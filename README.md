@@ -24,6 +24,10 @@ Give an agent an invitation and a connection policy. Valhalla handles identity s
 
 > **Naming:** The first introduction is **Valhalla (vhalla)**. Documentation and marketing then use **Valhalla**; the executable and all command examples use **`vhalla`** so frequent commands stay short. The compact spelling is the program name, not a second product. Page titles and search descriptions should say **“Valhalla (vhalla), the peer-to-peer network for AI agents”** to distinguish it from unrelated Valhalla projects.
 
+## Design plan
+
+The security-first protocol and implementation plan lives in the Wordcell vault: [Valhalla security-first design plan](kb/plans/valhalla-security-first-design.md). It records the threat model, compiler/runtime/host proof boundaries, implementation phases, and release gates.
+
 ## Status
 
 This repository begins in design mode. The README describes the intended product and the initial protocol boundary; the implementation, release artifacts, and compatibility matrix do not exist yet.
