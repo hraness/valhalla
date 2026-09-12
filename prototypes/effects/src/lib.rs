@@ -66,7 +66,12 @@ pub struct LocalPolicy {
 
 impl LocalPolicy {
     pub fn read_only(owner: PeerId, epoch: PolicyEpoch, resource: u32) -> Self {
-        Self { owner, epoch, read_resource: Some(resource), write_resource: None }
+        Self {
+            owner,
+            epoch,
+            read_resource: Some(resource),
+            write_resource: None,
+        }
     }
 
     /// This is the only constructor path for an effect capability.
@@ -75,7 +80,9 @@ impl LocalPolicy {
             Operation::ReadWorkspace => self.read_resource == Some(request.requested.resource),
             Operation::WriteWorkspace => self.write_resource == Some(request.requested.resource),
         };
-        if !allowed { return Err(Denied::ScopeMismatch); }
+        if !allowed {
+            return Err(Denied::ScopeMismatch);
+        }
         Ok(AuthorizedEffect {
             capability: EffectCapability {
                 scope: request.requested,
@@ -89,12 +96,25 @@ impl LocalPolicy {
 }
 
 impl AuthorizedEffect {
-    pub fn consume(&mut self, caller: PeerId, epoch: PolicyEpoch) -> Result<ExecutedEffect, Denied> {
-        if self.capability.audience != caller { return Err(Denied::WrongAudience); }
-        if self.capability.epoch != epoch { return Err(Denied::Exhausted); }
-        if self.capability.max_uses == 0 { return Err(Denied::Exhausted); }
+    pub fn consume(
+        &mut self,
+        caller: PeerId,
+        epoch: PolicyEpoch,
+    ) -> Result<ExecutedEffect, Denied> {
+        if self.capability.audience != caller {
+            return Err(Denied::WrongAudience);
+        }
+        if self.capability.epoch != epoch {
+            return Err(Denied::Exhausted);
+        }
+        if self.capability.max_uses == 0 {
+            return Err(Denied::Exhausted);
+        }
         self.capability.max_uses -= 1;
-        Ok(ExecutedEffect { event: self.request.event, scope: self.capability.scope })
+        Ok(ExecutedEffect {
+            event: self.request.event,
+            scope: self.capability.scope,
+        })
     }
 }
 
@@ -105,7 +125,10 @@ pub struct ExecutedEffect {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Visibility { Public, Private }
+pub enum Visibility {
+    Public,
+    Private,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryEvent {
@@ -115,7 +138,10 @@ pub struct HistoryEvent {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum HistoryError { TooLarge, Duplicate }
+pub enum HistoryError {
+    TooLarge,
+    Duplicate,
+}
 
 /// A bounded append-only view. It does not promise durable replication or
 /// encryption; those are separate protocol decisions.
@@ -129,13 +155,25 @@ pub struct BoundedHistory {
 
 impl BoundedHistory {
     pub fn new(max_events: usize, max_bytes: usize) -> Self {
-        Self { max_events, max_bytes, bytes: 0, seen: HashMap::new(), events: VecDeque::new() }
+        Self {
+            max_events,
+            max_bytes,
+            bytes: 0,
+            seen: HashMap::new(),
+            events: VecDeque::new(),
+        }
     }
 
     pub fn append(&mut self, event: HistoryEvent) -> Result<(), HistoryError> {
-        if event.bytes.len() > self.max_bytes { return Err(HistoryError::TooLarge); }
-        if self.seen.contains_key(&event.id) { return Err(HistoryError::Duplicate); }
-        while self.events.len() >= self.max_events || self.bytes + event.bytes.len() > self.max_bytes {
+        if event.bytes.len() > self.max_bytes {
+            return Err(HistoryError::TooLarge);
+        }
+        if self.seen.contains_key(&event.id) {
+            return Err(HistoryError::Duplicate);
+        }
+        while self.events.len() >= self.max_events
+            || self.bytes + event.bytes.len() > self.max_bytes
+        {
             if let Some(old) = self.events.pop_front() {
                 self.bytes -= old.bytes.len();
                 self.seen.remove(&old.id);
@@ -149,8 +187,12 @@ impl BoundedHistory {
         Ok(())
     }
 
-    pub fn events(&self) -> impl Iterator<Item = &HistoryEvent> { self.events.iter() }
-    pub fn bytes(&self) -> usize { self.bytes }
+    pub fn events(&self) -> impl Iterator<Item = &HistoryEvent> {
+        self.events.iter()
+    }
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
 }
 
 #[cfg(test)]
@@ -158,27 +200,66 @@ mod tests {
     use super::*;
 
     fn request(operation: Operation) -> RemoteRequest {
-        RemoteRequest { event: EventId(1), author: PeerId(99), requested: Scope { operation, resource: 7 }, argument: b"hostile prose".to_vec() }
+        RemoteRequest {
+            event: EventId(1),
+            author: PeerId(99),
+            requested: Scope {
+                operation,
+                resource: 7,
+            },
+            argument: b"hostile prose".to_vec(),
+        }
     }
 
     #[test]
     fn remote_request_is_inert_until_local_policy_authorizes() {
         let policy = LocalPolicy::read_only(PeerId(1), PolicyEpoch(3), 7);
-        assert_eq!(policy.authorize(request(Operation::WriteWorkspace)), Err(Denied::ScopeMismatch));
+        assert_eq!(
+            policy.authorize(request(Operation::WriteWorkspace)),
+            Err(Denied::ScopeMismatch)
+        );
         let mut authorized = policy.authorize(request(Operation::ReadWorkspace)).unwrap();
-        assert_eq!(authorized.consume(PeerId(2), PolicyEpoch(3)), Err(Denied::WrongAudience));
+        assert_eq!(
+            authorized.consume(PeerId(2), PolicyEpoch(3)),
+            Err(Denied::WrongAudience)
+        );
         assert!(authorized.consume(PeerId(1), PolicyEpoch(2)).is_err());
         assert!(authorized.consume(PeerId(1), PolicyEpoch(3)).is_ok());
-        assert_eq!(authorized.consume(PeerId(1), PolicyEpoch(3)), Err(Denied::Exhausted));
+        assert_eq!(
+            authorized.consume(PeerId(1), PolicyEpoch(3)),
+            Err(Denied::Exhausted)
+        );
     }
 
     #[test]
     fn history_deduplicates_and_evicts_within_bound() {
         let mut h = BoundedHistory::new(2, 8);
-        h.append(HistoryEvent { id: EventId(1), visibility: Visibility::Public, bytes: b"1234".to_vec() }).unwrap();
-        assert_eq!(h.append(HistoryEvent { id: EventId(1), visibility: Visibility::Public, bytes: b"1234".to_vec() }), Err(HistoryError::Duplicate));
-        h.append(HistoryEvent { id: EventId(2), visibility: Visibility::Private, bytes: b"5678".to_vec() }).unwrap();
-        h.append(HistoryEvent { id: EventId(3), visibility: Visibility::Public, bytes: b"ab".to_vec() }).unwrap();
+        h.append(HistoryEvent {
+            id: EventId(1),
+            visibility: Visibility::Public,
+            bytes: b"1234".to_vec(),
+        })
+        .unwrap();
+        assert_eq!(
+            h.append(HistoryEvent {
+                id: EventId(1),
+                visibility: Visibility::Public,
+                bytes: b"1234".to_vec()
+            }),
+            Err(HistoryError::Duplicate)
+        );
+        h.append(HistoryEvent {
+            id: EventId(2),
+            visibility: Visibility::Private,
+            bytes: b"5678".to_vec(),
+        })
+        .unwrap();
+        h.append(HistoryEvent {
+            id: EventId(3),
+            visibility: Visibility::Public,
+            bytes: b"ab".to_vec(),
+        })
+        .unwrap();
         let ids: Vec<_> = h.events().map(|event| event.id).collect();
         assert_eq!(ids, vec![EventId(2), EventId(3)]);
         assert_eq!(h.bytes(), 6);

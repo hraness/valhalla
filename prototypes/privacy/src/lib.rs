@@ -9,10 +9,18 @@ pub struct Epoch(pub u64);
 pub struct KeyFingerprint(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PrivateEnvelope { pub epoch: Epoch, pub key: KeyFingerprint, pub bytes: [u8; 4] }
+pub struct PrivateEnvelope {
+    pub epoch: Epoch,
+    pub key: KeyFingerprint,
+    pub bytes: [u8; 4],
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Reject { NotMember, StaleEpoch, WrongKey }
+pub enum Reject {
+    NotMember,
+    StaleEpoch,
+    WrongKey,
+}
 
 pub struct Group {
     epoch: Epoch,
@@ -21,19 +29,48 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn new(owner: Member, key: KeyFingerprint) -> Self { Self { epoch: Epoch(0), key, members: vec![owner] } }
-    pub fn epoch(&self) -> Epoch { self.epoch }
-    pub fn join(&mut self, member: Member, next_key: KeyFingerprint) { self.members.push(member); self.rotate(next_key); }
-    pub fn leave(&mut self, member: Member, next_key: KeyFingerprint) { self.members.retain(|m| *m != member); self.rotate(next_key); }
-    fn rotate(&mut self, key: KeyFingerprint) { self.epoch = Epoch(self.epoch.0 + 1); self.key = key; }
+    pub fn new(owner: Member, key: KeyFingerprint) -> Self {
+        Self {
+            epoch: Epoch(0),
+            key,
+            members: vec![owner],
+        }
+    }
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+    pub fn join(&mut self, member: Member, next_key: KeyFingerprint) {
+        self.members.push(member);
+        self.rotate(next_key);
+    }
+    pub fn leave(&mut self, member: Member, next_key: KeyFingerprint) {
+        self.members.retain(|m| *m != member);
+        self.rotate(next_key);
+    }
+    fn rotate(&mut self, key: KeyFingerprint) {
+        self.epoch = Epoch(self.epoch.0 + 1);
+        self.key = key;
+    }
     pub fn seal(&self, sender: Member, bytes: [u8; 4]) -> Result<PrivateEnvelope, Reject> {
-        if !self.members.contains(&sender) { return Err(Reject::NotMember); }
-        Ok(PrivateEnvelope { epoch: self.epoch, key: self.key, bytes })
+        if !self.members.contains(&sender) {
+            return Err(Reject::NotMember);
+        }
+        Ok(PrivateEnvelope {
+            epoch: self.epoch,
+            key: self.key,
+            bytes,
+        })
     }
     pub fn open(&self, recipient: Member, envelope: PrivateEnvelope) -> Result<[u8; 4], Reject> {
-        if !self.members.contains(&recipient) { return Err(Reject::NotMember); }
-        if envelope.epoch != self.epoch { return Err(Reject::StaleEpoch); }
-        if envelope.key != self.key { return Err(Reject::WrongKey); }
+        if !self.members.contains(&recipient) {
+            return Err(Reject::NotMember);
+        }
+        if envelope.epoch != self.epoch {
+            return Err(Reject::StaleEpoch);
+        }
+        if envelope.key != self.key {
+            return Err(Reject::WrongKey);
+        }
         Ok(envelope.bytes)
     }
 }
@@ -50,6 +87,9 @@ mod tests {
         let before_leave = group.seal(owner, *b"old!").unwrap();
         group.leave(removed, KeyFingerprint(12));
         assert_eq!(group.open(owner, before_leave), Err(Reject::StaleEpoch));
-        assert_eq!(group.open(removed, group.seal(owner, *b"new!").unwrap()), Err(Reject::NotMember));
+        assert_eq!(
+            group.open(removed, group.seal(owner, *b"new!").unwrap()),
+            Err(Reject::NotMember)
+        );
     }
 }
