@@ -456,6 +456,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-host"
+version = "0.0.0"
+dependencies = [
+ "vhalla-core",
+ "vhalla-policy",
+]
+
+[[package]]
+name = "vhalla-policy"
+version = "0.0.0"
+dependencies = [
+ "vhalla-core",
+]
+
+[[package]]
+name = "vhalla-steel-thread"
+version = "0.0.0"
+dependencies = [
+ "vhalla-core",
+ "vhalla-host",
+ "vhalla-policy",
+ "vhalla-wire",
+]
+
+[[package]]
 name = "vhalla-wire"
 version = "0.0.0"
 dependencies = [

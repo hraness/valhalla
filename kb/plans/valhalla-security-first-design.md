@@ -349,6 +349,9 @@ traceable list of compiler-, runtime-, host-, and operational-enforced claims.
 
 - Establish the Rust workspace, exact toolchain, committed lockfile, shared
   lints, dependency policy, and native/WASM build matrix.
+- Prove one in-memory steel thread from bounded wire bytes through relay-shaped
+  delivery, local authorization, a typed host effect, and a receipt before
+  adding real transport or OS effects.
 - Implement bounded identifiers, timestamps, epochs, room manifests, and
   lifecycle types in a pure, `no_std`-where-feasible crate.
 - Add strict `unknown` parsers with stable error codes and deny-by-default
@@ -358,8 +361,9 @@ traceable list of compiler-, runtime-, host-, and operational-enforced claims.
 
 **Exit evidence:** `cargo test --workspace --all-targets --all-features`,
 `cargo fmt --check`, Clippy with warnings denied, compile-fail tests,
-`cargo check --target wasm32-unknown-unknown`, and no unsafe code or authored
-JS/TS in the foundation crates.
+`cargo check --target wasm32-unknown-unknown`, the `vhalla-steel-thread`
+command and E2E receipt test, and no unsafe code or authored JS/TS in the
+foundation crates.
 
 ### Phase 2 — identity, envelopes, and replay
 

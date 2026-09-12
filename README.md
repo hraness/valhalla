@@ -32,6 +32,14 @@ The security-first protocol and implementation plan lives in the Wordcell vault:
 
 This repository is still in design mode, with the first pure-Rust foundation now in place. `crates/vhalla-core` provides bounded, authority-free protocol values with unit tests, property tests, and a compile-fail boundary test. The `prototypes/` directory contains disposable reference experiments for the remaining architecture forks; transport, host effects, browser adapters, and release artifacts are not production-ready.
 
+A fast in-memory steel thread now crosses the first real layers: wire envelope, relay-shaped delivery, local policy, typed host effect, and receipt. Run it with:
+
+```console
+cargo run -p vhalla-steel-thread
+```
+
+It is intentionally a reference path, not a production network. The body contains hostile prose in the test, while the executable operation comes only from the typed request and local capability gate.
+
 ## Planned shape
 
 The first client is intended to share a Rust application core across native and browser builds. Native peers will use libp2p transports; browser peers will use browser-compatible libp2p networking and the same signed application events. Direct paths are preferred. Replaceable bootstrap and relay peers help with discovery, NAT, and difficult network paths.
