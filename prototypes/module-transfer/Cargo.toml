@@ -1,0 +1,10 @@
+[package]
+name = "valhalla-module-transfer-prototype"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[lib]
+path = "src/lib.rs"
+[workspace]
+[dependencies]
+sha2 = { version = "0.10", default-features = false }

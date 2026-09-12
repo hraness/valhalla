@@ -11,6 +11,14 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `game-session` | Single-host versus quorum checkpoint authority |
 | `settlement` | Voucher consumption, quorum finality, and light-client continuity |
 | `zk-profile` | Transparent/SNARK/Nova proof envelopes separated from authority |
+| `control-plane` | Protected policy authority versus hostile execution requests |
+| `membrane` | Realm admission, capability boundaries, queues, and revocation |
+| `genome-bundle` | Versioned agent manifests, component imports, budgets, rollback |
+| `module-transfer` | Provenance-bound horizontal module transfer and downgrade rejection |
+| `symbiosis` | Typed contracts, obligations, expiry, and bounded signaling |
+| `liveness` | Partition-aware leases and suspicion without authority transfer |
+| `multicell` | Differentiated members, budgets, checkpoints, and graceful failure |
+| `ecology` | Deterministic Platonik-style composition and lineage replay |
 | Existing forks | `wire-format`, `transport`, `discovery`, `browser`, `privacy`, `effects`, and `replication` |
 
 Run every prototype with:

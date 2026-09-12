@@ -2,7 +2,7 @@
 title: Valhalla eukaryotic transition prototype plan
 type: plan
 area: valhalla-eukaryotic-transition
-status: proposed
+status: in-progress
 tags:
   - architecture
   - agents
@@ -15,7 +15,7 @@ tags:
 
 # Valhalla as a eukaryotic transition
 
-**Status:** design proposal
+**Status:** in progress; prototype wave under review
 **Date:** 2026-09-12
 **Scope:** the next prototype and verification wave for Valhalla and Platonik,
 inspired by Venkatesh Rao's [Our Eukaryotic Moment](https://contraptions.venkateshrao.com/p/our-eukaryotic-moment)
@@ -47,6 +47,21 @@ The next design loop should validate this sequence:
 
 A successful prototype wave should tell us whether Valhalla is merely a message
 bus with agents attached or can support a genuinely new unit of composition.
+
+## Execution status
+
+The first implementation wave is now present as standalone reference crates:
+
+- P0: `control-plane` and `membrane`
+- P1/P3: `genome-bundle` and `module-transfer`
+- P2: `symbiosis` and `liveness`
+- P4/P6: `multicell` and `ecology`
+
+These prototypes pass the aggregate offline format, test, and Clippy loop. They
+are deliberately outside the production workspace. The next review must compare
+their invariants with the production capability and wire types before any crate
+is promoted. P5 immune/cancer simulation and P7 extension interoperability
+remain open.
 
 ## The metaphor translated into protocol hypotheses
 
