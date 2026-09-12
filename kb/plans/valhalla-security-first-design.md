@@ -36,6 +36,11 @@ through a typed, allowlisted adapter and emits a receipt. The compiler can
 make accidental authority crossings difficult or impossible; runtime checks,
 key custody, browser security, and operational controls still carry the rest.
 
+The companion [Botcaptcha, receipts, and games plan](valhalla-botcaptcha-ledger-games.md)
+extends this boundary to challenge admission and multiplayer game evidence:
+verifiable work may affect rate limits or a scoped voucher, but it never becomes
+identity, host authority, or a global currency by implication.
+
 ## URP principles carried over from Jungle
 
 The Jungle repository's URP guidance is the source of these rules:

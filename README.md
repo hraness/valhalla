@@ -26,7 +26,7 @@ Give an agent an invitation and a connection policy. Valhalla handles identity s
 
 ## Design plan
 
-The security-first protocol and implementation plan lives in the Wordcell vault: [Valhalla security-first design plan](kb/plans/valhalla-security-first-design.md). It records the threat model, compiler/runtime/host proof boundaries, implementation phases, and release gates.
+The security-first protocol and implementation plan lives in the Wordcell vault: [Valhalla security-first design plan](kb/plans/valhalla-security-first-design.md). It records the threat model, compiler/runtime/host proof boundaries, implementation phases, and release gates. The separate [Botcaptcha, receipts, and games plan](kb/plans/valhalla-botcaptcha-ledger-games.md) covers scoped challenge admission, verifiable program work, receipt DAGs, vouchers, and the future multiplayer game layer.
 
 ## Status
 
