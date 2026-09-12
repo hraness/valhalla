@@ -439,22 +439,56 @@ The implementation is not ready for public agents until these are automated:
 - release: locked dependencies, audit/license results, SBOM, reproducible
   native/WASM artifacts, and signed immutable release provenance.
 
-## Open forks to decide before implementation
+## Prototype-backed decisions (throwaway reference pass)
 
-1. **Wire format:** canonical CBOR is the leading option for compact,
-   cross-language bytes; canonical JSON is easier to inspect. Whichever wins
-   must have one canonical transcript and bounded decoding.
-2. **Transport:** libp2p provides peer identity, multiplexing, and relays;
-   WebRTC is needed for browser reachability. Keep transport replaceable so
-   embedded builds can choose a smaller profile.
-3. **Private messaging:** use a separate group-encryption design rather than
-   treating relay/session encryption as end-to-end privacy.
-4. **Effect runner:** separate process/WASI is the default. A library-only
-   plugin model is simpler but weakens the authority fence and should not be
-   the initial trust boundary.
-5. **Room history:** bounded local append-only logs with explicit retention
-   are safer than an implicit global archive; durable replication is a later
-   capability with its own authorization and privacy review.
+The first fork pass lives under `prototypes/`. Each prototype is intentionally
+small, dependency-light, and disposable; it tests a boundary or failure mode
+rather than claiming production security. The current decisions are:
+
+- **Wire:** choose canonical CBOR for signed protocol envelopes. The
+  `prototypes/wire-format` experiment shows typed bytes, smaller transcripts,
+  definite-length maps, duplicate-key rejection, and bounded decoding. Keep a
+  canonical JSON projection for diagnostics, fixtures, and human tooling only;
+  replace the hand-written codec with an audited Rust implementation and
+  cross-target golden vectors before production.
+- **Transport:** keep application events independent from sockets and model
+  relay loss, duplication, reordering, and bounded inboxes at that seam. The
+  `prototypes/transport` experiment supports a libp2p-first investigation
+  because direct browser capability is a priority. Keep Iroh as a native-first
+  optional adapter and make relay fallback explicit; no relay is an authority
+  or durable store.
+- **Private messaging:** use pairwise owner DMs in the first secure release.
+  The `prototypes/privacy` membership-epoch model shows why group membership
+  changes require key rotation and stale-envelope rejection. Defer group E2E
+  until offline delivery, browser key custody, history retention, and
+  revocation semantics have a complete design.
+- **Effects and history:** keep a typed capability/effect boundary separate
+  from bounded local history. The `prototypes/effects` experiment shows that
+  remote requests remain inert, local policy is the only capability minting
+  path, single-use/epoch checks are explicit, and history can deduplicate and
+  evict within count/byte limits. The production runner should be a separate
+  process or WASI-style boundary, not a general plugin API.
+
+These are provisional architecture decisions, not release claims. The next
+implementation phase must replace hand-written codecs and placeholder key
+fingerprints with vetted libraries, signed vectors, adversarial tests, and
+measured native/WASM builds.
+
+## Remaining forks and production gates
+
+1. **Wire productionization:** select and audit the canonical CBOR crate,
+   finalize integer/key ordering and unknown-field policy, and freeze vectors.
+2. **Transport productionization:** compile native and WASM libp2p profiles,
+   measure relay/direct behavior, and decide which discovery helpers are
+   allowed in a minimal embedded profile.
+3. **Group messaging:** decide whether and how to add group E2E after pairwise
+   DMs have exercised pairing, revocation, and browser key custody.
+4. **Effect runner hardening:** choose the first concrete process/WASI runner,
+   prove its allowlist and recovery behavior, and test it against malicious
+   adapters.
+5. **History replication:** decide whether durable replication belongs in the
+   protocol at all; if it does, define retention, privacy, authorization, and
+   recovery as a separate capability.
 
 ## Security review rule
 
