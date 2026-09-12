@@ -1,5 +1,5 @@
 [package]
-name = "valhalla-transport-prototype"
+name = "valhalla-discovery-prototype"
 version = "0.0.0"
 edition = "2021"
 publish = false

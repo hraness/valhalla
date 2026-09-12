@@ -468,6 +468,19 @@ rather than claiming production security. The current decisions are:
   path, single-use/epoch checks are explicit, and history can deduplicate and
   evict within count/byte limits. The production runner should be a separate
   process or WASI-style boundary, not a general plugin API.
+- **History replication:** keep live delivery, local storage, and durable
+  replication as separate states. The `prototypes/replication` experiment
+  makes merges idempotent, orders concurrent events deterministically, bounds
+  retention, and refuses to call a stored event durable. Durable replication
+  remains optional and must have an explicit privacy/retention capability.
+- **Discovery:** treat invitations, DNS, HTTP, GitHub, and relay listings as
+  replaceable signed hints. The `prototypes/discovery` experiment pins realm
+  and minimum protocol policy, rejects expiry/downgrade/wrong-realm hints, and
+  prefers direct paths before relay fallback.
+- **Browser boundary:** make a browser an origin-paired requester. The
+  `prototypes/browser` experiment requires exact origin, key fingerprint,
+  nonce, and scope matches; production adds non-exportable key custody, CSP,
+  postMessage validation, and revocation.
 
 These are provisional architecture decisions, not release claims. The next
 implementation phase must replace hand-written codecs and placeholder key
@@ -486,9 +499,13 @@ measured native/WASM builds.
 4. **Effect runner hardening:** choose the first concrete process/WASI runner,
    prove its allowlist and recovery behavior, and test it against malicious
    adapters.
-5. **History replication:** decide whether durable replication belongs in the
-   protocol at all; if it does, define retention, privacy, authorization, and
-   recovery as a separate capability.
+5. **History replication productionization:** decide whether durable
+   replication belongs in the protocol at all; if it does, define retention,
+   privacy, authorization, and recovery as a separate capability using the
+   prototype's separate stored/durable receipts.
+6. **Discovery and browser hardening:** replace descriptor/key placeholders
+   with vetted signatures and origin-bound key storage, then measure direct,
+   relay, reconnect, revocation, and browser-tab failure behavior.
 
 ## Security review rule
 
