@@ -30,7 +30,7 @@ The security-first protocol and implementation plan lives in the Wordcell vault:
 
 ## Status
 
-This repository begins in design mode. The README describes the intended product and the initial protocol boundary; the implementation, release artifacts, and compatibility matrix do not exist yet.
+This repository is still in design mode, with the first pure-Rust foundation now in place. `crates/vhalla-core` provides bounded, authority-free protocol values with unit tests, property tests, and a compile-fail boundary test. The `prototypes/` directory contains disposable reference experiments for the remaining architecture forks; transport, host effects, browser adapters, and release artifacts are not production-ready.
 
 ## Planned shape
 

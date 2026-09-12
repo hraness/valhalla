@@ -1,0 +1,32 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Workspace tests
+        run: cargo test --workspace --all-targets
+      - name: Reference prototype tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for manifest in prototypes/*/Cargo.toml; do
+            cargo fmt --manifest-path "$manifest" -- --check
+            cargo test --manifest-path "$manifest"
+          done

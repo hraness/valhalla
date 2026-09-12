@@ -1,0 +1,11 @@
+error[E0423]: cannot initialize a tuple struct which contains private fields
+ --> tests/ui/cannot_fabricate_envelope.rs:4:19
+  |
+4 |     let _forged = UntrustedEnvelope(vec![1, 2, 3]);
+  |                   ^^^^^^^^^^^^^^^^^
+  |
+note: constructor is not visible here due to private fields
+ --> src/lib.rs
+  |
+  | pub struct UntrustedEnvelope(Vec<u8>);
+  |                              ^^^^^^^ private field
