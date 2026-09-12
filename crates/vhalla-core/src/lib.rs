@@ -16,19 +16,19 @@ use alloc::vec::Vec;
 pub const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
 
 /// A stable peer identity handle. Cryptographic verification lives elsewhere.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PeerId(pub u128);
 
 /// A realm identifier.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RealmId(pub u128);
 
 /// A room identifier within a realm.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RoomId(pub u128);
 
 /// A protocol event identifier.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct EventId(pub u128);
 
 /// A monotonically increasing sender sequence.

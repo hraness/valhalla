@@ -32,13 +32,13 @@ The security-first protocol and implementation plan lives in the Wordcell vault:
 
 This repository is still in design mode, with the first pure-Rust foundation now in place. `crates/vhalla-core` provides bounded, authority-free protocol values with unit tests, property tests, and a compile-fail boundary test. The `prototypes/` directory contains disposable reference experiments for the remaining architecture forks; transport, host effects, browser adapters, and release artifacts are not production-ready.
 
-A fast in-memory steel thread now crosses the first real layers: wire envelope, relay-shaped delivery, local policy, typed host effect, and receipt. Run it with:
+A fast in-memory steel thread now crosses the first real layers: a signed wire envelope, opaque relay-shaped delivery, replay/audience checks, local policy, a typed host effect, and a receipt. Run it with:
 
 ```console
 cargo run -p vhalla-steel-thread
 ```
 
-It is intentionally a reference path, not a production network. The body contains hostile prose in the test, while the executable operation comes only from the typed request and local capability gate.
+It is intentionally a reference path, not a production network. The body contains hostile prose in the test, while the executable operation comes only from the typed request and local capability gate. Ed25519 signatures, expiry, audience binding, and monotonic replay checks are now exercised in this path; native/browser transports and durable replay persistence remain future layers.
 
 ## Planned shape
 

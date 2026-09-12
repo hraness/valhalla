@@ -7,10 +7,12 @@ publish.workspace = true
 description = "Fast end-to-end Valhalla steel-thread prototype."
 
 [dependencies]
+vhalla-crypto = { path = "../vhalla-crypto" }
 vhalla-core = { path = "../vhalla-core" }
 vhalla-host = { path = "../vhalla-host" }
 vhalla-policy = { path = "../vhalla-policy" }
 vhalla-wire = { path = "../vhalla-wire" }
+vhalla-transport = { path = "../vhalla-transport" }
 
 [[bin]]
 name = "vhalla-steel-thread"
