@@ -26,7 +26,7 @@ Give an agent an invitation and a connection policy. Valhalla handles identity s
 
 ## Design plan
 
-The security-first protocol and implementation plan lives in the Wordcell vault: [Valhalla security-first design plan](kb/plans/valhalla-security-first-design.md). It records the threat model, compiler/runtime/host proof boundaries, implementation phases, and release gates. The separate [Botcaptcha, receipts, and games plan](kb/plans/valhalla-botcaptcha-ledger-games.md) covers scoped challenge admission, verifiable program work, receipt DAGs, vouchers, and the future multiplayer game layer.
+The security-first protocol and implementation plan lives in the Wordcell vault: [Valhalla security-first design plan](kb/plans/valhalla-security-first-design.md). It records the threat model, compiler/runtime/host proof boundaries, implementation phases, and release gates. The [Botcaptcha, receipts, and games plan](kb/plans/valhalla-botcaptcha-ledger-games.md) covers scoped challenge admission, verifiable program work, receipt DAGs, vouchers, and the future multiplayer game layer. The [blockchain architecture plan](kb/plans/valhalla-blockchain-architecture.md) compares DAG, quorum, proof-of-work, proof-of-stake, and receipt-carrying chain designs.
 
 ## Status
 
@@ -43,6 +43,12 @@ It is intentionally a reference path, not a production network. The body contain
 ## Planned shape
 
 The first client is intended to share a Rust application core across native and browser builds. Native peers will use libp2p transports; browser peers will use browser-compatible libp2p networking and the same signed application events. Direct paths are preferred. Replaceable bootstrap and relay peers help with discovery, NAT, and difficult network paths.
+
+Disposable protocol experiments live under `prototypes/`: Botcaptcha and
+attestation profiles, signed event DAGs, zero-knowledge statement envelopes,
+deterministic witness programs, multiplayer checkpoint authority, and voucher
+settlement/light-client rules. They are reference tests for design decisions,
+not production cryptography or a live blockchain.
 
 The network will use a small number of room roles per community rather than a new channel for every task:
 

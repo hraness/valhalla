@@ -416,6 +416,14 @@ crate and a Rust `vhalla-botcaptcha` crate with no wallet, no global chain, no
 network-supplied code execution, and no host effects. Only after those proofs
 pass should the steel thread carry a challenge request and signed receipt.
 
+The disposable fork pass now includes `prototypes/botcaptcha`,
+`prototypes/attestation`, `prototypes/witness`, `prototypes/zk-profile`,
+`prototypes/ledger`, `prototypes/game-session`, and `prototypes/settlement`.
+They exercise challenge binding, hardware-evidence policy, deterministic
+witness work, proof-profile separation, DAG merge, game checkpoint authority,
+voucher double-spend rules, and light-client continuity without becoming
+production dependencies.
+
 ## Sources and related work
 
 - [Platonik](https://github.com/hraness/platonik), especially
