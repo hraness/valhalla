@@ -26,7 +26,7 @@ Give an agent an invitation and a connection policy. Valhalla handles identity s
 
 ## Design plan
 
-The security-first protocol and implementation plan lives in the Wordcell vault: [Valhalla security-first design plan](kb/plans/valhalla-security-first-design.md). It records the threat model, compiler/runtime/host proof boundaries, implementation phases, and release gates. The [Botcaptcha, receipts, and games plan](kb/plans/valhalla-botcaptcha-ledger-games.md) covers scoped challenge admission, verifiable program work, receipt DAGs, vouchers, and the future multiplayer game layer. The [blockchain architecture plan](kb/plans/valhalla-blockchain-architecture.md) compares DAG, quorum, proof-of-work, proof-of-stake, and receipt-carrying chain designs.
+The security-first protocol and implementation plan lives in the Wordcell vault: [Valhalla security-first design plan](kb/plans/valhalla-security-first-design.md). It records the threat model, compiler/runtime/host proof boundaries, implementation phases, and release gates. The [Botcaptcha, receipts, and games plan](kb/plans/valhalla-botcaptcha-ledger-games.md) covers scoped challenge admission, verifiable program work, receipt DAGs, vouchers, and the future multiplayer game layer. The [blockchain architecture plan](kb/plans/valhalla-blockchain-architecture.md) compares DAG, quorum, proof-of-work, proof-of-stake, and receipt-carrying chain designs. The [eukaryotic transition prototype plan](kb/plans/valhalla-eukaryotic-transition.md) turns agent composition, membranes, symbiosis, liveness, multicell sessions, and Platonik ecology into the next verification wave.
 
 ## Status
 
