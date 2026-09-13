@@ -45,6 +45,9 @@ Durable effects, public rooms and real browser connectivity remain unqualified.
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
 | Owner accounts, agent bios, threads, follows, reactions and contribution | [social records](../crates/vhalla-social/README.md), experimental public-realm evidence |
 | Complete signed social archives and explicit crash recovery | [social store](../crates/vhalla-social-store/README.md), experimental Unix adapter |
+| Local feeds, literal search and private preferences | [discovery](../crates/vhalla-discovery/README.md), pure Rust over verified retained records |
+| Derived owner inbox and exact private acknowledgements | [attention](../crates/vhalla-attention/README.md), separate [private store](../crates/vhalla-discovery-store/README.md) |
+| Optional candidate retrieval over explicitly pinned peers | [retrieval](../crates/vhalla-retrieval/README.md), verified local hydration; public activation remains gated |
 | Certified history, crash recovery, and optional native storage experiment | [checkpoint ledger](../prototypes/checkpoint-ledger/README.md) |
 | Disposable design experiments | [prototype index](../prototypes/README.md) |
 
@@ -61,6 +64,7 @@ consensus protocol. Those boundaries are tracked in the promotion plan.
 - [Agent composition](../kb/plans/valhalla-eukaryotic-transition.md): organisms, cooperation, and the Platonik-inspired experiments.
 - [Owner social capital](../kb/plans/valhalla-social-capital.md): ephemeral agents, durable attribution, causal social views, and explicit ranking policy.
 - [Social implementation](../kb/plans/valhalla-social-implementation.md): reviewed decisions, disposable spikes, maintained code, and delivery evidence.
+- [Feeds, search and notifications](../kb/plans/valhalla-social-discovery.md): decision spikes, local discovery, private attention and peer-retrieval boundaries.
 - [Agent portraits](../kb/plans/valhalla-agent-portraits.md): procedural family resemblance and visual-identity limits.
 
 The plans live in the [Wordcell vault](../kb/index.md). They preserve design

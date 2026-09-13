@@ -1,0 +1,12 @@
+[package]
+name = "vhalla-dioxus-boundary-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[dev-dependencies]
+percent-encoding = "=2.3.2"
+proptest = "=1.11.0"

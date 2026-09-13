@@ -141,6 +141,8 @@ pub struct RevisionText<'a> {
     pub revision: RecordId,
     /// Plain text; consumers must escape it for their output medium.
     pub text: &'a str,
+    /// Immutable signed annotations belonging only to this exact revision.
+    pub facets: &'a [crate::Facet],
 }
 /// Retraction hides ordinary presentation while the archive retains evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -471,6 +473,15 @@ impl<'a> View<'a> {
     fn archive(&self) -> &'a Archive {
         self.control.archive()
     }
+    /// Check that an external immutable archive has this view's complete source
+    /// context: retained evidence, realm, and every local resource limit. Equal
+    /// evidence roots alone do not prove equal authority under quota pressure.
+    #[must_use]
+    pub fn matches_archive(&self, archive: &Archive) -> bool {
+        self.archive().realm() == archive.realm()
+            && self.archive().limits() == archive.limits()
+            && self.basis.archive_root == archive.root()
+    }
     /// Exact basis for every result from this borrowed view.
     #[must_use]
     pub const fn basis(&self) -> EvaluationBasis {
@@ -502,7 +513,7 @@ impl<'a> View<'a> {
     }
     fn post_operation(&self, id: RecordId) -> Result<(Actor, &'a Operation), Error> {
         let (actor, op) = self.operation(id)?;
-        if !matches!(op, Operation::Post { .. }) {
+        if !matches!(op, Operation::Post { .. } | Operation::PostFaceted { .. }) {
             return Err(Error::Context);
         }
         self.dependency(id)?;
@@ -512,8 +523,10 @@ impl<'a> View<'a> {
         self.post_operation(reference.post)?;
         let (_, op) = self.operation(reference.revision)?;
         match op {
-            Operation::Post { .. } if reference.revision == reference.post => {}
-            Operation::Revise { post, .. } if *post == reference.post => {}
+            Operation::Post { .. } | Operation::PostFaceted { .. }
+                if reference.revision == reference.post => {}
+            Operation::Revise { post, .. } | Operation::ReviseFaceted { post, .. }
+                if *post == reference.post => {}
             _ => return Err(Error::Context),
         }
         self.dependency(reference.revision)
@@ -521,11 +534,15 @@ impl<'a> View<'a> {
     fn key_for(&self, id: RecordId) -> Option<RegisterKey> {
         let (actor, op) = self.operation(id).ok()?;
         match op {
-            Operation::Post { .. } => Some(RegisterKey::Revision(id)),
-            Operation::Revise { post, .. } if self.can_rewrite(actor, *post).is_ok() => {
+            Operation::Post { .. } | Operation::PostFaceted { .. } => {
+                Some(RegisterKey::Revision(id))
+            }
+            Operation::Revise { post, .. } | Operation::ReviseFaceted { post, .. }
+                if self.can_rewrite(actor, *post).is_ok() =>
+            {
                 Some(RegisterKey::Revision(*post))
             }
-            Operation::Revise { .. } => None,
+            Operation::Revise { .. } | Operation::ReviseFaceted { .. } => None,
             Operation::React { post, .. } => Some(RegisterKey::Reaction(actor.owner(), *post)),
             Operation::Repost { post, .. } => Some(RegisterKey::Repost(actor.owner(), *post)),
             Operation::Follow { target, .. } => Some(RegisterKey::Follow(actor.owner(), *target)),
@@ -544,7 +561,10 @@ impl<'a> View<'a> {
         let (actor, op) = self.operation(id)?;
         // Known foreign writers cannot hide failed authorization behind a
         // missing causal predecessor and make another owner's content partial.
-        if let Operation::Revise { post, .. } | Operation::Retract { post } = op {
+        if let Operation::Revise { post, .. }
+        | Operation::ReviseFaceted { post, .. }
+        | Operation::Retract { post } = op
+        {
             self.can_rewrite(actor, *post)?;
         }
         for previous in op.supersedes() {
@@ -567,6 +587,12 @@ impl<'a> View<'a> {
                 reply,
                 quote,
                 ..
+            }
+            | Operation::PostFaceted {
+                placement,
+                reply,
+                quote,
+                ..
             } => {
                 if let Some(source) = quote {
                     self.exact_revision(*source)?;
@@ -574,11 +600,16 @@ impl<'a> View<'a> {
                 if let Some(reply) = reply {
                     self.exact_revision(reply.parent)?;
                     let (_, root) = self.post_operation(reply.root)?;
-                    let Operation::Post {
+                    let (Operation::Post {
                         placement: root_placement,
                         reply: root_reply,
                         ..
-                    } = root
+                    }
+                    | Operation::PostFaceted {
+                        placement: root_placement,
+                        reply: root_reply,
+                        ..
+                    }) = root
                     else {
                         return Err(Error::Context);
                     };
@@ -588,11 +619,16 @@ impl<'a> View<'a> {
                     let mut parent = reply.parent.post;
                     for depth in 0..MAX_THREAD_DEPTH {
                         let (_, ancestor) = self.post_operation(parent)?;
-                        let Operation::Post {
+                        let (Operation::Post {
                             placement: ancestor_placement,
                             reply: ancestor_reply,
                             ..
-                        } = ancestor
+                        }
+                        | Operation::PostFaceted {
+                            placement: ancestor_placement,
+                            reply: ancestor_reply,
+                            ..
+                        }) = ancestor
                         else {
                             return Err(Error::Context);
                         };
@@ -620,9 +656,15 @@ impl<'a> View<'a> {
                     }
                 }
             }
-            Operation::Revise { post, .. } | Operation::Retract { post } => {
+            Operation::Revise { post, .. }
+            | Operation::ReviseFaceted { post, .. }
+            | Operation::Retract { post } => {
                 self.post_operation(*post)?;
-                if matches!(op, Operation::Revise { .. }) && op.supersedes().is_empty() {
+                if matches!(
+                    op,
+                    Operation::Revise { .. } | Operation::ReviseFaceted { .. }
+                ) && op.supersedes().is_empty()
+                {
                     return Err(Error::Context);
                 }
             }
@@ -670,7 +712,7 @@ impl<'a> View<'a> {
     }
     fn can_rewrite(&self, actor: Actor, post: RecordId) -> Result<(), Error> {
         let (original, op) = self.operation(post)?;
-        if !matches!(op, Operation::Post { .. }) {
+        if !matches!(op, Operation::Post { .. } | Operation::PostFaceted { .. }) {
             return Err(Error::Context);
         }
         if actor.owner() != original.owner()
@@ -931,25 +973,67 @@ impl<'a> View<'a> {
         Content::Present(self.register(
             RegisterKey::Revision(post),
             committed,
-            |id, op| match op {
-                Operation::Post { text, .. } | Operation::Revise { text, .. } => RevisionText {
+            |id, op| {
+                let (text, facets) = op.text_and_facets().expect("revision key");
+                RevisionText {
                     revision: id,
-                    text: text.as_str(),
-                },
-                _ => unreachable!("revision key"),
+                    text,
+                    facets,
+                }
             },
             |_| None,
         ))
     }
+    /// Whether retained verified control evidence establishes this owner identity.
+    /// This does not assert active control, trust weight or complete history.
+    #[must_use]
+    pub fn owner_known(&self, owner: OwnerId) -> bool {
+        self.control.owner(owner).is_some()
+    }
+    /// Historical owner binding of an admitted agent incarnation, including after
+    /// retirement. Unknown/conflicting affiliation returns None; this is no grant.
+    #[must_use]
+    pub fn agent_owner(&self, agent: AgentId) -> Option<OwnerId> {
+        self.control.agent(agent).map(|status| status.owner())
+    }
+    /// Borrow the exact currently admitted source revision, including superseded
+    /// historical text deliberately referenced by a quote/repost. Never substitute
+    /// a newer revision. Reject missing/invalid source dependencies, any currently
+    /// observed withdrawal, or incomplete current content. Conflicting alternatives
+    /// do not change the explicitly requested revision. Ordinary feed cursors
+    /// must additionally recheck membership in their current revision projection.
+    pub fn exact_revision_text(&self, reference: PostRef) -> Result<RevisionText<'a>, Error> {
+        self.exact_revision(reference)?;
+        match self.content(reference.post, false) {
+            Content::Retracted { .. } => return Err(Error::Context),
+            Content::Incomplete | Content::Present(Register::Incomplete) => {
+                return Err(Error::Incomplete)
+            }
+            Content::Present(_) => (),
+        }
+        let (_, operation) = self.operation(reference.revision)?;
+        let (text, facets) = operation.text_and_facets().ok_or(Error::Context)?;
+        Ok(RevisionText {
+            revision: reference.revision,
+            text,
+            facets,
+        })
+    }
     /// Read one validated original, preserving exact references and authorship.
     pub fn post(&self, id: RecordId) -> Result<PostView<'a>, Error> {
         let (actor, op) = self.post_operation(id)?;
-        let Operation::Post {
+        let (Operation::Post {
             placement,
             reply,
             quote,
             ..
-        } = op
+        }
+        | Operation::PostFaceted {
+            placement,
+            reply,
+            quote,
+            ..
+        }) = op
         else {
             return Err(Error::Context);
         };
@@ -1185,7 +1269,9 @@ impl<'a> View<'a> {
             if self.control.social_status(post) != SocialStatus::Committed {
                 continue;
             }
-            let Ok((author, Operation::Post { .. })) = self.operation(post) else {
+            let Ok((author, Operation::Post { .. } | Operation::PostFaceted { .. })) =
+                self.operation(post)
+            else {
                 continue;
             };
             if author.owner() != owner {
@@ -1236,7 +1322,9 @@ impl<'a> View<'a> {
         let mut provisional_posts = 0;
         let accepted: BTreeSet<_> = self.control.accepted_ids().collect();
         for (&id, c) in &self.classification {
-            if let Ok((actor, Operation::Post { .. })) = self.operation(id) {
+            if let Ok((actor, Operation::Post { .. } | Operation::PostFaceted { .. })) =
+                self.operation(id)
+            {
                 if actor.owner() == owner {
                     if accepted.contains(&id) {
                         committed_posts += 1;

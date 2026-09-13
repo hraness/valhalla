@@ -1,4 +1,6 @@
 //! Explicit local experimental social commands; no network or host activation.
+#[path = "discovery.rs"]
+mod discovery;
 #[path = "social_json.rs"]
 mod json;
 
@@ -44,10 +46,18 @@ vhalla social COMMAND STORE REALM32HEX [arguments] [--now SECONDS]
 ACTOR is owner:OWNER64 or agent:AGENT64:GRANT64; IDs are full hex.
 RIGHTS is all or a comma-list of post,bio,react,follow,repost,revise.
 Read paging: --offset N --limit N (1..64); stats policy: --eligible OWNER_CSV.
+Signed facets on post/reply/quote/revise: --mention START:END:owner:OWNER64
+or --mention START:END:agent:AGENT64; --tag START:END:TAG. Offsets are UTF-8 bytes.
+Repeat up to 16 facets. --format legacy|faceted selects encoding; facets imply
+faceted, otherwise legacy is the default. Legacy revisions have no facets.
 Register updates default to all visible heads; --heads ID_CSV explicitly resolves
 up to 16 predecessors, including partial resolution discovered through records.
 Use -- before positional text beginning with --. Output is ASCII JSON.
 Owner writes are atomically sealed; agent writes remain provisional until sealed.";
+
+pub fn help() -> String {
+    format!("{HELP}\n\n{}", discovery::HELP)
+}
 
 struct Args {
     command: String,
@@ -59,6 +69,9 @@ struct Args {
     eligibility: Eligibility,
     offset: usize,
     limit: usize,
+    facets: Vec<Facet>,
+    faceted: bool,
+    discovery: discovery::Options,
 }
 impl Args {
     fn parse(args: Vec<OsString>) -> Result<Self, String> {
@@ -68,6 +81,10 @@ impl Args {
         let mut eligible = None;
         let mut offset = None;
         let mut limit = None;
+        let mut facets = Vec::new();
+        let mut tags = Vec::new();
+        let mut faceted = None;
+        let mut discovery = discovery::Options::default();
         let mut literal = false;
         let mut args = args.into_iter().skip(1);
         while let Some(raw) = args.next() {
@@ -88,6 +105,26 @@ impl Args {
                 }
                 let option = raw.into_string().map_err(|_| "option must be UTF-8")?;
                 match value.as_str() {
+                    "--mention" => {
+                        if facets.len() == 16 {
+                            return Err("at most 16 signed facets".into());
+                        }
+                        facets.push(parse_facet(&option, true)?);
+                    }
+                    "--tag" => {
+                        if tags.len() == 16 {
+                            return Err("at most 16 tag arguments".into());
+                        }
+                        tags.push(option);
+                    }
+                    "--format" => set(
+                        &mut faceted,
+                        match option.as_str() {
+                            "legacy" => false,
+                            "faceted" => true,
+                            _ => return Err("format must be legacy or faceted".into()),
+                        },
+                    )?,
                     "--now" => set(
                         &mut now,
                         option.parse::<u64>().map_err(|_| "invalid --now")?,
@@ -109,7 +146,11 @@ impl Args {
                         &mut limit,
                         option.parse::<usize>().map_err(|_| "invalid --limit")?,
                     )?,
-                    _ => return Err("unknown social option".into()),
+                    _ => {
+                        if !discovery.flag(&value, &option)? {
+                            return Err("unknown social option".into());
+                        }
+                    }
                 }
             } else {
                 values.push(value);
@@ -119,6 +160,35 @@ impl Args {
             return Err(HELP.into());
         }
         let command = values.remove(0);
+        if matches!(command.as_str(), "post" | "reply" | "quote" | "revise") {
+            if facets.len() + tags.len() > 16 {
+                return Err("at most 16 signed facets".into());
+            }
+            for tag in tags {
+                facets.push(parse_facet(&tag, false)?);
+            }
+        } else {
+            for tag in tags {
+                set(
+                    &mut discovery.tag,
+                    CanonicalTag::new(&tag)
+                        .map_err(social_error)?
+                        .as_str()
+                        .to_owned(),
+                )?;
+            }
+        }
+        if (faceted.is_some() || !facets.is_empty())
+            && !matches!(command.as_str(), "post" | "reply" | "quote" | "revise")
+        {
+            return Err("facet options require post/reply/quote/revise".into());
+        }
+        let faceted = faceted.unwrap_or(!facets.is_empty());
+        if !faceted && !facets.is_empty() {
+            return Err("legacy format cannot contain signed facets".into());
+        }
+        facets.sort_by_key(|facet| (facet.start, facet.end));
+        discovery.validate(&command)?;
         let store = values.remove(0);
         let realm = RealmId(hex128(&values.remove(0))?);
         let limit = limit.unwrap_or(32);
@@ -141,6 +211,9 @@ impl Args {
             eligibility: eligible.unwrap_or_default(),
             offset: offset.unwrap_or(0),
             limit,
+            facets,
+            faceted,
+            discovery,
         })
     }
     fn count(&self, n: usize) -> Result<(), String> {
@@ -162,6 +235,33 @@ impl Args {
     fn view<'a>(&'a self, archive: &'a Archive) -> View<'a> {
         View::new(archive, self.now, &self.eligibility)
     }
+}
+fn parse_facet(input: &str, mention: bool) -> Result<Facet, String> {
+    let mut parts = input.splitn(3, ':');
+    let start = parts
+        .next()
+        .ok_or("facet start missing")?
+        .parse::<u16>()
+        .map_err(|_| "facet start must be a UTF-8 byte offset")?;
+    let end = parts
+        .next()
+        .ok_or("facet end missing")?
+        .parse::<u16>()
+        .map_err(|_| "facet end must be a UTF-8 byte offset")?;
+    let target = parts.next().ok_or("facet target missing")?;
+    let kind = if mention {
+        let (kind, id) = target
+            .split_once(':')
+            .ok_or("mention needs owner:ID or agent:ID")?;
+        FacetKind::Mention(match kind {
+            "owner" => MentionTarget::Owner(oid(id)?),
+            "agent" => MentionTarget::Agent(aid(id)?),
+            _ => return Err("mention needs owner:ID or agent:ID".into()),
+        })
+    } else {
+        FacetKind::Tag(CanonicalTag::new(target).map_err(social_error)?)
+    };
+    Ok(Facet { start, end, kind })
 }
 fn set<T>(value: &mut Option<T>, next: T) -> Result<(), String> {
     if value.is_some() {
@@ -397,7 +497,7 @@ fn operation(args: &Args, archive: &Archive, actor: Actor) -> Result<Operation, 
     let view = args.view(archive);
     let owner = actor.owner();
     let text = |i| Text::new(args.get(i)?).map_err(social_error);
-    match args.command.as_str() {
+    let operation: Result<Operation, String> = match args.command.as_str() {
         "post" => {
             args.count(4)?;
             Ok(Operation::Post {
@@ -555,7 +655,34 @@ fn operation(args: &Args, archive: &Archive, actor: Actor) -> Result<Operation, 
             })
         }
         _ => Err("unknown social write command".into()),
+    };
+    let operation = operation?;
+    if !args.faceted {
+        return Ok(operation);
     }
+    Ok(match operation {
+        Operation::Post {
+            placement,
+            text,
+            reply,
+            quote,
+        } => Operation::PostFaceted {
+            placement,
+            content: FacetedText::new(text, args.facets.clone()).map_err(social_error)?,
+            reply,
+            quote,
+        },
+        Operation::Revise {
+            post,
+            text,
+            supersedes,
+        } => Operation::ReviseFaceted {
+            post,
+            content: FacetedText::new(text, args.facets.clone()).map_err(social_error)?,
+            supersedes,
+        },
+        _ => return Err("facets require an exact text revision".into()),
+    })
 }
 fn commit(store: &mut Store, candidate: Archive) -> Result<Vec<(&'static str, String)>, String> {
     let published = store
@@ -998,7 +1125,7 @@ fn export(path: &str, bytes: &[u8]) -> Result<(), String> {
 }
 pub fn run(raw: Vec<OsString>) -> Result<(), String> {
     if raw.len() == 2 && (raw[1] == "--help" || raw[1] == "-h") {
-        println!("{HELP}");
+        println!("{}", help());
         return Ok(());
     }
     let args = Args::parse(raw)?;
@@ -1035,6 +1162,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             return Err("retained publication requires explicit social recover before deriving or exporting state".into());
         }
         match args.command.as_str() {
+            command if discovery::handles(command) => discovery::run(&args, &store)?,
             "post" | "reply" | "quote" | "revise" | "retract" | "react" | "follow" | "repost"
             | "bio" | "profile-set" => social_write(&args, &mut store)?,
             "enroll" | "grant" | "seal" | "ratify" | "revoke" | "retire" | "rotate" => {
@@ -1071,6 +1199,11 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             _ => query(&args, &store)?,
         }
     };
+    // The escaped presentation has its own ceiling, separate from signed text
+    // and query budgets. Never emit a partial JSON object on overflow.
+    if output.len() > 2 * 1024 * 1024 {
+        return Err("presentation exceeds 2 MiB; reduce --limit and inspect durable state before retrying a write".into());
+    }
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{output}")
         .and_then(|()| stdout.flush())

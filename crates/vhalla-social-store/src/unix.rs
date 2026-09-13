@@ -306,6 +306,12 @@ impl Store {
     pub fn archive(&self) -> &Archive {
         &self.archive
     }
+    /// Exact owned directory path for adapters that must keep private state
+    /// outside this store's strict file layout. This grants no filesystem handle.
+    #[must_use]
+    pub fn directory_path(&self) -> &Path {
+        &self.path
+    }
     /// Last reconciled local durable basis; retain independently for exact freshness checking.
     #[must_use]
     pub const fn pin(&self) -> Pin {

@@ -1,0 +1,23 @@
+[package]
+name = "vhalla-social-retrieval-spike"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+proptest = "1.9"
+
+[target.'cfg(unix)'.dev-dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+getrandom = "0.3"
+tokio = { version = "1.53", default-features = false, features = ["macros", "rt", "time"] }
+vhalla-core = { path = "../../crates/vhalla-core" }
+vhalla-crypto = { path = "../../crates/vhalla-crypto" }
+vhalla-discovery = { path = "../../crates/vhalla-discovery" }
+vhalla-identity = { path = "../../crates/vhalla-identity" }
+vhalla-native = { path = "../../crates/vhalla-native" }
+vhalla-retrieval = { path = "../../crates/vhalla-retrieval" }
+vhalla-social = { path = "../../crates/vhalla-social" }

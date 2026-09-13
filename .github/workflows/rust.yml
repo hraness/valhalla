@@ -29,7 +29,7 @@ jobs:
       - name: WASM pure crate checks
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/agent-portraits/Cargo.toml --lib --target wasm32-unknown-unknown --locked
@@ -47,6 +47,13 @@ jobs:
             cargo test --manifest-path "$manifest" --locked
             cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
           done
+      - name: Signed discovery native and WASM execution parity
+        run: |
+          cargo install wasm-bindgen-cli --version 0.2.108 --locked
+          cargo fetch --manifest-path prototypes/discovery-parity/Cargo.toml --locked
+          sh prototypes/discovery-parity/verify.sh
+      - name: Independent signed facet golden vectors
+        run: python3 prototypes/social-facets/verify-vectors.py
       - name: Native checkpoint persistence
         run: |
           cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked

@@ -701,4 +701,439 @@ mod enabled {
         );
         ok(&account.store, REALM, "profile", &[&account.owner]);
     }
+
+    #[test]
+    fn exact_signed_facets_survive_export_and_legacy_revision_removes_them() {
+        let temp = Temp::new();
+        let account = Account::init(&temp, "facets", REALM);
+        let mention = format!("0:4:owner:{}", account.owner);
+        let posted = ok(
+            &account.store,
+            REALM,
+            "post",
+            &[
+                path(&account.key),
+                &account.actor(),
+                "profile",
+                "@you #Rust 🧠",
+                "--mention",
+                &mention,
+                "--tag",
+                "5:10:Rust",
+            ],
+        );
+        let post = field(&posted, "event");
+        let shown = ok(&account.store, REALM, "post-show", &[&post]);
+        assert!(contains_text(&shown, "mention-owner"));
+        assert!(contains_text(&shown, "rust"));
+        let archive = export(&account, &temp.path("facets.snapshot"));
+        let eligibility = Eligibility::default();
+        let view = View::new(&archive, 10, &eligibility);
+        let Content::Present(Register::Resolved { value, .. }) =
+            view.post(record(&post)).unwrap().committed
+        else {
+            panic!("committed faceted post");
+        };
+        assert_eq!(value.facets.len(), 2);
+
+        let pin = fs::read(account.store.join("pin")).unwrap();
+        // Offsets inside an emoji and an explicit legacy/facet conflict must not publish.
+        fails(
+            &account.store,
+            REALM,
+            "revise",
+            &[
+                path(&account.key),
+                &account.actor(),
+                &post,
+                "🧠 @you",
+                "--mention",
+                &format!("1:4:owner:{}", account.owner),
+            ],
+        );
+        fails(
+            &account.store,
+            REALM,
+            "revise",
+            &[
+                path(&account.key),
+                &account.actor(),
+                &post,
+                "@you",
+                "--mention",
+                &mention,
+                "--format",
+                "legacy",
+            ],
+        );
+        assert_eq!(fs::read(account.store.join("pin")).unwrap(), pin);
+        ok(
+            &account.store,
+            REALM,
+            "revise",
+            &[
+                path(&account.key),
+                &account.actor(),
+                &post,
+                "@you #Rust",
+                "--format",
+                "legacy",
+            ],
+        );
+        let updated = export(&account, &temp.path("legacy-revision.snapshot"));
+        assert!(updated.is_extension_of(&archive));
+        let view = View::new(&updated, 10, &eligibility);
+        let Content::Present(Register::Resolved { value, .. }) =
+            view.post(record(&post)).unwrap().committed
+        else {
+            panic!("committed legacy revision");
+        };
+        assert!(value.facets.is_empty());
+    }
+
+    #[test]
+    fn discovery_offline_mentions_private_readers_and_exact_acknowledgements() {
+        let temp = Temp::new();
+        let alice = Account::init(&temp, "discovery-alice", REALM);
+        let bob = Account::init(&temp, "discovery-bob", REALM);
+        let mut agents = Vec::new();
+        for name in ["reader-one", "reader-two"] {
+            let key = temp.path(name);
+            let enrolled = ok(
+                &bob.store,
+                REALM,
+                "enroll",
+                &[path(&bob.key), &bob.owner, path(&key), "all", "1000"],
+            );
+            agents.push(field(&enrolled, "agent"));
+        }
+        let bob_export = temp.path("bob-initial.snapshot");
+        export(&bob, &bob_export);
+        ok(&alice.store, REALM, "import", &[path(&bob_export)]);
+        let mention = format!("0:4:agent:{}", agents[0]);
+        let posted = ok(
+            &alice.store,
+            REALM,
+            "post",
+            &[
+                path(&alice.key),
+                &alice.actor(),
+                "channel:00000000000000000000000000000001",
+                "@bee #Rust WASM",
+                "--mention",
+                &mention,
+                "--tag",
+                "5:10:Rust",
+            ],
+        );
+        let post = field(&posted, "event");
+        let source_export = temp.path("alice-post.snapshot");
+        export(&alice, &source_export);
+        ok(&bob.store, REALM, "import", &[path(&source_export)]);
+        ok(
+            &bob.store,
+            REALM,
+            "follow",
+            &[path(&bob.key), &bob.actor(), &alice.owner, "on"],
+        );
+
+        let private_one = temp.path("private-one");
+        let private_two = temp.path("private-two");
+        let reader_one = format!("agent:{}", agents[0]);
+        let reader_two = format!("agent:{}", agents[1]);
+        let local = |command: &str, values: &[&str], private: &Path, reader: &str| {
+            let mut args = values.to_vec();
+            args.extend(["--private", path(private), "--reader", reader]);
+            ok(&bob.store, REALM, command, &args)
+        };
+        for (private, reader) in [(&private_one, &reader_one), (&private_two, &reader_two)] {
+            local("reader-init", &[], private, reader);
+            local("reader-observe", &[], private, reader);
+        }
+        let before = export(&bob, &temp.path("before-private.snapshot")).snapshot();
+        let initial = local("notifications", &[], &private_one, &reader_one);
+        let item = initial["notifications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["reason"] == "mention")
+            .unwrap();
+        assert_eq!(item["read"], "unread");
+        assert_eq!(item["lane"], "selected");
+        assert_eq!(item["recipient_agents"][0], agents[0]);
+        let exact = field(item, "id");
+        let same = local("notifications", &[], &private_one, &reader_one);
+        assert_eq!(initial, same, "query must not mutate read state");
+        local("notifications-ack", &[&exact], &private_one, &reader_one);
+        let acknowledged = local("notifications", &[], &private_one, &reader_one);
+        assert_eq!(acknowledged["notifications"][0]["read"], "read");
+        let sibling = local("notifications", &[], &private_two, &reader_two);
+        assert_eq!(sibling["notifications"][0]["read"], "unread");
+
+        local("reader-set", &["more", "rust"], &private_one, &reader_one);
+        local(
+            "reader-set",
+            &["save-search", "wasm", "WASM"],
+            &private_one,
+            &reader_one,
+        );
+        let results = local(
+            "search-saved",
+            &["wasm", "--tag", "rust"],
+            &private_one,
+            &reader_one,
+        );
+        assert_eq!(results["items"][0]["post"], post);
+        assert_eq!(results["items"][0]["owner"], alice.owner);
+        assert_eq!(results["coverage"]["network_complete"], false);
+        assert!(
+            local("feed", &["discover"], &private_one, &reader_one)["items"][0]["why"]["topic"]
+                .as_i64()
+                .unwrap()
+                > 0
+        );
+        assert_eq!(
+            local("feed", &["discover"], &private_two, &reader_two)["items"][0]["why"]["topic"],
+            0
+        );
+        local(
+            "reader-set",
+            &["clear-interests"],
+            &private_one,
+            &reader_one,
+        );
+        let down = local(
+            "reader-feedback",
+            &[&post, &post, "down"],
+            &private_one,
+            &reader_one,
+        );
+        let repeated = local(
+            "reader-feedback",
+            &[&post, &post, "down"],
+            &private_one,
+            &reader_one,
+        );
+        assert_eq!(
+            down, repeated,
+            "repeated feedback must not accumulate or publish"
+        );
+        assert!(
+            local("feed", &["discover"], &private_one, &reader_one)["items"][0]["why"]["topic"]
+                .as_i64()
+                .unwrap()
+                < 0
+        );
+        assert_eq!(
+            local("feed", &["discover"], &private_two, &reader_two)["items"][0]["why"]["topic"],
+            0
+        );
+        local(
+            "reader-feedback",
+            &[&post, &post, "clear"],
+            &private_one,
+            &reader_one,
+        );
+        assert_eq!(
+            local("feed", &["discover"], &private_one, &reader_one)["items"][0]["why"]["topic"],
+            0
+        );
+        local("reader-seen", &[&post, &post], &private_one, &reader_one);
+        assert_eq!(
+            export(&bob, &temp.path("after-private.snapshot")).snapshot(),
+            before,
+            "private queries, feedback and acknowledgements must not enter public export"
+        );
+
+        let revised = ok(
+            &alice.store,
+            REALM,
+            "revise",
+            &[
+                path(&alice.key),
+                &alice.actor(),
+                &post,
+                "@bee #Rust revised WASM",
+                "--mention",
+                &mention,
+                "--tag",
+                "5:10:Rust",
+            ],
+        );
+        let revision = field(&revised, "event");
+        let updated_export = temp.path("alice-revised.snapshot");
+        export(&alice, &updated_export);
+        ok(&bob.store, REALM, "import", &[path(&updated_export)]);
+        let edited = local("notifications", &[], &private_one, &reader_one);
+        let edited_item = edited["notifications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["reason"] == "mention")
+            .unwrap();
+        assert_ne!(edited_item["id"], exact);
+        assert_eq!(edited_item["event"], revision);
+        assert_eq!(edited_item["priority"], "read");
+        assert_eq!(edited_item["read"], "unread");
+        let private_before = local("reader-show", &[], &private_one, &reader_one);
+        fails(
+            &bob.store,
+            REALM,
+            "notifications-ack",
+            &[
+                &exact,
+                "--private",
+                path(&private_one),
+                "--reader",
+                &reader_one,
+            ],
+        );
+        assert_eq!(
+            local("reader-show", &[], &private_one, &reader_one),
+            private_before
+        );
+        let unread = local(
+            "notifications",
+            &["--unread", "on"],
+            &private_one,
+            &reader_one,
+        );
+        assert_eq!(unread["notifications"][0]["event"], revision);
+        local(
+            "reader-set",
+            &["mute", &alice.owner],
+            &private_one,
+            &reader_one,
+        );
+        assert!(
+            local("search", &["WASM"], &private_one, &reader_one)["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            local("notifications", &[], &private_one, &reader_one)["notifications"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !local("search", &["WASM"], &private_two, &reader_two)["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        ok(
+            &bob.store,
+            REALM,
+            "repost",
+            &[path(&bob.key), &bob.actor(), &post, &post],
+        );
+        let repost = local(
+            "search",
+            &["WASM", "--kind", "repost"],
+            &private_two,
+            &reader_two,
+        );
+        assert_eq!(repost["items"][0]["revision"], post);
+        assert_eq!(repost["items"][0]["owner"], alice.owner);
+        assert_eq!(repost["items"][0]["reposted_by"][0], bob.owner);
+        ok(
+            &bob.store,
+            REALM,
+            "reply",
+            &[
+                path(&bob.key),
+                &bob.actor(),
+                &post,
+                &revision,
+                "thread reply",
+            ],
+        );
+        let boards = local("boards", &[], &private_two, &reader_two);
+        assert_eq!(boards["boards"][0]["roots"], 1);
+        assert_eq!(boards["boards"][0]["replies"], 1);
+        assert_eq!(
+            local("directory", &[], &private_two, &reader_two)["owners"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // A late control record must remove provisional candidates at every new query.
+        let author_key = temp.path("author-agent");
+        let enrolled = ok(
+            &alice.store,
+            REALM,
+            "enroll",
+            &[
+                path(&alice.key),
+                &alice.owner,
+                path(&author_key),
+                "all",
+                "1000",
+            ],
+        );
+        let author_agent = field(&enrolled, "agent");
+        let grant = field(&enrolled, "grant");
+        let author = format!("agent:{author_agent}:{grant}");
+        let provisional = ok(
+            &alice.store,
+            REALM,
+            "post",
+            &[
+                path(&author_key),
+                &author,
+                "profile",
+                "@bee provisional-only",
+                "--mention",
+                &mention,
+            ],
+        );
+        let provisional_id = field(&provisional, "event");
+        let provisional_export = temp.path("provisional.snapshot");
+        export(&alice, &provisional_export);
+        ok(&bob.store, REALM, "import", &[path(&provisional_export)]);
+        assert!(
+            local("search", &["provisional-only"], &private_two, &reader_two)["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let live = local(
+            "search",
+            &["provisional-only", "--live", "on", "--state", "provisional"],
+            &private_two,
+            &reader_two,
+        );
+        assert_eq!(live["items"][0]["post"], provisional_id);
+        ok(
+            &alice.store,
+            REALM,
+            "revoke",
+            &[path(&alice.key), &alice.owner, &grant, "-"],
+        );
+        let revoked_export = temp.path("revoked.snapshot");
+        export(&alice, &revoked_export);
+        ok(&bob.store, REALM, "import", &[path(&revoked_export)]);
+        assert!(local(
+            "search",
+            &["provisional-only", "--live", "on"],
+            &private_two,
+            &reader_two
+        )["items"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(!contains_text(
+            &local(
+                "notifications",
+                &["--live", "on"],
+                &private_two,
+                &reader_two
+            ),
+            &provisional_id
+        ));
+    }
 }

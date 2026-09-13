@@ -18,6 +18,8 @@ vhalla-transport = { path = "../vhalla-transport" }
 proptest = "1.6"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
 vhalla-social = { path = "../vhalla-social" }
+vhalla-discovery = { path = "../vhalla-discovery" }
+vhalla-attention = { path = "../vhalla-attention" }
 vhalla-session = { path = "../vhalla-session" }
 
 [[bin]]

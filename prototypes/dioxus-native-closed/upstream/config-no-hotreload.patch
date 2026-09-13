@@ -1,0 +1,18 @@
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -10,10 +10,12 @@
+ 
+ impl Default for Config {
+     fn default() -> Self {
++        #[cfg(feature = "hot-reload")]
++        let title = dioxus_cli_config::app_title().unwrap_or_else(|| "Dioxus App".to_string());
++        #[cfg(not(feature = "hot-reload"))]
++        let title = "Dioxus App".to_string();
+         Self {
+-            window_attributes: WindowAttributes::default().with_title(
+-                dioxus_cli_config::app_title().unwrap_or_else(|| "Dioxus App".to_string()),
+-            ),
++            window_attributes: WindowAttributes::default().with_title(title),
+         }
+     }
+ }

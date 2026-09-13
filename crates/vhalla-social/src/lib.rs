@@ -13,9 +13,11 @@ extern crate alloc;
 
 pub mod archive;
 pub mod control;
+pub mod facets;
 pub mod model;
 pub mod view;
 pub mod wire;
 
+pub use facets::*;
 pub use model::*;
 pub use wire::{PrimarySignedRecord, SignedRecord, UnsignedRecord, VerifiedRecord};

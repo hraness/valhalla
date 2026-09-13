@@ -1,0 +1,46 @@
+{
+  "unicode_version": "16.0.0",
+  "experimental_algorithm": "NFKC(CaseFold(NFKC(input)))",
+  "values": [
+    {
+      "input": "Rust",
+      "key": "rust"
+    },
+    {
+      "input": "\u00c9",
+      "key": "\u00e9"
+    },
+    {
+      "input": "E\u0301",
+      "key": "\u00e9"
+    },
+    {
+      "input": "\u0130",
+      "key": "i\u0307"
+    },
+    {
+      "input": "i",
+      "key": "i"
+    },
+    {
+      "input": "\u00df",
+      "key": "ss"
+    },
+    {
+      "input": "ss",
+      "key": "ss"
+    },
+    {
+      "input": "\uff32ust",
+      "key": "rust"
+    },
+    {
+      "input": "\u0430",
+      "key": "\u0430"
+    },
+    {
+      "input": "a",
+      "key": "a"
+    }
+  ]
+}

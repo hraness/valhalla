@@ -1,0 +1,17 @@
+[package]
+name = "vhalla-social-discovery-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[dev-dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+proptest = "1.6"
+vhalla-core = { path = "../../crates/vhalla-core" }
+vhalla-social = { path = "../../crates/vhalla-social" }
+
+[lints.rust]
+unsafe_code = "forbid"

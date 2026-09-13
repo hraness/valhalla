@@ -420,10 +420,12 @@ fn unrelated_or_corrupt_bundle_is_preserved_and_never_reclaimed() {
         .write_all(&unrelated.snapshot())
         .unwrap();
     drop(store);
-    assert!(matches!(
-        Store::open(temp.store(), REALM, Limits::default(), None),
-        Err(Error::Conflict)
-    ));
+    let opened = Store::open(temp.store(), REALM, Limits::default(), None);
+    assert!(
+        matches!(opened, Err(Error::Conflict)),
+        "unrelated bundle must conflict: {:?}",
+        opened.err()
+    );
     assert_eq!(
         fs::read(temp.store().join(&name)).unwrap(),
         unrelated.snapshot()

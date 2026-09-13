@@ -1,0 +1,34 @@
+[package]
+name = "vhalla-dioxus-services-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+vhalla-core = { path = "../../crates/vhalla-core" }
+vhalla-social = { path = "../../crates/vhalla-social" }
+vhalla-discovery = { path = "../../crates/vhalla-discovery" }
+vhalla-attention = { path = "../../crates/vhalla-attention" }
+sha2 = { version = "0.10.9", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+vhalla-social-store = { path = "../../crates/vhalla-social-store" }
+vhalla-discovery-store = { path = "../../crates/vhalla-discovery-store" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+futures-channel = "0.3"
+web-sys = { version = "=0.3.85", features = ["Window", "IdbFactory", "IdbDatabase", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbObjectStore", "Event", "DomException", "DomStringList"] }
+
+[dev-dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+proptest = "1.6"
+getrandom = { version = "0.3", features = ["wasm_js"] }

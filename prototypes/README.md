@@ -30,12 +30,25 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | [`social-lifecycle`](social-lifecycle/README.md) | Owner-bound agent lifecycles, sealed history, rotation and unavailable recovery |
 | [`social-reducer`](social-reducer/README.md) | Causal social registers, owner contribution and explicit local eligibility |
 | [`social-sync`](social-sync/README.md) | Bounded anti-entropy, protected control delivery and monotonic complete archives |
+| [`social-facets`](social-facets/README.md) | Exact signed mention/tag spans, legacy compatibility and ASCII normalization |
+| [`social-discovery`](social-discovery/README.md) | Scanner/index equivalence, bounded ranking, corpus measurements and cursor expiry |
+| [`social-attention`](social-attention/README.md) | Stable notification groups, exact revision read marks and bounded unknown precision |
+| [`social-retrieval`](social-retrieval/README.md) | Chosen-provider hint limits, poisoned candidates and separate control credit |
+| [`discovery-parity`](discovery-parity/README.md) | Native/WASM execution of the same signed discovery and attention fixture |
+| [`dioxus-ui`](dioxus-ui/README.md) | Shared Rust feed/thread/profile/inbox screens; baseline browser/native journeys observed, corrected-artifact qualification pending |
+| [`dioxus-services`](dioxus-services/README.md) | Typed client projections/intents, lossless revision/notification evidence, exact source-first private image CAS, native store reuse and Rust IndexedDB adapter; semantic projection compiles |
+| [`dioxus-controller`](dioxus-controller/README.md) | Bounded asynchronous presentation lifecycle, stale callback/completion rejection and uncertain-publication recovery; 18 passing pure tests, platform integration pending |
+| [`dioxus-boundary`](dioxus-boundary/README.md) | Source-derived desktop effect/resource behavior, closed policy model and renderer decision evidence |
+| [`dioxus-native-closed`](dioxus-native-closed/README.md) | Custom native Dioxus/Blitz launcher with finite embedded resources and inert navigation; baseline package feature audit passed, interaction/metadata corrections await rebuilt qualification |
 | `extension-interop` | Opaque future objects, negotiation, and downgrade resistance |
 | Existing forks | `wire-format`, `transport`, `discovery`, `browser`, `privacy`, `effects`, and `replication` |
 
 Fetch locked dependencies first when running on a new machine. The native QUIC
-experiment opens loopback UDP sockets and starts owned child processes; the other
-references use local models. The nested browser-record fixture has separate native/WASM and actual-browser gates in its README. Run every top-level prototype with:
+experiment opens loopback UDP sockets and starts owned child processes. The
+social-retrieval fixture uses explicitly pinned native loopback peers; discovery
+parity executes an actual WASM module. Other references state their model or native
+boundary in their guides. The nested browser-record fixture has separate native/WASM
+and actual-browser gates in its README. Run every top-level prototype with:
 
 ```console
 for manifest in prototypes/*/Cargo.toml; do

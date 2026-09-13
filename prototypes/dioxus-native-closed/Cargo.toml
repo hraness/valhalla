@@ -1,0 +1,36 @@
+[package]
+name = "vhalla-dioxus-native-closed-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+resolver = "2"
+exclude = ["upstream/dioxus-native"]
+
+[features]
+default = []
+# dx selects this local alias instead of injecting the broad dioxus/native feature.
+native = ["renderer"]
+renderer = ["dep:dioxus", "dep:dioxus-native", "dep:blitz-dom", "dep:blitz-shell", "dep:blitz-traits", "dep:winit", "dep:vhalla-dioxus-ui-spike"]
+
+[dependencies]
+dioxus = { version = "=0.7.10", default-features = false, features = ["lib", "router"], optional = true }
+dioxus-native = { version = "=0.7.10", default-features = false, features = ["svg", "system-fonts"], optional = true }
+blitz-dom = { version = "=0.2.4", default-features = false, optional = true }
+blitz-shell = { version = "=0.2.3", default-features = false, optional = true }
+blitz-traits = { version = "=0.2.0", default-features = false, optional = true }
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"], optional = true }
+vhalla-dioxus-ui-spike = { path = "../dioxus-ui", default-features = false, optional = true }
+
+[dev-dependencies]
+proptest = "=1.11.0"
+
+[[bin]]
+name = "vhalla-native-closed"
+path = "src/main.rs"
+required-features = ["renderer"]
+
+[patch.crates-io]
+dioxus-native = { path = "upstream/dioxus-native" }

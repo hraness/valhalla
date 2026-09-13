@@ -724,7 +724,8 @@ fn dependencies(body: &Body) -> Vec<RecordId> {
             out.extend(previous);
             out.extend(operation.supersedes());
             match operation {
-                Operation::Post { reply, quote, .. } => {
+                Operation::Post { reply, quote, .. }
+                | Operation::PostFaceted { reply, quote, .. } => {
                     if let Some(reply) = reply {
                         out.extend([reply.root, reply.parent.post, reply.parent.revision]);
                     }
@@ -732,7 +733,9 @@ fn dependencies(body: &Body) -> Vec<RecordId> {
                         out.extend([quote.post, quote.revision]);
                     }
                 }
-                Operation::Revise { post, .. } | Operation::Retract { post } => out.push(*post),
+                Operation::Revise { post, .. }
+                | Operation::ReviseFaceted { post, .. }
+                | Operation::Retract { post } => out.push(*post),
                 Operation::Repost { post, revision, .. } => {
                     out.push(*post);
                     out.extend(revision);

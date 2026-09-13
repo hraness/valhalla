@@ -1,4 +1,5 @@
 //! Bounded unsigned protocol vocabulary. These values alone confer no authority.
+use crate::facets::{Facet, FacetedText};
 use alloc::{string::String, vec::Vec};
 use vhalla_core::{RealmId, RoomId};
 
@@ -229,6 +230,26 @@ pub enum Operation {
         /// Previous revisions of this same post.
         supersedes: References,
     },
+    /// Explicit v1 operation 8; legacy post bytes remain unchanged.
+    PostFaceted {
+        /// Public placement inherited by replies.
+        placement: Placement,
+        /// Exact text and its immutable signed annotations.
+        content: FacetedText,
+        /// Exact root and parent, when replying.
+        reply: Option<ReplyRef>,
+        /// Exact original content being quoted.
+        quote: Option<PostRef>,
+    },
+    /// Explicit v1 operation 9; replaces both text and annotations together.
+    ReviseFaceted {
+        /// Stable original creation ID.
+        post: RecordId,
+        /// Exact replacement text and annotations; an empty list removes facets.
+        content: FacetedText,
+        /// Previous revisions of this same post.
+        supersedes: References,
+    },
     /// Withdraw displayed content, retaining historical evidence.
     Retract {
         /// Stable original creation ID.
@@ -277,12 +298,27 @@ pub enum Operation {
     },
 }
 impl Operation {
+    /// Borrow exact post/revision content; legacy operations have no annotations.
+    /// Other operation families return None. This is vocabulary, not admission.
+    #[must_use]
+    pub fn text_and_facets(&self) -> Option<(&str, &[Facet])> {
+        match self {
+            Self::Post { text, .. } | Self::Revise { text, .. } => Some((text.as_str(), &[])),
+            Self::PostFaceted { content, .. } | Self::ReviseFaceted { content, .. } => {
+                Some((content.text().as_str(), content.facets()))
+            }
+            _ => None,
+        }
+    }
+
     /// Required agent right, or None for owner-controller-only profile edits.
     #[must_use]
     pub fn required_right(&self) -> Option<Rights> {
         match self {
-            Self::Post { .. } => Some(Rights::POST),
-            Self::Revise { .. } | Self::Retract { .. } => Some(Rights::REVISE),
+            Self::Post { .. } | Self::PostFaceted { .. } => Some(Rights::POST),
+            Self::Revise { .. } | Self::ReviseFaceted { .. } | Self::Retract { .. } => {
+                Some(Rights::REVISE)
+            }
             Self::Repost { .. } => Some(Rights::REPOST),
             Self::React { .. } => Some(Rights::REACT),
             Self::Follow { .. } => Some(Rights::FOLLOW),
@@ -295,6 +331,7 @@ impl Operation {
     pub fn supersedes(&self) -> &[RecordId] {
         match self {
             Self::Revise { supersedes, .. }
+            | Self::ReviseFaceted { supersedes, .. }
             | Self::Repost { supersedes, .. }
             | Self::React { supersedes, .. }
             | Self::Follow { supersedes, .. }

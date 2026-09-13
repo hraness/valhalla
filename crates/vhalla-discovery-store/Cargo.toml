@@ -1,0 +1,24 @@
+[package]
+name = "vhalla-discovery-store"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Explicit private persistence for discovery preferences and attention."
+
+[dependencies]
+vhalla-attention = { path = "../vhalla-attention" }
+vhalla-discovery = { path = "../vhalla-discovery" }
+vhalla-social-store = { path = "../vhalla-social-store" }
+vhalla-social = { path = "../vhalla-social" }
+vhalla-core = { path = "../vhalla-core" }
+sha2 = "0.10"
+libc = "0.2"
+
+[dev-dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+getrandom = "0.3"
+proptest = "1.6"
+
+[lints]
+workspace = true

@@ -51,6 +51,39 @@ committed/provisional/conflicted/incomplete states. Composed projections and CLI
 query results carry the basis. Equal roots alone do not mean
 equal interpretation. Text remains untrusted; adapters must escape it.
 
+## Signed mentions and tags
+
+`PostFaceted` and `ReviseFaceted` bind exact text and annotations inside the same
+signed record. Existing v1 opcodes/bytes/domains remain unchanged; explicit new
+opcodes 8/9 append the facet array to the corresponding post/revision fields.
+Older clients reject these operations and can consequently lack writer/control
+closure. Publication must negotiate support or explicitly select legacy authoring;
+never strip annotations, re-sign history, or silently rewrite stored records.
+
+`FacetedText::new` validates at most 16 sorted, nonoverlapping UTF-8 byte spans,
+at most 8 distinct typed Owner/Agent mention targets, and 8 distinct tags. A
+`CanonicalTag` uses ASCII-only lowercase and `[a-z0-9_][a-z0-9_-]{0,47}`. Foreign
+wire keys must already be canonical. Unicode text remains supported; no host
+Unicode normalization tables affect tag acceptance. Mention labels start with
+`@`, exclude ASCII whitespace/control bytes, and remain untrusted author text.
+An alias is not a verified identity, and mentioning an unknown reference does
+not admit an account or confer authority. Recipient binding is a view operation.
+
+`Operation::text_and_facets` and `RevisionText.facets` expose the exact annotation
+set. Every revision replaces the set; legacy text has no inherited annotations.
+`View::agent_owner` preserves historical routing after retirement without granting
+active rights. `View::exact_revision_text` hydrates the specifically reviewed
+revision even after it is superseded, but refuses missing/invalid dependencies,
+current withdrawal, and incomplete source content. It does not select among
+current conflicting alternatives. A feed cursor must separately recheck that its
+exact revision remains part of its selected current projection.
+
+The maximum tested owner revision is 5,570 bytes with 4,096 text bytes, 16 heads,
+8 mentions and 8 maximum-length tags (agent plus predecessor fields add 64 bytes).
+[Facet vectors](tests/vectors/) preserve exact extended and legacy bytes. Existing
+authorization, causal registers, retraction, attribution and control reserves apply
+equally to both operation encodings; facets add no execution, fetch or wake power.
+
 ## Bounds and synchronization
 
 The hard ceiling is 4,096 retained records, 8,192 bytes per signed record, 4,096

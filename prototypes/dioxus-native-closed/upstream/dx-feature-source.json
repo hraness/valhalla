@@ -1,0 +1,14 @@
+{
+  "build-renderer.rs": {
+    "url": "https://raw.githubusercontent.com/DioxusLabs/dioxus/v0.7.10/packages/cli/src/build/renderer.rs",
+    "sha256": "11704700383da791b949fd13bb9a7e4b790fab95288fe1e76901d1482a2abd83"
+  },
+  "build-request.rs": {
+    "url": "https://raw.githubusercontent.com/DioxusLabs/dioxus/v0.7.10/packages/cli/src/build/request.rs",
+    "sha256": "e3fdfd93b3e77e4461bfea870c78ff5b8a9c08a96e8160aa50987f585505ed4b"
+  },
+  "platform.rs": {
+    "url": "https://raw.githubusercontent.com/DioxusLabs/dioxus/v0.7.10/packages/cli/src/platform.rs",
+    "sha256": "de8565a0e3c157464d63e268dba7fe178faaf3abb3a05c5421234709c3adcfc2"
+  }
+}

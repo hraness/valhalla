@@ -73,7 +73,7 @@ hashes. None may be imported as a production security boundary.
 | --- | --- | --- |
 | 1. Authority and message sessions | A message crosses bounded decoding, strict signature and full-key/context checks, retained replay state, explicit requester policy, and host-owned execution context | Repair first: baseline authorization was cloneable and its public effect request bypassed policy. Require exploit regressions, compile-fail boundaries, expiry and rotation tests, and no effect on denial. Only the in-memory read exists; OS effects stay absent. |
 | 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | Implement bounded transport, private identity creation/reopen, explicit full-key invitations and a JSON-lines agent interface. Test wrong peer/room/epoch, malformed frames, timeout, queue pressure, loss and reconnect. Measure executable size, idle RSS, latency and connections. A localhost echo spike alone does not pass. |
-| 3. Browser participation | A Rust/WASM browser joins the same room, displays foreign text safely, and sends authenticated messages | Execute in a real browser, not only `cargo check`. Verify key custody, origin/CSP, tab restart, explicit owner pairing, failure paths and direct versus relay routing. Generated browser binding glue is allowed; no authored JS/TS protocol implementation. |
+| 3. Shared web/desktop participation | Dioxus web and desktop applications reuse Rust screens/client logic, join the same room, display foreign text safely, and send authenticated messages | Execute actual browser and selected desktop renderer journeys, not only `cargo check`. Verify separate identity/storage/transport adapters, resource/navigation authority, applicable origin/CSP/IPC, restart, explicit owner pairing, denial paths and direct versus relay routing. Generated binding glue is allowed; no authored JS/TS application or protocol implementation. Headless/embedded crates must not depend on Dioxus. |
 | 4. Resilient rooms and discovery | Three peers converge on bounded chat history, survive one peer/relay loss, and bootstrap through interchangeable signed hints | Separate delivered, locally stored, replicated and executed states. Define concurrent ordering and retention without abusing the linear checkpoint ledger as multiwriter consensus. Qualify two replaceable bootstrap/relay choices, identity rotation and recovery without silently resetting replay state. |
 | 5. A real game | Platonik runs through an optional Valhalla session adapter and a receiver independently verifies the result | Preserve exact versioned inner artifacts, charge verification budgets, request large traces separately, and test tampering, duplication, wrong ruleset/case, pause/resume and failed exchange evidence. Keep game authority explicit; multiplayer does not imply permissionless finality. |
 | 6. Usable distribution | A clean machine can install, initialize, invite, join, recover and remove Valhalla using documented commands | Admit locked dependency/license/advisory/provenance evidence, bounded decoder fuzzing, native/WASM execution vectors, exact toolchain and release artifacts, real target builds, restore drills and performance budgets based on measurements. Check `vh` availability before offering it as an optional alias; never overwrite another command. |
@@ -201,6 +201,14 @@ The production workspace currently contains these crates:
 | `vhalla-steel-thread` | signed envelope → transport → policy → host receipt | integrated proof that provenance, checkpoint, replay, expiry, and recovery boundaries compose |
 | `vhalla-session` | experimental paired chat handshake and directional replay | reviewed app/transport identity binding, real reconnect/restart and browser integration |
 | `vhalla-identity` | experimental Unix private-file application key | qualified secret custody, recovery, transport-key integration and installable native program |
+| `vhalla-native` | explicitly pinned paired loopback chat | qualified public routing, identity lifecycle and browser interoperability |
+| `vhalla-cli` | feature-gated native chat and local signed social/discovery commands | installable client with separately qualified public transport and storage adapters |
+| `vhalla-social` | signed owner/agent records, causal projections, exact facets and bounded archive sync | preserve verified control/history under any future retention or network extension |
+| `vhalla-social-store` | complete Unix signed archives with exact publication recovery | separately qualify other storage platforms and external freshness anchors |
+| `vhalla-discovery` | bounded local search, Following/Discover and private reader signals | measured workload-specific indexes, wider retention and target memory qualification |
+| `vhalla-attention` | derived owner notifications and exact per-reader acknowledgement | preserve bounded honest read precision in future adapters |
+| `vhalla-discovery-store` | separate Unix private reader state with source-first recovery | browser durability and privacy qualification before browser activation |
+| `vhalla-retrieval` | optional pinned-peer candidate rounds with verified local hydration | actual adapter evidence and separate public-network qualification; no discovery or wake authority |
 
 The rule is **model first, production second, integration third**. A reference
 crate may be promoted only after its invariant is restated in production types,
@@ -219,6 +227,55 @@ bounded replay primitive, while durable receipt retention remains an explicit
 ledger/host concern.
 
 ## Execution status
+
+### Dioxus application decision — 2026-09-13
+
+The user selected Dioxus and its maintained tooling for the browser and desktop
+applications. The accepted [[plans/valhalla-security-first-design|security design]]
+now separates shared Rust UI/client state from web and desktop launchers, storage,
+transport and custody. Dioxus dependencies are confined to standalone prototype
+workspaces; no maintained application binary is promoted. Shared screens, typed
+services and source-derived renderer boundary experiments have baseline evidence.
+Stock WebView interception is insufficient for the intended privileged client;
+the native/Blitz candidate passed its compiled feature audit with explicit closed
+providers. Actual baseline browser/native journeys exercised profiles, portraits,
+threads and private reader acknowledgments; the browser IndexedDB qualifier passed
+its specified recovery/cancellation cases. Native input/disclosure failures led to
+reviewed shared Rust corrections whose rebuilds were rejected before execution.
+Corrected-artifact qualification, native adapter execution, platform security and
+accessibility, maintained integration and final repository gates remain open.
+
+### Local discovery and private attention — 2026-09-13
+
+The [[plans/valhalla-social-discovery|discovery implementation record]] adds signed
+UTF-8 mention/tag facets without rewriting legacy bytes, Following and explainable
+Discover feeds, bounded local text/typed search, boards, a known-owner directory,
+owner notifications and separate private reader preferences/read state. The
+`experimental-social` CLI exposes these local surfaces. Public signed snapshots
+exclude private signals; sibling readers acknowledge and personalize independently.
+
+Independent reviews and focused tests cover current exact revisions, stale cursor
+rejection, late revocation, partial history, request floods, private feedback and
+source-before-private persistence. The seven-test actual CLI walkthrough and the
+11-test native private-store suite passed, including real child-process locking and
+nine publication fault points. A signed fixture has passed native/WASM execution
+parity; the full joined tree repeats that evidence before delivery. Compiler tests
+reject conversion of discovery and notification outputs into host requests.
+
+Optional `vhalla-retrieval` accepts only explicitly pinned peers and context-bound
+finite requests. Candidate IDs are hints; every signed record traverses ordinary
+archive admission, and candidate presentation is rechecked against the current
+local query. Its actual paired-QUIC fixture passed alongside six model tests and
+strict Clippy. Final integration remains in progress, with no public-network or
+browser activation.
+
+Native scanner/index measurements support a scanner baseline and disclose partial
+coverage at exhausted budgets. The measured capacities and whole-process RSS do
+not qualify isolated query peak allocation, maintained end-to-end latency, browser
+memory or embedded targets. Canonical retention remains capped at 4,096 total
+records, with no semantic garbage collection. Endless feeds, public view-count
+credit, private encrypted publication, automatic agent wake and public retrieval
+services remain unqualified extensions; this change grants none of them authority.
 
 ### Owner social records and local CLI — 2026-09-13
 

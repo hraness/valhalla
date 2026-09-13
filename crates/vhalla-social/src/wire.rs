@@ -1,4 +1,5 @@
 //! Canonical signed records. Verification is immutable evidence, not affiliation.
+use crate::facets::*;
 use crate::model::*;
 #[cfg(test)]
 use alloc::vec;
@@ -303,7 +304,10 @@ fn validate_body(body: &Body, primary: &[u8; 32]) -> Result<(), Error> {
                 {
                     return Err(Error::Bounds)
                 }
-                Operation::Revise { supersedes, .. } if supersedes.as_slice().is_empty() => {
+                Operation::Revise { supersedes, .. }
+                | Operation::ReviseFaceted { supersedes, .. }
+                    if supersedes.as_slice().is_empty() =>
+                {
                     return Err(Error::Encoding)
                 }
                 _ => {}
@@ -461,6 +465,58 @@ fn encode_body(body: &Body, out: &mut Vec<u8>) {
         }
     }
 }
+fn encode_post_fields(
+    placement: Placement,
+    text: &Text,
+    reply: Option<ReplyRef>,
+    quote: Option<PostRef>,
+    out: &mut Vec<u8>,
+) {
+    match placement {
+        Placement::Profile => out.push(0),
+        Placement::Channel(room) => {
+            out.push(1);
+            out.extend_from_slice(&room.0.to_be_bytes());
+        }
+    }
+    put_text(out, text);
+    out.push(u8::from(reply.is_some()));
+    if let Some(reply) = reply {
+        put_id(out, reply.root);
+        put_post_ref(out, reply.parent);
+    }
+    out.push(u8::from(quote.is_some()));
+    if let Some(quote) = quote {
+        put_post_ref(out, quote);
+    }
+}
+fn encode_revision_fields(post: RecordId, text: &Text, supersedes: &References, out: &mut Vec<u8>) {
+    put_id(out, post);
+    put_text(out, text);
+    put_refs(out, supersedes);
+}
+fn encode_facets(facets: &[Facet], out: &mut Vec<u8>) {
+    out.push(facets.len() as u8);
+    for facet in facets {
+        out.extend_from_slice(&facet.start.to_be_bytes());
+        out.extend_from_slice(&facet.end.to_be_bytes());
+        match &facet.kind {
+            FacetKind::Mention(MentionTarget::Owner(id)) => {
+                out.push(0);
+                put_owner(out, *id);
+            }
+            FacetKind::Mention(MentionTarget::Agent(id)) => {
+                out.push(1);
+                put_agent(out, *id);
+            }
+            FacetKind::Tag(tag) => {
+                out.push(2);
+                out.push(tag.as_str().len() as u8);
+                out.extend_from_slice(tag.as_str().as_bytes());
+            }
+        }
+    }
+}
 fn encode_operation(operation: &Operation, out: &mut Vec<u8>) {
     match operation {
         Operation::Post {
@@ -470,23 +526,17 @@ fn encode_operation(operation: &Operation, out: &mut Vec<u8>) {
             quote,
         } => {
             out.push(0);
-            match placement {
-                Placement::Profile => out.push(0),
-                Placement::Channel(room) => {
-                    out.push(1);
-                    out.extend_from_slice(&room.0.to_be_bytes());
-                }
-            }
-            put_text(out, text);
-            out.push(u8::from(reply.is_some()));
-            if let Some(reply) = reply {
-                put_id(out, reply.root);
-                put_post_ref(out, reply.parent);
-            }
-            out.push(u8::from(quote.is_some()));
-            if let Some(quote) = quote {
-                put_post_ref(out, *quote);
-            }
+            encode_post_fields(*placement, text, *reply, *quote, out);
+        }
+        Operation::PostFaceted {
+            placement,
+            content,
+            reply,
+            quote,
+        } => {
+            out.push(8);
+            encode_post_fields(*placement, content.text(), *reply, *quote, out);
+            encode_facets(content.facets(), out);
         }
         Operation::Revise {
             post,
@@ -494,9 +544,16 @@ fn encode_operation(operation: &Operation, out: &mut Vec<u8>) {
             supersedes,
         } => {
             out.push(1);
-            put_id(out, *post);
-            put_text(out, text);
-            put_refs(out, supersedes);
+            encode_revision_fields(*post, text, supersedes, out);
+        }
+        Operation::ReviseFaceted {
+            post,
+            content,
+            supersedes,
+        } => {
+            out.push(9);
+            encode_revision_fields(*post, content.text(), supersedes, out);
+            encode_facets(content.facets(), out);
         }
         Operation::Retract { post } => {
             out.push(2);
@@ -613,6 +670,33 @@ impl<'a> Reader<'a> {
         }
         Text::new(core::str::from_utf8(self.take(len)?).map_err(|_| Error::Encoding)?)
     }
+    fn facets(&mut self) -> Result<Vec<Facet>, Error> {
+        let count = usize::from(self.u8()?);
+        if count > MAX_FACETS {
+            return Err(Error::Bounds);
+        }
+        let mut facets = Vec::with_capacity(count);
+        for _ in 0..count {
+            let start = self.u16()?;
+            let end = self.u16()?;
+            let kind = match self.u8()? {
+                0 => FacetKind::Mention(MentionTarget::Owner(self.owner()?)),
+                1 => FacetKind::Mention(MentionTarget::Agent(self.agent()?)),
+                2 => {
+                    let len = usize::from(self.u8()?);
+                    if len > MAX_TAG_BYTES {
+                        return Err(Error::Bounds);
+                    }
+                    let text =
+                        core::str::from_utf8(self.take(len)?).map_err(|_| Error::Encoding)?;
+                    FacetKind::Tag(CanonicalTag::canonical(text)?)
+                }
+                _ => return Err(Error::Encoding),
+            };
+            facets.push(Facet { start, end, kind });
+        }
+        Ok(facets)
+    }
     fn refs(&mut self) -> Result<References, Error> {
         let len = self.u8()? as usize;
         if len > MAX_REFS {
@@ -710,7 +794,7 @@ fn decode_body(r: &mut Reader<'_>) -> Result<Body, Error> {
 }
 fn decode_operation(r: &mut Reader<'_>) -> Result<Operation, Error> {
     match r.u8()? {
-        0 => {
+        opcode @ (0 | 8) => {
             let placement = match r.u8()? {
                 0 => Placement::Profile,
                 1 => Placement::Channel(RoomId(r.u128()?)),
@@ -726,18 +810,42 @@ fn decode_operation(r: &mut Reader<'_>) -> Result<Operation, Error> {
                 None
             };
             let quote = if r.bool()? { Some(r.post_ref()?) } else { None };
-            Ok(Operation::Post {
-                placement,
-                text,
-                reply,
-                quote,
-            })
+            if opcode == 8 {
+                let content = FacetedText::new(text, r.facets()?)?;
+                Ok(Operation::PostFaceted {
+                    placement,
+                    content,
+                    reply,
+                    quote,
+                })
+            } else {
+                Ok(Operation::Post {
+                    placement,
+                    text,
+                    reply,
+                    quote,
+                })
+            }
         }
-        1 => Ok(Operation::Revise {
-            post: r.id()?,
-            text: r.text()?,
-            supersedes: r.refs()?,
-        }),
+        opcode @ (1 | 9) => {
+            let post = r.id()?;
+            let text = r.text()?;
+            let supersedes = r.refs()?;
+            if opcode == 9 {
+                let content = FacetedText::new(text, r.facets()?)?;
+                Ok(Operation::ReviseFaceted {
+                    post,
+                    content,
+                    supersedes,
+                })
+            } else {
+                Ok(Operation::Revise {
+                    post,
+                    text,
+                    supersedes,
+                })
+            }
+        }
         2 => Ok(Operation::Retract { post: r.id()? }),
         3 => Ok(Operation::Repost {
             post: r.id()?,

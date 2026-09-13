@@ -3005,6 +3005,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vhalla-attention"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "proptest",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-social",
+]
+
+[[package]]
 name = "vhalla-cli"
 version = "0.0.0"
 dependencies = [
@@ -3013,7 +3024,10 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "vhalla-attention",
  "vhalla-core",
+ "vhalla-discovery",
+ "vhalla-discovery-store",
  "vhalla-identity",
  "vhalla-native",
  "vhalla-social",
@@ -3037,6 +3051,33 @@ dependencies = [
  "sha2 0.10.9",
  "vhalla-core",
  "vhalla-wire",
+]
+
+[[package]]
+name = "vhalla-discovery"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "proptest",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-social",
+]
+
+[[package]]
+name = "vhalla-discovery-store"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "getrandom 0.3.4",
+ "libc",
+ "proptest",
+ "sha2 0.10.9",
+ "vhalla-attention",
+ "vhalla-core",
+ "vhalla-discovery",
+ "vhalla-social",
+ "vhalla-social-store",
 ]
 
 [[package]]
@@ -3101,6 +3142,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-retrieval"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "proptest",
+ "vhalla-core",
+ "vhalla-crypto",
+ "vhalla-discovery",
+ "vhalla-social",
+ "vhalla-wire",
+]
+
+[[package]]
 name = "vhalla-session"
 version = "0.0.0"
 dependencies = [
@@ -3140,8 +3194,10 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "proptest",
+ "vhalla-attention",
  "vhalla-core",
  "vhalla-crypto",
+ "vhalla-discovery",
  "vhalla-host",
  "vhalla-policy",
  "vhalla-session",

@@ -91,7 +91,27 @@ fn revision(value: &RevisionText<'_>) -> String {
     object(vec![
         ("revision", id(value.revision.as_bytes())),
         ("text", string(value.text)),
+        ("facets", facets(value.facets)),
     ])
+}
+pub fn facets(values: &[Facet]) -> String {
+    array(values.iter().map(|facet| {
+        let (kind, target) = match &facet.kind {
+            FacetKind::Mention(MentionTarget::Owner(owner)) => {
+                ("mention-owner", id(owner.as_bytes()))
+            }
+            FacetKind::Mention(MentionTarget::Agent(agent)) => {
+                ("mention-agent", id(agent.as_bytes()))
+            }
+            FacetKind::Tag(tag) => ("tag", string(tag.as_str())),
+        };
+        object(vec![
+            ("start", facet.start.to_string()),
+            ("end", facet.end.to_string()),
+            ("kind", string(kind)),
+            ("target", target),
+        ])
+    }))
 }
 fn content(value: &Content<'_>) -> String {
     match value {
@@ -275,6 +295,33 @@ pub fn reaction(value: &Reaction) -> String {
 pub fn operation(value: &Operation) -> String {
     let mut fields = vec![("supersedes", ids(value.supersedes()))];
     match value {
+        Operation::PostFaceted {
+            placement: p,
+            content,
+            reply,
+            quote,
+        } => fields.extend([
+            ("kind", string("post-faceted")),
+            ("placement", placement(*p)),
+            ("text", string(content.text().as_str())),
+            ("facets", facets(content.facets())),
+            (
+                "reply",
+                optional(*reply, |v| {
+                    object(vec![
+                        ("root", id(v.root.as_bytes())),
+                        ("parent", reference(v.parent)),
+                    ])
+                }),
+            ),
+            ("quote", optional(*quote, reference)),
+        ]),
+        Operation::ReviseFaceted { post, content, .. } => fields.extend([
+            ("kind", string("revise-faceted")),
+            ("post", id(post.as_bytes())),
+            ("text", string(content.text().as_str())),
+            ("facets", facets(content.facets())),
+        ]),
         Operation::Post {
             placement: p,
             text,

@@ -1,0 +1,21 @@
+[package]
+name = "vhalla-discovery-parity"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+vhalla-core = { path = "../../crates/vhalla-core" }
+vhalla-social = { path = "../../crates/vhalla-social" }
+vhalla-discovery = { path = "../../crates/vhalla-discovery" }
+vhalla-attention = { path = "../../crates/vhalla-attention" }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.108"

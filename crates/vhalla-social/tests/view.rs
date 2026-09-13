@@ -187,6 +187,7 @@ fn evaluation_basis_binds_all_limits_and_exposes_capacity_without_erasing_histor
     let _agent = f.agent(owner, 2, Rights::ALL);
     let eligibility = Eligibility::default();
     let ordinary = View::new(&f.archive, 5, &eligibility);
+    assert!(ordinary.matches_archive(&f.archive));
     assert!(!ordinary.profile(owner).unwrap().capacity_blocked);
     let original = ordinary.basis();
     let snapshot = f.archive.snapshot();
@@ -205,6 +206,9 @@ fn evaluation_basis_binds_all_limits_and_exposes_capacity_without_erasing_histor
         }
         let archive = Archive::from_snapshot(REALM, changed, &snapshot).unwrap();
         let view = View::new(&archive, 5, &eligibility);
+        assert!(view.matches_archive(&archive));
+        assert!(!ordinary.matches_archive(&archive));
+        assert!(!view.matches_archive(&f.archive));
         assert_eq!(original.archive_root, view.basis().archive_root);
         assert_ne!(original.limits_digest, view.basis().limits_digest);
         assert_ne!(original.digest, view.basis().digest);
@@ -1142,4 +1146,249 @@ proptest! {
         }
         prop_assert_eq!(received.stats(a).unwrap().eligible_appreciation, Measured::Known(0));
     }
+}
+
+fn tagged(value: &str) -> FacetedText {
+    FacetedText::new(
+        text(value),
+        vec![Facet {
+            start: 0,
+            end: value.len() as u16,
+            kind: FacetKind::Tag(CanonicalTag::new(&value[1..]).unwrap()),
+        }],
+    )
+    .unwrap()
+}
+fn faceted_post(value: &str) -> Operation {
+    Operation::PostFaceted {
+        placement: Placement::Profile,
+        content: tagged(value),
+        reply: None,
+        quote: None,
+    }
+}
+#[test]
+fn faceted_content_shares_causal_history_replies_reposts_and_retired_owner_binding() {
+    let mut f = Fixture::new();
+    let owner = f.owner(101);
+    let other = f.owner(102);
+    let mut agent = f.agent(owner, 103, Rights::ALL);
+    let mut peer = f.agent(other, 104, Rights::ALL);
+    let agent_id = match agent.actor {
+        Actor::Agent { agent, .. } => agent,
+        _ => unreachable!(),
+    };
+    let original = f.emit(&mut agent, faceted_post("#Rust"));
+    let revision = f.emit(
+        &mut agent,
+        Operation::ReviseFaceted {
+            post: original,
+            content: tagged("#Wasm"),
+            supersedes: refs(&[original]),
+        },
+    );
+    let reply = f.emit(
+        &mut peer,
+        Operation::PostFaceted {
+            placement: Placement::Profile,
+            content: tagged("#Reply"),
+            reply: Some(ReplyRef {
+                root: original,
+                parent: PostRef {
+                    post: original,
+                    revision,
+                },
+            }),
+            quote: Some(PostRef {
+                post: original,
+                revision: original,
+            }),
+        },
+    );
+    let repost = f.emit(
+        &mut peer,
+        Operation::Repost {
+            post: original,
+            revision: Some(original),
+            supersedes: refs(&[]),
+        },
+    );
+    let vote = f.emit(
+        &mut peer,
+        Operation::React {
+            post: original,
+            reaction: Reaction::Up(original),
+            supersedes: refs(&[]),
+        },
+    );
+    f.seal(owner, &[revision]);
+    f.seal(other, &[vote]);
+    f.control(
+        owner,
+        ControlAction::Retire {
+            agent: agent_id,
+            realm: REALM,
+            accepted: refs(&[]),
+        },
+    );
+    let policy = Eligibility::new(vec![other]).unwrap();
+    let view = View::new(&f.archive, 2000, &policy);
+    assert!(view.owner_known(owner));
+    assert!(!view.owner_known(OwnerId::from_bytes([0; 32])));
+    assert_eq!(view.agent_owner(agent_id), Some(owner));
+    for id in [original, revision, reply, repost, vote] {
+        assert_eq!(view.state(id), Some(RecordState::Committed));
+    }
+    let source = view.post(original).unwrap();
+    assert!(
+        matches!(source.committed,Content::Present(Register::Resolved { value:RevisionText { text:"#Wasm",facets,.. },.. }) if facets==tagged("#Wasm").facets())
+    );
+    assert_eq!(
+        view.exact_revision_text(PostRef {
+            post: original,
+            revision: original
+        })
+        .unwrap()
+        .text,
+        "#Rust"
+    );
+    assert_eq!(
+        view.exact_revision_text(PostRef {
+            post: original,
+            revision
+        })
+        .unwrap()
+        .facets,
+        tagged("#Wasm").facets()
+    );
+    assert_eq!(
+        view.post(reply).unwrap().quote_attribution.unwrap().owner,
+        owner
+    );
+    assert_eq!(
+        view.stats(owner).unwrap().eligible_appreciation,
+        Measured::Known(1)
+    );
+    let copy = Archive::from_snapshot(REALM, limits(), &f.archive.snapshot()).unwrap();
+    let restored = View::new(&copy, 2000, &policy);
+    assert_eq!(restored.post(original), view.post(original));
+    let mut controller = f.owner_writer(owner);
+    let withdrawal = f.emit(&mut controller, Operation::Retract { post: original });
+    f.seal(owner, &[withdrawal]);
+    let withdrawn = View::new(&f.archive, 2000, &policy);
+    assert_eq!(
+        withdrawn.exact_revision_text(PostRef {
+            post: original,
+            revision
+        }),
+        Err(Error::Context)
+    );
+    assert_eq!(
+        withdrawn.stats(owner).unwrap().eligible_appreciation,
+        Measured::Known(1)
+    );
+}
+#[test]
+fn legacy_and_faceted_revisions_replace_annotations_without_inheritance() {
+    let mut f = Fixture::new();
+    let owner = f.owner(105);
+    let mut writer = f.agent(owner, 106, Rights::ALL);
+    let original = f.emit(&mut writer, faceted_post("#Rust"));
+    let legacy = f.emit(
+        &mut writer,
+        Operation::Revise {
+            post: original,
+            text: text("@someone #legacy"),
+            supersedes: refs(&[original]),
+        },
+    );
+    let policy = Eligibility::default();
+    let view = View::new(&f.archive, 10, &policy);
+    assert!(view
+        .exact_revision_text(PostRef {
+            post: original,
+            revision: legacy
+        })
+        .unwrap()
+        .facets
+        .is_empty());
+    assert!(
+        matches!(view.post(original).unwrap().observed,Content::Present(Register::Resolved { value:RevisionText { facets,.. },.. }) if facets.is_empty())
+    );
+    let next = f.emit(
+        &mut writer,
+        Operation::ReviseFaceted {
+            post: original,
+            content: tagged("#Again"),
+            supersedes: refs(&[legacy]),
+        },
+    );
+    f.seal(owner, &[next]);
+    let view = View::new(&f.archive, 2000, &policy);
+    assert_eq!(view.state(next), Some(RecordState::Committed));
+    assert_eq!(
+        view.exact_revision_text(PostRef {
+            post: original,
+            revision: next
+        })
+        .unwrap()
+        .facets,
+        tagged("#Again").facets()
+    );
+}
+#[test]
+fn unknown_mention_is_inert_and_facets_do_not_expand_authority() {
+    let mut f = Fixture::new();
+    let owner = f.owner(107);
+    let other = f.owner(108);
+    let mut writer = f.agent(owner, 109, Rights::POST);
+    let mut hostile = f.agent(other, 110, Rights::ALL);
+    let unknown = AgentId::from_bytes([0; 32]);
+    let content = FacetedText::new(
+        text("@missing"),
+        vec![Facet {
+            start: 0,
+            end: 8,
+            kind: FacetKind::Mention(MentionTarget::Agent(unknown)),
+        }],
+    )
+    .unwrap();
+    let original = f.emit(
+        &mut writer,
+        Operation::PostFaceted {
+            placement: Placement::Profile,
+            content,
+            reply: None,
+            quote: None,
+        },
+    );
+    let denied = f.emit(
+        &mut writer,
+        Operation::ReviseFaceted {
+            post: original,
+            content: tagged("#No"),
+            supersedes: refs(&[original]),
+        },
+    );
+    let attack = f.emit(
+        &mut hostile,
+        Operation::ReviseFaceted {
+            post: original,
+            content: tagged("#Foreign"),
+            supersedes: refs(&[original]),
+        },
+    );
+    let policy = Eligibility::default();
+    let view = View::new(&f.archive, 10, &policy);
+    assert_eq!(view.state(original), Some(RecordState::Provisional));
+    assert_eq!(view.agent_owner(unknown), None);
+    assert_eq!(view.state(denied), Some(RecordState::Rejected));
+    assert_eq!(view.state(attack), Some(RecordState::Rejected));
+    let expired = View::new(&f.archive, 1001, &policy);
+    assert!(expired
+        .exact_revision_text(PostRef {
+            post: original,
+            revision: original
+        })
+        .is_err());
 }

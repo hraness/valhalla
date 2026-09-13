@@ -18,6 +18,24 @@
 //!     let _ = RemoteRequest::from_verified(record, scope);
 //! }
 //! ```
+//!
+//! Search results and notifications are inert projections, not effect envelopes:
+//!
+//! ```compile_fail
+//! use vhalla_discovery::Hit;
+//! use vhalla_policy::{RemoteRequest, Scope};
+//! fn elevate(hit: Hit<'_>, scope: Scope) {
+//!     let _ = RemoteRequest::from_verified(hit, scope);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use vhalla_attention::Notification;
+//! use vhalla_policy::{RemoteRequest, Scope};
+//! fn elevate(notification: Notification, scope: Scope) {
+//!     let _ = RemoteRequest::from_verified(notification, scope);
+//! }
+//! ```
 
 use vhalla_core::{Epoch, EventId, PeerId, RealmId, RoomId, Sequence};
 use vhalla_crypto::{

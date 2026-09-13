@@ -1,0 +1,22 @@
+{
+  "crate": "dioxus-native",
+  "version": "0.7.10",
+  "source": "https://static.crates.io/crates/dioxus-native/dioxus-native-0.7.10.crate",
+  "archive_sha256": "6d022085082d379df7f453cc465a7cfb75926c5e23d5781dbcbdf5df269840e5",
+  "original_files": {
+    ".cargo_vcs_info.json": "a45e5424377068c162632fadaf43d62914130131dec783d6d869cf9c6ddc3af4",
+    "Cargo.lock": "55e00bcf32e36b75b90d5f27a90f9aced79d16fc73295d192916f49486773899",
+    "Cargo.toml": "a2986447eca63fedac71fbd4263462e7e0f60c32c4bfd8bc16f9d116ae030d78",
+    "Cargo.toml.orig": "a4d9741eba1f70cfa491ed12d9213181d56d6d44006b06bf83e4342090aeaa2d",
+    "src/assets.rs": "d74f32f8753499f175627c6e4f4f1b0ca6d660358719e6333f6b5fe0c4e4d319",
+    "src/config.rs": "76ece6511a43cfe1a9b7d8bdcd6e4b565854d54d362de70280a01b834c959a8d",
+    "src/contexts.rs": "085c867e2a740e67f822a5aec606ca4d93724b0a06f5385d3a2497a420ba7bc9",
+    "src/dioxus_application.rs": "6fc8f4f172a4f79321ba5ffc0396681ca10edef7ea5eeddca90a33866090ac5a",
+    "src/dioxus_renderer.rs": "24f3089369065f970644c5921dc8c16bbaf6587cfb34fd487bd188e673030b1c",
+    "src/lib.rs": "ebec24b8dd5025939c5a23e2506d40db490bd23a8bae35044c41e033a08e6650",
+    "src/link_handler.rs": "08dc137387de7fe2cd7a51b846f7533b5a7cf7536fd67380a15cf45776c20657",
+    "src/prelude.rs": "35172d6b8ecbb4f3d08a1c3d45fb2f1b85d74f125cdb572fe6cdae1629c09d70"
+  },
+  "patched_file": "src/config.rs",
+  "patched_sha256": "7667d4a5ec28c3bfc522ef56bd8057d4c7257f50d2d0c5b58902daf3d46e9e5b"
+}

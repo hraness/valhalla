@@ -40,7 +40,7 @@ fn run() -> Result<(), String> {
         #[cfg(feature = "experimental-network")]
         println!("\nvhalla experimental listen <identity-directory> <peer-app-key>\nvhalla experimental send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime.");
         #[cfg(feature = "experimental-social")]
-        println!("\n{}", social::HELP);
+        println!("\n{}", social::help());
         return Ok(());
     }
     if args.first().is_some_and(|s| s == "social") {

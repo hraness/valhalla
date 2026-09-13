@@ -475,12 +475,15 @@ impl<'a> ControlView<'a> {
             }
             _ => {}
         }
-        if let Operation::Revise { post, .. } | Operation::Retract { post } = operation {
+        if let Operation::Revise { post, .. }
+        | Operation::ReviseFaceted { post, .. }
+        | Operation::Retract { post } = operation
+        {
             let original = self.archive.get(*post).ok_or(Eval::Pending)?;
             let Body::Social {
                 actor: original_actor,
                 realm: original_realm,
-                operation: Operation::Post { .. },
+                operation: Operation::Post { .. } | Operation::PostFaceted { .. },
                 ..
             } = original.body()
             else {
