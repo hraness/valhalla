@@ -14,7 +14,7 @@ tags:
 
 # Valhalla prototype promotion gates
 
-**Status:** proposed; production promotion has not started  
+**Status:** in progress; narrow primitives exist, integration gates remain open
 **Date:** 2026-09-12  
 **Scope:** the evidence and integration gates required before hardened
 reference prototypes can become part of the `vhalla-*` production workspace
@@ -81,7 +81,7 @@ Prototype APIs and lossy toy digests must not be copied into production merely
 because their examples pass.
 
 The first production seam is deliberately split in two. `vhalla-core` owns
-typed identifiers and bounded event/checkpoint value types; a future
+typed identifiers and bounded event/checkpoint value types;
 `vhalla-ledger` crate owns retained history, state-root derivation, compaction,
 and recovery. This keeps persistence and authority out of the no-`std` kernel
 and prevents a caller-supplied root from becoming a core-level capability.
@@ -107,7 +107,7 @@ never an authorization result.
 
 The isolated `vhalla-ledger` seam is also present now. It derives a SHA-256
 root from a bounded linear history and rejects forged, stale, forked, and
-wrong-context checkpoints. It intentionally has no persistence, quorum proof,
+wrong-context checkpoints. It intentionally has no durable storage, quorum proof,
 compaction anchor, or host integration, so its accepted checkpoint remains
 single-replica evidence. Commit `80c77df` additionally caps configured history
 at `MAX_EVENTS`, enforces actor sequence monotonicity, and permits a validated
@@ -116,6 +116,61 @@ Clippy, and diff gates passed after that repair. Commit `ba6db83` adds bounded
 canonical snapshot/restore with round-trip, truncation, trailing-byte, and
 header-tamper tests; snapshots remain unauthenticated until a future signed
 storage layer wraps them.
+
+### Checkpoint certificates and recovery repair — 2026-09-12
+
+Independent recovery review found two defects in the snapshot implementation:
+restoring an older accepted checkpoint failed after appending newer events, and
+out-of-order actor sequence records were accepted despite the canonical format.
+Both were reproduced before repair. Restore now rederives an anchor's root and
+height from retained linear history while preserving the latest tip. New live
+checkpoint admission still requires the current tip. Snapshot actor records
+must be strictly sorted; duplicate and alternate-order encodings fail closed.
+
+The public-API recovery suite includes a generated sequence of appends,
+checkpoints, restarts, and attempted sequence reuse. Its checked-in regression
+seed reduces the original recovery defect to two events with a checkpoint after
+the first. Negative tests mutate each retained checkpoint field: wrong realm,
+epoch, unknown head, forged root, and wrong height all fail. This establishes
+serialization consistency, not authenticated storage, crash durability, or
+protection against loading an older valid snapshot. Those remain open gates.
+
+The standalone `prototypes/checkpoint-proof` reference now tests bounded
+Ed25519 approvals over a canonical statement tied to an immutable trust
+configuration. Its digest commits to the realm, epoch, sorted full public keys,
+threshold, signer limit, and byte limit. Configuration changes require new
+approvals. Strict verification produces immutable evidence with a compile-fail
+mutation test; it cannot produce a policy or host capability.
+
+A bounded observer reports conflicting head/root pairs at a retained height
+and rejects capacity exhaustion without eviction. A regression test constructs
+two conflicting certificates that both verify: certificate validity is not
+consensus, ancestry, finality, or freshness. Root derivation remains the ledger's
+job; the prototype deliberately has no production imports or host integration.
+Its realm strings still require a reviewed mapping to production `RealmId`.
+
+Focused evidence: four recovery integration tests, nine certificate unit/property
+tests, and one certificate compile-fail doc test pass locally. The certificate
+suite includes a canonical transcript hash independently generated using Python
+`struct` and `hashlib`, configuration permutation/replacement, field mutation,
+malformed approvals, and fail-closed limits. Local worker review stopped at the
+account usage limit; the integration owner completed and audited the reference
+implementation. No independent review of that final certificate implementation
+is claimed. It remains excluded from production.
+
+Reproducible final gates for this change are workspace format, all-target tests,
+doc tests and Clippy, plus format/test/Clippy for every standalone prototype,
+Wordcell percolation/refresh/check, and the managed repository baseline check.
+CI additionally compiles core, wire, crypto, policy, ledger, and the certificate
+reference for `wasm32-unknown-unknown`; this expands the former core-only gate.
+The local Homebrew Rust installation lacks that target, so CI owns cross-target
+evidence. Compilation alone does not satisfy native/WASM execution agreement.
+
+**Next bounded targets:** review the certificate API independently; define a
+bounded canonical decoder and production identifier mapping; compose certificate
+verification with independently derived ledger roots; then test durable anchors,
+rollback rejection, and explicit trust rotation before joining policy/host.
+Do not bypass these steps by treating the in-memory observer as settlement.
 
 ## Invariant map
 
@@ -332,7 +387,7 @@ This plan does not authorize or promise:
 
 ## Decision record and durable memory
 
-The promotion decision remains **proposed** until Gates 0–5 have named owners,
+Full promotion remains **unaccepted** until Gates 0–5 have named owners,
 production APIs, acceptance receipts, and residual risks. When a gate is
 accepted, append its exact commit, commands, vectors, and recovery result to
 this plan rather than creating a separate progress note. If the protocol later
@@ -342,8 +397,10 @@ link the accepted checkpoint/receipt format here.
 
 ## Result
 
-Not yet applicable. This document defines the gates; no production prototype
-has been promoted by creating it.
+Partial: bounded claims, derived ledger roots, and canonical recovery have narrow
+workspace implementations. Signed checkpoint certificates remain a disposable
+reference. The integrated promotion result is not yet accepted; durable recovery,
+trust rotation, ancestry, and policy/host composition remain open.
 
 ## Durable memory
 

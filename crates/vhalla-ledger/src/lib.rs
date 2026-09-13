@@ -131,6 +131,8 @@ pub enum Error {
     InvalidSnapshotBounds,
     /// The actor sequence map does not match the decoded event history.
     SnapshotSequenceMismatch,
+    /// Snapshot map entries are not in strictly increasing actor order.
+    NonCanonicalSnapshot,
 }
 
 /// A bounded, single-tip event ledger.
@@ -223,13 +225,7 @@ impl Ledger {
         if self.head != Some(checkpoint.head) {
             return Err(Error::StaleCheckpoint);
         }
-        if self.state_root(checkpoint.head)? != checkpoint.state_root {
-            return Err(Error::RootMismatch);
-        }
-        let expected_height = self.chain(checkpoint.head)?.len().saturating_sub(1) as u64;
-        if checkpoint.height != expected_height {
-            return Err(Error::HeightMismatch);
-        }
+        self.validate_retained_checkpoint(checkpoint)?;
         if let Some(previous) = self.checkpoint {
             if previous == checkpoint {
                 return Ok(());
@@ -248,7 +244,7 @@ impl Ledger {
         self.head
     }
 
-    /// Return the accepted checkpoint, if any.
+    /// Return the last locally accepted checkpoint, which may trail the tip.
     #[must_use]
     pub fn checkpoint(&self) -> Option<Checkpoint> {
         self.checkpoint
@@ -393,7 +389,11 @@ impl Ledger {
             _ => return Err(Error::InvalidSnapshotBounds),
         };
         if let Some(checkpoint) = encoded_checkpoint {
-            ledger.accept_checkpoint(checkpoint)?;
+            // A restored anchor may legitimately trail uncheckpointed events.
+            // Replay above admits only one linear chain, so a retained head is
+            // an ancestor of the current tip. Live admission still requires the tip.
+            ledger.validate_retained_checkpoint(checkpoint)?;
+            ledger.checkpoint = Some(checkpoint);
         }
 
         let sequence_count = reader.u32()? as usize;
@@ -401,9 +401,14 @@ impl Ledger {
             return Err(Error::InvalidSnapshotBounds);
         }
         let mut encoded_sequences = BTreeMap::new();
+        let mut previous_actor = None;
         for _ in 0..sequence_count {
             let actor = PeerId(reader.u128()?);
             let sequence = Sequence(reader.u64()?);
+            if previous_actor.is_some_and(|previous| actor <= previous) {
+                return Err(Error::NonCanonicalSnapshot);
+            }
+            previous_actor = Some(actor);
             if encoded_sequences.insert(actor, sequence).is_some() {
                 return Err(Error::SnapshotSequenceMismatch);
             }
@@ -415,6 +420,21 @@ impl Ledger {
             return Err(Error::TrailingSnapshot);
         }
         Ok(ledger)
+    }
+
+    /// Check an anchor against retained history, without admitting a new one.
+    fn validate_retained_checkpoint(&self, checkpoint: Checkpoint) -> Result<(), Error> {
+        if checkpoint.realm != self.realm || checkpoint.epoch != self.epoch {
+            return Err(Error::WrongContext);
+        }
+        if self.state_root(checkpoint.head)? != checkpoint.state_root {
+            return Err(Error::RootMismatch);
+        }
+        let height = self.chain(checkpoint.head)?.len().saturating_sub(1) as u64;
+        if checkpoint.height != height {
+            return Err(Error::HeightMismatch);
+        }
+        Ok(())
     }
 
     fn chain(&self, head: EventDigest) -> Result<Vec<&Event>, Error> {

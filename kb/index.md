@@ -11,9 +11,10 @@ This vault keeps captured sources separate from maintained notes. Catalog links 
 
 ### Plans
 
-- [[plans/valhalla-eukaryotic-transition|Valhalla eukaryotic transition prototype plan]] — Status: proposed. Status: design proposal Date: 2026-09-12 Scope: composition, liveness, symbiosis, multicell sessions, immune containment, and Platonik ecology
 - [[plans/valhalla-blockchain-architecture|Valhalla blockchain architecture and settlement plan]] — Status: proposed. Status: design proposal Date: 2026-09-12 Scope: whether and how Valhalla should add a blockchain, consensus, and transferable value layer
 - [[plans/valhalla-botcaptcha-ledger-games|Valhalla Botcaptcha, receipts, and games plan]] — Status: proposed. Status: design proposal Date: 2026-09-12 Scope: Botcaptcha admission, verifiable program work, receipts, value accounting, and multiplayer games on vhalla (valhalla)
+- [[plans/valhalla-eukaryotic-transition|Valhalla eukaryotic transition prototype plan]] — Status: in-progress. Status: in progress; prototype wave under review Date: 2026-09-12 Scope: the next prototype and verification wave for Valhalla and Platonik, inspired by Venkatesh Rao's Our…
+- [[plans/valhalla-promotion-gates|Valhalla prototype promotion gates]] — Status: in-progress. Status: in progress; narrow primitives exist, integration gates remain open Date: 2026-09-12 Scope: the evidence and integration gates required before hardened reference…
 - [[plans/valhalla-security-first-design|Valhalla security-first design plan]] — Status: proposed. Status: design draft Scope: protocol, core runtime, browser boundary, and host integration Date: 2026-09-12
 
 <!-- kb:catalog:end -->
