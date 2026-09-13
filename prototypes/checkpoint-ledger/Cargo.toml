@@ -1,0 +1,16 @@
+[package]
+name = "valhalla-checkpoint-ledger-prototype"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+vhalla-core = { path = "../../crates/vhalla-core" }
+vhalla-ledger = { path = "../../crates/vhalla-ledger" }
+valhalla-checkpoint-proof-prototype = { path = "../checkpoint-proof" }
+
+[dev-dependencies]
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+proptest = "1.6"

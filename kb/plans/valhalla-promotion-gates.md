@@ -166,11 +166,12 @@ reference for `wasm32-unknown-unknown`; this expands the former core-only gate.
 The local Homebrew Rust installation lacks that target, so CI owns cross-target
 evidence. Compilation alone does not satisfy native/WASM execution agreement.
 
-**Next bounded targets:** review the certificate API and decoder independently;
-define the production identifier mapping; compose certificate
-verification with independently derived ledger roots; then test durable anchors,
-rollback rejection, and explicit trust rotation before joining policy/host.
-Do not bypass these steps by treating the in-memory observer as settlement.
+**Next bounded targets:** specify and prototype the persistence transaction for
+snapshot, certificate, and independently protected anchor; inject failures at
+every write/commit boundary; define the freshness threat model and explicit
+trust/epoch rotation. The certificate/history join and exact-pin recovery model
+below are references for that work. Durable conflict retention and policy/host
+composition still follow those gates; an in-memory observer is not settlement.
 
 ### Marketing release and bounded certificate decoding
 
@@ -198,6 +199,64 @@ review, production identifier mapping, ledger-root composition, durable conflict
 records, trust rotation, and rollback resistance remain open. No production
 crate imports the reference, and no decoded or verified certificate can grant
 host authority.
+
+### Certified history and externally pinned recovery — 2026-09-12
+
+Independent source review of `checkpoint-proof` found no concrete defect in the
+bounded byte-to-verified-evidence boundary. The reviewer checked pre-allocation
+limits, canonical ordering, full-key and trust binding, and strict verification,
+and ran the 19 unit/property tests plus two compile-fail doctests. This is a
+bounded code review, not a dependency cryptographic audit or consensus proof.
+
+`prototypes/checkpoint-ledger` now composes that verifier with the actual
+`vhalla-ledger` implementation. It remains excluded from production and adds
+no dependency from production to prototypes. Its `CertifiedLedger` owns the
+ledger and immutable trust policy with no mutable projection. Admission verifies
+certificate bytes, then requires the real ledger to accept the exact current
+tip, derived root, realm, epoch, and height before constructing a sealed
+`CheckedCheckpoint`. Raw or merely signature-verified claims cannot construct
+that type. Rejections preserve history and previously checked evidence.
+
+The adapter maps `RealmId(u128)` to `vhalla/realm/u128/v1/` followed by exactly
+32 lowercase hexadecimal digits. This preserves all realm bits and rejects
+alternate spellings; construction checks the mapping and epoch against the
+policy. The certificate format itself is unchanged. This is an experimental
+mapping decision, not a realm allocation scheme or a released protocol version.
+
+Recovery re-verifies a certificate under the anchor's exact trust-policy digest,
+compares the complete checkpoint with a separately retained `RecoveryAnchor`,
+replays bounded snapshot history, and validates that checkpoint at the restored
+current tip. It rejects old or divergent histories and uncheckpointed suffixes.
+It performs no truncation or roll-forward. Snapshot-local checkpoint metadata
+cannot select the anchor; valid older metadata may be replaced by the pin.
+
+The important limit is **freshness relative to the supplied pin**. The anchor
+is sealed evidence retained in memory by the owner, with no serialization or
+disk implementation. A caller deliberately supplying a matching old snapshot,
+certificate, and old anchor can still recover old state. Protecting the latest
+anchor against rollback, and committing it atomically with recoverable history
+and certificate bytes, remain operational requirements. Rust privacy enforces
+construction discipline, not persistence or freshness. The model retains the
+latest checked checkpoint; certificate bytes must be retained separately.
+
+Independent review of the implemented adapter found no blocking issue and
+confirmed exact context binding, immutable boundaries, admission atomicity,
+and recovery checks. Review also called out two preserved limits: ledger actor
+IDs are unauthenticated claims, and malicious staged appends can advance or fill
+the bounded history. Checkpoint signatures do not prove individual authorship,
+authorize payloads, guarantee availability, or mint a host capability.
+
+The runnable `recovery` example recovers two certified events, then rejects an
+older valid certificate against the retained newer pin. Focused validation is
+`cargo run --manifest-path prototypes/checkpoint-ledger/Cargo.toml --example recovery --locked --offline`.
+Public-API tests cover context and trust changes, false signed roots/heights,
+rejection atomicity, fork/rollback/suffix rejection, and generated bounded
+append/admit/recover schedules. All 13 integration/property tests and three
+compile-fail cases pass locally; each of the three properties uses 64 cases.
+The focused format and all-target Clippy checks also pass with warnings denied.
+The compile-fail cases protect evidence and anchor construction. CI now also
+compiles this composition for
+`wasm32-unknown-unknown`; runtime cross-target agreement remains open.
 
 ## Invariant map
 
@@ -425,9 +484,10 @@ link the accepted checkpoint/receipt format here.
 ## Result
 
 Partial: bounded claims, derived ledger roots, and canonical recovery have narrow
-workspace implementations. Signed checkpoint certificates remain a disposable
-reference. The integrated promotion result is not yet accepted; durable recovery,
-trust rotation, ancestry, and policy/host composition remain open.
+workspace implementations. The disposable certificate/history adapter now joins
+signature checks to real linear history and models recovery against a separate
+pin. The integrated promotion result is not yet accepted; durable recovery,
+protected anchor freshness, trust rotation, and policy/host composition remain open.
 
 ## Durable memory
 

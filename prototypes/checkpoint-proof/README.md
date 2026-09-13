@@ -125,8 +125,12 @@ ensures decoded values cannot be used as verified values.
 WASM compilation checks portability only;
 browser execution and byte-for-byte cross-target vectors remain future evidence.
 
-Promotion requires independent review of the bounded decoder, explicit production realm-ID
-mapping, independently derived ledger roots and ancestry checks, durable trust
-and conflict records, and restart/rollback resistance. Follow the
+The decoder has received a bounded independent source review. The separate
+[`checkpoint-ledger` experiment](../checkpoint-ledger/README.md) now joins this
+evidence to production realm IDs and independently derived linear history,
+with recovery against an externally retained pin. Both remain prototypes.
+
+Promotion still requires durable trust and conflict records, protected anchor
+freshness, crash recovery, explicit trust rotation, and policy integration. Follow the
 [promotion gates](../../kb/plans/valhalla-promotion-gates.md). A certificate must
 remain evidence consumed by local policy, never a constructor for host authority.
