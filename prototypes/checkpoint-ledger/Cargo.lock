@@ -513,6 +513,7 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek",
  "proptest",
+ "sha2",
  "valhalla-checkpoint-proof-prototype",
  "vhalla-core",
  "vhalla-ledger",

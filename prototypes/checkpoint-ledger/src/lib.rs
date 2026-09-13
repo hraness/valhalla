@@ -1,14 +1,23 @@
 //! Disposable composition of certificate verification and derived ledger roots.
 //!
-//! Recovery requires a separately retained anchor and restores exactly that
-//! certified frontier. The anchor is an in-memory model, not durable storage or
-//! proof that it is the newest checkpoint in the network. No type grants host
+//! Direct recovery requires a separately retained anchor and restores exactly
+//! that certified frontier. [`persistence`] models conditional durable commits;
+//! the optional Unix file backend exercises local storage. Neither establishes
+//! that a pin is the newest checkpoint in the network. No type grants host
 //! authority, establishes event authorship, or provides consensus.
 #![no_std]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 extern crate alloc;
+
+#[cfg(feature = "native-store")]
+extern crate std;
+
+pub mod persistence;
+
+#[cfg(all(feature = "native-store", unix))]
+pub mod file_store;
 
 use alloc::{format, string::String, vec::Vec};
 use valhalla_checkpoint_proof_prototype::{

@@ -166,12 +166,13 @@ reference for `wasm32-unknown-unknown`; this expands the former core-only gate.
 The local Homebrew Rust installation lacks that target, so CI owns cross-target
 evidence. Compilation alone does not satisfy native/WASM execution agreement.
 
-**Next bounded targets:** specify and prototype the persistence transaction for
-snapshot, certificate, and independently protected anchor; inject failures at
-every write/commit boundary; define the freshness threat model and explicit
-trust/epoch rotation. The certificate/history join and exact-pin recovery model
-below are references for that work. Durable conflict retention and policy/host
-composition still follow those gates; an in-memory observer is not settlement.
+**Next bounded targets:** prototype the explicit trust/epoch transition below,
+including competing transitions and interrupted rotation recovery. Specify a
+protected-pin backend contract separately from ordinary filesystem storage;
+qualify real crash behavior before claiming it. Add bounded retention/compaction
+and durable conflict evidence before policy/host composition. The reference
+transaction now models crash boundaries, but an ordinary local pin is not
+adversarial rollback protection or distributed settlement.
 
 ### Marketing release and bounded certificate decoding
 
@@ -257,6 +258,87 @@ The focused format and all-target Clippy checks also pass with warnings denied.
 The compile-fail cases protect evidence and anchor construction. CI now also
 compiles this composition for
 `wasm32-unknown-unknown`; runtime cross-target agreement remains open.
+
+### Conditional persistence and native storage — 2026-09-12
+
+The persistence fork is now executable in `checkpoint-ledger::persistence`.
+`PreparedCommit` binds a certified snapshot/certificate bundle to the complete
+expected predecessor pin. Preparation re-verifies the exact current frontier,
+requires the same realm, epoch, and trust policy, and independently checks the
+predecessor's root and height inside the candidate's retained history. A higher
+signed fork is not an extension. Local commit generations cannot wrap.
+
+The only production API addition exposes the existing read-only
+`Ledger::validate_retained_checkpoint` check; its validation body is unchanged.
+A public-API regression verifies ancestor validation leaves snapshot bytes
+unchanged, rejects a false height, and does not relax current-tip admission.
+
+The commit order is immutable bundle contents and name first, then a durable
+compare-and-exchange over the full expected pin. Stale writers must reload and
+prepare again, not silently rebase. Failed operations may retain bounded orphan
+bundles. A pin write can be indeterminate: retries reconcile the exact target,
+repeat durability operations, and return an acknowledgement only after durable
+CAS succeeds. No automatic pruning or fallback occurs.
+
+Independent review caught an important design gap before acceptance: visible
+bytes or a visible pin after a failed sync do not prove durability. Both the
+core retry path and native adapter now re-sync identical content and re-publish
+the identical pin before acknowledging a retry. The crash oracle keeps visible
+and durable records separate and tests that precise failure window. Review of
+the implemented core and native adapter found no blocking defect and requested
+an additional race test; that test covers another writer winning after the
+initial read but before CAS, leaving an orphan without changing the winning pin.
+
+The optional `native-store` feature adds a Unix `FileStore` using standard-library
+file locking (Rust 1.89+), private permissions, bounded record reads and retention,
+immutable hard-link publication, atomic pin rename, and file/directory syncs.
+An OS lock spans each adapter's lifetime. Symlinks and unexpected entries are
+rejected; the owner must control the directory and its ancestors. Capacity is
+explicitly 1–64 bundles, counting orphans. Only fixed temporary names are cleaned
+up; immutable bundles are never deleted. The default core stays `no_std` +
+`alloc`, and CI still compiles it for WASM. Native tests and Clippy are now a
+separate required CI step; no authored JavaScript or new runtime package was added.
+
+Canonical pin and bundle formats have independent Python-generated SHA-256
+vectors, bounded decoding, truncation and oversized-field rejection. The native
+test suite closes and reopens a real store, verifies its certificates and history,
+advances it, and reopens again. The model tests inject failures before writes,
+after visible/synced contents, after name sync, before CAS, after visible pin
+replacement, and after pin sync/lost acknowledgement. Generated 64-case schedules
+check acknowledged frontiers across crashes and retries. Other tests cover
+malformed pin errors versus absence, stale writers, forks, generation overflow,
+policy changes, missing/corrupt pinned bundles, and typed preparation fences.
+
+This is a **crash-consistency reference under backend contracts**, not protected
+freshness. An ordinary file store cannot detect deletion or coordinated rollback
+of the pin and matching bundles by someone controlling the disk. Tests explicitly
+demonstrate that limit. A decoded pin is plain data; the local owner-selected
+backend supplies the recovery expectation. Filesystem tests exercise API behavior,
+not physical power loss or arbitrary filesystems. Loading captures the pin at its
+initial read and does not promise the newest pin if another writer advances later.
+
+### Next trust-rotation experiment
+
+Ordinary commits reject all implicit trust or epoch changes. The next reference
+should keep rotation a separate protocol with these proposed constraints:
+
+1. A signed transition binds the realm, exact old and new policy digests, the old
+   certified frontier, and exactly the next epoch. Incoming certificates never
+   select their own trust policy.
+2. Require old-quorum authorization and new-quorum acknowledgement in the first
+   experiment. Neither alone establishes consensus. Key-loss recovery needs a
+   separately predeclared local authority; timeout cannot waive approval.
+3. Start an explicit new-epoch genesis that commits the transition digest and old
+   certified root. Do not silently reset history or actor sequence counters.
+4. Persist transition evidence, new policy, and the new-epoch bundle before
+   conditionally advancing the complete pin. Inject interrupted-write failures
+   and verify rotation from the old pinned policy before accepting the new one.
+5. Treat competing valid transitions from one frontier as a conflict. Retain
+   evidence and fail closed until an explicit selection/agreement rule exists;
+   higher generation, epoch, or arrival order must not silently choose a winner.
+
+These are upcoming acceptance targets, not implemented rotation support. Protected
+freshness, conflict retention, compaction, and host integration remain open gates.
 
 ## Invariant map
 
@@ -485,9 +567,10 @@ link the accepted checkpoint/receipt format here.
 
 Partial: bounded claims, derived ledger roots, and canonical recovery have narrow
 workspace implementations. The disposable certificate/history adapter now joins
-signature checks to real linear history and models recovery against a separate
-pin. The integrated promotion result is not yet accepted; durable recovery,
-protected anchor freshness, trust rotation, and policy/host composition remain open.
+signature checks to real linear history, conditional persistence, and an optional
+Unix store. Crash models and native reopen tests exercise recovery against a local
+pin. Full promotion remains unaccepted; physical crash qualification, protected
+pin freshness, trust rotation, compaction, and policy/host composition remain open.
 
 ## Durable memory
 

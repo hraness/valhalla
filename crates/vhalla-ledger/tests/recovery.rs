@@ -30,6 +30,27 @@ fn checkpoint(ledger: &mut Ledger) -> Checkpoint {
 }
 
 #[test]
+fn retained_checkpoint_validation_is_read_only_and_still_checks_height() {
+    let mut ledger = Ledger::new(RealmId(1), Epoch(2), 8);
+    append(&mut ledger, 7, 1, b"ancestor");
+    let ancestor = checkpoint(&mut ledger);
+    append(&mut ledger, 7, 2, b"tip");
+    let snapshot = ledger.snapshot();
+    assert_eq!(ledger.validate_retained_checkpoint(ancestor), Ok(()));
+    let mut incorrect = ancestor;
+    incorrect.height = 1;
+    assert_eq!(
+        ledger.validate_retained_checkpoint(incorrect),
+        Err(Error::HeightMismatch)
+    );
+    assert_eq!(ledger.snapshot(), snapshot);
+    assert_eq!(
+        ledger.accept_checkpoint(ancestor),
+        Err(Error::StaleCheckpoint)
+    );
+}
+
+#[test]
 fn checkpoint_behind_tip_survives_restart_without_becoming_current() {
     let mut ledger = Ledger::new(RealmId(1), Epoch(2), 8);
     append(&mut ledger, 7, 1, b"checkpointed");

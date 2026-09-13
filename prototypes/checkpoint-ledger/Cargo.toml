@@ -6,7 +6,11 @@ publish = false
 
 [workspace]
 
+[features]
+native-store = []
+
 [dependencies]
+sha2 = { version = "0.10", default-features = false }
 vhalla-core = { path = "../../crates/vhalla-core" }
 vhalla-ledger = { path = "../../crates/vhalla-ledger" }
 valhalla-checkpoint-proof-prototype = { path = "../checkpoint-proof" }

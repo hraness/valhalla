@@ -422,8 +422,11 @@ impl Ledger {
         Ok(ledger)
     }
 
-    /// Check an anchor against retained history, without admitting a new one.
-    fn validate_retained_checkpoint(&self, checkpoint: Checkpoint) -> Result<(), Error> {
+    /// Check context, root, and height against retained history without mutation.
+    ///
+    /// The checkpoint may trail the tip. Success establishes only consistency
+    /// with this local linear history, not signatures, freshness, or authority.
+    pub fn validate_retained_checkpoint(&self, checkpoint: Checkpoint) -> Result<(), Error> {
         if checkpoint.realm != self.realm || checkpoint.epoch != self.epoch {
             return Err(Error::WrongContext);
         }

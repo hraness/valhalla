@@ -39,3 +39,7 @@ jobs:
             cargo test --manifest-path "$manifest"
             cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
           done
+      - name: Native checkpoint persistence
+        run: |
+          cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked
+          cargo clippy --manifest-path prototypes/checkpoint-ledger/Cargo.toml --all-targets --features native-store --locked -- -D warnings

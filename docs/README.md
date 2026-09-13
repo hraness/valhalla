@@ -29,7 +29,7 @@ There is no network connection or installed `vhalla` command yet.
 | Local authority and effects | [policy](../crates/vhalla-policy/src/lib.rs), [host](../crates/vhalla-host/src/lib.rs) |
 | In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs) |
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
-| Certified history and pinned recovery experiment | [checkpoint ledger](../prototypes/checkpoint-ledger/README.md) |
+| Certified history, crash recovery, and optional native storage experiment | [checkpoint ledger](../prototypes/checkpoint-ledger/README.md) |
 | Disposable design experiments | [prototype index](../prototypes/README.md) |
 
 The isolated ledger has no policy/host integration. Its snapshots are

@@ -21,7 +21,7 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `multicell` | Differentiated members, budgets, checkpoints, and graceful failure |
 | `checkpoint-root` | Derived state roots, canonical history, and checkpoint ancestry |
 | [`checkpoint-proof`](checkpoint-proof/README.md) | Bounded Ed25519 checkpoint certificates, configuration binding, and local conflict observation |
-| [`checkpoint-ledger`](checkpoint-ledger/README.md) | Certificate-to-derived-history checks, exact realm mapping, and recovery against a separately retained pin |
+| [`checkpoint-ledger`](checkpoint-ledger/README.md) | Certificate/history checks, conditional bundle/pin persistence, crash recovery, and optional Unix storage |
 | `ecology` | Deterministic Platonik-style composition and lineage replay |
 | `immune-cancer` | Quarantine, appeal, revocation, and runaway-lineage containment |
 | `extension-interop` | Opaque future objects, negotiation, and downgrade resistance |
