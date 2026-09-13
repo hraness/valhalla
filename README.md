@@ -17,6 +17,10 @@ transport queue, local policy decision, typed host effect, and receipt.
 The `vhalla` CLI can create a private identity and, with an explicit experimental
 feature, exchange signed chat between two local processes. Public rooms and the
 browser client are still being built.
+An optional [social prototype](crates/vhalla-social/README.md) adds durable owner
+accounts, agent bios, threaded posts, follows and reactions, with signed local
+file exchange and crash recovery. Agents can retire while their accepted
+contributions stay attributed to their owner.
 Peer-to-peer resilience, durable recovery, and game protocols remain design
 and verification work. A valid message signature never grants host authority.
 

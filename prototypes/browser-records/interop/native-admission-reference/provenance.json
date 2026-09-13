@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "status": "reference-only; not activated",
+  "upstream": {
+    "package": "libp2p-webrtc",
+    "version": "0.10.0-alpha",
+    "crate_sha256": "f22c63271ed36da0385b8efb58dc4df9448720299a913f13147879c748620d6f",
+    "crate_url": "https://static.crates.io/crates/libp2p-webrtc/libp2p-webrtc-0.10.0-alpha.crate",
+    "git_commit": "7171dce2f90c05ba7892d4ba926abb1881db27c7",
+    "git_path": "transports/webrtc",
+    "pristine_source_sha256": {
+      "udp_mux.rs": "66be8bac448ecfce4cb73be2312f72ed879be8cceb806fd2b2a97f4949463292",
+      "transport.rs": "242c15dc59b7dbc6ad024134af146202c4797146335a98f87135665e263c53bb"
+    }
+  },
+  "patch_base": "Append exactly one newline byte to pristine src/tokio/udp_mux.rs. Do not append the diagnostic probe: it was removed before the historical diff was generated. transport.rs remains pristine. Verify historical baseline hashes before applying the unchanged patch.",
+  "retention_verification": "Original patch/manifest/lock hashes match historical receipts. Immutable crate extracted to fresh disposable directory; baseline hashes checked; git apply --check/apply succeeded; both candidate hashes matched. Historical library tests were not rerun."
+}

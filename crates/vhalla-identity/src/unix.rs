@@ -195,6 +195,26 @@ impl Identity {
             .map_err(IdentityError::Session)
     }
 
+    /// Sign a checked social-domain request without exporting the retained key.
+    /// This signs content; remote affiliation still requires control admission.
+    #[cfg(feature = "social")]
+    pub fn sign_social(
+        &self,
+        request: vhalla_social::UnsignedRecord,
+    ) -> Result<vhalla_social::PrimarySignedRecord, vhalla_social::Error> {
+        request.sign_with_key(&self.key)
+    }
+
+    /// Acknowledge an exact agent genesis or planned controller rotation.
+    /// The required second key is fixed by the already signed request.
+    #[cfg(feature = "social")]
+    pub fn countersign_social(
+        &self,
+        request: vhalla_social::PrimarySignedRecord,
+    ) -> Result<vhalla_social::SignedRecord, vhalla_social::Error> {
+        request.countersign(&self.key)
+    }
+
     /// Sign a bounded envelope using retained key custody. The caller supplies
     /// locally admitted context; this method alone grants no remote authority.
     pub fn sign_envelope(

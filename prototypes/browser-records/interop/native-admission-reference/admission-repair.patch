@@ -1,0 +1,1311 @@
+--- a/src/tokio/udp_mux.rs
++++ b/src/tokio/udp_mux.rs
+@@ -19,20 +19,25 @@
+ // DEALINGS IN THE SOFTWARE.
+ 
+ use std::{
+-    collections::{HashMap, HashSet},
++    collections::HashMap,
+     io,
+     io::ErrorKind,
+     net::SocketAddr,
+-    sync::Arc,
++    sync::{
++        Arc,
++        atomic::{AtomicBool, AtomicU8, Ordering},
++    },
+     task::{Context, Poll},
++    time::{Duration, Instant},
+ };
+ 
+ use async_trait::async_trait;
+ use futures::{
+-    StreamExt,
++    Future, StreamExt,
+     channel::oneshot,
+     future::{BoxFuture, FutureExt, OptionFuture},
+     stream::FuturesUnordered,
++    task::AtomicWaker,
+ };
+ use stun::{
+     attributes::ATTR_USERNAME,
+@@ -48,12 +53,83 @@
+ use crate::tokio::req_res_chan;
+ 
+ const RECEIVE_MTU: usize = 8192;
++const MAX_PENDING: usize = 32;
++const MAX_CONNS: usize = 32;
++const POLL_BUDGET: usize = 32;
++const RESERVATION_TTL: Duration = Duration::from_secs(10);
++const PENDING: u8 = 0;
++const PROMOTED: u8 = 1;
++const CANCELLED: u8 = 2;
++
++#[derive(Debug)]
++struct Admission {
++    addr: SocketAddr,
++    ufrag: String,
++    deadline: Instant,
++    status: AtomicU8,
++    waker: Arc<AtomicWaker>,
++}
++
++impl Admission {
++    fn valid(&self) -> bool {
++        match self.status.load(Ordering::Acquire) {
++            PROMOTED => true,
++            PENDING if Instant::now() < self.deadline => true,
++            _ => false,
++        }
++    }
++    fn cancel_pending(&self) -> u8 {
++        self.status
++            .compare_exchange(PENDING, CANCELLED, Ordering::AcqRel, Ordering::Acquire)
++            .unwrap_or_else(|status| status)
++    }
++    fn promote(&self) -> bool {
++        if Instant::now() >= self.deadline {
++            return false;
++        }
++        self.status
++            .compare_exchange(PENDING, PROMOTED, Ordering::AcqRel, Ordering::Acquire)
++            .is_ok()
++    }
++}
++
++/// Only this owner can keep an unaccepted incoming reservation alive. Scoped
++/// ICE handles may share its identity, but cannot keep a cancelled offer alive.
++#[derive(Debug)]
++pub(crate) struct Reservation {
++    state: Arc<Admission>,
++}
++impl Reservation {
++    pub(crate) fn valid(&self) -> bool {
++        self.state.valid()
++    }
++    pub(crate) fn remaining(&self) -> Duration {
++        self.state
++            .deadline
++            .saturating_duration_since(Instant::now())
++    }
++    pub(crate) fn promote(&self) -> bool {
++        self.state.promote()
++    }
++}
++impl Drop for Reservation {
++    fn drop(&mut self) {
++        let _ = self.state.status.compare_exchange(
++            PENDING,
++            CANCELLED,
++            Ordering::AcqRel,
++            Ordering::Acquire,
++        );
++        self.state.waker.wake();
++    }
++}
+ 
+ /// A previously unseen address of a remote which has sent us an ICE binding request.
+ #[derive(Debug)]
+ pub(crate) struct NewAddr {
+     pub(crate) addr: SocketAddr,
+     pub(crate) ufrag: String,
++    pub(crate) reservation: Reservation,
+ }
+ 
+ /// An event emitted by [`UDPMuxNewAddr`] when it's polled.
+@@ -80,22 +156,35 @@
+     /// Maps from socket address to the underlying connection.
+     address_map: HashMap<SocketAddr, UDPMuxConn>,
+ 
+-    /// Set of the new addresses to avoid sending the same address multiple times.
+-    new_addrs: HashSet<SocketAddr>,
++    /// Bounded reservations; entries cannot outlive their owner or deadline.
++    new_addrs: HashMap<SocketAddr, Arc<Admission>>,
++    conn_admissions: HashMap<String, Arc<Admission>>,
++    conn_writers: HashMap<String, Arc<ScopedWriter>>,
++    reservation_waker: Arc<AtomicWaker>,
++    expiry_timer: futures_timer::Delay,
+ 
+     /// `true` when UDP mux is closed.
+     is_closed: bool,
+ 
+-    send_buffer: Option<(Vec<u8>, SocketAddr, oneshot::Sender<Result<usize, Error>>)>,
++    send_buffer: Option<(
++        Vec<u8>,
++        SocketAddr,
++        Arc<WriterPermit>,
++        oneshot::Sender<Result<usize, Error>>,
++    )>,
+ 
+     close_futures: FuturesUnordered<BoxFuture<'static, ()>>,
+     write_future: OptionFuture<BoxFuture<'static, ()>>,
+ 
+     close_command: req_res_chan::Receiver<(), Result<(), Error>>,
+-    get_conn_command: req_res_chan::Receiver<String, Result<Arc<dyn Conn + Send + Sync>, Error>>,
+-    remove_conn_command: req_res_chan::Receiver<String, ()>,
++    get_conn_command: req_res_chan::Receiver<
++        (String, Option<Arc<Admission>>),
++        Result<Arc<dyn Conn + Send + Sync>, Error>,
++    >,
++    remove_conn_command: req_res_chan::Receiver<(String, Option<Arc<Admission>>), ()>,
+     registration_command: req_res_chan::Receiver<(UDPMuxConn, SocketAddr), ()>,
+-    send_command: req_res_chan::Receiver<(Vec<u8>, SocketAddr), Result<usize, Error>>,
++    send_command:
++        req_res_chan::Receiver<(Vec<u8>, SocketAddr, Arc<WriterPermit>), Result<usize, Error>>,
+ 
+     udp_mux_handle: Arc<UdpMuxHandle>,
+     udp_mux_writer_handle: Arc<UdpMuxWriterHandle>,
+@@ -118,7 +207,11 @@
+             listen_addr,
+             conns: HashMap::default(),
+             address_map: HashMap::default(),
+-            new_addrs: HashSet::default(),
++            new_addrs: HashMap::default(),
++            conn_admissions: HashMap::default(),
++            conn_writers: HashMap::default(),
++            reservation_waker: Arc::new(AtomicWaker::new()),
++            expiry_timer: futures_timer::Delay::new(RESERVATION_TTL),
+             is_closed: false,
+             send_buffer: None,
+             close_futures: FuturesUnordered::default(),
+@@ -141,19 +234,100 @@
+         self.udp_mux_handle.clone()
+     }
+ 
++    pub(crate) fn scoped_handle(&self, reservation: &Reservation) -> Arc<dyn UDPMux + Send + Sync> {
++        Arc::new(ScopedUdpMux {
++            inner: self.udp_mux_handle.clone(),
++            admission: reservation.state.clone(),
++        })
++    }
++
++    fn retire_conn(&mut self, key: &str) {
++        if let Some(writer) = self.conn_writers.remove(key) {
++            writer.permit.live.store(false, Ordering::Release);
++        }
++        if let Some(conn) = self.conns.remove(key) {
++            conn.close();
++            self.address_map
++                .retain(|_, existing| !existing.close_rx().same_channel(&conn.close_rx()));
++        }
++        if let Some(state) = self.conn_admissions.remove(key) {
++            state.status.store(CANCELLED, Ordering::Release);
++        }
++    }
++
++    fn reap_reservations(&mut self, cx: &mut Context<'_>) {
++        self.reservation_waker.register(cx.waker());
++        let now = Instant::now();
++        let expired: Vec<_> = self
++            .new_addrs
++            .iter()
++            .filter_map(|(addr, state)| {
++                let status = state.status.load(Ordering::Acquire);
++                (status != PENDING || now >= state.deadline).then_some((*addr, state.clone()))
++            })
++            .collect();
++        for (addr, state) in expired {
++            self.new_addrs.remove(&addr);
++            // Cancellation and promotion compete for the Pending state. A
++            // successful concurrent promotion must never be overwritten.
++            let previous = state.cancel_pending();
++            if previous != PROMOTED
++                && self
++                    .conn_admissions
++                    .get(&state.ufrag)
++                    .is_some_and(|current| Arc::ptr_eq(current, &state))
++            {
++                self.retire_conn(&state.ufrag);
++            }
++        }
++        let next = self
++            .new_addrs
++            .values()
++            .map(|s| s.deadline)
++            .min()
++            .unwrap_or(now + RESERVATION_TTL);
++        self.expiry_timer.reset(next.saturating_duration_since(now));
++        if std::pin::Pin::new(&mut self.expiry_timer)
++            .poll(cx)
++            .is_ready()
++        {
++            cx.waker().wake_by_ref();
++        }
++    }
++
++    fn admission_matches(&self, key: &str, admission: &Option<Arc<Admission>>) -> bool {
++        match (self.conn_admissions.get(key), admission) {
++            (None, None) => true,
++            (Some(current), Some(given)) => Arc::ptr_eq(current, given),
++            _ => false,
++        }
++    }
++
+     /// Create a muxed connection for a given ufrag.
+-    fn create_muxed_conn(&self, ufrag: &str) -> Result<UDPMuxConn, Error> {
++    fn create_muxed_conn(
++        &mut self,
++        ufrag: &str,
++        admission: Option<Arc<Admission>>,
++    ) -> Result<UDPMuxConn, Error> {
+         let local_addr = self.udp_sock.local_addr()?;
+ 
++        let writer = Arc::new(ScopedWriter {
++            inner: self.udp_mux_writer_handle.clone(),
++            permit: Arc::new(WriterPermit {
++                key: ufrag.to_owned(),
++                live: AtomicBool::new(true),
++                admission,
++            }),
++        });
+         let params = UDPMuxConnParams {
+             local_addr,
+             key: ufrag.into(),
+-            udp_mux: Arc::downgrade(
+-                &(self.udp_mux_writer_handle.clone() as Arc<dyn UDPMuxWriter + Send + Sync>),
+-            ),
++            udp_mux: Arc::downgrade(&(writer.clone() as Arc<dyn UDPMuxWriter + Send + Sync>)),
+         };
+ 
+-        Ok(UDPMuxConn::new(params))
++        let conn = UDPMuxConn::new(params);
++        self.conn_writers.insert(ufrag.to_owned(), writer);
++        Ok(conn)
+     }
+ 
+     /// Returns a muxed connection if the `ufrag` from the given STUN message matches an existing
+@@ -166,6 +340,13 @@
+         match ufrag_from_stun_message(buffer, true) {
+             Ok(ufrag) => {
+                 if let Some(conn) = self.conns.get(&ufrag) {
++                    if self
++                        .conn_admissions
++                        .get(&ufrag)
++                        .is_some_and(|permit| permit.addr != *addr || !permit.valid())
++                    {
++                        return Some(Err(ConnQueryError::SourceNotReserved));
++                    }
+                     let associated_addrs = conn.get_addresses();
+                     // This basically ensures only one address is registered per ufrag.
+                     if associated_addrs.is_empty() || associated_addrs.contains(addr) {
+@@ -183,30 +364,154 @@
+         }
+     }
+ 
++    fn get_conn(
++        &mut self,
++        ufrag: String,
++        admission: Option<Arc<Admission>>,
++    ) -> Result<Arc<dyn Conn + Send + Sync>, Error> {
++        let admitted = admission.as_ref().is_none_or(|permit| {
++            permit.ufrag == ufrag
++                && permit.valid()
++                && (permit.status.load(Ordering::Acquire) == PROMOTED
++                    || self
++                        .new_addrs
++                        .get(&permit.addr)
++                        .is_some_and(|current| Arc::ptr_eq(current, permit)))
++        });
++        if self.is_closed
++            || !admitted
++            || (self.conns.contains_key(&ufrag) && !self.admission_matches(&ufrag, &admission))
++        {
++            return Err(Error::ErrUseClosedNetworkConn);
++        }
++
++        if let Some(conn) = self.conns.get(&ufrag).cloned() {
++            return Ok(Arc::new(conn));
++        }
++
++        if self.conns.len() >= MAX_CONNS {
++            return Err(Error::ErrUseClosedNetworkConn);
++        }
++        let muxed_conn = match self.create_muxed_conn(&ufrag, admission.clone()) {
++            Ok(conn) => conn,
++            Err(e) => {
++                return Err(e);
++            }
++        };
++        let mut close_rx = muxed_conn.close_rx();
++
++        self.close_futures.push({
++            let ufrag = ufrag.clone();
++            let udp_mux_handle = self.udp_mux_handle.clone();
++            let admission = admission.clone();
++
++            Box::pin(async move {
++                let _ = close_rx.changed().await;
++                let _ = udp_mux_handle.remove_sender.send((ufrag, admission)).await;
++            })
++        });
++
++        if let Some(admission) = admission {
++            self.conn_admissions.insert(ufrag.clone(), admission);
++        }
++        self.conns.insert(ufrag, muxed_conn.clone());
++
++        Ok(Arc::new(muxed_conn) as Arc<dyn Conn + Send + Sync>)
++    }
++
++    fn register_conn(&mut self, conn: UDPMuxConn, addr: SocketAddr) {
++        let key = conn.key();
++        let current = self
++            .conns
++            .get(key)
++            .is_some_and(|current| current.close_rx().same_channel(&conn.close_rx()));
++        let admitted = self
++            .conn_admissions
++            .get(key)
++            .is_none_or(|permit| permit.addr == addr && permit.valid());
++        if self.is_closed
++            || conn.is_closed()
++            || !current
++            || !admitted
++            || (self.address_map.len() >= MAX_CONNS && !self.address_map.contains_key(&addr))
++        {
++            conn.remove_address(&addr);
++            return;
++        }
++
++        self.address_map
++            .entry(addr)
++            .and_modify(|e| {
++                if e.key() != key {
++                    e.remove_address(&addr);
++                    *e = conn.clone();
++                }
++            })
++            .or_insert_with(|| conn.clone());
++
++        // Registration alone does not authenticate the transport upgrade.
++        // Keep the reservation until Noise success promotes it.
++    }
++
+     /// Reads from the underlying UDP socket and either reports a new address or proxies data to the
+     /// muxed connection.
+     pub(crate) fn poll(&mut self, cx: &mut Context) -> Poll<UDPMuxEvent> {
+         let mut recv_buf = [0u8; RECEIVE_MTU];
+ 
+-        loop {
++        for _ in 0..POLL_BUDGET {
++            let mut progressed = false;
++            self.reap_reservations(cx);
++            // Always service closure before packet input or commands.
++            if let Poll::Ready(Some(((), response))) = self.close_command.poll_next_unpin(cx) {
++                let result = if self.is_closed {
++                    Err(Error::ErrAlreadyClosed)
++                } else {
++                    for state in self.new_addrs.values() {
++                        state.status.store(CANCELLED, Ordering::Release);
++                    }
++                    self.new_addrs.clear();
++                    for (_, conn) in self.conns.drain() {
++                        conn.close();
++                    }
++                    self.address_map.clear();
++                    self.conn_admissions.clear();
++                    for (_, writer) in self.conn_writers.drain() {
++                        writer.permit.live.store(false, Ordering::Release);
++                    }
++                    self.is_closed = true;
++                    Ok(())
++                };
++                let _ = response.send(result);
++                progressed = true;
++            }
++            let _ = self.close_futures.poll_next_unpin(cx);
+             // => Send data to target
+             match self.send_buffer.take() {
+                 None => {
+-                    if let Poll::Ready(Some(((buf, target), response))) =
++                    if let Poll::Ready(Some(((buf, target, permit), response))) =
+                         self.send_command.poll_next_unpin(cx)
+                     {
+-                        self.send_buffer = Some((buf, target, response));
+-                        continue;
++                        self.send_buffer = Some((buf, target, permit, response));
++                        progressed = true;
+                     }
+                 }
+-                Some((buf, target, response)) => {
+-                    match self.udp_sock.poll_send_to(cx, &buf, target) {
+-                        Poll::Ready(result) => {
+-                            let _ = response.send(result.map_err(|e| Error::Io(e.into())));
+-                            continue;
+-                        }
+-                        Poll::Pending => {
+-                            self.send_buffer = Some((buf, target, response));
++                Some((buf, target, permit, response)) => {
++                    let current = self
++                        .conn_writers
++                        .get(&permit.key)
++                        .is_some_and(|writer| Arc::ptr_eq(&writer.permit, &permit));
++                    if self.is_closed || !current || !permit.valid(target) {
++                        let _ = response.send(Err(Error::ErrUseClosedNetworkConn));
++                        progressed = true;
++                    } else {
++                        match self.udp_sock.poll_send_to(cx, &buf, target) {
++                            Poll::Ready(result) => {
++                                let _ = response.send(result.map_err(|e| Error::Io(e.into())));
++                                progressed = true;
++                            }
++                            Poll::Pending => {
++                                self.send_buffer = Some((buf, target, permit, response));
++                            }
+                         }
+                     }
+                 }
+@@ -216,107 +521,33 @@
+             if let Poll::Ready(Some(((conn, addr), response))) =
+                 self.registration_command.poll_next_unpin(cx)
+             {
+-                let key = conn.key();
+-
+-                self.address_map
+-                    .entry(addr)
+-                    .and_modify(|e| {
+-                        if e.key() != key {
+-                            e.remove_address(&addr);
+-                            *e = conn.clone();
+-                        }
+-                    })
+-                    .or_insert_with(|| conn.clone());
+-
+-                // remove addr from new_addrs once conn is established
+-                self.new_addrs.remove(&addr);
+-
++                self.register_conn(conn, addr);
+                 let _ = response.send(());
+-
+-                continue;
++                progressed = true;
+             }
+ 
+             // => Get connection with the given ufrag
+-            if let Poll::Ready(Some((ufrag, response))) = self.get_conn_command.poll_next_unpin(cx)
++            if let Poll::Ready(Some(((ufrag, admission), response))) =
++                self.get_conn_command.poll_next_unpin(cx)
+             {
+-                if self.is_closed {
+-                    let _ = response.send(Err(Error::ErrUseClosedNetworkConn));
+-                    continue;
+-                }
+-
+-                if let Some(conn) = self.conns.get(&ufrag).cloned() {
+-                    let _ = response.send(Ok(Arc::new(conn)));
+-                    continue;
+-                }
+-
+-                let muxed_conn = match self.create_muxed_conn(&ufrag) {
+-                    Ok(conn) => conn,
+-                    Err(e) => {
+-                        let _ = response.send(Err(e));
+-                        continue;
+-                    }
+-                };
+-                let mut close_rx = muxed_conn.close_rx();
+-
+-                self.close_futures.push({
+-                    let ufrag = ufrag.clone();
+-                    let udp_mux_handle = self.udp_mux_handle.clone();
+-
+-                    Box::pin(async move {
+-                        let _ = close_rx.changed().await;
+-                        udp_mux_handle.remove_conn_by_ufrag(&ufrag).await;
+-                    })
+-                });
+-
+-                self.conns.insert(ufrag, muxed_conn.clone());
+-
+-                let _ = response.send(Ok(Arc::new(muxed_conn) as Arc<dyn Conn + Send + Sync>));
+-
+-                continue;
+-            }
+-
+-            // => Close UDPMux
+-            if let Poll::Ready(Some(((), response))) = self.close_command.poll_next_unpin(cx) {
+-                if self.is_closed {
+-                    let _ = response.send(Err(Error::ErrAlreadyClosed));
+-                    continue;
+-                }
+-
+-                for (_, conn) in self.conns.drain() {
+-                    conn.close();
+-                }
+-
+-                // NOTE: This is important, we need to drop all instances of `UDPMuxConn` to
+-                // avoid a retain cycle due to the use of [`std::sync::Arc`] on both sides.
+-                self.address_map.clear();
+-
+-                // NOTE: This is important, we need to drop all instances of `UDPMuxConn` to
+-                // avoid a retain cycle due to the use of [`std::sync::Arc`] on both sides.
+-                self.new_addrs.clear();
+-
+-                let _ = response.send(Ok(()));
+-
+-                self.is_closed = true;
+-
+-                continue;
++                let result = self.get_conn(ufrag, admission);
++                let _ = response.send(result);
++                progressed = true;
+             }
+ 
+             // => Remove connection with the given ufrag
+-            if let Poll::Ready(Some((ufrag, response))) =
++            if let Poll::Ready(Some(((ufrag, admission), response))) =
+                 self.remove_conn_command.poll_next_unpin(cx)
+             {
+                 // Pion's ice implementation has both `RemoveConnByFrag` and `RemoveConn`, but since
+                 // `conns` is keyed on `ufrag` their implementation is equivalent.
+ 
+-                if let Some(removed_conn) = self.conns.remove(&ufrag) {
+-                    for address in removed_conn.get_addresses() {
+-                        self.address_map.remove(&address);
+-                    }
++                if self.admission_matches(&ufrag, &admission) {
++                    self.retire_conn(&ufrag);
+                 }
+ 
+                 let _ = response.send(());
+-
+-                continue;
++                progressed = true;
+             }
+ 
+             // => Remove closed connections
+@@ -334,6 +565,9 @@
+ 
+                     match self.udp_sock.poll_recv_from(cx, &mut read) {
+                         Poll::Ready(Ok(addr)) => {
++                            if self.is_closed {
++                                continue;
++                            }
+                             // Find connection based on previously having seen this source address
+                             let conn = self.address_map.get(&addr);
+ 
+@@ -357,19 +591,36 @@
+ 
+                             match conn {
+                                 None => {
+-                                    if !self.new_addrs.contains(&addr) {
++                                    if !self.new_addrs.contains_key(&addr)
++                                        && self.new_addrs.len() < MAX_PENDING
++                                    {
+                                         match ufrag_from_stun_message(read.filled(), false) {
+-                                            Ok(ufrag) => {
++                                            Ok(ufrag)
++                                                if !ufrag.is_empty() && ufrag.len() <= 256 =>
++                                            {
+                                                 tracing::trace!(
+                                                     address=%&addr,
+                                                     %ufrag,
+                                                     "Notifying about new address from ufrag",
+                                                 );
+-                                                self.new_addrs.insert(addr);
++                                                let state = Arc::new(Admission {
++                                                    addr,
++                                                    ufrag: ufrag.clone(),
++                                                    deadline: Instant::now() + RESERVATION_TTL,
++                                                    status: AtomicU8::new(PENDING),
++                                                    waker: self.reservation_waker.clone(),
++                                                });
++                                                self.new_addrs.insert(addr, state.clone());
++                                                self.reap_reservations(cx);
+                                                 return Poll::Ready(UDPMuxEvent::NewAddr(
+-                                                    NewAddr { addr, ufrag },
++                                                    NewAddr {
++                                                        addr,
++                                                        ufrag,
++                                                        reservation: Reservation { state },
++                                                    },
+                                                 ));
+                                             }
++                                            Ok(_) => {}
+                                             Err(e) => {
+                                                 tracing::debug!(
+                                                     address=%&addr,
+@@ -415,8 +666,74 @@
+                 Poll::Pending => {}
+             }
+ 
++            if progressed {
++                continue;
++            }
+             return Poll::Pending;
+         }
++        cx.waker().wake_by_ref();
++        Poll::Pending
++    }
++}
++
++impl Drop for UDPMuxNewAddr {
++    fn drop(&mut self) {
++        for state in self.new_addrs.values() {
++            state.status.store(CANCELLED, Ordering::Release);
++        }
++        for conn in self.conns.values() {
++            conn.close();
++        }
++        for writer in self.conn_writers.values() {
++            writer.permit.live.store(false, Ordering::Release);
++        }
++    }
++}
++
++struct WriterPermit {
++    key: String,
++    live: AtomicBool,
++    admission: Option<Arc<Admission>>,
++}
++impl WriterPermit {
++    fn valid(&self, target: SocketAddr) -> bool {
++        self.live.load(Ordering::Acquire)
++            && self
++                .admission
++                .as_ref()
++                .is_none_or(|admission| admission.valid() && admission.addr == target)
++    }
++}
++struct ScopedWriter {
++    inner: Arc<UdpMuxWriterHandle>,
++    permit: Arc<WriterPermit>,
++}
++
++struct ScopedUdpMux {
++    inner: Arc<UdpMuxHandle>,
++    admission: Arc<Admission>,
++}
++#[async_trait]
++impl UDPMux for ScopedUdpMux {
++    async fn close(&self) -> Result<(), Error> {
++        Err(Error::ErrUseClosedNetworkConn)
++    }
++    async fn get_conn(self: Arc<Self>, ufrag: &str) -> Result<Arc<dyn Conn + Send + Sync>, Error> {
++        if !self.admission.valid() || self.admission.ufrag != ufrag {
++            return Err(Error::ErrUseClosedNetworkConn);
++        }
++        self.inner
++            .get_conn_sender
++            .send((ufrag.to_owned(), Some(self.admission.clone())))
++            .await
++            .map_err(|e| Error::Io(e.into()))?
++    }
++    async fn remove_conn_by_ufrag(&self, ufrag: &str) {
++        let _ = self
++            .inner
++            .remove_sender
++            .send((ufrag.to_owned(), Some(self.admission.clone())))
++            .await;
+     }
+ }
+ 
+@@ -424,17 +741,23 @@
+ /// WebRTC ICE agent to [`UDPMuxNewAddr::poll`].
+ pub(crate) struct UdpMuxHandle {
+     close_sender: req_res_chan::Sender<(), Result<(), Error>>,
+-    get_conn_sender: req_res_chan::Sender<String, Result<Arc<dyn Conn + Send + Sync>, Error>>,
+-    remove_sender: req_res_chan::Sender<String, ()>,
++    get_conn_sender: req_res_chan::Sender<
++        (String, Option<Arc<Admission>>),
++        Result<Arc<dyn Conn + Send + Sync>, Error>,
++    >,
++    remove_sender: req_res_chan::Sender<(String, Option<Arc<Admission>>), ()>,
+ }
+ 
+ impl UdpMuxHandle {
+     /// Returns a new `UdpMuxHandle` and `close`, `get_conn` and `remove` receivers.
+-    pub(crate) fn new() -> (
++    fn new() -> (
+         Self,
+         req_res_chan::Receiver<(), Result<(), Error>>,
+-        req_res_chan::Receiver<String, Result<Arc<dyn Conn + Send + Sync>, Error>>,
+-        req_res_chan::Receiver<String, ()>,
++        req_res_chan::Receiver<
++            (String, Option<Arc<Admission>>),
++            Result<Arc<dyn Conn + Send + Sync>, Error>,
++        >,
++        req_res_chan::Receiver<(String, Option<Arc<Admission>>), ()>,
+     ) {
+         let (sender1, receiver1) = req_res_chan::new(1);
+         let (sender2, receiver2) = req_res_chan::new(1);
+@@ -464,7 +787,7 @@
+     async fn get_conn(self: Arc<Self>, ufrag: &str) -> Result<Arc<dyn Conn + Send + Sync>, Error> {
+         let conn = self
+             .get_conn_sender
+-            .send(ufrag.to_owned())
++            .send((ufrag.to_owned(), None))
+             .await
+             .map_err(|e| Error::Io(e.into()))??;
+ 
+@@ -472,7 +795,7 @@
+     }
+ 
+     async fn remove_conn_by_ufrag(&self, ufrag: &str) {
+-        if let Err(e) = self.remove_sender.send(ufrag.to_owned()).await {
++        if let Err(e) = self.remove_sender.send((ufrag.to_owned(), None)).await {
+             tracing::debug!("Failed to send message through channel: {:?}", e);
+         }
+     }
+@@ -482,7 +805,8 @@
+ /// [`UDPMuxNewAddr::poll`].
+ pub(crate) struct UdpMuxWriterHandle {
+     registration_channel: req_res_chan::Sender<(UDPMuxConn, SocketAddr), ()>,
+-    send_channel: req_res_chan::Sender<(Vec<u8>, SocketAddr), Result<usize, Error>>,
++    send_channel:
++        req_res_chan::Sender<(Vec<u8>, SocketAddr, Arc<WriterPermit>), Result<usize, Error>>,
+ }
+ 
+ impl UdpMuxWriterHandle {
+@@ -490,7 +814,7 @@
+     fn new() -> (
+         Self,
+         req_res_chan::Receiver<(UDPMuxConn, SocketAddr), ()>,
+-        req_res_chan::Receiver<(Vec<u8>, SocketAddr), Result<usize, Error>>,
++        req_res_chan::Receiver<(Vec<u8>, SocketAddr, Arc<WriterPermit>), Result<usize, Error>>,
+     ) {
+         let (sender1, receiver1) = req_res_chan::new(1);
+         let (sender2, receiver2) = req_res_chan::new(1);
+@@ -505,9 +829,14 @@
+ }
+ 
+ #[async_trait]
+-impl UDPMuxWriter for UdpMuxWriterHandle {
++impl UDPMuxWriter for ScopedWriter {
+     async fn register_conn_for_address(&self, conn: &UDPMuxConn, addr: SocketAddr) {
++        if !self.permit.valid(addr) {
++            conn.remove_address(&addr);
++            return;
++        }
+         match self
++            .inner
+             .registration_channel
+             .send((conn.to_owned(), addr))
+             .await
+@@ -523,9 +852,16 @@
+     }
+ 
+     async fn send_to(&self, buf: &[u8], target: &SocketAddr) -> Result<usize, Error> {
++        if !self.permit.valid(*target) {
++            return Err(Error::ErrUseClosedNetworkConn);
++        }
++        if buf.len() > RECEIVE_MTU {
++            return Err(Error::ErrBufferShort);
++        }
+         let bytes_written = self
++            .inner
+             .send_channel
+-            .send((buf.to_owned(), target.to_owned()))
++            .send((buf.to_owned(), target.to_owned(), self.permit.clone()))
+             .await
+             .map_err(|e| Error::Io(e.into()))??;
+ 
+@@ -574,7 +910,380 @@
+ 
+ #[derive(Error, Debug)]
+ enum ConnQueryError {
++    #[error("source address does not own this incoming reservation")]
++    SourceNotReserved,
+     #[error("ufrag is already taken (associated_addrs={associated_addrs:?})")]
+     UfragAlreadyTaken { associated_addrs: Vec<SocketAddr> },
+ }
+ 
++#[cfg(test)]
++mod valhalla_admission_repair {
++    use super::*;
++    use futures::{
++        future::poll_fn,
++        task::{ArcWake, waker_ref},
++    };
++    use std::sync::atomic::AtomicUsize;
++
++    fn packet(username: &str) -> Vec<u8> {
++        let padded = (username.len() + 3) & !3;
++        let mut packet = Vec::new();
++        packet.extend_from_slice(&1_u16.to_be_bytes());
++        packet.extend_from_slice(&((4 + padded) as u16).to_be_bytes());
++        packet.extend_from_slice(&0x2112A442_u32.to_be_bytes());
++        packet.extend_from_slice(&[7; 12]);
++        packet.extend_from_slice(&6_u16.to_be_bytes());
++        packet.extend_from_slice(&(username.len() as u16).to_be_bytes());
++        packet.extend_from_slice(username.as_bytes());
++        packet.resize(20 + 4 + padded, 0);
++        packet
++    }
++    async fn offer(mux: &mut UDPMuxNewAddr, socket: &UdpSocket, key: &str) -> NewAddr {
++        socket
++            .send_to(&packet(&format!("{key}:{key}")), mux.listen_addr())
++            .await
++            .unwrap();
++        match tokio::time::timeout(Duration::from_secs(1), poll_fn(|cx| mux.poll(cx)))
++            .await
++            .unwrap()
++        {
++            UDPMuxEvent::NewAddr(offer) => offer,
++            event => panic!("unexpected {event:?}"),
++        }
++    }
++    fn poll_once(mux: &mut UDPMuxNewAddr) -> Poll<UDPMuxEvent> {
++        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
++        mux.poll(&mut cx)
++    }
++    async fn no_event(mux: &mut UDPMuxNewAddr) {
++        assert!(
++            tokio::time::timeout(Duration::from_millis(15), poll_fn(|cx| mux.poll(cx)))
++                .await
++                .is_err()
++        );
++    }
++    async fn drive<F: Future>(mux: &mut UDPMuxNewAddr, operation: F) -> F::Output {
++        let pumping = poll_fn(|cx| match mux.poll(cx) {
++            Poll::Ready(UDPMuxEvent::Error(error)) => panic!("mux error {error}"),
++            Poll::Ready(UDPMuxEvent::NewAddr(_)) => panic!("unexpected incoming offer"),
++            Poll::Pending => Poll::<()>::Pending,
++        });
++        futures::pin_mut!(operation, pumping);
++        match tokio::time::timeout(
++            Duration::from_secs(1),
++            futures::future::select(operation, pumping),
++        )
++        .await
++        .unwrap()
++        {
++            futures::future::Either::Left((value, _)) => value,
++            _ => unreachable!(),
++        }
++    }
++    async fn connected(mux: &mut UDPMuxNewAddr, offer: &NewAddr) -> UDPMuxConn {
++        let handle = mux.scoped_handle(&offer.reservation);
++        drive(mux, handle.get_conn(&offer.ufrag)).await.unwrap();
++        mux.conns[&offer.ufrag].clone()
++    }
++
++    #[tokio::test]
++    async fn declined_source_churn_releases_every_reservation_and_repeated_source_reoffers() {
++        tokio::time::timeout(Duration::from_secs(5), async {
++            let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++            let mut sockets = Vec::new();
++            for index in 0..96 {
++                let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++                let event = offer(&mut mux, &socket, &format!("probe{index}")).await;
++                assert_eq!(mux.new_addrs.len(), 1);
++                drop(event);
++                let _ = poll_once(&mut mux);
++                assert!(mux.new_addrs.is_empty());
++                assert!(mux.conns.is_empty());
++                sockets.push(socket);
++            }
++            for _ in 0..4 {
++                drop(offer(&mut mux, &sockets[0], "repeated").await);
++                let _ = poll_once(&mut mux);
++                assert!(mux.new_addrs.is_empty());
++            }
++            println!("REPAIRED declined_sources=96 repeated_source_reoffers=4 retained=0");
++        })
++        .await
++        .unwrap();
++    }
++
++    #[tokio::test]
++    async fn capacity_declines_excess_and_recovers_after_owner_drop() {
++        let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++        let mut sockets = Vec::new();
++        let mut offers = Vec::new();
++        for index in 0..MAX_PENDING {
++            let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++            offers.push(offer(&mut mux, &socket, &format!("cap{index}")).await);
++            sockets.push(socket);
++        }
++        let excess = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        excess
++            .send_to(&packet("extra:extra"), mux.listen_addr())
++            .await
++            .unwrap();
++        no_event(&mut mux).await;
++        assert_eq!(mux.new_addrs.len(), MAX_PENDING);
++        drop(offers.pop());
++        let fresh = offer(&mut mux, &excess, "extra").await;
++        assert_eq!(mux.new_addrs.len(), MAX_PENDING);
++        drop(fresh);
++        drop(offers);
++        let _ = poll_once(&mut mux);
++        assert!(mux.new_addrs.is_empty());
++    }
++
++    #[tokio::test]
++    async fn cancellation_after_get_conn_closes_state_and_rejects_late_commands() {
++        let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        let first = offer(&mut mux, &socket, "samekey").await;
++        let stale_handle = mux.scoped_handle(&first.reservation);
++        let stale_conn = connected(&mut mux, &first).await;
++        drop(first);
++        let _ = poll_once(&mut mux);
++        assert!(stale_conn.is_closed());
++        assert!(mux.new_addrs.is_empty());
++        assert!(mux.conns.is_empty());
++        let next = offer(&mut mux, &socket, "samekey").await;
++        let current = connected(&mut mux, &next).await;
++        assert!(
++            drive(&mut mux, stale_handle.clone().get_conn("samekey"))
++                .await
++                .is_err()
++        );
++        drive(
++            &mut mux,
++            stale_conn.add_address(socket.local_addr().unwrap()),
++        )
++        .await;
++        assert!(mux.address_map.is_empty());
++        drive(&mut mux, stale_handle.remove_conn_by_ufrag("samekey")).await;
++        assert!(!current.is_closed());
++        assert_eq!(mux.conns.len(), 1);
++        drive(&mut mux, current.add_address(socket.local_addr().unwrap())).await;
++        assert_eq!(mux.address_map.len(), 1);
++        drop(next);
++        let _ = poll_once(&mut mux);
++        assert!(mux.address_map.is_empty());
++        assert!(current.is_closed());
++    }
++
++    #[tokio::test]
++    async fn fixed_deadline_reaps_even_without_another_packet_and_stale_owner_cannot_promote() {
++        let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        let mut first = offer(&mut mux, &socket, "expiry").await;
++        // Test-only deadline shortening leaves production TTL unchanged.
++        mux.new_addrs.remove(&first.addr);
++        Arc::get_mut(&mut first.reservation.state).unwrap().deadline =
++            Instant::now() + Duration::from_millis(15);
++        mux.new_addrs
++            .insert(first.addr, first.reservation.state.clone());
++        let conn = connected(&mut mux, &first).await;
++        assert!(
++            tokio::time::timeout(Duration::from_millis(60), poll_fn(|cx| mux.poll(cx)))
++                .await
++                .is_err()
++        );
++        assert!(mux.new_addrs.is_empty());
++        assert!(mux.conns.is_empty());
++        assert!(conn.is_closed());
++        assert!(!first.reservation.promote());
++        let next = offer(&mut mux, &socket, "expiry").await;
++        drop(first);
++        let _ = poll_once(&mut mux);
++        assert_eq!(mux.new_addrs.len(), 1);
++        assert!(Arc::ptr_eq(
++            &mux.new_addrs[&next.addr],
++            &next.reservation.state
++        ));
++    }
++
++    #[tokio::test]
++    async fn authenticated_success_releases_pending_slot_but_preserves_live_connection() {
++        let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        let first = offer(&mut mux, &socket, "success").await;
++        let handle = mux.scoped_handle(&first.reservation);
++        let conn = connected(&mut mux, &first).await;
++        drive(&mut mux, conn.add_address(first.addr)).await;
++        assert_eq!(mux.new_addrs.len(), 1); // registration is not authentication
++        assert!(first.reservation.promote()); // models the checked Noise-success boundary
++        drop(first);
++        let _ = poll_once(&mut mux);
++        assert!(mux.new_addrs.is_empty());
++        assert!(!conn.is_closed());
++        assert_eq!(mux.address_map.len(), 1);
++        drive(&mut mux, handle.remove_conn_by_ufrag("success")).await;
++        assert!(conn.is_closed());
++        assert!(drive(&mut mux, handle.get_conn("success")).await.is_err());
++    }
++
++    #[tokio::test]
++    async fn listener_close_and_drop_cancel_held_offers_and_close_admitted_state() {
++        for command in [false, true] {
++            let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++            let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++            let first = offer(&mut mux, &socket, "closed").await;
++            let conn = connected(&mut mux, &first).await;
++            if command {
++                let handle = mux.udp_mux_handle();
++                drive(&mut mux, handle.close()).await.unwrap();
++                assert!(mux.new_addrs.is_empty());
++                assert!(mux.conns.is_empty());
++            }
++            drop(mux);
++            assert!(!first.reservation.valid());
++            assert!(!first.reservation.promote());
++            assert!(conn.is_closed());
++        }
++    }
++
++    struct WakeCount(AtomicUsize);
++    impl ArcWake for WakeCount {
++        fn wake_by_ref(me: &Arc<Self>) {
++            me.0.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++    #[tokio::test]
++    async fn hot_invalid_input_yields_to_executor_and_wakes_itself() {
++        let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        for _ in 0..128 {
++            socket.send_to(&[0; 32], mux.listen_addr()).await.unwrap();
++        }
++        // Allow the reactor to mark input ready without unbounded producer work.
++        tokio::time::sleep(Duration::from_millis(10)).await;
++        let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
++        let waker = waker_ref(&wakes);
++        let mut cx = Context::from_waker(&waker);
++        assert!(mux.poll(&mut cx).is_pending());
++        assert!(
++            wakes.0.load(Ordering::Relaxed) > 0,
++            "budget exhaustion must self-wake"
++        );
++        assert!(mux.new_addrs.is_empty());
++        // A finite packet backlog does not prevent a subsequent valid offer.
++        drop(offer(&mut mux, &socket, "afterchurn").await);
++    }
++    #[tokio::test]
++    async fn stale_connection_cannot_send_after_cancellation_or_listener_close() {
++        for close_listener in [false, true] {
++            let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++            let source = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++            let first = offer(&mut mux, &source, "stalesend").await;
++            let handle = mux.scoped_handle(&first.reservation);
++            let conn = drive(&mut mux, handle.get_conn(&first.ufrag))
++                .await
++                .unwrap();
++            if close_listener {
++                let whole = mux.udp_mux_handle();
++                drive(&mut mux, whole.close()).await.unwrap();
++            } else {
++                drop(first);
++                let _ = poll_once(&mut mux);
++            }
++            assert!(
++                drive(
++                    &mut mux,
++                    conn.send_to(b"must not leave", source.local_addr().unwrap())
++                )
++                .await
++                .is_err()
++            );
++            let mut bytes = [0_u8; 32];
++            assert!(
++                tokio::time::timeout(Duration::from_millis(15), source.recv_from(&mut bytes))
++                    .await
++                    .is_err()
++            );
++        }
++    }
++
++    #[tokio::test]
++    async fn queued_send_is_rechecked_after_cancellation_and_current_send_succeeds() {
++        let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++        let source = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        let first = offer(&mut mux, &source, "queued").await;
++        let conn = connected(&mut mux, &first).await;
++        let writer = mux.conn_writers["queued"].clone();
++        let target = source.local_addr().unwrap();
++        let send = writer.send_to(b"queued stale", &target);
++        futures::pin_mut!(send);
++        assert!(send.as_mut().now_or_never().is_none()); // request is enqueued
++        drop(first);
++        assert!(drive(&mut mux, send).await.is_err());
++        let mut bytes = [0_u8; 32];
++        assert!(
++            tokio::time::timeout(Duration::from_millis(15), source.recv_from(&mut bytes))
++                .await
++                .is_err()
++        );
++        assert!(conn.is_closed());
++        let second = offer(&mut mux, &source, "queued").await;
++        let handle = mux.scoped_handle(&second.reservation);
++        let current = drive(&mut mux, handle.get_conn("queued")).await.unwrap();
++        assert_eq!(
++            drive(&mut mux, current.send_to(b"current", target))
++                .await
++                .unwrap(),
++            7
++        );
++        assert_eq!(
++            tokio::time::timeout(Duration::from_secs(1), source.recv_from(&mut bytes))
++                .await
++                .unwrap()
++                .unwrap()
++                .0,
++            7
++        );
++        assert_eq!(&bytes[..7], b"current");
++    }
++
++    #[tokio::test]
++    async fn different_source_cannot_enter_reserved_ice_buffer_before_registration() {
++        let mut mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++        let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        let stranger = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        let first = offer(&mut mux, &owner, "sourcebound").await;
++        let conn = connected(&mut mux, &first).await;
++        assert!(conn.get_addresses().is_empty());
++        let message = packet("sourcebound:sourcebound");
++        assert!(matches!(
++            mux.conn_from_stun_message(&message, &stranger.local_addr().unwrap()),
++            Some(Err(ConnQueryError::SourceNotReserved))
++        ));
++        assert!(matches!(
++            mux.conn_from_stun_message(&message, &owner.local_addr().unwrap()),
++            Some(Ok(_))
++        ));
++    }
++
++    #[test]
++    fn atomic_cancellation_does_not_overwrite_a_promotion_winner() {
++        let state = Admission {
++            addr: "127.0.0.1:1".parse().unwrap(),
++            ufrag: "race".to_owned(),
++            deadline: Instant::now() + RESERVATION_TTL,
++            status: AtomicU8::new(PENDING),
++            waker: Arc::new(AtomicWaker::new()),
++        };
++        // A reaper can have observed Pending before the promotion commits.
++        assert_eq!(state.status.load(Ordering::Acquire), PENDING);
++        assert!(state.promote());
++        assert_eq!(state.cancel_pending(), PROMOTED);
++        assert_eq!(state.status.load(Ordering::Acquire), PROMOTED);
++        let other = Admission {
++            status: AtomicU8::new(PENDING),
++            ..state
++        };
++        assert_eq!(other.cancel_pending(), PENDING);
++        assert!(!other.promote());
++    }
++}
+--- a/src/tokio/transport.rs
++++ b/src/tokio/transport.rs
+@@ -327,14 +327,32 @@
+                         socketaddr_to_multiaddr(&self.listen_addr, Some(self.config.fingerprint));
+                     let send_back_addr = socketaddr_to_multiaddr(&new_addr.addr, None);
+ 
+-                    let upgrade = upgrade::inbound(
+-                        new_addr.addr,
+-                        self.config.inner.clone(),
+-                        self.udp_mux.udp_mux_handle(),
+-                        self.config.fingerprint.into_inner(),
+-                        new_addr.ufrag,
+-                        self.config.id_keys.clone(),
+-                    )
++                    let scoped_mux = self.udp_mux.scoped_handle(&new_addr.reservation);
++                    let config = self.config.clone();
++                    let upgrade = async move {
++                        if !new_addr.reservation.valid() {
++                            return Err(Error::Internal("incoming reservation cancelled".into()));
++                        }
++                        let timeout = futures_timer::Delay::new(new_addr.reservation.remaining());
++                        let inbound = upgrade::inbound(
++                            new_addr.addr,
++                            config.inner,
++                            scoped_mux,
++                            config.fingerprint.into_inner(),
++                            new_addr.ufrag,
++                            config.id_keys,
++                        )
++                        .boxed();
++                        match futures::future::select(inbound, timeout).await {
++                            futures::future::Either::Left((Ok(result), _))
++                                if new_addr.reservation.promote() =>
++                            {
++                                Ok(result)
++                            }
++                            futures::future::Either::Left((Err(error), _)) => Err(error),
++                            _ => Err(Error::Internal("incoming reservation expired".into())),
++                        }
++                    }
+                     .boxed();
+ 
+                     return Poll::Ready(Some(TransportEvent::Incoming {
+@@ -552,3 +570,84 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod valhalla_admission_repair {
++    use super::*;
++    use futures::future::poll_fn;
++    use std::time::Duration;
++    use tokio::net::UdpSocket;
++
++    #[tokio::test]
++    async fn real_transport_offer_carries_reservation_until_future_drop() {
++        tokio::time::timeout(Duration::from_secs(5), async {
++            let mux = UDPMuxNewAddr::listen_on("127.0.0.1:0".parse().unwrap()).unwrap();
++            let mut stream = ListenStream::new(
++                ListenerId::next(),
++                Config::new(
++                    identity::Keypair::generate_ed25519(),
++                    Certificate::generate(&mut rand::rng()).unwrap(),
++                ),
++                mux,
++            )
++            .unwrap();
++            assert!(matches!(
++                stream.next().await,
++                Some(TransportEvent::NewAddress { .. })
++            ));
++            let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++            let username = b"0123456789abcdef0123456789abcdef:0123456789abcdef0123456789abcdef";
++            let mut packet = vec![0, 1, 0, 72, 0x21, 0x12, 0xa4, 0x42];
++            packet.extend_from_slice(&[9; 12]);
++            packet.extend_from_slice(&[0, 6, 0, 65]);
++            packet.extend_from_slice(username);
++            packet.extend_from_slice(&[0; 3]);
++            for poll_upgrade in [false, true] {
++                socket.send_to(&packet, stream.listen_addr).await.unwrap();
++                let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
++                    .await
++                    .unwrap()
++                    .unwrap();
++                let mut upgrade = match event {
++                    TransportEvent::Incoming { upgrade, .. } => upgrade,
++                    event => panic!("unexpected {event:?}"),
++                };
++                if poll_upgrade {
++                    // Poll the actual WebRTC upgrade while servicing its real mux,
++                    // then cancel it before an unauthenticated fixture can finish.
++                    let pumping = poll_fn(|cx| {
++                        let _ = stream.udp_mux.poll(cx);
++                        Poll::<()>::Pending
++                    });
++                    let racing = futures::future::select(upgrade.as_mut(), pumping);
++                    assert!(
++                        tokio::time::timeout(Duration::from_millis(40), racing)
++                            .await
++                            .is_err()
++                    );
++                }
++                drop(upgrade);
++                let pumping = poll_fn(|cx| {
++                    let _ = stream.udp_mux.poll(cx);
++                    Poll::<()>::Pending
++                });
++                assert!(
++                    tokio::time::timeout(Duration::from_millis(20), pumping)
++                        .await
++                        .is_err()
++                );
++                // Reusing the exact source and ufrag on the next iteration proves
++                // the real Incoming upgrade did not strand its reservation.
++            }
++            socket.send_to(&packet, stream.listen_addr).await.unwrap();
++            assert!(matches!(
++                tokio::time::timeout(Duration::from_secs(1), stream.next())
++                    .await
++                    .unwrap(),
++                Some(TransportEvent::Incoming { .. })
++            ));
++        })
++        .await
++        .unwrap();
++    }
++}

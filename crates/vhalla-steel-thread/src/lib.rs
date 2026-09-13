@@ -7,6 +7,17 @@
 //! key. It has no network or OS effects. Recreating a session loses replay state:
 //! real reconnect/restart support must persist it or establish a fresh,
 //! authenticated session/epoch before accepting traffic.
+//!
+//! Social verification cannot produce a host request. Even an accepted record
+//! is a different evidence type from a replay-checked effect envelope:
+//!
+//! ```compile_fail
+//! use vhalla_social::VerifiedRecord;
+//! use vhalla_policy::{RemoteRequest, Scope};
+//! fn elevate(record: VerifiedRecord, scope: Scope) {
+//!     let _ = RemoteRequest::from_verified(record, scope);
+//! }
+//! ```
 
 use vhalla_core::{Epoch, EventId, PeerId, RealmId, RoomId, Sequence};
 use vhalla_crypto::{

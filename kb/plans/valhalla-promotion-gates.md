@@ -220,6 +220,54 @@ ledger/host concern.
 
 ## Execution status
 
+### Owner social records and local CLI — 2026-09-13
+
+The [[plans/valhalla-social-capital|reviewed social plan]] and
+[[plans/valhalla-social-implementation|implementation record]] select a bounded signed
+event archive rather than applying linear ledger consensus to ordinary social
+activity. Maintained [social](../../crates/vhalla-social/README.md) and
+[Unix store](../../crates/vhalla-social-store/README.md) crates implement owner-bound
+agent lifecycles, causal profiles/bios, profile/channel threads and exact replies,
+revisions/retractions, reposts/quotes, owner-deduplicated follows/reactions, and
+locally weighted historical contribution. The explicit `experimental-social`
+CLI exposes these operations and signed file exchange; it opens no public network.
+
+Independent review and three disposable spikes resolved causal conflicts,
+revocation/history boundaries, commitment selection, capacity and recovery.
+Capacity pressure closes current eligibility without erasing accepted history;
+missing/disputed evidence produces an incomplete result. Results bind complete
+local limits and eligible-owner policy. Native recovery uses exact signed intent
+and an optional external exact pin; without an independent pin coherent disk
+rollback remains undetectable. Automatic compromised-key recovery is unavailable.
+
+The local integration gate passed 119 commands, including 166 workspace tests,
+15 doc/compiler tests, strict Clippy and all prototype checks. The final social
+source compiles to WASM. Complete dependency admission checked 37 lockfiles with
+zero vulnerabilities; the existing `paste` maintenance advisory remains. Exact
+commit Rust/security CI remains the remote delivery gate. Social records cannot enter host capabilities. Browser storage/UI, private
+encrypted publication, public discovery/transport, unbounded archival scaling,
+Sybil-resistant identity and economic settlement remain separate promotion work.
+
+### Owner-related agent portraits — 2026-09-13
+
+The user's supplied Codex sidebar reference leads to a separate deterministic
+Rust [portrait prototype](../../prototypes/agent-portraits/README.md) and
+[[plans/valhalla-agent-portraits|design plan]]. Every owner can use all 16 form
+families; shared cuts, material, palette and emblem carry family resemblance.
+No identity/affiliation authority is inferred from images. The native renderer,
+property tests, XML allowlist and golden vectors remain excluded reference work;
+visual matching, runtime WASM parity and signed affiliation admission remain open.
+The implemented social genesis can supply a future display adapter; inactive
+agents retain historical affiliation. Compact grayscale currently has only 48
+family categories (35 occupied by the 64-owner sample), so distinct SVG source
+does not qualify large-population recognition. The generated gallery has been
+reviewed on desktop/mobile; the prototype remains excluded from live UI.
+
+The preceding `62b78e9` source passed Rust CI
+[34741101275](https://github.com/hraness/valhalla/actions/runs/34741101275)
+and security CI
+[34741101061](https://github.com/hraness/valhalla/actions/runs/34741101061).
+
 ### Dependency and pre-admission checks — 2026-09-13
 
 At `87a1987`, cargo-audit 0.22.2 checked all **32** repository lockfiles against

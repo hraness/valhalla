@@ -25,12 +25,17 @@ jobs:
           cargo test --workspace --all-targets --all-features --locked
           cargo test --workspace --doc --all-features --locked
           cargo test -p vhalla-cli --no-default-features --test identity --locked
+          cargo test -p vhalla-cli --no-default-features --test social --locked
       - name: WASM pure crate checks
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
+          cargo check --manifest-path prototypes/agent-portraits/Cargo.toml --lib --target wasm32-unknown-unknown --locked
+          cargo check --manifest-path prototypes/social-lifecycle/Cargo.toml --lib --target wasm32-unknown-unknown --locked
+          cargo check --manifest-path prototypes/social-reducer/Cargo.toml --lib --target wasm32-unknown-unknown --locked
+          cargo check --manifest-path prototypes/social-sync/Cargo.toml --lib --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/browser-records/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/browser-records/interop/Cargo.toml --lib --target wasm32-unknown-unknown --locked
       - name: Reference prototype tests
@@ -51,3 +56,10 @@ jobs:
           cargo fmt --manifest-path prototypes/browser-records/interop/Cargo.toml -- --check
           cargo test --manifest-path prototypes/browser-records/interop/Cargo.toml --locked
           cargo clippy --manifest-path prototypes/browser-records/interop/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Portrait SVG vocabulary and golden vectors
+        run: |
+          cargo run --manifest-path prototypes/agent-portraits/Cargo.toml --example gallery --locked -- /tmp/valhalla-portrait-check
+          python3 prototypes/agent-portraits/verify.py /tmp/valhalla-portrait-check
+      - name: Retained native admission reference integrity
+        working-directory: prototypes/browser-records/interop/native-admission-reference
+        run: sha256sum --check SHA256SUMS

@@ -1,0 +1,40 @@
+{
+  "status": "reference-only; not activated",
+  "date_utc": "2026-09-13",
+  "scope": "libp2p-webrtc 0.10.0-alpha disposable source copy",
+  "commands": [
+    {
+      "argv": "cargo fmt --manifest-path work/native-webrtc-admission/Cargo.toml --check",
+      "exit_code": 0
+    },
+    {
+      "argv": "cargo test --manifest-path work/native-webrtc-admission/Cargo.toml --lib --features tokio --locked --offline -- --nocapture",
+      "exit_code": 0,
+      "passed": 18,
+      "failed": 0,
+      "existing_library_tests": 6,
+      "new_tests": 12
+    },
+    {
+      "argv": "cargo clippy --manifest-path work/native-webrtc-admission/Cargo.toml --lib --features tokio --locked --offline -- -D warnings",
+      "exit_code": 0
+    }
+  ],
+  "scheduler": "/Users/bg/.bun/bin/oompa-host-run --mode=heavy --lane=compute --label=valhalla-admission-repair-final -- /bin/sh /Users/bg/Documents/Codex/2026-09-12/continue/work/admission-repair-final-check.sh",
+  "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.8",
+  "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+  "source_hashes": {
+    "udp_mux.rs": {
+      "baseline_sha256": "6bfd974cb5126d7368b88edff61dc0f2a1fea3380daa52ec258b67bcae6036b6",
+      "candidate_sha256": "fb2e9a66e51e898348cacbecb174d11f16994bc9ec81423c6b19a0f51084c1a3"
+    },
+    "transport.rs": {
+      "baseline_sha256": "242c15dc59b7dbc6ad024134af146202c4797146335a98f87135665e263c53bb",
+      "candidate_sha256": "d43a73dc5069a714bf57b31a0d81f93f7ae7c34acadf5b2aa6e2ccd5c9a3b424"
+    }
+  },
+  "patch_sha256": "1c57fae4a776e2a23d323f6d4f4d604688286ffffa0b5c16d6990770299cb6ba",
+  "cargo_manifest_sha256": "5b28f229ac6832bd4ce3324259e389c51eb1cd5e724cd428baae1e219a5faa38",
+  "cargo_lock_sha256": "e80f876b17bf63a910b9d81a0349ce217a70a94ed0adec879e3a9a4b65ff6313",
+  "observed": "96 declined source addresses plus four same-source retries; zero retained after reaping. Real Incoming cancellation before/after poll. Queued and stale UDP send rejected; current send succeeds."
+}
