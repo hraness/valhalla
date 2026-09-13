@@ -235,6 +235,7 @@ fn transcript(claims: &InvitationClaims) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -318,5 +319,79 @@ mod tests {
             ),
             Err(InvitationError::Malformed)
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn arbitrary_issued_claims_have_a_canonical_round_trip(
+            owner_seed in any::<u8>(),
+            invitee_seed in any::<u8>(),
+            realm in any::<u128>(),
+            room in any::<u128>(),
+            epoch in any::<u64>(),
+            expires_at in any::<u64>(),
+            mut nonce in any::<[u8; NONCE_BYTES]>(),
+        ) {
+            prop_assume!(owner_seed != invitee_seed);
+            nonce[0] |= 1;
+            let owner = key(owner_seed);
+            let invitee = key(invitee_seed).verifying_key().to_bytes();
+            let expires_at = expires_at.max(1);
+            let issued = Invitation::issue(
+                &owner,
+                invitee,
+                RealmId(realm),
+                RoomId(room),
+                Epoch(epoch),
+                expires_at,
+                nonce,
+            ).unwrap();
+            let encoded = issued.encode();
+            let decoded = Invitation::decode(&encoded).unwrap();
+            prop_assert_eq!(encoded.len(), INVITATION_BYTES);
+            prop_assert_eq!(decoded.encode(), encoded);
+            prop_assert_eq!(
+                decoded.verify_at(owner.verifying_key().to_bytes(), expires_at - 1),
+                Ok(decoded.claims())
+            );
+        }
+
+        #[test]
+        fn any_changed_invitation_bit_cannot_still_verify(
+            owner_seed in any::<u8>(),
+            invitee_seed in any::<u8>(),
+            bit_offset in any::<usize>(),
+            bit in 0u8..8,
+        ) {
+            prop_assume!(owner_seed != invitee_seed);
+            let owner = key(owner_seed);
+            let invitee = key(invitee_seed).verifying_key().to_bytes();
+            let issued = Invitation::issue(
+                &owner,
+                invitee,
+                RealmId(1),
+                RoomId(2),
+                Epoch(3),
+                100,
+                [9; NONCE_BYTES],
+            ).unwrap();
+            let mut tampered = issued.encode();
+            let index = bit_offset % tampered.len();
+            tampered[index] ^= 1 << bit;
+            let result = Invitation::decode(&tampered)
+                .and_then(|decoded| decoded.verify_for(owner.verifying_key().to_bytes()));
+            prop_assert!(result.is_err());
+        }
+
+        #[test]
+        fn arbitrary_bytes_are_bounded_and_never_panic(raw in prop::collection::vec(any::<u8>(), 0..256)) {
+            if let Ok(decoded) = Invitation::decode(&raw) {
+                let encoded = decoded.encode();
+                prop_assert_eq!(encoded.len(), INVITATION_BYTES);
+                prop_assert_eq!(Invitation::decode(&encoded), Ok(decoded));
+            }
+        }
     }
 }
