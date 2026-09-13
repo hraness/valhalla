@@ -408,7 +408,16 @@ more testable design space for Valhalla and Platonik.
 
 ## Result
 
-Pending prototype execution and review.
+The reference hardening wave is complete. Twenty-six standalone Rust crates now
+pass formatting, offline tests, and Clippy; the production workspace continues
+to pass its aggregate tests and Clippy gate. The models cover generated
+state-machine schedules, authenticated provenance, bounded replay/retention,
+domain-separated digests, derived checkpoint roots, and explicit fork/rollback
+rejection.
+
+No prototype has been promoted. Production work still requires authenticated
+wire integration, durable storage and recovery, distributed agreement, key
+rotation, and a reviewed capability-policy migration path.
 
 ## Durable memory
 
