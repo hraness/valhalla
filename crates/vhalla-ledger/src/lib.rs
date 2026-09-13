@@ -17,10 +17,14 @@ use vhalla_core::{Epoch, PeerId, RealmId, Sequence};
 
 const EVENT_DOMAIN: &[u8] = b"vhalla/ledger/event/v1";
 const ROOT_DOMAIN: &[u8] = b"vhalla/ledger/root/v1";
+const SNAPSHOT_DOMAIN: &[u8] = b"vhalla/ledger/snapshot/v1";
+const SNAPSHOT_VERSION: u8 = 1;
 /// Maximum event payload accepted by this reference production seam.
 pub const MAX_PAYLOAD: usize = 1024;
 /// Hard ceiling on retained events, even when configuration supplies a larger value.
 pub const MAX_EVENTS: usize = 4096;
+/// Hard ceiling on an encoded, unauthenticated snapshot.
+pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 
 /// A derived content address for an event.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -115,6 +119,18 @@ pub enum Error {
     StaleCheckpoint,
     /// A different checkpoint was already accepted.
     ConflictingCheckpoint,
+    /// The snapshot exceeded [`MAX_SNAPSHOT_BYTES`].
+    SnapshotTooLarge,
+    /// The snapshot ended before a complete field could be decoded.
+    TruncatedSnapshot,
+    /// The snapshot has an unsupported version or domain.
+    InvalidSnapshotHeader,
+    /// The snapshot contains bytes after its canonical payload.
+    TrailingSnapshot,
+    /// A snapshot field exceeds its protocol bound.
+    InvalidSnapshotBounds,
+    /// The actor sequence map does not match the decoded event history.
+    SnapshotSequenceMismatch,
 }
 
 /// A bounded, single-tip event ledger.
@@ -244,6 +260,163 @@ impl Ledger {
         self.events.len()
     }
 
+    /// Encode the complete retained state as bounded canonical bytes.
+    ///
+    /// The result is an unauthenticated serialization. Callers that persist or
+    /// exchange it must wrap it in an authenticated storage/provenance layer.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(SNAPSHOT_DOMAIN);
+        bytes.push(SNAPSHOT_VERSION);
+        put_u128(&mut bytes, self.realm.0);
+        put_u64(&mut bytes, self.epoch.0);
+
+        let chain = self
+            .head
+            .and_then(|head| self.chain(head).ok())
+            .unwrap_or_default();
+        put_u32(&mut bytes, chain.len() as u32);
+        for event in chain {
+            bytes.extend_from_slice(&event.id.0);
+            match event.parent {
+                Some(parent) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&parent.0);
+                }
+                None => bytes.push(0),
+            }
+            put_u128(&mut bytes, event.realm.0);
+            put_u64(&mut bytes, event.epoch.0);
+            put_u128(&mut bytes, event.actor.0);
+            put_u64(&mut bytes, event.sequence.0);
+            put_u32(&mut bytes, event.payload.len() as u32);
+            bytes.extend_from_slice(&event.payload);
+        }
+
+        match self.head {
+            Some(head) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&head.0);
+            }
+            None => bytes.push(0),
+        }
+        match self.checkpoint {
+            Some(checkpoint) => {
+                bytes.push(1);
+                put_u128(&mut bytes, checkpoint.realm.0);
+                put_u64(&mut bytes, checkpoint.epoch.0);
+                bytes.extend_from_slice(&checkpoint.head.0);
+                bytes.extend_from_slice(&checkpoint.state_root.0);
+                put_u64(&mut bytes, checkpoint.height);
+            }
+            None => bytes.push(0),
+        }
+
+        put_u32(&mut bytes, self.last_sequences.len() as u32);
+        for (actor, sequence) in &self.last_sequences {
+            put_u128(&mut bytes, actor.0);
+            put_u64(&mut bytes, sequence.0);
+        }
+        debug_assert!(bytes.len() <= MAX_SNAPSHOT_BYTES);
+        bytes
+    }
+
+    /// Restore a ledger from canonical snapshot bytes under an explicit bound.
+    ///
+    /// Snapshot bytes are not authenticated or durable by this method. The
+    /// caller must verify a signature/provenance receipt before treating them
+    /// as trusted storage.
+    pub fn restore(raw: &[u8], max_events: usize) -> Result<Self, Error> {
+        if raw.len() > MAX_SNAPSHOT_BYTES {
+            return Err(Error::SnapshotTooLarge);
+        }
+        let mut reader = SnapshotReader::new(raw);
+        if reader.take(SNAPSHOT_DOMAIN.len())? != SNAPSHOT_DOMAIN
+            || reader.u8()? != SNAPSHOT_VERSION
+        {
+            return Err(Error::InvalidSnapshotHeader);
+        }
+        let realm = RealmId(reader.u128()?);
+        let epoch = Epoch(reader.u64()?);
+        let effective_max = max_events.min(MAX_EVENTS);
+        let event_count = reader.u32()? as usize;
+        if event_count > effective_max || event_count > MAX_EVENTS {
+            return Err(Error::InvalidSnapshotBounds);
+        }
+        let mut ledger = Self::new(realm, epoch, effective_max);
+        for _ in 0..event_count {
+            let id = EventDigest(reader.array32()?);
+            let parent = match reader.u8()? {
+                0 => None,
+                1 => Some(EventDigest(reader.array32()?)),
+                _ => return Err(Error::InvalidSnapshotBounds),
+            };
+            let event_realm = RealmId(reader.u128()?);
+            let event_epoch = Epoch(reader.u64()?);
+            let actor = PeerId(reader.u128()?);
+            let sequence = Sequence(reader.u64()?);
+            let payload_len = reader.u32()? as usize;
+            if payload_len > MAX_PAYLOAD {
+                return Err(Error::InvalidSnapshotBounds);
+            }
+            let payload = reader.take(payload_len)?.to_vec();
+            ledger.append(Event {
+                id,
+                parent,
+                realm: event_realm,
+                epoch: event_epoch,
+                actor,
+                sequence,
+                payload,
+            })?;
+        }
+
+        let encoded_head = match reader.u8()? {
+            0 => None,
+            1 => Some(EventDigest(reader.array32()?)),
+            _ => return Err(Error::InvalidSnapshotBounds),
+        };
+        if encoded_head != ledger.head {
+            return Err(Error::UnknownHead);
+        }
+
+        let encoded_checkpoint = match reader.u8()? {
+            0 => None,
+            1 => Some(Checkpoint {
+                realm: RealmId(reader.u128()?),
+                epoch: Epoch(reader.u64()?),
+                head: EventDigest(reader.array32()?),
+                state_root: StateRoot(reader.array32()?),
+                height: reader.u64()?,
+            }),
+            _ => return Err(Error::InvalidSnapshotBounds),
+        };
+        if let Some(checkpoint) = encoded_checkpoint {
+            ledger.accept_checkpoint(checkpoint)?;
+        }
+
+        let sequence_count = reader.u32()? as usize;
+        if sequence_count > event_count || sequence_count > MAX_EVENTS {
+            return Err(Error::InvalidSnapshotBounds);
+        }
+        let mut encoded_sequences = BTreeMap::new();
+        for _ in 0..sequence_count {
+            let actor = PeerId(reader.u128()?);
+            let sequence = Sequence(reader.u64()?);
+            if encoded_sequences.insert(actor, sequence).is_some() {
+                return Err(Error::SnapshotSequenceMismatch);
+            }
+        }
+        if encoded_sequences != ledger.last_sequences {
+            return Err(Error::SnapshotSequenceMismatch);
+        }
+        if !reader.is_empty() {
+            return Err(Error::TrailingSnapshot);
+        }
+        Ok(ledger)
+    }
+
     fn chain(&self, head: EventDigest) -> Result<Vec<&Event>, Error> {
         let mut reverse = Vec::new();
         let mut current = Some(head);
@@ -290,12 +463,70 @@ fn put_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
+fn put_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
 fn put_u128(out: &mut Vec<u8>, value: u128) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
 fn hash(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
+}
+
+struct SnapshotReader<'a> {
+    raw: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> SnapshotReader<'a> {
+    fn new(raw: &'a [u8]) -> Self {
+        Self { raw, offset: 0 }
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], Error> {
+        let end = self
+            .offset
+            .checked_add(length)
+            .ok_or(Error::TruncatedSnapshot)?;
+        if end > self.raw.len() {
+            return Err(Error::TruncatedSnapshot);
+        }
+        let value = &self.raw[self.offset..end];
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn u8(&mut self) -> Result<u8, Error> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, Error> {
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().expect("length checked"),
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, Error> {
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("length checked"),
+        ))
+    }
+
+    fn u128(&mut self) -> Result<u128, Error> {
+        Ok(u128::from_be_bytes(
+            self.take(16)?.try_into().expect("length checked"),
+        ))
+    }
+
+    fn array32(&mut self) -> Result<[u8; 32], Error> {
+        Ok(self.take(32)?.try_into().expect("length checked"))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.offset == self.raw.len()
+    }
 }
 
 #[cfg(test)]
@@ -418,6 +649,51 @@ mod tests {
             ledger.append(event(Some(first.id), 1, b"rollback")),
             Err(Error::NonMonotonicSequence)
         );
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_history_and_checkpoint() {
+        let mut ledger = ledger();
+        let first = event(None, 1, b"one");
+        ledger.append(first.clone()).unwrap();
+        let second = event(Some(first.id), 2, b"two");
+        ledger.append(second.clone()).unwrap();
+        let checkpoint = Checkpoint {
+            realm: RealmId(1),
+            epoch: Epoch(2),
+            head: second.id,
+            state_root: ledger.state_root(second.id).unwrap(),
+            height: 1,
+        };
+        ledger.accept_checkpoint(checkpoint).unwrap();
+        let restored = Ledger::restore(&ledger.snapshot(), 8).unwrap();
+        assert_eq!(restored.event_count(), 2);
+        assert_eq!(restored.head(), ledger.head());
+        assert_eq!(restored.checkpoint(), Some(checkpoint));
+        assert_eq!(restored.state_root(second.id), ledger.state_root(second.id));
+    }
+
+    #[test]
+    fn snapshot_tamper_truncation_and_trailing_bytes_fail_closed() {
+        let mut ledger = ledger();
+        ledger.append(event(None, 1, b"one")).unwrap();
+        let snapshot = ledger.snapshot();
+        let mut bad_header = snapshot.clone();
+        bad_header[0] ^= 1;
+        assert!(matches!(
+            Ledger::restore(&bad_header, 8),
+            Err(Error::InvalidSnapshotHeader)
+        ));
+        let mut trailing = snapshot.clone();
+        trailing.push(0);
+        assert!(matches!(
+            Ledger::restore(&trailing, 8),
+            Err(Error::TrailingSnapshot)
+        ));
+        assert!(matches!(
+            Ledger::restore(&snapshot[..snapshot.len() - 1], 8),
+            Err(Error::TruncatedSnapshot)
+        ));
     }
 
     proptest! {

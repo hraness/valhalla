@@ -5,6 +5,8 @@ keeps a bounded linear event history (capped at `MAX_EVENTS`) and derives
 checkpoint roots from the canonical ancestor chain, realm, and epoch. Actor
 sequences must advance monotonically. Forged roots, stale heads, forks,
 wrong-context events, malformed IDs, and capacity exhaustion fail closed.
+Deterministic snapshot/restore supports restart testing, but snapshot bytes are
+unauthenticated and are not a durable trust anchor.
 
 This crate does not provide persistence, quorum signatures, distributed
 consensus, compaction proofs, or host authority. A checkpoint accepted here is
