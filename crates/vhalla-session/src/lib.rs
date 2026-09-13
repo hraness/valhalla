@@ -12,6 +12,10 @@
 
 extern crate alloc;
 
+mod invitation;
+
+pub use invitation::{Invitation, InvitationClaims, InvitationError, INVITATION_BYTES};
+
 use alloc::vec::Vec;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};

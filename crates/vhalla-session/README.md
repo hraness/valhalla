@@ -28,11 +28,20 @@ custodian. `receive` verifies signed bytes and returns immutable chat evidence.
 No policy or host crate is imported, and chat evidence cannot satisfy the policy
 crate's typed effect-kind check.
 
+The `Invitation` type is a separate fixed-width owner-signed claim for pairing
+handoff. It binds the complete owner and invitee application keys, realm, room,
+membership epoch, exclusive expiry and a nonzero 32-byte nonce under a versioned
+domain. `decode` checks canonical size and key validity; `verify_for` additionally
+requires the caller's expected owner key; `verify_at` applies the caller's clock.
+An invitation does not authenticate a transport, open a room, or establish a
+session, and the owner must retain spent-token state if it needs single-use
+semantics.
+
 The caller must supply fresh unpredictable entropy on **every** handshake,
 including after a crash. Reusing both nonces repeats the session and can reopen
 replay; the nonzero check is only a default-value guard. Pending handshakes need
 adapter-owned count limits and deadlines. Pairing persistence, real entropy,
-signed invitations, key custody, restart integration, browser execution and
+invitation integration, key custody, restart integration, browser execution and
 network delivery are separate admission gates. This module provides no durable
 exactly-once effect, encrypted history or global membership consensus.
 

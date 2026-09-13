@@ -72,7 +72,7 @@ hashes. None may be imported as a production security boundary.
 | Slice | Required observable result | Status and admission evidence |
 | --- | --- | --- |
 | 1. Authority and message sessions | A message crosses bounded decoding, strict signature and full-key/context checks, retained replay state, explicit requester policy, and host-owned execution context | Repair first: baseline authorization was cloneable and its public effect request bypassed policy. Require exploit regressions, compile-fail boundaries, expiry and rotation tests, and no effect on denial. Only the in-memory read exists; OS effects stay absent. |
-| 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | The maintained loopback steel thread now has persisted identities, explicit full-key invitations, actual child-process restart evidence, and a versioned bounded JSON-lines output interface. Product admission still requires non-loopback transport qualification, malformed-frame/queue/loss/reconnect evidence, resource measurements, and reviewed invitation policy. |
+| 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | The maintained loopback steel thread now has persisted identities, explicit full-key invitations, actual child-process restart evidence, and a versioned bounded JSON-lines output interface. A fixed-width owner-signed invitation claim now binds owner/invitee keys, room scope, epoch, expiry and nonce without granting transport authority. Product admission still requires non-loopback transport qualification, malformed-frame/queue/loss/reconnect evidence, resource measurements, and reviewed invitation integration. |
 | 3. Shared web/desktop participation | Dioxus web and desktop applications reuse Rust screens/client logic, join the same room, display foreign text safely, and send authenticated messages | Execute actual browser and selected desktop renderer journeys, not only `cargo check`. Verify separate identity/storage/transport adapters, resource/navigation authority, applicable origin/CSP/IPC, restart, explicit owner pairing, denial paths and direct versus relay routing. Generated binding glue is allowed; no authored JS/TS application or protocol implementation. Headless/embedded crates must not depend on Dioxus. |
 | 4. Resilient rooms and discovery | Three peers converge on bounded chat history, survive one peer/relay loss, and bootstrap through interchangeable signed hints | Separate delivered, locally stored, replicated and executed states. Define concurrent ordering and retention without abusing the linear checkpoint ledger as multiwriter consensus. Qualify two replaceable bootstrap/relay choices, identity rotation and recovery without silently resetting replay state. |
 | 5. A real game | Platonik runs through an optional Valhalla session adapter and a receiver independently verifies the result | Preserve exact versioned inner artifacts, charge verification budgets, request large traces separately, and test tampering, duplication, wrong ruleset/case, pause/resume and failed exchange evidence. Keep game authority explicit; multiplayer does not imply permissionless finality. |
@@ -597,6 +597,18 @@ next. Preserve
 private keys, verify observed transport identities, reject recorded old traffic
 after an actual process restart, and keep kind 2 out of the chat dispatch path.
 Independent review and live evidence are admission gates, not completed claims.
+
+### Typed owner invitation claim — 2026-09-13
+
+`vhalla-session::Invitation` is a fixed-width, versioned owner signature over
+the complete owner and invitee application keys, realm, room, membership epoch,
+exclusive expiry and a nonzero nonce. Canonical decoding is bounded and strict;
+verification requires an explicitly supplied expected owner and caller clock.
+The type returns claims only: it does not authenticate transport keys, mutate
+membership, establish a session or provide single-use state. Three focused unit
+tests cover round-trip/issuer binding, scope/expiry/signature tampering and
+malformed or zero-nonce rejection. Integrating this claim into native/browser
+pairing UX, spent-token persistence and independent protocol review remain open.
 
 ### Message and effect authority repair — 2026-09-12
 
