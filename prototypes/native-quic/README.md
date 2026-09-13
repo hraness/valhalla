@@ -81,6 +81,15 @@ maximum reported RSS during compilation/testing was about 399 MB. That RSS is
 browser, embedded, loss/reorder, handshake-flood, or wide-area measurement was
 performed.
 
+A follow-up on 2026-09-13 at `4dac7fa`, Rust 1.97.1, measured the stripped release
+binary at **5,732,240 bytes**. Three fresh loopback listeners showed **8.81–8.86
+MB idle RSS** before messages and **10.94–11.01 MB peak RSS** across a 17-byte and
+64 KiB echo each. Sender peak RSS was **10.62–10.98 MB**. These are decimal MB.
+The measurement sampled only owned listener PIDs and collected per-child Darwin
+`wait4` resource usage after reaping; it did not substitute build memory for
+runtime memory. Three short trials are initial footprint evidence, not a
+long-running load, memory-leak, embedded-target or throughput qualification.
+
 The first integration attempt exposed a lifecycle issue: the small echo passed,
 but replacing its sender process under the same peer identity collided with the
 one-connection-per-peer limit. Dropping the old swarm did not prove the listener

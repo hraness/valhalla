@@ -1,0 +1,20 @@
+[package]
+name = "vhalla-session"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Bounded authenticated chat sessions for explicitly paired Valhalla peers."
+
+[dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "zeroize"] }
+sha2 = { version = "0.10", default-features = false }
+vhalla-core = { path = "../vhalla-core" }
+vhalla-crypto = { path = "../vhalla-crypto" }
+vhalla-wire = { path = "../vhalla-wire" }
+
+[dev-dependencies]
+proptest = "1.6"
+
+[lints]
+workspace = true

@@ -675,6 +675,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-identity"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "proptest",
+ "sha2",
+ "vhalla-core",
+ "vhalla-crypto",
+ "vhalla-session",
+ "vhalla-wire",
+ "zeroize",
+]
+
+[[package]]
 name = "vhalla-ledger"
 version = "0.0.0"
 dependencies = [
@@ -689,6 +704,18 @@ version = "0.0.0"
 dependencies = [
  "vhalla-core",
  "vhalla-crypto",
+]
+
+[[package]]
+name = "vhalla-session"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "proptest",
+ "sha2",
+ "vhalla-core",
+ "vhalla-crypto",
+ "vhalla-wire",
 ]
 
 [[package]]

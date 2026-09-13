@@ -199,6 +199,8 @@ The production workspace currently contains these crates:
 | `vhalla-transport` | opaque bounded frames and bounded in-memory queues | delivery only: backpressure, duplication/reorder/loss simulation, and no inspection-based authority |
 | `vhalla-host` | typed in-memory effect runner and receipts | host execution and durable receipt handoff, with no path from wire data to an effect |
 | `vhalla-steel-thread` | signed envelope → transport → policy → host receipt | integrated proof that provenance, checkpoint, replay, expiry, and recovery boundaries compose |
+| `vhalla-session` | experimental paired chat handshake and directional replay | reviewed app/transport identity binding, real reconnect/restart and browser integration |
+| `vhalla-identity` | experimental Unix private-file application key and identity CLI | qualified secret custody, recovery, transport-key integration and installable native program |
 
 The rule is **model first, production second, integration third**. A reference
 crate may be promoted only after its invariant is restated in production types,
@@ -217,6 +219,61 @@ bounded replay primitive, while durable receipt retention remains an explicit
 ledger/host concern.
 
 ## Execution status
+
+### Fresh sessions and persistent application identity — 2026-09-13
+
+Commit `4dac7fa` passed the 94-command local aggregate, Linux/WASM Rust CI
+[34736562561](https://github.com/hraness/valhalla/actions/runs/34736562561), and
+security analysis [34736562718](https://github.com/hraness/valhalla/actions/runs/34736562718).
+That revision includes independently reviewed authority repairs and a real
+loopback QUIC experiment. The following session/identity increment was authored
+locally after worker agents hit their account usage limit; it has automated and
+local source-review evidence but **no independent protocol/security review**.
+Keep it experimental and disconnected from live room ingress until that review
+and the relevant operational gates pass. No general host effects are added.
+
+`vhalla-session` supplies a bounded three-message paired handshake. Hello,
+response and confirmation have distinct signed packet kinds. Both complete
+application keys, both observed transport keys, realm, room, epoch and expiry
+are bound through the pairing digest; both fresh nonces derive the common
+session ID. Replaying an old Hello receives a new responder challenge, so an
+old confirmation cannot establish the new session. Each direction retains its
+own chat-only replay window. Local close, expiry and observed clock rollback
+permanently close that session. The caller owns pending-handshake capacity and
+must supply fresh entropy and trusted transport observations.
+
+The pure session suite currently has 14 public-API unit/property tests and one
+compile-fail test, including a separately calculated Python pairing-digest
+vector. Cases cover role reflection, handshake/chat replay after a new nonce,
+changed context or keys, malformed framing, signature tampering, timeout,
+revocation, maximum-size frames and direction checks. They do not prove Internet
+connectivity, durable exactly-once semantics, signed invitations or browser
+execution. Pairing remains trusted local configuration; no remote descriptor
+can authorize itself by constructing it.
+
+`vhalla-identity` adds the first `vhalla identity init/show` commands and Unix
+private-file custody of a single application key. Creation requires a new
+directory, OS entropy, synchronized publication and an exclusive lifetime
+lock. Open never creates or repairs missing/corrupt state. Tests cover real
+filesystem reopen/locking, symlinks/hardlinks, permissions, partial records and
+the CLI. Its joined session test reopens the same key, obtains fresh OS nonces,
+rejects old transcript/chat traffic and accepts a new message. A borrowed-key
+signing helper avoids reconstructing the retained key for every message.
+
+Unlike the earlier two-persistent-seed proposal, this first custody layer stores
+only the application identity. Native transport secret custody and rotation
+remain adapter work; transport keys must still be authenticated and explicitly
+bound by every pairing. The identity record is unencrypted owner-private data
+with a corruption checksum. It provides neither hostile-host isolation nor
+adversarial rollback protection, and interrupted-publication tests are not
+physical crash qualification. No command is installed globally or shadows `vh`.
+
+**Next joined target:** connect the persisted key and fresh session exchange to
+two real native transports, with bounded invitation/pairing inputs and explicit
+chat membership, before extending the same path into a real browser. Preserve
+private keys, verify observed transport identities, reject recorded old traffic
+after an actual process restart, and keep kind 2 out of the chat dispatch path.
+Independent review and live evidence are admission gates, not completed claims.
 
 ### Message and effect authority repair — 2026-09-12
 

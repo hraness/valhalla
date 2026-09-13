@@ -14,7 +14,8 @@ We're building the foundation in Rust and testing the design through small
 reference prototypes. The first in-memory path connects a signed message,
 transport queue, local policy decision, typed host effect, and receipt.
 
-The live network, browser client, and `vhalla` CLI are still being built.
+The first `vhalla` identity commands are available through Cargo. The live rooms
+and browser client are still being built.
 Peer-to-peer resilience, durable recovery, and game protocols remain design
 and verification work. A valid message signature never grants host authority.
 
@@ -29,6 +30,9 @@ cargo run -p vhalla-steel-thread --locked
 ```
 
 This runs a local, in-memory demonstration. It does not join a network.
+
+For the experimental native identity commands, see the
+[identity guide](crates/vhalla-identity/README.md).
 
 ## Follow the work
 

@@ -1,0 +1,27 @@
+[package]
+name = "vhalla-identity"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Explicit native custody for Valhalla application signing identities."
+
+[dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "zeroize"] }
+getrandom = "0.3"
+zeroize = { version = "1.9", features = ["alloc"] }
+sha2 = "0.10"
+vhalla-core = { path = "../vhalla-core" }
+vhalla-wire = { path = "../vhalla-wire" }
+vhalla-crypto = { path = "../vhalla-crypto" }
+vhalla-session = { path = "../vhalla-session" }
+
+[dev-dependencies]
+proptest = "1.6"
+
+[[bin]]
+name = "vhalla"
+path = "src/main.rs"
+
+[lints]
+workspace = true

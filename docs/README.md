@@ -20,7 +20,10 @@ The demo is entirely in memory. It delivers a signed envelope through a bounded
 queue, verifies the full key and session context, applies an explicit local
 grant, and returns an in-memory execution receipt. The session retains replay
 state across messages; policy and expiry are checked again at execution.
-There is no network connection or installed `vhalla` command yet.
+The first `vhalla` identity commands are available through Cargo; rooms and
+networking are not connected to the CLI yet. See the
+[identity guide](../crates/vhalla-identity/README.md) for explicit initialization
+and reopening of a private key directory.
 
 Signed framing is now v2 and rejects the earlier unversioned format. Restart
 freshness, durable effects and real browser connectivity remain unqualified.
@@ -31,6 +34,8 @@ freshness, durable effects and real browser connectivity remain unqualified.
 | --- | --- |
 | Protocol values and bounded parsing | [core](../crates/vhalla-core/src/lib.rs), [wire](../crates/vhalla-wire/src/lib.rs) |
 | Signatures and replay checks | [crypto](../crates/vhalla-crypto/src/lib.rs) |
+| Fresh explicitly paired chat sessions | [session](../crates/vhalla-session/README.md), experimental and awaiting independent protocol review |
+| Native key custody and identity CLI | [identity](../crates/vhalla-identity/README.md), experimental Unix private-file storage |
 | Local authority and effects | [policy](../crates/vhalla-policy/src/lib.rs), [host](../crates/vhalla-host/src/lib.rs) |
 | In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs) |
 | Real two-process transport experiment | [native QUIC](../prototypes/native-quic/README.md), loopback-only with public fixture keys |

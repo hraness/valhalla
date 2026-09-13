@@ -346,6 +346,19 @@ pub fn sign(
     seed: [u8; 32],
 ) -> Result<SignedEnvelope, SignError> {
     let key = SigningKey::from_bytes(&seed);
+    sign_with_key(envelope, audience, epoch, session, expires_at, &key)
+}
+
+/// Sign using a borrowed key held by a trusted custodian, without exporting or
+/// reconstructing its seed for each message. Context and bounds match [`sign`].
+pub fn sign_with_key(
+    envelope: Envelope,
+    audience: PeerId,
+    epoch: Epoch,
+    session: SessionId,
+    expires_at: u64,
+    key: &SigningKey,
+) -> Result<SignedEnvelope, SignError> {
     let mut signed = SignedEnvelope {
         envelope,
         audience,
