@@ -1,0 +1,3 @@
+# Unified-diff blank context lines contain a mandatory single space. Preserve
+# this hash-verified historical artifact byte-for-byte; keep other checks active.
+prototypes/browser-records/interop/native-admission-reference/admission-repair.patch whitespace=-blank-at-eol

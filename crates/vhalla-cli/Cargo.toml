@@ -9,16 +9,24 @@ description = "Valhalla command line entry point."
 [features]
 default = []
 experimental-network = ["dep:vhalla-native", "dep:tokio"]
+experimental-social = ["vhalla-identity/social", "dep:vhalla-social", "dep:vhalla-social-store", "dep:vhalla-core", "dep:getrandom", "dep:libc"]
 
 [dependencies]
 vhalla-identity = { path = "../vhalla-identity" }
+vhalla-social = { path = "../vhalla-social", optional = true }
+vhalla-core = { path = "../vhalla-core", optional = true }
+getrandom = { version = "0.3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+vhalla-social-store = { path = "../vhalla-social-store", optional = true }
 vhalla-native = { path = "../vhalla-native", optional = true }
 tokio = { version = "1.53", default-features = false, features = ["rt", "time"], optional = true }
 
 [dev-dependencies]
 getrandom = "0.3"
+serde_json = "1"
+sha2 = "0.10"
 
 [[bin]]
 name = "vhalla"

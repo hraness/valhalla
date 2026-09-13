@@ -41,7 +41,13 @@ empty `[workspace]` to the disposable manifest, and removed unused upstream
 the only append to the multiplexer. Those adjustments avoid unrelated package
 downloads and are not evidence that the upstream full test suite passed.
 
-The next candidate must use bounded reservations with cancellation/decline,
+The preserved [repair reference](native-admission-reference/README.md) contains
+the reviewed disposable candidate, exact historical receipts, fixture lockfile,
+upstream MIT notice, and hash-checked reproduction instructions. It is not an
+active dependency repair; real browser/native success and full RTC lifecycle
+cleanup remain unqualified.
+
+Any activated candidate must use bounded reservations with cancellation/decline,
 timeout, success and listener-close cleanup. Test capacity exhaustion, repeated
 source addresses, source-port churn, late registration, timeouts and fairness of
 polling under sustained input. A hard cap with no cleanup would merely turn the

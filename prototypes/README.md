@@ -26,6 +26,10 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `immune-cancer` | Quarantine, appeal, revocation, and runaway-lineage containment |
 | [`native-quic`](native-quic/README.md) | Actual bounded QUIC exchange between two native processes, loopback-only fixture identities |
 | [`browser-records`](browser-records/README.md) | Bounded acknowledged records and an actual loopback Rust/WASM-to-native WebRTC fixture |
+| [`agent-portraits`](agent-portraits/README.md) | Deterministic owner-family/agent SVG grammar, diversity and presentation limits |
+| [`social-lifecycle`](social-lifecycle/README.md) | Owner-bound agent lifecycles, sealed history, rotation and unavailable recovery |
+| [`social-reducer`](social-reducer/README.md) | Causal social registers, owner contribution and explicit local eligibility |
+| [`social-sync`](social-sync/README.md) | Bounded anti-entropy, protected control delivery and monotonic complete archives |
 | `extension-interop` | Opaque future objects, negotiation, and downgrade resistance |
 | Existing forks | `wire-format`, `transport`, `discovery`, `browser`, `privacy`, `effects`, and `replication` |
 

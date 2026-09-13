@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "source": "Independent Python hashlib/struct transcript; public fixture seed [1;32], never an identity for deployment.",
+  "owner_genesis": {
+    "primary_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "nonce_hex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+    "unsigned_hex": "5648534f018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c008a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c002a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+    "unsigned_length_prefix_hex": "00000067",
+    "content_id_hex": "55790ef35564706a7cf3e24f9d16caa7c312b3e2719b22170cd8b41103065088"
+  }
+}

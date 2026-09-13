@@ -16,6 +16,9 @@ vhalla-transport = { path = "../vhalla-transport" }
 
 [dev-dependencies]
 proptest = "1.6"
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+vhalla-social = { path = "../vhalla-social" }
+vhalla-session = { path = "../vhalla-session" }
 
 [[bin]]
 name = "vhalla-steel-thread"

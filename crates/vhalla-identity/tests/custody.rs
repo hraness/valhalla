@@ -33,6 +33,57 @@ impl Drop for Temp {
     }
 }
 
+#[cfg(feature = "social")]
+#[test]
+fn social_custodian_signs_only_the_exact_primary_and_acknowledgement_keys() {
+    use vhalla_social::{Body, Error, OwnerId, UnsignedRecord};
+    let dir = Temp::new();
+    let owner = Identity::create_new(dir.child()).unwrap();
+    let agent = Identity::create_new(dir.0.join("agent")).unwrap();
+    let wrong = Identity::create_new(dir.0.join("wrong")).unwrap();
+    let genesis = UnsignedRecord::new(
+        owner.public_key(),
+        Body::OwnerGenesis {
+            controller: owner.public_key(),
+            recovery: None,
+            nonce: [9; 32],
+        },
+    )
+    .unwrap();
+    let signed = owner.sign_social(genesis).unwrap().finish().unwrap();
+    let verified = signed.verify().unwrap();
+    let request = || {
+        UnsignedRecord::new(
+            owner.public_key(),
+            Body::AgentGenesis {
+                owner: OwnerId::from_bytes(*verified.id().as_bytes()),
+                control: verified.id(),
+                key: agent.public_key(),
+                nonce: [10; 32],
+            },
+        )
+        .unwrap()
+    };
+    assert!(matches!(
+        wrong.sign_social(request()),
+        Err(Error::SigningKey)
+    ));
+    assert!(matches!(
+        owner.sign_social(request()).unwrap().finish(),
+        Err(Error::AcknowledgementRequired)
+    ));
+    assert!(matches!(
+        wrong.countersign_social(owner.sign_social(request()).unwrap()),
+        Err(Error::SigningKey)
+    ));
+    let binding = agent
+        .countersign_social(owner.sign_social(request()).unwrap())
+        .unwrap()
+        .verify()
+        .unwrap();
+    assert_eq!(binding.primary_key(), &owner.public_key());
+}
+
 #[test]
 fn create_reopen_and_sign_preserve_one_random_identity() {
     let dir = Temp::new();

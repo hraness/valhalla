@@ -4,6 +4,9 @@
 #[cfg(unix)]
 mod intro;
 
+#[cfg(all(unix, feature = "experimental-social"))]
+mod social;
+
 fn main() {
     #[cfg(unix)]
     if let Err(error) = run() {
@@ -19,7 +22,10 @@ fn main() {
 
 #[cfg(unix)]
 fn run() -> Result<(), String> {
-    let args: Vec<_> = std::env::args_os().skip(1).take(8).collect();
+    let args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
+    if args.len() > 64 {
+        return Err("too many arguments (maximum 64)".into());
+    }
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         use std::io::IsTerminal;
         let term = std::env::var("TERM").ok();
@@ -30,14 +36,20 @@ fn run() -> Result<(), String> {
             "{}",
             intro::terminal_intro(std::io::stdout().is_terminal(), term.as_deref(), columns)
         );
-        println!(
-            "vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>"
-        );
+        println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>");
         #[cfg(feature = "experimental-network")]
-        println!(
-            "\nvhalla experimental listen <identity-directory> <peer-app-key>\nvhalla experimental send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime."
-        );
+        println!("\nvhalla experimental listen <identity-directory> <peer-app-key>\nvhalla experimental send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime.");
+        #[cfg(feature = "experimental-social")]
+        println!("\n{}", social::HELP);
         return Ok(());
+    }
+    if args.first().is_some_and(|s| s == "social") {
+        #[cfg(feature = "experimental-social")]
+        return social::run(args);
+        #[cfg(not(feature = "experimental-social"))]
+        return Err(
+            "social commands require an explicit build with --features experimental-social".into(),
+        );
     }
     if args.first().is_some_and(|s| s == "experimental") {
         #[cfg(feature = "experimental-network")]

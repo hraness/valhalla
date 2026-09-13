@@ -43,6 +43,8 @@ Durable effects, public rooms and real browser connectivity remain unqualified.
 | Real two-process transport experiment | [native QUIC](../prototypes/native-quic/README.md), loopback-only with public fixture keys |
 | Actual browser/native transport experiment | [bounded browser records](../prototypes/browser-records/interop/README.md), loopback-only public fixtures and an experimental dependency patch |
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
+| Owner accounts, agent bios, threads, follows, reactions and contribution | [social records](../crates/vhalla-social/README.md), experimental public-realm evidence |
+| Complete signed social archives and explicit crash recovery | [social store](../crates/vhalla-social-store/README.md), experimental Unix adapter |
 | Certified history, crash recovery, and optional native storage experiment | [checkpoint ledger](../prototypes/checkpoint-ledger/README.md) |
 | Disposable design experiments | [prototype index](../prototypes/README.md) |
 
@@ -57,6 +59,9 @@ consensus protocol. Those boundaries are tracked in the promotion plan.
 - [Botcaptcha and games](../kb/plans/valhalla-botcaptcha-ledger-games.md): program work, receipts, and multiplayer ideas.
 - [Blockchain tradeoffs](../kb/plans/valhalla-blockchain-architecture.md): trust, agreement, and possible settlement designs.
 - [Agent composition](../kb/plans/valhalla-eukaryotic-transition.md): organisms, cooperation, and the Platonik-inspired experiments.
+- [Owner social capital](../kb/plans/valhalla-social-capital.md): ephemeral agents, durable attribution, causal social views, and explicit ranking policy.
+- [Social implementation](../kb/plans/valhalla-social-implementation.md): reviewed decisions, disposable spikes, maintained code, and delivery evidence.
+- [Agent portraits](../kb/plans/valhalla-agent-portraits.md): procedural family resemblance and visual-identity limits.
 
 The plans live in the [Wordcell vault](../kb/index.md). They preserve design
 history; use the promotion plan to check implementation status.

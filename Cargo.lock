@@ -3009,9 +3009,15 @@ name = "vhalla-cli"
 version = "0.0.0"
 dependencies = [
  "getrandom 0.3.4",
+ "libc",
+ "serde_json",
+ "sha2 0.10.9",
  "tokio",
+ "vhalla-core",
  "vhalla-identity",
  "vhalla-native",
+ "vhalla-social",
+ "vhalla-social-store",
 ]
 
 [[package]]
@@ -3055,6 +3061,7 @@ dependencies = [
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-session",
+ "vhalla-social",
  "vhalla-wire",
  "zeroize",
 ]
@@ -3106,14 +3113,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-social"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "proptest",
+ "sha2 0.10.9",
+ "vhalla-core",
+]
+
+[[package]]
+name = "vhalla-social-store"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "getrandom 0.3.4",
+ "proptest",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-social",
+]
+
+[[package]]
 name = "vhalla-steel-thread"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek 2.2.0",
  "proptest",
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-host",
  "vhalla-policy",
+ "vhalla-session",
+ "vhalla-social",
  "vhalla-transport",
  "vhalla-wire",
 ]
