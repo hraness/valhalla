@@ -19,9 +19,5 @@ vhalla-session = { path = "../vhalla-session" }
 [dev-dependencies]
 proptest = "1.6"
 
-[[bin]]
-name = "vhalla"
-path = "src/main.rs"
-
 [lints]
 workspace = true

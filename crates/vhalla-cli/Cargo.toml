@@ -1,0 +1,28 @@
+[package]
+name = "vhalla-cli"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Valhalla command line entry point."
+
+[features]
+default = []
+experimental-network = ["dep:vhalla-native", "dep:tokio"]
+
+[dependencies]
+vhalla-identity = { path = "../vhalla-identity" }
+
+[target.'cfg(unix)'.dependencies]
+vhalla-native = { path = "../vhalla-native", optional = true }
+tokio = { version = "1.53", default-features = false, features = ["rt", "time"], optional = true }
+
+[dev-dependencies]
+getrandom = "0.3"
+
+[[bin]]
+name = "vhalla"
+path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "vhalla-native"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Experimental bounded loopback QUIC adapter for Valhalla paired chat."
+
+[target.'cfg(unix)'.dependencies]
+futures = "0.3"
+libp2p = { version = "=0.57.0", default-features = false, features = ["tokio", "quic", "ed25519", "macros", "request-response"] }
+tokio = { version = "1.53", default-features = false, features = ["macros", "rt", "time"] }
+getrandom = "0.3"
+zeroize = "1.9"
+sha2 = "0.10"
+vhalla-core = { path = "../vhalla-core" }
+vhalla-crypto = { path = "../vhalla-crypto" }
+vhalla-identity = { path = "../vhalla-identity" }
+vhalla-session = { path = "../vhalla-session" }
+
+[dev-dependencies]
+proptest = "1.6"
+
+[lints]
+workspace = true

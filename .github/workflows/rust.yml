@@ -22,8 +22,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Workspace tests
         run: |
-          cargo test --workspace --all-targets --locked
-          cargo test --workspace --doc --locked
+          cargo test --workspace --all-targets --all-features --locked
+          cargo test --workspace --doc --all-features --locked
+          cargo test -p vhalla-cli --no-default-features --test identity --locked
       - name: WASM pure crate checks
         run: |
           rustup target add wasm32-unknown-unknown

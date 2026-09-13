@@ -10,8 +10,8 @@ Install Rust and Cargo, then run these from the repository root:
 
 ```console
 cargo run -p vhalla-steel-thread --locked
-cargo test --workspace --all-targets --locked
-cargo test --workspace --doc --locked
+cargo test --workspace --all-targets --all-features --locked
+cargo test --workspace --doc --all-features --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
@@ -20,13 +20,14 @@ The demo is entirely in memory. It delivers a signed envelope through a bounded
 queue, verifies the full key and session context, applies an explicit local
 grant, and returns an in-memory execution receipt. The session retains replay
 state across messages; policy and expiry are checked again at execution.
-The first `vhalla` identity commands are available through Cargo; rooms and
-networking are not connected to the CLI yet. See the
-[identity guide](../crates/vhalla-identity/README.md) for explicit initialization
-and reopening of a private key directory.
+The `vhalla` CLI supports explicit identity creation and reopening. Its optional
+experimental feature connects two local processes over QUIC, using persistent
+application identities and fresh signed sessions. Start with the
+[identity guide](../crates/vhalla-identity/README.md) or the
+[local chat walkthrough](../crates/vhalla-native/README.md).
 
-Signed framing is now v2 and rejects the earlier unversioned format. Restart
-freshness, durable effects and real browser connectivity remain unqualified.
+Signed framing is now v2 and rejects the earlier unversioned format. Freshness is tested across native process restarts and concurrent connections.
+Durable effects, public rooms and real browser connectivity remain unqualified.
 
 ## Find the code
 
@@ -35,9 +36,10 @@ freshness, durable effects and real browser connectivity remain unqualified.
 | Protocol values and bounded parsing | [core](../crates/vhalla-core/src/lib.rs), [wire](../crates/vhalla-wire/src/lib.rs) |
 | Signatures and replay checks | [crypto](../crates/vhalla-crypto/src/lib.rs) |
 | Fresh explicitly paired chat sessions | [session](../crates/vhalla-session/README.md), experimental and awaiting independent protocol review |
-| Native key custody and identity CLI | [identity](../crates/vhalla-identity/README.md), experimental Unix private-file storage |
+| Native key custody | [identity](../crates/vhalla-identity/README.md), experimental Unix private-file storage |
 | Local authority and effects | [policy](../crates/vhalla-policy/src/lib.rs), [host](../crates/vhalla-host/src/lib.rs) |
 | In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs) |
+| Optional native CLI and signed chat | [CLI](../crates/vhalla-cli/README.md), [native adapter](../crates/vhalla-native/README.md), loopback only |
 | Real two-process transport experiment | [native QUIC](../prototypes/native-quic/README.md), loopback-only with public fixture keys |
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
 | Certified history, crash recovery, and optional native storage experiment | [checkpoint ledger](../prototypes/checkpoint-ledger/README.md) |

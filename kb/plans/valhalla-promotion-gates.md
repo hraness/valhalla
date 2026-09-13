@@ -200,7 +200,7 @@ The production workspace currently contains these crates:
 | `vhalla-host` | typed in-memory effect runner and receipts | host execution and durable receipt handoff, with no path from wire data to an effect |
 | `vhalla-steel-thread` | signed envelope → transport → policy → host receipt | integrated proof that provenance, checkpoint, replay, expiry, and recovery boundaries compose |
 | `vhalla-session` | experimental paired chat handshake and directional replay | reviewed app/transport identity binding, real reconnect/restart and browser integration |
-| `vhalla-identity` | experimental Unix private-file application key and identity CLI | qualified secret custody, recovery, transport-key integration and installable native program |
+| `vhalla-identity` | experimental Unix private-file application key | qualified secret custody, recovery, transport-key integration and installable native program |
 
 The rule is **model first, production second, integration third**. A reference
 crate may be promoted only after its invariant is restated in production types,
@@ -219,6 +219,58 @@ bounded replay primitive, while durable receipt retention remains an explicit
 ledger/host concern.
 
 ## Execution status
+
+### Maintained native chat integration — 2026-09-13
+
+The coordinator owns this increment. `422022e` passed the local aggregate,
+Rust CI [34737491792](https://github.com/hraness/valhalla/actions/runs/34737491792)
+and CodeQL [34737491359](https://github.com/hraness/valhalla/actions/runs/34737491359).
+The next maintained adapter builds on its session and identity APIs. Independent
+review is still unavailable because the worker account remains usage-limited.
+The CLI therefore requires `experimental-network`, and both bind and dial are
+restricted to literal loopback QUIC addresses. This is source/prototype admission,
+not public room activation or acceptance of product Slice 2.
+
+`vhalla-cli` now owns the command entry point; `vhalla-identity` remains a custody
+library with no transport dependency. Its default build supports only identity
+commands. `vhalla-native` provides a bounded listener and one-message sender.
+They use OS-generated transport secrets per process, independently pinned full
+application keys, actual authenticated transport identities and fresh paired
+sessions. Address/expiry handoff is explicitly untrusted routing information,
+not a signed invitation. This avoids treating a remote advertisement as a
+membership policy; reviewed invitation UX and the JSON-lines interface remain
+open.
+
+The native state machine keeps at most four exact connection IDs, discards each
+connection's pending/session state on rejection or closure, and limits pending
+handshakes to five monotonic seconds. Readiness and exact-frame acknowledgments
+are themselves signed chat. Acknowledgment means volatile reception only. CLI
+bodies are hex-encoded so remote text cannot inject terminal controls or forge
+output records. Realm/room/epoch remain fixed at 1/2/1 for this short-lived test
+path, and no policy or host execution is connected.
+
+Focused tests cross real socket and process boundaries: stranger/wrong-recipient
+rejection followed by valid chat, persisted keys after process restart, fresh
+transport/session IDs, maximum signed frames, and two simultaneous connections
+for one app identity. Replaying a frame on the second connection is rejected
+while the original remains usable. This exposed duplicate diagnostics from a
+late transport failure after rejection; state-free close failures are now ignored.
+Unit/property tests retain frame/route bounds and permanent clock-failure closure.
+The maintained tests separately establish process restart and cross-connection
+replay rejection; the earlier scratch experiment combined restart and captured
+wire replay. Do not label either as physical crash or adversarial disk rollback
+qualification.
+
+The native dependency addition reuses libp2p 0.57.0 from the existing transport
+experiment and preserves every previously locked package version. Network
+features remain absent from the default CLI graph. The full native graph still
+includes C/assembly TLS dependencies and is not the embedded profile.
+
+**Next acceptance work:** independent review of identity/session/native joins;
+a real Rust/WASM browser connection with measured buffer behavior; reviewed
+invitation and owner-pairing UX; public/NAT and replaceable-relay qualification;
+then bounded multi-peer history and the Platonik consumer. No networking gate is
+satisfied by a compile-only WASM check or an opaque socket echo.
 
 ### Fresh sessions and persistent application identity — 2026-09-13
 
@@ -268,9 +320,10 @@ with a corruption checksum. It provides neither hostile-host isolation nor
 adversarial rollback protection, and interrupted-publication tests are not
 physical crash qualification. No command is installed globally or shadows `vh`.
 
-**Next joined target:** connect the persisted key and fresh session exchange to
-two real native transports, with bounded invitation/pairing inputs and explicit
-chat membership, before extending the same path into a real browser. Preserve
+**Target recorded for this increment:** connect the persisted key and fresh
+session exchange to real native transports. The later maintained native section
+above records that progress; browser execution and reviewed invitation UX remain
+next. Preserve
 private keys, verify observed transport identities, reject recorded old traffic
 after an actual process restart, and keep kind 2 out of the chat dispatch path.
 Independent review and live evidence are admission gates, not completed claims.

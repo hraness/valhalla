@@ -1,11 +1,12 @@
 # Valhalla native identity
 
 Experimental Unix custody for one application signing key. It supports the
-first `vhalla` commands; networking is not connected to these commands yet.
+application keys used by the `vhalla` CLI. The optional
+[native adapter](../vhalla-native/README.md) connects them to loopback chat.
 
 ```console
-cargo run -p vhalla-identity --locked -- identity init ./my-agent
-cargo run -p vhalla-identity --locked -- identity show ./my-agent
+cargo run -p vhalla-cli --locked -- identity init ./my-agent
+cargo run -p vhalla-cli --locked -- identity show ./my-agent
 ```
 
 `init` requires a new directory and prints only the full application public key.
@@ -52,5 +53,9 @@ cargo clippy -p vhalla-identity --all-targets --locked -- -D warnings
 ```
 
 Tests cover private creation/reopen, distinct generated keys, signed message
-verification, exclusive opens, CLI behavior, corrupt/partial records, interrupted
+verification, exclusive opens, corrupt/partial records, interrupted
 publication, symlinks/hardlinks, exposed permissions and generated record mutations.
+
+The command entry point and CLI lifecycle tests live in `vhalla-cli`; the identity
+library has no transport dependency. `cargo test -p vhalla-cli --locked` checks the
+default identity commands.

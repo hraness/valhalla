@@ -1,9 +1,9 @@
 # Valhalla paired chat sessions
 
 Experimental pure Rust session layer for two **explicitly paired** peers. It is
-in the test workspace but is not connected to a live network, CLI, discovery
-system or host-effect runner. Independent protocol review is still required
-before live admission.
+in the test workspace and the optional loopback-only native CLI. Public rooms,
+discovery and browser integration remain open; it has no host-effect connection.
+Independent protocol review is still required before public network admission.
 
 The local adapter pins both complete application keys, both observed transport
 keys, realm, room, membership epoch and expiry. This configuration is trusted

@@ -5,7 +5,6 @@ use std::{
     fs,
     os::unix::fs::{symlink, DirBuilderExt, PermissionsExt},
     path::PathBuf,
-    process::Command,
 };
 use vhalla_core::{Epoch, EventId, PeerId, RealmId, RoomId, Sequence};
 use vhalla_crypto::{peer_id_from_key, ReplayWindow, SessionId, VerificationContext, VerifyingKey};
@@ -166,33 +165,6 @@ fn symlinks_hardlinks_and_exposed_permissions_are_rejected() {
         Identity::open(dir.child()),
         Err(IdentityError::UnsafePath)
     ));
-}
-
-#[test]
-fn cli_initializes_once_and_shows_only_the_same_public_key() {
-    let dir = Temp::new();
-    let run = |operation: &str| {
-        Command::new(env!("CARGO_BIN_EXE_vhalla"))
-            .args(["identity", operation])
-            .arg(dir.child())
-            .output()
-            .unwrap()
-    };
-    let created = run("init");
-    assert!(
-        created.status.success(),
-        "{}",
-        String::from_utf8_lossy(&created.stderr)
-    );
-    let shown = run("show");
-    assert!(shown.status.success());
-    assert_eq!(created.stdout, shown.stdout);
-    let public = String::from_utf8(created.stdout).unwrap();
-    let hex = public.trim().strip_prefix("application-key ").unwrap();
-    assert_eq!(hex.len(), 64);
-    assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
-    assert!(!run("init").status.success());
-    assert_eq!(run("show").stdout, shown.stdout);
 }
 
 #[test]
