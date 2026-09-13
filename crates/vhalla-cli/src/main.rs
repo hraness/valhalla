@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 #![allow(missing_docs)]
 
+#[cfg(unix)]
+mod intro;
+
 fn main() {
     #[cfg(unix)]
     if let Err(error) = run() {
@@ -18,9 +21,22 @@ fn main() {
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().skip(1).take(8).collect();
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>");
+        use std::io::IsTerminal;
+        let term = std::env::var("TERM").ok();
+        let columns = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse().ok());
+        print!(
+            "{}",
+            intro::terminal_intro(std::io::stdout().is_terminal(), term.as_deref(), columns)
+        );
+        println!(
+            "vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>"
+        );
         #[cfg(feature = "experimental-network")]
-        println!("\nvhalla experimental listen <identity-directory> <peer-app-key>\nvhalla experimental send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime.");
+        println!(
+            "\nvhalla experimental listen <identity-directory> <peer-app-key>\nvhalla experimental send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime."
+        );
         return Ok(());
     }
     if args.first().is_some_and(|s| s == "experimental") {
