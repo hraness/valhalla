@@ -578,6 +578,7 @@ cargo test --manifest-path prototypes/social-attention/Cargo.toml --locked
 cargo test -p vhalla-discovery --all-targets --locked
 cargo test -p vhalla-cli --features experimental-social --test social --locked
 cargo test -p vhalla-steel-thread --test social --locked
+cargo test -p vhalla-steel-thread --test native_social --locked
 cargo check -p vhalla-discovery --target wasm32-unknown-unknown --locked
 ```
 

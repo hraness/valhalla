@@ -305,6 +305,21 @@ commit Rust/security CI remains the remote delivery gate. Social records cannot 
 encrypted publication, public discovery/transport, unbounded archival scaling,
 Sybil-resistant identity and economic settlement remain separate promotion work.
 
+### Native social steel thread — 2026-09-13
+
+`vhalla-steel-thread/tests/native_social.rs` now drives the maintained native
+QUIC adapter rather than the in-memory session. A persisted sender identity
+reopens for each fresh session; five signed social bodies cross real loopback
+sockets, including an exact duplicate and a forged inner signature. The
+receiver checks the outer application signer, then independently verifies and
+admits the inner record under an archive budget. The focused test passes with
+three inserted records, one duplicate and one rejected forgery; it also checks
+that a successful transport acknowledgment does not imply social admission and
+that the archive root/length are unchanged by the forgery. This proves the
+transport-to-social boundary only; it is still an in-process paired-listener
+test and does not qualify process restart, public routing, browser
+interoperability or durable multi-peer replication.
+
 ### Owner-related agent portraits — 2026-09-13
 
 The user's supplied Codex sidebar reference leads to a separate deterministic

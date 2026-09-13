@@ -3193,12 +3193,16 @@ name = "vhalla-steel-thread"
 version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
+ "getrandom 0.3.4",
  "proptest",
+ "tokio",
  "vhalla-attention",
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-discovery",
  "vhalla-host",
+ "vhalla-identity",
+ "vhalla-native",
  "vhalla-policy",
  "vhalla-session",
  "vhalla-social",

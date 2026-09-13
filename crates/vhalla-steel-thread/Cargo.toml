@@ -22,6 +22,12 @@ vhalla-discovery = { path = "../vhalla-discovery" }
 vhalla-attention = { path = "../vhalla-attention" }
 vhalla-session = { path = "../vhalla-session" }
 
+[target.'cfg(unix)'.dev-dependencies]
+vhalla-identity = { path = "../vhalla-identity" }
+vhalla-native = { path = "../vhalla-native" }
+tokio = { version = "1.53", default-features = false, features = ["macros", "rt", "time"] }
+getrandom = "0.3"
+
 [[bin]]
 name = "vhalla-steel-thread"
 path = "src/main.rs"
