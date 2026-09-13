@@ -160,6 +160,10 @@ fn main() -> io::Result<()> {
     // Copy generated roots and nested snippets into the fresh output closure.
     copy_tree(&generated, &output, &output, &mut entries)?;
     fs::copy(&stylesheet, output.join("screen.css"))?;
+    // The shell and stylesheet are owned by this assembler. A prior generated
+    // copy may exist in a tool output directory, but it must not survive as a
+    // second stale row in the provenance manifest.
+    entries.retain(|(name, _, _)| name != "index.html" && name != "screen.css");
     entries.push((
         "screen.css".into(),
         fs::metadata(&stylesheet)?.len(),
