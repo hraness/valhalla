@@ -19,6 +19,8 @@ const EVENT_DOMAIN: &[u8] = b"vhalla/ledger/event/v1";
 const ROOT_DOMAIN: &[u8] = b"vhalla/ledger/root/v1";
 /// Maximum event payload accepted by this reference production seam.
 pub const MAX_PAYLOAD: usize = 1024;
+/// Hard ceiling on retained events, even when configuration supplies a larger value.
+pub const MAX_EVENTS: usize = 4096;
 
 /// A derived content address for an event.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -99,6 +101,8 @@ pub enum Error {
     UnknownOrForkedParent,
     /// The event ID already exists.
     DuplicateEvent,
+    /// The actor sequence is not newer than its last accepted sequence.
+    NonMonotonicSequence,
     /// The bounded history cannot retain another event.
     Capacity,
     /// The requested head is not retained.
@@ -121,6 +125,7 @@ pub struct Ledger {
     events: BTreeMap<EventDigest, Event>,
     head: Option<EventDigest>,
     checkpoint: Option<Checkpoint>,
+    last_sequences: BTreeMap<PeerId, Sequence>,
 }
 
 impl Ledger {
@@ -130,10 +135,11 @@ impl Ledger {
         Self {
             realm,
             epoch,
-            max_events,
+            max_events: max_events.min(MAX_EVENTS),
             events: BTreeMap::new(),
             head: None,
             checkpoint: None,
+            last_sequences: BTreeMap::new(),
         }
     }
 
@@ -160,12 +166,20 @@ impl Ledger {
         if self.events.contains_key(&event.id) {
             return Err(Error::DuplicateEvent);
         }
+        if self
+            .last_sequences
+            .get(&event.actor)
+            .is_some_and(|last| event.sequence.0 <= last.0)
+        {
+            return Err(Error::NonMonotonicSequence);
+        }
         if event.parent != self.head {
             return Err(Error::UnknownOrForkedParent);
         }
         if self.events.len() >= self.max_events {
             return Err(Error::Capacity);
         }
+        self.last_sequences.insert(event.actor, event.sequence);
         self.head = Some(event.id);
         self.events.insert(event.id, event);
         Ok(())
@@ -204,7 +218,9 @@ impl Ledger {
             if previous == checkpoint {
                 return Ok(());
             }
-            return Err(Error::ConflictingCheckpoint);
+            if checkpoint.height <= previous.height {
+                return Err(Error::ConflictingCheckpoint);
+            }
         }
         self.checkpoint = Some(checkpoint);
         Ok(())
@@ -318,6 +334,18 @@ mod tests {
         };
         ledger.accept_checkpoint(checkpoint).unwrap();
         assert_eq!(ledger.accept_checkpoint(checkpoint), Ok(()));
+
+        let third = event(Some(second.id), 3, b"three");
+        ledger.append(third.clone()).unwrap();
+        let advanced = Checkpoint {
+            realm: RealmId(1),
+            epoch: Epoch(2),
+            head: third.id,
+            state_root: ledger.state_root(third.id).unwrap(),
+            height: 2,
+        };
+        assert_eq!(ledger.accept_checkpoint(advanced), Ok(()));
+        assert_eq!(ledger.checkpoint(), Some(advanced));
     }
 
     #[test]
@@ -374,6 +402,21 @@ mod tests {
         assert_eq!(
             ledger.append(event(Some(first.id), 2, b"two")),
             Err(Error::Capacity)
+        );
+    }
+
+    #[test]
+    fn actor_sequences_are_monotonic_and_bound_is_capped() {
+        let mut ledger = Ledger::new(RealmId(1), Epoch(2), usize::MAX);
+        let first = event(None, 2, b"one");
+        ledger.append(first.clone()).unwrap();
+        assert_eq!(
+            ledger.append(event(Some(first.id), 2, b"repeat")),
+            Err(Error::NonMonotonicSequence)
+        );
+        assert_eq!(
+            ledger.append(event(Some(first.id), 1, b"rollback")),
+            Err(Error::NonMonotonicSequence)
         );
     }
 

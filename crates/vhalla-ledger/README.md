@@ -1,8 +1,9 @@
 # vhalla-ledger
 
 `vhalla-ledger` is the first production-shaped state seam for Valhalla. It
-keeps a bounded linear event history and derives checkpoint roots from the
-canonical ancestor chain, realm, and epoch. Forged roots, stale heads, forks,
+keeps a bounded linear event history (capped at `MAX_EVENTS`) and derives
+checkpoint roots from the canonical ancestor chain, realm, and epoch. Actor
+sequences must advance monotonically. Forged roots, stale heads, forks,
 wrong-context events, malformed IDs, and capacity exhaustion fail closed.
 
 This crate does not provide persistence, quorum signatures, distributed
