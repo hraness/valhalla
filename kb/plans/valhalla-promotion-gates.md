@@ -109,7 +109,10 @@ The isolated `vhalla-ledger` seam is also present now. It derives a SHA-256
 root from a bounded linear history and rejects forged, stale, forked, and
 wrong-context checkpoints. It intentionally has no persistence, quorum proof,
 compaction anchor, or host integration, so its accepted checkpoint remains
-single-replica evidence.
+single-replica evidence. Commit `80c77df` additionally caps configured history
+at `MAX_EVENTS`, enforces actor sequence monotonicity, and permits a validated
+checkpoint to advance to a later descendant tip. The workspace format, test,
+Clippy, and diff gates passed after that repair.
 
 ## Invariant map
 
