@@ -19,8 +19,10 @@ provided approvals must pass, even after reaching the threshold. Weak public
 keys are rejected when configuring trust. Signing malformed statements returns
 an error. There are at most 128 members, 128 realm bytes, and 64 KiB of modeled
 proof bytes; limits are checked before verification allocates or hashes input.
-Raw structs are untrusted and may already have been allocated by a caller: a
-future wire decoder must enforce those bounds before allocating them.
+Raw structs remain untrusted. `wire::decode` enforces the byte, UTF-8 realm, and
+approval limits before allocating the affected fields. `verify_bytes` applies
+the trust policy's tighter byte/count limits during decoding, then verifies
+signatures. Neither parsing nor encoding authenticates a signature.
 
 Only verification constructs `VerifiedProof`. Its fields are private, its views
 are immutable, and a compile-fail test protects the mutation boundary. This type
@@ -60,11 +62,22 @@ signed transcript =
   || trust_digest:32 || head:32 || state_root:32 || height:u64
 ```
 
-Version 1 is the only accepted version. Approval ordering does not affect the
-verification result. There is no canonical serialized certificate or raw byte
-decoder yet. `encoded_len` accounts for the proposed proof domain, outer
-statement, u64 count, and repeated statement/key/signature records; it is an
-admission budget for this in-memory model, not a shipped wire format.
+Version 1 is the only accepted version. `wire::encode` sorts approvals by the
+full signer key and rejects duplicates or mixed statements. `wire::decode`
+requires that strict order, identical nested statements, and exact framing with
+no trailing bytes. The reference certificate encoding is:
+
+```text
+"valhalla/checkpoint-proof/proof/v1"
+|| outer_signed_transcript || approval_count:u64
+|| (signed_transcript || signer_key:32 || signature:64) * approval_count
+```
+
+`encoded_len` computes that size. The redundant transcripts deliberately retain
+the first model's explicit statement comparison; reducing them to one shared
+statement would be a versioned format decision. An empty certificate can be
+structurally decoded but cannot satisfy any valid trust configuration.
+This format is a reference experiment, not a released network protocol.
 
 The independent transcript fixture is 161 bytes with SHA-256
 `54b51ba9f2b1c2e554676d410f95869528969e218bf171e915dca59b7b6b45ed`.
@@ -80,6 +93,18 @@ assert len(raw) == 161
 print(hashlib.sha256(raw).hexdigest())
 ```
 
+An independent 460-byte certificate framing fixture wraps that transcript with
+one signer filled with byte `1` and one signature filled with byte `2` (an
+intentionally unauthenticated signature). Its SHA-256 is
+`ffd0ff7484bc46a75bef322b352917ed320be95a8baf84290d4ef48f3205f31a`:
+
+```python
+certificate = (b"valhalla/checkpoint-proof/proof/v1" + raw
+               + struct.pack(">Q", 1) + raw + bytes([1]) * 32 + bytes([2]) * 64)
+assert len(certificate) == 460
+print(hashlib.sha256(certificate).hexdigest())
+```
+
 ## Verify and promote
 
 ```console
@@ -91,10 +116,16 @@ cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm
 Tests cover threshold/subset ordering, duplicate/unknown signers, invalid extra
 approvals, weak keys, bounds, trust reconfiguration, conflicting certificates,
 observer capacity, an independent transcript vector, generated field tampering,
-and distinct statement encodings. WASM compilation checks portability only;
+and distinct statement encodings. Parser tests cover every truncated prefix of
+a certificate, malformed lengths/domains/UTF-8/versions, trailing bytes,
+ordering and duplicate rejection, maximum realm/count boundaries, generated
+round trips and bit mutations, and arbitrary bounded input. A compile-fail test
+ensures decoded values cannot be used as verified values.
+
+WASM compilation checks portability only;
 browser execution and byte-for-byte cross-target vectors remain future evidence.
 
-Promotion requires a reviewed bounded decoder, explicit production realm-ID
+Promotion requires independent review of the bounded decoder, explicit production realm-ID
 mapping, independently derived ledger roots and ancestry checks, durable trust
 and conflict records, and restart/rollback resistance. Follow the
 [promotion gates](../../kb/plans/valhalla-promotion-gates.md). A certificate must

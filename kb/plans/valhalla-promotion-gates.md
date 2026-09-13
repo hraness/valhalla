@@ -166,11 +166,38 @@ reference for `wasm32-unknown-unknown`; this expands the former core-only gate.
 The local Homebrew Rust installation lacks that target, so CI owns cross-target
 evidence. Compilation alone does not satisfy native/WASM execution agreement.
 
-**Next bounded targets:** review the certificate API independently; define a
-bounded canonical decoder and production identifier mapping; compose certificate
+**Next bounded targets:** review the certificate API and decoder independently;
+define the production identifier mapping; compose certificate
 verification with independently derived ledger roots; then test durable anchors,
 rollback rejection, and explicit trust rotation before joining policy/host.
 Do not bypass these steps by treating the in-memory observer as settlement.
+
+### Marketing release and bounded certificate decoding
+
+The user prioritized a minimal public introduction before further internals.
+Commit `bf8846b` adds the static vhalla.com page, a shorter README, and a compact
+docs index. Vercel deployment `dpl_6QXTqfTgEArq1CTYCAC4v44tge3Y` serves that
+revision in the Hraness `valhalla` project. Public HTTPS returned matching bytes
+for the page, CSS, font, favicon, robots file, and sitemap; desktop and mobile
+browser inspection passed. Marketing content keeps prototype status explicit.
+The earlier internal commit `f048550` passed Rust, the expanded WASM gate,
+reference tests, and GitHub security checks.
+
+After deployment, the certificate reference gained a canonical byte encoder and
+bounded decoder. Approvals sort by full public key; decoding rejects alternate
+orders, duplicates, mixed statements, malformed fields, and trailing bytes.
+Total bytes and counts are checked before allocating approval slots, and UTF-8
+realm byte lengths are capped before copying strings. `verify_bytes` uses the
+configured policy limits during decoding, then performs signature verification.
+A compile-fail test keeps parsed certificates distinct from verified evidence.
+
+The native tests exercise every truncated prefix, maximum realm/count bounds,
+generated valid and arbitrary-input round trips, bit mutations, and a second
+Python-generated framing hash. This advances the parser model only: independent
+review, production identifier mapping, ledger-root composition, durable conflict
+records, trust rotation, and rollback resistance remain open. No production
+crate imports the reference, and no decoded or verified certificate can grant
+host authority.
 
 ## Invariant map
 

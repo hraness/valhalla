@@ -8,6 +8,8 @@
 
 extern crate alloc;
 
+pub mod wire;
+
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::String,
@@ -93,8 +95,8 @@ pub struct CheckpointProof {
 }
 
 impl CheckpointProof {
-    /// Size of the model encoding: domain, outer statement, u64 count, then
-    /// repeated statement/key/signature records. No raw wire decoder exists yet.
+    /// Size of the encoding: domain, outer statement, u64 count, then
+    /// repeated statement/key/signature records. Structural admission is in `wire`.
     pub fn encoded_len(&self) -> Result<usize, Reject> {
         if self.approvals.len() > MAX_MEMBERS {
             return Err(Reject::OversizedProof);
@@ -247,6 +249,13 @@ impl TrustConfig {
             signers,
         })
     }
+
+    /// Bound and decode foreign bytes before authenticating their claim.
+    /// This result still provides no history validation or host authority.
+    pub fn verify_bytes(&self, raw: &[u8]) -> Result<VerifiedProof, Reject> {
+        let proof = wire::decode_with_limits(raw, self.max_signers, self.max_proof_bytes)?;
+        self.verify(&proof)
+    }
 }
 
 /// Authenticated evidence, with no constructor or mutable projection.
@@ -325,6 +334,9 @@ pub enum Observation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Reject {
+    InvalidEncoding,
+    NonCanonicalProof,
+    TrailingBytes,
     InvalidStatement,
     InvalidTrust,
     TooManyMembers,
