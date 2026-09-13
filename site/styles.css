@@ -1,20 +1,9 @@
-@font-face {
-  font-family: "Instrument Serif";
-  src: url("/fonts/instrument-serif.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
 :root {
-  color-scheme: light;
-  --paper: #f3f1e9;
-  --ink: #272b25;
-  --muted: #606258;
-  --accent: #9a402f;
-  --line: #d2d3c7;
-  --selected: #e9cebf;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --paper: var(--background);
+  --ink: var(--foreground);
+  --accent: var(--focus);
+  --selected: var(--hraness-material-warm-plane);
+  font-family: var(--font-text);
   color: var(--ink);
   background: var(--paper);
   font-synthesis: none;
@@ -30,28 +19,28 @@ a:hover { color: var(--accent); }
 a:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
 p, h1, h2, dl, dd { margin: 0; }
 .page { max-width: 1248px; min-height: 100svh; margin: auto; padding: 0 64px; display: flex; flex-direction: column; }
-.masthead { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 35px 0; border-bottom: 1px solid var(--line); }
+.masthead { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 0; }
 .wordmark { text-decoration: none; font-size: 25px; font-weight: 650; letter-spacing: -0.04em; }
-.wordmark span { font-size: 14px; font-weight: 400; letter-spacing: 0; color: var(--muted); margin-left: 7px; }
+.wordmark .product-icon { font-size: 24px; font-weight: 400; letter-spacing: 0; margin-right: 8px; }
 .source-link { display: inline-flex; align-items: center; gap: 9px; font-size: 14px; text-decoration: none; }
 .source-link svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 main { flex: 1; }
-.introduction { display: grid; grid-template-columns: 1.4fr 1fr; gap: 64px; align-items: center; padding: 92px 0 90px; }
+.introduction { display: grid; grid-template-columns: 1.4fr 1fr; gap: 64px; align-items: center; padding: 92px 32px 90px; margin-inline: -32px; border-radius: 1.25rem; }
 h1 { font-family: "Instrument Serif", Georgia, serif; font-size: clamp(64px, 6.8vw, 96px); line-height: 0.99; font-weight: 400; letter-spacing: -0.025em; }
 .description { margin-top: 30px; font-size: 20px; line-height: 1.55; }
 .context { margin-top: 16px; color: var(--muted); font-size: 16px; line-height: 1.6; }
 .actions { display: flex; flex-wrap: wrap; gap: 28px; align-items: center; margin-top: 32px; font-size: 14px; }
 .primary-link { color: var(--accent); font-weight: 600; }
 .primary-link span { display: inline-block; margin-left: 7px; }
-.room { padding: 10px 0 0 34px; border-left: 1px solid var(--line); }
+.room { padding: 0; align-self: center; }
 .room-heading { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; justify-content: space-between; }
 .room-heading > span:first-child { font: 500 14px ui-monospace, "SFMono-Regular", Consolas, monospace; }
 .example-label { color: var(--muted); font-size: 12px; }
-.conversation { margin-top: 30px; }
+.conversation { margin: 22px 24px 0; }
 .conversation > div { display: grid; grid-template-columns: 44px 1fr; gap: 15px; margin-top: 23px; font-size: 15px; line-height: 1.65; }
 dt { font: 500 12px/2 ui-monospace, "SFMono-Regular", Consolas, monospace; color: var(--muted); }
 dt.owner { color: var(--accent); }
-.room-end { display: flex; gap: 5px; margin: 28px 0 0 59px; }
+.room-end { display: flex; gap: 5px; margin: 24px 24px 24px 83px; }
 .room-end span { width: 3px; height: 3px; border-radius: 50%; background: var(--line); }
 .status { display: grid; grid-template-columns: 1fr 1.65fr; gap: 48px; padding: 34px 0 40px; border-top: 1px solid var(--line); }
 h2 { font-size: 17px; line-height: 1.55; font-weight: 550; }
@@ -62,7 +51,7 @@ footer a { text-decoration: none; }
 @media (max-width: 900px) {
   .page { padding: 0 36px; }
   .introduction { gap: 34px; padding: 70px 0; }
-  .room { padding-left: 24px; }
+  .room { padding: 0; }
   .room-heading { display: block; }
   .example-label { display: block; margin-top: 8px; }
   .status { grid-template-columns: 1fr 1.4fr; gap: 32px; }
@@ -72,7 +61,7 @@ footer a { text-decoration: none; }
   .page { padding: 0 24px; }
   .masthead { padding: 25px 0; }
   .wordmark { font-size: 23px; }
-  .wordmark span { font-size: 12px; margin-left: 5px; }
+  .wordmark .product-icon { font-size: 22px; margin-left: 0; }
   .source-link { font-size: 13px; }
   .introduction { grid-template-columns: 1fr; padding: 52px 0 40px; gap: 46px; }
   h1 { font-size: clamp(58px, 14vw, 78px); }
@@ -80,7 +69,7 @@ footer a { text-decoration: none; }
   .context { font-size: 15px; }
   .desktop-break { display: none; }
   .actions { gap: 24px; margin-top: 28px; }
-  .room { padding: 0 0 0 20px; }
+  .room { padding: 0; }
   .room-heading { display: flex; }
   .example-label { margin-top: 0; }
   .conversation { margin-top: 22px; }
@@ -89,3 +78,10 @@ footer a { text-decoration: none; }
   .status { grid-template-columns: 1fr; gap: 12px; padding: 27px 0 30px; }
   footer { font-size: 11px; padding: 23px 0; }
 }
+
+.header-actions { display: flex; align-items: center; gap: 1.25rem; }
+/* The shared menu owns geometry, keyboard states and forced-color paint. */
+.header-actions .hraness-design-theme-toggle__trigger { min-width: 44px; min-height: 44px; border-color: var(--hraness-material-seam); box-shadow: var(--hraness-material-lift); }
+.header-actions .hraness-design-theme-toggle__popover { box-shadow: var(--hraness-material-lift); }
+@media (max-width: 640px) { .introduction { padding-inline: 18px; margin-inline: -18px; } .header-actions { gap: 12px; } }
+@media (forced-colors: active) { .room, .hraness-design-theme-toggle__trigger, .hraness-design-theme-toggle__popover { border: 1px solid CanvasText; } }
