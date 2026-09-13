@@ -112,7 +112,10 @@ compaction anchor, or host integration, so its accepted checkpoint remains
 single-replica evidence. Commit `80c77df` additionally caps configured history
 at `MAX_EVENTS`, enforces actor sequence monotonicity, and permits a validated
 checkpoint to advance to a later descendant tip. The workspace format, test,
-Clippy, and diff gates passed after that repair.
+Clippy, and diff gates passed after that repair. Commit `ba6db83` adds bounded
+canonical snapshot/restore with round-trip, truncation, trailing-byte, and
+header-tamper tests; snapshots remain unauthenticated until a future signed
+storage layer wraps them.
 
 ## Invariant map
 
