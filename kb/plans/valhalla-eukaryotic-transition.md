@@ -81,6 +81,12 @@ production design, not automatic promotion: signatures, durable storage,
 distributed agreement, and integration with `vhalla-wire` and `vhalla-policy`
 still need separate review.
 
+The follow-on hardening pass closes several model-level ambiguities: control
+plane fingerprints and ecology replay digests now use domain-separated SHA-256;
+duplicate organism identities are rejected before truncation; genome and
+symbiosis retention is bounded and fails closed; and multicell checkpoints use
+derived roots tied to the current event head and membership epoch.
+
 ## The metaphor translated into protocol hypotheses
 
 | Essay concept | Valhalla hypothesis | Platonik experiment |

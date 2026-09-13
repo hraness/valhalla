@@ -33,6 +33,7 @@ pub struct Bundle {
 pub enum Reject {
     Invalid,
     Duplicate,
+    Capacity,
     Revoked,
     Stale,
     Abi,
@@ -62,6 +63,7 @@ pub struct Registry {
     receipts: Vec<Receipt>,
     max_memory: u64,
     max_fuel: u64,
+    max_receipts: usize,
 }
 impl Component {
     fn valid(&self) -> bool {
@@ -85,9 +87,14 @@ impl Bundle {
 }
 impl Registry {
     pub fn with_limits(max_memory: u64, max_fuel: u64) -> Self {
+        Self::with_bounds(max_memory, max_fuel, 1024)
+    }
+
+    pub fn with_bounds(max_memory: u64, max_fuel: u64, max_receipts: usize) -> Self {
         Self {
             max_memory,
             max_fuel,
+            max_receipts,
             ..Default::default()
         }
     }
@@ -154,6 +161,9 @@ impl Registry {
         if !b.genome.components.iter().any(|x| x.name == c) {
             return Err(Reject::Missing);
         };
+        if self.receipts.len() >= self.max_receipts {
+            return Err(Reject::Capacity);
+        }
         let r = Receipt {
             bundle: d,
             component: c.to_string(),
@@ -185,6 +195,10 @@ impl Registry {
     }
     pub fn receipts(&self) -> &[Receipt] {
         &self.receipts
+    }
+
+    pub fn receipt_count(&self) -> usize {
+        self.receipts.len()
     }
 }
 fn canonical(g: &Genome, p: Option<Digest32>) -> Vec<u8> {
@@ -324,5 +338,19 @@ mod tests {
             r.lifecycle("a", "tool", Phase::Crashed),
             Err(Reject::Revoked)
         );
+    }
+
+    #[test]
+    fn lifecycle_receipts_fail_closed_at_capacity() {
+        let mut r = Registry::with_bounds(8, 20, 1);
+        let d = r.admit(Bundle::new(g(1, [4; 32]), None)).unwrap();
+        r.activate("a", d).unwrap();
+        assert!(r.lifecycle("a", "tool", Phase::Attached).is_ok());
+        assert_eq!(r.receipt_count(), 1);
+        assert_eq!(
+            r.lifecycle("a", "tool", Phase::Detached),
+            Err(Reject::Capacity)
+        );
+        assert_eq!(r.receipt_count(), 1);
     }
 }

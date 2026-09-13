@@ -4,6 +4,8 @@
 //! and lineage. Each tick uses a seed-derived deterministic schedule so a
 //! canonical transcript can be replayed on native and WASM implementations.
 
+use sha2::{Digest, Sha256};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Organism {
     pub id: u64,
@@ -17,6 +19,11 @@ pub const MAX_ORGANISMS: usize = 128;
 pub const MAX_ABILITIES: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorldError {
+    DuplicateOrganismId(u64),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct World {
     pub seed: u64,
     pub tick: u64,
@@ -24,17 +31,29 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(seed: u64, mut organisms: Vec<Organism>) -> Self {
+    /// Construct a world while rejecting duplicate organism identities before
+    /// canonicalization or truncation. Inputs from an untrusted wire should
+    /// use this fallible constructor.
+    pub fn try_new(seed: u64, mut organisms: Vec<Organism>) -> Result<Self, WorldError> {
         organisms.sort_by_key(|organism| organism.id);
+        for pair in organisms.windows(2) {
+            if pair[0].id == pair[1].id {
+                return Err(WorldError::DuplicateOrganismId(pair[0].id));
+            }
+        }
         organisms.truncate(MAX_ORGANISMS);
         for organism in &mut organisms {
             organism.abilities.truncate(MAX_ABILITIES);
         }
-        Self {
+        Ok(Self {
             seed,
             tick: 0,
             organisms,
-        }
+        })
+    }
+
+    pub fn new(seed: u64, organisms: Vec<Organism>) -> Self {
+        Self::try_new(seed, organisms).expect("duplicate organism ID")
     }
 
     pub fn step(&mut self) {
@@ -56,18 +75,23 @@ impl World {
         self.tick = self.tick.wrapping_add(1);
     }
 
-    pub fn replay_digest(&self) -> u64 {
-        let mut digest = self.seed ^ self.tick;
+    pub fn replay_digest(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"valhalla/ecology/replay/v1\0");
+        hasher.update(self.seed.to_be_bytes());
+        hasher.update(self.tick.to_be_bytes());
+        hasher.update((self.organisms.len() as u64).to_be_bytes());
         for organism in &self.organisms {
-            digest = digest.rotate_left(7) ^ organism.id;
-            digest = digest.rotate_left(7) ^ organism.lineage;
-            digest = digest.rotate_left(7) ^ organism.resources;
-            digest = digest.rotate_left(7) ^ u64::from(organism.alive);
+            hasher.update(organism.id.to_be_bytes());
+            hasher.update(organism.lineage.to_be_bytes());
+            hasher.update(organism.resources.to_be_bytes());
+            hasher.update([u8::from(organism.alive)]);
+            hasher.update((organism.abilities.len() as u64).to_be_bytes());
             for ability in &organism.abilities {
-                digest = digest.rotate_left(3) ^ u64::from(*ability);
+                hasher.update([*ability]);
             }
         }
-        digest
+        hasher.finalize().into()
     }
 
     pub fn composition_gain(&self) -> u64 {
@@ -141,5 +165,20 @@ mod tests {
         let before = world.organisms[0].resources;
         world.step();
         assert_eq!(world.organisms[0].resources, before);
+    }
+
+    #[test]
+    fn duplicate_ids_are_rejected_before_truncation() {
+        let duplicate = Organism {
+            id: 9,
+            lineage: 0,
+            abilities: vec![],
+            resources: 0,
+            alive: true,
+        };
+        assert_eq!(
+            World::try_new(0, vec![duplicate.clone(), duplicate]),
+            Err(WorldError::DuplicateOrganismId(9))
+        );
     }
 }

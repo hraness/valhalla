@@ -55,6 +55,7 @@ pub enum Error {
     NotActive,
     DuplicateSignal,
     StaleSequence,
+    Capacity,
     TooLarge,
     QueueFull,
 }
@@ -64,6 +65,8 @@ pub struct Exchange {
     max_queue: usize,
     max_signal_bytes: usize,
     seen_limit: usize,
+    max_contracts: usize,
+    max_sequence_entries: usize,
     contracts: BTreeMap<ContractId, Contract>,
     seen_signals: BTreeSet<MessageId>,
     last_sequence: BTreeMap<(ContractId, Peer), u64>,
@@ -72,11 +75,28 @@ pub struct Exchange {
 
 impl Exchange {
     pub fn new(now: u64, max_queue: usize) -> Self {
+        let max_contracts = max_queue.max(1).saturating_mul(4);
+        Self::with_limits(
+            now,
+            max_queue,
+            max_contracts,
+            max_contracts.saturating_mul(2),
+        )
+    }
+
+    pub fn with_limits(
+        now: u64,
+        max_queue: usize,
+        max_contracts: usize,
+        max_sequence_entries: usize,
+    ) -> Self {
         Self {
             now,
             max_signal_bytes: max_queue.max(1).saturating_mul(1024),
             seen_limit: max_queue.max(1).saturating_mul(4),
             max_queue,
+            max_contracts,
+            max_sequence_entries,
             contracts: BTreeMap::new(),
             seen_signals: BTreeSet::new(),
             last_sequence: BTreeMap::new(),
@@ -87,6 +107,9 @@ impl Exchange {
     pub fn propose(&mut self, contract: Contract) -> Result<(), Error> {
         if self.contracts.contains_key(&contract.id) {
             return Err(Error::DuplicateContract);
+        }
+        if self.contracts.len() >= self.max_contracts {
+            return Err(Error::Capacity);
         }
         if contract.provider == contract.consumer || contract.state != ContractState::Active {
             return Err(Error::InvalidContract);
@@ -149,14 +172,19 @@ impl Exchange {
         if self.queue.len() >= self.max_queue {
             return Err(Error::QueueFull);
         }
+        let sequence_key = (signal.contract, signal.sender);
+        if !self.last_sequence.contains_key(&sequence_key)
+            && self.last_sequence.len() >= self.max_sequence_entries
+        {
+            return Err(Error::Capacity);
+        }
         if self.seen_signals.len() >= self.seen_limit {
             if let Some(oldest) = self.seen_signals.iter().next().copied() {
                 self.seen_signals.remove(&oldest);
             }
         }
         self.seen_signals.insert(signal.id);
-        self.last_sequence
-            .insert((signal.contract, signal.sender), signal.sequence);
+        self.last_sequence.insert(sequence_key, signal.sequence);
         self.queue.push_back(signal);
         Ok(())
     }
@@ -206,6 +234,14 @@ impl Exchange {
 
     pub fn queue_len(&self) -> usize {
         self.queue.len()
+    }
+
+    pub fn contract_count(&self) -> usize {
+        self.contracts.len()
+    }
+
+    pub fn sequence_count(&self) -> usize {
+        self.last_sequence.len()
     }
 
     pub fn state_digest(&self) -> u64 {
@@ -355,6 +391,58 @@ mod tests {
         left.signal(signal.clone()).unwrap();
         right.signal(signal).unwrap();
         assert_eq!(left.state_digest(), right.state_digest());
+    }
+
+    #[test]
+    fn contract_capacity_fails_closed_without_eviction() {
+        let mut exchange = Exchange::with_limits(0, 4, 1, 2);
+        exchange.propose(contract()).unwrap();
+        assert_eq!(exchange.contract_count(), 1);
+        assert_eq!(
+            exchange.propose(Contract {
+                id: ContractId(2),
+                ..contract()
+            }),
+            Err(Error::Capacity)
+        );
+        assert_eq!(exchange.contract_count(), 1);
+        assert_eq!(
+            exchange.propose(Contract {
+                id: ContractId(1),
+                ..contract()
+            }),
+            Err(Error::DuplicateContract)
+        );
+    }
+
+    #[test]
+    fn sequence_capacity_does_not_consume_or_evict_history() {
+        let mut exchange = Exchange::with_limits(0, 4, 2, 1);
+        exchange.propose(contract()).unwrap();
+        exchange
+            .signal(Signal {
+                id: MessageId(1),
+                contract: ContractId(1),
+                sender: Peer(1),
+                sequence: 0,
+                kind: 11,
+                bytes: vec![],
+            })
+            .unwrap();
+        assert_eq!(exchange.sequence_count(), 1);
+        assert_eq!(
+            exchange.signal(Signal {
+                id: MessageId(2),
+                contract: ContractId(1),
+                sender: Peer(2),
+                sequence: 0,
+                kind: 10,
+                bytes: vec![],
+            }),
+            Err(Error::Capacity)
+        );
+        assert_eq!(exchange.sequence_count(), 1);
+        assert_eq!(exchange.queue_len(), 1);
     }
 
     #[derive(Clone, Debug)]

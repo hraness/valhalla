@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use sha2::{Digest, Sha256};
+
 pub type RealmId = u64;
 pub type RequestId = u64;
 
@@ -50,7 +52,7 @@ struct RealmPolicy {
 
 #[derive(Clone, Debug)]
 struct SeenRequest {
-    fingerprint: u64,
+    fingerprint: [u8; 32],
     epoch: u64,
     verdict: Verdict,
 }
@@ -138,31 +140,39 @@ impl ControlPlane {
         );
         verdict
     }
-    pub fn policy_digest(&self, id: RealmId) -> Option<u64> {
+    /// Return a domain-separated, canonical digest of one realm's policy.
+    ///
+    /// This remains a local reference-model digest: it is not a signature and
+    /// does not establish authority by itself.
+    pub fn policy_digest(&self, id: RealmId) -> Option<[u8; 32]> {
         self.policies.get(&id).map(|p| {
-            p.grants.iter().fold(p.max_bytes as u64 ^ p.epoch, |h, c| {
-                h.wrapping_mul(31).wrapping_add(*c as u64 + 1)
-            })
+            let mut hasher = Sha256::new();
+            hasher.update(b"valhalla/control-plane/policy/v1\0");
+            put_u64(&mut hasher, id);
+            put_u64(&mut hasher, p.epoch);
+            hasher.update([u8::from(p.revoked)]);
+            put_u64(&mut hasher, p.max_bytes as u64);
+            put_u64(&mut hasher, p.grants.len() as u64);
+            for capability in &p.grants {
+                hasher.update([*capability as u8]);
+            }
+            hasher.finalize().into()
         })
     }
 }
 
-fn fingerprint(req: &Request) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in req.realm.to_be_bytes() {
-        hash = hash
-            .wrapping_mul(0x100000001b3)
-            .wrapping_add(u64::from(byte));
-    }
-    hash = hash
-        .wrapping_mul(0x100000001b3)
-        .wrapping_add(req.capability as u64);
-    for byte in &req.bytes {
-        hash = hash
-            .wrapping_mul(0x100000001b3)
-            .wrapping_add(u64::from(*byte));
-    }
-    hash
+fn fingerprint(req: &Request) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"valhalla/control-plane/request/v1\0");
+    put_u64(&mut hasher, req.realm);
+    hasher.update([req.capability as u8]);
+    put_u64(&mut hasher, req.bytes.len() as u64);
+    hasher.update(&req.bytes);
+    hasher.finalize().into()
+}
+
+fn put_u64(hasher: &mut Sha256, value: u64) {
+    hasher.update(value.to_be_bytes());
 }
 
 impl Default for ControlPlane {
@@ -287,5 +297,15 @@ mod tests {
             .decision,
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn policy_digest_binds_epoch_and_revocation() {
+        let mut c = ControlPlane::new();
+        c.admit_realm(1, [Capability::ReadState], 10);
+        let admitted = c.policy_digest(1).expect("admitted policy");
+        c.revoke(1);
+        let revoked = c.policy_digest(1).expect("revoked policy");
+        assert_ne!(admitted, revoked);
     }
 }
