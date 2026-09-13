@@ -13,9 +13,12 @@ use zeroize::Zeroizing;
 
 #[derive(NetworkBehaviour)]
 pub(crate) struct Network {
-    pub(crate) chat: request_response::Behaviour<BoundedCodec>,
-    limits: connection_limits::Behaviour,
+    // Derive invokes admission hooks in declaration order. Request-response
+    // 0.30 preloads state in its hook, before the swarm confirms admission.
+    // Every rejecting behaviour must precede it, or denials leak connections.
     allowed: Toggle<allow_block_list::Behaviour<AllowedPeers>>,
+    limits: connection_limits::Behaviour,
+    pub(crate) chat: request_response::Behaviour<BoundedCodec>,
 }
 
 pub(crate) fn new(expected: Option<PeerId>) -> Result<Swarm<Network>> {
@@ -66,4 +69,83 @@ pub(crate) fn new(expected: Option<PeerId>) -> Result<Swarm<Network>> {
                 .with_dial_concurrency_factor(NonZeroU8::new(1).expect("nonzero"))
         })
         .build())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libp2p::{
+        core::ConnectedPoint,
+        swarm::{
+            behaviour::{ConnectionClosed, ConnectionEstablished},
+            ConnectionId, FromSwarm,
+        },
+    };
+    fn peer(seed: u8) -> PeerId {
+        Keypair::ed25519_from_bytes([seed; 32])
+            .unwrap()
+            .public()
+            .to_peer_id()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_peer_never_enters_request_response_bookkeeping() {
+        let mut swarm = new(Some(peer(1))).unwrap();
+        let address: Multiaddr = "/ip4/127.0.0.1/udp/1/quic-v1".parse().unwrap();
+        for seed in 2..66 {
+            let remote = peer(seed);
+            assert!(swarm
+                .behaviour_mut()
+                .handle_established_inbound_connection(
+                    ConnectionId::new_unchecked(seed as usize),
+                    remote,
+                    &address,
+                    &address
+                )
+                .is_err());
+            assert!(
+                !swarm.behaviour().chat.is_connected(&remote),
+                "denied peer leaked into request-response state"
+            );
+        }
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn denied_second_connection_does_not_corrupt_first_connection_close() {
+        let remote = peer(1);
+        let mut swarm = new(Some(remote)).unwrap();
+        let address: Multiaddr = "/ip4/127.0.0.1/udp/1/quic-v1".parse().unwrap();
+        let endpoint = ConnectedPoint::Listener {
+            local_addr: address.clone(),
+            send_back_addr: address.clone(),
+        };
+        let first = ConnectionId::new_unchecked(1);
+        let second = ConnectionId::new_unchecked(2);
+        let _handler = swarm
+            .behaviour_mut()
+            .handle_established_inbound_connection(first, remote, &address, &address)
+            .unwrap();
+        swarm
+            .behaviour_mut()
+            .on_swarm_event(FromSwarm::ConnectionEstablished(ConnectionEstablished {
+                peer_id: remote,
+                connection_id: first,
+                endpoint: &endpoint,
+                failed_addresses: &[],
+                other_established: 0,
+            }));
+        assert!(swarm
+            .behaviour_mut()
+            .handle_established_inbound_connection(second, remote, &address, &address)
+            .is_err());
+        swarm
+            .behaviour_mut()
+            .on_swarm_event(FromSwarm::ConnectionClosed(ConnectionClosed {
+                peer_id: remote,
+                connection_id: first,
+                endpoint: &endpoint,
+                cause: None,
+                remaining_established: 0,
+            }));
+        assert!(!swarm.behaviour().chat.is_connected(&remote));
+    }
 }

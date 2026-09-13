@@ -220,6 +220,36 @@ ledger/host concern.
 
 ## Execution status
 
+### Admission-order repair from real browser testing — 2026-09-13
+
+A real Rust/WASM page exchanged 17-byte and, after smaller flushed writes,
+8,192-byte payloads with the native WebRTC fixture. Larger transfers and
+reconnects exposed several distinct failures. Browser execution must remain a
+qualification gate: compile success did not detect these problems.
+
+One failure also affected the native QUIC composition at `fd4b529`: the derived
+libp2p behaviour called request-response admission before the allowlist and
+connection limits. Request-response 0.30 preloads a connection in that hook;
+a later sibling denial did not remove it. A rejected identity therefore remained
+in its bookkeeping, and rejecting a second connection then closing the first
+could panic in debug builds. Release builds could retain stale state instead;
+disabling the assertion would not be a repair.
+
+Two focused regression tests reproduced both failures before the change. All
+rejecting behaviours now precede request-response in declaration order, in the
+native adapter and earlier QUIC reference. The tests exercise 64 rejected keys
+and the exact establish/deny/close sequence; existing socket and process tests
+must continue to pass. Future behaviours that can reject connections must remain
+before request-response. Independent review remains outstanding, so the runtime
+and build restrictions stay in place.
+
+The browser fixture additionally reports callbacks invoked after their Rust
+closures were dropped, and larger-frame reliability remains unresolved. Neither
+small-frame success nor this admission repair qualifies its receive buffer,
+cleanup, ICE path, application signing or browser-to-browser support. Preserve
+those as separate tests instead of increasing memory limits or claiming the
+whole browser path works.
+
 ### Maintained native chat integration — 2026-09-13
 
 The coordinator owns this increment. `422022e` passed the local aggregate,

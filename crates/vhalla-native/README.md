@@ -48,7 +48,9 @@ records. This temporary line interface is not the planned JSON-lines API.
   authenticated QUIC PeerId supplies the observed transport key; the signed
   handshake binds both transport keys, both application keys and room context.
 - Each connection has separate, consumed handshake/replay state. Invalid input
-  closes only that exact connection. A new connection cannot reuse another's
+  closes only that exact connection. Admission guards run before request-response
+  can register a connection; regressions cover denied-peer bookkeeping and
+  rejecting a duplicate connection before closing the original. A new connection cannot reuse another's
   confirmation or signed chat. Errors do not trigger automatic sends or retries.
 - Transport keys use OS entropy and temporary zeroizing seed buffers. The
   application identity stays inside its existing custodian. No transport secret

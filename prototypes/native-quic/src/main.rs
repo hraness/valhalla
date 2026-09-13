@@ -100,9 +100,10 @@ impl request_response::Codec for BoundedCodec {
 
 #[derive(NetworkBehaviour)]
 struct Network {
-    echo: request_response::Behaviour<BoundedCodec>,
-    limits: connection_limits::Behaviour,
+    // Admission must run before request-response preloads connection state.
     allowed: allow_block_list::Behaviour<AllowedPeers>,
+    limits: connection_limits::Behaviour,
+    echo: request_response::Behaviour<BoundedCodec>,
 }
 
 fn key(seed: u8) -> Keypair {
