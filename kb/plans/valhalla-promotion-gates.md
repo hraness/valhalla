@@ -244,6 +244,10 @@ its specified recovery/cancellation cases. Native input/disclosure failures led 
 reviewed shared Rust corrections whose rebuilds were rejected before execution.
 Corrected-artifact qualification, native adapter execution, platform security and
 accessibility, maintained integration and final repository gates remain open.
+The new pure-Rust Dioxus preview assembler produces a fresh generated closure
+with an explicit `#main` shell and SHA-256/size manifest; its focused tests,
+Clippy and assembly against the corrected WASM output pass. This is packaging
+evidence only and does not close live browser or desktop qualification.
 
 ### Local discovery and private attention — 2026-09-13
 

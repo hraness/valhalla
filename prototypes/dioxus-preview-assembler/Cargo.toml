@@ -1,0 +1,19 @@
+[package]
+name = "vhalla-dioxus-preview-assembler"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Deterministic, fresh-directory assembler for a Valhalla Dioxus web closure."
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

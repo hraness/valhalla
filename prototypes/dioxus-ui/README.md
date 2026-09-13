@@ -70,6 +70,21 @@ Do not use `--all-features`: renderer feature unification is not target parity.
 Browser WASM needs the matching Rust standard library and binding toolchain.
 Do not claim the UI or a system WebView runs on no_std embedded hardware.
 
+After `wasm-bindgen` has produced a fresh binding directory, use the
+repository-owned pure-Rust [preview assembler](../dioxus-preview-assembler/) to
+create a clean browser closure:
+
+```sh
+cargo run --manifest-path ../dioxus-preview-assembler/Cargo.toml --locked --offline -- \
+  /tmp/vhalla-preview /tmp/wasm-bindgen-output assets/screen.css
+```
+
+It refuses an existing output directory, symlinked or oversized inputs, asset
+count/path surprises, and multiple root bindings. The emitted `index.html`,
+copied snippets, stylesheet, WASM and generated bindings are listed with
+SHA-256 and byte size in `SHA256SUMS`; this is packaging evidence, not a live
+browser or deployment qualification.
+
 The minimal web feature explicitly enables `web-sys 0.3.85/Location` on WASM.
 An actual web build exposed Dioxus 0.7.10 history code calling `Window.location()`
 without enabling that binding in this selected feature graph. This compensates
@@ -130,6 +145,11 @@ account. The baseline release passed this route in an actual browser on
   `wasm-bindgen` bindings generated into a fresh closure. A separate corrected
   native release build also passes. Browser and desktop interaction qualification
   remains open because these artifact checks do not exercise a live renderer.
+- The pure-Rust preview assembler passes formatting, offline tests, strict
+  Clippy, and a fresh assembly of the corrected generated closure. It removes
+  the prior manual `#main` shell/CSS-copy step while preserving generated
+  binding output as an opaque toolchain artifact. Its manifest is a local
+  packaging receipt; live browser qualification remains separate.
 - Automatic approval review rejected the U0 headless test and both correction
   builds before starting their processes, citing the command tool's built-in
   `/bin/zsh -lc` carrier despite the explicit absolute scheduler invocation and
