@@ -162,7 +162,18 @@ impl Exchange {
     }
 
     pub fn receive(&mut self) -> Option<Signal> {
-        self.queue.pop_front()
+        while let Some(signal) = self.queue.pop_front() {
+            let active = self
+                .contracts
+                .get(&signal.contract)
+                .is_some_and(|contract| {
+                    contract.state == ContractState::Active && self.now < contract.expires_at
+                });
+            if active {
+                return Some(signal);
+            }
+        }
+        None
     }
 
     pub fn fulfill(&mut self, id: ContractId, actor: Peer) -> Result<(), Error> {
@@ -306,6 +317,24 @@ mod tests {
             Err(Error::NotActive)
         );
         assert_eq!(exchange.contract(ContractId(1)).unwrap().provider, Peer(1));
+    }
+
+    #[test]
+    fn delayed_signal_is_dropped_after_contract_expiry() {
+        let mut exchange = Exchange::new(5, 4);
+        exchange.propose(contract()).unwrap();
+        exchange
+            .signal(Signal {
+                id: MessageId(9),
+                contract: ContractId(1),
+                sender: Peer(2),
+                sequence: 0,
+                kind: 10,
+                bytes: vec![],
+            })
+            .unwrap();
+        assert!(exchange.advance(20));
+        assert!(exchange.receive().is_none());
     }
 
     #[test]

@@ -56,12 +56,13 @@ The first implementation wave is now present as standalone reference crates:
 - P1/P3: `genome-bundle` and `module-transfer`
 - P2: `symbiosis` and `liveness`
 - P4/P6: `multicell` and `ecology`
+- P5: `immune-cancer`
+- P7: `extension-interop`
 
 These prototypes pass the aggregate offline format, test, and Clippy loop. They
-are deliberately outside the production workspace. The next review must compare
-their invariants with the production capability and wire types before any crate
-is promoted. P5 immune/cancer simulation and P7 extension interoperability
-remain open.
+are deliberately outside the production workspace. The design wave is complete
+at the reference-model level; the next review must compare their invariants with
+the production capability and wire types before any crate is promoted.
 
 ## The metaphor translated into protocol hypotheses
 
