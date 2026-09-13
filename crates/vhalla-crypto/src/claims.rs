@@ -1,10 +1,12 @@
 //! Typed, context-bound signed claims.
 //!
 //! Claims are deliberately smaller and more constrained than arbitrary signed
-//! application bytes.  Their canonical transcript binds the protocol domain,
+//! application bytes. Their canonical transcript binds the protocol domain,
 //! realm, session, subject digest, sequence, epoch, lifetime, audience, and
-//! issuer.  This makes a receipt or capability portable between transports
-//! without making it portable between unrelated contexts.
+//! issuer. This makes evidence portable between transports without making it
+//! portable between unrelated contexts. A verified claim remains evidence;
+//! local policy must still admit the issuer and decide whether the evidence
+//! authorizes anything.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -173,6 +175,8 @@ pub enum ClaimVerifyError {
     EpochMismatch,
     /// The current time is before issuance.
     NotYetValid,
+    /// The claim lifetime is empty or inverted.
+    InvalidLifetime,
     /// The current time is after expiry.
     Expired,
     /// The signature is invalid.
@@ -378,7 +382,10 @@ impl SignedClaim {
         expected: ClaimContext,
         now: u64,
     ) -> Result<(), ClaimVerifyError> {
-        if peer_id_from_key(key) != self.issuer {
+        if self.claim.expires_at <= self.claim.issued_at {
+            return Err(ClaimVerifyError::InvalidLifetime);
+        }
+        if super::peer_id_from_key(key) != self.issuer {
             return Err(ClaimVerifyError::IssuerMismatch);
         }
         if self.claim.domain != expected.domain {
@@ -412,7 +419,7 @@ pub fn sign_claim(claim: Claim, seed: [u8; 32]) -> SignedClaim {
     let key = SigningKey::from_bytes(&seed);
     let mut signed = SignedClaim {
         claim,
-        issuer: peer_id_from_key(&key.verifying_key()),
+        issuer: super::peer_id_from_key(&key.verifying_key()),
         signature: [0; 64],
     };
     signed.signature = key.sign(&transcript(&signed)).to_bytes();
@@ -524,13 +531,6 @@ fn read_u128(raw: &[u8], offset: &mut usize) -> Result<u128, ClaimDecodeError> {
     Ok(u128::from_be_bytes(bytes))
 }
 
-fn peer_id_from_key(key: &VerifyingKey) -> PeerId {
-    let digest = Sha256::digest(key.as_bytes());
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    PeerId(u128::from_be_bytes(bytes))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +621,12 @@ mod tests {
         assert_eq!(
             signed.verify(&key, context(2), 21),
             Err(ClaimVerifyError::Expired)
+        );
+        let mut invalid = signed.clone();
+        invalid.claim.expires_at = invalid.claim.issued_at;
+        assert_eq!(
+            invalid.verify(&key, context(2), 10),
+            Err(ClaimVerifyError::InvalidLifetime)
         );
         let mut tampered = signed.clone();
         tampered.signature[0] ^= 1;

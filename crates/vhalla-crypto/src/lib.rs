@@ -3,6 +3,10 @@
 #![warn(missing_docs)]
 
 //! Deterministic application signatures and replay checks for the steel thread.
+//!
+//! The [`claims`] module authenticates typed evidence only. A valid claim is
+//! never a host capability or an authorization decision; local policy must
+//! still admit its issuer, scope, and subject.
 
 extern crate alloc;
 

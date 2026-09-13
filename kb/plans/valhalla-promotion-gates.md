@@ -99,7 +99,10 @@ closed-domain claims, canonical bounded encoding, context-bound Ed25519
 signatures, expiry checks, equivocation detection, and a fail-closed replay
 window with an explicit scope limit. It is intentionally stateless beyond the
 bounded in-memory window; durable receipt retention, checkpoint ancestry, and
-quorum evidence remain future gates.
+quorum evidence remain future gates. The primitive does not yet supply issuer
+trust configuration, policy-scope or revocation handles, durable compaction,
+or a checkpoint quorum; `ClaimDomain::Capability` therefore remains evidence,
+never an authorization result.
 
 ## Invariant map
 
