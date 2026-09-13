@@ -672,6 +672,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-ledger"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "sha2",
+ "vhalla-core",
+]
+
+[[package]]
 name = "vhalla-policy"
 version = "0.0.0"
 dependencies = [

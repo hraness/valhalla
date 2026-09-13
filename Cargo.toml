@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vhalla-core", "crates/vhalla-wire", "crates/vhalla-crypto", "crates/vhalla-policy", "crates/vhalla-host", "crates/vhalla-steel-thread", "crates/vhalla-transport"]
+members = ["crates/vhalla-core", "crates/vhalla-wire", "crates/vhalla-crypto", "crates/vhalla-policy", "crates/vhalla-host", "crates/vhalla-steel-thread", "crates/vhalla-transport", "crates/vhalla-ledger"]
 exclude = ["prototypes/*"]
 
 [workspace.package]

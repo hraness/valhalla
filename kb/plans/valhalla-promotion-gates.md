@@ -65,6 +65,7 @@ The production workspace currently contains these crates:
 | Crate | Owns now | Must own after promotion |
 | --- | --- | --- |
 | `vhalla-core` | no-`std` identifiers, epochs, bounded untrusted bytes | typed event/checkpoint identities, bounded state transitions, and no authority-bearing constructors from raw data |
+| `vhalla-ledger` | bounded linear event history and locally derived checkpoint roots | durable history/recovery, signed checkpoint proofs, explicit quorum/trust configuration, and compaction anchors |
 | `vhalla-wire` | canonical bounded envelope encoding/decoding | versioned canonical evidence envelopes, strict length/count limits, and compatibility rules for checkpoint/provenance objects |
 | `vhalla-crypto` | Ed25519 signed envelopes, SHA-256 peer handles, a sequence replay window | domain-separated transcript/hash helpers, signed provenance/receipt verification, revocation binding, and bounded replay state |
 | `vhalla-policy` | local owner policy and single-use epoch-bound effects | admission decisions that consume authenticated evidence while keeping remote data separate from authority |
@@ -103,6 +104,12 @@ quorum evidence remain future gates. The primitive does not yet supply issuer
 trust configuration, policy-scope or revocation handles, durable compaction,
 or a checkpoint quorum; `ClaimDomain::Capability` therefore remains evidence,
 never an authorization result.
+
+The isolated `vhalla-ledger` seam is also present now. It derives a SHA-256
+root from a bounded linear history and rejects forged, stale, forked, and
+wrong-context checkpoints. It intentionally has no persistence, quorum proof,
+compaction anchor, or host integration, so its accepted checkpoint remains
+single-replica evidence.
 
 ## Invariant map
 
