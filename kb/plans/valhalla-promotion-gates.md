@@ -220,6 +220,84 @@ ledger/host concern.
 
 ## Execution status
 
+### Actual browser records and closure repair — 2026-09-13
+
+The standalone `prototypes/browser-records` now contains a `no_std` bounded
+transfer state machine and a nested, reproducible Rust/WASM-to-native WebRTC
+fixture. This is the first actual-browser transport evidence in this plan; it
+does not pass the browser room, key custody or application-session gates.
+
+The actual browser established these distinct results:
+
+1. A single 64 KiB frame with small flushed writes succeeded while the reader
+   kept up, but a 100 ms read pause triggered the browser dependency's explicit
+   `remote overloaded us with messages` error. Its aggregate unread buffer is
+   16 KiB. Write fragmentation alone did not solve receive flow control.
+2. Sixteen acknowledged 4 KiB records transferred the same 64 KiB with a 100 ms
+   pause before every record read. Each record carries an exact total, offset
+   and object digest; the receiver validates the complete digest before its
+   final acknowledgment. Connection-owned assembly is capped at 64 KiB and ten
+   seconds. Invalid ordering, metadata, acknowledgments or time permanently
+   closes the corresponding transfer owner. No receive cap was raised.
+3. Duplicate stream closure caused native `BrokenPipe` errors after otherwise
+   successful responses. The codec had closed and libp2p's request-response
+   handler closed again. The codec now flushes and leaves closure to that
+   handler. The real browser test then produced sixteen `RESPONSE_SENT` events,
+   one complete object, and no native or current-page console errors. The
+   correction also applies to the maintained QUIC codec, with a regression that
+   permits exactly one close after codec return.
+4. The browser dependency retained JavaScript event handlers after destroying
+   their Rust closures. A local experimental patch detaches handlers on the
+   final shared callback-owner drop and closes peer connections on failed or
+   cancelled authentication. The narrower patch passes the observed transfers
+   and reconnect after native closure. A variant that also closed the raw data
+   channel in Drop caused a timeout and was rejected. Provenance and the MIT
+   license accompany the vendored reference; independent review is still open.
+
+The fixture binds loopback, uses public transport keys, safe text rendering,
+self-only CSP, four connection/stream/event caps and owned process teardown.
+CI compiles its native and WASM paths; actual-browser execution is a separate
+gate. See the [reproduction and recorded evidence](../../prototypes/browser-records/interop/README.md).
+The parent crate has nine unit/property tests, including a fixed wire vector;
+the nested codec has three tests. These are experimental transfer bytes and
+acknowledgments, not signed application receipts or durable storage.
+
+Next: review the dependency patch independently; exercise cancellation, page
+suspension, peer rejection, resource recovery and supported browser engines;
+then carry the existing paired session through this transport with explicit
+browser key custody. Long-lived per-channel cleanup, Internet/NAT reachability,
+selected ICE paths, browser-to-browser routes and replaceable relays remain
+unqualified. The account usage limit still prevents the review workers from
+running; no unavailable review has been counted as passed.
+
+### Platonik capacity update and artifact fork — 2026-09-13
+
+Read-only source review and GitHub HEAD verification now identify Platonik
+`5eedec07c84af3b4beb82f22cc6c2b9fa3520d42`. Its
+[capacity report](https://github.com/hraness/platonik/blob/5eedec07c84af3b4beb82f22cc6c2b9fa3520d42/docs/exchange-capacity.md)
+admits the measured six reference worlds/eight controls, not a general service
+or runtime sandbox. On its recorded host, process-inclusive run and fresh
+verification medians were about 32 ms; the largest receipt was **7,141,362 bytes**.
+The recorder's maximum was 211.2 MiB, while individual CLI processes reached
+15.1 MiB. This evidence is inspected upstream data, not a Valhalla rerun.
+
+The earlier 7.14 MB local artifact is now published, reviewed Platonik evidence.
+That reinforces the existing adapter boundary: keep game receipts out of chat
+frames and never import the archive's roughly 160:1 compression ratio as a
+storage assumption. The next artifact spike should announce a signed manifest,
+request at most 8 MiB only under local policy, and transfer independently
+verified blocks of at most 64 KiB using bounded records. Cap the manifest's
+block count, total retained bytes, concurrent transfers, decompressed bytes,
+verification work and total deadline separately. Resume only blocks bound to
+the same immutable manifest; changed metadata, missing blocks, duplicates,
+digest mismatch, exhausted budgets and restart must have explicit outcomes.
+
+Validate exact Platonik receipt bytes and expected grades across all six worlds
+and eight controls before considering any core extraction. Preserve separate
+costs for execution, verification, transport and evidence retention. The current
+4 KiB stop-and-wait prototype qualifies one small object; it does not yet carry
+these multi-megabyte receipts or provide a game adapter.
+
 ### Admission-order repair from real browser testing — 2026-09-13
 
 A real Rust/WASM page exchanged 17-byte and, after smaller flushed writes,

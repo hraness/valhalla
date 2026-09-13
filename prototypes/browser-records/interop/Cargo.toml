@@ -1,0 +1,49 @@
+[package]
+name = "vhalla-browser-webrtc-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "vhalla-webrtc-listener"
+path = "src/main.rs"
+
+[dependencies]
+vhalla-browser-records-spike = { path = ".." }
+futures = "0.3"
+libp2p = { version = "=0.57.0", default-features = false, features = ["ed25519", "macros", "request-response"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libp2p = { version = "=0.57.0", default-features = false, features = ["tokio"] }
+libp2p-webrtc = { version = "=0.10.0-alpha", features = ["tokio"] }
+rand = "0.10"
+tokio = { version = "1.53", default-features = false, features = ["macros", "rt", "time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+libp2p-webrtc-websys = "=0.5.0"
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+web-sys = { version = "=0.3.85", features = ["Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "Event", "EventTarget", "Performance"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+debug = 0
+strip = "symbols"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.futures-timer]
+version = "=3.0.3"
+features = ["wasm-bindgen"]
+
+[patch.crates-io]
+libp2p-webrtc-websys = { path = "vendor/libp2p-webrtc-websys" }

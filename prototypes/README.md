@@ -25,12 +25,13 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `ecology` | Deterministic Platonik-style composition and lineage replay |
 | `immune-cancer` | Quarantine, appeal, revocation, and runaway-lineage containment |
 | [`native-quic`](native-quic/README.md) | Actual bounded QUIC exchange between two native processes, loopback-only fixture identities |
+| [`browser-records`](browser-records/README.md) | Bounded acknowledged records and an actual loopback Rust/WASM-to-native WebRTC fixture |
 | `extension-interop` | Opaque future objects, negotiation, and downgrade resistance |
 | Existing forks | `wire-format`, `transport`, `discovery`, `browser`, `privacy`, `effects`, and `replication` |
 
 Fetch locked dependencies first when running on a new machine. The native QUIC
 experiment opens loopback UDP sockets and starts owned child processes; the other
-references use local models. Run every prototype with:
+references use local models. The nested browser-record fixture has separate native/WASM and actual-browser gates in its README. Run every top-level prototype with:
 
 ```console
 for manifest in prototypes/*/Cargo.toml; do

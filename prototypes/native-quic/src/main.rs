@@ -54,7 +54,8 @@ async fn write_frame<T: AsyncWrite + Unpin>(io: &mut T, body: &[u8]) -> io::Resu
     }
     io.write_all(&(body.len() as u32).to_be_bytes()).await?;
     io.write_all(body).await?;
-    io.close().await
+    // request-response owns the close after this codec returns.
+    io.flush().await
 }
 
 impl request_response::Codec for BoundedCodec {

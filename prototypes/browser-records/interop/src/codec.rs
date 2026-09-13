@@ -1,11 +1,11 @@
 //! Length admission precedes allocation. One request occupies one stream.
 use super::MAX_FRAME;
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use libp2p::{request_response, StreamProtocol};
+use libp2p::{StreamProtocol, request_response};
 use std::io;
 
 #[derive(Clone, Default)]
-pub(crate) struct BoundedCodec;
+pub struct BoundedCodec;
 
 async fn read_frame<T: AsyncRead + Unpin>(io: &mut T) -> io::Result<Vec<u8>> {
     let mut header = [0_u8; 4];
@@ -18,6 +18,10 @@ async fn read_frame<T: AsyncRead + Unpin>(io: &mut T) -> io::Result<Vec<u8>> {
         ));
     }
     // The untrusted length is checked before any payload allocation or read.
+    #[cfg(target_arch = "wasm32")]
+    if super::PAUSE.load(std::sync::atomic::Ordering::Relaxed) {
+        futures_timer::Delay::new(std::time::Duration::from_millis(100)).await;
+    }
     let mut body = vec![0; length];
     io.read_exact(&mut body).await?;
     let mut extra = [0_u8; 1];
@@ -35,9 +39,13 @@ async fn write_frame<T: AsyncWrite + Unpin>(io: &mut T, body: &[u8]) -> io::Resu
         ));
     }
     io.write_all(&(body.len() as u32).to_be_bytes()).await?;
-    io.write_all(body).await?;
-    // request-response owns the close after this codec returns. Closing here
-    // would close twice and breaks transports whose close is not idempotent.
+    io.flush().await?;
+    for chunk in body.chunks(1024) {
+        io.write_all(chunk).await?;
+        io.flush().await?;
+    }
+    // request-response closes after the codec returns. A second close fails on
+    // WebRTC's BothClosed state even though the response bytes were delivered.
     io.flush().await
 }
 
@@ -86,29 +94,43 @@ impl request_response::Codec for BoundedCodec {
 mod tests {
     use super::*;
     use futures::{executor::block_on, io::Cursor};
-    use proptest::prelude::*;
     use std::{
         pin::Pin,
         task::{Context, Poll},
     };
+
     #[test]
-    fn max_frame_and_oversize_before_read_or_write() {
-        let mut io = Cursor::new(Vec::new());
-        block_on(write_frame(&mut io, &vec![42; MAX_FRAME])).unwrap();
-        io.set_position(0);
-        assert_eq!(block_on(read_frame(&mut io)).unwrap(), vec![42; MAX_FRAME]);
-        for n in [MAX_FRAME as u32 + 1, u32::MAX] {
-            let mut io = Cursor::new(n.to_be_bytes());
+    fn bounded_codec_rejects_length_before_payload_read_or_write() {
+        for length in [MAX_FRAME as u32 + 1, u32::MAX] {
+            let mut input = Cursor::new(length.to_be_bytes());
             assert_eq!(
-                block_on(read_frame(&mut io)).unwrap_err().kind(),
-                std::io::ErrorKind::InvalidData
+                block_on(read_frame(&mut input)).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
             );
-            assert_eq!(io.position(), 4);
+            assert_eq!(input.position(), 4);
         }
-        let mut io = Cursor::new(Vec::new());
-        assert!(block_on(write_frame(&mut io, &vec![0; MAX_FRAME + 1])).is_err());
-        assert!(io.into_inner().is_empty());
+        let mut output = Cursor::new(Vec::new());
+        assert!(block_on(write_frame(&mut output, &vec![0; MAX_FRAME + 1])).is_err());
+        assert!(output.into_inner().is_empty());
     }
+
+    #[test]
+    fn boundary_roundtrip_truncation_and_trailing_rejection() {
+        for length in [0, 1, 44, MAX_FRAME] {
+            let body = vec![7; length];
+            let mut output = Cursor::new(Vec::new());
+            block_on(write_frame(&mut output, &body)).unwrap();
+            output.set_position(0);
+            assert_eq!(block_on(read_frame(&mut output)).unwrap(), body);
+            let mut raw = output.into_inner();
+            raw.push(0);
+            assert!(block_on(read_frame(&mut Cursor::new(raw))).is_err());
+        }
+        for raw in [vec![], vec![0, 0, 0, 2, 1]] {
+            assert!(block_on(read_frame(&mut Cursor::new(raw))).is_err());
+        }
+    }
+
     // WebRTC permits one graceful close after both halves finish. Model that
     // transport contract while exercising the actual request-response codec.
     struct OneClose {
@@ -143,23 +165,5 @@ mod tests {
             .unwrap();
         // libp2p-request-response's handler performs this exact final operation.
         block_on(io.close()).unwrap();
-    }
-    proptest! {
-        #[test]
-        fn bounded_roundtrip_and_trailing_rejection(body in prop::collection::vec(any::<u8>(), 0..4096)) {
-            let mut io = Cursor::new(Vec::new());
-            block_on(write_frame(&mut io, &body)).unwrap();
-            io.set_position(0);
-            prop_assert_eq!(block_on(read_frame(&mut io)).unwrap(), body);
-            let mut raw = io.into_inner();
-            raw.push(0);
-            prop_assert!(block_on(read_frame(&mut Cursor::new(raw))).is_err());
-        }
-        #[test]
-        fn arbitrary_frame_never_panics(raw in prop::collection::vec(any::<u8>(), 0..4096)) {
-            if let Ok(body) = block_on(read_frame(&mut Cursor::new(raw))) {
-                prop_assert!(body.len() <= MAX_FRAME);
-            }
-        }
     }
 }
