@@ -1,0 +1,12 @@
+{
+  "name": "vhalla-site",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "scripts": {
+    "build:site": "bun run site/build.ts"
+  },
+  "dependencies": {
+    "@hraness/design-kit": "github:hraness/design-kit#v0.8.0"
+  }
+}

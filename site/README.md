@@ -6,14 +6,18 @@ README and [promotion status](../kb/plans/valhalla-promotion-gates.md).
 From the repository root, preview locally:
 
 ```console
-python3 -m http.server 8764 --bind 127.0.0.1 --directory site
+bun install --frozen-lockfile --ignore-scripts
+bun run build:site
+python3 -m http.server 8764 --bind 127.0.0.1 --directory site/dist
 ```
 
-Open http://127.0.0.1:8764. There is no build or JavaScript dependency.
-`fonts/instrument-serif.ttf` is Instrument Serif, distributed under the
-[SIL Open Font License](fonts/OFL.txt). The other typefaces use system fallbacks.
+Open http://127.0.0.1:8764. The site uses the pinned `@hraness/design-kit`
+Paper palette, Lantern material, marketing texture, Nebula Sans and Instrument
+Serif fonts. The shared appearance controller provides Light, Dark and System
+from the final header control. Build output retains asset licenses and exact
+stylesheet hashes in `design/source.json`. Product content and layout stay here.
 
-`vercel.json` selects `site/` as the static output and sets restrictive content
+`vercel.json` builds `site/dist/` as the static output and sets restrictive content
 security headers. Deploy from the repository root to the Hraness `valhalla`
 project after reviewing the changes and checking the page at desktop and mobile
 sizes:

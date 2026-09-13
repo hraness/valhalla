@@ -68,6 +68,8 @@ history; use the promotion plan to check implementation status.
 
 ## Marketing page
 
-[vhalla.com](https://vhalla.com) serves the static HTML, CSS, and self-hosted font
-in [site/](../site/). It has no JavaScript, tracking, build dependencies, or backend.
+[vhalla.com](https://vhalla.com) serves static HTML, CSS, and self-hosted fonts
+built from [site/](../site/) with the pinned shared design package. Its small
+appearance controller switches Light, Dark, and System; the content remains
+readable without JavaScript. The page has no tracking or backend.
 See the [site guide](../site/README.md) for preview and deployment.

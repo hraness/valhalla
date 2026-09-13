@@ -3,3 +3,7 @@
 /.impeccable/review/
 .vercel
 .env*
+
+node_modules/
+site/dist/
+.vercel/
