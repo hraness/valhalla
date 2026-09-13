@@ -15,9 +15,11 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `membrane` | Realm admission, capability boundaries, queues, and revocation |
 | `genome-bundle` | Versioned agent manifests, component imports, budgets, rollback |
 | `module-transfer` | Provenance-bound horizontal module transfer and downgrade rejection |
+| `provenance` | Authenticated module manifests, revocations, lifecycle receipts, and bounded replay/equivocation checks |
 | `symbiosis` | Typed contracts, obligations, expiry, and bounded signaling |
 | `liveness` | Partition-aware leases and suspicion without authority transfer |
 | `multicell` | Differentiated members, budgets, checkpoints, and graceful failure |
+| `checkpoint-root` | Derived state roots, canonical history, and checkpoint ancestry |
 | `ecology` | Deterministic Platonik-style composition and lineage replay |
 | `immune-cancer` | Quarantine, appeal, revocation, and runaway-lineage containment |
 | `extension-interop` | Opaque future objects, negotiation, and downgrade resistance |

@@ -161,6 +161,7 @@ impl Collective {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn cells() -> [Cell; 3] {
         [
@@ -269,5 +270,35 @@ mod tests {
             }),
             Err(Error::Budget)
         );
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_event_schedule_preserves_history_and_budget(
+            costs in prop::collection::vec(0u8..8, 0..64),
+            failures in prop::collection::vec(any::<bool>(), 0..64)
+        ) {
+            let mut collective = Collective::new(2, cells());
+            let mut successful = 0usize;
+            for (index, cost) in costs.into_iter().enumerate() {
+                if failures.get(index).copied().unwrap_or(false) {
+                    let _ = collective.fail(CellId(1));
+                }
+                let result = collective.append(Event {
+                    id: index as u64 + 1,
+                    cell: CellId(if index % 2 == 0 { 1 } else { 2 }),
+                    parent: (index > 0).then_some(index as u64),
+                    cost: u64::from(cost),
+                    action: index as u8,
+                });
+                if result.is_ok() { successful += 1; }
+                prop_assert_eq!(collective.event_count(), successful);
+                for id in [CellId(1), CellId(2), CellId(3)] {
+                    if let Some(cell) = collective.cell(id) {
+                        prop_assert!(cell.budget <= 5);
+                    }
+                }
+            }
+        }
     }
 }

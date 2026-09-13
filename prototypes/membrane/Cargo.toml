@@ -6,3 +6,6 @@ edition = "2021"
 [workspace]
 
 [dependencies]
+
+[dev-dependencies]
+proptest = "1.6"

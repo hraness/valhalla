@@ -154,6 +154,7 @@ impl Membrane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     fn f(id: u64, realm: u64, cap: Capability) -> Frame {
         f_at(id, realm, cap, 1)
     }
@@ -255,5 +256,65 @@ mod tests {
             m.receive(f(2, 2, Capability::Read)),
             Admission::Rejected(Reject::QueueFull)
         );
+    }
+
+    #[derive(Clone, Debug)]
+    enum Action {
+        Admit(u8),
+        Revoke(u8),
+        Receive(u8, u16, bool),
+        Pop(u8),
+    }
+
+    fn action_strategy() -> impl Strategy<Value = Action> {
+        prop_oneof![
+            any::<u8>().prop_map(Action::Admit),
+            any::<u8>().prop_map(Action::Revoke),
+            (any::<u8>(), any::<u16>(), any::<bool>())
+                .prop_map(|(realm, id, stale)| Action::Receive(realm, id, stale)),
+            any::<u8>().prop_map(Action::Pop),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_lifecycle_keeps_global_bounds(actions in prop::collection::vec(action_strategy(), 0..128)) {
+            let mut membrane = Membrane::new(3);
+            for (step, action) in actions.into_iter().enumerate() {
+                let is_pop = matches!(&action, Action::Pop(_));
+                let realm = match action {
+                    Action::Admit(raw) => {
+                        let realm = u64::from(raw % 4);
+                        membrane.admit(realm, 9, [Capability::Read], 8);
+                        realm
+                    }
+                    Action::Revoke(raw) => {
+                        let realm = u64::from(raw % 4);
+                        membrane.revoke(realm);
+                        realm
+                    }
+                    Action::Receive(raw, id, stale) => {
+                        let realm = u64::from(raw % 4);
+                        if let Some((context, current_epoch)) = membrane
+                            .cells.get(&realm).map(|cell| (cell.context, cell.epoch)) {
+                            let epoch = if stale { current_epoch.saturating_sub(1) } else { current_epoch };
+                            let _ = membrane.receive(Frame {
+                                id: u64::from(id), realm, capability: Capability::Read,
+                                context, epoch, payload: vec![step as u8],
+                            });
+                        }
+                        realm
+                    }
+                    Action::Pop(raw) => u64::from(raw % 4),
+                };
+                if is_pop {
+                    let _ = membrane.pop(realm);
+                }
+                let total: usize = membrane.cells.values().map(|cell| cell.queue.len()).sum();
+                prop_assert!(total <= 3);
+                prop_assert_eq!(total, membrane.queued);
+                prop_assert!(membrane.cells.values().all(|cell| !cell.revoked || cell.queue.is_empty()));
+            }
+        }
     }
 }

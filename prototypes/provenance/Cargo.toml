@@ -1,5 +1,5 @@
 [package]
-name = "valhalla-ledger-prototype"
+name = "valhalla-provenance-prototype"
 version = "0.0.0"
 edition = "2021"
 publish = false

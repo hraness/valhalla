@@ -234,6 +234,7 @@ impl Exchange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn contract() -> Contract {
         Contract {
@@ -354,5 +355,63 @@ mod tests {
         left.signal(signal.clone()).unwrap();
         right.signal(signal).unwrap();
         assert_eq!(left.state_digest(), right.state_digest());
+    }
+
+    #[derive(Clone, Debug)]
+    enum Action {
+        Propose(u8),
+        Signal(u8, u8),
+        Advance(u8),
+        Receive,
+        Cancel,
+        Fulfill,
+    }
+
+    fn action_strategy() -> impl Strategy<Value = Action> {
+        prop_oneof![
+            any::<u8>().prop_map(Action::Propose),
+            (any::<u8>(), any::<u8>()).prop_map(|(id, seq)| Action::Signal(id, seq)),
+            any::<u8>().prop_map(Action::Advance),
+            Just(Action::Receive),
+            Just(Action::Cancel),
+            Just(Action::Fulfill),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_contract_schedule_preserves_queue_and_sequence_bounds(
+            actions in prop::collection::vec(action_strategy(), 0..96)
+        ) {
+            let mut exchange = Exchange::new(0, 4);
+            let mut next_contract = 1u64;
+            for action in actions {
+                match action {
+                    Action::Propose(raw) if next_contract < 8 => {
+                        let id = ContractId(next_contract);
+                        next_contract += 1;
+                        let expiry = 5 + u64::from(raw % 20);
+                        let _ = exchange.propose(Contract { id, provider: Peer(1), consumer: Peer(2),
+                            input_kind: 10, output_kind: 11, expires_at: expiry, state: ContractState::Active });
+                    }
+                    Action::Signal(raw, seq) => {
+                        let id = ContractId(1 + u64::from(raw % 7));
+                        let _ = exchange.signal(Signal { id: MessageId(u64::from(raw)), contract: id,
+                            sender: Peer(1), sequence: u64::from(seq), kind: 11, bytes: vec![raw] });
+                    }
+                    Action::Advance(raw) => { let _ = exchange.advance(u64::from(raw % 32)); }
+                    Action::Receive => { let _ = exchange.receive(); }
+                    Action::Cancel => { let _ = exchange.cancel(ContractId(1), Peer(1)); }
+                    Action::Fulfill => { let _ = exchange.fulfill(ContractId(1), Peer(1)); }
+                    Action::Propose(_) => {}
+                }
+                prop_assert!(exchange.queue_len() <= 4);
+                prop_assert!(exchange.last_sequence.len() <= exchange.contracts.len().saturating_mul(2));
+                let scoped_sequences = exchange.last_sequence.keys().all(|(id, peer)| {
+                    exchange.contracts.contains_key(id) && (*peer == Peer(1) || *peer == Peer(2))
+                });
+                prop_assert!(scoped_sequences);
+            }
+        }
     }
 }

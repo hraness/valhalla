@@ -64,6 +64,23 @@ are deliberately outside the production workspace. The design wave is complete
 at the reference-model level; the next review must compare their invariants with
 the production capability and wire types before any crate is promoted.
 
+### Promotion hardening wave (in progress)
+
+The next bounded wave is closing the gaps that would make promotion premature:
+
+- `checkpoint-root` derives state roots from a bounded canonical event history
+  and rejects forged, stale, or forked checkpoint heads;
+- property/state-machine schedules are being added to membrane, symbiosis, and
+  multicell models so queue, epoch, expiry, and budget invariants are exercised
+  beyond hand-written examples; and
+- an authenticated provenance/receipt model is being added for module origin,
+  content, policy scope, expiry, revocation, replay, and equivocation checks.
+
+These remain disposable reference crates. Their exit condition is evidence for
+production design, not automatic promotion: signatures, durable storage,
+distributed agreement, and integration with `vhalla-wire` and `vhalla-policy`
+still need separate review.
+
 ## The metaphor translated into protocol hypotheses
 
 | Essay concept | Valhalla hypothesis | Platonik experiment |

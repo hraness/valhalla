@@ -258,6 +258,7 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32])
@@ -270,6 +271,40 @@ mod tests {
             lamport,
             parents,
             payload: payload.to_vec(),
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn signed_events_are_idempotent_and_merge_order_independent(
+            payloads in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..16), 1..12)
+        ) {
+            let key = key(7);
+            let events: Vec<_> = payloads.into_iter().enumerate()
+                .map(|(i, payload)| Event::sign(&key, body(i as u64, i as u64, vec![], &payload)))
+                .collect();
+            let mut left = Replica::new(32, 1024);
+            let mut right = Replica::new(32, 1024);
+            for event in &events {
+                prop_assert_eq!(left.ingest(event.clone()), Ok(Ingested::Stored));
+                prop_assert_eq!(left.ingest(event.clone()), Ok(Ingested::Duplicate));
+            }
+            for event in events.iter().rev() {
+                prop_assert_eq!(right.ingest(event.clone()), Ok(Ingested::Stored));
+            }
+            let left_ids: Vec<_> = left.ordered().map(|event| event.id).collect();
+            let right_ids: Vec<_> = right.ordered().map(|event| event.id).collect();
+            prop_assert_eq!(left_ids, right_ids);
+            prop_assert!(left.heads().len() <= 32);
+        }
+
+        #[test]
+        fn tampering_never_turns_into_a_valid_event(payload in prop::collection::vec(any::<u8>(), 0..32), flip in 0usize..32) {
+            let key = key(9);
+            let mut event = Event::sign(&key, body(1, 1, vec![], &payload));
+            event.id.0[flip] ^= 1;
+            let mut replica = Replica::new(4, 128);
+            prop_assert!(matches!(replica.ingest(event), Err(Reject::InvalidId | Reject::InvalidSignature)));
         }
     }
 
