@@ -220,6 +220,36 @@ ledger/host concern.
 
 ## Execution status
 
+### Dependency and pre-admission checks — 2026-09-13
+
+At `87a1987`, cargo-audit 0.22.2 checked all **32** repository lockfiles against
+RustSec database `b50980aad8b8f14f77e25a97b32dd94bf008b0af` (1,243 advisories),
+without ignored advisories or target filtering. All exited successfully with
+zero known vulnerabilities. The workspace, native QUIC reference and nested
+browser fixture retain the informational `RUSTSEC-2024-0436` warning for
+unmaintained `paste` 1.0.15, reached through `netlink-packet-core` and `if-watch`
+in the all-target graph. It is not compiled in the inspected macOS graph. Keep
+this maintenance issue visible; no warning was suppressed or dependency silently
+replaced. [The snapshot](../../docs/evidence/rustsec-2026-09-13.json) binds every
+lock hash, tool release digest and database commit. This is known-advisory
+evidence, not review of vendored code or a general safety claim.
+
+A separate bounded loopback diagnostic confirmed a pre-admission retention
+problem in native `libp2p-webrtc` 0.10.0-alpha. The UDP multiplexer records a new
+source address before returning an offer. Dropping that offer without creating
+its connection left **32 retained addresses, zero connections and zero mapped
+addresses**; they remained after the sockets closed and a 150 ms poll. Source
+inspection finds no size bound or expiry on this set. The probe drives the
+actual private multiplexer in a disposable source copy; it models declined
+offers, not a full Swarm flood or a process-memory measurement.
+
+The diagnostic is retained next to the browser fixture. No native dependency
+patch is enabled. Before public WebRTC admission, prototype bounded reservations
+that are released on decline, cancellation, timeout and success, and prove a
+fixed memory bound plus cooperative polling under churn. Raising the outer
+connection cap does not address state created below that cap. The reference
+remains public-fixture, loopback-only and limited to a ten-minute process lifetime.
+
 ### Actual browser records and closure repair — 2026-09-13
 
 The standalone `prototypes/browser-records` now contains a `no_std` bounded

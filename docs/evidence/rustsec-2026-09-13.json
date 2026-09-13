@@ -1,0 +1,261 @@
+{
+  "database_commit": "b50980aad8b8f14f77e25a97b32dd94bf008b0af",
+  "tool": "cargo-audit 0.22.2",
+  "results": [
+    {
+      "lock": "Cargo.lock",
+      "sha256": "0d316b7bf326638d83b2ba7cf6db50f4b878877c72dd318a9e4040ee933c0a32",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {
+        "unmaintained": [
+          {
+            "crate": "paste",
+            "version": "1.0.15",
+            "advisory": "RUSTSEC-2024-0436"
+          }
+        ]
+      }
+    },
+    {
+      "lock": "prototypes/attestation/Cargo.lock",
+      "sha256": "af946083064e73c314fe4506896ac4e14268bfbb5a7e66613eb0fd851d9e7f08",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/botcaptcha/Cargo.lock",
+      "sha256": "028cca1cf4eab52fb416f64cf4ff48a64e0c640799c628f0c480abffb138f2d3",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/browser/Cargo.lock",
+      "sha256": "61cbd695704ad41bec9ac44190b87552d2c967a5876da0699b8a155187f38053",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/browser-records/Cargo.lock",
+      "sha256": "ca367f9f6fcfb9e83a61fa060bc503631be89c3e60598cc575c5990a6f0450e8",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/checkpoint-ledger/Cargo.lock",
+      "sha256": "1eaf044ba4616854e284829a75d93ca8b25cb8b563bbd428b94359d6e9686b31",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/checkpoint-proof/Cargo.lock",
+      "sha256": "9693db0d782031167fc5e8dff3918f7c82e9719bf71320f03ec71d1a5bca3c4d",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/checkpoint-root/Cargo.lock",
+      "sha256": "3a10a790c3860d9a52b39b240d4cc74c57dbe4d40fe617b95da26cc856af18c0",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/control-plane/Cargo.lock",
+      "sha256": "4669a25362f26532ad9b84d2e9bccd8b190355131efb78545f2f1936cd750a19",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/discovery/Cargo.lock",
+      "sha256": "327c0b653d6225e00c7ec6d70e57d5801b5ab8a4bc619967254e2eca96d838f0",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/ecology/Cargo.lock",
+      "sha256": "fd1ede66bbceb6a7f8cd2ef20b47b67df66b5867de6af2a23c1d42a63a57cd31",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/effects/Cargo.lock",
+      "sha256": "908cbd43ab6dee18e1ee83a50d1c30929cb1a96163983c986911a3b146ec6d76",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/extension-interop/Cargo.lock",
+      "sha256": "ce89ad20e168cde2aef9986f4ee7516931ccca010e5d700952a77bda00ca50e7",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/game-session/Cargo.lock",
+      "sha256": "42d2c9b5fdfc633be290717bd53b1bc9ffee87a7cb14b0a56c8cea800d7e6fd1",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/genome-bundle/Cargo.lock",
+      "sha256": "48851de264b057ff463716f7f2c662e7d0e3641388a21124ac2493f140fa4fee",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/immune-cancer/Cargo.lock",
+      "sha256": "1adb2d3efd879033a13f6121617ed20e81950facc612c4af8f5558d0ac1a92b2",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/ledger/Cargo.lock",
+      "sha256": "2174b6641baab7680f429059e11bad9dbdfb8e321d9b7638c81ba8aebd9117b5",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/liveness/Cargo.lock",
+      "sha256": "c7824ce69b058cfe4827c6f9e962119b3159c90a8b3b9bfa4235b98e962418e6",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/membrane/Cargo.lock",
+      "sha256": "0821f3c5ad1e076f2226a8cc5ec639de57d4341928988bf5bdf0cf2b06c80ebe",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/module-transfer/Cargo.lock",
+      "sha256": "efe7782bb72f1a67001d0427529945e979a316752d4ac471535547f178ec49b1",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/multicell/Cargo.lock",
+      "sha256": "e516445da264fc2475f4384a390d42caefe722f13b647b09ad6f521783bd8e6e",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/native-quic/Cargo.lock",
+      "sha256": "cc39e0b9697d43e5aa833093b172c9bc317def01b02bec77a300cf572a04fd84",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {
+        "unmaintained": [
+          {
+            "crate": "paste",
+            "version": "1.0.15",
+            "advisory": "RUSTSEC-2024-0436"
+          }
+        ]
+      }
+    },
+    {
+      "lock": "prototypes/privacy/Cargo.lock",
+      "sha256": "fd4c85ddaed4ee6fe6f71c76540ed085cc09103e93bc365ad22bf0fa4089f25e",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/provenance/Cargo.lock",
+      "sha256": "c840aa11a34fa61554ceccef69403dbf5bfb571955664ee815e369bf480d6474",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/replication/Cargo.lock",
+      "sha256": "a462228fafa870c2a73519c4f2361c14e4ab6877fda88bbe2ce1f535c27cd6bd",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/settlement/Cargo.lock",
+      "sha256": "c753f245ffb62a4b242450203886834a8aac23fcd9d4a53981e57e19387633a2",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/symbiosis/Cargo.lock",
+      "sha256": "ac49a9350b8a0ae43f0ce776f060e3cf3a952e9f77e32407912cee82e1c2ff28",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/transport/Cargo.lock",
+      "sha256": "7113143e8ba064a950b69007a5d8c95018ec096789ffc0ba84e05c20d94a21f0",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/wire-format/Cargo.lock",
+      "sha256": "10d00561653bd05fd940010fcdb539619483ae0eb3558efe5cb58ff4471230f7",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/witness/Cargo.lock",
+      "sha256": "72cfcec52c3d7e341fd77e50f54e9fc75e6b33726e08102a8b9ef00d149ea350",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/zk-profile/Cargo.lock",
+      "sha256": "8275a8065c4e0215a1d79b95930bf13650c9545f70ad20c39a9737eb3514a653",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {}
+    },
+    {
+      "lock": "prototypes/browser-records/interop/Cargo.lock",
+      "sha256": "7b47a86977905befab11f0cbb1d859b9775df7aeeb7ddef922fb93154c8b631e",
+      "exit": 0,
+      "vulnerabilities": 0,
+      "warnings": {
+        "unmaintained": [
+          {
+            "crate": "paste",
+            "version": "1.0.15",
+            "advisory": "RUSTSEC-2024-0436"
+          }
+        ]
+      }
+    }
+  ],
+  "date": "2026-09-13",
+  "repository_commit": "87a1987f34fff1aaaf5662f4587d916c9c3582fd",
+  "tool_archive_sha256": "ec7ca4263769593df4d909be85b94a6b79efa2897be5d2bb8ebd516e823175af",
+  "advisory_count": 1243,
+  "ignored_advisories": [],
+  "target_filters": [],
+  "scope": "Known RustSec advisories and yanked packages in locked graphs; no source-code, vendored-patch or runtime safety proof."
+}

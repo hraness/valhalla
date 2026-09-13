@@ -89,3 +89,8 @@ Internet/NAT reachability, selected ICE-path inspection, direct browser-to-brows
 connections, private browser key custody, signed Valhalla sessions and independent
 review remain open. The upstream browser adapter only dials WebRTC-direct; it
 does not provide a browser listener.
+
+The [pre-admission diagnostic](native-admission.md) separately found retained
+addresses inside the native UDP multiplexer before connection admission. This
+must be repaired and reviewed before public WebRTC use; the outer connection
+limits do not bound that lower-layer state.
