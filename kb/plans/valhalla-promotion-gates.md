@@ -247,7 +247,11 @@ accessibility, maintained integration and final repository gates remain open.
 The new pure-Rust Dioxus preview assembler produces a fresh generated closure
 with an explicit `#main` shell and SHA-256/size manifest; its focused tests,
 Clippy and assembly against the corrected WASM output pass. This is packaging
-evidence only and does not close live browser or desktop qualification.
+evidence only and does not close live browser or desktop qualification. The
+shell now uses a same-origin CSP with an exact hash for its sole module
+bootstrap, enables only the required `wasm-unsafe-eval`, and rejects control or
+markup delimiters in asset names before HTML insertion. Response headers,
+origin pairing and live renderer security remain separate gates.
 
 ### Local discovery and private attention — 2026-09-13
 
