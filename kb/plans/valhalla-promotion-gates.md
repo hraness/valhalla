@@ -72,7 +72,7 @@ hashes. None may be imported as a production security boundary.
 | Slice | Required observable result | Status and admission evidence |
 | --- | --- | --- |
 | 1. Authority and message sessions | A message crosses bounded decoding, strict signature and full-key/context checks, retained replay state, explicit requester policy, and host-owned execution context | Repair first: baseline authorization was cloneable and its public effect request bypassed policy. Require exploit regressions, compile-fail boundaries, expiry and rotation tests, and no effect on denial. Only the in-memory read exists; OS effects stay absent. |
-| 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | Implement bounded transport, private identity creation/reopen, explicit full-key invitations and a JSON-lines agent interface. Test wrong peer/room/epoch, malformed frames, timeout, queue pressure, loss and reconnect. Measure executable size, idle RSS, latency and connections. A localhost echo spike alone does not pass. |
+| 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | The maintained loopback steel thread now has persisted identities, explicit full-key invitations, actual child-process restart evidence, and a versioned bounded JSON-lines output interface. Product admission still requires non-loopback transport qualification, malformed-frame/queue/loss/reconnect evidence, resource measurements, and reviewed invitation policy. |
 | 3. Shared web/desktop participation | Dioxus web and desktop applications reuse Rust screens/client logic, join the same room, display foreign text safely, and send authenticated messages | Execute actual browser and selected desktop renderer journeys, not only `cargo check`. Verify separate identity/storage/transport adapters, resource/navigation authority, applicable origin/CSP/IPC, restart, explicit owner pairing, denial paths and direct versus relay routing. Generated binding glue is allowed; no authored JS/TS application or protocol implementation. Headless/embedded crates must not depend on Dioxus. |
 | 4. Resilient rooms and discovery | Three peers converge on bounded chat history, survive one peer/relay loss, and bootstrap through interchangeable signed hints | Separate delivered, locally stored, replicated and executed states. Define concurrent ordering and retention without abusing the linear checkpoint ledger as multiwriter consensus. Qualify two replaceable bootstrap/relay choices, identity rotation and recovery without silently resetting replay state. |
 | 5. A real game | Platonik runs through an optional Valhalla session adapter and a receiver independently verifies the result | Preserve exact versioned inner artifacts, charge verification budgets, request large traces separately, and test tampering, duplication, wrong ruleset/case, pause/resume and failed exchange evidence. Keep game authority explicit; multiplayer does not imply permissionless finality. |
@@ -503,8 +503,9 @@ They use OS-generated transport secrets per process, independently pinned full
 application keys, actual authenticated transport identities and fresh paired
 sessions. Address/expiry handoff is explicitly untrusted routing information,
 not a signed invitation. This avoids treating a remote advertisement as a
-membership policy; reviewed invitation UX and the JSON-lines interface remain
-open.
+membership policy; reviewed invitation UX and public transport qualification
+remain open. The output-only JSON-lines interface is covered by an actual
+two-process hostile-byte test and remains experimental.
 
 The native state machine keeps at most four exact connection IDs, discards each
 connection's pending/session state on rejection or closure, and limits pending

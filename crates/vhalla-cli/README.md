@@ -14,6 +14,35 @@ the [local chat walkthrough](../vhalla-native/README.md) for the explicit
 The experimental commands bind/dial loopback only and do not execute message
 content. No `vh` alias or global installation is performed.
 
+### Experimental JSON-lines transport
+
+For process supervisors and browser/WASM adapters, add `--json` immediately after
+`experimental`:
+
+```console
+vhalla experimental --json listen <identity-directory> <peer-app-key>
+vhalla experimental --json send <identity-directory> <peer-app-key> <route> <expiry> <message>
+```
+
+The default human-readable protocol is unchanged. JSON mode writes one flushed,
+versioned event per line and never evaluates the message body. Every event is a
+JSON object with `v: 1` and a bounded line size (140,000 bytes including the
+newline):
+
+| `kind` | Fields | Meaning |
+| --- | --- | --- |
+| `ready` | `route`, `expires_at` | Listener is accepting the explicitly invited peer. |
+| `joined` | `session` | A fresh authenticated session joined; the 128-bit session is a hex string. |
+| `message` | `peer`, `session`, `body_hex` | Signed body bytes, represented as hex to preserve arbitrary input safely. |
+| `rejected` | bounded `message` | A peer or frame was rejected; the diagnostic is advisory and capped. |
+| `peer_closed` | — | The authenticated peer disconnected. |
+| `received` | `peer`, `session`, `frame_sha256` | A sender received an authenticated acknowledgement and frame digest. |
+
+The event stream is output-only: stdin is not a control channel, and no event
+causes a tool call or code execution. Consumers should treat routes and
+diagnostics as untrusted data, validate `v`/`kind`, and preserve the stable
+hex-string fields rather than parsing sessions as JSON numbers.
+
 ```console
 cargo test -p vhalla-cli --locked
 cargo test -p vhalla-cli --all-features --locked

@@ -38,7 +38,7 @@ fn run() -> Result<(), String> {
         );
         println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>");
         #[cfg(feature = "experimental-network")]
-        println!("\nvhalla experimental listen <identity-directory> <peer-app-key>\nvhalla experimental send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime.");
+        println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key>\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime. --json emits bounded versioned JSON lines.");
         #[cfg(feature = "experimental-social")]
         println!("\n{}", social::help());
         return Ok(());
@@ -83,6 +83,7 @@ fn run() -> Result<(), String> {
 #[cfg(all(unix, feature = "experimental-network"))]
 fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     use std::io::Write;
+    const MAX_JSON_LINE_BYTES: usize = 140_000;
     use vhalla_native::{Event, Listener, Route};
     fn hex(raw: &[u8]) -> String {
         raw.iter().map(|b| format!("{b:02x}")).collect()
@@ -93,16 +94,68 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             .and_then(|()| out.flush())
             .map_err(|e| e.to_string())
     }
+    fn json_quote(value: &str) -> String {
+        let mut out = String::with_capacity(value.len() + 2);
+        out.push('"');
+        for character in value.chars() {
+            match character {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                character if character.is_control() => {
+                    out.push_str(&format!("\\u{:04x}", character as u32))
+                }
+                _ => out.push(character),
+            }
+        }
+        out.push('"');
+        out
+    }
+    fn bounded_detail(value: &str) -> String {
+        const MAX_DETAIL_BYTES: usize = 1_024;
+        if value.len() <= MAX_DETAIL_BYTES {
+            return value.to_owned();
+        }
+        let mut end = MAX_DETAIL_BYTES;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &value[..end])
+    }
+    fn print_json(kind: &str, fields: &str) -> Result<(), String> {
+        let mut line = format!("{{\"v\":1,\"kind\":{}{}}}", json_quote(kind), fields);
+        if line.len() + 1 > MAX_JSON_LINE_BYTES {
+            return Err("JSON event exceeds bounded line size".into());
+        }
+        line.push('\n');
+        let mut out = std::io::stdout().lock();
+        out.write_all(line.as_bytes())
+            .and_then(|()| out.flush())
+            .map_err(|e| e.to_string())
+    }
+    fn emit(json: bool, line: &str, kind: &str, fields: &str) -> Result<(), String> {
+        if json {
+            print_json(kind, fields)
+        } else {
+            print_line(line)
+        }
+    }
     let text = |index: usize| -> Result<&str, String> {
         args.get(index)
             .and_then(|a| a.to_str())
             .ok_or_else(|| "missing or non-UTF-8 argument".into())
     };
-    let mode = text(1)?;
-    if !((mode == "listen" && args.len() == 4) || (mode == "send" && args.len() == 7)) {
+    let json = args.get(1).is_some_and(|value| value == "--json");
+    let offset = usize::from(json);
+    let mode = text(1 + offset)?;
+    if !((mode == "listen" && args.len() == 4 + offset)
+        || (mode == "send" && args.len() == 7 + offset))
+    {
         return Err("see vhalla --help for experimental command arguments".into());
     }
-    let peer = text(3)?;
+    let peer = text(3 + offset)?;
     if peer.len() != 64 || !peer.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("expected full 64-hex-digit application key".into());
     }
@@ -110,8 +163,8 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     for (i, byte) in peer_app.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&peer[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string())?;
     }
-    let identity =
-        vhalla_identity::Identity::open(&args[2]).map_err(|e| format!("identity: {e:?}"))?;
+    let identity = vhalla_identity::Identity::open(&args[2 + offset])
+        .map_err(|e| format!("identity: {e:?}"))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -121,41 +174,86 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             let mut listener = Listener::bind(identity, peer_app)
                 .await
                 .map_err(|e| e.to_string())?;
-            print_line(&format!(
-                "route {} {}",
-                listener.route().address(),
-                listener.route().expires_at()
-            ))?;
+            let address = listener.route().address();
+            let expires_at = listener.route().expires_at();
+            emit(
+                json,
+                &format!("route {address} {expires_at}"),
+                "ready",
+                &format!(
+                    ",\"route\":{},\"expires_at\":{}",
+                    json_quote(&address),
+                    expires_at
+                ),
+            )?;
             loop {
                 match listener.next().await {
-                    Ok(Event::Joined(session)) => {
-                        print_line(&format!("joined session={:032x}", session.0))?
+                    Ok(Event::Joined(session)) => emit(
+                        json,
+                        &format!("joined session={:032x}", session.0),
+                        "joined",
+                        &format!(
+                            ",\"session\":{}",
+                            json_quote(&format!("{:032x}", session.0))
+                        ),
+                    )?,
+                    Ok(Event::Message(message)) => {
+                        let peer = hex(message.signer_key());
+                        let session = message.context().session.0;
+                        let body = hex(message.envelope().body());
+                        emit(
+                            json,
+                            &format!("message peer={peer} session={session:032x} body-hex={body}"),
+                            "message",
+                            &format!(
+                                ",\"peer\":{},\"session\":{},\"body_hex\":{}",
+                                json_quote(&peer),
+                                json_quote(&format!("{session:032x}")),
+                                json_quote(&body)
+                            ),
+                        )?
                     }
-                    Ok(Event::Message(message)) => print_line(&format!(
-                        "message peer={} session={:032x} body-hex={}",
-                        hex(message.signer_key()),
-                        message.context().session.0,
-                        hex(message.envelope().body())
-                    ))?,
-                    Ok(Event::Rejected(error)) => print_line(&format!("rejected {error}"))?,
-                    Ok(Event::Disconnected) => print_line("peer-closed")?,
+                    Ok(Event::Rejected(error)) => emit(
+                        json,
+                        &format!("rejected {error}"),
+                        "rejected",
+                        &format!(
+                            ",\"message\":{}",
+                            json_quote(&bounded_detail(&error.to_string()))
+                        ),
+                    )?,
+                    Ok(Event::Disconnected) => emit(json, "peer-closed", "peer_closed", "")?,
                     Err(vhalla_native::Error::Closed) => return Ok(()),
                     Err(error) => return Err(error.to_string()),
                 }
             }
         } else {
-            let expires = text(5)?.parse().map_err(|_| "invalid expiry".to_string())?;
-            let route = Route::parse(text(4)?, expires).map_err(|e| e.to_string())?;
-            let result =
-                vhalla_native::send_message(identity, peer_app, route, text(6)?.as_bytes())
-                    .await
-                    .map_err(|e| e.to_string())?;
-            print_line(&format!(
-                "received peer={} session={:032x} frame-sha256={}",
-                hex(result.acknowledgment().signer_key()),
-                result.acknowledgment().context().session.0,
-                hex(result.digest())
-            ))
+            let expires = text(5 + offset)?
+                .parse()
+                .map_err(|_| "invalid expiry".to_string())?;
+            let route = Route::parse(text(4 + offset)?, expires).map_err(|e| e.to_string())?;
+            let result = vhalla_native::send_message(
+                identity,
+                peer_app,
+                route,
+                text(6 + offset)?.as_bytes(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let peer = hex(result.acknowledgment().signer_key());
+            let session = result.acknowledgment().context().session.0;
+            let digest = hex(result.digest());
+            emit(
+                json,
+                &format!("received peer={peer} session={session:032x} frame-sha256={digest}"),
+                "received",
+                &format!(
+                    ",\"peer\":{},\"session\":{},\"frame_sha256\":{}",
+                    json_quote(&peer),
+                    json_quote(&format!("{session:032x}")),
+                    json_quote(&digest)
+                ),
+            )
         }
     })
 }

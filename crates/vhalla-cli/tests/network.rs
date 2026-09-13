@@ -151,6 +151,48 @@ fn send(path: &Path, peer: &str, address: &str, expiry: &str, text: &str, ok: bo
     .finish(ok)
 }
 
+fn json_line(process: &Process, kind: &str) -> serde_json::Value {
+    let line = process.line(&format!("{{\"v\":1,\"kind\":\"{kind}\""));
+    assert!(line.len() <= 140_000);
+    serde_json::from_str(&line).unwrap_or_else(|error| panic!("valid JSON event {line:?}: {error}"))
+}
+
+fn json_listener(path: &Path, peer: &str) -> (Process, String, String) {
+    let process = Process::spawn(&["experimental", "--json", "listen", self::path(path), peer]);
+    let event = json_line(&process, "ready");
+    assert_eq!(event["v"], 1);
+    (
+        process,
+        event["route"].as_str().unwrap().to_string(),
+        event["expires_at"].as_u64().unwrap().to_string(),
+    )
+}
+
+fn json_send(
+    path: &Path,
+    peer: &str,
+    address: &str,
+    expiry: &str,
+    text: &str,
+    ok: bool,
+) -> serde_json::Value {
+    let process = Process::spawn(&[
+        "experimental",
+        "--json",
+        "send",
+        self::path(path),
+        peer,
+        address,
+        expiry,
+        text,
+    ]);
+    let event = json_line(&process, "received");
+    assert_eq!(event["v"], 1);
+    let output = process.finish(ok);
+    assert!(output.lines().all(|line| line.len() <= 140_000));
+    event
+}
+
 #[test]
 fn pinned_chat_survives_process_restart_and_strangers_cannot_join() {
     let tmp = Temp::new();
@@ -216,4 +258,25 @@ fn pinned_chat_survives_process_restart_and_strangers_cannot_join() {
         .line("message ")
         .contains(&format!("peer={alice_key} ")));
     server.line("peer-closed");
+}
+
+#[test]
+fn json_lines_preserve_hostile_bytes_and_bound_each_event() {
+    let tmp = Temp::new();
+    let alice = tmp.0.join("alice");
+    let bob = tmp.0.join("bob");
+    let alice_key = init(&alice);
+    let bob_key = init(&bob);
+    let (server, route, expiry) = json_listener(&bob, &alice_key);
+    let text = "quote \" slash \\ newline\nemoji 🛡 and escape \u{1b}";
+    let receipt = json_send(&alice, &bob_key, &route, &expiry, text, true);
+    assert_eq!(receipt["kind"], "received");
+    assert_eq!(receipt["peer"], bob_key);
+    assert_eq!(receipt["frame_sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(json_line(&server, "joined")["kind"], "joined");
+    let message = json_line(&server, "message");
+    let expected: String = text.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(message["peer"], alice_key);
+    assert_eq!(message["body_hex"], expected);
+    assert_eq!(json_line(&server, "peer_closed")["kind"], "peer_closed");
 }
