@@ -6,6 +6,13 @@
 
 extern crate alloc;
 
+pub mod claims;
+
+pub use claims::{
+    sign_claim, Claim, ClaimBuildError, ClaimContext, ClaimDecodeError, ClaimDomain,
+    ClaimReplayWindow, ClaimVerifyError, SessionId, SignedClaim, SubjectDigest,
+};
+
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
