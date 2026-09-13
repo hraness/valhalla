@@ -84,6 +84,10 @@ count/path surprises, and multiple root bindings. The emitted `index.html`,
 copied snippets, stylesheet, WASM and generated bindings are listed with
 SHA-256 and byte size in `SHA256SUMS`; this is packaging evidence, not a live
 browser or deployment qualification.
+The generated shell also admits only its exact hashed module bootstrap through
+a restrictive same-origin CSP; asset names are checked before they enter HTML.
+Response headers, origin pairing and live browser security qualification remain
+separate gates.
 
 The minimal web feature explicitly enables `web-sys 0.3.85/Location` on WASM.
 An actual web build exposed Dioxus 0.7.10 history code calling `Window.location()`
