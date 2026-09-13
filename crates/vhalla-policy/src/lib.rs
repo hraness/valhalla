@@ -1,171 +1,213 @@
+#![no_std]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! Local authorization for the steel thread.
+//! Explicit local grants over immutable, authenticated remote requests.
 //!
-//! This crate does not parse wire data and does not perform effects. It turns a
-//! validated remote request into a private, scope-limited capability only when
-//! local policy permits it.
+//! Constructors configure trusted local policy. They are not a sandbox against
+//! hostile code in the same process. A verified peer message is evidence only;
+//! the local policy must also grant its full signing key, context, and scope.
 
-use vhalla_core::{Epoch, EventId, PeerId};
+use vhalla_core::EventId;
+pub use vhalla_crypto::VerificationContext;
+use vhalla_crypto::VerifiedEnvelope;
+
+/// Reserved kind for the first bounded in-memory read request.
+pub const KIND_READ_MEMORY_REQUEST: u8 = 2;
 
 /// The only operation exposed by the first steel thread.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Operation {
-    /// A bounded in-memory read used by the prototype host.
+    /// A bounded in-memory read used by the demonstration host.
     ReadMemory,
 }
 
-/// A resource scope for an operation.
+/// Locally selected operation and resource; this value is not authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Scope {
-    /// Operation granted by the policy.
+    /// Requested operation.
     pub operation: Operation,
     /// Host-defined resource identifier.
     pub resource: u32,
 }
 
-/// A request that remains inert until a local policy authorizes it.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// An inert request that retains the consumed signature and replay evidence.
+/// Remote bytes cannot fabricate this type or change its authenticated fields.
+///
+/// ```compile_fail
+/// use vhalla_policy::{RemoteRequest, Scope};
+/// fn fabricate(scope: Scope) -> RemoteRequest { RemoteRequest { scope } }
+/// ```
+#[derive(Debug)]
 pub struct RemoteRequest {
-    /// Event that carried the request.
-    pub event_id: EventId,
-    /// Peer that authored the request.
-    pub author: PeerId,
-    /// Requested operation and resource.
-    pub scope: Scope,
-    /// Opaque model/peer text; this is never interpreted as authority.
-    pub content: alloc::vec::Vec<u8>,
+    verified: VerifiedEnvelope,
+    scope: Scope,
 }
 
-extern crate alloc;
+impl RemoteRequest {
+    /// Consume verified evidence and select a typed scope locally. Ordinary
+    /// chat and unknown message kinds cannot enter the effect-request path.
+    pub fn from_verified(verified: VerifiedEnvelope, scope: Scope) -> Result<Self, Denied> {
+        if verified.envelope().kind() != KIND_READ_MEMORY_REQUEST {
+            return Err(Denied::Kind);
+        }
+        Ok(Self { verified, scope })
+    }
 
-/// A local policy for one owner/epoch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    /// Foreign content remains immutable data, never policy instructions.
+    #[must_use]
+    pub fn content(&self) -> &[u8] {
+        self.verified.envelope().body()
+    }
+}
+
+/// One locally configured full-key grant in one host/session/policy context.
+///
+/// Policy replacement belongs to the host. A policy value cannot revoke
+/// capabilities that have already been passed to a different execution system.
+#[derive(Debug, Eq, PartialEq)]
 pub struct LocalPolicy {
-    owner: PeerId,
-    epoch: Epoch,
-    read_resource: Option<u32>,
+    context: VerificationContext,
+    requester: [u8; 32],
+    scope: Scope,
 }
 
 impl LocalPolicy {
-    /// Permit one in-memory resource for the owner at this policy epoch.
+    /// Grant one in-memory resource to exactly this signing key and context.
     #[must_use]
-    pub const fn read_memory(owner: PeerId, epoch: Epoch, resource: u32) -> Self {
+    pub const fn read_memory(
+        context: VerificationContext,
+        requester: [u8; 32],
+        resource: u32,
+    ) -> Self {
         Self {
-            owner,
-            epoch,
-            read_resource: Some(resource),
+            context,
+            requester,
+            scope: Scope {
+                operation: Operation::ReadMemory,
+                resource,
+            },
         }
     }
 
-    /// Authorize a request using only local policy; peer content cannot mint a capability.
+    /// Context the actual host must retain and compare during execution.
+    #[must_use]
+    pub const fn context(&self) -> VerificationContext {
+        self.context
+    }
+
+    /// Explicit locally granted scope.
+    #[must_use]
+    pub const fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    /// Full signing key of the locally granted requester.
+    #[must_use]
+    pub const fn requester(&self) -> &[u8; 32] {
+        &self.requester
+    }
+
+    /// Turn verified data into a move-only capability only for this exact grant.
     pub fn authorize(&self, request: RemoteRequest) -> Result<AuthorizedEffect, Denied> {
-        if request.scope.operation != Operation::ReadMemory
-            || self.read_resource != Some(request.scope.resource)
-        {
+        self.check_grant(
+            request.verified.context(),
+            request.verified.signer_key(),
+            request.scope,
+        )?;
+        Ok(AuthorizedEffect {
+            event_id: request.verified.envelope().event(),
+            context: request.verified.context(),
+            requester: *request.verified.signer_key(),
+            scope: request.scope,
+            expires_at: request.verified.expires_at(),
+        })
+    }
+
+    /// Check a prepared capability against the host's current policy and clock.
+    /// This read-only check does not execute or consume the capability. The host
+    /// must accept it by value and perform this check at the actual effect.
+    pub fn validate_effect(&self, effect: &AuthorizedEffect, now: u64) -> Result<(), Denied> {
+        self.check_grant(effect.context, &effect.requester, effect.scope)?;
+        if now > effect.expires_at {
+            return Err(Denied::Expired);
+        }
+        Ok(())
+    }
+
+    fn check_grant(
+        &self,
+        context: VerificationContext,
+        requester: &[u8; 32],
+        scope: Scope,
+    ) -> Result<(), Denied> {
+        if context.audience != self.context.audience {
+            return Err(Denied::Owner);
+        }
+        if context.epoch != self.context.epoch {
+            return Err(Denied::Epoch);
+        }
+        if context != self.context {
+            return Err(Denied::Context);
+        }
+        if requester != &self.requester {
+            return Err(Denied::Requester);
+        }
+        if scope != self.scope {
             return Err(Denied::Scope);
         }
-        Ok(AuthorizedEffect {
-            event_id: request.event_id,
-            scope: request.scope,
-            owner: self.owner,
-            epoch: self.epoch,
-            consumed: false,
-        })
+        Ok(())
     }
 }
 
-/// A capability that can only be created by [`LocalPolicy::authorize`].
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Sealed move-only capability. The execution boundary consumes this value.
+///
+/// ```compile_fail
+/// use vhalla_policy::AuthorizedEffect;
+/// fn duplicate(effect: AuthorizedEffect) { let _other = effect.clone(); }
+/// ```
+///
+/// ```compile_fail
+/// use vhalla_policy::{AuthorizedEffect, Scope};
+/// fn change_scope(effect: &mut AuthorizedEffect, scope: Scope) { effect.scope = scope; }
+/// ```
+#[derive(Debug)]
 pub struct AuthorizedEffect {
     event_id: EventId,
+    context: VerificationContext,
+    requester: [u8; 32],
     scope: Scope,
-    owner: PeerId,
-    epoch: Epoch,
-    consumed: bool,
+    expires_at: u64,
 }
 
 impl AuthorizedEffect {
-    /// Consume the capability for a host execution at the same owner and epoch.
-    pub fn consume(&mut self, owner: PeerId, epoch: Epoch) -> Result<EffectRequest, Denied> {
-        if self.consumed {
-            return Err(Denied::Consumed);
-        }
-        if owner != self.owner {
-            return Err(Denied::Owner);
-        }
-        if epoch != self.epoch {
-            return Err(Denied::Epoch);
-        }
-        self.consumed = true;
-        Ok(EffectRequest {
-            event_id: self.event_id,
-            scope: self.scope,
-        })
+    /// Event named by the authenticated request; a copy is ordinary data.
+    #[must_use]
+    pub const fn event_id(&self) -> EventId {
+        self.event_id
+    }
+    /// Locally authorized scope; a copy cannot alter the capability.
+    #[must_use]
+    pub const fn scope(&self) -> Scope {
+        self.scope
     }
 }
 
-/// The typed request accepted by the host effect runner.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EffectRequest {
-    /// Source event ID for the receipt.
-    pub event_id: EventId,
-    /// Allowlisted effect scope.
-    pub scope: Scope,
-}
-
-/// Why local authorization refused a request.
+/// Why local authorization or current-policy validation refused a request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Denied {
-    /// Requested operation/resource is not allowed.
+    /// Message kind is not a typed read request.
+    Kind,
+    /// Operation or resource has no local grant.
     Scope,
-    /// Caller is not the paired owner.
+    /// Audience differs from this host's owner identity.
     Owner,
-    /// Policy epoch is stale.
+    /// Policy epoch differs or a replacement does not advance it.
     Epoch,
-    /// Capability was already consumed.
-    Consumed,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-
-    #[test]
-    fn hostile_content_cannot_expand_scope() {
-        let policy = LocalPolicy::read_memory(PeerId(1), Epoch(1), 7);
-        let request = RemoteRequest {
-            event_id: EventId(9),
-            author: PeerId(99),
-            scope: Scope {
-                operation: Operation::ReadMemory,
-                resource: 8,
-            },
-            content: vec![b'!'; 128],
-        };
-        assert_eq!(policy.authorize(request), Err(Denied::Scope));
-    }
-
-    #[test]
-    fn capability_is_single_use_and_epoch_bound() {
-        let policy = LocalPolicy::read_memory(PeerId(1), Epoch(1), 7);
-        let request = RemoteRequest {
-            event_id: EventId(9),
-            author: PeerId(99),
-            scope: Scope {
-                operation: Operation::ReadMemory,
-                resource: 7,
-            },
-            content: vec![],
-        };
-        let mut capability = policy.authorize(request).unwrap();
-        assert_eq!(capability.consume(PeerId(2), Epoch(1)), Err(Denied::Owner));
-        assert!(capability.consume(PeerId(1), Epoch(1)).is_ok());
-        assert_eq!(
-            capability.consume(PeerId(1), Epoch(1)),
-            Err(Denied::Consumed)
-        );
-    }
+    /// Realm, room, or session differs from the local context.
+    Context,
+    /// The complete signing key has no local grant.
+    Requester,
+    /// The signed request expired before actual execution.
+    Expired,
 }

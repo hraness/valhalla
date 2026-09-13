@@ -11,7 +11,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use vhalla_core::{parse_untrusted, EventId, ParseError, PeerId, RealmId, RoomId, Sequence};
+use vhalla_core::{EventId, ParseError, PeerId, RealmId, RoomId, Sequence};
 
 /// The only wire version currently understood by this prototype.
 pub const WIRE_VERSION: u8 = 1;
@@ -23,22 +23,31 @@ pub const HEADER_BYTES: usize = 78;
 pub const MAX_BODY_BYTES: usize = vhalla_core::MAX_ENVELOPE_BYTES - HEADER_BYTES;
 
 /// A structurally valid, still-untrusted envelope.
+///
+/// Construction and decoding enforce the size and kind invariants. Fields have
+/// no mutable projections, so encoding cannot serialize a subsequently enlarged
+/// or invalid body.
+///
+/// ```compile_fail
+/// use vhalla_wire::Envelope;
+/// fn enlarge(envelope: &mut Envelope) { envelope.body.push(0); }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Envelope {
     /// Application-defined message kind.
-    pub kind: u8,
+    kind: u8,
     /// The peer that authored the event (signature verification is separate).
-    pub author: PeerId,
+    author: PeerId,
     /// Realm namespace containing the room.
-    pub realm: RealmId,
+    realm: RealmId,
     /// Room namespace containing the event.
-    pub room: RoomId,
+    room: RoomId,
     /// Unique event identifier.
-    pub event: EventId,
+    event: EventId,
     /// Sender sequence used for ordering and replay policy.
-    pub sequence: Sequence,
+    sequence: Sequence,
     /// Opaque message body. It is never interpreted by this crate.
-    pub body: Vec<u8>,
+    body: Vec<u8>,
 }
 
 /// Stable failures from the bounded wire decoder.
@@ -109,6 +118,46 @@ impl From<ParseError> for DecodeError {
 }
 
 impl Envelope {
+    /// Application-defined, nonzero message kind.
+    #[must_use]
+    pub fn kind(&self) -> u8 {
+        self.kind
+    }
+    /// Claimed author handle; this getter grants no authentication.
+    #[must_use]
+    pub fn author(&self) -> PeerId {
+        self.author
+    }
+    /// Realm namespace.
+    #[must_use]
+    pub fn realm(&self) -> RealmId {
+        self.realm
+    }
+    /// Room namespace.
+    #[must_use]
+    pub fn room(&self) -> RoomId {
+        self.room
+    }
+    /// Claimed event identifier.
+    #[must_use]
+    pub fn event(&self) -> EventId {
+        self.event
+    }
+    /// Claimed sender sequence.
+    #[must_use]
+    pub fn sequence(&self) -> Sequence {
+        self.sequence
+    }
+    /// Opaque, immutable content bytes.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+    /// Exact canonical byte count, without allocating an encoding.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        HEADER_BYTES + self.body.len()
+    }
     /// Build a chat envelope for the initial steel thread.
     #[must_use]
     pub fn chat(
@@ -165,8 +214,13 @@ impl Envelope {
 
     /// Decode a bounded byte slice into an untrusted envelope.
     pub fn decode(raw: &[u8]) -> Result<Self, DecodeError> {
-        let bounded = parse_untrusted(raw).map_err(DecodeError::from)?;
-        Self::decode_bounded(bounded.as_bytes())
+        if raw.len() > vhalla_core::MAX_ENVELOPE_BYTES {
+            return Err(DecodeError::TooLarge {
+                actual: raw.len(),
+                limit: vhalla_core::MAX_ENVELOPE_BYTES,
+            });
+        }
+        Self::decode_bounded(raw)
     }
 
     fn decode_bounded(raw: &[u8]) -> Result<Self, DecodeError> {

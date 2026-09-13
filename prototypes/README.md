@@ -24,16 +24,19 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | [`checkpoint-ledger`](checkpoint-ledger/README.md) | Certificate/history checks, conditional bundle/pin persistence, crash recovery, and optional Unix storage |
 | `ecology` | Deterministic Platonik-style composition and lineage replay |
 | `immune-cancer` | Quarantine, appeal, revocation, and runaway-lineage containment |
+| [`native-quic`](native-quic/README.md) | Actual bounded QUIC exchange between two native processes, loopback-only fixture identities |
 | `extension-interop` | Opaque future objects, negotiation, and downgrade resistance |
 | Existing forks | `wire-format`, `transport`, `discovery`, `browser`, `privacy`, `effects`, and `replication` |
 
-Run every prototype with:
+Fetch locked dependencies first when running on a new machine. The native QUIC
+experiment opens loopback UDP sockets and starts owned child processes; the other
+references use local models. Run every prototype with:
 
 ```console
 for manifest in prototypes/*/Cargo.toml; do
   cargo fmt --manifest-path "$manifest" -- --check
-  cargo test --manifest-path "$manifest" --offline
-  cargo clippy --manifest-path "$manifest" --all-targets --offline -- -D warnings
+  cargo test --manifest-path "$manifest" --locked --offline
+  cargo clippy --manifest-path "$manifest" --all-targets --locked --offline -- -D warnings
 done
 ```
 

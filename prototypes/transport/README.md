@@ -6,22 +6,17 @@ reordering, relay fallback, and bounded inboxes. It deliberately has no
 network dependency, because pulling a full transport stack into a throwaway
 comparison would hide the actual browser and footprint tradeoffs.
 
-The comparison is:
+The original stack comparison was a hypothesis, not a footprint or connectivity
+measurement. Follow the [dated transport decision](../../kb/plans/valhalla-promotion-gates.md#transport-decision-after-current-source-review)
+for current candidates: libp2p browser WebRTC-direct dials native peers, while
+Iroh browser connections are relayed. Direct browser-to-browser connectivity
+remains a separate experiment. This prototype executes neither stack and does
+not establish which is smallest or suitable for embedded devices.
 
-- **Iroh:** the smallest native-first candidate and a good relay-backed QUIC
-  path, but browser traffic is relay-dependent today.
-- **libp2p:** more protocol surface, but the stronger fit when direct browser
-  connectivity is a first-class requirement; WebRTC and relay adapters remain
-  replaceable.
-- **IRC/Nostr/Matrix:** useful interoperability or federation references, but
-  they do not satisfy the desired direct peer-first topology as the primary
-  runtime.
-
-Recommendation: keep this transport-neutral event seam, then prototype
-libp2p first because browser capability is a stated priority. Keep the
-transport crate feature-gated and allow an embedded profile to omit browser
-and discovery features. A relay can drop, delay, duplicate, or reorder events;
-it must never be treated as an authority or durable store.
+Retain the transport-neutral event seam while real native and browser spikes
+qualify the adapters. Keep small core profiles independent of the full network
+stack. A relay can drop, delay, duplicate or reorder events; it is neither an
+authority nor evidence of durable storage.
 
 Run:
 

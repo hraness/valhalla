@@ -1,5 +1,5 @@
 ---
-title: Valhalla prototype promotion gates
+title: Valhalla readiness and promotion gates
 type: plan
 area: valhalla-promotion
 status: in-progress
@@ -12,12 +12,12 @@ tags:
   - wasm
 ---
 
-# Valhalla prototype promotion gates
+# Valhalla readiness and promotion gates
 
 **Status:** in progress; narrow primitives exist, integration gates remain open
 **Date:** 2026-09-12  
-**Scope:** the evidence and integration gates required before hardened
-reference prototypes can become part of the `vhalla-*` production workspace
+**Scope:** a usable native/browser agent room, its security and operational
+evidence, and selective promotion of reference code into `vhalla-*` crates
 
 This plan turns the prototype hardening wave into a reviewable promotion path.
 The prototypes are useful models, but their passing tests do not automatically
@@ -54,9 +54,136 @@ The promotion result should be a small, portable Rust protocol core in which:
 6. the end-to-end steel thread demonstrates that remote data cannot mint or
    widen a host capability.
 
-The result is still an event and receipt layer. It does not, by itself, create
-a global blockchain, a currency, a browser UI, or a claim that an agent is
-autonomous.
+The event and receipt layer is a prerequisite, not the whole product. The
+standing implementation objective also includes a usable `vhalla` command,
+browser participation, autonomous discovery, and a real game consumer. Do not
+declare readiness after completing only the reference models below.
+
+## Product acceptance and implementation order
+
+The source audit at `c373c71` found no socket transport, browser application,
+installed CLI, persisted network identity, signed invitation parser, room
+membership protocol, or connection lifecycle. The in-memory transport,
+browser pairing, and discovery experiments are models. In particular, browser
+pairing uses equality checks, replication retains an unbounded seen-ID set,
+and the game-session model uses unauthenticated integer approvers and toy
+hashes. None may be imported as a production security boundary.
+
+| Slice | Required observable result | Status and admission evidence |
+| --- | --- | --- |
+| 1. Authority and message sessions | A message crosses bounded decoding, strict signature and full-key/context checks, retained replay state, explicit requester policy, and host-owned execution context | Repair first: baseline authorization was cloneable and its public effect request bypassed policy. Require exploit regressions, compile-fail boundaries, expiry and rotation tests, and no effect on denial. Only the in-memory read exists; OS effects stay absent. |
+| 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | Implement bounded transport, private identity creation/reopen, explicit full-key invitations and a JSON-lines agent interface. Test wrong peer/room/epoch, malformed frames, timeout, queue pressure, loss and reconnect. Measure executable size, idle RSS, latency and connections. A localhost echo spike alone does not pass. |
+| 3. Browser participation | A Rust/WASM browser joins the same room, displays foreign text safely, and sends authenticated messages | Execute in a real browser, not only `cargo check`. Verify key custody, origin/CSP, tab restart, explicit owner pairing, failure paths and direct versus relay routing. Generated browser binding glue is allowed; no authored JS/TS protocol implementation. |
+| 4. Resilient rooms and discovery | Three peers converge on bounded chat history, survive one peer/relay loss, and bootstrap through interchangeable signed hints | Separate delivered, locally stored, replicated and executed states. Define concurrent ordering and retention without abusing the linear checkpoint ledger as multiwriter consensus. Qualify two replaceable bootstrap/relay choices, identity rotation and recovery without silently resetting replay state. |
+| 5. A real game | Platonik runs through an optional Valhalla session adapter and a receiver independently verifies the result | Preserve exact versioned inner artifacts, charge verification budgets, request large traces separately, and test tampering, duplication, wrong ruleset/case, pause/resume and failed exchange evidence. Keep game authority explicit; multiplayer does not imply permissionless finality. |
+| 6. Usable distribution | A clean machine can install, initialize, invite, join, recover and remove Valhalla using documented commands | Admit locked dependency/license/advisory/provenance evidence, bounded decoder fuzzing, native/WASM execution vectors, exact toolchain and release artifacts, real target builds, restore drills and performance budgets based on measurements. Check `vh` availability before offering it as an optional alias; never overwrite another command. |
+
+Each slice needs a named implementation owner, independent review, current-tree
+repository gates, and a reproducible user journey. Record limitations alongside
+evidence. The coordinator owns final integration and delivery. Tests are not a
+security audit, and availability cannot be guaranteed across partitions or
+without reachable peers. Persisted owner identity and session freshness are
+required before advertising unattended network agents.
+
+Checkpoint rotation, protected pins, settlement and botcaptcha remain useful
+parallel investigations. They do not block chat-only slices unless those slices
+actually depend on their guarantees. There is no default remote shell/tool
+execution, token issuance, or autonomous value transfer in the first room.
+
+### Transport decision after current-source review
+
+As of 2026-09-12, retain **libp2p as a candidate**, subject to execution evidence.
+The released Rust `libp2p` 0.57.0 requires Rust 1.88; its native WebRTC adapter
+0.10.0-alpha is still alpha. The browser adapter 0.5.0 dials WebRTC-direct peers
+but rejects listening. It does not establish direct browser-to-browser support.
+See the [published manifest](https://docs.rs/crate/libp2p/0.57.0/source/Cargo.toml)
+and [browser transport source](https://docs.rs/crate/libp2p-webrtc-websys/0.5.0/source/src/transport.rs).
+
+The first disposable native spike uses QUIC, explicit expected transport peer
+identity, a bounded binary codec, and no discovery service. Browser-to-native
+WebRTC follows independently. Cap connections, concurrent requests, stream and
+receive windows, frame bytes, queues and deadlines inside the adapter. Keep
+transport identity separate from the application signing key and local policy.
+Relay admission later requires explicit reservation, circuit, duration, byte
+and rate limits, with two interchangeable relay processes.
+
+The executable reference now lives in `prototypes/native-quic`, excluded from
+the workspace. It exchanges 17-byte and full 65,536-byte payloads between
+separate native processes and rejects a substituted transport PeerId. The first
+reconnect attempt exposed a lingering connection slot; the repaired sender
+disconnects and the test waits for the listener's close event before reuse.
+Fixture keys are public and sockets are loopback-only. Passing this test is
+transport interoperability evidence, not application authentication, private
+identity custody, Internet reachability or browser support. Its native graph
+contains 195 normal/build dependencies; the unoptimized arm64 binary measured
+about 19.7 MB with debug information disabled. This supports keeping the stack
+in an optional host adapter rather than the portable core. Build RSS and test
+duration in its README are not idle-memory or latency benchmarks.
+
+Iroh 1.2.0 is an alternative when browser relay traffic is acceptable. Its
+[browser documentation](https://docs.iroh.computer/languages/wasm-browser)
+states that browser connections are relayed. Use explicit custom relays and a
+minimal preset for an experiment; provider DNS and public bootstrap defaults
+must not become protocol dependencies. Neither library alone currently closes
+the direct browser-to-browser requirement.
+
+For that fork, a bounded two-browser WebRTC experiment must inspect the selected
+ICE path, continue after signaling stops, reconnect through another signaling
+service, and fail clearly when a direct path is unavailable. The Rust
+[Matchbox implementation](https://github.com/johanhelsing/matchbox) can serve as
+an interoperability oracle, but its 0.14.0 socket code has unbounded internal
+queues and public STUN defaults. An outer frame bound does not fix those queues;
+do not admit it unchanged. All authored application code can remain Rust, but
+browser bindings need generated JavaScript and transport TLS dependencies may
+include C/assembly. Embedded/no-`std` claims apply only to separately verified
+small core profiles, not the complete native network stack.
+
+### Platonik boundary after inspection of the latest engine
+
+Reviewed Platonik commit
+[`76ea2db`](https://github.com/hraness/platonik/tree/76ea2db82abf0e146f1a2abb9d89b5848289e0f6).
+The active checkout also contains another task's uncommitted exchange-capacity
+work; that work is preserved and is not treated as released evidence.
+
+| Option | Benefit | Cost | Decision |
+| --- | --- | --- | --- |
+| Move the complete core into the base platform | Immediate access to all current experiments | Couples networking and security to game rules, graders, fixtures, `std` and JSON | Do not make this the default platform dependency |
+| Extract a shared deterministic kernel immediately | Could unify metering and replay | Extraction can change canonical bytes, fuel semantics, historical results and charged work | Require parity evidence before moving semantics |
+| Optional game adapter, then proven shared pieces | Reuses the actual engine while keeping the portable platform small | Requires bounded artifacts, evaluator budgets and target qualification | Start here |
+
+The current Rust engine is a finite rule machine with typed game actions, not
+the Lisp imagined in the original botcaptcha proposal. Its useful foundations
+are bounded input, a pinned ruleset, deterministic execution, cumulative work
+accounting, replay and independently checked outcomes. Platonik's
+`check::verify_receipt` reruns the experiment; a hash or a remotely supplied
+verification report does not replace that check. Introduce private immutable
+`VerifiedRun` evidence only after the adapter has verified locally.
+
+Preserve exact Serde JSON receipt hashes and protocol versions: canonical input
+bytes are charged work, and fuel failure rolls back staged effects while
+retaining consumed work. A naive serializer change or replacement fuel counter
+could change the economics. Keep habitat types, interpreter semantics, grades,
+fixtures and economy in the adapter. The smallest candidate shared contract is
+versioned session input, ruleset identity, explicit work allowance, ordered
+replay inputs, checkpoint identity and checked-result evidence. Its game-facing
+API must not expose files, networks, wall clock, signing keys or host commands.
+
+The next cross-repository spike uses the exact committed engine in a disposable
+Rust harness: send ruleset digest, case ID and bounded experiment identity;
+independently execute and verify at the receiving peer; compare unchanged
+hashes, traces, costs and exchange grades across reference worlds and failure
+controls; then test tampered/rehashed receipts, wrong model/case, duplicate and
+stale sessions, oversized input and pause/resume without resetting fuel.
+Measure verification count, memory and artifact sizes before choosing chunk
+defaults, and run the same engine under WASM before claiming portability.
+
+`bloom_exchange` supplies a useful request → custody → provenance-bearing
+acknowledgment → service model and rejects contradictory failed attempts too.
+Its simulator provenance is not peer authentication. Committed Bloom receipts
+already reach roughly 1.25 MB, so traces belong in explicitly requested bounded
+artifacts, not 64 KiB room frames. Program size, charged work, demonstrated
+ability and money remain distinct; complexity or botcaptcha cannot mint host
+authority, prove agency or establish financial value.
 
 ## Current boundary and promotion rule
 
@@ -90,6 +217,52 @@ bounded replay primitive, while durable receipt retention remains an explicit
 ledger/host concern.
 
 ## Execution status
+
+### Message and effect authority repair — 2026-09-12
+
+Two isolated tests reproduced the old public-API bypasses against `c373c71`:
+a fabricated, copyable `EffectRequest` executed without policy, and one
+authorization could be cloned into two executions. A foreign requester was
+also accepted by an author-agnostic scope grant. These were defects in the
+demonstration boundary; the host only counted in-memory reads and exposed no
+OS command or file operation.
+
+The repaired path consumes a signed message into private, immutable,
+non-cloneable `VerifiedEnvelope` evidence. Verification checks the full key,
+strict Ed25519 signature, owner, realm, room, epoch, session, expiry and a
+bounded full-key replay frontier before returning evidence. Invalid traffic
+does not mutate that frontier. `RemoteRequest` consumes that proof and checks
+the typed request kind. Local policy grants one exact key, context and scope;
+`AuthorizedEffect` moves into the host, whose own current policy and injected
+clock are checked immediately before execution. The fabricable effect request
+and unrestricted runner trait are removed. Policy replacement must advance the
+epoch in the same owner/realm/room/session; old prepared capabilities fail.
+
+The signed transport format is now **v2**, with an explicit version and signed
+epoch/session. Legacy unversioned signed frames are rejected; there is no
+automatic downgrade. The inner unsigned envelope retains its canonical v1
+bytes and now has private fields. The complete signed frame, not just its body,
+must fit in 65,536 bytes; the maximum signed body is 65,341 bytes. This is an
+intentional pre-release API/protocol break. No deployed network or signed
+message store depended on the previous format.
+
+`MemorySession` keeps verification and host policy together across successive
+deliveries, pins one full key, rejects weak-key configuration, and changes its
+verifier only after a valid policy rotation. Integration tests cover duplicate
+and reordered delivery, forged or expired traffic, wrong room/key, authenticated
+chat denied as an effect, maximum-size frames, failed rotation preserving replay
+state, and valid key/epoch rotation. Generated schedules compare each effect
+count with an independent high-water model. Compiler tests reject fabricated
+requests, mutated verified evidence, capability cloning and reuse after move.
+
+This is **in-process, volatile** protection. Trusted local code still configures
+policy and supplies the clock. Constructing another replay window with the same
+context or restoring old process state can reopen old requests; native identity,
+fresh-session negotiation and persistence must address this before unattended
+network operation. Move-only types do not provide durable exactly-once effects,
+defend a compromised process, or stop model prompt injection. Public receipts
+are observations of the local demonstration, not signed execution attestations.
+The workspace no-`std` policy/host boundary still needs runtime target evidence.
 
 Gate 0 is complete against baseline commit `b0d091c`: the workspace was clean,
 the production aggregate tests and Clippy gate passed, and the prototype
@@ -166,7 +339,7 @@ reference for `wasm32-unknown-unknown`; this expands the former core-only gate.
 The local Homebrew Rust installation lacks that target, so CI owns cross-target
 evidence. Compilation alone does not satisfy native/WASM execution agreement.
 
-**Next bounded targets:** prototype the explicit trust/epoch transition below,
+**Checkpoint-specific next targets:** prototype the explicit trust/epoch transition below,
 including competing transitions and interrupted rotation recovery. Specify a
 protected-pin backend contract separately from ordinary filesystem storage;
 qualify real crash behavior before claiming it. Add bounded retention/compaction
@@ -476,10 +649,10 @@ duplicate/reorder/loss tests; policy epoch rotation; checkpoint recovery;
 receipt replay rejection; and a compile-fail or API-level proof that remote
 content cannot construct an `AuthorizedEffect`.
 
-**Recovery:** keep the existing steel thread as the fallback path, disable the
-new evidence kind by feature/version negotiation, and preserve old receipts and
-anchors. A failed integration must not broaden policy or silently downgrade
-verification.
+**Recovery:** disable the affected effect/evidence path while preserving receipts
+and anchors. A rollback must retain the repaired authorization boundary; never
+restore the old raw request or cloneable capability APIs. A failed integration
+must not broaden policy or silently downgrade signed framing or verification.
 
 ### Gate 6: portability and operational admission
 
@@ -544,7 +717,8 @@ This plan does not authorize or promise:
 - a global blockchain, permissionless consensus, token, or redeemable currency;
 - treating program complexity, Botcaptcha work, hardware fingerprints, or TEE
   evidence as proof of agency or as a substitute for authorization;
-- a browser UI, JavaScript/TypeScript implementation, or hosted relay service;
+- an authored JavaScript/TypeScript protocol implementation or an indispensable
+  hosted relay service (a Rust/WASM browser client is in product scope);
 - transparent persistence of private prompts, game state, or owner metadata;
 - availability through partitions, honest relays, or stable network identity;
 - recovery from a compromised owner host, browser origin, kernel, or key store;

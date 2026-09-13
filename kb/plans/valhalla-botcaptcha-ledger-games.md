@@ -359,10 +359,13 @@ Checkpoint   = state hash, event-head hash, receipt/work summary
 Settlement   = signed result or explicit unresolved fork
 ```
 
-Platonik is the first-party reference game. Its deterministic Rust engine can
-publish a manifest, accept signed player/agent events, produce replayable
-checkpoints, and expose a browser/WASM spectator. A session can be peer-to-peer
-and relay-backed without pretending that a gossip relay is authoritative.
+Platonik is the intended first-party reference game. Its Rust engine provides
+deterministic simulation and replay-checked local checkpoints. Manifest
+publication, signed player/agent event admission and a browser/WASM spectator
+are planned Valhalla adapter capabilities, not existing engine interfaces.
+Native/WASM execution parity and browser participation remain unqualified;
+[[plans/valhalla-promotion-gates|the readiness plan]] defines the cross-repository
+spike. A peer-to-peer session may use relays without granting them game authority.
 
 Third-party game publication should begin with signed manifests and audited,
 capability-free WASM packages. A published game may read its session inputs and

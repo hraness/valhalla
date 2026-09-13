@@ -15,7 +15,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use vhalla_core::{Epoch, PeerId, RealmId, Sequence};
 
@@ -161,6 +161,8 @@ pub enum ClaimDecodeError {
 /// Errors from context, signature, and replay verification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClaimVerifyError {
+    /// Weak Ed25519 keys cannot identify an authenticated issuer.
+    WeakKey,
     /// The signing key does not match the embedded issuer.
     IssuerMismatch,
     /// The claim domain differs from the expected context.
@@ -195,7 +197,7 @@ struct ReplayScope {
     realm: RealmId,
     session: SessionId,
     audience: PeerId,
-    issuer: PeerId,
+    issuer: [u8; 32],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,7 +374,7 @@ impl SignedClaim {
         now: u64,
     ) -> Result<(), ClaimVerifyError> {
         self.verify_context(key, expected, now)?;
-        key.verify(&transcript(self), &Signature::from_bytes(&self.signature))
+        key.verify_strict(&transcript(self), &Signature::from_bytes(&self.signature))
             .map_err(|_| ClaimVerifyError::InvalidSignature)
     }
 
@@ -382,6 +384,9 @@ impl SignedClaim {
         expected: ClaimContext,
         now: u64,
     ) -> Result<(), ClaimVerifyError> {
+        if key.is_weak() {
+            return Err(ClaimVerifyError::WeakKey);
+        }
         if self.claim.expires_at <= self.claim.issued_at {
             return Err(ClaimVerifyError::InvalidLifetime);
         }
@@ -436,12 +441,13 @@ impl ClaimReplayWindow {
         }
     }
 
-    /// Create an empty replay window with an explicit bounded scope limit.
+    /// Create a window with an explicit scope limit, capped at
+    /// [`DEFAULT_REPLAY_LIMIT`]. Zero admits no new scopes.
     #[must_use]
     pub fn with_limit(limit: usize) -> Self {
         Self {
             accepted: BTreeMap::new(),
-            limit,
+            limit: limit.min(DEFAULT_REPLAY_LIMIT),
         }
     }
 
@@ -459,7 +465,7 @@ impl ClaimReplayWindow {
             realm: signed.claim.realm,
             session: signed.claim.session,
             audience: signed.claim.audience,
-            issuer: signed.issuer,
+            issuer: key.to_bytes(),
         };
         let accepted = Accepted {
             epoch: signed.claim.epoch,
@@ -563,6 +569,24 @@ mod tests {
             audience: PeerId(55),
             epoch: Epoch(epoch),
         }
+    }
+
+    #[test]
+    fn weak_issuer_is_rejected_and_replay_scope_limit_is_hard_bounded() {
+        let mut identity = [0; 32];
+        identity[0] = 1;
+        let key = VerifyingKey::from_bytes(&identity).unwrap();
+        let expected = context(2);
+        let claim = Claim::new(expected, SubjectDigest([1; 32]), Sequence(1), 10, 20).unwrap();
+        let mut signed = sign_claim(claim, [7; 32]);
+        signed.issuer = super::super::peer_id_from_key(&key);
+        let mut window = ClaimReplayWindow::with_limit(usize::MAX);
+        assert_eq!(window.limit, DEFAULT_REPLAY_LIMIT);
+        assert_eq!(
+            window.verify_and_accept(&signed, &key, expected, 15),
+            Err(ClaimVerifyError::WeakKey)
+        );
+        assert!(window.accepted.is_empty());
     }
 
     #[test]

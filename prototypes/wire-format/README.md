@@ -1,6 +1,6 @@
 # Wire-format prototype
 
-This is a throwaway, dependency-free Rust experiment for one Valhalla protocol fork: the bytes that are signed for an event envelope. It is reference material for the eventual `vhalla-wire` crate, not a production parser.
+This is a throwaway, dependency-free Rust experiment for one Valhalla protocol fork: the bytes that are signed for an event envelope. It is historical reference material; the current `vhalla-wire` crate uses a separate format.
 
 ## What it compares
 
@@ -19,9 +19,9 @@ Both formats expose `Envelope::signing_transcript(format)`. The signature is int
 - Unknown fields are retained only as names in `ignored_unknown_fields`; they never enter the trusted envelope or signing transcript.
 - Version `!= 1` is rejected. A future schema must be admitted explicitly rather than silently changing the signed meaning.
 
-## Recommendation
+## Historical recommendation
 
-Choose **canonical CBOR as the protocol wire format**. Keep a canonical JSON projection only for diagnostics, fixtures, and human tooling; never accept a JSON projection as an alternative unsigned command path. Specify the selected CBOR canonicalization profile in the protocol (definite lengths, key ordering, integer width rules, duplicate-key rejection, and unknown-field policy), then replace this hand-written codec with an audited Rust implementation and cross-language golden vectors.
+This experiment originally favored canonical CBOR over its JSON alternative. That recommendation is superseded for application envelopes: [the current wire crate](../../crates/vhalla-wire/src/lib.rs) retains fixed-field v1 bytes, wrapped in [signed framing v2](../../crates/vhalla-crypto/src/lib.rs). Neither experimental codec is an accepted alternative message path. The [readiness plan](../../kb/plans/valhalla-promotion-gates.md) tracks format review, rejection vectors and target qualification; an extensible object may justify a separate encoding decision later.
 
 The experiment deliberately has no crates.io dependencies, so its tests can run offline. The hand-written JSON and CBOR codecs are not suitable for production until replaced or independently audited.
 

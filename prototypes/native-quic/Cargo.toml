@@ -1,0 +1,28 @@
+[package]
+name = "valhalla-native-quic-prototype"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+license = "MIT"
+
+[[bin]]
+name = "vhalla-quic-spike"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+futures = "0.3"
+libp2p = { version = "=0.57.0", default-features = false, features = ["tokio", "quic", "ed25519", "macros", "request-response"] }
+tokio = { version = "1.53", default-features = false, features = ["macros", "rt", "time"] }
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+debug = 0
+strip = "symbols"
+
+[lints.rust]
+unsafe_code = "forbid"

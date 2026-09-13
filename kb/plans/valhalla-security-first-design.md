@@ -2,7 +2,7 @@
 title: Valhalla security-first design plan
 type: plan
 area: valhalla-security
-status: proposed
+status: in-progress
 tags:
   - security
   - p2p
@@ -12,16 +12,17 @@ tags:
 
 # vhalla (valhalla) security-first design plan
 
-**Status:** design draft  
+**Status:** implementation in progress; product readiness remains unaccepted
 **Scope:** protocol, core runtime, browser boundary, and host integration  
 **Date:** 2026-09-12
 
 This document is the design contract for **vhalla (valhalla)**: a portable,
 peer-to-peer coordination protocol with IRC-like ergonomics for agents and
 humans. The command is `vhalla`; public documentation calls the product
-Valhalla. The repository is still in design mode. This plan is intentionally
-more specific than the README, but it does not claim that an implementation
-exists.
+Valhalla. The repository contains narrow Rust implementations and disposable
+experiments. This plan also describes unimplemented requirements; the current
+evidence and next product slices are maintained in
+[[plans/valhalla-promotion-gates|the readiness and promotion plan]].
 
 ## Decision in one paragraph
 
@@ -166,32 +167,35 @@ fuzz/                      bounded cargo-fuzz targets
 vectors/                   versioned cross-target protocol fixtures
 ```
 
-The workspace sets shared `rustfmt`, Clippy, documentation, and dependency
-lints. Core, wire, crypto, and policy crates use `#![forbid(unsafe_code)]`,
-`#![deny(missing_docs)]`, explicit feature flags, and no filesystem, process,
-network, model, or browser imports. `Cargo.lock` and the toolchain file are
-part of the reviewed source state. A dependency must be justified by the
-boundary it serves, pinned by the lockfile, and checked for license,
-provenance, and advisories before admission.
+The workspace shares Clippy and Rust lints. Core, wire, crypto, and policy
+forbid unsafe code, warn on missing documentation, and have no filesystem,
+process, network, model, or browser imports. Clippy's warnings-as-errors gate
+enforces the documentation warning during validation. `Cargo.lock` is committed;
+an exact toolchain file and dependency/license/advisory admission automation
+remain readiness requirements. A dependency must be justified by its boundary
+and reviewed before admission.
 
 ### Testing foundation before networking
 
 Every pure module gets focused unit tests beside its implementation. Cross-
 crate behavior lives in `crates/*/tests/`, and shared protocol fixtures live
-in `vectors/`. Tests must not use wall-clock time, ambient randomness,
+in `vectors/`. Pure tests must not use wall-clock time, ambient randomness,
 network access, the local home directory, or provider credentials; inject a
-clock, entropy source, and store so a test can replay the same result.
+clock, entropy source, and store so a test can replay the same result. Real
+transport qualification tests separately use bounded local processes, loopback
+sockets and deadlines, with owned-process cleanup and no provider credentials.
 
 The initial test stack is:
 
-- `cargo test --workspace --all-targets --all-features` for unit,
-  integration, and documentation tests;
+- `cargo test --workspace --all-targets --all-features` for unit and integration
+  tests, plus `cargo test --workspace --doc` for documentation tests;
 - `proptest` for parser, canonicalization, ordering, expiry, deduplication,
   capability scope, and state-machine laws, with checked-in regression cases;
-- `trybuild` compile-fail tests proving that unverified events cannot call
-  effect APIs and external crates cannot construct capabilities;
-- `cargo-fuzz`/libFuzzer targets for bounded wire, manifest, envelope, and
-  intent parsers, with corpus limits and no side effects;
+- compile-fail doctests proving that unverified events cannot call effect APIs
+  and external crates cannot construct capabilities (`trybuild` is optional
+  when a case needs more detailed compiler diagnostics);
+- planned `cargo-fuzz`/libFuzzer targets for bounded wire, manifest, envelope,
+  and intent parsers, with corpus limits and no side effects;
 - deterministic transport/state simulations once those crates exist, covering
   loss, reorder, duplication, delay, partition, and quota exhaustion;
 - `cargo check --target wasm32-unknown-unknown` and the same protocol/vector
@@ -370,10 +374,13 @@ traceable list of compiler-, runtime-, host-, and operational-enforced claims.
 command and E2E receipt test, and no unsafe code or authored JS/TS in the
 foundation crates.
 
-The current steel-thread checkpoint is implemented by `vhalla-steel-thread`:
-`vhalla-crypto` signs and verifies the bounded envelope, `vhalla-transport`
-only forwards opaque frames, `vhalla-policy` mints a single-use local
-capability, and `vhalla-host` accepts only the resulting typed effect.
+The in-memory checkpoint is implemented by `vhalla-steel-thread`. The
+2026-09-12 audit found that its original cloneable capability and publicly
+constructible effect request did not enforce the intended single-use boundary.
+The repair requires a consumed verified message, explicit full-key requester
+grant, move-only capability and host-owned policy validation at execution.
+Production readiness additionally requires retained session replay state,
+expiry/context checks, restart freshness and actual native/browser ingress.
 
 ### Phase 2 — identity, envelopes, and replay
 
@@ -459,17 +466,20 @@ The first fork pass lives under `prototypes/`. Each prototype is intentionally
 small, dependency-light, and disposable; it tests a boundary or failure mode
 rather than claiming production security. The current decisions are:
 
-- **Wire:** choose canonical CBOR for signed protocol envelopes. The
-  `prototypes/wire-format` experiment shows typed bytes, smaller transcripts,
-  definite-length maps, duplicate-key rejection, and bounded decoding. Keep a
-  canonical JSON projection for diagnostics, fixtures, and human tooling only;
-  replace the hand-written codec with an audited Rust implementation and
-  cross-target golden vectors before production.
+- **Wire:** retain the bounded fixed-field application envelope currently
+  implemented in `vhalla-wire`; version changes in signed framing explicitly.
+  The earlier canonical-CBOR preference came from `prototypes/wire-format`,
+  not the implemented codec. Do not add a serialization dependency solely to
+  match that preference. Require reviewed canonical bytes, bounds, rejection
+  vectors and cross-target execution for the actual format. Consider CBOR for
+  a concrete extensible object only when its benefit is demonstrated.
 - **Transport:** keep application events independent from sockets and model
   relay loss, duplication, reordering, and bounded inboxes at that seam. The
   `prototypes/transport` experiment supports a libp2p-first investigation
-  because direct browser capability is a priority. Keep Iroh as a native-first
-  optional adapter and make relay fallback explicit; no relay is an authority
+  because browser capability is a priority. Current-source review shows Rust
+  libp2p browser transport dials native WebRTC-direct peers; Iroh browser traffic
+  is relayed. Direct browser-to-browser remains a separate experiment. Follow
+  the dated source evidence in the readiness plan; no relay is an authority
   or durable store.
 - **Private messaging:** use pairwise owner DMs in the first secure release.
   The `prototypes/privacy` membership-epoch model shows why group membership
@@ -478,10 +488,11 @@ rather than claiming production security. The current decisions are:
   revocation semantics have a complete design.
 - **Effects and history:** keep a typed capability/effect boundary separate
   from bounded local history. The `prototypes/effects` experiment shows that
-  remote requests remain inert, local policy is the only capability minting
-  path, single-use/epoch checks are explicit, and history can deduplicate and
-  evict within count/byte limits. The production runner should be a separate
-  process or WASI-style boundary, not a general plugin API.
+  remote requests remain inert and history can deduplicate within count/byte
+  limits. Its cloneable capabilities only model per-instance consumption; they
+  are not a compiler-enforced single-use boundary. Use the repaired workspace
+  policy/host seam as the current reference. A future OS runner needs separate
+  process or WASI isolation beyond the present in-memory host.
 - **History replication:** keep live delivery, local storage, and durable
   replication as separate states. The `prototypes/replication` experiment
   makes merges idempotent, orders concurrent events deterministically, bounds
@@ -497,14 +508,16 @@ rather than claiming production security. The current decisions are:
   postMessage validation, and revocation.
 
 These are provisional architecture decisions, not release claims. The next
-implementation phase must replace hand-written codecs and placeholder key
-fingerprints with vetted libraries, signed vectors, adversarial tests, and
-measured native/WASM builds.
+implementation phase must replace placeholder identity checks with real
+cryptographic verification and qualify actual codecs through review, vectors,
+adversarial tests and measured native/WASM execution. Replace an existing
+codec only when a demonstrated need justifies a versioned migration.
 
 ## Remaining forks and production gates
 
-1. **Wire productionization:** select and audit the canonical CBOR crate,
-   finalize integer/key ordering and unknown-field policy, and freeze vectors.
+1. **Wire productionization:** freeze vectors for the actual bounded binary
+   format, finalize version and unknown-field policy, and run native/WASM
+   execution and decoder fuzzing. An encoding change requires a new version.
 2. **Transport productionization:** compile native and WASM libp2p profiles,
    measure relay/direct behavior, and decide which discovery helpers are
    allowed in a minimal embedded profile.

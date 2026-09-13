@@ -10,5 +10,10 @@ description = "In-memory steel-thread effect runner for Valhalla."
 vhalla-core = { path = "../vhalla-core" }
 vhalla-policy = { path = "../vhalla-policy" }
 
+[dev-dependencies]
+vhalla-crypto = { path = "../vhalla-crypto" }
+vhalla-wire = { path = "../vhalla-wire" }
+proptest = "1.6"
+
 [lints]
 workspace = true

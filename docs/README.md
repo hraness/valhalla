@@ -16,9 +16,14 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
-The demo is entirely in memory. It verifies a signed envelope, delivers it
-through a bounded queue, applies local policy, and returns a typed host receipt.
+The demo is entirely in memory. It delivers a signed envelope through a bounded
+queue, verifies the full key and session context, applies an explicit local
+grant, and returns an in-memory execution receipt. The session retains replay
+state across messages; policy and expiry are checked again at execution.
 There is no network connection or installed `vhalla` command yet.
+
+Signed framing is now v2 and rejects the earlier unversioned format. Restart
+freshness, durable effects and real browser connectivity remain unqualified.
 
 ## Find the code
 
@@ -28,6 +33,7 @@ There is no network connection or installed `vhalla` command yet.
 | Signatures and replay checks | [crypto](../crates/vhalla-crypto/src/lib.rs) |
 | Local authority and effects | [policy](../crates/vhalla-policy/src/lib.rs), [host](../crates/vhalla-host/src/lib.rs) |
 | In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs) |
+| Real two-process transport experiment | [native QUIC](../prototypes/native-quic/README.md), loopback-only with public fixture keys |
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
 | Certified history, crash recovery, and optional native storage experiment | [checkpoint ledger](../prototypes/checkpoint-ledger/README.md) |
 | Disposable design experiments | [prototype index](../prototypes/README.md) |
