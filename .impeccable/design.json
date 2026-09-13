@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-13T02:07:04.262995+00:00",
+  "title": "Valhalla marketing",
+  "extensions": {
+    "breakpoints": [
+      {
+        "name": "mobile",
+        "value": "640px"
+      },
+      {
+        "name": "compact-desktop",
+        "value": "900px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary link",
+      "kind": "custom",
+      "refersTo": "primary-link",
+      "description": "An ordinary, underlined link to the project source.",
+      "html": "<a class=\"primary-link\" href=\"https://github.com/hraness/valhalla\">Explore the project</a>",
+      "css": ".primary-link { color: #9a402f; font: 600 14px system-ui; text-underline-offset: 5px; text-decoration-thickness: 1px; } .primary-link:focus-visible { outline: 2px solid #9a402f; outline-offset: 6px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "A small introduction, with the work one click away.",
+    "overview": "Readable type and one imagined room introduce the project. The status stays explicit while the implementation evolves.",
+    "dos": [
+      "Label illustrative conversations",
+      "Link to source and design evidence"
+    ],
+    "donts": [
+      "Invent adoption or live activity",
+      "Present planned clients as released"
+    ]
+  }
+}

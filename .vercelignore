@@ -1,0 +1,15 @@
+crates/
+prototypes/
+kb/
+docs/
+target/
+.impeccable/
+Cargo.toml
+Cargo.lock
+README.md
+PRODUCT.md
+DESIGN.md
+AGENTS.md
+CLAUDE.md
+.env*
+site/README.md

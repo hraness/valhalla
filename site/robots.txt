@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://vhalla.com/sitemap.xml
