@@ -317,6 +317,14 @@ retention and durable application commit ordering. Upstream certificates are
 not room-directory authority until those wrappers and fault-injected recovery
 tests exist.
 
+Commonware Simplex remains a fallback comparison rather than a second v1
+dependency. Its v2026.9.0 release notes describe stable leaders, persisted
+nullification recovery and bounded mailbox overflow, while the project documents
+Linux/macOS as supported platforms and only selected primitives as WASM/no-std.
+That makes it a credible native validator candidate if Malachite cannot satisfy
+the application boundary, but it cannot be the shared browser consensus core
+without an additional protocol/adapter split and target-specific qualification.
+
 ### Current implementation evidence
 
 The model has real owner/actor signatures for exact proposals, bounded state,
