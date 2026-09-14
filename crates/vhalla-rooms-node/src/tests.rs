@@ -92,22 +92,35 @@ async fn four_validators_commit_planned_batches() {
         );
     }
 
+    // The journal frontier is the commit evidence; the ack sink records
+    // the engine messages (CommitAck for `Decided`, NextHeightReply for
+    // `Finalized`) — each names its decided height, so evidence for h is
+    // CommitAck{h} or NextHeightReply{h+1}.
+    fn evidenced(acks: &[vhalla_rooms_consensus::EngineMsg]) -> HashSet<u64> {
+        acks.iter()
+            .map(|m| match m {
+                vhalla_rooms_consensus::EngineMsg::CommitAck { height } => *height,
+                vhalla_rooms_consensus::EngineMsg::NextHeightReply { height } => height - 1,
+            })
+            .collect()
+    }
     wait_for(
-        "all four nodes to journal-commit height 3",
-        || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
+        "all four nodes to journal-commit and acknowledge height 3",
+        || {
+            nodes.iter().all(|n| {
+                n.committed_height() >= HEIGHTS && evidenced(&n.acks()).contains(&HEIGHTS)
+            })
+        },
         Duration::from_secs(90),
     )
     .await;
 
     for node in &nodes {
         let acks = node.acks();
-        // Every acknowledged commit is durable: CommitAck per decided
-        // height and a NextHeightReply per finalized one.
-        let decided = acks
-            .iter()
-            .filter(|m| matches!(m, vhalla_rooms_consensus::EngineMsg::CommitAck { .. }))
-            .count();
-        assert!(decided >= HEIGHTS as usize, "acks: {acks:?}");
+        assert!(
+            (1..=HEIGHTS).all(|h| evidenced(&acks).contains(&h)),
+            "acks: {acks:?}"
+        );
     }
 
     // Identical application state everywhere: same frontier commitment.
@@ -1691,6 +1704,7 @@ fn reordered_proposal_parts_still_assemble_and_verify() {
         address,
         private_key: key.clone(),
         proposals: BTreeMap::new(),
+        pending_proposals: VecDeque::new(),
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
@@ -1783,6 +1797,7 @@ fn undecided_values_resupply_from_durable_store() {
             address,
             private_key: key.clone(),
             proposals: BTreeMap::new(),
+            pending_proposals: VecDeque::new(),
             held_by_id: held,
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
@@ -1846,6 +1861,131 @@ fn undecided_values_resupply_from_durable_store() {
     assert_eq!(resupplied.len(), 1);
     assert_eq!(resupplied[0].value.id.0, batch.value_id());
     assert_eq!(resupplied[0].round, Round::new(2));
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A batch submitted at runtime — not pre-planned in `NodeSpec::held` —
+/// must be proposed at the first height its queue reaches and committed
+/// by every journal. Submitting to all validators lets whichever node
+/// holds the proposer slot carry it; all four commit the same value id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn runtime_submission_commits_after_start() {
+    let plan = fixture::plan(2, 8, 16);
+    let (keys, set) = validators(4);
+    let base = fixture("submit");
+    let base_port = 27600usize;
+
+    let mut nodes = Vec::new();
+    for (i, key) in keys.iter().enumerate().take(4) {
+        nodes.push(
+            RoomNode::start(NodeSpec {
+                home: base.join(format!("n{i}")),
+                config: node_config(i + 1, 4, base_port),
+                node_key: key.clone(),
+                validator_sets: sched(set.clone()),
+                held: BTreeMap::new(),
+                genesis: plan.genesis.clone(),
+                wal_faults: None,
+                net_gate: None,
+            })
+            .await,
+        );
+    }
+    // First submission lands before the first height; the second arrives
+    // while height 1 is in flight — FIFO order keeps them distinct.
+    for node in &nodes {
+        node.submit(plan.batches[&1].clone()).await;
+    }
+    wait_for(
+        "all four nodes to journal-commit height 1",
+        || nodes.iter().all(|n| n.committed_height() >= 1),
+        Duration::from_secs(60),
+    )
+    .await;
+    for node in &nodes {
+        node.submit(plan.batches[&2].clone()).await;
+    }
+    wait_for(
+        "all four nodes to journal-commit height 2",
+        || nodes.iter().all(|n| n.committed_height() >= 2),
+        Duration::from_secs(60),
+    )
+    .await;
+    for node in &nodes {
+        // The durable evidence is the journal frontier (asserted by the
+        // waits) plus the pending queue's retirement: a committed
+        // submission's marker must be gone from `store/pending/`.
+        let pending = std::fs::read_dir(node.home.join("store").join("pending"))
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(
+            pending, 0,
+            "committed submissions must retire their markers"
+        );
+    }
+    for node in nodes {
+        node.crash().await;
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// `store/pending/` markers reload only while their batch is retained
+/// and still validates against the current frontier: a marker with no
+/// batch bytes, an undecodable name, and a marker for an already
+/// committed batch are all dropped rather than re-queued.
+#[test]
+fn pending_markers_reload_only_uncommitted_submissions() {
+    let base = fixture("pending");
+    let store = base.join("store");
+    std::fs::create_dir_all(store.join("batches")).unwrap();
+    std::fs::create_dir_all(store.join("seen")).unwrap();
+    std::fs::create_dir_all(store.join("pending")).unwrap();
+    let adapter = Arc::new(Mutex::new(
+        Adapter::open(base.join("app"), &genesis()).unwrap(),
+    ));
+
+    let mut s = fixture::scenario(8, 16);
+    let mut cursor = 0usize;
+    let (ev, rec, _) =
+        fixture::first_create(&s.app, &s.owners[0], &mut s.sources, &mut cursor, "live", 1);
+    let live = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let (ev2, rec2, _) =
+        fixture::first_create(&s.app, &s.owners[1], &mut s.sources, &mut cursor, "gone", 2);
+    let gone = s.app.prepare(1, ev2, rec2).unwrap().batch().clone();
+
+    // Retained + validating: re-queued.
+    store_write(
+        &store.join("batches"),
+        &hex(&live.value_id()),
+        &live.encode(),
+    )
+    .unwrap();
+    store_write(&store.join("pending"), &hex(&live.value_id()), &[]).unwrap();
+    // Marker without batch bytes: dropped.
+    store_write(&store.join("pending"), &hex(&gone.value_id()), &[]).unwrap();
+    // Undecodable marker name: dropped.
+    store_write(&store.join("pending"), "not-hex", &[]).unwrap();
+
+    let mut held = BTreeMap::new();
+    held.insert(RoomValueId(live.value_id()), live.clone());
+    let pending = reload_pending(&store, &held, &adapter);
+    assert_eq!(pending, VecDeque::from([RoomValueId(live.value_id())]));
+    assert!(store.join("pending").join(hex(&live.value_id())).exists());
+    assert!(!store.join("pending").join(hex(&gone.value_id())).exists());
+    assert!(!store.join("pending").join("not-hex").exists());
+
+    // Commit the batch, then reload: its marker must drop.
+    adapter.lock().unwrap().hold(live.clone());
+    let outcome = adapter.lock().unwrap().decide(&RoomCertificate {
+        bytes: b"cert".to_vec(),
+        value_commitment: live.value_id(),
+        height: 1,
+    });
+    assert!(matches!(outcome, DecidedOutcome::Acked));
+    let pending = reload_pending(&store, &held, &adapter);
+    assert!(pending.is_empty(), "a committed batch must not re-queue");
+    assert!(!store.join("pending").join(hex(&live.value_id())).exists());
 
     let _ = std::fs::remove_dir_all(&base);
 }

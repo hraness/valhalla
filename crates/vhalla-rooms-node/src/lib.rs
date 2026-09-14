@@ -247,6 +247,11 @@ struct App {
     private_key: PrivateKey,
     /// height -> value commitment of the batch this node proposes.
     proposals: BTreeMap<u64, RoomValueId>,
+    /// Batches submitted at runtime awaiting a height assignment. FIFO:
+    /// `GetValue` assigns the front to its height; a losing decision at
+    /// that height leaves it queued for the next — only a commit of the
+    /// batch's own value id removes it.
+    pending_proposals: VecDeque<RoomValueId>,
     /// value commitment -> the full held batch (local proposals and
     /// batches received over the wire alike).
     held_by_id: BTreeMap<RoomValueId, Batch>,
@@ -286,6 +291,19 @@ impl App {
         self.adapter.lock().unwrap().hold(batch.clone());
         self.held_by_id.insert(id, batch);
         id
+    }
+
+    /// A locally produced batch entering the proposal pipeline: the same
+    /// durable registration as wire-received values, plus a `store/pending/`
+    /// marker so a restart re-queues it, then FIFO queueing for the next
+    /// `GetValue` this node wins. The entry leaves only when its own value
+    /// id commits.
+    fn submit(&mut self, batch: Batch) {
+        let id = self.register_batch(batch);
+        store_write(&self.store.join("pending"), &hex(&id.0), &[]).expect("pending marker write");
+        if !self.pending_proposals.contains(&id) && !self.proposals.values().any(|p| *p == id) {
+            self.pending_proposals.push_back(id);
+        }
     }
 
     /// fsync the canonical batch bytes under `store/batches/<id>` —
@@ -547,11 +565,23 @@ impl App {
         let Ok(accepted) = verify_commit_certificate(certificate, set) else {
             return DecidedOutcome::Rejected;
         };
-        self.adapter.lock().unwrap().decide(&RoomCertificate {
+        let outcome = self.adapter.lock().unwrap().decide(&RoomCertificate {
             bytes: accepted.bytes,
             value_commitment: accepted.value_id.0,
             height: accepted.height,
-        })
+        });
+        if matches!(outcome, DecidedOutcome::Acked) {
+            let height = certificate.height.as_u64();
+            self.proposals.remove(&height);
+            let _ = std::fs::remove_file(
+                self.store
+                    .join("pending")
+                    .join(hex(&certificate.value_id.0)),
+            );
+            self.pending_proposals
+                .retain(|p| *p != certificate.value_id);
+        }
+        outcome
     }
 }
 
@@ -979,6 +1009,8 @@ pub struct RoomNode {
     pub loaded: (usize, usize),
     /// The runtime partition gate, when this node was started with one.
     pub gate: Option<NetGate>,
+    /// Inbound channel for locally produced batches — [`RoomNode::submit`].
+    submissions: tokio::sync::mpsc::Sender<Batch>,
     task: tokio::task::JoinHandle<()>,
     _engine: EngineHandle,
     /// The proxied real WAL actor, when this node runs under a fault
@@ -1164,6 +1196,8 @@ impl RoomNode {
         let (mut held_by_id, seen) = load_store(&store);
         let loaded = (held_by_id.len(), seen.values().map(Vec::len).sum());
 
+        let pending_proposals = reload_pending(&store, &held_by_id, &adapter);
+
         let mut proposals = BTreeMap::new();
         {
             let mut guard = adapter.lock().unwrap();
@@ -1193,6 +1227,7 @@ impl RoomNode {
             address,
             private_key: node_key.clone(),
             proposals,
+            pending_proposals,
             held_by_id,
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
@@ -1204,7 +1239,9 @@ impl RoomNode {
             resupplied: Arc::clone(&resupplied),
         };
 
-        let task = tokio::spawn(async move { run(&mut app, &mut channels).await });
+        let (submission_tx, mut submission_rx) = tokio::sync::mpsc::channel::<Batch>(64);
+        let task =
+            tokio::spawn(async move { run(&mut app, &mut channels, &mut submission_rx).await });
 
         RoomNode {
             home,
@@ -1215,11 +1252,22 @@ impl RoomNode {
             resupplied,
             loaded,
             gate: net_gate,
+            submissions: submission_tx,
             task,
             _engine: engine,
             inner_wal,
             inner_net,
         }
+    }
+
+    /// Submit a locally produced batch for proposal: durable
+    /// registration, then FIFO assignment to the next `GetValue` this
+    /// node wins. The submission survives restart (`store/pending/`)
+    /// and is retired only when its own value id commits — losing a
+    /// height re-queues it automatically. Backpressures once 64
+    /// uncommitted submissions queue.
+    pub async fn submit(&self, batch: Batch) {
+        let _ = self.submissions.send(batch).await;
     }
 
     /// Durable frontier height committed by the journal.
@@ -1254,6 +1302,40 @@ impl RoomNode {
     }
 }
 
+/// Re-queue durable submissions at start: a `store/pending/` marker whose
+/// batch still validates against the current frontier is an uncommitted
+/// proposal owed another height. Markers whose bytes are gone or no
+/// longer validate (already committed, superseded, corrupt) are dropped
+/// so a dead marker can never stall `GetValue`.
+fn reload_pending(
+    store: &Path,
+    held_by_id: &BTreeMap<RoomValueId, Batch>,
+    adapter: &Arc<Mutex<Adapter<vhalla_journal::FsStore>>>,
+) -> VecDeque<RoomValueId> {
+    std::fs::create_dir_all(store.join("pending")).unwrap();
+    let mut out = VecDeque::new();
+    let Ok(entries) = std::fs::read_dir(store.join("pending")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let id = entry
+            .file_name()
+            .to_str()
+            .and_then(unhex)
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .map(RoomValueId);
+        let keep = id
+            .and_then(|id| held_by_id.get(&id).cloned())
+            .is_some_and(|b| adapter.lock().unwrap().application().validate(&b).is_ok());
+        if keep {
+            out.push_back(id.unwrap());
+        } else {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    out
+}
+
 fn net_seed(address: &Address) -> [u8; 32] {
     let inner = address.into_inner();
     let mut seed = [0xA5; 32];
@@ -1263,9 +1345,43 @@ fn net_seed(address: &Address) -> [u8; 32] {
 }
 
 /// The application boundary loop: every reply that authorizes engine
-/// progress is sent only after the durable layer permits it.
-async fn run(app: &mut App, channels: &mut Channels<RoomContext>) {
-    while let Some(msg) = channels.consensus.recv().await {
+/// progress is sent only after the durable layer permits it. Local batch
+/// submissions interleave with engine messages on the same loop so the
+/// proposal queue is never touched concurrently.
+async fn run(
+    app: &mut App,
+    channels: &mut Channels<RoomContext>,
+    submissions: &mut tokio::sync::mpsc::Receiver<Batch>,
+) {
+    /// Either side of the loop's select: a consensus `AppMsg` or a local
+    /// batch submission.
+    enum Feed {
+        Msg(Option<AppMsg<RoomContext>>),
+        Submit(Option<Batch>),
+    }
+    let mut submissions_open = true;
+    loop {
+        let feed = if submissions_open {
+            tokio::select! {
+                msg = channels.consensus.recv() => Feed::Msg(msg),
+                batch = submissions.recv() => Feed::Submit(batch),
+            }
+        } else {
+            Feed::Msg(channels.consensus.recv().await)
+        };
+        let msg = match feed {
+            Feed::Submit(Some(batch)) => {
+                app.submit(batch);
+                continue;
+            }
+            Feed::Submit(None) => {
+                // The last sender dropped: keep serving consensus.
+                submissions_open = false;
+                continue;
+            }
+            Feed::Msg(None) => return,
+            Feed::Msg(Some(msg)) => msg,
+        };
         match msg {
             AppMsg::ConsensusReady { reply } => {
                 // Resume from the DURABLE frontier — the journal is the
@@ -1296,6 +1412,16 @@ async fn run(app: &mut App, channels: &mut Channels<RoomContext>) {
                 reply,
                 ..
             } => {
+                // No pre-planned batch for this height: assign the
+                // oldest submitted one — it stays queued until its own
+                // value id commits, so a losing height retries next.
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    app.proposals.entry(height.as_u64())
+                {
+                    if let Some(id) = app.pending_proposals.front().copied() {
+                        e.insert(id);
+                    }
+                }
                 let Some(value_id) = app.proposals.get(&height.as_u64()).copied() else {
                     // Nothing held for this height: stall rather than
                     // invent a value. The timeout will prevote nil.

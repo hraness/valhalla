@@ -945,6 +945,15 @@ bounded-WAL soak. `NetGate` and `WalPlan` ship as the node's qualification
 surface. Engine selection is thereby settled in the tree: Malachite
 v0.8.0 at pinned rev `72143f6`.
 
+Beyond the spike the node gains the live proposal path the static
+`NodeSpec::held` plan lacked: `RoomNode::submit` durably registers a
+locally produced batch (`store/pending/` marker), queues it FIFO, and
+assigns it at the first `GetValue` the node wins — a losing height
+re-queues it automatically, and only its own value id committing retires
+the marker. Restart reloads only markers whose batches still validate
+against the current frontier, so a dead marker can never stall
+`GetValue`. The suite covers runtime submission end-to-end (29 tests).
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
