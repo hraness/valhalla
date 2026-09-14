@@ -550,14 +550,21 @@ carrying both the engine WAL and the room journal. The application loop
 is the spike's own: `ConsensusReady` resumes from the durable journal
 frontier (never memory), `GetValue` proposes the `u64` engine id bound
 to a held room `Batch` with proposer-signed `Init`/`Data`/`Fin` parts,
-`ReceivedProposalPart` verifies the expected proposer and the Fin
+`ReceivedProposalPart` resolves the height's active validator set, checks
+the part's proposer against the context's `select_proposer` for
+`(height, round)` — not mere set membership — and verifies the Fin
 signature over the content hash before voting, and `Decided`/`Finalized`
 reply only after the verified-certificate → batch-replay → fsync-ordered
 journal commit lands. The engine's `u64` value id is the wire value; the
-durable bundle still binds the batch's real 32-byte `value_id`.
+durable bundle still binds the batch's real 32-byte `value_id`. A shared
+application data-plane pool models value availability: a node that never
+held the decided batch resolves the `u64` id through the pool, registers
+the real `Batch` with its durable adapter, and commits through the same
+path — an unknown id is rejected rather than finalized.
 
-Six tests under scheduler run `3e3aa96457625249e9179e8bf3301812`
-(superseding `9c4be548420fa007e42fa2aaec837380` and
+Seven tests under scheduler run `29c3f3942ed989611090b3dd5b149565`
+(superseding `3e3aa96457625249e9179e8bf3301812`,
+`9c4be548420fa007e42fa2aaec837380` and
 `701411a70fac9a868ce870c25ff334f0`):
 
 - Four validators commit three planned heights; every node emits its
@@ -585,6 +592,10 @@ Six tests under scheduler run `3e3aa96457625249e9179e8bf3301812`
   4652 B of journal state, and the verify → journal → fsync → ack
   boundary costs ~38–51 ms per height on this machine (fsync-dominated).
   The engine WAL at rest is a 12 B tail — it holds only the live height.
+- A validator that never held the decided batch resolves the `u64` id
+  through the shared data-plane pool, registers the real `Batch` with its
+  durable adapter, and converges to the same frontier; an unresolvable id
+  is rejected rather than finalized.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real certificates, real replay against the real
@@ -597,8 +608,10 @@ withheld-data and reordered-input liveness bounds, `no_std`
 certificate-consumer parity (no wasm32 toolchain on this machine — defer
 to CI), and cumulative WAL growth across longer runs. The `u64` engine
 value id stands in for full value propagation — batches do not cross the
-wire in this spike — and undecided-proposal replay on restart is
-delegated to the engine WAL rather than an application store.
+consensus wire in this spike; the shared data-plane pool models
+application-level availability but is not a transport — and
+undecided-proposal replay on restart is delegated to the engine WAL
+rather than an application store.
 
 ### Current implementation evidence
 
