@@ -37,6 +37,15 @@ An invitation does not authenticate a transport, open a room, or establish a
 session, and the owner must retain spent-token state if it needs single-use
 semantics.
 
+`SpentInvitationNonces` provides the corresponding local replay guard. It is a
+move-only, explicitly capacity-bounded set with atomic `consume`; duplicates
+return `AlreadySpent`, and a full set returns `Capacity` without eviction or
+mutation. It has no filesystem, clock or network behavior, so an adapter must
+persist and recover its state before using it for durable single-use policy.
+Scope one guard to the issuer and authorization domain that owns its nonce set;
+callers spanning multiple issuers should derive a domain-separated spend key
+from verified claims before consuming.
+
 The caller must supply fresh unpredictable entropy on **every** handshake,
 including after a crash. Reusing both nonces repeats the session and can reopen
 replay; the nonzero check is only a default-value guard. Pending handshakes need

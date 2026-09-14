@@ -610,6 +610,13 @@ tests cover round-trip/issuer binding, scope/expiry/signature tampering and
 malformed or zero-nonce rejection. Integrating this claim into native/browser
 pairing UX, spent-token persistence and independent protocol review remain open.
 
+The session crate also exposes `SpentInvitationNonces`, a move-only bounded
+check-and-insert guard. Duplicate nonces return `AlreadySpent`; capacity
+overflow returns `Capacity` without eviction or mutation. Property tests cover
+arbitrary capacities and nonce schedules. This is a local replay primitive,
+scoped to one issuer/authorization domain; durable persistence, crash recovery
+and integration at the owner admission boundary remain separate gates.
+
 ### Message and effect authority repair — 2026-09-12
 
 Two isolated tests reproduced the old public-API bypasses against `c373c71`:
