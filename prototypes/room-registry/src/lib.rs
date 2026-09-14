@@ -6,6 +6,8 @@
 //! social-history verifier, persistence, or live transport.
 extern crate alloc;
 
+pub mod transition;
+
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::String,

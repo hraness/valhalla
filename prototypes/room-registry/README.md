@@ -53,6 +53,37 @@ they are not production key custody. The full 32-byte genesis ID has not been
 mapped into the maintained 128-bit `RoomId`. No grant rotation, permit revocation,
 description update, status wire record, snapshot codec or crash proof is supplied.
 
+## Engine application value seam
+
+`transition::Application` consumes an initial fixture directory and an opaque
+control-snapshot digest. `prepare` and `validate` replay a batch of 1–16 signed
+creation proposals on a private copy. A failed operation rejects the whole batch
+without publishing an accepted prefix. A claimed result root is independently
+recomputed; stale or altered complete predecessors are rejected.
+
+The SHA-256 state commitment includes policy and eligible sources, accounting,
+support and evidence deduplication, every room/tombstone and exact signatures,
+revision and time. BTree iteration and fixed-width integers make its ordering
+deterministic. The batch commitment additionally binds the complete predecessor,
+opaque control digest, batch time, ordered proposal bytes and resulting root.
+Signature bytes are included because the existing model uses exact signed
+proposal equality when deciding whether a retry is the same operation.
+
+`CheckedBatch` has private fields and immutable projections; only replay creates
+it. `apply_locally` models an externally ordered decision, uses the complete
+expected predecessor, and handles an exact retry without another debit. Batch
+time is retained even when every creation is an existing retry and the directory
+root does not change. This prevents a later batch from moving the application
+clock backwards. Neither checked values nor local application prove agreement.
+
+This seam has no durable storage, network decoder, engine decision input, fresh
+control-history verifier or credit-award endpoint. Credits and control authenticity
+are assumptions of the initial fixture. Authority checks, bounded authenticated
+data exchange, consensus-time policy, actual engine decisions, and durable state
+before next-height acknowledgement remain adapter work. No type here is a
+finalized room or a host capability, and these spike domains are not released
+wire formats.
+
 ## Verification
 
 ```sh

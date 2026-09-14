@@ -236,7 +236,7 @@ proposal, and a collision response offers alternatives without auto-renaming.
 
 ### R3 engine qualification target
 
-The next engine spike should use **Malachite v0.8.0**, pinned to release commit
+The engine qualification work uses **Malachite v0.8.0**, pinned to release commit
 `72143f6c99a98452b587e1c392bdb80944eb2232`, outside the production workspace.
 The [release](https://github.com/circlefin/malachite/releases/tag/v0.8.0)
 and [exact release commit](https://github.com/circlefin/malachite/commit/72143f6c99a98452b587e1c392bdb80944eb2232)
@@ -292,11 +292,14 @@ Neither candidate closes R1b authority freshness or R3 finality by dependency ch
 A disposable consumer pinned to the exact release commit compiled against the
 actual `core-types` and `signing` APIs with `--locked`; the source archive was
 verified by SHA-256 before use. The consumer ran its bounded certificate checks
-in native and `wasm32-unknown-unknown` builds, and a separate OpenSSL/Python
+in native and `wasm32-unknown-unknown` builds executed under Node (not a browser),
+and a separate OpenSSL/Python
 fixture generated the same Ed25519 certificate bytes that Rust accepted. The
 consumer's 40-case verdict matrix covers valid quorum, zero/one/two-of-four
 rejections, duplicate and unknown signers, altered domains, stale heights,
-Nil-round rejection, oversized input and threshold-policy changes. This proves
+Nil-round rejection, oversized input and configuration substitutions. The
+consumer fixes the three-of-four threshold rather than exposing a threshold
+parameter. This proves
 verification parity and decoder behavior only; it does not grant finality.
 
 The pinned upstream `arc-malachitebft-test` integration binary also ran its
@@ -304,10 +307,11 @@ maintained WAL subset serially: 8 tests passed and 2 intentionally ignored in
 161.56 seconds, including proposer/non-proposer restart, Byzantine-proposer,
 decode-fallback and multi-certificate recovery. The full suite exercised the
 same paths but aborted one crash test after the harness's 60-second concurrent
-warning; rerunning that exact case passed in 6.89 seconds. Treat the full-suite
-warning as a harness/resource qualification issue and retain serial WAL runs in
-the evidence set. No upstream source, validator process or production crate was
-modified.
+warning; rerunning that exact case passed in 6.89 seconds. The cause of the
+full-suite abort remains unresolved; a passing isolated retry does not establish
+that resource contention caused it. Retain both results and qualify the complete
+suite again before selection. No upstream source or production crate was changed;
+the maintained test harness did run local validator fixtures.
 
 Source review still found obligations the adapter must enforce itself: immutable
 and unique full validator keys, directory/genesis/config domain binding, full
@@ -327,6 +331,69 @@ without an additional protocol/adapter split and target-specific qualification.
 
 ### Current implementation evidence
 
+The room-registry reference now includes an application-value seam in
+`transition`: a complete SHA-256 state commitment, a bounded ordered creation
+batch, independent result-root replay, private checked evidence and an exact
+predecessor check at local application. It retains batch time across retry-only
+transitions even when the underlying directory root does not change. An initial
+fixture supplies credits and an opaque control commitment; binding that digest
+does not verify control history or admit social awards. This is the deterministic
+application layer an engine will need, not a consensus implementation, wire
+format, durable journal or R1b authority adapter.
+
+Ten focused tests cover atomic failure, full predecessor substitutions, owner and
+sibling races, retry accounting, monotonic batch time, bounds, overflow and
+generated deterministic replay. Independent SHA-256 golden values cover the
+empty state and fixture genesis; mutation tests also cover signature bytes,
+tombstones and hidden evidence bindings. Compile-fail examples prevent callers
+from constructing or mutating checked replay evidence. These tests qualify the
+reference types, not the assumed initial authority or credits.
+
+A separate scratch harness now routes proposals and votes emitted by four real
+`core-driver` instances through strict simulated host admission. Each validator
+checks the exact full batch value and replays it before local application. Both
+FIFO and LIFO delivery after round initialization converge; each of the three
+2–2 partition layouts quiesces without changing application state, then converges
+after held messages are delivered. Three live validators also decide when the
+silent fourth is not the proposer. A late validator may decide before emitting
+its own votes: the connected fixtures emitted eight votes under FIFO and six
+under LIFO. These are one-height, round-zero schedule observations. There are no
+sockets, transport-peer authentication, timer/liveness test, engine certificate
+assembly, WAL or durable application writes in this harness.
+
+Hostile-input fixtures use a connected network with the selected proposer silent,
+so a partition cannot mask an admission failure. Separate counters establish
+rejection of unknown signers and tampered votes, application rejection of a wrong
+full value signed by the real proposer, and rejection of an authenticated
+non-proposer before driver entry. That last guard is mandatory: the low-level
+proposal keeper assumes proposer validation has happened and asserts when given
+proposals from different validators in one round. Proposal signatures also bind
+the proof-of-lock round; changing only that round invalidates the signature.
+
+The pinned engine's [`AppMsg::Decided`](https://github.com/circlefin/malachite/blob/72143f6c99a98452b587e1c392bdb80944eb2232/code/crates/app-channel/src/msgs.rs)
+carries a certificate and a separate commit
+acknowledgement; the engine notifies sync only after that acknowledgement.
+`AppMsg::Finalized` may contain additional signatures and carries the next-height
+reply. The native adapter must look up the exact full value, replay it against
+the pinned application predecessor, persist the state and certificate together,
+and reconcile an uncertain write before either acknowledgement. A later
+certificate with more signatures must not apply the same batch twice. Restart
+must recover that exact application pin before choosing the engine's starting
+height. These are source-derived implementation obligations, not completed
+crash-recovery evidence for Valhalla.
+
+The next storage spike should reuse the existing checkpoint journal's sequence,
+not its generic checkpoint types: persist and sync an immutable bundle, then
+compare-and-swap the complete durable predecessor pin, then acknowledge. A room
+bundle must retain the actual native engine certificate, full batch and pinned
+configuration/control evidence. Existing `CertifiedLedger`, `PreparedCommit` and
+`FileStore` have different certificate and pin schemas; wrapping or re-signing
+native evidence into them would not prove the required boundary. Start with a
+separate faulting store and assert that failed/uncertain writes withhold the
+acknowledgement, identical retries re-establish durability, and restart never
+continues from an advanced but uncommitted in-memory state. Then qualify actual
+filesystem sync and native engine acknowledgements together.
+
 The model has real owner/actor signatures for exact proposals, bounded state,
 atomic sequential allocation, quadratic prices, tombstones, literal search,
 rolling limits and generated schedule tests. It demonstrates the partition
@@ -342,7 +409,7 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | R0 | Namespace choice; pricing/accounting and conflict counterexamples; independent review | Shared public directory accepted; isolated model implemented |
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence implemented in `vhalla-rooms`; R1b authority assessment pending the committed-control-snapshot contract from R3 |
 | R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Model inputs only; authoritative adapter pending |
-| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 is the qualified candidate for the next adapter spike; engine integration, application commit ordering, key rotation and finality evidence remain pending |
+| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 remains the candidate; atomic application batches and four-driver in-memory partition/heal schedules are tested. Native actor integration, durable application commits, key rotation and finality evidence remain pending |
 | R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Pending R1–R3 |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
