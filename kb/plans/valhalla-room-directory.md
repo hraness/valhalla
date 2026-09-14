@@ -269,6 +269,35 @@ simulate collusion, honest onboarding and many-room demand before choosing value
 Hardware fingerprints, TEE claims and botcaptcha are not mandatory identities or
 automatic substitutes for that policy. No paid token or value transfer is needed.
 
+Calibration evidence now exists in `crates/vhalla-rooms/tests/calibration.rs`
+(four deterministic scenarios over real signed records and the maintained
+`Registry`, shared fixture extracted to `tests/common/`):
+
+- Honest onboarding: with four admitted sources earning four credits per
+  epoch, a creator's rooms land at epochs 1, 2, 4 and 8 — quadratic slot
+  pricing `base·n²` makes cumulative cost `n(n+1)(2n+1)/6` while earnings
+  stay linear, so sustained support, not one-time capital, gates growth.
+- Collusion: `k` colluding beneficiary owners linearize the quadratic —
+  four colluders produce four rooms in one window for four credits total
+  where one honest account's fourth room alone costs sixteen, and the
+  per-owner rate window gives the cluster `k` rooms per window against the
+  honest owner's one. Per-account pricing is not a Sybil bound.
+- Funnel: the admitted eligible-source set is the actual Sybil gate — a
+  beneficiary earns at most `|eligible|` credits per epoch, sustained, and
+  an owner outside the set is denied `Ineligible` even with fully committed
+  evidence. Award rules bound deduplication; eligibility admission bounds
+  who may vouch.
+- Demand: a fully funded account (208 credits against the 204 needed) is
+  still denied `RateLimit` on a second creation inside one rolling window
+  and `Slot` when quoting past the eight-room lifetime cap — credit never
+  buys throughput.
+
+These pin the model's scaling laws; they do not make the policy values
+calibrated. The candidate `DirectoryPolicy` values remain admitted inputs —
+the simulation evidence is what a chosen eligibility policy and its size
+must stand against, and collusion resistance follows the eligible-set
+admission story, not the price curve.
+
 ### R4 registry application — implemented in `vhalla-rooms`
 
 `registry::Registry` is now the maintained application layer the prototype
@@ -976,7 +1005,7 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | --- | --- | --- |
 | R0 | Namespace choice; pricing/accounting and conflict counterexamples; independent review | Shared public directory accepted; isolated model implemented |
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
-| R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards` (5 tests) and now wired into `registry::Registry` award dedup and eligible-source policy. Sybil/collusion calibration remains simulation work |
+| R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards` (5 tests) and wired into `registry::Registry` award dedup and eligible-source policy. Calibration suite (`tests/calibration.rs`, 4 scenarios over real records) pins the scaling laws: quadratic pricing is linearized by beneficiary collusion, the eligible-source set is the actual Sybil funnel, and window plus lifetime caps bound demand independent of credit. Choosing policy values against a concrete eligibility admission story remains open |
 | R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike, now integrated production-shaped: native engines over libp2p drive the real `vhalla-rooms` `Registry` and both snapshot stores through the certificate-gated journal boundary (61 tests green). The application data plane and the remaining listed gaps are pending |
 | R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests), durable `vhalla-rooms-store` (5 tests, 13 crash boundaries) and the `vhalla rooms` CLI service lane (3 subprocess tests): quote/create/list/search/show/account, grant/describe/archive, collect, proof/evidence retrieval and explicit recover all commit through pin CAS before reporting success; two agents of one owner share state across separate invocations. Consensus-driven ordering with commit-before-acknowledge is now qualified by the production integration spike, and the engine-agnostic adapter is promoted in-tree (`vhalla-journal` + `vhalla-rooms-consensus`). What remains is the hosted node: engine wiring and the data plane pending final engine selection |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
