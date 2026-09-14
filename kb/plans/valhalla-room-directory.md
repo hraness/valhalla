@@ -574,8 +574,9 @@ channel. `Decided`/`Finalized` certificates name the real 32-byte
 commitment (canonicalized as `VC2`) and reply only after the
 verified-certificate → batch-replay → fsync-ordered journal commit lands.
 
-Twenty-four tests across the context and engine crates under
-scheduler run `c035163c6a15759e8670ece775e9f224` (superseding
+Twenty-five tests across the context and engine crates under
+scheduler run `266133fc7c25dfd6b9770248a66c1d70` (superseding
+`c035163c6a15759e8670ece775e9f224`,
 `4af529bd38e1b6293604a55b7618b743`,
 `89d9c5cda2d8b3ce2da459dc8c8b7c58`,
 `cbdb31226eba29625abd4254ba56e8c8`,
@@ -660,9 +661,9 @@ scheduler run `c035163c6a15759e8670ece775e9f224` (superseding
   the node commits the next height with the group, and the journal's
   height markers keep every prior height applied exactly once.
 - The competing-slug case under partition: a validator partitioned
-  through the h=1 decision (modelled as a late start — unreachable
-  nodes cannot vote either way; a mid-test runtime partition is not
-  expressible with static persistent peers) rejoins holding a
+  through the h=1 decision (modelled as a late start — this run predates
+  the `GateNetwork` runtime-partition proxy, which now provides the true
+  mid-test cut — see the runtime-partition bullet below) rejoins holding a
   concurrently-prepared competitor for the same slug. It syncs the
   committed h=1, occupies the h=2 round-0 proposer slot, and its stale
   batch cannot commit — the decided certificate records round >= 1 on
@@ -682,20 +683,31 @@ scheduler run `c035163c6a15759e8670ece775e9f224` (superseding
   spec-held batch bodies plus its seen records (>= 2 heights) before it
   rejoined and committed height 4, and the unit test shows a resupplied
   value rebuilt from disk alone after the in-memory app is dropped.
+- A TRUE runtime partition now runs inside the engine machinery: a
+  `GateNetwork` proxy wraps the real libp2p actor (`NetworkBuilder::Custom`),
+  drops every data-plane message in both directions while closed, and
+  passes link-layer peer events so the live node keeps its sockets and
+  peer table. A validator gated while RUNNING commits nothing for two
+  full heights while the other three decide h=1 at round 0 and h=2 at a
+  later round (the gated node's own h2r0 proposer slot times out — its
+  publish dies on the gate), and after the gate reopens on the same live
+  process it value-syncs h=1 and h=2 and converges at h=3 with identical
+  frontiers. Every h=2 journal certificate records round >= 1 — direct
+  proof the gated proposer's slot never finalized.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real application values on the wire, real certificates
 naming the real 32-byte commitment, real replay against the real
 application frontier, durable commit before acknowledgement, restart,
-catch-up and a validator-set transition through the same path. Still
-unqualified per the target list: a TRUE mid-test runtime partition
-(the static persistent-peer topology can only model partition as a
-late start — the competing-slug partition variant above exercises the
-stale-boundary + rejoin case, and the sibling-slot case reduces to the
-same predecessor/replay checks), withheld-data bounds beyond the
+catch-up, a validator-set transition and a true runtime partition
+through the same path. Still unqualified per the target list:
+competing-slug and sibling-slot allocations where BOTH sides of a
+partition reach quorum — impossible under the N=4 quorum-3 topology
+(quorum intersection forbids it; an asymmetric-divergence run needs
+N>=7/f>=2 and more wall time); withheld-data bounds beyond the
 proposer round (e.g. a decided value whose parts never reach a node —
-covered only via the value-sync path), `no_std` certificate-consumer
-parity (no wasm32 toolchain on this machine — defer to CI), and WAL
+covered only via the value-sync path); `no_std` certificate-consumer
+parity (no wasm32 toolchain on this machine — defer to CI); and WAL
 growth beyond a 12-height run (the bounded tail is confirmed over 12
 heights; very long runs are not yet sampled). Full value
 propagation is now real — batch bytes cross the consensus wire inside
