@@ -556,9 +556,9 @@ reply only after the verified-certificate → batch-replay → fsync-ordered
 journal commit lands. The engine's `u64` value id is the wire value; the
 durable bundle still binds the batch's real 32-byte `value_id`.
 
-Five tests under scheduler run `9c4be548420fa007e42fa2aaec837380`
-(superseding `701411a70fac9a868ce870c25ff334f0`, which covered the first
-four):
+Six tests under scheduler run `3e3aa96457625249e9179e8bf3301812`
+(superseding `9c4be548420fa007e42fa2aaec837380` and
+`701411a70fac9a868ce870c25ff334f0`):
 
 - Four validators commit three planned heights; every node emits its
   post-commit `CommitAck`/`NextHeightReply` per height and all four
@@ -579,19 +579,26 @@ four):
   certificate past the boundary verifies against the new set, the
   rotated-out key contributes nothing, and all four running nodes commit
   heights 1–4 with identical frontiers.
+- A measurement harness reports the inputs production limits need:
+  canonical certificates are 277 B per height at three-of-four
+  signatures, journal bundles 1104 B each, four committed heights occupy
+  4652 B of journal state, and the verify → journal → fsync → ack
+  boundary costs ~38–51 ms per height on this machine (fsync-dominated).
+  The engine WAL at rest is a 12 B tail — it holds only the live height.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real certificates, real replay against the real
 application frontier, durable commit before acknowledgement, restart,
 catch-up and a validator-set transition through the same path. Still
 unqualified per the target list: WAL append/flush fault injection inside
-the engine's own machinery, the competing-slug and sibling-slot
-allocation cases under partition, withheld-data and reordered-input
-liveness bounds, `no_std` certificate-consumer parity, and
-proof-byte/verifier-cost/footprint measurements. The `u64` engine value
-id stands in for full value propagation — batches do not cross the wire
-in this spike — and undecided-proposal replay on restart is delegated to
-the engine WAL rather than an application store.
+the engine's own machinery (needs engine-internal hooks), the
+competing-slug and sibling-slot allocation cases under partition,
+withheld-data and reordered-input liveness bounds, `no_std`
+certificate-consumer parity (no wasm32 toolchain on this machine — defer
+to CI), and cumulative WAL growth across longer runs. The `u64` engine
+value id stands in for full value propagation — batches do not cross the
+wire in this spike — and undecided-proposal replay on restart is
+delegated to the engine WAL rather than an application store.
 
 ### Current implementation evidence
 
