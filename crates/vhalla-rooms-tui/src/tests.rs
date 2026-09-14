@@ -578,3 +578,133 @@ mod signing {
         let _ = std::fs::remove_dir_all(&base);
     }
 }
+
+#[cfg(unix)]
+mod update_signing {
+    use super::*;
+    use crate::sign;
+    use crate::Form;
+    use vhalla_identity::Identity;
+    use vhalla_rooms::{Body, SignedRecord};
+
+    struct UpdateSource {
+        ctx: UpdateContext,
+    }
+
+    impl Source for UpdateSource {
+        fn sync(&mut self) -> Result<u64, Error> {
+            Ok(0)
+        }
+        fn project(&self, _s: &Screen) -> Result<Projection, Error> {
+            Err(Error::Bounds)
+        }
+        fn pending(&self) -> Result<Vec<Pending>, Error> {
+            Ok(Vec::new())
+        }
+        fn submit(&mut self, _t: u64, _e: Vec<Vec<u8>>, _r: Vec<Vec<u8>>) -> Result<String, Error> {
+            Err(Error::Bounds)
+        }
+        fn create_context(
+            &self,
+            _o: OwnerId,
+            _k: [u8; 32],
+            _n: u64,
+        ) -> Result<CreateContext, Error> {
+            Err(Error::Bounds)
+        }
+        fn update_context(
+            &self,
+            slug: &str,
+            _k: [u8; 32],
+            _n: u64,
+        ) -> Result<UpdateContext, Error> {
+            if slug == "salon" {
+                Ok(self.ctx.clone())
+            } else {
+                Err(Error::Record("no committed room by that slug".into()))
+            }
+        }
+    }
+
+    fn dir(tag: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "tui-upd-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn ctx() -> UpdateContext {
+        UpdateContext {
+            directory: "aa".repeat(32),
+            realm: format!("{:032x}", 0x47u128),
+            genesis: "11".repeat(32),
+            previous: "22".repeat(32),
+            owner: "33".repeat(32),
+            social_control: "44".repeat(32),
+        }
+    }
+
+    #[test]
+    fn describe_body_signs_an_owner_update() {
+        let base = dir("describe");
+        let key_dir = base.join("owner-id");
+        let id = Identity::create_new(&key_dir).unwrap();
+        let key_pub = id.public_key();
+        drop(id);
+
+        let mut f = crate::form("describe room", &crate::DESCRIBE_LABELS);
+        f.fields[0].value = "second edition".into();
+        f.fields[1].value = "9999999".into();
+        f.fields[2].value = key_dir.to_str().unwrap().into();
+
+        let mut src = UpdateSource { ctx: ctx() };
+        let raw = sign::describe_body("salon", &f, 1_000, &mut src).unwrap();
+        let record = SignedRecord::decode(&raw).unwrap().verify().unwrap();
+        let Body::Update(update) = record.body() else {
+            panic!("the record is an update");
+        };
+        let vhalla_rooms::UpdateAction::Describe(d) = &update.action else {
+            panic!("describe action");
+        };
+        assert_eq!(d.as_str(), "second edition");
+        assert_eq!(update.controller_key, key_pub);
+        assert_eq!(
+            update
+                .owner
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            "33".repeat(32)
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn archive_body_signs_and_denies_foreign_rooms() {
+        let base = dir("archive");
+        let key_dir = base.join("owner-id");
+        let id = Identity::create_new(&key_dir).unwrap();
+        let key_pub = id.public_key();
+        drop(id);
+
+        let mut src = UpdateSource { ctx: ctx() };
+        let raw = sign::archive_body("salon", key_dir.to_str().unwrap(), 1_000, &mut src).unwrap();
+        let record = SignedRecord::decode(&raw).unwrap().verify().unwrap();
+        let Body::Update(update) = record.body() else {
+            panic!("the record is an update");
+        };
+        assert!(matches!(update.action, vhalla_rooms::UpdateAction::Archive));
+        assert_eq!(update.controller_key, key_pub);
+
+        // A slug the source does not know fails before any signing.
+        assert!(sign::archive_body("ghost", key_dir.to_str().unwrap(), 1_000, &mut src).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
