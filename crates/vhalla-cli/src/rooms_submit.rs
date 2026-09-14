@@ -46,7 +46,7 @@ pub fn run(args: &Args) -> Result<(), String> {
             // OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY
             // DESCRIPTION [EVIDENCE_CSV]
             let v: Vec<&str> = (2..10).filter_map(|i| args.value(i)).collect();
-            if v.len() < 7 {
+            if v.len() < 7 || args.value(10).is_some() {
                 return Err(
                     "submit create takes OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV]"
                         .into(),
@@ -71,6 +71,9 @@ pub fn run(args: &Args) -> Result<(), String> {
             let slug = args.value(3).ok_or("describe takes SLUG")?;
             let expiry = args.value(4).ok_or("describe takes EXPIRY")?;
             let text = args.value(5).ok_or("describe takes DESCRIPTION")?;
+            if args.value(6).is_some() {
+                return Err("describe takes exactly OWNER_KEYDIR SLUG EXPIRY DESCRIPTION".into());
+            }
             let mut f = form("describe room", &DESCRIBE_LABELS);
             f.fields[0].value = text.into();
             f.fields[1].value = expiry.into();
@@ -84,6 +87,9 @@ pub fn run(args: &Args) -> Result<(), String> {
             // OWNER_KEYDIR SLUG
             let key_dir = args.value(2).ok_or("archive takes OWNER_KEYDIR")?;
             let slug = args.value(3).ok_or("archive takes SLUG")?;
+            if args.value(4).is_some() {
+                return Err("archive takes exactly OWNER_KEYDIR SLUG".into());
+            }
             (
                 Vec::new(),
                 vec![sign::archive_body(slug, key_dir, now, &mut service)?],
