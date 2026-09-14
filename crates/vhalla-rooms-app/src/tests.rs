@@ -264,3 +264,47 @@ async fn replica_syncs_commits_and_resolves_pending() {
     node.crash().await;
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// `create_context`/`update_context` read only committed state — a
+/// replica with no running node still reports the genesis quote, the
+/// owner's social head, and denies a key that does not control the owner.
+#[test]
+fn context_helpers_report_committed_state() {
+    let base = temp("ctx");
+    let s = fixture::scenario(4, 8);
+    let social_dir = base.join("social-store");
+    {
+        let mut social =
+            SocialStore::create(&social_dir, s.genesis.realm, s.genesis.limits).unwrap();
+        social
+            .commit(s.genesis.archive.clone(), social.pin())
+            .unwrap();
+    }
+    let node_home = base.join("node");
+    std::fs::create_dir_all(node_home.join("app").join("journal")).unwrap();
+    std::fs::create_dir_all(node_home.join("intake")).unwrap();
+    let key = PrivateKey::from([9; 32]);
+    let config = ServiceConfig::parse(&config_json(&s, &key)).unwrap();
+    let service = Service::open(&social_dir, &node_home, &base.join("replica"), &config).unwrap();
+
+    let owner = &s.owners[0];
+    let owner_key = owner.key.verifying_key().to_bytes();
+    let ctx = service.create_context(owner.id, owner_key, 1).unwrap();
+    assert_eq!(ctx.directory, hex(s.genesis.directory.as_bytes()));
+    assert_eq!(ctx.realm, format!("{:032x}", s.genesis.realm.0));
+    assert_eq!(ctx.slot, 1, "a first room quotes slot one");
+    assert_eq!(ctx.charge, s.genesis.policy.base_cost);
+    assert_eq!(ctx.social_control, hex(owner.head.as_bytes()));
+    assert_eq!(ctx.room_head, None, "no room-control chain at genesis");
+    assert_eq!(ctx.sequence, 0);
+    assert_eq!(ctx.balance, 0, "no finalized awards at genesis");
+
+    // A key that does not control the owner is refused.
+    let other_key = s.owners[1].key.verifying_key().to_bytes();
+    assert!(service.create_context(owner.id, other_key, 1).is_err());
+
+    // An unknown slug has no update context.
+    assert!(service.update_context("ghost", owner_key, 1).is_err());
+
+    let _ = std::fs::remove_dir_all(&base);
+}

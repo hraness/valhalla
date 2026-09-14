@@ -13,6 +13,8 @@ mod social;
 mod rooms;
 #[cfg(all(unix, feature = "experimental-rooms-node"))]
 mod rooms_node;
+#[cfg(all(unix, feature = "experimental-rooms-tui"))]
+mod rooms_tui;
 
 fn main() {
     #[cfg(unix)]

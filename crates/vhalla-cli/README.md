@@ -297,6 +297,20 @@ Malformed drops and effects that can never apply are renamed
 `*.rejected`; accepted drops unlink once queued. SIGINT stops the
 service.
 
+## Room-directory terminal companion
+
+The `experimental-rooms-tui` feature (which implies
+`experimental-rooms-node`) adds `vhalla rooms tui`: a ratatui terminal
+surface over a node's committed journal. `vhalla rooms tui SOCIAL_STORE
+REPLICA_HOME REALM NODE_HOME --config FILE` opens a read replica in
+`REPLICA_HOME` against `NODE_HOME`'s journal, shares the node's JSON
+config, and drives a directory/search, room detail, account, pending
+strip and creation form. Submissions sign in-process from identity
+directories the form asks for — the same trust boundary as
+`rooms create` — and land as ordinary intake drops; the pending strip
+then tracks each submission from queued through committed, collision or
+rejected. The replica never holds node, store or consensus authority.
+
 Every mutating command signs a real wire record, applies it to a candidate
 registry, and reports success only after the store's durable pin publication.
 Two agents of one owner share the directory through separate invocations; a

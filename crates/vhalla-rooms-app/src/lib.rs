@@ -128,6 +128,19 @@ pub enum Error {
     Record(String),
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Config(e) => write!(f, "config: {e}"),
+            Self::Io(e) => write!(f, "io: {e}"),
+            Self::Bounds => write!(f, "bound exceeded"),
+            Self::Record(e) => write!(f, "record: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 #[cfg(unix)]
 fn hex32(text: &str) -> Result<[u8; 32], Error> {
     if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -316,6 +329,49 @@ pub struct Projection {
     pub pending: Vec<Pending>,
 }
 
+/// Everything a create-intent form needs from committed replica state.
+/// Produced by `Service::create_context`; the signer assembles the
+/// `CreationIntent` from these typed fields plus the form's answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateContext {
+    /// The shared directory id.
+    pub directory: String,
+    /// The shared realm, 32 lowercase hex characters.
+    pub realm: String,
+    /// The admitted directory policy id, hex.
+    pub policy: String,
+    /// Quoted slot for the owner's next room.
+    pub slot: u32,
+    /// Quoted charge for the owner's next room.
+    pub charge: u64,
+    /// The owner's accepted social head, hex — the create's basis.
+    pub social_control: String,
+    /// The owner's room-control chain head, hex, when a grant is
+    /// already committed; a first room carries the grant in-body.
+    pub room_head: Option<String>,
+    /// The next room-control sequence number.
+    pub sequence: u64,
+    /// Unspent credit: `earned - spent`.
+    pub balance: u64,
+}
+
+/// Everything an update form needs for one committed room.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateContext {
+    /// The shared directory id.
+    pub directory: String,
+    /// The shared realm, 32 lowercase hex characters.
+    pub realm: String,
+    /// The room's genesis id, hex.
+    pub genesis: String,
+    /// The room's current revision head, hex.
+    pub previous: String,
+    /// The room's owner id, hex.
+    pub owner: String,
+    /// The owner's accepted social head, hex — the update's basis.
+    pub social_control: String,
+}
+
 /// A durable pending marker under `replica_home/pending/`.
 #[derive(Serialize, Deserialize)]
 #[cfg(unix)]
@@ -408,8 +464,92 @@ impl Service {
 
     /// The replica registry — read-only projections use it; the service
     /// never mutates it outside `sync`.
-    fn registry(&self) -> &Registry {
+    pub fn registry(&self) -> &Registry {
         self.adapter.application().registry()
+    }
+
+    /// The replica's committed social archive — read-only intent context.
+    pub fn archive(&self) -> &Archive {
+        self.adapter.application().social()
+    }
+
+    /// The committed context a create form needs: the current quote, the
+    /// owner's accepted social head (checked against `key`), and the
+    /// room-control chain head and sequence for grant synthesis.
+    pub fn create_context(
+        &self,
+        owner: OwnerId,
+        key: [u8; 32],
+        now: u64,
+    ) -> Result<CreateContext, Error> {
+        let social_control = self.owner_head(owner, key, now)?;
+        let registry = self.registry();
+        let (slot, charge) = registry
+            .quote(owner)
+            .map_err(|e| Error::Record(format!("quote: {e:?}")))?;
+        let account = registry.account(owner);
+        Ok(CreateContext {
+            directory: hex(registry.directory().as_bytes()),
+            realm: format!("{:032x}", registry.realm().0),
+            policy: hex(registry.policy().id().as_bytes()),
+            slot,
+            charge,
+            social_control: hex(social_control.as_bytes()),
+            room_head: registry.authority().head(owner).map(|h| hex(h.as_bytes())),
+            sequence: registry.authority().sequence(owner),
+            balance: account.earned.saturating_sub(account.spent),
+        })
+    }
+
+    /// The committed context an update form needs for `slug`: genesis,
+    /// head and owner from the room, plus the owner's social head.
+    pub fn update_context(
+        &self,
+        slug: &str,
+        key: [u8; 32],
+        now: u64,
+    ) -> Result<UpdateContext, Error> {
+        let room = self
+            .registry()
+            .room(&Slug::new(slug).map_err(|e| Error::Record(format!("slug: {e:?}")))?)
+            .ok_or_else(|| Error::Record("no committed room by that slug".into()))?;
+        let social_control = self.owner_head(room.owner(), key, now)?;
+        Ok(UpdateContext {
+            directory: hex(self.registry().directory().as_bytes()),
+            realm: format!("{:032x}", self.registry().realm().0),
+            genesis: hex(room.genesis().as_bytes()),
+            previous: hex(room.head().as_bytes()),
+            owner: hex(room.owner().as_bytes()),
+            social_control: hex(social_control.as_bytes()),
+        })
+    }
+
+    /// The owner's accepted social head under the agreed clock, checked
+    /// against the key that must control it — the same admission the
+    /// registry will apply to the signed record.
+    fn owner_head(
+        &self,
+        owner: OwnerId,
+        key: [u8; 32],
+        now: u64,
+    ) -> Result<vhalla_social::RecordId, Error> {
+        let view = vhalla_social::control::ControlView::new(self.archive(), now);
+        let status = view
+            .owner(owner)
+            .ok_or_else(|| Error::Record("owner missing from committed social state".into()))?;
+        if status.frozen() || status.incomplete() || status.capacity_blocked() {
+            return Err(Error::Record(
+                "owner authority is frozen, incomplete or capacity-blocked".into(),
+            ));
+        }
+        if status.key() != Some(key) {
+            return Err(Error::Record(
+                "key directory does not control that owner".into(),
+            ));
+        }
+        status
+            .head()
+            .ok_or_else(|| Error::Record("owner has no accepted head".into()))
     }
 
     /// Absorbs every committed journal bundle past the replica frontier.
@@ -617,6 +757,14 @@ impl Service {
             Screen::Account { owner } => {
                 projection.account = Some(registry.account(*owner));
                 projection.quote = registry.quote(*owner).ok();
+                let search = registry.search("", 64, 4096).map_err(|_| Error::Bounds)?;
+                projection.partial = search.partial;
+                projection.rooms = search
+                    .rooms
+                    .iter()
+                    .filter(|r| r.owner() == *owner)
+                    .map(|r| row(r))
+                    .collect();
             }
         }
         Ok(projection)
