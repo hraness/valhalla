@@ -848,6 +848,44 @@ undecided-proposal replay is now application-owned (fsync'd `store/`
 records resupplied at `StartedRound`), but the application data plane
 (value availability beyond the deciding quorum) is still unmodelled.
 
+### Production registry integration spike — 2026-09-14
+
+The engine's application seam no longer consumes the prototype registry:
+`room-registry-ack` now drives the real `vhalla_rooms::Registry` and
+`vhalla_social::Archive` behind the journal-gated boundary, and
+`room-consensus-engine` runs multi-validator consensus over real signed
+records end to end. The decided `Batch` carries canonical social evidence
+and room record bytes, the parent frontier, the agreed clock and the
+claimed `Registry::digest()` / `Archive::root()` / committed control
+snapshot; its value id hashes the complete `VRB1` canonical encoding and
+is the value `CommitCertificate`s name. Validation clones the archive and
+registry, ingests every evidence record under bounded budgets, builds the
+`ControlView`, harvests mature awards through `Registry::award`, applies
+room records through `Registry::apply` and rejects on any divergence from
+the claimed digests — before any durable write. The commit order is
+journal bundle first (the order authority), then the social snapshot
+store, then the rooms snapshot store, then memory, and only then the
+engine acknowledgement; ambiguous or failed writes withhold it. Restart
+treats the journal pin as the frontier authority, re-verifies and replays
+every retained batch, and republishes both snapshots idempotently — an
+exact `Finalized` redelivery after restart reconciles without
+re-applying. The certificate-boundary spike (`room-cert-ack`) consumes
+the same real adapter, so real `CommitCertificate` verification and the
+journal boundary are now exercised against production registry semantics.
+
+Evidence: 61 tests green across the spike workspace — engine 16
+(planned multi-validator commits, competing-slug and underfunded-slot
+rejection, withheld-proposal recovery, WAL append-failure halt plus
+silent-loss recovery, late-join replay, runtime partition heal, validator
+rotation, reordered parts, durable undecided-value resupply, WAL/journal
+growth measurement), adapter 6, certificate boundary 5, journal 16,
+context 9, engine-adapter 9. Every batch in those runs is real: signed
+social grants, agent-signed reactions, owner seals, room-control
+`GrantCreate` chains and owner-permit/agent-proposal creations, with the
+quadratic slot charge funded by the mature awards the batch itself
+carries. No prototype registry dependency remains anywhere in the spike
+workspace.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
@@ -928,8 +966,8 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | R0 | Namespace choice; pricing/accounting and conflict counterexamples; independent review | Shared public directory accepted; isolated model implemented |
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
 | R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards` (5 tests) and now wired into `registry::Registry` award dedup and eligible-source policy. Sybil/collusion calibration remains simulation work |
-| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike above: native engines over libp2p with real batch bytes in proposal values, certificate-gated durable journal commits, WAL fault injection, crash/restart, rotation, late-join sync and a true runtime partition (62 tests, run `266133fc7c25dfd6b9770248a66c1d70`). Scratch-only; production integration, the application data plane and the remaining listed gaps are pending |
-| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests), durable `vhalla-rooms-store` (5 tests, 13 crash boundaries) and the `vhalla rooms` CLI service lane (3 subprocess tests): quote/create/list/search/show/account, grant/describe/archive, collect, proof/evidence retrieval and explicit recover all commit through pin CAS before reporting success; two agents of one owner share state across separate invocations. Consensus-driven ordering and commit-before-acknowledge remain pending |
+| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike, now integrated production-shaped: native engines over libp2p drive the real `vhalla-rooms` `Registry` and both snapshot stores through the certificate-gated journal boundary (61 tests green). The application data plane and the remaining listed gaps are pending |
+| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests), durable `vhalla-rooms-store` (5 tests, 13 crash boundaries) and the `vhalla rooms` CLI service lane (3 subprocess tests): quote/create/list/search/show/account, grant/describe/archive, collect, proof/evidence retrieval and explicit recover all commit through pin CAS before reporting success; two agents of one owner share state across separate invocations. Consensus-driven ordering with commit-before-acknowledge is now qualified by the production integration spike; what remains is promoting the spike adapter into a hosted service |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
 
