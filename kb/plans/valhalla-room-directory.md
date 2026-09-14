@@ -886,6 +886,17 @@ quadratic slot charge funded by the mature awards the batch itself
 carries. No prototype registry dependency remains anywhere in the spike
 workspace.
 
+The engine-agnostic parts are now promoted into the workspace:
+`vhalla-journal` is the durable commit journal (bundle/pin CAS, height
+markers, exclusive writer lock via `File::try_lock`, fault-injection
+`Store`, 16 tests) and `vhalla-rooms-consensus` is the application
+adapter (`Frontier`, bounded canonical `Batch`, `Application` replay,
+`Genesis` seeding, `Adapter` driving journal → social store → rooms
+store → memory → acknowledgement, 6 tests). Both pass the workspace
+clippy `-D warnings` and full test gates. The Malachite `Context`
+implementation and node wiring remain spike-side until engine selection
+is finalized.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
@@ -967,7 +978,7 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
 | R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards` (5 tests) and now wired into `registry::Registry` award dedup and eligible-source policy. Sybil/collusion calibration remains simulation work |
 | R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike, now integrated production-shaped: native engines over libp2p drive the real `vhalla-rooms` `Registry` and both snapshot stores through the certificate-gated journal boundary (61 tests green). The application data plane and the remaining listed gaps are pending |
-| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests), durable `vhalla-rooms-store` (5 tests, 13 crash boundaries) and the `vhalla rooms` CLI service lane (3 subprocess tests): quote/create/list/search/show/account, grant/describe/archive, collect, proof/evidence retrieval and explicit recover all commit through pin CAS before reporting success; two agents of one owner share state across separate invocations. Consensus-driven ordering with commit-before-acknowledge is now qualified by the production integration spike; what remains is promoting the spike adapter into a hosted service |
+| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests), durable `vhalla-rooms-store` (5 tests, 13 crash boundaries) and the `vhalla rooms` CLI service lane (3 subprocess tests): quote/create/list/search/show/account, grant/describe/archive, collect, proof/evidence retrieval and explicit recover all commit through pin CAS before reporting success; two agents of one owner share state across separate invocations. Consensus-driven ordering with commit-before-acknowledge is now qualified by the production integration spike, and the engine-agnostic adapter is promoted in-tree (`vhalla-journal` + `vhalla-rooms-consensus`). What remains is the hosted node: engine wiring and the data plane pending final engine selection |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
 
