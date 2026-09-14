@@ -35,8 +35,10 @@ use vhalla_social::archive::{Archive, Budget, Limits};
 use vhalla_social::control::ControlView;
 use vhalla_social::OwnerId;
 
-#[cfg(test)]
-mod fixture;
+/// Deterministic signed-record scenario builders shared by this crate's
+/// tests and engine-level integration tests in `vhalla-rooms-node`.
+#[cfg(any(test, feature = "fixture"))]
+pub mod fixture;
 #[cfg(test)]
 mod tests;
 

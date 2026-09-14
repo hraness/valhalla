@@ -300,9 +300,31 @@ pub struct Scenario {
     pub app: Application,
 }
 
+/// Wide bounds for long plans: dozens of reacts and seals per source
+/// writer, ~1.5k retained records, and — the binding constraint — ~850
+/// committed seals + grants must fit inside `control_reserve` before the
+/// archive marks every owner capacity-blocked.
+pub fn wide_limits() -> Limits {
+    Limits {
+        records: 4_096,
+        control_reserve: 1_024,
+        data_per_owner: 64,
+        data_per_writer: 64,
+        control_per_owner: 64,
+        pending: 256,
+        pending_per_signer: 8,
+    }
+}
+
 /// Builds the genesis archive + registry, the owners and the sources.
 pub fn scenario(owner_count: usize, source_count: u8) -> Scenario {
-    let mut archive = Archive::new(REALM, limits()).unwrap();
+    scenario_with_limits(owner_count, source_count, limits())
+}
+
+/// `scenario` under caller-supplied archive bounds — long plans need wider
+/// per-writer and total caps than the unit fixture's.
+pub fn scenario_with_limits(owner_count: usize, source_count: u8, limits: Limits) -> Scenario {
+    let mut archive = Archive::new(REALM, limits).unwrap();
     let owners: Vec<Owner> = (0..owner_count)
         .map(|i| beneficiary(&mut archive, 1 + i as u8))
         .collect();
@@ -314,7 +336,7 @@ pub fn scenario(owner_count: usize, source_count: u8) -> Scenario {
         realm: REALM,
         policy: policy(),
         eligible: sources.iter().map(|s| s.id).collect(),
-        limits: limits(),
+        limits,
         archive: archive.clone(),
     };
     let app = Application::genesis(archive, genesis.registry().unwrap());
@@ -402,7 +424,18 @@ pub struct Plan {
 
 /// Builds the genesis archive + registry and the per-height batch plan.
 pub fn plan(heights: u64, owner_count: usize, source_count: u8) -> Plan {
-    let mut scenario = scenario(owner_count, source_count);
+    plan_with_limits(heights, owner_count, source_count, limits())
+}
+
+/// `plan` under caller-supplied archive bounds; the returned `Genesis`
+/// carries them so every node's stores open with the same caps.
+pub fn plan_with_limits(
+    heights: u64,
+    owner_count: usize,
+    source_count: u8,
+    limits: Limits,
+) -> Plan {
+    let mut scenario = scenario_with_limits(owner_count, source_count, limits);
     let mut grants: BTreeMap<OwnerId, RoomRecordId> = BTreeMap::new();
     let mut cursors: BTreeMap<OwnerId, usize> = BTreeMap::new();
 

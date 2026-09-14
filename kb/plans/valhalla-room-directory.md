@@ -927,10 +927,23 @@ markers, exclusive writer lock via `File::try_lock`, fault-injection
 `Store`, 16 tests) and `vhalla-rooms-consensus` is the application
 adapter (`Frontier`, bounded canonical `Batch`, `Application` replay,
 `Genesis` seeding, `Adapter` driving journal → social store → rooms
-store → memory → acknowledgement, 6 tests). Both pass the workspace
-clippy `-D warnings` and full test gates. The Malachite `Context`
-implementation and node wiring remain spike-side until engine selection
-is finalized.
+store → memory → acknowledgement, 8 tests including replica absorb).
+Both pass the workspace clippy `-D warnings` and full test gates.
+
+The Malachite wiring is now promoted too: `vhalla-rooms-node` carries the
+`RoomContext` (value = bounded canonical batch bytes, `ValueId` = the
+batch's 32-byte commitment), the wire codec, Ed25519 signing/verification
+and commit-certificate verification, the `App` boundary loop, and
+`RoomNode::start` driving the full `EngineBuilder` stack — real libp2p,
+real WAL, real certificates. Its 27 in-tree tests re-run the whole
+qualification suite: four-validator commits, late join, crash/restart,
+minority partition, validator rotation, reordered parts, withheld-proposal
+timeout, competing-slug and underfunded-slot rejection, WAL fault
+injection and silent-loss recovery, runtime partition heal, the N=7/f=2
+asymmetric-island campaign, undecided-value resupply, and the 32-height
+bounded-WAL soak. `NetGate` and `WalPlan` ship as the node's qualification
+surface. Engine selection is thereby settled in the tree: Malachite
+v0.8.0 at pinned rev `72143f6`.
 
 ### Current implementation evidence
 
@@ -1012,8 +1025,8 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | R0 | Namespace choice; pricing/accounting and conflict counterexamples; independent review | Shared public directory accepted; isolated model implemented |
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
 | R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards` (5 tests) and wired into `registry::Registry` award dedup and eligible-source policy. Calibration suite (`tests/calibration.rs`, 4 scenarios over real records) pins the scaling laws: quadratic pricing is linearized by beneficiary collusion, the eligible-source set is the actual Sybil funnel, and window plus lifetime caps bound demand independent of credit. Choosing policy values against a concrete eligibility admission story remains open |
-| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike, now integrated production-shaped: native engines over libp2p drive the real `vhalla-rooms` `Registry` and both snapshot stores through the certificate-gated journal boundary (61 tests green). The application data plane and the remaining listed gaps are pending |
-| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests), durable `vhalla-rooms-store` (5 tests, 13 crash boundaries) and the `vhalla rooms` CLI service lane (3 subprocess tests): quote/create/list/search/show/account, grant/describe/archive, collect, proof/evidence retrieval and explicit recover all commit through pin CAS before reporting success; two agents of one owner share state across separate invocations. Consensus-driven ordering with commit-before-acknowledge is now qualified by the production integration spike, and the engine-agnostic adapter is promoted in-tree (`vhalla-journal` + `vhalla-rooms-consensus`). What remains is the hosted node: engine wiring and the data plane pending final engine selection |
+| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) selected and qualified in-tree: `vhalla-rooms-node` hosts real engines over libp2p driving the real `vhalla-rooms` `Registry` and both snapshot stores through the certificate-gated journal boundary — 27 node tests re-run the full qualification suite (quorum, late join, crash/restart, partitions incl. the N=7 asymmetric island, rotation, WAL faults, resupply, bounded WAL soak). The replica `absorb` data plane is in `vhalla-rooms-consensus`; `no_std` cert-consumer parity is CI-deferred |
+| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests), durable `vhalla-rooms-store` (5 tests, 13 crash boundaries) and the `vhalla rooms` CLI service lane (3 subprocess tests): quote/create/list/search/show/account, grant/describe/archive, collect, proof/evidence retrieval and explicit recover all commit through pin CAS before reporting success; two agents of one owner share state across separate invocations. Consensus-driven ordering with commit-before-acknowledge is now qualified end-to-end: the engine-agnostic adapter is promoted in-tree (`vhalla-journal` + `vhalla-rooms-consensus`, including the replica `absorb` data plane) and the hosted node is promoted in `vhalla-rooms-node` — engine wiring, certificate verification, and durable resupply all in-workspace. What remains is wiring a `vhalla rooms node`-style service command into the CLI and operational qualification under R6 |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
 
