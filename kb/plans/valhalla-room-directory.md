@@ -574,9 +574,9 @@ channel. `Decided`/`Finalized` certificates name the real 32-byte
 commitment (canonicalized as `VC2`) and reply only after the
 verified-certificate → batch-replay → fsync-ordered journal commit lands.
 
-Twenty tests across the context and engine crates under scheduler run
-`2e967146cba1cb1d035113026c2a1b52` (superseding
-`a26567a31737946cd253e26340573989`,
+Twenty-two tests across the context and engine crates under scheduler
+run `cbdb31226eba29625abd4254ba56e8c8` (superseding
+`2e967146cba1cb1d035113026c2a1b52`, `a26567a31737946cd253e26340573989`,
 `e75d2eb0f0ef37ac0fe58bbb9363fb85`, `739e3a2086b9ac82eba318b070ed4752`,
 `29c3f3942ed989611090b3dd5b149565`, `3e3aa96457625249e9179e8bf3301812`,
 `9c4be548420fa007e42fa2aaec837380` and
@@ -637,14 +637,29 @@ Twenty tests across the context and engine crates under scheduler run
   assembler — which keys stream state by part kind, not sequence —
   produces the same verified `ProposedValue`; an incomplete stream
   yields nothing.
+- WAL append/flush fault injection now runs INSIDE the engine's own
+  machinery: a `WalBuilder::Custom` proxy actor wraps the real
+  file-backed WAL (spawned against a stand-in `NodeRef`) and applies an
+  ordered per-kind fault schedule to `Append`/`Flush`. A reported
+  `Append` failure drives the consensus actor into the engine's own
+  `hang_on_safety_failure` — the faulted validator never signs or
+  commits again, the remaining three hold quorum through every planned
+  height, and a clean restart on the same home replays the empty WAL
+  and value-syncs to the identical frontier. The safety halt is
+  exercised, not bypassed.
+- Silent WAL loss (the fsync-lie case — `Append` replies `Ok`, nothing
+  is written) leaves the faulted node committing normally; after a
+  crash the WAL on disk is near-empty, replay reconstructs no undecided
+  state, `ConsensusReady` resumes from the durable journal frontier,
+  the node commits the next height with the group, and the journal's
+  height markers keep every prior height applied exactly once.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real application values on the wire, real certificates
 naming the real 32-byte commitment, real replay against the real
 application frontier, durable commit before acknowledgement, restart,
 catch-up and a validator-set transition through the same path. Still
-unqualified per the target list: WAL append/flush fault injection inside
-the engine's own machinery (needs engine-internal hooks), the
+unqualified per the target list: the
 competing-slug and sibling-slot allocation cases *under partition*
 (both connected cases above resolve by invalid votes on a fully
 connected network; a partition reaching quorum on each side of a stale
