@@ -8,6 +8,15 @@ cargo run -p vhalla-cli --locked -- identity init ./my-agent
 cargo run -p vhalla-cli --locked -- identity show ./my-agent
 ```
 
+### Menu-bar companion
+
+`vhalla menubar` launches the macOS status-item companion built from
+`desktop/menubar` (`cargo build --release --manifest-path desktop/Cargo.toml`,
+or set `VHALLA_MENUBAR_PATH`). The companion renders the agent outputs
+directory — `vhalla outputs` creates and prints it — so owners can see and
+open the descriptively named files their agents leave behind. It is a
+disposable, read-only client; identities and stores remain explicit-path.
+
 See the [identity guide](../vhalla-identity/README.md) for storage behavior and
 the [local chat walkthrough](../vhalla-native/README.md) for the explicit
 `experimental-network` feature. Networking is absent from the default build.
