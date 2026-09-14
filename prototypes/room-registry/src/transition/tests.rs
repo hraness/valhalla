@@ -315,3 +315,64 @@ proptest! {
         prop_assert_eq!(replay.frontier(), before);
     }
 }
+
+#[test]
+fn proposal_and_batch_codecs_roundtrip_and_reverify() {
+    let source = app();
+    let one = proposal(&source, 1, 21, "one");
+    let two = proposal(&source, 2, 22, "two");
+
+    // Proposal round-trip preserves identity and exact signatures.
+    let decoded = Proposal::decode(&one.encode()).unwrap();
+    assert_eq!(decoded, one);
+    assert_eq!(decoded.id(), one.id());
+
+    // A tampered signature fails at decode — stored bytes cannot smuggle an
+    // unverified proposal.
+    let mut tampered = one.encode();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    assert_eq!(
+        Proposal::decode(&tampered),
+        Err(super::super::Error::Signature)
+    );
+
+    // Batch round-trip preserves the complete transition claim.
+    let checked = source.prepare(1, &[one.clone(), two.clone()]).unwrap();
+    let bytes = checked.batch().encode();
+    let batch = Batch::decode(&bytes).unwrap();
+    assert_eq!(batch.value_id(), checked.batch().value_id());
+    assert_eq!(batch.parent(), source.frontier());
+    // The decoded batch validates independently against the same parent.
+    let replay = app();
+    let checked_again = replay.validate(&batch).unwrap();
+    assert_eq!(checked_again.next(), checked.next());
+
+    // Truncation, trailing bytes and count bound violations all fail.
+    assert!(Batch::decode(&bytes[..bytes.len() - 1]).is_err());
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(Batch::decode(&trailing).is_err());
+    let mut bad_count = bytes.clone();
+    bad_count[FRONTIER_BYTES + 8] = 0;
+    bad_count[FRONTIER_BYTES + 9] = 0;
+    assert!(Batch::decode(&bad_count).is_err());
+}
+
+#[test]
+fn frontier_codec_roundtrips_and_commitment_binds_every_field() {
+    let f = app().frontier();
+    let bytes = f.encode();
+    assert_eq!(bytes.len(), 176);
+    assert_eq!(Frontier::decode(&bytes), Ok(f));
+    assert_eq!(
+        Frontier::decode(&bytes[..bytes.len() - 1]),
+        Err(Error::Bounds)
+    );
+    let mut later = f;
+    later.height += 1;
+    assert_ne!(f.commitment(), later.commitment());
+    let mut elsewhere = f;
+    elsewhere.state = [9; 32];
+    assert_ne!(f.commitment(), elsewhere.commitment());
+}

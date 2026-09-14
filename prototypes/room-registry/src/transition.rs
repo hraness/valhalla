@@ -23,6 +23,45 @@ pub struct Frontier {
     pub time: u64,
 }
 
+const FRONTIER_BYTES: usize = 32 * 5 + 8 * 2;
+
+impl Frontier {
+    /// Canonical frontier bytes, in fixed field order.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(FRONTIER_BYTES);
+        out.extend_from_slice(&self.directory);
+        out.extend_from_slice(&self.policy);
+        out.extend_from_slice(&self.height.to_be_bytes());
+        out.extend_from_slice(&self.value);
+        out.extend_from_slice(&self.state);
+        out.extend_from_slice(&self.control);
+        out.extend_from_slice(&self.time.to_be_bytes());
+        out
+    }
+    /// Parses canonical frontier bytes; the result is still an untrusted claim.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != FRONTIER_BYTES {
+            return Err(Error::Bounds);
+        }
+        Ok(Frontier {
+            directory: bytes[..32].try_into().map_err(|_| Error::Bounds)?,
+            policy: bytes[32..64].try_into().map_err(|_| Error::Bounds)?,
+            height: u64::from_be_bytes(bytes[64..72].try_into().map_err(|_| Error::Bounds)?),
+            value: bytes[72..104].try_into().map_err(|_| Error::Bounds)?,
+            state: bytes[104..136].try_into().map_err(|_| Error::Bounds)?,
+            control: bytes[136..168].try_into().map_err(|_| Error::Bounds)?,
+            time: u64::from_be_bytes(bytes[168..176].try_into().map_err(|_| Error::Bounds)?),
+        })
+    }
+    /// Content commitment over the complete frontier.
+    pub fn commitment(&self) -> Id {
+        let mut h = Sha256::new();
+        h.update(b"vhalla/room-frontier/spike-v1\0");
+        hash_frontier(&mut h, *self);
+        h.finalize().into()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Bounds,
@@ -75,6 +114,60 @@ impl Batch {
     }
     pub fn result(&self) -> Id {
         self.result
+    }
+    /// Canonical batch bytes: parent frontier, time, exact ordered proposals
+    /// and the claimed result root.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(FRONTIER_BYTES + 8 + 2 + 32 + self.proposals.len() * 600);
+        out.extend_from_slice(&self.parent.encode());
+        out.extend_from_slice(&self.time.to_be_bytes());
+        out.extend_from_slice(&(self.proposals.len() as u16).to_be_bytes());
+        for proposal in &self.proposals {
+            let bytes = proposal.encode();
+            out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            out.extend_from_slice(&bytes);
+        }
+        out.extend_from_slice(&self.result);
+        out
+    }
+    /// Parses canonical batch bytes. Each proposal's signatures are
+    /// re-verified by [`Proposal::decode`]; the result is still only a
+    /// claimed transition until `validate` replays it.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() < FRONTIER_BYTES + 8 + 2 + 32 {
+            return Err(Error::Bounds);
+        }
+        let parent = Frontier::decode(&bytes[..FRONTIER_BYTES])?;
+        let mut rest = &bytes[FRONTIER_BYTES..];
+        let time = u64::from_be_bytes(rest[..8].try_into().map_err(|_| Error::Bounds)?);
+        rest = &rest[8..];
+        let count = usize::from(u16::from_be_bytes(
+            rest[..2].try_into().map_err(|_| Error::Bounds)?,
+        ));
+        rest = &rest[2..];
+        if count == 0 || count > MAX_BATCH {
+            return Err(Error::Bounds);
+        }
+        let mut proposals = Vec::with_capacity(count);
+        for _ in 0..count {
+            if rest.len() < 4 {
+                return Err(Error::Bounds);
+            }
+            let len = u32::from_be_bytes(rest[..4].try_into().map_err(|_| Error::Bounds)?) as usize;
+            rest = &rest[4..];
+            if rest.len() < len {
+                return Err(Error::Bounds);
+            }
+            proposals.push(Proposal::decode(&rest[..len]).map_err(Error::Operation)?);
+            rest = &rest[len..];
+        }
+        if rest.len() != 32 {
+            return Err(Error::Bounds);
+        }
+        let result: Id = rest[..32].try_into().map_err(|_| Error::Bounds)?;
+        // `Batch::new` re-runs the bounds and per-draft checks so decoded
+        // bytes can never construct a batch that bypassed validation.
+        Batch::new(parent, time, &proposals, result)
     }
     /// Full application value commitment, including order and exact signatures.
     pub fn value_id(&self) -> Id {

@@ -168,6 +168,55 @@ impl Draft {
         out.extend_from_slice(&self.nonce);
         out
     }
+    /// Canonical draft bytes, as bound into both signatures.
+    pub fn encode(&self) -> Vec<u8> {
+        self.bytes()
+    }
+    /// Parses canonical draft bytes and revalidates every bound.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() < 128 + 1 + 2 + 4 + 8 + 8 + 32 {
+            return Err(Error::Bounds);
+        }
+        let (fixed, rest) = bytes.split_at(128);
+        let directory: Id = fixed[..32].try_into().map_err(|_| Error::Bounds)?;
+        let policy: Id = fixed[32..64].try_into().map_err(|_| Error::Bounds)?;
+        let owner: Id = fixed[64..96].try_into().map_err(|_| Error::Bounds)?;
+        let actor: Id = fixed[96..128].try_into().map_err(|_| Error::Bounds)?;
+        let (slug_len, rest) = rest.split_first().ok_or(Error::Bounds)?;
+        let slug_len = usize::from(*slug_len);
+        if rest.len() < slug_len + 2 {
+            return Err(Error::Bounds);
+        }
+        let (slug, rest) = rest.split_at(slug_len);
+        let slug = Slug::new(core::str::from_utf8(slug).map_err(|_| Error::Slug)?)?;
+        let (desc_len, rest) = rest.split_at(2);
+        let desc_len = usize::from(u16::from_be_bytes(
+            desc_len.try_into().map_err(|_| Error::Bounds)?,
+        ));
+        if rest.len() != desc_len + 4 + 8 + 8 + 32 {
+            return Err(Error::Bounds);
+        }
+        let (desc, rest) = rest.split_at(desc_len);
+        let description =
+            alloc::string::String::from_utf8(desc.to_vec()).map_err(|_| Error::Bounds)?;
+        let (slot, rest) = rest.split_at(4);
+        let (cost, rest) = rest.split_at(8);
+        let (expires_at, nonce) = rest.split_at(8);
+        let draft = Draft {
+            directory,
+            policy,
+            owner,
+            actor,
+            slug,
+            description,
+            slot: u32::from_be_bytes(slot.try_into().map_err(|_| Error::Bounds)?),
+            cost: u64::from_be_bytes(cost.try_into().map_err(|_| Error::Bounds)?),
+            expires_at: u64::from_be_bytes(expires_at.try_into().map_err(|_| Error::Bounds)?),
+            nonce: nonce.try_into().map_err(|_| Error::Bounds)?,
+        };
+        draft.validate()?;
+        Ok(draft)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -201,6 +250,30 @@ impl Proposal {
     }
     pub fn draft(&self) -> &Draft {
         &self.draft
+    }
+    /// Canonical proposal bytes: the signed draft followed by both exact
+    /// signature byte strings.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = self.draft.bytes();
+        out.extend_from_slice(&self.owner_signature);
+        out.extend_from_slice(&self.actor_signature);
+        out
+    }
+    /// Parses canonical proposal bytes and re-verifies both signatures, so a
+    /// stored or transported proposal cannot bypass verification.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() <= 128 {
+            return Err(Error::Bounds);
+        }
+        let (draft_end, sigs) = (bytes.len() - 128, &bytes[bytes.len() - 128..]);
+        let draft = Draft::decode(&bytes[..draft_end])?;
+        let proposal = Proposal {
+            draft,
+            owner_signature: sigs[..64].try_into().map_err(|_| Error::Bounds)?,
+            actor_signature: sigs[64..].try_into().map_err(|_| Error::Bounds)?,
+        };
+        proposal.verify()?;
+        Ok(proposal)
     }
     pub fn id(&self) -> Id {
         digest(&domain(

@@ -454,6 +454,42 @@ the application layer that owns replay must consume this boundary rather
 than the scratch `apply` fold, and the engine's real `Decided`/`Finalized`
 types must replace the modeled certificate surface.
 
+### Real-application acknowledgement spike — 2026-09-14
+
+The boundary now runs against the actual room-registry application layer
+rather than a scratch fold. A decided certificate references the full batch
+by its `value_id`; the adapter looks up the held `Batch`, replays it through
+`Application::validate` against the complete pinned `Frontier`, commits a
+journal bundle carrying the certificate, the exact canonical
+`Batch::encode` bytes, the value commitment, the resulting policy/control
+binding and both complete frontier commitments, applies the checked batch
+in memory, and only then acknowledges. A first decided batch must extend
+the real genesis frontier — the journal's empty-directory frontier is now a
+caller-bound genesis commitment rather than a fixed constant.
+
+Restart is exercised against real application state: the in-memory
+`Directory` is dropped entirely and `open` rebuilds it by replaying every
+retained committed batch in height order through `validate`/`apply_locally`
+before the engine may deliver anything. A crash after the pin rename
+rebuilds the exact room state on reopen, and the redelivered certificate
+dedups against the durable marker rather than re-applying. A corrupted
+retained batch fails the rebuild closed.
+
+Seven adapter tests pass under scheduler run
+`8e4face1a2b17117324e8aacb29d6fdb`, which also re-ran the journal (16) and
+modeled-boundary (9) suites plus the room-registry prototype suite (24)
+under locked format, doc-tests and strict clippy. The prototype gained the
+canonical codecs this boundary requires: `Draft::encode`/`decode`,
+`Proposal::encode`/`decode` (decode re-verifies both signatures), and
+`Frontier`/`Batch` encode/decode with exact field order and count bounds.
+
+This qualifies the real replay path through the durable acknowledgement
+boundary. Still unqualified: certificate byte verification inside this
+adapter (receipt parity stands separately), durable `Directory` snapshots
+(the rebuild replays retained batches, so retained-bundle growth bounds are
+unmeasured), network admission, validator rotation, consensus, finality and
+real power-loss durability.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
