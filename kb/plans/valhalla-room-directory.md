@@ -574,8 +574,9 @@ channel. `Decided`/`Finalized` certificates name the real 32-byte
 commitment (canonicalized as `VC2`) and reply only after the
 verified-certificate → batch-replay → fsync-ordered journal commit lands.
 
-Twenty-three tests across the context and engine crates under
-scheduler run `4af529bd38e1b6293604a55b7618b743` (superseding
+Twenty-four tests across the context and engine crates under
+scheduler run `c035163c6a15759e8670ece775e9f224` (superseding
+`4af529bd38e1b6293604a55b7618b743`,
 `89d9c5cda2d8b3ce2da459dc8c8b7c58`,
 `cbdb31226eba29625abd4254ba56e8c8`,
 `2e967146cba1cb1d035113026c2a1b52`, `a26567a31737946cd253e26340573989`,
@@ -668,6 +669,19 @@ scheduler run `4af529bd38e1b6293604a55b7618b743` (superseding
   every journal, and every h=2 bundle binds the honest batch's
   commitment. Whether the stale batch is physically emitted or simply
   absent, the partition side's allocation never finalizes.
+- Undecided-proposal replay now comes from an application-owned durable
+  store, not only the engine WAL: `home/store/batches/` retains every
+  verified batch body (fsync'd before it is held) and `home/store/seen/`
+  retains one fsync'd record per observed proposal (height, round,
+  proposer -> value id + polka round). At `StartedRound` the app
+  resupplies the engine with the real `ProposedValue`s it saw at the
+  height — original round, polka round and proposer preserved, validity
+  re-computed against the pinned frontier; a record whose batch bytes
+  are missing is skipped rather than resurrected. The crash test proves
+  the reload is real: the restarted node's store returned all four
+  spec-held batch bodies plus its seen records (>= 2 heights) before it
+  rejoined and committed height 4, and the unit test shows a resupplied
+  value rebuilt from disk alone after the in-memory app is dropped.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real application values on the wire, real certificates
@@ -685,9 +699,9 @@ parity (no wasm32 toolchain on this machine — defer to CI), and WAL
 growth beyond a 12-height run (the bounded tail is confirmed over 12
 heights; very long runs are not yet sampled). Full value
 propagation is now real — batch bytes cross the consensus wire inside
-proposal parts and decided values carry them through sync — but
-undecided-proposal replay on restart is still delegated to the engine
-WAL rather than an application store, and the application data plane
+proposal parts and decided values carry them through sync — and
+undecided-proposal replay is now application-owned (fsync'd `store/`
+records resupplied at `StartedRound`), but the application data plane
 (value availability beyond the deciding quorum) is still unmodelled.
 
 ### Current implementation evidence
