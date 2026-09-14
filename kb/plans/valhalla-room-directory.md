@@ -574,8 +574,9 @@ channel. `Decided`/`Finalized` certificates name the real 32-byte
 commitment (canonicalized as `VC2`) and reply only after the
 verified-certificate → batch-replay → fsync-ordered journal commit lands.
 
-Sixteen tests across the context and engine crates under scheduler run
-`739e3a2086b9ac82eba318b070ed4752` (superseding
+Seventeen tests across the context and engine crates under scheduler run
+`e75d2eb0f0ef37ac0fe58bbb9363fb85` (superseding
+`739e3a2086b9ac82eba318b070ed4752`,
 `29c3f3942ed989611090b3dd5b149565`, `3e3aa96457625249e9179e8bf3301812`,
 `9c4be548420fa007e42fa2aaec837380` and
 `701411a70fac9a868ce870c25ff334f0`):
@@ -611,6 +612,13 @@ Sixteen tests across the context and engine crates under scheduler run
   adapter, votes, and converges to the same frontier — the value itself
   crosses the consensus wire; a batch that fails decode or frontier
   validation is voted against rather than finalized.
+- A competing-slug allocation loses deterministically: two distinct
+  batches claim the same slug against the same genesis frontier, the
+  h=1 batch commits first, and the h=2 round-0 proposer's stale
+  competitor fails the exact predecessor check at every validator and is
+  voted down. Round 1 finalizes the honest batch, and every journal's
+  h=2 bundle binds the winner's 32-byte commitment — the stale
+  allocation never entered a journal.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real application values on the wire, real certificates
@@ -619,10 +627,12 @@ application frontier, durable commit before acknowledgement, restart,
 catch-up and a validator-set transition through the same path. Still
 unqualified per the target list: WAL append/flush fault injection inside
 the engine's own machinery (needs engine-internal hooks), the
-competing-slug and sibling-slot allocation cases under partition,
-withheld-data and reordered-input liveness bounds, `no_std`
-certificate-consumer parity (no wasm32 toolchain on this machine — defer
-to CI), and cumulative WAL growth across longer runs. Full value
+competing-slug and sibling-slot allocation cases *under partition* (the
+connected competing-slug case above resolves by unanimous invalid
+votes; a partition reaching quorum on each side of a stale boundary is
+not yet exercised), withheld-data and reordered-input liveness bounds,
+`no_std` certificate-consumer parity (no wasm32 toolchain on this
+machine — defer to CI), and cumulative WAL growth across longer runs. Full value
 propagation is now real — batch bytes cross the consensus wire inside
 proposal parts and decided values carry them through sync — but
 undecided-proposal replay on restart is still delegated to the engine
