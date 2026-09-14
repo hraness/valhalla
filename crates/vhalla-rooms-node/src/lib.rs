@@ -335,8 +335,19 @@ impl App {
     /// durable registration as wire-received values, plus a `store/pending/`
     /// marker so a restart re-queues it, then FIFO queueing for the next
     /// `GetValue` this node wins. The entry leaves only when its own value
-    /// id commits.
+    /// id commits. A batch that can no longer apply — already committed,
+    /// stale-parented — writes no marker: nothing durable is owed it.
     fn submit(&mut self, batch: Batch) {
+        if self
+            .adapter
+            .lock()
+            .unwrap()
+            .application()
+            .validate(&batch)
+            .is_err()
+        {
+            return;
+        }
         let id = self.register_batch(batch);
         store_write(&self.store.join("pending"), &hex(&id.0), &[]).expect("pending marker write");
         if !self
