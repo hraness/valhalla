@@ -543,27 +543,40 @@ review.
 ### Multi-validator engine run — 2026-09-15
 
 The boundary is now exercised end to end against the real engine, not a
-message-shaped stand-in. Each node in the spike runs the full
-`EngineBuilder` stack — libp2p TCP networking, consensus, value-sync,
-request and WAL actors — under `TestContext` with its own home directory
-carrying both the engine WAL and the room journal. The application loop
-is the spike's own: `ConsensusReady` resumes from the durable journal
-frontier (never memory), `GetValue` proposes the `u64` engine id bound
-to a held room `Batch` with proposer-signed `Init`/`Data`/`Fin` parts,
-`ReceivedProposalPart` resolves the height's active validator set, checks
-the part's proposer against the context's `select_proposer` for
-`(height, round)` — not mere set membership — and verifies the Fin
-signature over the content hash before voting, and `Decided`/`Finalized`
-reply only after the verified-certificate → batch-replay → fsync-ordered
-journal commit lands. The engine's `u64` value id is the wire value; the
-durable bundle still binds the batch's real 32-byte `value_id`. A shared
-application data-plane pool models value availability: a node that never
-held the decided batch resolves the `u64` id through the pool, registers
-the real `Batch` with its durable adapter, and commits through the same
-path — an unknown id is rejected rather than finalized.
+message-shaped stand-in — and under a real application `Context`, not the
+test fixture. Each node in the spike runs the full `EngineBuilder` stack —
+libp2p TCP networking, consensus, value-sync, request and WAL actors —
+under `RoomContext`, a scratch context whose `Value` carries bounded
+canonical batch bytes and whose `ValueId` IS the batch's 32-byte value
+commitment. `RoomContext` reuses only the non-context-generic test
+primitives (`Height`, `Address`, the `Ed25519` scheme, `LinearTimeouts`)
+and implements everything else itself: `RoomValue`/`RoomValueId`,
+`RoomVote`, `RoomProposal`, `Init`/`Data`/`Fin` proposal parts, the
+validator set, deterministic `(height + round) % count` proposer
+selection, `Signer`/`Verifier` over canonical domain-separated preimages
+(`RV1` votes, `RP1` proposals, `RF1` fin parts, engine-native validator
+proofs), and a strict bounded length-prefixed codec covering every wire
+and WAL type — consensus messages, liveness rebroadcasts, polka and
+skip-round certificates, streamed parts, validator proofs, and the sync
+status/request/response family.
 
-Seven tests under scheduler run `29c3f3942ed989611090b3dd5b149565`
-(superseding `3e3aa96457625249e9179e8bf3301812`,
+The application loop is the spike's own: `ConsensusReady` resumes from
+the durable journal frontier (never memory), `GetValue` proposes a
+`RoomValue` carrying the real `Batch::encode()` bytes and streams them in
+proposer-signed parts, `ReceivedProposalPart` resolves the height's
+active validator set, checks the stream's proposer against the context's
+`select_proposer` for `(height, round)` — not mere set membership —
+verifies the `Fin` signature over the streamed content, decodes the
+batch, re-checks `batch.value_id() == proposed id`, validates it against
+the pinned application frontier, and only then votes. A node that never
+held the batch receives it inside the proposal stream itself — no side
+channel. `Decided`/`Finalized` certificates name the real 32-byte
+commitment (canonicalized as `VC2`) and reply only after the
+verified-certificate → batch-replay → fsync-ordered journal commit lands.
+
+Sixteen tests across the context and engine crates under scheduler run
+`739e3a2086b9ac82eba318b070ed4752` (superseding
+`29c3f3942ed989611090b3dd5b149565`, `3e3aa96457625249e9179e8bf3301812`,
 `9c4be548420fa007e42fa2aaec837380` and
 `701411a70fac9a868ce870c25ff334f0`):
 
@@ -587,18 +600,21 @@ Seven tests under scheduler run `29c3f3942ed989611090b3dd5b149565`
   rotated-out key contributes nothing, and all four running nodes commit
   heights 1–4 with identical frontiers.
 - A measurement harness reports the inputs production limits need:
-  canonical certificates are 277 B per height at three-of-four
-  signatures, journal bundles 1104 B each, four committed heights occupy
-  4652 B of journal state, and the verify → journal → fsync → ack
-  boundary costs ~38–51 ms per height on this machine (fsync-dominated).
+  canonical `VC2` certificates are 301 B per height at three-of-four
+  signatures, journal bundles 1128 B each, four committed heights occupy
+  4748 B of journal state, and the verify → journal → fsync → ack
+  boundary costs ~24–51 ms per height on this machine (fsync-dominated).
   The engine WAL at rest is a 12 B tail — it holds only the live height.
-- A validator that never held the decided batch resolves the `u64` id
-  through the shared data-plane pool, registers the real `Batch` with its
-  durable adapter, and converges to the same frontier; an unresolvable id
-  is rejected rather than finalized.
+- A validator that never held the decided batch receives the real
+  canonical batch bytes inside the proposal stream, decodes and validates
+  them against its own pinned frontier, registers them with the durable
+  adapter, votes, and converges to the same frontier — the value itself
+  crosses the consensus wire; a batch that fails decode or frontier
+  validation is voted against rather than finalized.
 
 This closes the loop on the R3 qualification sequence: real engine in,
-real network, real certificates, real replay against the real
+real network, real application values on the wire, real certificates
+naming the real 32-byte commitment, real replay against the real
 application frontier, durable commit before acknowledgement, restart,
 catch-up and a validator-set transition through the same path. Still
 unqualified per the target list: WAL append/flush fault injection inside
@@ -606,12 +622,12 @@ the engine's own machinery (needs engine-internal hooks), the
 competing-slug and sibling-slot allocation cases under partition,
 withheld-data and reordered-input liveness bounds, `no_std`
 certificate-consumer parity (no wasm32 toolchain on this machine — defer
-to CI), and cumulative WAL growth across longer runs. The `u64` engine
-value id stands in for full value propagation — batches do not cross the
-consensus wire in this spike; the shared data-plane pool models
-application-level availability but is not a transport — and
-undecided-proposal replay on restart is delegated to the engine WAL
-rather than an application store.
+to CI), and cumulative WAL growth across longer runs. Full value
+propagation is now real — batch bytes cross the consensus wire inside
+proposal parts and decided values carry them through sync — but
+undecided-proposal replay on restart is still delegated to the engine
+WAL rather than an application store, and the application data plane
+(value availability beyond the deciding quorum) is still unmodelled.
 
 ### Current implementation evidence
 
