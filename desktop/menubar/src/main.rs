@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use desktop_foundation::{outputs::OutputsSection, Host, MenuModel, MenuNode, Options};
+use desktop_foundation::{
+    outputs::OutputsSection, AccessibilityMetadata, Host, MenuItem, MenuModel, MenuNode, Options,
+};
 
 /// `~/Library/Application Support/Valhalla` on macOS, matching
 /// `state_directory()` in `crates/vhalla-cli/src/main.rs`.
@@ -57,7 +59,15 @@ impl Host for ValhallaHost {
         let mut nodes = vec![MenuNode::disabled("Valhalla"), MenuNode::Separator];
         nodes.extend(self.outputs.nodes());
         nodes.push(MenuNode::Separator);
-        nodes.push(MenuNode::quit("Quit Valhalla"));
+        nodes.push(MenuNode::interactive(
+            MenuItem::action(desktop_foundation::QUIT_ACTION_ID, "Quit Valhalla")
+                .with_shortcut("CmdOrCtrl+Q")
+                .with_accessibility(AccessibilityMetadata {
+                    label: Some("Quit Valhalla".to_owned()),
+                    value: None,
+                    hint: Some("Exit the Valhalla menu bar companion".to_owned()),
+                }),
+        ));
         MenuModel {
             title: Some("Valhalla".to_owned()),
             tooltip: Some("Valhalla — agent outputs".to_owned()),
