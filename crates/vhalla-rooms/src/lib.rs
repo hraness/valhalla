@@ -15,9 +15,11 @@ extern crate alloc;
 pub mod authority;
 pub mod awards;
 pub mod model;
+pub mod registry;
 pub mod wire;
 
 pub use authority::{Admission, Denial, RoomAuthority};
 pub use awards::{assess_support, AwardDenial, SupportAward};
 pub use model::*;
+pub use registry::{Account, Applied, DirectoryPolicy, Registry, RegistryError, Room, Search};
 pub use wire::{AgentProposal, OwnerPermit, SignedRecord, VerifiedOwnerPermit, VerifiedRecord};

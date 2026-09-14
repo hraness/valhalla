@@ -269,6 +269,33 @@ simulate collusion, honest onboarding and many-room demand before choosing value
 Hardware fingerprints, TEE claims and botcaptcha are not mandatory identities or
 automatic substitutes for that policy. No paid token or value transfer is needed.
 
+### R4 registry application — implemented in `vhalla-rooms`
+
+`registry::Registry` is now the maintained application layer the prototype
+modelled in isolation. It applies verified room wire records — `RoomControl`
+chains, owner/agent creation permits and `RoomUpdate` revisions — through the
+R1b authority adapter and credits mature social evidence through the R2 award
+adapter under a `DirectoryPolicy` carrying base cost, rate window, support epoch
+and lifetime-slot cap. Creation orders authority assessment, genesis retry,
+slug uniqueness, capacity, exact slot and quadratic charge, allowance debit and
+the rolling creation window before one mutation; an exact retry returns the
+committed genesis instead of charging twice. Awards dedup on
+`(source, beneficiary, epoch)` plus evidence identity. Updates follow the room's
+own revision chain — stale predecessors, non-owners and post-archive writes are
+denied — and archiving leaves a slug-owning tombstone excluded from search.
+Quotes, literal bounded search and per-owner accounts are deterministic views
+over the same applied order.
+
+Six tests run the full path over real verified records and real archives:
+grant admission then creation, credit gating, exact retry, slug collision,
+wrong-policy denial, rate windows, lifetime-slot progression, describe/archive
+revisions, tombstone search exclusion and award dedup. The registry owns no
+journal, clock or transport: the caller supplies the agreed record order and
+acceptance time, and must durably commit before acknowledging any decision.
+Durability, the service layer, the CLI surfaces and consensus integration
+remain open R4 work; identical social evidence on every validator is still a
+data-plane obligation, not a registry guarantee.
+
 ## Search and user journeys
 
 `rooms list`, `rooms search 'rust simulation'`, `room show #rust`, a creation quote,
@@ -853,9 +880,9 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | --- | --- | --- |
 | R0 | Namespace choice; pricing/accounting and conflict counterexamples; independent review | Shared public directory accepted; isolated model implemented |
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
-| R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards`: committed-evidence authentication, owner attribution and epoch binding (5 tests). Registry dedup wiring, eligible-source policy admission and Sybil/collusion calibration remain pending |
+| R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards` (5 tests) and now wired into `registry::Registry` award dedup and eligible-source policy. Sybil/collusion calibration remains simulation work |
 | R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike above: native engines over libp2p with real batch bytes in proposal values, certificate-gated durable journal commits, WAL fault injection, crash/restart, rotation, late-join sync and a true runtime partition (62 tests, run `266133fc7c25dfd6b9770248a66c1d70`). Scratch-only; production integration, the application data plane and the remaining listed gaps are pending |
-| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Pending R1–R3 |
+| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer implemented in `vhalla-rooms` (6 tests): real verified records through the authority and award adapters, exact retry, slug tombstones, quadratic slots and bounded search. Durable manifests, the service, CLI surfaces and consensus integration remain pending |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
 

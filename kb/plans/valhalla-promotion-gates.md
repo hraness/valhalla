@@ -256,9 +256,14 @@ permit, proposal and metadata-update records with distinct signature domains,
 full owner/agent identities and private immutable verified wrappers. Its 2 KiB
 decoder and cryptographic verification produce evidence only. The crate cannot
 register a name, accept a claimed current controller, spend allowance or create
-a finalized-room value. R1b admission remains gated on R3's exact agreed social
-and room-control snapshot, including rotation/revocation freshness. Old social
-v1 wire and `Rights::ALL` remain unchanged.
+a finalized-room value. The R1b authority adapter, the R2 mature-award
+derivation and the R4 registry application layer are now implemented in the
+same crate — see the
+[[plans/valhalla-room-directory|room directory plan]] for their basis-freshness,
+snapshot-commitment, committed-evidence and deterministic-application evidence.
+Durable manifests, the registry service, CLI surfaces, Sybil/collusion
+calibration and consensus integration remain open. Old social v1 wire and
+`Rights::ALL` remain unchanged.
 
 ### Dioxus application decision — 2026-09-13
 
