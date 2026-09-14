@@ -16,7 +16,8 @@ fn hex_id(value: &str) -> Id {
     let bytes = value.as_bytes();
     assert_eq!(bytes.len(), 64);
     let mut out = [0u8; 32];
-    for (i, pair) in bytes.chunks_exact(2).enumerate() {
+    for (i, pair) in bytes.chunks(2).enumerate() {
+        assert_eq!(pair.len(), 2);
         let nibble = |b: u8| match b {
             b'0'..=b'9' => b - b'0',
             b'a'..=b'f' => b - b'a' + 10,
