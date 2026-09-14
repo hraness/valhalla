@@ -47,3 +47,54 @@ fn menubar_and_outputs_reject_extra_arguments() {
         );
     }
 }
+
+#[test]
+fn menubar_status_reports_an_uninstalled_companion() {
+    let home = std::env::temp_dir().join(format!("vhalla-menubar-test-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .args(["menubar", "status"])
+        .env("HOME", &home)
+        .env("VHALLA_MENUBAR_PATH", "/definitely/missing/vhalla-menubar")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("installed: none"), "{text}");
+    if cfg!(target_os = "macos") {
+        assert!(text.contains("launch agent: none"), "{text}");
+    }
+    assert!(text.contains("nothing qualified"), "{text}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn menubar_rejects_an_unknown_subcommand() {
+    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .args(["menubar", "bogus"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"));
+}
+
+/// `install` with an unqualified override fails before touching launchd or
+/// the state directory — the failure path must be side-effect free.
+#[test]
+fn menubar_install_requires_a_qualified_binary() {
+    let home = std::env::temp_dir().join(format!("vhalla-install-test-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .args(["menubar", "install"])
+        .env("HOME", &home)
+        .env("VHALLA_MENUBAR_PATH", "/definitely/missing/vhalla-menubar")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let _ = std::fs::remove_dir_all(&home);
+}
