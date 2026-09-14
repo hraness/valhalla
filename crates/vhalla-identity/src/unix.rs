@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 use vhalla_crypto::{sign_with_key, SignError, SignedEnvelope, VerificationContext};
-use vhalla_session::{ChatSession, Pairing, Pending, Reject};
+use vhalla_session::{ChatSession, Invitation, InvitationError, Pairing, Pending, Reject};
 use vhalla_wire::Envelope;
 use zeroize::Zeroizing;
 
@@ -131,6 +131,21 @@ impl Identity {
     #[must_use]
     pub fn public_key(&self) -> [u8; 32] {
         self.key.verifying_key().to_bytes()
+    }
+
+    /// Issue an owner-signed pairing invitation without exporting private key
+    /// material. The caller remains responsible for publishing or tracking
+    /// the returned token and for enforcing any single-use policy.
+    pub fn issue_invitation(
+        &self,
+        invitee: [u8; 32],
+        realm: vhalla_core::RealmId,
+        room: vhalla_core::RoomId,
+        epoch: vhalla_core::Epoch,
+        expires_at: u64,
+        nonce: [u8; 32],
+    ) -> Result<Invitation, InvitationError> {
+        Invitation::issue(&self.key, invitee, realm, room, epoch, expires_at, nonce)
     }
 
     /// Start an explicitly paired chat handshake with a fresh OS-generated

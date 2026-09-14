@@ -15,14 +15,14 @@ mod codec;
 mod connection;
 mod network;
 
-pub use connection::{send_message, Delivery, Event, Listener};
+pub use connection::{send_message, send_message_with_invitation, Delivery, Event, Listener};
 
 use libp2p::{identity::PublicKey, multiaddr::Protocol, Multiaddr, PeerId};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use vhalla_core::{Epoch, RealmId, RoomId};
 use vhalla_crypto::VerifyingKey;
 use vhalla_identity::IdentityError;
-use vhalla_session::{Pairing, Reject};
+use vhalla_session::{InvitationError, Pairing, Reject};
 
 const MAX_FRAME: usize = 64 * 1024;
 const MAX_CONNECTIONS: u32 = 4;
@@ -30,6 +30,24 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
 const LIFETIME: u64 = 60;
 const READY: &[u8] = b"vhalla/native/ready/v1";
+
+#[derive(Clone, Copy)]
+struct PairingScope {
+    realm: RealmId,
+    room: RoomId,
+    epoch: Epoch,
+    expires_at: u64,
+}
+impl PairingScope {
+    const fn default() -> Self {
+        Self {
+            realm: RealmId(1),
+            room: RoomId(2),
+            epoch: Epoch(1),
+            expires_at: 0,
+        }
+    }
+}
 
 /// Native adapter failures. Errors never authorize retrying a consumed session.
 #[derive(Debug)]
@@ -40,6 +58,8 @@ pub enum Error {
     Identity(IdentityError),
     /// Authenticated protocol admission rejected a message.
     Session(Reject),
+    /// Owner-signed pairing invitation failed verification or was expired.
+    Invitation(InvitationError),
     /// Bounded transport operation failed.
     Transport(String),
     /// Operation's monotonic deadline elapsed.
@@ -65,6 +85,11 @@ impl From<Reject> for Error {
         Self::Session(value)
     }
 }
+impl From<InvitationError> for Error {
+    fn from(value: InvitationError) -> Self {
+        Self::Invitation(value)
+    }
+}
 type Result<T> = std::result::Result<T, Error>;
 fn transport(error: impl std::fmt::Display) -> Error {
     Error::Transport(error.to_string())
@@ -84,6 +109,9 @@ impl Route {
     pub fn parse(address: &str, expires_at: u64) -> Result<Self> {
         if address.len() > 256 {
             return Err(Error::Input("route exceeds 256 bytes"));
+        }
+        if expires_at == 0 {
+            return Err(Error::Input("route expiry is required"));
         }
         let address: Multiaddr = address.parse().map_err(transport)?;
         let parts: Vec<_> = address.iter().collect();
@@ -155,17 +183,17 @@ fn pairing(
     responder: [u8; 32],
     initiator_transport: [u8; 32],
     responder_transport: [u8; 32],
-    expires_at: u64,
+    scope: PairingScope,
 ) -> Pairing {
     Pairing {
         initiator,
         responder,
         initiator_transport,
         responder_transport,
-        realm: RealmId(1),
-        room: RoomId(2),
-        epoch: Epoch(1),
-        expires_at,
+        realm: scope.realm,
+        room: scope.room,
+        epoch: scope.epoch,
+        expires_at: scope.expires_at,
     }
 }
 

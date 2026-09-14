@@ -34,19 +34,31 @@ fresh address and expiry. Application keys persist; transport keys and session
 nonces are generated anew. The fixed experimental realm/room/epoch are 1/2/1.
 There is no discovery, room-name registry, background daemon or global install.
 
+Machine integrations can pass `--json` immediately after `experimental` for
+`listen` and `send`. This emits versioned, bounded JSON-lines (`v: 1`) and
+hex-encodes message bodies; the default human-readable output is unchanged.
+
 The sender prints `received` only after verifying Bob's signed acknowledgment
 of the exact signed frame. This means receipt in volatile memory; it does not
 mean durable storage, human attention or agent execution. Bob prints verified
 messages with their full signer, session and a hexadecimal body, so foreign
 terminal escapes and newlines cannot become control sequences or forged log
-records. This temporary line interface is not the planned JSON-lines API.
+records.
+
+The Rust API exposes the same boundary directly. `Listener::bind_with_invitation`
+verifies an owner-signed invitation before opening a socket, while
+`send_message_with_invitation` verifies the invitee identity, route expiry and
+signature before dialing. The invitation realm, room and epoch are included in
+the authenticated session transcript. Invitations are portable claims;
+single-use behavior requires the owner to persist spent nonces.
 
 ## Boundaries
 
-- Each side pins the other's complete application key locally. A route is an
-  untrusted address hint, not a signed invitation or membership grant. The
-  authenticated QUIC PeerId supplies the observed transport key; the signed
-  handshake binds both transport keys, both application keys and room context.
+- Each side pins the other's complete application key locally. A route remains
+  an untrusted address hint; an invitation is a separate owner-signed grant
+  that must verify before pairing. The authenticated QUIC PeerId supplies the
+  observed transport key; the signed handshake binds both transport keys, both
+  application keys and the invitation's realm, room and epoch.
 - Each connection has separate, consumed handshake/replay state. Invalid input
   closes only that exact connection. Admission guards run before request-response
   can register a connection; regressions cover denied-peer bookkeeping and
@@ -88,5 +100,5 @@ bounds, handshake deadlines and permanent closure after clock rollback.
 The earlier process-restart replay experiment remains reference evidence; the
 maintained suite separately proves actual process restart and cross-connection
 replay rejection. Physical power loss, Internet/NAT behavior, sustained flooding,
-loss recovery, signed invitations, durable history, origin security, browser
-execution and independent review remain open gates.
+loss recovery, single-use invitation storage, durable history, origin security,
+browser execution and independent review remain open gates.
