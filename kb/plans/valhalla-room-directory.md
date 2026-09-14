@@ -408,6 +408,52 @@ engine's `Decided`/`Finalized` acknowledgement path so the engine's commit
 acknowledgement is gated on the durable pin, per the obligations recorded
 above.
 
+### Engine acknowledgement adapter spike — 2026-09-14
+
+The scratch journal now binds consensus height into the same durable
+sequence: `heights/<n>` records the committed bundle identity for each
+height, written and fsynced between the bundle fsync and `pin.tmp`, and the
+pin itself carries the committed height. Commits require exactly the next
+height extending the pinned predecessor, so a height gap or a different
+bundle claiming an already-committed height conflicts. Recovery verifies the
+committed pin against its height marker and discards markers above the pin
+as unpublished residue, so a crash between marker write and pin rename
+leaves that height open for any bundle to claim. The journal also re-decodes
+stored bundles from canonical bytes (`Bundle::decode`, `Bundle::field`,
+`Journal::bundle`, `Journal::at_height`) so read-back never trusts a
+filename or an unverified header.
+
+A second scratch crate models the pinned engine boundary. `Decided` carries
+a commit certificate plus a value commitment and expects a separate commit
+acknowledgement; `Finalized` may carry additional signatures and expects a
+next-height reply. The adapter looks up the exact full value by content
+commitment, replays it deterministically against the pinned predecessor,
+builds the bundle with complete 256-bit predecessor and next frontiers, and
+commits it — only then does the acknowledgement leave. Deduplication reads
+durable evidence only: a repeated decision at an already-committed height is
+reconciled against the height marker and the committed bundle's bound value
+commitment, so a `Finalized` carrying more signatures acknowledges without
+applying the batch twice even after restart, while a certificate deciding a
+different value at a committed height is rejected as equivocation. No
+in-memory state grants or skips an acknowledgement.
+
+Sixteen journal tests and nine adapter tests pass under scheduler run
+`c4cc8ac130725c5e9c8fa5363119b81b` with locked format, doc-tests and strict
+all-target clippy for both crates. Programmed crashes cover the expanded
+protocol including the height-marker window; restart reconciliation,
+dedup-from-disk, equivocation rejection, height-gap rejection, sequential
+commits and acknowledgement-withholding on uncertain writes are all
+exercised.
+
+This qualifies acknowledgement ordering and restart reconciliation at the
+boundary. Certificate bytes remain opaque here — verification parity was
+qualified in the earlier receipt spikes, not re-established — and nothing
+here is consensus, finality, network admission, validator rotation or real
+power-loss durability. The remaining R3 gap is a production-shaped seam:
+the application layer that owns replay must consume this boundary rather
+than the scratch `apply` fold, and the engine's real `Decided`/`Finalized`
+types must replace the modeled certificate surface.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
