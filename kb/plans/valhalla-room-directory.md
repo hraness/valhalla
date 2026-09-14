@@ -379,6 +379,35 @@ durable bundle plus complete predecessor identity the only acknowledgement
 source. It remains scratch-only and does not establish filesystem WAL
 durability, network admission, validator rotation, consensus or finality.
 
+### Filesystem commit journal spike — 2026-09-14
+
+A scratch-only journal now performs the documented sequence on a real
+filesystem: create the immutable bundle under its content identity, fsync the
+bundle, write and fsync `pin.tmp` carrying predecessor/next/bundle, rename it
+over `HEAD` as the single publication point, fsync the directory, then
+acknowledge. Commits serialize on an exclusive `flock` that the kernel releases
+on process death, and the predecessor is re-read under that lock so an already
+published identical bundle reconciles to `AlreadyCommitted` instead of applying
+twice. Recovery trusts only the disk image: a renamed pin whose bundle verifies
+is committed, a leftover `pin.tmp` is discarded, on-disk orphan bundles carry
+no authority, and a corrupt or bundle-less pin fails closed without being
+overwritten. Fourteen unit tests pass under scheduler run
+`9db74e0499d84797454493d8c4f3cac9` with locked format, doc-tests and strict
+all-target clippy. Programmed crash-before and crash-after faults cover every
+protocol step: no acknowledgement precedes the durable rename, identical
+retries re-establish durability, a rival bundle claiming the same predecessor
+after a crash conflicts, and restart never continues from an in-memory state
+that never reached the pin.
+
+This qualifies local filesystem ordering, retry reconciliation and restart
+behavior only. It does not prove real power-loss durability (the fsync calls
+are real, but the fault model stops at process death, not storage hardware),
+network admission, certificate verification, validator rotation, consensus or
+finality. The next bounded spike must connect this journal to the native
+engine's `Decided`/`Finalized` acknowledgement path so the engine's commit
+acknowledgement is gated on the durable pin, per the obligations recorded
+above.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
