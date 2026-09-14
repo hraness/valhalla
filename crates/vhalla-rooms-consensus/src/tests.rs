@@ -196,3 +196,126 @@ fn corrupt_retained_batch_fails_rebuild_closed() {
     }
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// The data plane: a replica with no engine and no proposal stream reads
+/// committed bundles from a peer's journal, verifies each certificate
+/// through the caller's hook, and replays them through the same durable
+/// decide path — converging byte-identically without ever voting.
+#[test]
+fn replica_absorbs_committed_bundles_and_converges() {
+    let plan = fixture::plan(3, 4, 12);
+    let source_home = dir("source");
+    let commitment = {
+        let mut adapter = Adapter::open(&source_home, &plan.genesis).unwrap();
+        let mut sink = EngineSink::default();
+        for (height, batch) in &plan.batches {
+            adapter.hold(batch.clone());
+            adapter.on_decided(&mut sink, &cert(batch, *height, "s"));
+        }
+        adapter.frontier().commitment()
+        // drop: the replica then opens the source's journal read-side
+    };
+
+    let replica_home = dir("replica");
+    let mut replica = Adapter::open(&replica_home, &plan.genesis).unwrap();
+    let source_journal = Journal::new(source_home.join("journal"), FsStore);
+
+    // The stand-in verifier checks what a real engine verifier would:
+    // the certificate's claimed height and the value it decides.
+    let verify = |bytes: &[u8], height: u64, value: &[u8; 32]| {
+        bytes == format!("cert-s-{height}").as_bytes()
+            && plan
+                .batches
+                .get(&height)
+                .is_some_and(|b| b.value_id() == *value)
+    };
+
+    // Out-of-order absorption is rejected: the h=2 batch's parent is not
+    // yet applied — the replica must fetch earlier bundles first.
+    let h2 = source_journal
+        .bundle(source_journal.at_height(2).unwrap().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(replica.absorb(&h2, verify), DecidedOutcome::Rejected);
+    assert_eq!(replica.frontier().height, 0);
+
+    for height in 1..=3u64 {
+        let bundle = source_journal
+            .bundle(source_journal.at_height(height).unwrap().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(replica.absorb(&bundle, verify), DecidedOutcome::Acked);
+    }
+    assert_eq!(replica.frontier().commitment(), commitment);
+    assert_eq!(replica.frontier().height, 3);
+    // The replica's journal binds byte-identical bundles — the absorbed
+    // evidence is the same object the deciding quorum committed.
+    for height in 1..=3u64 {
+        let replica_journal = Journal::new(replica_home.join("journal"), FsStore);
+        let replica_id = replica_journal.at_height(height).unwrap().unwrap();
+        let source_id = source_journal.at_height(height).unwrap().unwrap();
+        assert_eq!(replica_id, source_id);
+    }
+    // Re-absorbing a committed bundle reconciles without double-applying.
+    let h1 = source_journal
+        .bundle(source_journal.at_height(1).unwrap().unwrap())
+        .unwrap()
+        .unwrap();
+    let revision = replica.application().registry().revision();
+    assert_eq!(replica.absorb(&h1, verify), DecidedOutcome::Acked);
+    assert_eq!(replica.application().registry().revision(), revision);
+    let _ = std::fs::remove_dir_all(&source_home);
+    let _ = std::fs::remove_dir_all(&replica_home);
+}
+
+/// A bundle whose certificate fails the caller's verification, or whose
+/// bound value does not match its batch, is rejected before any write —
+/// a peer cannot push an unverified decision into a replica's journal.
+#[test]
+fn replica_rejects_unverified_and_misbound_bundles() {
+    let plan = fixture::plan(1, 4, 8);
+    let source_home = dir("src-forge");
+    {
+        let mut adapter = Adapter::open(&source_home, &plan.genesis).unwrap();
+        let mut sink = EngineSink::default();
+        let batch = plan.batches.values().next().unwrap().clone();
+        adapter.hold(batch.clone());
+        adapter.on_decided(&mut sink, &cert(&batch, 1, "s"));
+    }
+    let source_journal = Journal::new(source_home.join("journal"), FsStore);
+    let bundle = source_journal
+        .bundle(source_journal.at_height(1).unwrap().unwrap())
+        .unwrap()
+        .unwrap();
+
+    let replica_home = dir("replica-forge");
+    let mut replica = Adapter::open(&replica_home, &plan.genesis).unwrap();
+    // Verification refuses: nothing is held, replayed or journaled.
+    assert_eq!(
+        replica.absorb(&bundle, |_, _, _| false),
+        DecidedOutcome::Rejected
+    );
+    // A well-formed bundle lying about its decided value is rejected on
+    // the binding check before verification is even consulted.
+    let batch = plan.batches.values().next().unwrap().clone();
+    let misbound = Bundle::new(BundleParts {
+        certificate: b"cert-s-1".to_vec(),
+        predecessor: [0xAA; 32],
+        next: [0xBB; 32],
+        batch: batch.encode(),
+        value: [0xCC; 32].to_vec(),
+        configuration: Vec::new(),
+        control_record: Vec::new(),
+        debit_marker: Vec::new(),
+        height: 1,
+    })
+    .unwrap();
+    assert_eq!(
+        replica.absorb(&misbound, |_, _, _| panic!("verify must not run")),
+        DecidedOutcome::Rejected
+    );
+    assert_eq!(replica.frontier().height, 0);
+    assert_eq!(replica.recover().unwrap().pin.height, 0);
+    let _ = std::fs::remove_dir_all(&source_home);
+    let _ = std::fs::remove_dir_all(&replica_home);
+}

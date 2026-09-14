@@ -851,6 +851,51 @@ impl<S: Store> Adapter<S> {
             other => other,
         }
     }
+
+    /// Absorb one committed bundle fetched from a peer into this replica —
+    /// the data plane for value availability beyond the deciding quorum.
+    ///
+    /// `verify` is the caller's certificate check: certificate formats are
+    /// engine-owned, so this crate accepts a hook. It must confirm the
+    /// certificate's quorum over the validator set for `bundle.height()`.
+    /// A bundle that fails verification, binds a different value than its
+    /// batch, or decodes badly is rejected before any durable write;
+    /// otherwise the batch joins `pending` and the shared `decide` path
+    /// replays, journals, publishes and applies it exactly like a local
+    /// decision — the journaled bundle is byte-identical to the absorbed
+    /// one, since every field is deterministic.
+    ///
+    /// Bundles must be absorbed in height order: a batch whose parent
+    /// frontier is not yet applied fails replay and is rejected — fetch
+    /// the earlier bundles first.
+    pub fn absorb<V>(&mut self, bundle: &Bundle, verify: V) -> DecidedOutcome
+    where
+        V: FnOnce(&[u8], u64, &[u8; 32]) -> bool,
+    {
+        let (Some(cert_raw), Some(batch_raw), Some(value)) =
+            (bundle.field(0), bundle.field(3), bundle.field(4))
+        else {
+            return DecidedOutcome::Rejected;
+        };
+        let Ok(batch) = Batch::decode(batch_raw) else {
+            return DecidedOutcome::Rejected;
+        };
+        let Ok(value_commitment) = <[u8; 32]>::try_from(value) else {
+            return DecidedOutcome::Rejected;
+        };
+        if value_commitment != batch.value_id() {
+            return DecidedOutcome::Rejected;
+        }
+        if !verify(cert_raw, bundle.height(), &value_commitment) {
+            return DecidedOutcome::Rejected;
+        }
+        self.hold(batch);
+        self.decide(&CommitCertificate {
+            bytes: cert_raw.to_vec(),
+            value_commitment,
+            height: bundle.height(),
+        })
+    }
 }
 
 /// Failures of the batch/application layer.

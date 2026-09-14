@@ -875,8 +875,13 @@ bytes and returned to tens of bytes per height, bounded as designed. Full value
 propagation is now real — batch bytes cross the consensus wire inside
 proposal parts and decided values carry them through sync — and
 undecided-proposal replay is now application-owned (fsync'd `store/`
-records resupplied at `StartedRound`), but the application data plane
-(value availability beyond the deciding quorum) is still unmodelled.
+records resupplied at `StartedRound`). The application data plane is now
+modelled at journal-bundle granularity: `vhalla_rooms_consensus::
+Adapter::absorb` lets a replica that never voted fetch committed bundles,
+verify each certificate through a caller-supplied engine hook, and replay
+them through the identical durable decide path — converging to
+byte-identical journals, rejecting out-of-order and unverified or
+misbound bundles before any durable write.
 
 ### Production registry integration spike — 2026-09-14
 
