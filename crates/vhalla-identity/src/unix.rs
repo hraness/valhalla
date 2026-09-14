@@ -230,6 +230,50 @@ impl Identity {
         request.countersign(&self.key)
     }
 
+    /// Sign a room-control record without exporting the retained key.
+    /// Admission against the agreed room-control chain remains the
+    /// directory's decision; this produces signed evidence only.
+    #[cfg(feature = "rooms")]
+    pub fn sign_room_control(
+        &self,
+        control: vhalla_rooms::RoomControl,
+    ) -> Result<vhalla_rooms::SignedRecord, vhalla_rooms::Error> {
+        control.sign_with_key(&self.key)
+    }
+
+    /// Sign a room update record without exporting the retained key.
+    /// The update's claimed owner, basis and predecessor still face the
+    /// directory's admission assessment.
+    #[cfg(feature = "rooms")]
+    pub fn sign_room_update(
+        &self,
+        update: vhalla_rooms::RoomUpdate,
+    ) -> Result<vhalla_rooms::SignedRecord, vhalla_rooms::Error> {
+        update.sign_with_key(&self.key)
+    }
+
+    /// Sign an owner permit for one exact creation intent without exporting
+    /// the retained key. The returned permit is verified but not yet a
+    /// proposal; the creating agent adds its own signature layer.
+    #[cfg(feature = "rooms")]
+    pub fn sign_room_permit(
+        &self,
+        intent: vhalla_rooms::CreationIntent,
+    ) -> Result<vhalla_rooms::VerifiedOwnerPermit, vhalla_rooms::Error> {
+        vhalla_rooms::OwnerPermit::sign_with_key(intent, &self.key)?.verify()
+    }
+
+    /// Add the agent proposal layer over an already verified owner permit
+    /// without exporting the retained key. The result is the complete signed
+    /// room record a directory may assess.
+    #[cfg(feature = "rooms")]
+    pub fn sign_room_proposal(
+        &self,
+        permit: vhalla_rooms::VerifiedOwnerPermit,
+    ) -> Result<vhalla_rooms::SignedRecord, vhalla_rooms::Error> {
+        Ok(permit.propose_with_key(&self.key)?.into_record())
+    }
+
     /// Sign a bounded envelope using retained key custody. The caller supplies
     /// locally admitted context; this method alone grants no remote authority.
     pub fn sign_envelope(

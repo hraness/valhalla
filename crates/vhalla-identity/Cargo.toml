@@ -9,6 +9,7 @@ description = "Explicit native custody for Valhalla application signing identiti
 [features]
 default = []
 social = ["dep:vhalla-social"]
+rooms = ["dep:vhalla-rooms"]
 
 [dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "zeroize"] }
@@ -20,6 +21,7 @@ vhalla-wire = { path = "../vhalla-wire" }
 vhalla-crypto = { path = "../vhalla-crypto" }
 vhalla-session = { path = "../vhalla-session" }
 vhalla-social = { path = "../vhalla-social", optional = true }
+vhalla-rooms = { path = "../vhalla-rooms", optional = true }
 
 [dev-dependencies]
 proptest = "1.6"

@@ -3030,6 +3030,8 @@ dependencies = [
  "vhalla-discovery-store",
  "vhalla-identity",
  "vhalla-native",
+ "vhalla-rooms",
+ "vhalla-rooms-store",
  "vhalla-social",
  "vhalla-social-store",
 ]
@@ -3101,6 +3103,7 @@ dependencies = [
  "sha2 0.10.9",
  "vhalla-core",
  "vhalla-crypto",
+ "vhalla-rooms",
  "vhalla-session",
  "vhalla-social",
  "vhalla-wire",

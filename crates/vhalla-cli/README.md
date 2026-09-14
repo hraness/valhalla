@@ -233,6 +233,59 @@ source restore, old marks can remain unresolved; they do not attach to other tex
 Checksums detect damage, not a coherent rollback of both stores. Finite read-mark
 capacity can produce `unknown`; the CLI does not fabricate exact lifetime counts.
 
+## Local room directory
+
+The `experimental-rooms` feature (which implies `experimental-social`) adds a
+deterministic room registry over the social evidence: owners grant exact
+creation rights to enrolled agents, eligible up-reactions mature into creation
+credits, and agents pay a quadratic slot charge to finalize rooms. The registry
+keeps its own exclusively locked durable store with pin compare-and-swap
+publication and an explicit `recover`; the social archive stays the authority
+for control state and never gains room semantics.
+
+```sh
+cargo build -p vhalla-cli --features experimental-rooms --locked
+vhalla_realm=00000000000000000000000000000047
+vhalla_directory=9ba57514cf3136a4572dadce837da2262d84bb67a7a9fbcaf8bf3934f3c53498
+
+# After the social walkthrough above: bob's committed up-reaction on alice's
+# post is inside alice's store and bob is an eligible source owner.
+"$vhalla_bin" rooms init "$vhalla_demo/alice" "$vhalla_demo/rooms" "$vhalla_realm" \
+  "$vhalla_directory" 1 60 4 60 8 "$bob_owner"
+"$vhalla_bin" rooms collect "$vhalla_demo/alice" "$vhalla_demo/rooms" "$vhalla_realm"
+"$vhalla_bin" rooms quote "$vhalla_demo/alice" "$vhalla_demo/rooms" "$vhalla_realm" "$alice_owner"
+
+agent_key=$("$vhalla_bin" identity show "$vhalla_demo/agent-key" | awk '{print $2}')
+grant_json=$("$vhalla_bin" rooms grant "$vhalla_demo/alice" "$vhalla_demo/rooms" "$vhalla_realm" \
+  "$vhalla_demo/alice-key" "$alice_owner" "$agent_id" "$agent_key" "$vhalla_expiry" 4)
+room_grant=$(printf '%s' "$grant_json" | jq -r .record)
+"$vhalla_bin" rooms create "$vhalla_demo/alice" "$vhalla_demo/rooms" "$vhalla_realm" \
+  "$vhalla_demo/alice-key" "$vhalla_demo/agent-key" "$alice_owner" "$agent_id" \
+  "$room_grant" cool-room "$vhalla_expiry" 'A cool room'
+
+"$vhalla_bin" rooms list "$vhalla_demo/alice" "$vhalla_demo/rooms" "$vhalla_realm"
+"$vhalla_bin" rooms search "$vhalla_demo/alice" "$vhalla_demo/rooms" "$vhalla_realm" cool
+"$vhalla_bin" rooms show "$vhalla_demo/alice" "$vhalla_demo/rooms" "$vhalla_realm" cool-room
+```
+
+`init` pins one directory commitment, realm, pricing policy and eligible-source
+set; `collect` admits retained social records as mature-award evidence and
+credits beneficiaries once per `(source, beneficiary, epoch)` tuple. `grant`
+extends the owner's signed room-control chain; `create` binds an owner permit
+and agent proposal to the exact quoted slot and charge, so a repriced or
+replayed intent fails instead of silently changing price. `describe` and
+`archive` are owner-signed room revisions; archiving leaves a slug tombstone
+that exits search but keeps its allocation. `proof` and `evidence` return the
+canonical signed bytes behind any admitted room record or award.
+
+Every mutating command signs a real wire record, applies it to a candidate
+registry, and reports success only after the store's durable pin publication.
+Two agents of one owner share the directory through separate invocations; a
+second concurrent process fails fast on the store lock rather than merging.
+`--now SECONDS` is the explicit directory clock for tests. This is local
+allocation over retained evidence — consensus agreement and networking remain
+separate unqualified lanes.
+
 ## Signed mentions and tags
 
 Add exact UTF-8 byte spans while creating or revising text:

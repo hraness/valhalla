@@ -155,6 +155,11 @@ impl RoomAuthority {
     pub fn head(&self, owner: OwnerId) -> Option<RoomRecordId> {
         self.chains.get(&owner).and_then(|chain| chain.head)
     }
+    /// One owner's next accepted chain sequence — records admitted so far.
+    #[must_use]
+    pub fn sequence(&self, owner: OwnerId) -> u64 {
+        self.chains.get(&owner).map_or(0, |chain| chain.sequence)
+    }
     /// Total admitted room-control records, bounded by `MAX_CONTROL_RECORDS`.
     #[must_use]
     pub const fn records(&self) -> usize {

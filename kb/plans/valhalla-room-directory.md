@@ -309,9 +309,39 @@ conflicts, and retained bundles are audited with strict-ancestor reclamation.
 Five tests cover commit/restart/readback, stale and divergent rejection, all
 thirteen publication-boundary crash points with exact-intent recovery, pending
 intent reconciliation and fail-closed corrupt bundles. Registry snapshots are
-O(state) per commit; the service layer, CLI surfaces and consensus integration
-remain open R4 work. Identical social evidence on every validator is still a
-data-plane obligation, not a registry guarantee.
+O(state) per commit; consensus integration remains open R4 work. Identical
+social evidence on every validator is still a data-plane obligation, not a
+registry guarantee.
+
+### R4 CLI service lane — implemented in `vhalla-cli`
+
+`vhalla rooms` (feature `experimental-rooms`, which implies
+`experimental-social`) is the local service surface over the maintained
+registry and store: `init` pins one directory identity, realm,
+`DirectoryPolicy` and eligible-source set into a fresh store; `collect` admits
+retained social records as mature-award evidence; `grant` extends the owner's
+signed room-control chain; `create` binds an owner permit and agent proposal to
+the exact quoted slot and quadratic charge; `describe`/`archive` are
+owner-signed room revisions; `quote`, `list`, `search`, `show`, `account`,
+`proof`, `evidence` and `recover` cover reads, source-proof retrieval and
+explicit reconciliation. Every mutating command signs a real wire record
+through `Identity`'s typed room methods — no private key leaves its directory —
+applies it to a candidate registry against a fresh `ControlView`, and reports
+success only after the pin compare-and-swap publication is durable. The social
+store supplies read-only evidence; it is opened with its own recovery gate and
+never mutated by rooms commands.
+
+Three CLI integration tests run real subprocesses end to end: the award →
+grant → create → query journey with proof retrieval, slug collision and
+tombstone exclusion; one owner acting through two enrolled agents in separate
+process invocations (slot 2 at charge 4 after slot 1 at charge 1, both over the
+same locked store); and fail-closed denials — insufficient credit, foreign
+key custody, missing stores and unknown rooms emit no success object. The
+full workspace gate (fmt, clippy `-D warnings`, all-targets and doc tests,
+default-feature absence checks) is green under run `e9f186f84d24eb1f9690d2b1e96a0077`.
+Remaining R4 gaps: identical social evidence across validators is a
+data-plane obligation, and consensus must drive `apply` order and the
+commit-before-acknowledge boundary rather than a local CLI clock.
 
 ## Search and user journeys
 
@@ -899,7 +929,7 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
 | R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards` (5 tests) and now wired into `registry::Registry` award dedup and eligible-source policy. Sybil/collusion calibration remains simulation work |
 | R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike above: native engines over libp2p with real batch bytes in proposal values, certificate-gated durable journal commits, WAL fault injection, crash/restart, rotation, late-join sync and a true runtime partition (62 tests, run `266133fc7c25dfd6b9770248a66c1d70`). Scratch-only; production integration, the application data plane and the remaining listed gaps are pending |
-| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests) plus durable `vhalla-rooms-store` (5 tests): canonical snapshots retain all admitted records and award proofs, pin CAS publication recovers all 13 crash boundaries, source-proof bytes are retrievable. Service, CLI surfaces, two-process same-owner evidence and consensus integration remain pending |
+| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests), durable `vhalla-rooms-store` (5 tests, 13 crash boundaries) and the `vhalla rooms` CLI service lane (3 subprocess tests): quote/create/list/search/show/account, grant/describe/archive, collect, proof/evidence retrieval and explicit recover all commit through pin CAS before reporting success; two agents of one owner share state across separate invocations. Consensus-driven ordering and commit-before-acknowledge remain pending |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
 

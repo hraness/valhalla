@@ -10,6 +10,7 @@ description = "Valhalla command line entry point."
 default = []
 experimental-network = ["dep:vhalla-native", "dep:tokio"]
 experimental-social = ["vhalla-identity/social", "dep:vhalla-social", "dep:vhalla-social-store", "dep:vhalla-core", "dep:getrandom", "dep:libc", "dep:vhalla-discovery", "dep:vhalla-attention", "dep:vhalla-discovery-store"]
+experimental-rooms = ["experimental-social", "vhalla-identity/rooms", "dep:vhalla-rooms", "dep:vhalla-rooms-store", "dep:sha2"]
 
 [dependencies]
 vhalla-identity = { path = "../vhalla-identity" }
@@ -17,11 +18,14 @@ vhalla-social = { path = "../vhalla-social", optional = true }
 vhalla-discovery = { path = "../vhalla-discovery", optional = true }
 vhalla-attention = { path = "../vhalla-attention", optional = true }
 vhalla-core = { path = "../vhalla-core", optional = true }
+vhalla-rooms = { path = "../vhalla-rooms", optional = true }
 getrandom = { version = "0.3", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2", optional = true }
 vhalla-social-store = { path = "../vhalla-social-store", optional = true }
+vhalla-rooms-store = { path = "../vhalla-rooms-store", optional = true }
 vhalla-discovery-store = { path = "../vhalla-discovery-store", optional = true }
 vhalla-native = { path = "../vhalla-native", optional = true }
 tokio = { version = "1.53", default-features = false, features = ["rt", "time"], optional = true }
