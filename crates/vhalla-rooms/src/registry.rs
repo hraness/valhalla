@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use vhalla_core::RealmId;
 use vhalla_social::{control::ControlView, OwnerId, RecordId};
 
-use crate::authority::{Denial, RoomAuthority};
+use crate::authority::{Denial, RoomAuthority, MAX_CONTROL_RECORDS};
 use crate::awards::{assess_support, SupportAward};
 use crate::model::*;
 use crate::wire::VerifiedRecord;
@@ -27,6 +27,8 @@ pub const MAX_ROOMS: usize = 4096;
 pub const MAX_OWNERS: usize = 256;
 /// Maximum retained support dedup entries.
 pub const MAX_SUPPORT: usize = 8192;
+/// Maximum retained revision records per room.
+pub const MAX_REVISIONS: usize = 256;
 /// Largest bounded search page.
 pub const MAX_PAGE: usize = 64;
 /// Maximum distinct search terms.
@@ -100,6 +102,8 @@ pub struct Account {
 }
 
 /// A finalized room: retained signed intent plus its current revision state.
+/// The verified create and update records are kept in order — they are the
+/// room's durable manifest and the source proofs a caller can retrieve.
 #[derive(Clone, Debug)]
 pub struct Room {
     genesis: RoomGenesisId,
@@ -108,6 +112,8 @@ pub struct Room {
     head: RoomRecordId,
     created_at: u64,
     archived: bool,
+    record: VerifiedRecord,
+    revisions: Vec<VerifiedRecord>,
 }
 impl Room {
     /// Full immutable genesis commitment, never a routing handle.
@@ -150,6 +156,16 @@ impl Room {
     pub fn slug(&self) -> &Slug {
         &self.intent.slug
     }
+    /// The verified creation record; the room's root source proof.
+    #[must_use]
+    pub const fn record(&self) -> &VerifiedRecord {
+        &self.record
+    }
+    /// The verified revision records in chain order.
+    #[must_use]
+    pub fn revisions(&self) -> &[VerifiedRecord] {
+        &self.revisions
+    }
 }
 
 /// What one applied record changed. `Existing`/`DuplicateAward` are exact
@@ -168,6 +184,14 @@ pub enum Applied {
     Awarded,
     /// Already-counted evidence or an exhausted dedup slot; no new credit.
     DuplicateAward,
+}
+
+/// One mature award plus its retained verified evidence record — the
+/// registry's source proof for the credit it wrote.
+#[derive(Clone, Debug)]
+struct Evidence {
+    award: SupportAward,
+    record: vhalla_social::wire::VerifiedRecord,
 }
 
 /// Closed registry failures. Authority and award denials carry through
@@ -205,10 +229,13 @@ pub enum RegistryError {
     Capacity,
     /// The supplied clock moved backwards.
     Clock,
+    /// A durable snapshot failed integrity, bounds or internal-order checks.
+    Corrupt,
 }
 
 /// The deterministic directory state. Applying the same verified records in
 /// the same agreed order under the same borrowed view yields the same state.
+#[derive(Clone)]
 pub struct Registry {
     directory: DirectoryId,
     realm: RealmId,
@@ -216,7 +243,7 @@ pub struct Registry {
     authority: RoomAuthority,
     eligible: BTreeSet<OwnerId>,
     support: BTreeSet<(OwnerId, OwnerId, u64)>,
-    evidence: BTreeMap<RecordId, SupportAward>,
+    evidence: BTreeMap<RecordId, Evidence>,
     accounts: BTreeMap<OwnerId, Account>,
     windows: BTreeMap<OwnerId, VecDeque<u64>>,
     rooms: BTreeMap<Slug, Room>,
@@ -372,7 +399,13 @@ impl Registry {
         .map_err(RegistryError::Award)?;
         let key = (award.beneficiary, award.source_owner, award.activity_epoch);
         if self.support.contains(&key) {
-            self.evidence.insert(record.id(), award);
+            self.evidence.insert(
+                record.id(),
+                Evidence {
+                    award,
+                    record: record.clone(),
+                },
+            );
             return Ok(Applied::DuplicateAward);
         }
         if self.support.len() >= MAX_SUPPORT {
@@ -384,7 +417,13 @@ impl Registry {
         let mut account = self.account(award.beneficiary);
         account.earned = account.earned.checked_add(1).ok_or(RegistryError::Cost)?;
         self.support.insert(key);
-        self.evidence.insert(record.id(), award);
+        self.evidence.insert(
+            record.id(),
+            Evidence {
+                award,
+                record: record.clone(),
+            },
+        );
         self.accounts.insert(award.beneficiary, account);
         self.last_time = now;
         self.revision = self
@@ -460,6 +499,8 @@ impl Registry {
                 head: record.id(),
                 created_at: now,
                 archived: false,
+                record: record.clone(),
+                revisions: Vec::new(),
             },
         );
         self.by_genesis.insert(genesis, intent.slug.clone());
@@ -492,11 +533,15 @@ impl Registry {
         if room.head != update.previous {
             return Err(RegistryError::StaleRevision);
         }
+        if room.revisions.len() >= MAX_REVISIONS {
+            return Err(RegistryError::Capacity);
+        }
         match &update.action {
             UpdateAction::Describe(text) => room.description = text.clone(),
             UpdateAction::Archive => room.archived = true,
         }
         room.head = record.id();
+        room.revisions.push(record.clone());
         Ok(Applied::Updated(record.id()))
     }
 
@@ -540,6 +585,347 @@ impl Registry {
             }
         }
         Ok(result)
+    }
+
+    /// Canonical signed bytes backing one applied room record: a control
+    /// record, a creation or a revision exactly as admitted. This is the
+    /// caller's source proof for a committed state transition.
+    #[must_use]
+    pub fn source_proof(&self, id: RoomRecordId) -> Option<Vec<u8>> {
+        for (_, history) in self.authority.histories() {
+            if let Some(record) = history.iter().find(|r| r.id() == id) {
+                return Some(record.encode());
+            }
+        }
+        for room in self.rooms.values() {
+            if room.record.id() == id {
+                return Some(room.record.encode());
+            }
+            if let Some(record) = room.revisions.iter().find(|r| r.id() == id) {
+                return Some(record.encode());
+            }
+        }
+        None
+    }
+
+    /// Canonical signed bytes backing one mature-award evidence record.
+    #[must_use]
+    pub fn evidence_proof(&self, id: RecordId) -> Option<Vec<u8>> {
+        self.evidence.get(&id).map(|e| e.record.encode())
+    }
+
+    /// Canonical snapshot of the complete registry state: every admitted
+    /// record, derived ledger and retained bound. Snapshots are trusted
+    /// local state — they carry integrity checks but no live authority
+    /// re-assessment, so restore trusts the durable layer's privacy.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut out = Out::new();
+        out.bytes(self.directory.as_bytes());
+        out.bytes(&self.realm.0.to_be_bytes());
+        out.u64(self.policy.base_cost);
+        out.u64(self.policy.window_seconds);
+        out.u16(self.policy.max_in_window);
+        out.u64(self.policy.support_epoch_seconds);
+        out.u32(self.policy.max_lifetime_rooms);
+        out.u64(self.last_time);
+        out.u64(self.revision);
+        out.u32(self.eligible.len() as u32);
+        for owner in &self.eligible {
+            out.bytes(owner.as_bytes());
+        }
+        let chains: Vec<_> = self.authority.histories().collect();
+        out.u32(chains.len() as u32);
+        for (owner, history) in &chains {
+            out.bytes(owner.as_bytes());
+            out.u32(history.len() as u32);
+            for record in *history {
+                out.bytes_len(&record.encode());
+            }
+        }
+        out.u32(self.rooms.len() as u32);
+        for room in self.rooms.values() {
+            out.bytes_len(&room.record.encode());
+            out.u64(room.created_at);
+            out.u32(room.revisions.len() as u32);
+            for revision in &room.revisions {
+                out.bytes_len(&revision.encode());
+            }
+        }
+        out.u32(self.accounts.len() as u32);
+        for (owner, account) in &self.accounts {
+            out.bytes(owner.as_bytes());
+            out.u64(account.earned);
+            out.u64(account.spent);
+            out.u32(account.lifetime_slots);
+        }
+        out.u32(self.windows.len() as u32);
+        for (owner, window) in &self.windows {
+            out.bytes(owner.as_bytes());
+            out.u32(window.len() as u32);
+            for time in window {
+                out.u64(*time);
+            }
+        }
+        out.u32(self.evidence.len() as u32);
+        for evidence in self.evidence.values() {
+            out.bytes(evidence.award.source_owner.as_bytes());
+            out.bytes(evidence.award.beneficiary.as_bytes());
+            out.u64(evidence.award.activity_epoch);
+            out.bytes_len(&evidence.record.encode());
+        }
+        let mut framed = Vec::with_capacity(out.0.len() + 40);
+        framed.extend_from_slice(SNAPSHOT_MAGIC);
+        framed.extend_from_slice(&out.0);
+        framed.extend_from_slice(&checksum(&out.0));
+        framed
+    }
+
+    /// Semantic digest of the complete registry state — the snapshot payload
+    /// checksum. A store pin binds this; any state change changes it.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        let snapshot = self.snapshot();
+        let raw: &[u8] = &snapshot[SNAPSHOT_MAGIC.len()..snapshot.len() - 32];
+        checksum(raw)
+    }
+
+    /// Restore a registry from `snapshot()` bytes. Signatures are re-verified
+    /// and internal order re-checked; live authority assessment is not re-run
+    /// — it was evaluated when each record entered the agreed log.
+    pub fn restore(raw: &[u8]) -> Result<Self, RegistryError> {
+        if raw.len() < SNAPSHOT_MAGIC.len() + 32
+            || raw.len() > MAX_SNAPSHOT_BYTES
+            || raw.get(..SNAPSHOT_MAGIC.len()) != Some(SNAPSHOT_MAGIC.as_slice())
+        {
+            return Err(RegistryError::Corrupt);
+        }
+        let body = &raw[SNAPSHOT_MAGIC.len()..raw.len() - 32];
+        if checksum(body) != raw[raw.len() - 32..] {
+            return Err(RegistryError::Corrupt);
+        }
+        let mut in_ = In::new(body);
+        let directory = DirectoryId::from_bytes(in_.array()?);
+        let realm = RealmId(u128::from_be_bytes(in_.array()?));
+        let policy = DirectoryPolicy {
+            base_cost: in_.u64()?,
+            window_seconds: in_.u64()?,
+            max_in_window: in_.u16()?,
+            support_epoch_seconds: in_.u64()?,
+            max_lifetime_rooms: in_.u32()?,
+        };
+        let last_time = in_.u64()?;
+        let revision = in_.u64()?;
+        policy.validate()?;
+        let eligible: Vec<OwnerId> = (0..in_.count(MAX_OWNERS)?)
+            .map(|_| in_.array().map(OwnerId::from_bytes))
+            .collect::<Result<_, _>>()?;
+        let mut registry = Self::new(directory, realm, policy, &eligible)?;
+        registry.last_time = last_time;
+        registry.revision = revision;
+        for _ in 0..in_.count(MAX_CONTROL_OWNERS)? {
+            let owner = OwnerId::from_bytes(in_.array()?);
+            for _ in 0..in_.count(MAX_CONTROL_RECORDS)? {
+                let record = in_
+                    .record(MAX_RECORD_BYTES)?
+                    .verify()
+                    .map_err(|_| RegistryError::Corrupt)?;
+                match record.body() {
+                    Body::Control(control) if control.owner == owner => {}
+                    _ => return Err(RegistryError::Corrupt),
+                }
+                registry
+                    .authority
+                    .restore_record(&record)
+                    .map_err(|_| RegistryError::Corrupt)?;
+            }
+        }
+        for _ in 0..in_.count(MAX_ROOMS)? {
+            let record = in_
+                .record(MAX_RECORD_BYTES)?
+                .verify()
+                .map_err(|_| RegistryError::Corrupt)?;
+            let genesis = record.genesis_id().ok_or(RegistryError::Corrupt)?;
+            let Body::Create(intent) = record.body() else {
+                return Err(RegistryError::Corrupt);
+            };
+            if intent.directory != directory || intent.realm != realm {
+                return Err(RegistryError::Corrupt);
+            }
+            let created_at = in_.u64()?;
+            let mut room = Room {
+                genesis,
+                intent: intent.clone(),
+                description: intent.description.clone(),
+                head: record.id(),
+                created_at,
+                archived: false,
+                record,
+                revisions: Vec::new(),
+            };
+            let slug = room.intent.slug.clone();
+            for _ in 0..in_.count(MAX_REVISIONS)? {
+                let revision_record = in_
+                    .record(MAX_RECORD_BYTES)?
+                    .verify()
+                    .map_err(|_| RegistryError::Corrupt)?;
+                let Body::Update(update) = revision_record.body() else {
+                    return Err(RegistryError::Corrupt);
+                };
+                if update.genesis != genesis
+                    || update.previous != room.head
+                    || update.directory != directory
+                    || update.realm != realm
+                {
+                    return Err(RegistryError::Corrupt);
+                }
+                match &update.action {
+                    UpdateAction::Describe(text) => room.description = text.clone(),
+                    UpdateAction::Archive => room.archived = true,
+                }
+                room.head = revision_record.id();
+                room.revisions.push(revision_record);
+            }
+            registry.by_genesis.insert(genesis, slug.clone());
+            registry.rooms.insert(slug, room);
+        }
+        for _ in 0..in_.count(MAX_OWNERS)? {
+            let owner = OwnerId::from_bytes(in_.array()?);
+            registry.accounts.insert(
+                owner,
+                Account {
+                    earned: in_.u64()?,
+                    spent: in_.u64()?,
+                    lifetime_slots: in_.u32()?,
+                },
+            );
+        }
+        for _ in 0..in_.count(MAX_OWNERS)? {
+            let owner = OwnerId::from_bytes(in_.array()?);
+            let times = (0..in_.count(usize::from(policy.max_in_window))?)
+                .map(|_| in_.u64())
+                .collect::<Result<_, _>>()?;
+            registry.windows.insert(owner, times);
+        }
+        for _ in 0..in_.count(MAX_SUPPORT)? {
+            let award = SupportAward {
+                source_owner: OwnerId::from_bytes(in_.array()?),
+                beneficiary: OwnerId::from_bytes(in_.array()?),
+                activity_epoch: in_.u64()?,
+                evidence_id: RecordId::from_bytes([0; 32]),
+            };
+            let record = in_
+                .social_record()?
+                .verify()
+                .map_err(|_| RegistryError::Corrupt)?;
+            let award = SupportAward {
+                evidence_id: record.id(),
+                ..award
+            };
+            registry
+                .support
+                .insert((award.beneficiary, award.source_owner, award.activity_epoch));
+            registry
+                .evidence
+                .insert(record.id(), Evidence { award, record });
+        }
+        if !in_.done() {
+            return Err(RegistryError::Corrupt);
+        }
+        Ok(registry)
+    }
+}
+
+const SNAPSHOT_MAGIC: &[u8; 8] = b"VRSN\0\0\0\x01";
+/// Snapshot byte ceiling: the private-store payload bound.
+pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
+/// Bound on distinct owners holding room-control chains in one snapshot.
+const MAX_CONTROL_OWNERS: usize = MAX_OWNERS;
+
+fn checksum(payload: &[u8]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"vhalla/rooms/registry-snapshot/v1\0");
+    hash.update(payload);
+    hash.finalize().into()
+}
+
+/// Bounded canonical writer.
+struct Out(Vec<u8>);
+impl Out {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+    fn bytes(&mut self, value: &[u8]) {
+        self.0.extend_from_slice(value);
+    }
+    fn bytes_len(&mut self, value: &[u8]) {
+        self.u32(value.len() as u32);
+        self.bytes(value);
+    }
+    fn u16(&mut self, value: u16) {
+        self.bytes(&value.to_be_bytes());
+    }
+    fn u32(&mut self, value: u32) {
+        self.bytes(&value.to_be_bytes());
+    }
+    fn u64(&mut self, value: u64) {
+        self.bytes(&value.to_be_bytes());
+    }
+}
+
+/// Bounded canonical reader; every count is checked against a retained bound.
+struct In<'a> {
+    raw: &'a [u8],
+    at: usize,
+}
+impl<'a> In<'a> {
+    fn new(raw: &'a [u8]) -> Self {
+        Self { raw, at: 0 }
+    }
+    fn take(&mut self, len: usize) -> Result<&'a [u8], RegistryError> {
+        let out = self
+            .raw
+            .get(self.at..self.at.saturating_add(len))
+            .ok_or(RegistryError::Corrupt)?;
+        self.at += len;
+        Ok(out)
+    }
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], RegistryError> {
+        self.take(N)?.try_into().map_err(|_| RegistryError::Corrupt)
+    }
+    fn u16(&mut self) -> Result<u16, RegistryError> {
+        Ok(u16::from_be_bytes(self.array()?))
+    }
+    fn u32(&mut self) -> Result<u32, RegistryError> {
+        Ok(u32::from_be_bytes(self.array()?))
+    }
+    fn u64(&mut self) -> Result<u64, RegistryError> {
+        Ok(u64::from_be_bytes(self.array()?))
+    }
+    /// A count bounded both by a semantic ceiling and the remaining bytes.
+    fn count(&mut self, bound: usize) -> Result<usize, RegistryError> {
+        let count = self.u32()? as usize;
+        if count > bound {
+            return Err(RegistryError::Corrupt);
+        }
+        Ok(count)
+    }
+    fn record(&mut self, bound: usize) -> Result<crate::SignedRecord, RegistryError> {
+        let len = self.u32()? as usize;
+        if len > bound {
+            return Err(RegistryError::Corrupt);
+        }
+        crate::SignedRecord::decode(self.take(len)?).map_err(|_| RegistryError::Corrupt)
+    }
+    fn social_record(&mut self) -> Result<vhalla_social::SignedRecord, RegistryError> {
+        let len = self.u32()? as usize;
+        if len > vhalla_social::MAX_RECORD_BYTES {
+            return Err(RegistryError::Corrupt);
+        }
+        vhalla_social::SignedRecord::decode(self.take(len)?).map_err(|_| RegistryError::Corrupt)
+    }
+    fn done(&self) -> bool {
+        self.at == self.raw.len()
     }
 }
 

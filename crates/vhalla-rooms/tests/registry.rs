@@ -612,3 +612,112 @@ fn non_owner_updates_and_stale_grant_authority_are_denied() {
     );
     let _ = genesis;
 }
+
+#[test]
+fn snapshot_round_trip_and_restore_continuity() {
+    let mut archive = Archive::new(REALM, limits()).unwrap();
+    let creator = beneficiary(&mut archive, 7);
+    let (mut pool, mut registry) = sources(&mut archive, 140, 5);
+    let head = grant_create(&mut registry, &archive, &creator, 100);
+    award_one(&mut registry, &mut archive, &mut pool[0], &creator, 200);
+    award_one(&mut registry, &mut archive, &mut pool[1], &creator, 200);
+    let create = creation(&creator, head, head, "snap-room", 1, 1, 30);
+    let genesis = match apply(&mut registry, &archive, &create, 300).unwrap() {
+        Applied::Created(id) => id,
+        other => panic!("expected creation, got {other:?}"),
+    };
+    let edit = RoomUpdate {
+        directory: DIRECTORY,
+        realm: REALM,
+        genesis,
+        previous: create.id(),
+        owner: creator.id,
+        social_control: creator.head,
+        controller_key: creator.key.verifying_key().to_bytes(),
+        expires_at: 1_000_000,
+        nonce: [31; 32],
+        action: UpdateAction::Describe(Description::new("snapshot me").unwrap()),
+    }
+    .sign_with_key(&creator.key)
+    .unwrap()
+    .verify()
+    .unwrap();
+    let view = ControlView::new(&archive, 400);
+    assert_eq!(
+        registry.apply(&edit, &view, 400),
+        Ok(Applied::Updated(edit.id()))
+    );
+    drop(view);
+    let digest = registry.digest();
+    let snapshot = registry.snapshot();
+    // A restored registry is byte-identical and keeps the agreed state.
+    let mut restored = Registry::restore(&snapshot).unwrap();
+    assert_eq!(restored.digest(), digest);
+    assert_eq!(restored.snapshot(), snapshot);
+    assert_eq!(restored.revision(), registry.revision());
+    assert_eq!(restored.last_time(), registry.last_time());
+    assert_eq!(restored.account(creator.id).earned, 2);
+    assert_eq!(restored.account(creator.id).lifetime_slots, 1);
+    let room = restored.room(&Slug::new("snap-room").unwrap()).unwrap();
+    assert_eq!(room.description().as_str(), "snapshot me");
+    assert_eq!(room.head(), edit.id());
+    // Source proofs survive the round trip byte-for-byte.
+    assert_eq!(
+        restored.source_proof(edit.id()).unwrap(),
+        registry.source_proof(edit.id()).unwrap()
+    );
+    assert!(restored.source_proof(create.id()).is_some());
+    // The restored registry still applies the agreed order at the same clock.
+    award_one(&mut restored, &mut archive, &mut pool[2], &creator, 500);
+    award_one(&mut restored, &mut archive, &mut pool[3], &creator, 500);
+    award_one(&mut restored, &mut archive, &mut pool[4], &creator, 500);
+    assert_eq!(restored.account(creator.id).earned, 5);
+    let second = creation(&creator, head, head, "snap-two", 2, 4, 32);
+    assert!(matches!(
+        apply(&mut restored, &archive, &second, 300 + EPOCH),
+        Ok(Applied::Created(_))
+    ));
+    // The original registry is untouched by the restored copy.
+    assert_eq!(registry.account(creator.id).earned, 2);
+}
+
+#[test]
+fn snapshot_integrity_and_bounds_are_checked() {
+    let mut archive = Archive::new(REALM, limits()).unwrap();
+    let creator = beneficiary(&mut archive, 8);
+    let (mut pool, mut registry) = sources(&mut archive, 150, 1);
+    let head = grant_create(&mut registry, &archive, &creator, 100);
+    award_one(&mut registry, &mut archive, &mut pool[0], &creator, 200);
+    apply(
+        &mut registry,
+        &archive,
+        &creation(&creator, head, head, "tampered", 1, 1, 40),
+        300,
+    )
+    .unwrap();
+    let snapshot = registry.snapshot();
+    // Truncation, bad magic and flipped payload bytes all fail integrity.
+    assert!(matches!(
+        Registry::restore(&snapshot[..snapshot.len() - 40]),
+        Err(RegistryError::Corrupt)
+    ));
+    let mut bad_magic = snapshot.clone();
+    bad_magic[0] ^= 1;
+    assert!(matches!(
+        Registry::restore(&bad_magic),
+        Err(RegistryError::Corrupt)
+    ));
+    let mut tampered = snapshot.clone();
+    let middle = tampered.len() / 2;
+    tampered[middle] ^= 1;
+    assert!(matches!(
+        Registry::restore(&tampered),
+        Err(RegistryError::Corrupt)
+    ));
+    // An empty registry round-trips too.
+    let empty = Registry::new(DIRECTORY, REALM, policy(), &[]).unwrap();
+    assert_eq!(
+        Registry::restore(&empty.snapshot()).unwrap().digest(),
+        empty.digest()
+    );
+}

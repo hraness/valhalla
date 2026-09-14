@@ -292,8 +292,25 @@ wrong-policy denial, rate windows, lifetime-slot progression, describe/archive
 revisions, tombstone search exclusion and award dedup. The registry owns no
 journal, clock or transport: the caller supplies the agreed record order and
 acceptance time, and must durably commit before acknowledging any decision.
-Durability, the service layer, the CLI surfaces and consensus integration
-remain open R4 work; identical social evidence on every validator is still a
+
+Durability now has a maintained layer too. `Registry::snapshot`/`restore` is a
+canonical bounded encoding of complete state — every admitted control, creation
+and revision record, every retained award proof, accounts, rate windows and
+the authority ledger — and `source_proof`/`evidence_proof` return the exact
+signed bytes backing any applied transition. Restore re-verifies every
+signature and re-checks internal order, but does not re-run live authority
+assessment: a snapshot is trusted local state under the store's privacy model,
+not independently authoritative. `vhalla-rooms-store` mirrors the social
+store's Unix discipline: owner-private directory, lifetime exclusive lock,
+durable intent file, content-addressed snapshot bundle, atomic pin rename and
+readback before the publication is sealed. Lineage is revision-monotone under
+a pin compare-and-swap — a rewound or same-revision divergent candidate
+conflicts, and retained bundles are audited with strict-ancestor reclamation.
+Five tests cover commit/restart/readback, stale and divergent rejection, all
+thirteen publication-boundary crash points with exact-intent recovery, pending
+intent reconciliation and fail-closed corrupt bundles. Registry snapshots are
+O(state) per commit; the service layer, CLI surfaces and consensus integration
+remain open R4 work. Identical social evidence on every validator is still a
 data-plane obligation, not a registry guarantee.
 
 ## Search and user journeys
@@ -882,7 +899,7 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
 | R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards` (5 tests) and now wired into `registry::Registry` award dedup and eligible-source policy. Sybil/collusion calibration remains simulation work |
 | R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike above: native engines over libp2p with real batch bytes in proposal values, certificate-gated durable journal commits, WAL fault injection, crash/restart, rotation, late-join sync and a true runtime partition (62 tests, run `266133fc7c25dfd6b9770248a66c1d70`). Scratch-only; production integration, the application data plane and the remaining listed gaps are pending |
-| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer implemented in `vhalla-rooms` (6 tests): real verified records through the authority and award adapters, exact retry, slug tombstones, quadratic slots and bounded search. Durable manifests, the service, CLI surfaces and consensus integration remain pending |
+| R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Registry application layer (8 tests) plus durable `vhalla-rooms-store` (5 tests): canonical snapshots retain all admitted records and award proofs, pin CAS publication recovers all 13 crash boundaries, source-proof bytes are retrievable. Service, CLI surfaces, two-process same-owner evidence and consensus integration remain pending |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
 

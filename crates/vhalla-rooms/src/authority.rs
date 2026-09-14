@@ -17,6 +17,7 @@
 use crate::model::*;
 use crate::wire::VerifiedRecord;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
 use vhalla_core::RealmId;
 use vhalla_social::{control::ControlView, AgentId, OwnerId, RecordId};
@@ -33,11 +34,14 @@ struct OpenGrant {
     maximum_charge: u64,
 }
 
-/// One owner's accepted room-control chain and its open grants.
+/// One owner's accepted room-control chain and its open grants. The admitted
+/// records are retained in order: they are the owner's durable manifest and
+/// the source proofs a snapshot restores.
 #[derive(Clone, Debug, Default)]
 struct OwnerChain {
     head: Option<RoomRecordId>,
     sequence: u64,
+    history: Vec<VerifiedRecord>,
     grants: BTreeMap<RoomRecordId, OpenGrant>,
 }
 
@@ -117,6 +121,7 @@ impl<'a> Admission<'a> {
 /// owner plus the open grants it retains. Admission re-derives every basis
 /// check against the borrowed social view; nothing here grants authority by
 /// itself.
+#[derive(Clone)]
 pub struct RoomAuthority {
     directory: DirectoryId,
     realm: RealmId,
@@ -219,15 +224,41 @@ impl RoomAuthority {
         if control.directory != self.directory || control.realm != self.realm {
             return Err(Denial::Scope);
         }
-        if self.records >= MAX_CONTROL_RECORDS {
-            return Err(Denial::Capacity);
-        }
         Self::owner_status(
             view,
             control.owner,
             control.social_control,
             &control.controller_key,
         )?;
+        if let CreateAction::GrantCreate {
+            agent,
+            agent_key,
+            expires_at,
+            ..
+        } = &control.action
+        {
+            Self::agent_status(view, control.owner, *agent, agent_key)?;
+            if *expires_at <= now {
+                return Err(Denial::Expired);
+            }
+        }
+        self.commit_control(record)
+    }
+
+    /// Apply one already-verified control record to its owner's chain,
+    /// checking only scope and the agreed chain order. Live authority claims
+    /// — the social basis, agent status and grant expiry — are the caller's
+    /// `admit` obligation; this tail is shared with snapshot restore.
+    fn commit_control(&mut self, record: &VerifiedRecord) -> Result<(), Denial> {
+        let Body::Control(control) = record.body() else {
+            return Err(Denial::Kind);
+        };
+        if control.directory != self.directory || control.realm != self.realm {
+            return Err(Denial::Scope);
+        }
+        if self.records >= MAX_CONTROL_RECORDS {
+            return Err(Denial::Capacity);
+        }
         let chain = self.chains.entry(control.owner).or_default();
         if control.previous != chain.head {
             return Err(Denial::Previous);
@@ -243,10 +274,6 @@ impl RoomAuthority {
                 maximum_charge,
                 ..
             } => {
-                Self::agent_status(view, control.owner, *agent, agent_key)?;
-                if *expires_at <= now {
-                    return Err(Denial::Expired);
-                }
                 chain.grants.insert(
                     record.id(),
                     OpenGrant {
@@ -265,8 +292,25 @@ impl RoomAuthority {
         }
         chain.head = Some(record.id());
         chain.sequence = chain.sequence.checked_add(1).ok_or(Denial::Sequence)?;
+        chain.history.push(record.clone());
         self.records += 1;
         Ok(())
+    }
+
+    /// Restore one previously admitted control record from a trusted local
+    /// snapshot. Order, scope and grant mutations are re-checked; the social
+    /// basis and expiry were assessed when the record first entered the
+    /// agreed log and are not re-derived from the current view.
+    pub(crate) fn restore_record(&mut self, record: &VerifiedRecord) -> Result<(), Denial> {
+        self.commit_control(record)
+    }
+
+    /// Iterate each owner's retained control records in agreed chain order.
+    /// The records are the durable manifest a snapshot persists.
+    pub(crate) fn histories(&self) -> impl Iterator<Item = (OwnerId, &[VerifiedRecord])> + '_ {
+        self.chains
+            .iter()
+            .map(|(owner, chain)| (*owner, chain.history.as_slice()))
     }
 
     /// Re-evaluate a verified creation intent against current state inside

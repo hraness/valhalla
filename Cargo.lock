@@ -3166,6 +3166,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-rooms-store"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "getrandom 0.3.4",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-rooms",
+ "vhalla-social",
+]
+
+[[package]]
 name = "vhalla-session"
 version = "0.0.0"
 dependencies = [
