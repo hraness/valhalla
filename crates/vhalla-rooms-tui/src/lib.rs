@@ -12,8 +12,10 @@ mod view;
 
 #[cfg(unix)]
 mod run;
+/// In-process signing assembly for the operator trust domain — shared by
+/// the interactive forms and the `rooms submit` command.
 #[cfg(unix)]
-mod sign;
+pub mod sign;
 
 #[cfg(unix)]
 pub use run::run;
@@ -158,7 +160,8 @@ pub enum Modal {
     },
 }
 
-const CREATE_LABELS: [&str; 8] = [
+/// Field order of the create form — shared with `rooms submit`.
+pub const CREATE_LABELS: [&str; 8] = [
     "slug",
     "description",
     "expires (unix seconds)",
@@ -169,13 +172,15 @@ const CREATE_LABELS: [&str; 8] = [
     "evidence record files (, separated, optional)",
 ];
 
-const DESCRIBE_LABELS: [&str; 3] = [
+/// Field order of the describe form — shared with `rooms submit`.
+pub const DESCRIBE_LABELS: [&str; 3] = [
     "description",
     "expires (unix seconds)",
     "owner identity dir",
 ];
 
-fn form(title: &'static str, labels: &[&'static str]) -> Form {
+/// A form with `labels` fields, all empty.
+pub fn form(title: &'static str, labels: &[&'static str]) -> Form {
     Form {
         title,
         fields: labels

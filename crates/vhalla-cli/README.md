@@ -311,6 +311,21 @@ directories the form asks for — the same trust boundary as
 then tracks each submission from queued through committed, collision or
 rejected. The replica never holds node, store or consensus authority.
 
+The same feature adds the scriptable siblings `rooms submit` and
+`rooms pending` for pipelines and remote operators. `rooms submit
+SOCIAL_STORE REPLICA_HOME REALM NODE_HOME KIND ... --config FILE` runs the
+identical signing assembly without a terminal: `create` takes the owner
+and agent identity directories, owner and agent ids, slug, expiry,
+description and an optional comma-separated evidence list whose entries
+are single canonical social records or whole `vhalla social export`
+snapshots (expanded and verified per record); `describe` and `archive`
+take the owner identity directory and slug. The signed records land as a
+canonical `*.body` in the node's intake and the command prints the local
+pending marker — an admission receipt, not a success claim. `rooms
+pending SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE` syncs
+the replica and reports each marker's resolution (queued, submitted,
+committed, collision, rejected) as JSON.
+
 Every mutating command signs a real wire record, applies it to a candidate
 registry, and reports success only after the store's durable pin publication.
 Two agents of one owner share the directory through separate invocations; a

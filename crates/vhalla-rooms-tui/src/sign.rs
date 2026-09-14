@@ -71,7 +71,8 @@ pub fn create_body(f: &Form, now: u64, src: &mut dyn Source) -> Result<Body, Str
     let social_control = RecordId::from_bytes(hex32(&ctx.social_control)?);
     let expires_at = expires(f.get(2).trim(), now)?;
 
-    if ctx.balance < ctx.charge && f.get(7).trim().is_empty() {
+    let evidence_text = f.get(7).trim();
+    if ctx.balance < ctx.charge && (evidence_text.is_empty() || evidence_text == "-") {
         return Err(format!(
             "unspent credit {} is below the quoted charge {}; attach evidence files or earn support first",
             ctx.balance, ctx.charge
@@ -206,20 +207,68 @@ fn update_record(
         .encode())
 }
 
-/// Each comma-separated path holds one canonical signed social record —
-/// the same bytes `vhalla rooms evidence` emits or a peer exported.
+/// Each comma-separated path holds either one canonical signed social
+/// record or a whole `vhalla social export` snapshot — the snapshot's
+/// records are expanded individually. Malformed or oversized drops are
+/// refused here; the node still verifies every record strictly.
 fn evidence_files(text: &str) -> Result<Vec<Vec<u8>>, String> {
+    const SNAPSHOT_MAGIC: &[u8; 8] = b"VHSA\0\0\0\x01";
     let mut out = Vec::new();
     for part in text.split(',') {
         let path = part.trim();
-        if path.is_empty() {
+        if path.is_empty() || path == "-" {
             continue;
         }
         let bytes = std::fs::read(Path::new(path)).map_err(|e| format!("evidence {path}: {e}"))?;
-        if bytes.is_empty() || bytes.len() > 64 * 1024 {
-            return Err(format!("evidence {path}: empty or over 64KiB"));
+        if bytes.len() > vhalla_social::archive::MAX_SNAPSHOT_BYTES {
+            return Err(format!("evidence {path}: over the snapshot bound"));
         }
+        if bytes.starts_with(SNAPSHOT_MAGIC) {
+            out.extend(split_snapshot(&bytes).map_err(|e| format!("evidence {path}: {e}"))?);
+            continue;
+        }
+        verify_record(&bytes).map_err(|e| format!("evidence {path}: {e}"))?;
         out.push(bytes);
     }
     Ok(out)
+}
+
+/// Splits a `VHSA` snapshot into its canonical record frames — an 8-byte
+/// magic, 16-byte realm and 4-byte count header, then length-prefixed
+/// records. Each extracted record is verified before it is offered.
+fn split_snapshot(raw: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    if raw.len() < 28 {
+        return Err("truncated snapshot header".into());
+    }
+    let count = u32::from_be_bytes(raw[24..28].try_into().unwrap()) as usize;
+    let mut at = 28usize;
+    let mut out = Vec::with_capacity(count.min(256));
+    for _ in 0..count {
+        let end = at.checked_add(4).ok_or("truncated record length")?;
+        if end > raw.len() {
+            return Err("truncated record length".into());
+        }
+        let len = u32::from_be_bytes(raw[at..end].try_into().unwrap()) as usize;
+        at = end;
+        let end = at.checked_add(len).ok_or("truncated record")?;
+        if end > raw.len() || len > vhalla_social::MAX_RECORD_BYTES {
+            return Err("truncated or oversized record".into());
+        }
+        let record = &raw[at..end];
+        verify_record(record)?;
+        out.push(record.to_vec());
+        at = end;
+    }
+    if at != raw.len() {
+        return Err("trailing bytes after snapshot records".into());
+    }
+    Ok(out)
+}
+
+/// Strict-decode and verify one canonical social record.
+fn verify_record(raw: &[u8]) -> Result<(), String> {
+    vhalla_social::SignedRecord::decode(raw)
+        .and_then(|r| r.verify())
+        .map(|_| ())
+        .map_err(|e| format!("not a verified social record: {e:?}"))
 }

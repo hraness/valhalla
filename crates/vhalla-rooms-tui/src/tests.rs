@@ -583,7 +583,6 @@ mod signing {
 mod update_signing {
     use super::*;
     use crate::sign;
-    use crate::Form;
     use vhalla_identity::Identity;
     use vhalla_rooms::{Body, SignedRecord};
 

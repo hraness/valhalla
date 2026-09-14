@@ -35,6 +35,10 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   list | search QUERY | show SLUG | account OWNER64 | proof RECORD64 | evidence RECORD64 | recover
   node NODE_HOME --config FILE  (build: --features experimental-rooms-node)
   tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
+  submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
+  submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
+  submit REPLICA_HOME NODE_HOME archive OWNER_KEYDIR SLUG --config FILE
+  pending REPLICA_HOME NODE_HOME --config FILE
 SOCIAL_STORE is an existing `vhalla social` store; ROOMS_STORE is created by `init`.
 IDs are full hex. Slot and charge are computed from the current policy quote.
 Read paging: --limit N (1..64). Output is ASCII JSON. The directory clock is
@@ -264,6 +268,40 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         {
             return Err(format!(
                 "rooms node needs --features experimental-rooms-node{}",
+                if args.config.is_some() {
+                    " (config ignored)"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    if args.command == "submit" {
+        #[cfg(feature = "experimental-rooms-tui")]
+        {
+            return crate::rooms_submit::run(&args);
+        }
+        #[cfg(not(feature = "experimental-rooms-tui"))]
+        {
+            return Err(format!(
+                "rooms submit needs --features experimental-rooms-tui{}",
+                if args.config.is_some() {
+                    " (config ignored)"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    if args.command == "pending" {
+        #[cfg(feature = "experimental-rooms-tui")]
+        {
+            return crate::rooms_submit::pending(&args);
+        }
+        #[cfg(not(feature = "experimental-rooms-tui"))]
+        {
+            return Err(format!(
+                "rooms pending needs --features experimental-rooms-tui{}",
                 if args.config.is_some() {
                     " (config ignored)"
                 } else {
@@ -590,7 +628,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
     emit(output)
 }
 
-fn emit(output: String) -> Result<(), String> {
+pub(crate) fn emit(output: String) -> Result<(), String> {
     // The escaped presentation has its own ceiling, separate from signed
     // payloads and query budgets. Never emit a partial JSON object on overflow.
     if output.len() > 2 * 1024 * 1024 {
