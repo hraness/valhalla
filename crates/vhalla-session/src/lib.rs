@@ -13,8 +13,10 @@
 extern crate alloc;
 
 mod invitation;
+mod spent_nonce;
 
 pub use invitation::{Invitation, InvitationClaims, InvitationError, INVITATION_BYTES};
+pub use spent_nonce::{SpendError, SpentInvitationNonces};
 
 use alloc::vec::Vec;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
