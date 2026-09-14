@@ -11,10 +11,12 @@
 use std::collections::BTreeSet;
 
 use arc_malachitebft_core_types::{
-    CommitCertificate, NilOrVal, Round, ValidatorSet as _, VoteType,
+    CommitCertificate, NilOrVal, Round, SigningScheme as _, ValidatorSet as _, VoteType,
 };
 
-use crate::{vote_sign_bytes, RoomContext, RoomValidatorSet, RoomValueId, RoomVote};
+use crate::{
+    vote_sign_bytes, Address, Ed25519, Height, RoomContext, RoomValidatorSet, RoomValueId, RoomVote,
+};
 
 /// Bounded certificate size: at most this many commit signatures are
 /// considered.
@@ -118,4 +120,86 @@ pub fn verify_commit_certificate(
         height: certificate.height.as_u64(),
         value_id: certificate.value_id,
     })
+}
+
+/// Verifies a canonical `VC2` certificate — the bounded bytes a journal
+/// bundle carries — against the trusted validator set for `height`.
+/// Decodes strictly (exact length, no trailing data), binds the embedded
+/// height and value id to the expected ones, verifies every signature
+/// over the rebuilt precommit preimage, and requires strictly more than
+/// two-thirds distinct voting power. This is the replica data-plane
+/// check: a consumer that never saw the engine run can still hold the
+/// committed bundle to the same standard a voter did.
+pub fn verify_canonical_certificate(
+    raw: &[u8],
+    height: u64,
+    value_id: &RoomValueId,
+    validators: &RoomValidatorSet,
+) -> bool {
+    let Some((count, mut rest)) = decode_head(raw, height, value_id) else {
+        return false;
+    };
+    if count == 0 || count > MAX_CERT_SIGNATURES || rest.len() != count * 84 {
+        return false;
+    }
+    let mut seen = BTreeSet::new();
+    let mut signed_power = 0u64;
+    for _ in 0..count {
+        let address = Address::new(rest[..20].try_into().unwrap());
+        let Ok(signature) = Ed25519::decode_signature(&rest[20..84]) else {
+            return false;
+        };
+        rest = &rest[84..];
+        let Some(validator) = validators.get_by_address(&address) else {
+            return false;
+        };
+        if !seen.insert(address) {
+            return false;
+        }
+        let vote = RoomVote::new(
+            VoteType::Precommit,
+            Height::new(height),
+            round_of(raw),
+            NilOrVal::Val(*value_id),
+            address,
+        );
+        if validator
+            .public_key
+            .verify(&vote_sign_bytes(&vote), &signature)
+            .is_err()
+        {
+            return false;
+        }
+        signed_power += validator.power;
+    }
+    signed_power * 3 > validators.total_voting_power() * 2
+}
+
+/// Decodes the fixed `VC2` head: magic, height, round, value id, count —
+/// checking height and value id against the expected commitment. Returns
+/// the signature count and the remaining `(address || signature)` span.
+fn decode_head<'a>(
+    raw: &'a [u8],
+    height: u64,
+    value_id: &RoomValueId,
+) -> Option<(usize, &'a [u8])> {
+    if raw.len() < 49 || raw.get(..3) != Some(b"VC2") {
+        return None;
+    }
+    if u64::from_be_bytes(raw[3..11].try_into().unwrap()) != height {
+        return None;
+    }
+    if raw[11..15] == u32::MAX.to_be_bytes() {
+        return None; // Nil round is never a commit certificate.
+    }
+    if raw[15..47] != value_id.0 {
+        return None;
+    }
+    let count = u16::from_be_bytes(raw[47..49].try_into().unwrap()) as usize;
+    Some((count, &raw[49..]))
+}
+
+/// The round field inside a `VC2` head, already known to be non-Nil.
+fn round_of(raw: &[u8]) -> Round {
+    Round::Some(u32::from_be_bytes(raw[11..15].try_into().unwrap()))
 }

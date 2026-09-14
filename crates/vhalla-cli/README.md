@@ -287,10 +287,15 @@ config supplies the consensus key, listen port, persistent peers, validator
 activations and the shared genesis parameters (directory, policy, eligible
 sources, archive limits). The genesis archive is read from the committed
 social snapshot named on the command line, decoded under the configured
-limits. Producers submit work by dropping canonical `*.batch` files into
-`<node-home>/intake/`; the node drains them at proposal time, commits through
-the certificate-gated journal before acknowledging, and renames malformed
-drops `*.rejected`. SIGINT stops the service.
+limits. Producers submit work by dropping `*.body` files into
+`<node-home>/intake/` — a canonical `BatchBody` carries only the agreed
+time, award evidence and signed room records; the node assembles parent
+and result claims against its own live frontier at proposal assignment,
+so a producer can never fabricate a stale or claimed result. Complete
+`*.batch` drops are accepted too and are re-assembled the same way.
+Malformed drops and effects that can never apply are renamed
+`*.rejected`; accepted drops unlink once queued. SIGINT stops the
+service.
 
 Every mutating command signs a real wire record, applies it to a candidate
 registry, and reports success only after the store's durable pin publication.

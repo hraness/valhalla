@@ -65,7 +65,8 @@ use arc_malachitebft_metrics::SharedRegistry;
 use arc_malachitebft_signing::Signer;
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use vhalla_rooms_consensus::{
-    Adapter, Batch, CommitCertificate as RoomCertificate, DecidedOutcome, EngineSink, Genesis,
+    Adapter, Batch, BatchBody, CommitCertificate as RoomCertificate, DecidedOutcome, EngineSink,
+    Genesis,
 };
 
 use crate::cert::verify_commit_certificate;
@@ -251,7 +252,11 @@ struct App {
     /// `GetValue` assigns the front to its height; a losing decision at
     /// that height leaves it queued for the next — only a commit of the
     /// batch's own value id removes it.
-    pending_proposals: VecDeque<RoomValueId>,
+    pending_proposals: VecDeque<PendingEntry>,
+    /// value id → pending marker name, for entries that began as bodies:
+    /// the body bytes stay in the marker until commit so a lost proposal
+    /// can be re-assembled against the new frontier rather than dropped.
+    assigned_bodies: BTreeMap<RoomValueId, String>,
     /// value commitment -> the full held batch (local proposals and
     /// batches received over the wire alike).
     held_by_id: BTreeMap<RoomValueId, Batch>,
@@ -269,6 +274,39 @@ struct App {
     seen: BTreeMap<u64, Vec<SeenProposal>>,
     /// Total `ProposedValue`s resupplied to the engine at round starts.
     resupplied: Arc<Mutex<u64>>,
+}
+
+/// One queued submission. Bodies are the honest runtime shape: a producer
+/// owns evidence + records but cannot know the frontier, so the durable
+/// marker holds the body bytes and assembly happens at assignment against
+/// the live state — a lost or late proposal can never be committed stale.
+/// `Value` entries are complete batches (test plans, direct submits) whose
+/// parent was fixed at assembly; if the frontier has already moved past
+/// that parent the entry can never commit and is dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingEntry {
+    /// `store/pending/<name>` holds the canonical `BatchBody` bytes.
+    Body(String),
+    /// `store/pending/<hex(id)>` is an empty marker; the batch is durable
+    /// under `store/batches/` and loaded in `held_by_id`.
+    Value(RoomValueId),
+}
+
+impl PendingEntry {
+    /// The value commitment once an entry has an assembled batch.
+    fn value_id(&self) -> Option<RoomValueId> {
+        match self {
+            PendingEntry::Value(id) => Some(*id),
+            PendingEntry::Body(_) => None,
+        }
+    }
+    /// The pending-marker name this entry persists under.
+    fn name(&self) -> String {
+        match self {
+            PendingEntry::Body(name) => name.clone(),
+            PendingEntry::Value(id) => hex(&id.0),
+        }
+    }
 }
 
 impl App {
@@ -301,16 +339,36 @@ impl App {
     fn submit(&mut self, batch: Batch) {
         let id = self.register_batch(batch);
         store_write(&self.store.join("pending"), &hex(&id.0), &[]).expect("pending marker write");
-        if !self.pending_proposals.contains(&id) && !self.proposals.values().any(|p| *p == id) {
-            self.pending_proposals.push_back(id);
+        if !self
+            .pending_proposals
+            .iter()
+            .any(|e| e.value_id() == Some(id))
+            && !self.proposals.values().any(|p| *p == id)
+        {
+            self.pending_proposals.push_back(PendingEntry::Value(id));
         }
     }
 
-    /// The cross-process submission contract: every `*.batch` file under
-    /// `home/intake/` is a canonical `Batch` a producer (the rooms CLI
-    /// service lane, an assembler) dropped for this node to propose.
-    /// Each file submits then unlinks; a file that fails to decode is
-    /// renamed `.rejected` — retained for the producer, never retried.
+    /// A producer-supplied body: the marker holds the canonical body
+    /// bytes under the file's stem, so assembly always happens against
+    /// the live frontier at assignment — a dropped body can never carry
+    /// a producer-fabricated parent or result claim.
+    fn submit_body(&mut self, name: String, body: BatchBody) {
+        store_write(&self.store.join("pending"), &name, &body.encode())
+            .expect("pending body write");
+        if !self.pending_proposals.iter().any(|e| e.name() == name) {
+            self.pending_proposals.push_back(PendingEntry::Body(name));
+        }
+    }
+
+    /// The cross-process submission contract under `home/intake/`:
+    /// `*.batch` and `*.body` files both enter the queue as bodies —
+    /// a complete batch's parent and result claims are recomputed at
+    /// assignment, so a stale assembler's value is rescued rather than
+    /// rejected outright and can never occupy the queue uncommittable.
+    /// The file stem becomes the pending-marker name (limited to 64
+    /// bytes of `[a-zA-Z0-9._-]` so it can never escape the store).
+    /// Accepted files unlink; malformed ones rename `.rejected`.
     /// Drained only at `GetValue`, the sole consumer of the queue.
     fn drain_intake(&mut self) {
         let dir = self
@@ -326,21 +384,109 @@ impl App {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if !name.ends_with(".batch") {
+            let Some(stem) = name
+                .strip_suffix(".batch")
+                .or_else(|| name.strip_suffix(".body"))
+            else {
                 continue;
-            }
-            let ok = std::fs::read(&path)
-                .ok()
-                .and_then(|bytes| Batch::decode(&bytes).ok())
-                .map(|batch| {
-                    self.submit(batch);
-                    std::fs::remove_file(&path)
-                });
-            match ok {
-                Some(Ok(())) => {}
-                Some(Err(_)) => {} // unlink raced or failed; retried next drain
-                None => {
+            };
+            let body = std::fs::read(&path).ok().and_then(|bytes| {
+                if name.ends_with(".batch") {
+                    Batch::decode(&bytes).ok().map(|b| BatchBody {
+                        time: b.time,
+                        evidence: b.evidence,
+                        records: b.records,
+                    })
+                } else {
+                    BatchBody::decode(&bytes).ok()
+                }
+            });
+            let safe = stem.len() <= 64
+                && !stem.is_empty()
+                && stem
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-' || c == b'_');
+            match (safe, body) {
+                (true, Some(body)) => {
+                    self.submit_body(stem.to_owned(), body);
+                    // An unlink race only means a duplicate enqueue next
+                    // drain — the stem dedup makes that harmless.
+                    let _ = std::fs::remove_file(&path);
+                }
+                _ => {
                     let _ = std::fs::rename(&path, path.with_extension("rejected"));
+                }
+            }
+        }
+    }
+
+    /// The queue front made committable for this height: bodies assemble
+    /// against the live frontier via `Application::prepare`; a complete
+    /// batch still validating goes as-is. A stale `Value` entry (lost
+    /// height, fixed parent) either downgrades back to its body — the
+    /// effect may still apply against the new frontier — or drops dead
+    /// when it came from a direct submit. A body that can never apply is
+    /// rejected to the producer and removed. Runs inside `GetValue`, so
+    /// an uncommittable front can never stall the queue.
+    fn next_pending(&mut self) -> Option<RoomValueId> {
+        loop {
+            match self.pending_proposals.front()?.clone() {
+                PendingEntry::Value(id) => {
+                    let valid = self.held_by_id.get(&id).is_some_and(|b| {
+                        self.adapter
+                            .lock()
+                            .unwrap()
+                            .application()
+                            .validate(b)
+                            .is_ok()
+                    });
+                    if valid {
+                        return Some(id);
+                    }
+                    self.pending_proposals.pop_front();
+                    match self.assigned_bodies.remove(&id) {
+                        Some(name) => self.pending_proposals.push_back(PendingEntry::Body(name)),
+                        None => {
+                            let _ =
+                                std::fs::remove_file(self.store.join("pending").join(hex(&id.0)));
+                        }
+                    }
+                }
+                PendingEntry::Body(name) => {
+                    let body = std::fs::read(self.store.join("pending").join(&name))
+                        .ok()
+                        .and_then(|b| BatchBody::decode(&b).ok());
+                    let checked = body.and_then(|b| {
+                        self.adapter
+                            .lock()
+                            .unwrap()
+                            .application()
+                            .prepare(b.time, b.evidence, b.records)
+                            .ok()
+                    });
+                    match checked {
+                        Some(checked) => {
+                            let batch = checked.batch().clone();
+                            let id = self.register_batch(batch);
+                            self.assigned_bodies.insert(id, name);
+                            self.pending_proposals.pop_front();
+                            self.pending_proposals.push_front(PendingEntry::Value(id));
+                            return Some(id);
+                        }
+                        None => {
+                            // The effect can never apply — mark it for the
+                            // producer exactly like an intake rejection.
+                            let intake = self
+                                .store
+                                .parent()
+                                .unwrap_or_else(|| Path::new("."))
+                                .join("intake");
+                            let _ = std::fs::create_dir_all(&intake);
+                            let _ = std::fs::write(intake.join(format!("{name}.rejected")), []);
+                            let _ = std::fs::remove_file(self.store.join("pending").join(&name));
+                            self.pending_proposals.pop_front();
+                        }
+                    }
                 }
             }
         }
@@ -613,13 +759,12 @@ impl App {
         if matches!(outcome, DecidedOutcome::Acked) {
             let height = certificate.height.as_u64();
             self.proposals.remove(&height);
-            let _ = std::fs::remove_file(
-                self.store
-                    .join("pending")
-                    .join(hex(&certificate.value_id.0)),
-            );
-            self.pending_proposals
-                .retain(|p| *p != certificate.value_id);
+            let id = certificate.value_id;
+            let _ = std::fs::remove_file(self.store.join("pending").join(hex(&id.0)));
+            if let Some(name) = self.assigned_bodies.remove(&id) {
+                let _ = std::fs::remove_file(self.store.join("pending").join(name));
+            }
+            self.pending_proposals.retain(|p| p.value_id() != Some(id));
         }
         outcome
     }
@@ -1268,6 +1413,7 @@ impl RoomNode {
             private_key: node_key.clone(),
             proposals,
             pending_proposals,
+            assigned_bodies: BTreeMap::new(),
             held_by_id,
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
@@ -1342,33 +1488,45 @@ impl RoomNode {
     }
 }
 
-/// Re-queue durable submissions at start: a `store/pending/` marker whose
-/// batch still validates against the current frontier is an uncommitted
-/// proposal owed another height. Markers whose bytes are gone or no
-/// longer validate (already committed, superseded, corrupt) are dropped
-/// so a dead marker can never stall `GetValue`.
+/// Re-queue durable submissions at start. A non-empty `store/pending/`
+/// marker holds canonical body bytes and re-enters as `Body` — assembly
+/// re-runs at assignment, so a body dropped before a crash is never
+/// stale afterward. An empty marker names a direct-submit value id and
+/// re-enters only when its batch still validates against the current
+/// frontier; dead markers drop so none can stall `GetValue`. Restart
+/// order is filename-sorted (deterministic), not strict FIFO.
 fn reload_pending(
     store: &Path,
     held_by_id: &BTreeMap<RoomValueId, Batch>,
     adapter: &Arc<Mutex<Adapter<vhalla_journal::FsStore>>>,
-) -> VecDeque<RoomValueId> {
+) -> VecDeque<PendingEntry> {
     std::fs::create_dir_all(store.join("pending")).unwrap();
     let mut out = VecDeque::new();
     let Ok(entries) = std::fs::read_dir(store.join("pending")) else {
         return out;
     };
-    for entry in entries.flatten() {
-        let id = entry
-            .file_name()
-            .to_str()
-            .and_then(unhex)
-            .and_then(|b| <[u8; 32]>::try_from(b).ok())
-            .map(RoomValueId);
-        let keep = id
-            .and_then(|id| held_by_id.get(&id).cloned())
-            .is_some_and(|b| adapter.lock().unwrap().application().validate(&b).is_ok());
-        if keep {
-            out.push_back(id.unwrap());
+    let mut files: Vec<_> = entries.flatten().collect();
+    files.sort_by_key(|e| e.file_name());
+    for entry in files {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let bytes = std::fs::read(entry.path()).unwrap_or_default();
+        if bytes.is_empty() {
+            let id = unhex(&name)
+                .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                .map(RoomValueId);
+            let keep = id
+                .and_then(|id| held_by_id.get(&id).cloned())
+                .is_some_and(|b| adapter.lock().unwrap().application().validate(&b).is_ok());
+            match (keep, id) {
+                (true, Some(id)) => out.push_back(PendingEntry::Value(id)),
+                _ => {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        } else if BatchBody::decode(&bytes).is_ok() {
+            out.push_back(PendingEntry::Body(name));
         } else {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -1456,13 +1614,11 @@ async fn run(
                 // dir before assigning this height's proposal.
                 app.drain_intake();
                 // No pre-planned batch for this height: assign the
-                // oldest submitted one — it stays queued until its own
-                // value id commits, so a losing height retries next.
-                if let std::collections::btree_map::Entry::Vacant(e) =
-                    app.proposals.entry(height.as_u64())
-                {
-                    if let Some(id) = app.pending_proposals.front().copied() {
-                        e.insert(id);
+                // oldest committable submission — bodies assemble here
+                // against the live frontier; a losing height requeues.
+                if !app.proposals.contains_key(&height.as_u64()) {
+                    if let Some(id) = app.next_pending() {
+                        app.proposals.insert(height.as_u64(), id);
                     }
                 }
                 let Some(value_id) = app.proposals.get(&height.as_u64()).copied() else {

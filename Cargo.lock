@@ -5242,6 +5242,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-rooms-app"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "serde",
+ "serde_json",
+ "tokio",
+ "vhalla-core",
+ "vhalla-journal",
+ "vhalla-rooms",
+ "vhalla-rooms-consensus",
+ "vhalla-rooms-node",
+ "vhalla-social",
+ "vhalla-social-store",
+]
+
+[[package]]
 name = "vhalla-rooms-consensus"
 version = "0.0.0"
 dependencies = [

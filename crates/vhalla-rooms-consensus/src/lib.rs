@@ -216,6 +216,76 @@ impl Batch {
     }
 }
 
+/// A submission body: the parts of a batch a producer owns — agreed clock,
+/// canonical social evidence and room records — without the frontier or
+/// claimed result digests, which only the node holding the current state
+/// can compute. The node's intake drains these and assembles the full
+/// batch against its own frontier at proposal time, so a producer never
+/// fabricates parent or result claims.
+pub struct BatchBody {
+    /// The agreed consensus clock for the assembled batch.
+    pub time: u64,
+    /// Canonical `vhalla_social::SignedRecord` bytes.
+    pub evidence: Vec<Vec<u8>>,
+    /// Canonical `vhalla_rooms::SignedRecord` bytes.
+    pub records: Vec<Vec<u8>>,
+}
+
+const BODY_MAGIC: &[u8; 4] = b"VBB1";
+
+impl BatchBody {
+    /// Canonical bounded encoding.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut raw = Vec::with_capacity(64);
+        raw.extend_from_slice(BODY_MAGIC);
+        raw.extend_from_slice(&self.time.to_be_bytes());
+        for items in [&self.evidence, &self.records] {
+            raw.extend_from_slice(&(items.len() as u32).to_be_bytes());
+            for item in items {
+                raw.extend_from_slice(&(item.len() as u32).to_be_bytes());
+                raw.extend_from_slice(item);
+            }
+        }
+        raw
+    }
+    /// Strict bounded decode of `encode` output.
+    pub fn decode(raw: &[u8]) -> Result<Self, ApplyError> {
+        if raw.len() < 4 + 8 + 4 + 4
+            || raw.len() > MAX_BATCH_BYTES
+            || raw.get(..4) != Some(BODY_MAGIC.as_slice())
+        {
+            return Err(ApplyError::Decode);
+        }
+        let mut rest = &raw[4..];
+        let time = u64::from_be_bytes(take(&mut rest, 8)?.try_into().unwrap());
+        let items = |rest: &mut &[u8]| -> Result<Vec<Vec<u8>>, ApplyError> {
+            let count = u32::from_be_bytes(take(rest, 4)?.try_into().unwrap()) as usize;
+            if count > MAX_BATCH_ITEMS {
+                return Err(ApplyError::Decode);
+            }
+            let mut out = Vec::with_capacity(count);
+            for _ in 0..count {
+                let len = u32::from_be_bytes(take(rest, 4)?.try_into().unwrap()) as usize;
+                if len > vhalla_social::MAX_RECORD_BYTES {
+                    return Err(ApplyError::Decode);
+                }
+                out.push(take(rest, len)?.to_vec());
+            }
+            Ok(out)
+        };
+        let evidence = items(&mut rest)?;
+        let records = items(&mut rest)?;
+        if !rest.is_empty() {
+            return Err(ApplyError::Decode);
+        }
+        Ok(BatchBody {
+            time,
+            evidence,
+            records,
+        })
+    }
+}
+
 /// A batch validated against the pinned frontier, carrying the replayed
 /// candidate states for publication.
 pub struct Checked {

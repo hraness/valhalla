@@ -1705,6 +1705,7 @@ fn reordered_proposal_parts_still_assemble_and_verify() {
         private_key: key.clone(),
         proposals: BTreeMap::new(),
         pending_proposals: VecDeque::new(),
+        assigned_bodies: BTreeMap::new(),
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
@@ -1798,6 +1799,7 @@ fn undecided_values_resupply_from_durable_store() {
             private_key: key.clone(),
             proposals: BTreeMap::new(),
             pending_proposals: VecDeque::new(),
+            assigned_bodies: BTreeMap::new(),
             held_by_id: held,
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
@@ -1970,7 +1972,10 @@ fn pending_markers_reload_only_uncommitted_submissions() {
     let mut held = BTreeMap::new();
     held.insert(RoomValueId(live.value_id()), live.clone());
     let pending = reload_pending(&store, &held, &adapter);
-    assert_eq!(pending, VecDeque::from([RoomValueId(live.value_id())]));
+    assert_eq!(
+        pending,
+        VecDeque::from([PendingEntry::Value(RoomValueId(live.value_id()))])
+    );
     assert!(store.join("pending").join(hex(&live.value_id())).exists());
     assert!(!store.join("pending").join(hex(&gone.value_id())).exists());
     assert!(!store.join("pending").join("not-hex").exists());
@@ -2019,6 +2024,7 @@ fn intake_files_submit_or_reject_deterministically() {
         private_key: key.clone(),
         proposals: BTreeMap::new(),
         pending_proposals: VecDeque::new(),
+        assigned_bodies: BTreeMap::new(),
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
@@ -2050,8 +2056,8 @@ fn intake_files_submit_or_reject_deterministically() {
 
     assert_eq!(
         app.pending_proposals,
-        VecDeque::from([RoomValueId(batch.value_id())]),
-        "a valid .batch file must enter the pending queue"
+        VecDeque::from([PendingEntry::Body("good".to_owned())]),
+        "a valid .batch file enters the pending queue as a body"
     );
     assert!(!intake.join("good.batch").exists());
     assert!(!intake.join("bad.batch").exists());
@@ -2064,12 +2070,160 @@ fn intake_files_submit_or_reject_deterministically() {
         "non-.batch names are left alone"
     );
     assert!(
-        app.store
-            .join("pending")
-            .join(hex(&batch.value_id()))
-            .exists(),
+        app.store.join("pending").join("good").exists(),
         "the submission carries a durable pending marker"
     );
+    // The body is assembled at assignment: the pending value commits.
+    assert_eq!(
+        app.next_pending().map(|id| id.0),
+        Some(batch.value_id()),
+        "the drained body assembles into the identical canonical batch"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A queued entry that loses its height can never commit — its parent is
+/// frozen at assembly. The queue must not livelock on it: a body-sourced
+/// value downgrades back to its body and re-assembles against the live
+/// frontier, and a body whose effect no longer applies is rejected to
+/// the producer rather than occupying the front forever.
+#[test]
+fn losing_body_reassembles_against_live_frontier() {
+    let (keys, set) = validators(1);
+    let base = fixture("losing");
+    let key = keys[0].clone();
+    let address = Address::from_public_key(&key.public_key());
+    let home = base.join("home");
+    let store = home.join("store");
+    std::fs::create_dir_all(store.join("batches")).unwrap();
+    std::fs::create_dir_all(store.join("seen")).unwrap();
+    std::fs::create_dir_all(store.join("pending")).unwrap();
+    let intake = home.join("intake");
+    std::fs::create_dir_all(&intake).unwrap();
+
+    let mut app = App {
+        ctx: RoomContext,
+        adapter: Arc::new(Mutex::new(
+            Adapter::open(home.join("app"), &genesis()).unwrap(),
+        )),
+        sink: Arc::new(Mutex::new(EngineSink::default())),
+        validator_sets: sched(set),
+        address,
+        private_key: key.clone(),
+        proposals: BTreeMap::new(),
+        pending_proposals: VecDeque::new(),
+        assigned_bodies: BTreeMap::new(),
+        held_by_id: BTreeMap::new(),
+        streams: BTreeMap::new(),
+        parts_cache: BTreeMap::new(),
+        decided: BTreeMap::new(),
+        stream_seq: 0,
+        boundary_latency: Arc::new(Mutex::new(Vec::new())),
+        store,
+        seen: BTreeMap::new(),
+        resupplied: Arc::new(Mutex::new(0)),
+    };
+
+    let mut s = fixture::scenario(8, 16);
+    let mut cursor = 0usize;
+    // Three pending creates: alpha (owner0), beta (owner1), and a second
+    // `alpha` from owner2 that must lose once the first commits.
+    let (ev1, rec1, _) = fixture::first_create(
+        &s.app,
+        &s.owners[0],
+        &mut s.sources,
+        &mut cursor,
+        "alpha",
+        1,
+    );
+    let (ev2, rec2, _) =
+        fixture::first_create(&s.app, &s.owners[1], &mut s.sources, &mut cursor, "beta", 2);
+    let (ev3, rec3, _) = fixture::first_create(
+        &s.app,
+        &s.owners[2],
+        &mut s.sources,
+        &mut cursor,
+        "alpha",
+        3,
+    );
+    let bodies = [
+        ("first", ev1, rec1),
+        ("second", ev2, rec2),
+        ("third", ev3, rec3),
+    ];
+    for (name, evidence, records) in bodies {
+        let body = BatchBody {
+            time: 1,
+            evidence,
+            records,
+        };
+        std::fs::write(intake.join(format!("{name}.body")), body.encode()).unwrap();
+    }
+    app.drain_intake();
+    assert_eq!(
+        app.pending_proposals.len(),
+        3,
+        "all bodies queue as unassembled entries"
+    );
+
+    // Height 1: the first body assembles against the genesis frontier.
+    let genesis_frontier = app.adapter.lock().unwrap().frontier();
+    let id1 = app.next_pending().expect("a body assembles at assignment");
+    let batch1 = app.held_by_id.get(&id1).unwrap().clone();
+    assert_eq!(
+        batch1.parent, genesis_frontier,
+        "first assembly binds the genesis frontier"
+    );
+
+    // The batch commits at height 1: the queued value is now stale —
+    // its parent no longer matches — and `third`'s slug is taken.
+    app.adapter.lock().unwrap().hold(batch1.clone());
+    let outcome = app.adapter.lock().unwrap().decide(&RoomCertificate {
+        bytes: b"cert".to_vec(),
+        value_commitment: batch1.value_id(),
+        height: 1,
+    });
+    assert!(matches!(outcome, DecidedOutcome::Acked));
+
+    // The second body must assemble against the LIVE frontier — parent
+    // binds the post-height-1 state, not genesis — while the stale
+    // value for `first` downgrades back to its body behind it.
+    let id2 = app.next_pending().expect("second body re-assembles fresh");
+    let batch2 = app.held_by_id.get(&id2).unwrap().clone();
+    assert_eq!(
+        batch2.parent,
+        app.adapter.lock().unwrap().frontier(),
+        "re-assembly binds the live frontier, never the stale one"
+    );
+    assert_ne!(id2.0, id1.0, "re-assembly produces a fresh value id");
+    app.adapter.lock().unwrap().hold(batch2.clone());
+    let outcome = app.adapter.lock().unwrap().decide(&RoomCertificate {
+        bytes: b"cert".to_vec(),
+        value_commitment: batch2.value_id(),
+        height: 2,
+    });
+    assert!(matches!(outcome, DecidedOutcome::Acked));
+
+    // Every remaining queued entry can never apply: `third`'s slug is
+    // taken and the requeued bodies' effects are already committed.
+    // Each fails assembly, writes a producer-visible `.rejected`, and
+    // drains — the queue can never livelock on an uncommittable front.
+    assert!(
+        app.next_pending().is_none(),
+        "unappliable bodies reject instead of stalling the queue"
+    );
+    assert!(
+        app.pending_proposals.is_empty(),
+        "the queue drains completely — no livelock"
+    );
+    for name in ["first", "second", "third"] {
+        assert!(
+            intake.join(format!("{name}.rejected")).exists(),
+            "{name}'s producer sees a rejection marker"
+        );
+        assert!(!app.store.join("pending").join(name).exists());
+    }
 
     let _ = std::fs::remove_dir_all(&base);
 }
