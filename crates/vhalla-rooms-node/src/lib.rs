@@ -762,7 +762,13 @@ impl App {
         let Ok(accepted) = verify_commit_certificate(certificate, set) else {
             return DecidedOutcome::Rejected;
         };
-        let outcome = self.adapter.lock().unwrap().decide(&RoomCertificate {
+        // The adapter lock stays held across marker retirement: the
+        // frontier advancing is already observable through
+        // `committed_height`, so a release between `decide` and the
+        // pending-dir cleanup would let a reader see "committed" while
+        // the submission's marker still exists.
+        let mut adapter = self.adapter.lock().unwrap();
+        let outcome = adapter.decide(&RoomCertificate {
             bytes: accepted.bytes,
             value_commitment: accepted.value_id.0,
             height: accepted.height,
@@ -777,6 +783,7 @@ impl App {
             }
             self.pending_proposals.retain(|p| p.value_id() != Some(id));
         }
+        drop(adapter);
         outcome
     }
 }

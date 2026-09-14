@@ -1918,12 +1918,16 @@ async fn runtime_submission_commits_after_start() {
         // The durable evidence is the journal frontier (asserted by the
         // waits) plus the pending queue's retirement: a committed
         // submission's marker must be gone from `store/pending/`.
-        let pending = std::fs::read_dir(node.home.join("store").join("pending"))
-            .map(|d| d.count())
-            .unwrap_or(0);
-        assert_eq!(
-            pending, 0,
-            "committed submissions must retire their markers"
+        let pending: Vec<String> = std::fs::read_dir(node.home.join("store").join("pending"))
+            .map(|d| {
+                d.flatten()
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            pending.is_empty(),
+            "committed submissions must retire their markers; left {pending:?}"
         );
     }
     for node in nodes {
