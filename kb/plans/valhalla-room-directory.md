@@ -861,16 +861,17 @@ real network, real application values on the wire, real certificates
 naming the real 32-byte commitment, real replay against the real
 application frontier, durable commit before acknowledgement, restart,
 catch-up, a validator-set transition and a true runtime partition
-through the same path. Still unqualified per the target list:
-competing-slug and sibling-slot allocations where BOTH sides of a
-partition reach quorum — impossible under the N=4 quorum-3 topology
-(quorum intersection forbids it; an asymmetric-divergence run needs
-N>=7/f>=2 and more wall time); withheld-data bounds beyond the
+through the same path. The N=7/f=2 asymmetric-divergence case is now
+exercised too: a two-node minority island holding the h=1 round-0/1
+proposer slots campaigns a real competing batch between themselves while
+the five-node majority waits out the islanded rounds and commits the
+honest plan — every journal binds the majority's value after reunite.
+Still unqualified per the target list: withheld-data bounds beyond the
 proposer round (e.g. a decided value whose parts never reach a node —
-covered only via the value-sync path); `no_std` certificate-consumer
-parity (no wasm32 toolchain on this machine — defer to CI); and WAL
-growth beyond a 12-height run (the bounded tail is confirmed over 12
-heights; very long runs are not yet sampled). Full value
+covered only via the value-sync path); and `no_std` certificate-consumer
+parity (no wasm32 toolchain on this machine — defer to CI). WAL growth
+is now sampled over a 32-height run — the live tail peaked at 12,556
+bytes and returned to tens of bytes per height, bounded as designed. Full value
 propagation is now real — batch bytes cross the consensus wire inside
 proposal parts and decided values carry them through sync — and
 undecided-proposal replay is now application-owned (fsync'd `store/`
