@@ -574,8 +574,9 @@ channel. `Decided`/`Finalized` certificates name the real 32-byte
 commitment (canonicalized as `VC2`) and reply only after the
 verified-certificate → batch-replay → fsync-ordered journal commit lands.
 
-Eighteen tests across the context and engine crates under scheduler run
-`a26567a31737946cd253e26340573989` (superseding
+Twenty tests across the context and engine crates under scheduler run
+`2e967146cba1cb1d035113026c2a1b52` (superseding
+`a26567a31737946cd253e26340573989`,
 `e75d2eb0f0ef37ac0fe58bbb9363fb85`, `739e3a2086b9ac82eba318b070ed4752`,
 `29c3f3942ed989611090b3dd5b149565`, `3e3aa96457625249e9179e8bf3301812`,
 `9c4be548420fa007e42fa2aaec837380` and
@@ -626,6 +627,16 @@ Eighteen tests across the context and engine crates under scheduler run
   at every validator, is marked `Invalid`, and round 1 finalizes the
   honest batch. This doubles as the faulty-proposer case: a proposer
   emitting a batch no honest node can replay cannot reach a journal.
+- Withheld data is a bounded stall, never a halt: when the h=2 round-0
+  proposer holds no batch for the height, it answers `GetValue` with
+  silence, the propose timeout fires, and round 1's honest proposer
+  commits. The measured cost is one timed-out round — seconds under
+  `LinearTimeouts::default`, not a stuck height.
+- Reordered input is tolerated at the part seam: a unit test feeds a
+  proposer-built stream back as Fin→Data→Init→transport-Fin and the
+  assembler — which keys stream state by part kind, not sequence —
+  produces the same verified `ProposedValue`; an incomplete stream
+  yields nothing.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real application values on the wire, real certificates
@@ -637,10 +648,11 @@ the engine's own machinery (needs engine-internal hooks), the
 competing-slug and sibling-slot allocation cases *under partition*
 (both connected cases above resolve by invalid votes on a fully
 connected network; a partition reaching quorum on each side of a stale
-boundary is not yet exercised), withheld-data and reordered-input
-liveness bounds, `no_std` certificate-consumer parity (no wasm32
-toolchain on this machine — defer to CI), and cumulative WAL growth
-across longer runs. Full value
+boundary is not yet exercised), withheld-data bounds beyond the
+proposer round (e.g. a decided value whose parts never reach a node —
+covered only via the value-sync path), `no_std` certificate-consumer
+parity (no wasm32 toolchain on this machine — defer to CI), and
+cumulative WAL growth across longer runs. Full value
 propagation is now real — batch bytes cross the consensus wire inside
 proposal parts and decided values carry them through sync — but
 undecided-proposal replay on restart is still delegated to the engine
