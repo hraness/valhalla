@@ -329,6 +329,21 @@ That makes it a credible native validator candidate if Malachite cannot satisfy
 the application boundary, but it cannot be the shared browser consensus core
 without an additional protocol/adapter split and target-specific qualification.
 
+### Native application commit journal spike — 2026-09-14
+
+A scratch-only journal model now passes its scheduler-owned locked validation
+(run `ac00aff4e1e8d3b4195e5c268bda546f`): format check, seven unit tests,
+doc-tests, and strict all-target clippy. It binds the verified receipt, full
+checked predecessor/next frontier, batch, value, configuration, control record
+and debit marker into a SHA-256 bundle identity. Fault cases cover publication
+before sync, orphan durable bundles, uncertain pin publication, a distinct
+concurrent winner, lost acknowledgements and corrupted durable recovery.
+
+This is ordering and retry evidence only. It is not filesystem durability,
+certificate verification, network transport, consensus, finality or authority.
+The next bounded spike must adapt the actual Malachite certificate consumer into
+this boundary before any production room adapter is considered.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
