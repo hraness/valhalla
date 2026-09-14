@@ -490,6 +490,56 @@ adapter (receipt parity stands separately), durable `Directory` snapshots
 unmeasured), network admission, validator rotation, consensus, finality and
 real power-loss durability.
 
+### Real-certificate acknowledgement spike — 2026-09-15
+
+The last modeled input is gone: the adapter now consumes the real pinned
+Malachite `CommitCertificate<TestContext>` (arc-malachitebft at
+`72143f6c99a98452b587e1c392bdb80944eb2232`, v0.8.0) instead of a struct
+that merely resembled one. `verify_certificate` enforces the application
+boundary the engine's documentation assigns to the consumer — the
+application must commit the decision before replying — and checks what a
+light client would: the round is not Nil, the signature count is bounded,
+signers are unique, every signer resolves to the trusted `ValidatorSet`,
+each `CommitSignature` verifies over the real
+`Vote::new_precommit(...).to_sign_bytes()`, and distinct voting power is
+strictly greater than two thirds. The verified certificate is then
+canonicalized into bounded bytes
+(`VC1 || height || round || value_id || count || (address || signature)*`)
+before it enters the journal — the durable record binds the canonical
+form, not the in-memory engine value.
+
+The engine's `u64` `ValueId` indexes a held `Batch`, but the durable
+bundle and the replay layer bind the batch's real 32-byte
+`value_id()` — the engine identifier never reaches the journal. A
+certificate whose `value_id` names no held batch is rejected before any
+verification cost; a verified certificate replays the held batch through
+`Application::validate` against the complete pinned frontier and commits
+through the same journal boundary as the previous spike. `Decided` emits
+its acknowledgement and `Finalized` its next-height reply only after the
+pin rename and directory fsync land.
+
+Five tests under scheduler run `ccaf2820ed396aebcd8481463edcdc05` cover
+the verdict matrix: a real three-of-four Ed25519 quorum decides, commits
+and acknowledges; two-of-four fails quorum with nothing committed;
+duplicate, unknown and forged signers, Nil rounds and oversized signature
+sets are each rejected; an equivocating certificate at an
+already-committed height is refused; and a `Finalized` carrying a richer
+signature set than the original `Decided` dedups across a full restart
+against the durable height marker without re-applying. The same run
+re-validated the journal (16), modeled adapter (9), real-application
+adapter (7) and prototype (24+2) suites under locked format and strict
+clippy.
+
+The acknowledgement path now has no modeled elements left: real
+certificate in, real signature and quorum verification, real batch replay
+against the real application frontier, real fsync-ordered durable commit,
+acknowledgement last. Still unqualified: certificate verification is a
+consumer-side check, not a consensus claim — the engine's own safety,
+value-sync catch-up, validator rotation, network admission, durable
+`Directory` snapshots and real power-loss durability remain open, and the
+bounded canonical certificate form is spike-local until promoted through
+review.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
