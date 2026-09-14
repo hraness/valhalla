@@ -556,7 +556,9 @@ reply only after the verified-certificate → batch-replay → fsync-ordered
 journal commit lands. The engine's `u64` value id is the wire value; the
 durable bundle still binds the batch's real 32-byte `value_id`.
 
-Four tests under scheduler run `701411a70fac9a868ce870c25ff334f0`:
+Five tests under scheduler run `9c4be548420fa007e42fa2aaec837380`
+(superseding `701411a70fac9a868ce870c25ff334f0`, which covered the first
+four):
 
 - Four validators commit three planned heights; every node emits its
   post-commit `CommitAck`/`NextHeightReply` per height and all four
@@ -572,19 +574,24 @@ Four tests under scheduler run `701411a70fac9a868ce870c25ff334f0`:
 - A 2-of-4 minority partition finalizes nothing: after several timeout
   rounds both journals are still empty — the partition clause holds (a
   2–2 split cannot finalize competing allocations).
+- One explicitly finalized configuration transition: the active
+  validator set rotates `{k1..k4} -> {k1,k2,k3,k5}` at height 3; every
+  certificate past the boundary verifies against the new set, the
+  rotated-out key contributes nothing, and all four running nodes commit
+  heights 1–4 with identical frontiers.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real certificates, real replay against the real
-application frontier, durable commit before acknowledgement, restart and
-catch-up through the same path. Still unqualified per the target list:
-WAL append/flush fault injection inside the engine's own machinery,
-validator rotation across an activation boundary, the competing-slug and
-sibling-slot allocation cases under partition, withheld-data and
-reordered-input liveness bounds, `no_std` certificate-consumer parity,
-and proof-byte/verifier-cost/footprint measurements. The `u64` engine
-value id stands in for full value propagation — batches do not cross the
-wire in this spike — and undecided-proposal replay on restart is
-delegated to the engine WAL rather than an application store.
+application frontier, durable commit before acknowledgement, restart,
+catch-up and a validator-set transition through the same path. Still
+unqualified per the target list: WAL append/flush fault injection inside
+the engine's own machinery, the competing-slug and sibling-slot
+allocation cases under partition, withheld-data and reordered-input
+liveness bounds, `no_std` certificate-consumer parity, and
+proof-byte/verifier-cost/footprint measurements. The `u64` engine value
+id stands in for full value propagation — batches do not cross the wire
+in this spike — and undecided-proposal replay on restart is delegated to
+the engine WAL rather than an application store.
 
 ### Current implementation evidence
 
