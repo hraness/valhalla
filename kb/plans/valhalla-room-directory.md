@@ -574,8 +574,9 @@ channel. `Decided`/`Finalized` certificates name the real 32-byte
 commitment (canonicalized as `VC2`) and reply only after the
 verified-certificate → batch-replay → fsync-ordered journal commit lands.
 
-Twenty-two tests across the context and engine crates under scheduler
-run `cbdb31226eba29625abd4254ba56e8c8` (superseding
+Twenty-three tests across the context and engine crates under
+scheduler run `89d9c5cda2d8b3ce2da459dc8c8b7c58` (superseding
+`cbdb31226eba29625abd4254ba56e8c8`,
 `2e967146cba1cb1d035113026c2a1b52`, `a26567a31737946cd253e26340573989`,
 `e75d2eb0f0ef37ac0fe58bbb9363fb85`, `739e3a2086b9ac82eba318b070ed4752`,
 `29c3f3942ed989611090b3dd5b149565`, `3e3aa96457625249e9179e8bf3301812`,
@@ -653,17 +654,27 @@ run `cbdb31226eba29625abd4254ba56e8c8` (superseding
   state, `ConsensusReady` resumes from the durable journal frontier,
   the node commits the next height with the group, and the journal's
   height markers keep every prior height applied exactly once.
+- The competing-slug case under partition: a validator partitioned
+  through the h=1 decision (modelled as a late start — unreachable
+  nodes cannot vote either way; a mid-test runtime partition is not
+  expressible with static persistent peers) rejoins holding a
+  concurrently-prepared competitor for the same slug. It syncs the
+  committed h=1, occupies the h=2 round-0 proposer slot, and its stale
+  batch cannot commit — the decided certificate records round >= 1 on
+  every journal, and every h=2 bundle binds the honest batch's
+  commitment. Whether the stale batch is physically emitted or simply
+  absent, the partition side's allocation never finalizes.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real application values on the wire, real certificates
 naming the real 32-byte commitment, real replay against the real
 application frontier, durable commit before acknowledgement, restart,
 catch-up and a validator-set transition through the same path. Still
-unqualified per the target list: the
-competing-slug and sibling-slot allocation cases *under partition*
-(both connected cases above resolve by invalid votes on a fully
-connected network; a partition reaching quorum on each side of a stale
-boundary is not yet exercised), withheld-data bounds beyond the
+unqualified per the target list: a TRUE mid-test runtime partition
+(the static persistent-peer topology can only model partition as a
+late start — the competing-slug partition variant above exercises the
+stale-boundary + rejoin case, and the sibling-slot case reduces to the
+same predecessor/replay checks), withheld-data bounds beyond the
 proposer round (e.g. a decided value whose parts never reach a node —
 covered only via the value-sync path), `no_std` certificate-consumer
 parity (no wasm32 toolchain on this machine — defer to CI), and
