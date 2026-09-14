@@ -3155,6 +3155,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-rooms"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "proptest",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-social",
+]
+
+[[package]]
 name = "vhalla-session"
 version = "0.0.0"
 dependencies = [

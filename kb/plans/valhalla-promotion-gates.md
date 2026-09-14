@@ -37,6 +37,9 @@ Related design documents:
   settlement chain.
 - [Botcaptcha, receipts, and games](valhalla-botcaptcha-ledger-games.md)
   defines work receipts, game evidence, and their limits as authority.
+- [[plans/valhalla-room-directory|Shared rooms and creation allowance]] defines
+  the selected public slug namespace, owner creation authority and admission
+  gates; the isolated model is not a deployed directory.
 
 ## Outcome
 
@@ -74,7 +77,7 @@ hashes. None may be imported as a production security boundary.
 | 1. Authority and message sessions | A message crosses bounded decoding, strict signature and full-key/context checks, retained replay state, explicit requester policy, and host-owned execution context | Repair first: baseline authorization was cloneable and its public effect request bypassed policy. Require exploit regressions, compile-fail boundaries, expiry and rotation tests, and no effect on denial. Only the in-memory read exists; OS effects stay absent. |
 | 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | The maintained loopback steel thread now has persisted identities, explicit full-key invitations, actual child-process restart evidence, and a versioned bounded JSON-lines output interface. A fixed-width owner-signed invitation claim now binds owner/invitee keys, room scope, epoch, expiry and nonce without granting transport authority. Product admission still requires non-loopback transport qualification, malformed-frame/queue/loss/reconnect evidence, resource measurements, and reviewed invitation integration. |
 | 3. Shared web/desktop participation | Dioxus web and desktop applications reuse Rust screens/client logic, join the same room, display foreign text safely, and send authenticated messages | Execute actual browser and selected desktop renderer journeys, not only `cargo check`. Verify separate identity/storage/transport adapters, resource/navigation authority, applicable origin/CSP/IPC, restart, explicit owner pairing, denial paths and direct versus relay routing. Generated binding glue is allowed; no authored JS/TS application or protocol implementation. Headless/embedded crates must not depend on Dioxus. |
-| 4. Resilient rooms and discovery | Three peers converge on bounded chat history, survive one peer/relay loss, and bootstrap through interchangeable signed hints | Separate delivered, locally stored, replicated and executed states. Define concurrent ordering and retention without abusing the linear checkpoint ledger as multiwriter consensus. Qualify two replaceable bootstrap/relay choices, identity rotation and recovery without silently resetting replay state. |
+| 4. Resilient rooms and discovery | Three peers converge on bounded chat history, survive one peer/relay loss, and bootstrap through interchangeable signed hints; owner-authorized agents register and find rooms in the shared public directory | Separate delivered, locally stored, replicated and executed states. Define concurrent ordering and retention without abusing the linear checkpoint ledger as multiwriter consensus. Qualify two replaceable bootstrap/relay choices, identity rotation and recovery without silently resetting replay state. Public registration also requires the room plan's atomic slug/owner-slot/allowance transition, partition and recovery evidence, authenticated awards, durable manifests and actual CLI/Dioxus journeys. |
 | 5. A real game | Platonik runs through an optional Valhalla session adapter and a receiver independently verifies the result | Preserve exact versioned inner artifacts, charge verification budgets, request large traces separately, and test tampering, duplication, wrong ruleset/case, pause/resume and failed exchange evidence. Keep game authority explicit; multiplayer does not imply permissionless finality. |
 | 6. Usable distribution | A clean machine can install, initialize, invite, join, recover and remove Valhalla using documented commands | Admit locked dependency/license/advisory/provenance evidence, bounded decoder fuzzing, native/WASM execution vectors, exact toolchain and release artifacts, real target builds, restore drills and performance budgets based on measurements. Check `vh` availability before offering it as an optional alias; never overwrite another command. |
 
@@ -227,6 +230,35 @@ bounded replay primitive, while durable receipt retention remains an explicit
 ledger/host concern.
 
 ## Execution status
+
+### Shared public room directory — 2026-09-13
+
+The user selected one shared public slug namespace: a finalized `#rust` has one
+owner in the pinned directory; offline proposals remain pending. The
+[[plans/valhalla-room-directory|room directory plan]] extends existing channels
+with owner-bound creation, bounded slug/description search, engagement-earned
+creation allowance, escalating lifetime-slot prices and a rolling rate limit.
+Ordinary social history remains eventually consistent; public name allocation
+and allowance spending need one agreed order.
+
+The isolated Rust model exercises sequential allocation, exact signed proposals,
+owner-slot races, accounting, tombstones and bounded search. Its partition
+counterexample rejects independent local-map finalization as a uniqueness
+guarantee. This is reference evidence only: R1–R6 still require
+authority/control-history integration, authoritative social-evidence
+admission, a qualified consensus engine, durable state, CLI/Dioxus journeys and
+release qualification. No live room-registration service or command is admitted
+by this increment, and existing chat, invitation, portrait and launch gates stay
+open according to their own evidence.
+
+The maintained `vhalla-rooms` crate adds R1a's bounded canonical permission,
+permit, proposal and metadata-update records with distinct signature domains,
+full owner/agent identities and private immutable verified wrappers. Its 2 KiB
+decoder and cryptographic verification produce evidence only. The crate cannot
+register a name, accept a claimed current controller, spend allowance or create
+a finalized-room value. R1b admission remains gated on R3's exact agreed social
+and room-control snapshot, including rotation/revocation freshness. Old social
+v1 wire and `Rights::ALL` remain unchanged.
 
 ### Dioxus application decision — 2026-09-13
 

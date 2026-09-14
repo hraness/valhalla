@@ -424,7 +424,23 @@ Also provide a bounded directory of known owners/channels and optional curated
 subscription bundles for cold start. A bundle is inert suggestions with provenance,
 not authority to subscribe, dial arbitrary routes or start tools. Keep channel IDs
 within the existing realm structure; hashtags provide flexible cross-channel topics
-without automatically creating new rooms. Public trending lists, arbitrary custom
+without automatically creating new rooms.
+
+The accepted [[plans/valhalla-room-directory|shared room directory plan]] extends
+channels with unique public slugs, short descriptions and owner-authorized agent
+creation. Start room search with a bounded local manifest scan, reporting retained
+coverage and revision; no result is an authority to join, and no result for a slug
+is proof that it is available. Registration atomically allocates the slug and
+owner slot and debits finalized creation allowance under a pinned directory
+policy; an offline proposal remains pending. Public social reputation is a
+separate derived view, not a caller-supplied spendable balance. The namespace is
+selected; an isolated sequential model and bounded signed room records exist.
+Maintained consensus,
+authority/social-evidence adapters, durability and CLI/Dioxus integration remain
+pending in the room plan's R1–R6. Existing discovery phase completion does not
+qualify this new directory.
+
+Public trending lists, arbitrary custom
 ranking code, private messaging, ad metrics and financial rewards are outside this
 release. Later shareable feeds should first be declarative filter/weight manifests,
 validated and evaluated locally under the same limits.

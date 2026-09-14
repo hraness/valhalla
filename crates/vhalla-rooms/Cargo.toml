@@ -1,0 +1,19 @@
+[package]
+name = "vhalla-rooms"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Bounded room creation and control signature evidence."
+
+[dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+vhalla-core = { path = "../vhalla-core" }
+vhalla-social = { path = "../vhalla-social" }
+
+[dev-dependencies]
+proptest = "1.6"
+
+[lints]
+workspace = true

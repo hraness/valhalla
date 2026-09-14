@@ -45,7 +45,7 @@ fn decode(raw: &[u8]) -> Result<Vec<Hint>, Error> {
         return Err(Error::Malformed);
     }
     let mut out = Vec::with_capacity(count);
-    for bytes in raw[5..].chunks_exact(64) {
+    for bytes in raw[5..].as_chunks::<64>().0 {
         let mut post = [0; 32];
         let mut revision = [0; 32];
         post.copy_from_slice(&bytes[..32]);

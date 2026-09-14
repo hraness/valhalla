@@ -35,6 +35,7 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | [`social-attention`](social-attention/README.md) | Stable notification groups, exact revision read marks and bounded unknown precision |
 | [`social-retrieval`](social-retrieval/README.md) | Chosen-provider hint limits, poisoned candidates and separate control credit |
 | [`discovery-parity`](discovery-parity/README.md) | Native/WASM execution of the same signed discovery and attention fixture |
+| [`room-registry`](room-registry/README.md) | Sequential shared-name allocation, owner creation allowance, signed proposals, bounded search and partition counterexamples; consensus and social admission remain pending |
 | [`dioxus-ui`](dioxus-ui/README.md) | Shared Rust feed/thread/profile/inbox screens; baseline browser/native journeys observed, corrected-artifact qualification pending |
 | [`dioxus-services`](dioxus-services/README.md) | Typed client projections/intents, lossless revision/notification evidence, exact source-first private image CAS, native store reuse and Rust IndexedDB adapter; semantic projection compiles |
 | [`dioxus-controller`](dioxus-controller/README.md) | Bounded asynchronous presentation lifecycle, stale callback/completion rejection and uncertain-publication recovery; 18 passing pure tests, platform integration pending |

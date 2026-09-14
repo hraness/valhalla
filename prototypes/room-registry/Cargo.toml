@@ -1,0 +1,15 @@
+[package]
+name = "vhalla-room-registry-spike"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10.9", default-features = false }
+
+[dev-dependencies]
+proptest = "1.9"

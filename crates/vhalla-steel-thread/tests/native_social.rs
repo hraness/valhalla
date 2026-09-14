@@ -205,7 +205,9 @@ fn hex_decode(value: &str) -> Vec<u8> {
     assert_eq!(value.len() % 2, 0, "hex value has odd length");
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = (pair[0] as char).to_digit(16).expect("hex high nibble");
             let low = (pair[1] as char).to_digit(16).expect("hex low nibble");

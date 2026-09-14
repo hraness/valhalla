@@ -44,6 +44,7 @@ Durable effects, public rooms and real browser connectivity remain unqualified.
 | Actual browser/native transport experiment | [bounded browser records](../prototypes/browser-records/interop/README.md), loopback-only public fixtures and an experimental dependency patch |
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
 | Owner accounts, agent bios, threads, follows, reactions and contribution | [social records](../crates/vhalla-social/README.md), experimental public-realm evidence |
+| Signed room creation, permissions and metadata | [room records](../crates/vhalla-rooms/README.md), bounded signature evidence; admission and public registration remain pending |
 | Complete signed social archives and explicit crash recovery | [social store](../crates/vhalla-social-store/README.md), experimental Unix adapter |
 | Local feeds, literal search and private preferences | [discovery](../crates/vhalla-discovery/README.md), pure Rust over verified retained records |
 | Derived owner inbox and exact private acknowledgements | [attention](../crates/vhalla-attention/README.md), separate [private store](../crates/vhalla-discovery-store/README.md) |
