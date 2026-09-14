@@ -575,7 +575,8 @@ commitment (canonicalized as `VC2`) and reply only after the
 verified-certificate → batch-replay → fsync-ordered journal commit lands.
 
 Twenty-three tests across the context and engine crates under
-scheduler run `89d9c5cda2d8b3ce2da459dc8c8b7c58` (superseding
+scheduler run `4af529bd38e1b6293604a55b7618b743` (superseding
+`89d9c5cda2d8b3ce2da459dc8c8b7c58`,
 `cbdb31226eba29625abd4254ba56e8c8`,
 `2e967146cba1cb1d035113026c2a1b52`, `a26567a31737946cd253e26340573989`,
 `e75d2eb0f0ef37ac0fe58bbb9363fb85`, `739e3a2086b9ac82eba318b070ed4752`,
@@ -602,12 +603,15 @@ scheduler run `89d9c5cda2d8b3ce2da459dc8c8b7c58` (superseding
   certificate past the boundary verifies against the new set, the
   rotated-out key contributes nothing, and all four running nodes commit
   heights 1–4 with identical frontiers.
-- A measurement harness reports the inputs production limits need:
-  canonical `VC2` certificates are 301 B per height at three-of-four
-  signatures, journal bundles 1128 B each, four committed heights occupy
-  4748 B of journal state, and the verify → journal → fsync → ack
-  boundary costs ~24–51 ms per height on this machine (fsync-dominated).
-  The engine WAL at rest is a 12 B tail — it holds only the live height.
+- A measurement harness reports the inputs production limits need over
+  a 12-height run: canonical `VC2` certificates are 301 B per height at
+  three-of-four signatures, journal bundles 1128–1129 B each, twelve
+  committed heights occupy 14031 B of journal state, and the verify →
+  journal → fsync → ack boundary costs ~19–46 ms per height on this
+  machine (fsync-dominated). The engine WAL stays bounded — sampled
+  after every commit it oscillates between a 12 B empty tail and ~2.3
+  KB mid-height (min 12 B, max 2292 B, last 12 B): it resets per
+  height and shows no cumulative growth over the run.
 - A validator that never held the decided batch receives the real
   canonical batch bytes inside the proposal stream, decodes and validates
   them against its own pinned frontier, registers them with the durable
@@ -677,8 +681,9 @@ stale-boundary + rejoin case, and the sibling-slot case reduces to the
 same predecessor/replay checks), withheld-data bounds beyond the
 proposer round (e.g. a decided value whose parts never reach a node —
 covered only via the value-sync path), `no_std` certificate-consumer
-parity (no wasm32 toolchain on this machine — defer to CI), and
-cumulative WAL growth across longer runs. Full value
+parity (no wasm32 toolchain on this machine — defer to CI), and WAL
+growth beyond a 12-height run (the bounded tail is confirmed over 12
+heights; very long runs are not yet sampled). Full value
 propagation is now real — batch bytes cross the consensus wire inside
 proposal parts and decided values carry them through sync — but
 undecided-proposal replay on restart is still delegated to the engine
