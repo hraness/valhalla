@@ -361,6 +361,24 @@ admission, validator rotation or finality claim. The next adapter must preserve
 bounded canonical certificate bytes and connect the typed hand-off to the
 fault-tested durable journal ordering.
 
+### Combined certificate-to-journal spike — 2026-09-14
+
+The combined scratch model completes that boundary. It accepts an actual pinned
+Malachite certificate only after the native receipt consumer verifies it,
+canonicalizes and bounds the exact certificate bytes, recomputes the artifact
+identity, and then hands a private bundle to a fault-tested journal. Five unit
+tests and one compile-fail doctest pass with locked format, tests and strict
+clippy under scheduler run `078cf606623004e1b06afeacac81a77b`. The model covers
+normal retry, conflicting heads, four crash points, durable recovery and
+certificate-count bounds.
+
+The model now supports selecting a production adapter shape: keep committee and
+configuration verification in the native receipt consumer; keep bundle and
+journal constructors private; preserve canonical certificate bytes; and make a
+durable bundle plus complete predecessor identity the only acknowledgement
+source. It remains scratch-only and does not establish filesystem WAL
+durability, network admission, validator rotation, consensus or finality.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
