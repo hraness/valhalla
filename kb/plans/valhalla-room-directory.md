@@ -234,6 +234,60 @@ proposal, and a collision response offers alternatives without auto-renaming.
 
 ## Evidence and next implementation
 
+### R3 engine qualification target
+
+The next engine spike should use **Malachite v0.8.0**, pinned to release commit
+`72143f6c99a98452b587e1c392bdb80944eb2232`, outside the production workspace.
+The [release](https://github.com/circlefin/malachite/releases/tag/v0.8.0)
+and [exact release commit](https://github.com/circlefin/malachite/commit/72143f6c99a98452b587e1c392bdb80944eb2232)
+identify the candidate. This is an integration recommendation from source review
+on 2026-09-13, not a measured comparison or production selection. No engine build,
+network run, resource measurement or browser verification has been performed.
+
+The attraction is its existing channel-based native engine, including networking,
+sync and crash recovery, described in the
+[architecture](https://github.com/circlefin/malachite/blob/main/ARCHITECTURE.md).
+Confirm those interfaces against the pinned source before implementation; current
+documentation and manifests are not proof of a released API or dependency graph.
+The [project status](https://github.com/circlefin/malachite#about) calls the software
+alpha and not externally audited. The
+[v0.8.0 notes](https://github.com/circlefin/malachite/blob/v0.8.0/RELEASE_NOTES.md)
+specifically fix swallowed WAL append/flush failures that could allow
+non-durable votes to escape, and introduce a safety halt for those failures.
+That makes restart qualification central to the spike.
+
+Use a disposable `prototypes/room-consensus-malachite` application with:
+
+- Four separate native validator keys and stores under one pinned directory
+  configuration, initially with equal voting power and configured authenticated
+  peers. Four processes on one machine are test fixtures, not independent operators.
+- Bounded proposed batches binding the predecessor, exact control-evidence
+  commitment, room operations and resulting state root. Replay the competing-slug
+  and sibling-slot cases; a 2–2 partition must not finalize competing allocations.
+  Exercise quorum recovery, one faulty proposer, withheld data and reordered input.
+- WAL append/flush fault injection and restart after votes and interrupted
+  application commits. Require preserved vote/lock safety, identical committed
+  directory state, no duplicate debit, and reconciliation of uncertain outcomes.
+  Never bypass the engine's safety halt to make a test progress.
+- A separate bounded native/WASM certificate consumer using the engine's actual
+  commit certificate and exact value commitment. Establish verification parity,
+  trusted-configuration binding, predecessor checks and a qualified `no_std`
+  dependency profile. Re-signing an old generic checkpoint envelope is insufficient.
+- Rejection of unknown configurations, followed by one explicitly finalized
+  configuration transition and restart across its activation boundary. A validator
+  list argument alone does not establish safe rotation. Measure proof bytes,
+  verifier cost, native footprint and WAL growth before choosing production limits.
+
+Keep ordinary messaging independent of this directory. The existing checkpoint
+prototypes remain evidence/recovery references, not consensus engines. Plain Raft
+is excluded under the Byzantine assumption; writing our own BFT protocol is not
+the fallback. If the pinned engine cannot meet these boundaries without replacing
+its safety machinery, evaluate the same fixtures against
+[Commonware Simplex v2026.9.0](https://github.com/commonwarexyz/monorepo/releases/tag/v2026.9.0).
+Neither candidate closes R1b authority freshness or R3 finality by dependency choice.
+
+### Current implementation evidence
+
 The model has real owner/actor signatures for exact proposals, bounded state,
 atomic sequential allocation, quadratic prices, tombstones, literal search,
 rolling limits and generated schedule tests. It demonstrates the partition

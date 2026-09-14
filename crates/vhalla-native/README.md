@@ -47,9 +47,14 @@ records.
 
 The Rust API exposes the same boundary directly. `Listener::bind_with_invitation`
 verifies an owner-signed invitation before opening a socket, while
-`send_message_with_invitation` verifies the invitee identity, route expiry and
-signature before dialing. The invitation realm, room and epoch are included in
-the authenticated session transcript. Invitations are portable claims;
+`send_message_with_invitation` requires a separate `expected_owner` full key,
+obtained from local policy or a trusted handoff rather than the invitation or
+route being checked. It verifies that issuer, the signature, invitee identity
+and route expiry before dialing. The invitation realm, room and epoch are included in
+the authenticated session transcript. An invitation's exclusive expiry `T` is
+converted to the existing session/route APIs' inclusive last second `T - 1`.
+Handshakes and messages that arrive at `T` are rejected even if their connection
+started earlier. Invitations are portable claims;
 single-use behavior requires the owner to persist spent nonces.
 
 ## Boundaries
@@ -96,6 +101,9 @@ two concurrent connections for the same application key: a full-size old frame
 replayed on the second connection is rejected, while the first still exchanges
 full-size signed messages. Pure tests cover malformed/oversized framing, route
 bounds, handshake deadlines and permanent closure after clock rollback.
+Invitation regressions cover rejection of a substituted issuer before dialing,
+the independently pinned successful socket flow, and deterministic handshake
+and message checks on both sides of the exclusive expiry boundary.
 
 The earlier process-restart replay experiment remains reference evidence; the
 maintained suite separately proves actual process restart and cross-connection

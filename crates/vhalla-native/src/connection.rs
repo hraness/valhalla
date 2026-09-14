@@ -10,7 +10,21 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use vhalla_crypto::{SessionId, VerifiedEnvelope};
 use vhalla_identity::Identity;
-use vhalla_session::{ChatSession, Invitation, Pending};
+use vhalla_session::{ChatSession, Invitation, InvitationClaims, Pending};
+
+// Invitations expire exclusively, while the existing pairing and route APIs
+// use an inclusive last second. Keep that translation at this adapter boundary.
+fn invitation_scope(claims: InvitationClaims) -> Result<PairingScope> {
+    Ok(PairingScope {
+        realm: claims.realm,
+        room: claims.room,
+        epoch: claims.epoch,
+        expires_at: claims
+            .expires_at
+            .checked_sub(1)
+            .ok_or(InvitationError::Malformed)?,
+    })
+}
 
 /// An admitted observation. Chat is untrusted data even after authentication.
 pub enum Event {
@@ -159,22 +173,13 @@ impl Listener {
 
     /// Bind using an owner-signed invitation. The local identity must be the
     /// invitation owner; the invited application key is pinned as the remote
-    /// peer and the invitation's realm, room, epoch and expiry become the
-    /// session pairing scope. Verification occurs before any socket is bound.
+    /// peer and the invitation's realm, room and epoch become the session
+    /// pairing scope. Its exclusive expiry is converted to the pairing's
+    /// inclusive last second. Verification occurs before any socket is bound.
     pub async fn bind_with_invitation(identity: Identity, invitation: Invitation) -> Result<Self> {
         let claims = invitation.verify_at(identity.public_key(), wall_time()?)?;
-        Self::bind_scoped(
-            identity,
-            claims.invitee,
-            PairingScope {
-                realm: claims.realm,
-                room: claims.room,
-                epoch: claims.epoch,
-                expires_at: claims.expires_at,
-            },
-            Some(claims.expires_at),
-        )
-        .await
+        let scope = invitation_scope(claims)?;
+        Self::bind_scoped(identity, claims.invitee, scope, Some(scope.expires_at)).await
     }
 
     async fn bind_scoped(
@@ -354,37 +359,28 @@ pub async fn send_message(
     send_message_scoped(identity, peer_app, route, body, PairingScope::default()).await
 }
 
-/// Join a fresh connection authorized by an owner-signed invitation. The
-/// local identity must be the invitation's invitee; the owner key is used as
-/// the remote application pin and the invitation scope is included in the
-/// authenticated session transcript.
+/// Join a fresh connection using an invitation from an independently pinned
+/// owner. `expected_owner` must come from local policy or a trusted handoff,
+/// never from the invitation or route being checked. The local identity must
+/// be the invitation's invitee. Verification precedes dialing; the invitation
+/// scope is included in the authenticated session transcript, with its exclusive
+/// expiry converted to the session's inclusive last second.
 pub async fn send_message_with_invitation(
     identity: Identity,
+    expected_owner: [u8; 32],
     invitation: Invitation,
     route: Route,
     body: &[u8],
 ) -> Result<Delivery> {
-    let claims = invitation.claims();
+    let claims = invitation.verify_at(expected_owner, wall_time()?)?;
     if claims.invitee != identity.public_key() {
         return Err(Error::Input("invitation invitee does not match identity"));
     }
-    invitation.verify_at(claims.owner, wall_time()?)?;
-    if route.expires_at > claims.expires_at {
-        return Err(Error::Input("route expires after invitation"));
+    let scope = invitation_scope(claims)?;
+    if route.expires_at > scope.expires_at {
+        return Err(Error::Input("route exceeds invitation lifetime"));
     }
-    send_message_scoped(
-        identity,
-        claims.owner,
-        route,
-        body,
-        PairingScope {
-            realm: claims.realm,
-            room: claims.room,
-            epoch: claims.epoch,
-            expires_at: claims.expires_at,
-        },
-    )
-    .await
+    send_message_scoped(identity, expected_owner, route, body, scope).await
 }
 
 async fn send_message_scoped(
@@ -751,6 +747,7 @@ mod tests {
         let invitee = tmp.identity("invitee");
         let wrong = tmp.identity("wrong");
         let late_invitee = tmp.identity("late-invitee");
+        let owner_key = owner.public_key();
         let now = wall_time().unwrap();
         let invitation = owner
             .issue_invitation(
@@ -776,16 +773,24 @@ mod tests {
             .await
             .unwrap();
         let route = listener.route().clone();
+        assert_eq!(route.expires_at(), invitation.claims().expires_at - 1);
         let mut late_route = route.clone();
         late_route.expires_at = late_route.expires_at.saturating_add(1);
         assert!(matches!(
-            send_message_with_invitation(wrong, invitation, route.clone(), b"blocked").await,
+            send_message_with_invitation(wrong, owner_key, invitation, route.clone(), b"blocked")
+                .await,
             Err(Error::Input("invitation invitee does not match identity"))
         ));
         assert!(matches!(
-            send_message_with_invitation(late_invitee, late_invitation, late_route, b"blocked")
-                .await,
-            Err(Error::Input("route expires after invitation"))
+            send_message_with_invitation(
+                late_invitee,
+                owner_key,
+                late_invitation,
+                late_route,
+                b"blocked"
+            )
+            .await,
+            Err(Error::Input("route exceeds invitation lifetime"))
         ));
         let server = async {
             let mut joined = false;
@@ -807,13 +812,187 @@ mod tests {
             }
             assert!(joined && received);
         };
-        let client = send_message_with_invitation(invitee, invitation, route, b"invited");
+        let client =
+            send_message_with_invitation(invitee, owner_key, invitation, route, b"invited");
         tokio::time::timeout(Duration::from_secs(12), async {
             let (result, ()) = tokio::join!(client, server);
             result.unwrap();
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invitation_sender_rejects_owner_substitution_before_dialing() {
+        let tmp = Temp::new();
+        let expected = tmp.identity("expected-owner");
+        let attacker = tmp.identity("attacker-owner");
+        let invitee = tmp.identity("invitee");
+        let now = wall_time().unwrap();
+        let substituted = attacker
+            .issue_invitation(
+                invitee.public_key(),
+                RealmId(9),
+                RoomId(11),
+                Epoch(13),
+                now + 30,
+                [7; 32],
+            )
+            .unwrap();
+        // No server exists. Issuer rejection must precede all transport setup,
+        // rather than failing later with a dial timeout or receipt mismatch.
+        let peer = libp2p::identity::Keypair::ed25519_from_bytes([17; 32])
+            .unwrap()
+            .public()
+            .to_peer_id();
+        let route = Route::parse(
+            &format!("/ip4/127.0.0.1/udp/9/quic-v1/p2p/{peer}"),
+            now + 29,
+        )
+        .unwrap();
+        assert!(matches!(
+            send_message_with_invitation(
+                invitee,
+                expected.public_key(),
+                substituted,
+                route,
+                b"must not be disclosed",
+            )
+            .await,
+            Err(Error::Invitation(InvitationError::Issuer))
+        ));
+    }
+
+    #[test]
+    fn invitation_exclusive_expiry_bounds_earlier_handshakes_and_messages() {
+        let tmp = Temp::new();
+        let owner = tmp.identity("owner");
+        let invitee = tmp.identity("invitee");
+        let invitation = owner
+            .issue_invitation(
+                invitee.public_key(),
+                RealmId(9),
+                RoomId(11),
+                Epoch(13),
+                100,
+                [7; 32],
+            )
+            .unwrap();
+        let claims = invitation.verify_at(owner.public_key(), 98).unwrap();
+        let scope = invitation_scope(claims).unwrap();
+        assert_eq!(scope.expires_at, 99);
+        let mut invalid = claims;
+        invalid.expires_at = 0;
+        assert!(matches!(
+            invitation_scope(invalid),
+            Err(Error::Invitation(InvitationError::Malformed))
+        ));
+        let transport = |seed| {
+            transport_key(
+                libp2p::identity::Keypair::ed25519_from_bytes([seed; 32])
+                    .unwrap()
+                    .public()
+                    .to_peer_id(),
+            )
+            .unwrap()
+        };
+        let initiator_transport = transport(17);
+        let responder_transport = transport(18);
+        let pair = pairing(
+            invitee.public_key(),
+            owner.public_key(),
+            initiator_transport,
+            responder_transport,
+            scope,
+        );
+        for finish_at in [99, 100] {
+            let (pending, hello) = invitee
+                .initiate_session(pair, initiator_transport, responder_transport, 98, 103)
+                .unwrap();
+            let inbound = Inbound::Hello {
+                transport: initiator_transport,
+                deadline: Instant::now() + HANDSHAKE_DEADLINE,
+            };
+            let (inbound, response, event) = inbound
+                .receive(
+                    &owner,
+                    invitee.public_key(),
+                    responder_transport,
+                    scope,
+                    &hello,
+                    98,
+                )
+                .unwrap();
+            assert!(event.is_none());
+            let (mut sender, confirmation) =
+                invitee.confirm_session(pending, &response, 98).unwrap();
+            let result = inbound.receive(
+                &owner,
+                invitee.public_key(),
+                responder_transport,
+                scope,
+                &confirmation,
+                finish_at,
+            );
+            if finish_at == 100 {
+                assert!(matches!(result, Err(Error::Session(Reject::Expired))));
+                continue;
+            }
+            let (inbound, ready, event) = result.unwrap();
+            assert!(matches!(event, Some(Event::Joined(_))));
+            assert_eq!(sender.receive(&ready, 99).unwrap().envelope().body(), READY);
+            let message = sign_chat(
+                &invitee,
+                &mut sender,
+                b"last valid second",
+                scope.expires_at,
+                99,
+            )
+            .unwrap();
+            let (inbound, acknowledgment, event) = inbound
+                .receive(
+                    &owner,
+                    invitee.public_key(),
+                    responder_transport,
+                    scope,
+                    &message,
+                    99,
+                )
+                .unwrap();
+            assert!(matches!(event, Some(Event::Message(_))));
+            assert_eq!(
+                sender
+                    .receive(&acknowledgment, 99)
+                    .unwrap()
+                    .envelope()
+                    .body(),
+                ack_body(&message)
+            );
+            // Prepared before expiry, but delivered at the exclusive boundary.
+            let delayed =
+                sign_chat(&invitee, &mut sender, b"too late", scope.expires_at, 99).unwrap();
+            assert!(matches!(
+                inbound.receive(
+                    &owner,
+                    invitee.public_key(),
+                    responder_transport,
+                    scope,
+                    &delayed,
+                    100
+                ),
+                Err(Error::Session(Reject::Expired))
+            ));
+            assert!(matches!(
+                sign_chat(
+                    &invitee,
+                    &mut sender,
+                    b"also too late",
+                    scope.expires_at,
+                    100
+                ),
+                Err(Error::Session(Reject::Expired))
+            ));
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

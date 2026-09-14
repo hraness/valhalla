@@ -642,6 +642,15 @@ tests cover round-trip/issuer binding, scope/expiry/signature tampering and
 malformed or zero-nonce rejection. Integrating this claim into native/browser
 pairing UX, spent-token persistence and independent protocol review remain open.
 
+The native library adapter now requires an independently supplied expected owner
+when sending with an invitation, and verifies it before transport setup. Sender
+and listener translate exclusive invitation expiry `T` into inclusive route and
+session expiry `T-1`. Reviewed regressions reject a substituted issuer before
+dialing, preserve the valid invited socket exchange, and drive handshake and
+message processing at `T-1` and `T` without wall-clock sleeps. The current CLI
+still uses its ordinary explicit-peer-key path. These adapter repairs do not
+close the remaining pairing UX, durable spent-nonce or public-transport gates.
+
 The session crate also exposes `SpentInvitationNonces`, a move-only bounded
 check-and-insert guard. Duplicate nonces return `AlreadySpent`; capacity
 overflow returns `Capacity` without eviction or mutation. Property tests cover
