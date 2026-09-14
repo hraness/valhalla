@@ -5,7 +5,18 @@
 mod intro;
 
 #[cfg(all(unix, feature = "experimental-social"))]
+mod json;
+#[cfg(all(unix, feature = "experimental-social"))]
 mod social;
+
+#[cfg(all(unix, feature = "experimental-rooms"))]
+mod rooms;
+#[cfg(all(unix, feature = "experimental-rooms-node"))]
+mod rooms_node;
+#[cfg(all(unix, feature = "experimental-rooms-tui"))]
+mod rooms_submit;
+#[cfg(all(unix, feature = "experimental-rooms-tui"))]
+mod rooms_tui;
 
 fn main() {
     #[cfg(unix)]
@@ -41,6 +52,8 @@ fn run() -> Result<(), String> {
         println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key>\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime. --json emits bounded versioned JSON lines.");
         #[cfg(feature = "experimental-social")]
         println!("\n{}", social::help());
+        #[cfg(feature = "experimental-rooms")]
+        println!("\n{}", rooms::HELP);
         return Ok(());
     }
     if args.first().is_some_and(|s| s == "social") {
@@ -49,6 +62,14 @@ fn run() -> Result<(), String> {
         #[cfg(not(feature = "experimental-social"))]
         return Err(
             "social commands require an explicit build with --features experimental-social".into(),
+        );
+    }
+    if args.first().is_some_and(|s| s == "rooms") {
+        #[cfg(feature = "experimental-rooms")]
+        return rooms::run(args);
+        #[cfg(not(feature = "experimental-rooms"))]
+        return Err(
+            "rooms commands require an explicit build with --features experimental-rooms".into(),
         );
     }
     if args.first().is_some_and(|s| s == "experimental") {

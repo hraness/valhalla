@@ -1,0 +1,24 @@
+[package]
+name = "vhalla-rooms-tui"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Terminal companion for the room directory: browses a replica's committed projections and drops signed submissions into a node's intake."
+
+[dependencies]
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+vhalla-rooms-app = { path = "../vhalla-rooms-app" }
+vhalla-rooms = { path = "../vhalla-rooms" }
+vhalla-social = { path = "../vhalla-social" }
+
+# Key custody and the real intake drop live on unix only.
+[target.'cfg(unix)'.dependencies]
+crossterm = "0.29"
+vhalla-core = { path = "../vhalla-core" }
+vhalla-identity = { path = "../vhalla-identity", features = ["rooms"] }
+getrandom = "0.3"
+sha2 = "0.10"
+
+[lints]
+workspace = true
