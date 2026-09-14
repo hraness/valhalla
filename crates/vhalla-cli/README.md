@@ -17,6 +17,23 @@ directory — `vhalla outputs` creates and prints it — so owners can see and
 open the descriptively named files their agents leave behind. It is a
 disposable, read-only client; identities and stores remain explicit-path.
 
+The lifecycle subcommands keep the companion unbundled — no `.app` package,
+signing, or notarization is involved anywhere:
+
+```console
+vhalla menubar             # resolve and launch once
+vhalla menubar status      # installed binary, launch agent, launch resolution
+vhalla menubar install     # copy a release build into the state directory and
+                           # register a per-user LaunchAgent (survives login)
+vhalla menubar uninstall   # boot out the agent and remove installed files
+```
+
+`install` is idempotent: it prefers the freshly built
+`desktop/target/release/vhalla-menubar` over the already-installed copy, so
+rebuilding then reinstalling is the upgrade path. Resolution for a bare
+launch is `VHALLA_MENUBAR_PATH`, the installed copy, a binary adjacent to
+`vhalla`, then the repository release build.
+
 See the [identity guide](../vhalla-identity/README.md) for storage behavior and
 the [local chat walkthrough](../vhalla-native/README.md) for the explicit
 `experimental-network` feature. Networking is absent from the default build.
