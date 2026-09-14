@@ -237,6 +237,20 @@ Each prototype must report what it proves, what it assumes, and what it cannot
 prove. Keep them outside the production workspace until a protocol decision is
 accepted.
 
+### Four-validator partition evidence — 2026-09-14
+
+The checkpoint-ledger prototype now contains a bounded four-validator regression
+with a pinned three-of-four trust policy. It verifies every three-member subset,
+rejects zero-, one- and two-member certificates, rejects a certificate under a
+different threshold policy, and demonstrates that a 2–2 partition cannot produce
+either proof. The test signs real Ed25519 approvals and checks the complete
+certificate path; it does not run a validator engine, model locks, impose an
+order, or prevent an equivocating validator from signing two conflicting
+three-member statements. This is therefore quorum-boundary evidence, not BFT
+finality or partition safety. The next engine spike must add durable voting locks,
+ordered predecessor checks, equivocation handling and recovery around application
+commit before any directory admission claim is made.
+
 ## Evidence and references
 
 - [Bitcoin whitepaper](https://bitcoin.org/bitcoin.pdf) for Nakamoto proof of
