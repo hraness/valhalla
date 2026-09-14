@@ -574,9 +574,9 @@ channel. `Decided`/`Finalized` certificates name the real 32-byte
 commitment (canonicalized as `VC2`) and reply only after the
 verified-certificate → batch-replay → fsync-ordered journal commit lands.
 
-Seventeen tests across the context and engine crates under scheduler run
-`e75d2eb0f0ef37ac0fe58bbb9363fb85` (superseding
-`739e3a2086b9ac82eba318b070ed4752`,
+Eighteen tests across the context and engine crates under scheduler run
+`a26567a31737946cd253e26340573989` (superseding
+`e75d2eb0f0ef37ac0fe58bbb9363fb85`, `739e3a2086b9ac82eba318b070ed4752`,
 `29c3f3942ed989611090b3dd5b149565`, `3e3aa96457625249e9179e8bf3301812`,
 `9c4be548420fa007e42fa2aaec837380` and
 `701411a70fac9a868ce870c25ff334f0`):
@@ -619,6 +619,13 @@ Seventeen tests across the context and engine crates under scheduler run
   voted down. Round 1 finalizes the honest batch, and every journal's
   h=2 bundle binds the winner's 32-byte commitment — the stale
   allocation never entered a journal.
+- A sibling-slot allocation with the CORRECT predecessor is rejected on
+  replay: a forged batch (byzantine `Batch::new` — bounds only, no
+  replay) whose operation is a sibling proposal for an owner whose
+  single slot is already occupied fails `finalize` with `Error::Slot`
+  at every validator, is marked `Invalid`, and round 1 finalizes the
+  honest batch. This doubles as the faulty-proposer case: a proposer
+  emitting a batch no honest node can replay cannot reach a journal.
 
 This closes the loop on the R3 qualification sequence: real engine in,
 real network, real application values on the wire, real certificates
@@ -627,12 +634,13 @@ application frontier, durable commit before acknowledgement, restart,
 catch-up and a validator-set transition through the same path. Still
 unqualified per the target list: WAL append/flush fault injection inside
 the engine's own machinery (needs engine-internal hooks), the
-competing-slug and sibling-slot allocation cases *under partition* (the
-connected competing-slug case above resolves by unanimous invalid
-votes; a partition reaching quorum on each side of a stale boundary is
-not yet exercised), withheld-data and reordered-input liveness bounds,
-`no_std` certificate-consumer parity (no wasm32 toolchain on this
-machine — defer to CI), and cumulative WAL growth across longer runs. Full value
+competing-slug and sibling-slot allocation cases *under partition*
+(both connected cases above resolve by invalid votes on a fully
+connected network; a partition reaching quorum on each side of a stale
+boundary is not yet exercised), withheld-data and reordered-input
+liveness bounds, `no_std` certificate-consumer parity (no wasm32
+toolchain on this machine — defer to CI), and cumulative WAL growth
+across longer runs. Full value
 propagation is now real — batch bytes cross the consensus wire inside
 proposal parts and decided values carry them through sync — but
 undecided-proposal replay on restart is still delegated to the engine
