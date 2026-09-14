@@ -238,6 +238,30 @@ an award can finalize. This is an accounting epoch, not a claim about when a
 person or agent originally acted. The adapter and consensus tests must establish
 this binding; the reference model receives it as privileged fixture input.
 
+### R2 award derivation — implemented in `vhalla-rooms`
+
+`awards::assess_support` now derives the award tuple the privileged fixture
+input stood in for. Given one retained social record, a borrowed `ControlView`,
+the policy's eligible source set and the directory's own acceptance clock, it
+returns a `SupportAward` — attributed source owner, post beneficiary, the
+epoch computed from `accepted_at` and the exact evidence record — or a closed
+`AwardDenial`. Only `SocialStatus::Committed` evidence qualifies: the record
+must be an owner-sealed up-reaction (`Operation::React` with `Reaction::Up`)
+on a committed original post, so forked or unsealed authority earns nothing
+whether it arrives once or a thousand times. Agent-signed reactions attribute
+to their owner. Self-support, ineligible sources, missing or non-post targets
+and future or zero-length epoch anchors are denied.
+
+Five tests over real archives cover an agent-signed committed up-vote deriving
+the exact tuple, provisional and conflicted rejections, down/clear and
+non-reaction exclusions, reaction-to-reaction and missing-post resolution,
+self-support, ineligibility, and the epoch's binding to directory acceptance
+rather than record time. Still unqualified: dedup and accounting stay with the
+registry ledger (the `(source, beneficiary, epoch)` tuple plus evidence ID are
+the adapter's output, not a credit write), the eligible-source set and
+`accepted_at` anchor are caller-supplied agreed state, and Sybil/collusion
+calibration remains simulation work.
+
 Independent-owner eligibility is not proof of independent people. Splitting
 across Sybil owners and collusion can still bypass account-based scaling.
 Initially use an explicit bounded eligibility policy under the pinned directory;
@@ -829,7 +853,7 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | --- | --- | --- |
 | R0 | Namespace choice; pricing/accounting and conflict counterexamples; independent review | Shared public directory accepted; isolated model implemented |
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
-| R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Model inputs only; authoritative adapter pending |
+| R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Award derivation implemented in `vhalla-rooms::awards`: committed-evidence authentication, owner attribution and epoch binding (5 tests). Registry dedup wiring, eligible-source policy admission and Sybil/collusion calibration remain pending |
 | R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike above: native engines over libp2p with real batch bytes in proposal values, certificate-gated durable journal commits, WAL fault injection, crash/restart, rotation, late-join sync and a true runtime partition (62 tests, run `266133fc7c25dfd6b9770248a66c1d70`). Scratch-only; production integration, the application data plane and the remaining listed gaps are pending |
 | R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Pending R1–R3 |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
