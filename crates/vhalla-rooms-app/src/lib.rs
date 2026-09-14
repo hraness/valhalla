@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-#![cfg(unix)]
 //! Renderer-agnostic room-directory service.
 //!
 //! A `Service` is a read replica of a hosted `vhalla-rooms-node`: it
@@ -11,27 +10,46 @@
 //! assembles the batch against its own frontier, so the service never
 //! fabricates parent or result claims. Signing stays outside: callers
 //! pass canonical signed record bytes; no private key enters the service.
+//!
+//! The projection types (`Screen`, `Projection`, `RoomRow`, `Pending`,
+//! `PendingState`, `Error`) are platform-neutral so browser and native
+//! renderers share them; the replica machinery is unix-only.
 
+use vhalla_rooms::registry::Account;
+use vhalla_social::OwnerId;
+
+#[cfg(unix)]
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use vhalla_core::RealmId;
+#[cfg(unix)]
 use vhalla_journal::{Bundle, FsStore, Store as _};
-use vhalla_rooms::registry::{Account, DirectoryPolicy, Registry};
+#[cfg(unix)]
+use vhalla_rooms::registry::{DirectoryPolicy, Registry};
+#[cfg(unix)]
 use vhalla_rooms::{Body, DirectoryId, RoomGenesisId, RoomRecordId, SignedRecord, Slug};
+#[cfg(unix)]
 use vhalla_rooms_consensus::{Adapter, BatchBody, Genesis};
+#[cfg(unix)]
 use vhalla_rooms_node::PublicKey;
+#[cfg(unix)]
 use vhalla_rooms_node::{
     cert::verify_canonical_certificate, RoomValidator, RoomValidatorSet, RoomValueId,
 };
+#[cfg(unix)]
 use vhalla_social::archive::{Archive, Limits};
-use vhalla_social::OwnerId;
+#[cfg(unix)]
 use vhalla_social_store::Store as SocialStore;
 
 /// The shared genesis plus trust configuration — the same fields the
 /// node file carries, so one JSON document serves a validator and every
 /// replica reader (`serde` ignores the node-only keys).
+#[cfg(unix)]
 #[derive(Deserialize)]
 pub struct ServiceConfig {
     /// Shared realm, 32 lowercase hex characters.
@@ -50,6 +68,7 @@ pub struct ServiceConfig {
 }
 
 /// Policy fields as they appear in the JSON config.
+#[cfg(unix)]
 #[derive(Deserialize)]
 pub struct PolicyJson {
     /// Base slot cost before the quadratic factor.
@@ -65,6 +84,7 @@ pub struct PolicyJson {
 }
 
 /// Archive-limit fields as they appear in the JSON config.
+#[cfg(unix)]
 #[derive(Deserialize)]
 pub struct LimitsJson {
     /// Total retained records.
@@ -84,6 +104,7 @@ pub struct LimitsJson {
 }
 
 /// One validator activation entry in the JSON config.
+#[cfg(unix)]
 #[derive(Deserialize)]
 pub struct ValidatorJson {
     /// Activation height.
@@ -107,6 +128,7 @@ pub enum Error {
     Record(String),
 }
 
+#[cfg(unix)]
 fn hex32(text: &str) -> Result<[u8; 32], Error> {
     if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::Config(format!(
@@ -121,6 +143,7 @@ fn hex32(text: &str) -> Result<[u8; 32], Error> {
     Ok(out)
 }
 
+#[cfg(unix)]
 fn hex128(text: &str) -> Result<u128, Error> {
     if text.len() != 32 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::Config(format!(
@@ -130,10 +153,12 @@ fn hex128(text: &str) -> Result<u128, Error> {
     u128::from_str_radix(text, 16).map_err(|e| Error::Config(e.to_string()))
 }
 
+#[cfg(unix)]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[cfg(unix)]
 impl ServiceConfig {
     /// Parses the shared config; unknown keys (the node's own fields) are
     /// ignored so one file serves every role.
@@ -235,7 +260,7 @@ pub enum PendingState {
 }
 
 /// One locally submitted body and its current resolution.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
     /// The submission marker name (hex record id of the effect record).
     pub name: String,
@@ -246,7 +271,7 @@ pub struct Pending {
 }
 
 /// One directory row.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomRow {
     /// Canonical slug.
     pub slug: String,
@@ -293,6 +318,7 @@ pub struct Projection {
 
 /// A durable pending marker under `replica_home/pending/`.
 #[derive(Serialize, Deserialize)]
+#[cfg(unix)]
 struct Marker {
     /// Effect record id, hex.
     record: String,
@@ -309,6 +335,7 @@ struct Marker {
 }
 
 /// The room-directory service: replica state plus the intake contract.
+#[cfg(unix)]
 pub struct Service {
     adapter: Adapter<vhalla_journal::FsStore>,
     /// `<node_home>/app/journal` — read-only source of committed bundles.
@@ -321,6 +348,7 @@ pub struct Service {
     validators: BTreeMap<u64, RoomValidatorSet>,
 }
 
+#[cfg(unix)]
 impl Service {
     /// Opens the replica under `replica_home`, seeding genesis from the
     /// committed `social_store` snapshot (opened under the configured
@@ -596,6 +624,7 @@ impl Service {
 }
 
 /// The marker fields one body's effect record resolves to.
+#[cfg(unix)]
 struct Effect {
     /// The effect record's content id — the pending marker's name.
     record: RoomRecordId,
@@ -611,6 +640,7 @@ struct Effect {
 
 /// The effect record of a body: its last non-control room record decides
 /// the pending marker's name, kind, slug or genesis, and update base.
+#[cfg(unix)]
 fn effect(records: &[Vec<u8>]) -> Result<Effect, Error> {
     let mut last: Option<Effect> = None;
     for raw in records {
@@ -641,6 +671,7 @@ fn effect(records: &[Vec<u8>]) -> Result<Effect, Error> {
     last.ok_or(Error::Record("body names no room effect".into()))
 }
 
+#[cfg(unix)]
 fn row(room: &vhalla_rooms::registry::Room) -> RoomRow {
     RoomRow {
         slug: room.slug().as_str().to_owned(),
@@ -657,5 +688,5 @@ fn row(room: &vhalla_rooms::registry::Room) -> RoomRow {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

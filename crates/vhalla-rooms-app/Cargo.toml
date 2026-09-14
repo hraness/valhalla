@@ -6,18 +6,21 @@ license.workspace = true
 publish.workspace = true
 description = "Renderer-agnostic room-directory service: a read replica of a node's committed journal plus bounded submission intents."
 
+# Portable surface: projection DTOs any renderer can consume.
 [dependencies]
+vhalla-rooms = { path = "../vhalla-rooms" }
+vhalla-social = { path = "../vhalla-social" }
+
+# The replica machinery (journal reads, certificate verification,
+# intake drops) is filesystem-bound and unix-only.
+[target.'cfg(unix)'.dependencies]
 vhalla-core = { path = "../vhalla-core" }
 vhalla-journal = { path = "../vhalla-journal" }
-vhalla-rooms = { path = "../vhalla-rooms" }
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus" }
 vhalla-rooms-node = { path = "../vhalla-rooms-node" }
-vhalla-social = { path = "../vhalla-social" }
+vhalla-social-store = { path = "../vhalla-social-store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[target.'cfg(unix)'.dependencies]
-vhalla-social-store = { path = "../vhalla-social-store" }
 
 [dev-dependencies]
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", features = ["fixture"] }
