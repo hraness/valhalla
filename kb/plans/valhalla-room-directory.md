@@ -146,6 +146,40 @@ change requires a fresh proposal. Reject frozen, incomplete, capacity-blocked or
 retired authority. Re-evaluate inside atomic registration so an earlier local
 assessment cannot survive a state change as a reusable admission token.
 
+### R1b authority assessment — implemented in `vhalla-rooms`
+
+`authority::RoomAuthority` now holds the agreed room-control state: one ordered
+`Body::Control` chain per owner (exact predecessor and sequence enforced) with
+its open `GrantCreate` grants, bounded by `MAX_CONTROL_RECORDS`. `admit`
+authenticates each verified control record against a borrowed `ControlView` —
+scope, current social head, controller key at that head, owner
+frozen/incomplete/capacity-blocked and locally complete history — before
+applying the grant or revocation. `assess_creation` re-evaluates a verified
+intent inside the caller's atomic registration: directory and realm scope,
+social basis and owner key equal the accepted head, agent affiliation, key and
+unretired status, exact room-control head, and an open grant covering agent,
+key, expiry and charge. `assess_update` applies the same social-authority
+checks to owner-signed edits. The returned `Admission` borrows the authority,
+so a passed assessment cannot outlive the state it depended on.
+
+`RoomAuthority::snapshot` commits canonically to every input an admission can
+depend on — per-owner accepted social head, controller key and status flags,
+per-agent affiliation, key and lifecycle flags, and per-owner room head,
+sequence and open grants — as the digest a consensus frontier binds as its
+control commitment. Any intervening rotation, grant change or status flip moves
+the digest, which is the committed social-control snapshot R3 required.
+
+Twelve focused tests over real social archives cover admission, stale social
+and room bases after head advance, forked-owner freezing, retired agents,
+revoked and expired grants, charge ceilings, chain-order enforcement, foreign
+scope, snapshot binding across rotation, and update assessment. A permit
+re-signed at the new head is admitted again — freshness is the basis, not the
+signature. Still unqualified: the snapshot is a pure function of the borrowed
+view plus ledger, so identical social evidence must reach every validator for
+deterministic replay (the data-plane gap below), and the adapter admits no
+room, debits no allowance and owns no slug table — those stay with the R4
+registry state.
+
 ## Engagement unlocks and escalating prices
 
 Keep public reputation separate from a **nontransferable creation allowance**.
@@ -794,9 +828,9 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | Phase | Work and acceptance evidence | Status |
 | --- | --- | --- |
 | R0 | Namespace choice; pricing/accounting and conflict counterexamples; independent review | Shared public directory accepted; isolated model implemented |
-| R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence implemented in `vhalla-rooms`; R1b authority assessment pending the committed-control-snapshot contract from R3 |
+| R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence plus the R1b authority adapter implemented in `vhalla-rooms`: ordered room-control chains, basis-freshness re-evaluation and the committed control snapshot (12 tests). Identical social evidence on every validator remains a data-plane obligation |
 | R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Model inputs only; authoritative adapter pending |
-| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 remains the candidate; atomic application batches and four-driver in-memory partition/heal schedules are tested. Native actor integration, durable application commits, key rotation and finality evidence remain pending |
+| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 (rev `72143f6`) qualified by the scratch spike above: native engines over libp2p with real batch bytes in proposal values, certificate-gated durable journal commits, WAL fault injection, crash/restart, rotation, late-join sync and a true runtime partition (62 tests, run `266133fc7c25dfd6b9770248a66c1d70`). Scratch-only; production integration, the application data plane and the remaining listed gaps are pending |
 | R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Pending R1–R3 |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
