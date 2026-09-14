@@ -24,6 +24,8 @@ pub struct SpentInvitationNonces {
 /// Failure to consume an invitation nonce.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpendError {
+    /// The all-zero value is reserved and cannot be consumed.
+    Malformed,
     /// This nonce was consumed previously.
     AlreadySpent,
     /// The explicit guard capacity is exhausted. State is unchanged.
@@ -73,6 +75,9 @@ impl SpentInvitationNonces {
     /// mutation. In particular, a full guard never evicts an older nonce and
     /// never admits a new one.
     pub fn consume(&mut self, nonce: [u8; 32]) -> Result<(), SpendError> {
+        if nonce == [0; 32] {
+            return Err(SpendError::Malformed);
+        }
         if self.spent.contains(&nonce) {
             return Err(SpendError::AlreadySpent);
         }
@@ -103,7 +108,10 @@ mod tests {
                 let already = guard.contains(&nonce);
                 let result = guard.consume(nonce);
                 prop_assert!(guard.len() <= capacity);
-                if already {
+                if nonce == [0; 32] {
+                    prop_assert_eq!(result, Err(SpendError::Malformed));
+                    prop_assert_eq!(guard.len(), before_len);
+                } else if already {
                     prop_assert_eq!(result, Err(SpendError::AlreadySpent));
                     prop_assert_eq!(guard.len(), before_len);
                 } else if before_len >= capacity {
@@ -130,5 +138,15 @@ mod tests {
         assert_eq!(guard.len(), 1);
         assert!(guard.contains(&first));
         assert!(!guard.contains(&second));
+    }
+
+    #[test]
+    fn zero_nonce_is_rejected_without_using_capacity() {
+        let mut guard = SpentInvitationNonces::new(1);
+        assert_eq!(guard.consume([0; 32]), Err(SpendError::Malformed));
+        assert_eq!(guard.len(), 0);
+        assert_eq!(guard.consume([7; 32]), Ok(()));
+        assert_eq!(guard.consume([0; 32]), Err(SpendError::Malformed));
+        assert_eq!(guard.len(), 1);
     }
 }
