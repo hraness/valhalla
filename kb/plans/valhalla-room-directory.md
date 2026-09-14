@@ -540,6 +540,52 @@ value-sync catch-up, validator rotation, network admission, durable
 bounded canonical certificate form is spike-local until promoted through
 review.
 
+### Multi-validator engine run — 2026-09-15
+
+The boundary is now exercised end to end against the real engine, not a
+message-shaped stand-in. Each node in the spike runs the full
+`EngineBuilder` stack — libp2p TCP networking, consensus, value-sync,
+request and WAL actors — under `TestContext` with its own home directory
+carrying both the engine WAL and the room journal. The application loop
+is the spike's own: `ConsensusReady` resumes from the durable journal
+frontier (never memory), `GetValue` proposes the `u64` engine id bound
+to a held room `Batch` with proposer-signed `Init`/`Data`/`Fin` parts,
+`ReceivedProposalPart` verifies the expected proposer and the Fin
+signature over the content hash before voting, and `Decided`/`Finalized`
+reply only after the verified-certificate → batch-replay → fsync-ordered
+journal commit lands. The engine's `u64` value id is the wire value; the
+durable bundle still binds the batch's real 32-byte `value_id`.
+
+Four tests under scheduler run `701411a70fac9a868ce870c25ff334f0`:
+
+- Four validators commit three planned heights; every node emits its
+  post-commit `CommitAck`/`NextHeightReply` per height and all four
+  application frontiers carry identical commitments.
+- A late joiner starts after three heights are committed and catches up
+  through real value-sync — peers serve `RawDecidedValue`s built from
+  journal-committed certificates, `ProcessSyncedValue` verdicts each
+  synced value against the held-batch table — converging to the same
+  state commitment.
+- A crashed validator restarts on the same home: the engine WAL replays,
+  `ConsensusReady` resumes from the journal's durable frontier, and the
+  node rejoins to height 4 with each height applied exactly once.
+- A 2-of-4 minority partition finalizes nothing: after several timeout
+  rounds both journals are still empty — the partition clause holds (a
+  2–2 split cannot finalize competing allocations).
+
+This closes the loop on the R3 qualification sequence: real engine in,
+real network, real certificates, real replay against the real
+application frontier, durable commit before acknowledgement, restart and
+catch-up through the same path. Still unqualified per the target list:
+WAL append/flush fault injection inside the engine's own machinery,
+validator rotation across an activation boundary, the competing-slug and
+sibling-slot allocation cases under partition, withheld-data and
+reordered-input liveness bounds, `no_std` certificate-consumer parity,
+and proof-byte/verifier-cost/footprint measurements. The `u64` engine
+value id stands in for full value propagation — batches do not cross the
+wire in this spike — and undecided-proposal replay on restart is
+delegated to the engine WAL rather than an application store.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
