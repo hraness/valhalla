@@ -5084,6 +5084,7 @@ version = "0.0.0"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
@@ -5094,6 +5095,8 @@ dependencies = [
  "vhalla-identity",
  "vhalla-native",
  "vhalla-rooms",
+ "vhalla-rooms-consensus",
+ "vhalla-rooms-node",
  "vhalla-rooms-store",
  "vhalla-social",
  "vhalla-social-store",

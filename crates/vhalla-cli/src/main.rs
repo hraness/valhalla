@@ -11,6 +11,8 @@ mod social;
 
 #[cfg(all(unix, feature = "experimental-rooms"))]
 mod rooms;
+#[cfg(all(unix, feature = "experimental-rooms-node"))]
+mod rooms_node;
 
 fn main() {
     #[cfg(unix)]

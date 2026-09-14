@@ -306,6 +306,46 @@ impl App {
         }
     }
 
+    /// The cross-process submission contract: every `*.batch` file under
+    /// `home/intake/` is a canonical `Batch` a producer (the rooms CLI
+    /// service lane, an assembler) dropped for this node to propose.
+    /// Each file submits then unlinks; a file that fails to decode is
+    /// renamed `.rejected` — retained for the producer, never retried.
+    /// Drained only at `GetValue`, the sole consumer of the queue.
+    fn drain_intake(&mut self) {
+        let dir = self
+            .store
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("intake");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !name.ends_with(".batch") {
+                continue;
+            }
+            let ok = std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| Batch::decode(&bytes).ok())
+                .map(|batch| {
+                    self.submit(batch);
+                    std::fs::remove_file(&path)
+                });
+            match ok {
+                Some(Ok(())) => {}
+                Some(Err(_)) => {} // unlink raced or failed; retried next drain
+                None => {
+                    let _ = std::fs::rename(&path, path.with_extension("rejected"));
+                }
+            }
+        }
+    }
+
     /// fsync the canonical batch bytes under `store/batches/<id>` —
     /// skipped when the file already exists (bytes are canonical).
     /// A write failure halts the app task: a node that cannot retain a
@@ -1412,6 +1452,9 @@ async fn run(
                 reply,
                 ..
             } => {
+                // Cross-process submissions land here: drain the intake
+                // dir before assigning this height's proposal.
+                app.drain_intake();
                 // No pre-planned batch for this height: assign the
                 // oldest submitted one — it stays queued until its own
                 // value id commits, so a losing height retries next.
@@ -1608,6 +1651,42 @@ async fn run(
                 let _ = reply.send(Ok(()));
             }
         }
+    }
+}
+
+/// Service config for a hosted validator: libp2p TCP listening on
+/// `listen_port` (all interfaces off — localhost binds by policy in this
+/// build), persistent peering to `peers`, value sync enabled. This is
+/// the same shape `node_config` produces for tests, without the
+/// index-derived ports.
+pub fn service_config(moniker: &str, listen_port: usize, peers: &[(String, usize)]) -> Config {
+    let transport = TransportProtocol::Tcp;
+    Config {
+        moniker: moniker.to_owned(),
+        consensus: ConsensusConfig {
+            value_payload: ValuePayload::ProposalAndParts,
+            queue_capacity: 100,
+            p2p: P2pConfig {
+                protocol: PubSubProtocol::default(),
+                discovery: DiscoveryConfig {
+                    max_connections_per_ip: usize::MAX,
+                    ..DiscoveryConfig::default()
+                },
+                listen_addr: transport.multiaddr("127.0.0.1", listen_port),
+                persistent_peers: peers
+                    .iter()
+                    .map(|(host, port)| transport.multiaddr(host, *port))
+                    .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        value_sync: ValueSyncConfig {
+            enabled: true,
+            status_update_interval: std::time::Duration::from_secs(2),
+            request_timeout: std::time::Duration::from_secs(5),
+            ..Default::default()
+        },
     }
 }
 

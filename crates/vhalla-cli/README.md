@@ -278,6 +278,20 @@ replayed intent fails instead of silently changing price. `describe` and
 that exits search but keeps its allocation. `proof` and `evidence` return the
 canonical signed bytes behind any admitted room record or award.
 
+## Room-consensus node
+
+The `experimental-rooms-node` feature (which implies `experimental-rooms`)
+adds `vhalla rooms node`: a hosted Malachite validator as a CLI process. The
+node home holds its journal, consensus WAL and application stores; a JSON
+config supplies the consensus key, listen port, persistent peers, validator
+activations and the shared genesis parameters (directory, policy, eligible
+sources, archive limits). The genesis archive is read from the committed
+social snapshot named on the command line, decoded under the configured
+limits. Producers submit work by dropping canonical `*.batch` files into
+`<node-home>/intake/`; the node drains them at proposal time, commits through
+the certificate-gated journal before acknowledging, and renames malformed
+drops `*.rejected`. SIGINT stops the service.
+
 Every mutating command signs a real wire record, applies it to a candidate
 registry, and reports success only after the store's durable pin publication.
 Two agents of one owner share the directory through separate invocations; a

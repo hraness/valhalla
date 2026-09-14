@@ -33,25 +33,34 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   describe OWNER_KEYDIR SLUG EXPIRY TEXT
   archive OWNER_KEYDIR SLUG EXPIRY
   list | search QUERY | show SLUG | account OWNER64 | proof RECORD64 | evidence RECORD64 | recover
+  node NODE_HOME --config FILE  (build: --features experimental-rooms-node)
 SOCIAL_STORE is an existing `vhalla social` store; ROOMS_STORE is created by `init`.
 IDs are full hex. Slot and charge are computed from the current policy quote.
 Read paging: --limit N (1..64). Output is ASCII JSON. The directory clock is
---now or the local clock; admission still requires the current social basis.";
+--now or the local clock; admission still requires the current social basis.
+`node` hosts a room-consensus validator: NODE_HOME holds its journal, WAL and
+application store; --config names a JSON file with node_key (hex seed), port,
+peers, validators, directory, policy, eligible owners and archive limits.
+Producers submit canonical batches by dropping *.batch files into
+NODE_HOME/intake/; committed state is queryable through the store commands.";
 
-struct Args {
+pub(crate) struct Args {
     command: String,
-    social_store: String,
-    rooms_store: String,
-    realm: RealmId,
+    pub(crate) social_store: String,
+    /// The rooms store path — for `node`, the validator's home directory.
+    pub(crate) rooms_store: String,
+    pub(crate) realm: RealmId,
     values: Vec<String>,
     now: u64,
     limit: usize,
+    pub(crate) config: Option<String>,
 }
 impl Args {
     fn parse(raw: Vec<OsString>) -> Result<Self, String> {
         let mut values = Vec::new();
         let mut now = None;
         let mut limit = 32usize;
+        let mut config = None;
         let mut literal = false;
         let mut args = raw.into_iter().skip(1);
         while let Some(raw) = args.next() {
@@ -79,6 +88,7 @@ impl Args {
                             return Err("limit must be 1..64".into());
                         }
                     }
+                    "--config" => config = Some(option),
                     _ => return Err("unknown rooms option".into()),
                 }
             } else {
@@ -106,6 +116,7 @@ impl Args {
                     .as_secs(),
             },
             limit,
+            config,
         })
     }
     fn count(&self, n: usize) -> Result<(), String> {
@@ -134,7 +145,7 @@ fn hex128(text: &str) -> Result<u128, String> {
     Ok(u128::from_be_bytes(raw.try_into().unwrap()))
 }
 
-fn hex32(text: &str) -> Result<[u8; 32], String> {
+pub(crate) fn hex32(text: &str) -> Result<[u8; 32], String> {
     let raw = hex_decode(text)?;
     raw.try_into()
         .map_err(|_| "expected 64 hex characters".to_string())
@@ -232,6 +243,23 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         return Ok(());
     }
     let args = Args::parse(raw)?;
+    if args.command == "node" {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_node::run(&args);
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err(format!(
+                "rooms node needs --features experimental-rooms-node{}",
+                if args.config.is_some() {
+                    " (config ignored)"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
     if args.command == "init" {
         if args.values.len() != 6 && args.values.len() != 7 {
             return Err(

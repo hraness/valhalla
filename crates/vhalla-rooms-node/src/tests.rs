@@ -107,9 +107,9 @@ async fn four_validators_commit_planned_batches() {
     wait_for(
         "all four nodes to journal-commit and acknowledge height 3",
         || {
-            nodes.iter().all(|n| {
-                n.committed_height() >= HEIGHTS && evidenced(&n.acks()).contains(&HEIGHTS)
-            })
+            nodes
+                .iter()
+                .all(|n| n.committed_height() >= HEIGHTS && evidenced(&n.acks()).contains(&HEIGHTS))
         },
         Duration::from_secs(90),
     )
@@ -1874,7 +1874,7 @@ async fn runtime_submission_commits_after_start() {
     let plan = fixture::plan(2, 8, 16);
     let (keys, set) = validators(4);
     let base = fixture("submit");
-    let base_port = 27600usize;
+    let base_port = 28500usize;
 
     let mut nodes = Vec::new();
     for (i, key) in keys.iter().enumerate().take(4) {
@@ -1986,6 +1986,90 @@ fn pending_markers_reload_only_uncommitted_submissions() {
     let pending = reload_pending(&store, &held, &adapter);
     assert!(pending.is_empty(), "a committed batch must not re-queue");
     assert!(!store.join("pending").join(hex(&live.value_id())).exists());
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The intake contract at the application boundary: a `*.batch` file is
+/// decoded, submitted (durable pending marker + FIFO queue) and unlinked;
+/// undecodable content is renamed `.rejected` and never retried, and
+/// non-`.batch` names are left alone.
+#[test]
+fn intake_files_submit_or_reject_deterministically() {
+    let (keys, set) = validators(1);
+    let base = fixture("intake");
+    let key = keys[0].clone();
+    let address = Address::from_public_key(&key.public_key());
+    let home = base.join("home");
+    let store = home.join("store");
+    std::fs::create_dir_all(store.join("batches")).unwrap();
+    std::fs::create_dir_all(store.join("seen")).unwrap();
+    std::fs::create_dir_all(store.join("pending")).unwrap();
+    let intake = home.join("intake");
+    std::fs::create_dir_all(&intake).unwrap();
+
+    let mut app = App {
+        ctx: RoomContext,
+        adapter: Arc::new(Mutex::new(
+            Adapter::open(home.join("app"), &genesis()).unwrap(),
+        )),
+        sink: Arc::new(Mutex::new(EngineSink::default())),
+        validator_sets: sched(set),
+        address,
+        private_key: key.clone(),
+        proposals: BTreeMap::new(),
+        pending_proposals: VecDeque::new(),
+        held_by_id: BTreeMap::new(),
+        streams: BTreeMap::new(),
+        parts_cache: BTreeMap::new(),
+        decided: BTreeMap::new(),
+        stream_seq: 0,
+        boundary_latency: Arc::new(Mutex::new(Vec::new())),
+        store,
+        seen: BTreeMap::new(),
+        resupplied: Arc::new(Mutex::new(0)),
+    };
+
+    let mut s = fixture::scenario(8, 16);
+    let mut cursor = 0usize;
+    let (ev, rec, _) = fixture::first_create(
+        &s.app,
+        &s.owners[0],
+        &mut s.sources,
+        &mut cursor,
+        "intake",
+        1,
+    );
+    let batch = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+
+    std::fs::write(intake.join("good.batch"), batch.encode()).unwrap();
+    std::fs::write(intake.join("bad.batch"), b"not a batch").unwrap();
+    std::fs::write(intake.join("note.txt"), b"unrelated").unwrap();
+
+    app.drain_intake();
+
+    assert_eq!(
+        app.pending_proposals,
+        VecDeque::from([RoomValueId(batch.value_id())]),
+        "a valid .batch file must enter the pending queue"
+    );
+    assert!(!intake.join("good.batch").exists());
+    assert!(!intake.join("bad.batch").exists());
+    assert!(
+        intake.join("bad.rejected").exists(),
+        "undecodable input is renamed, not retried"
+    );
+    assert!(
+        intake.join("note.txt").exists(),
+        "non-.batch names are left alone"
+    );
+    assert!(
+        app.store
+            .join("pending")
+            .join(hex(&batch.value_id()))
+            .exists(),
+        "the submission carries a durable pending marker"
+    );
 
     let _ = std::fs::remove_dir_all(&base);
 }
