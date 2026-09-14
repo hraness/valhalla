@@ -86,3 +86,21 @@ fn not_found_route_is_explicit() {
     });
     assert!(html.contains("Not found"), "{html}");
 }
+
+#[test]
+fn submission_journey_names_the_slug_in_pending() {
+    use vhalla_room_directory_ui::services::RoomServices;
+    let services = vhalla_room_directory_ui::FixtureServices::new();
+    let before = services.pending().unwrap().len();
+    let name = services
+        .submit(0, Vec::new(), vec![b"room-create:quiet-hall".to_vec()])
+        .unwrap();
+    let pending = services.pending().unwrap();
+    assert_eq!(pending.len(), before + 1);
+    let marker = pending.iter().find(|p| p.name == name).unwrap();
+    assert_eq!(marker.slug.as_deref(), Some("quiet-hall"));
+    assert_eq!(marker.state, vhalla_rooms_app::PendingState::Queued);
+    // And the strip projects it on the next render.
+    let html = render(Route::Directory {});
+    assert!(html.contains("queued"), "{html}");
+}

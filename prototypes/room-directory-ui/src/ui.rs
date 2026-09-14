@@ -282,9 +282,11 @@ fn Create() -> Element {
             onsubmit:move |event| {
                 event.prevent_default();
                 if !slug_ok { context.error.set(Some("slug must be 1-24 lowercase letters, digits or '-'".into())); return; }
-                // The fixture fabricates the signed record bytes; a real
-                // deployment's signer adapter produces them instead.
-                match context.services.submit(0, Vec::new(), Vec::new()) {
+                // A real deployment's signer adapter produces canonical signed
+                // record bytes here; the fixture fabricates a stand-in body
+                // carrying the slug so the pending marker can name it.
+                let record = format!("room-create:{}", slug.read()).into_bytes();
+                match context.services.submit(0, Vec::new(), vec![record]) {
                     Ok(name) => {
                         let short = short_id(&name);
                         context.status.set(Some(format!("queued {short}")));

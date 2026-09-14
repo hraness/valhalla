@@ -210,12 +210,18 @@ impl RoomServices for FixtureServices {
         let mut state = self.0.try_borrow_mut().map_err(|_| Error::Bounds)?;
         let name = format!("{:064x}", state.counter);
         state.counter += 1;
+        // A real body carries signed record bytes; the fixture fabricates
+        // `b"room-create:<slug>"` and reads the slug back for the marker.
+        let slug = records
+            .first()
+            .and_then(|r| r.strip_prefix(b"room-create:"))
+            .and_then(|s| String::from_utf8(s.to_vec()).ok())
+            .filter(|s| !s.is_empty());
         state.pending.push(Pending {
             name: name.clone(),
-            slug: None,
+            slug,
             state: vhalla_rooms_app::PendingState::Queued,
         });
-        let _ = records;
         Ok(name)
     }
 }
