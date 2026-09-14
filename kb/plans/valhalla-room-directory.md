@@ -344,6 +344,23 @@ certificate verification, network transport, consensus, finality or authority.
 The next bounded spike must adapt the actual Malachite certificate consumer into
 this boundary before any production room adapter is considered.
 
+### Native receipt adapter spike — 2026-09-14
+
+The follow-on scratch adapter now consumes the actual pinned Malachite
+`CommitCertificate` through `native_receipt::AcceptedReceipt`. Its journal
+receipt and prepared commit fields are private, and compile-fail doctests reject
+struct-literal bypasses. Three unit tests and two compile-fail doctests pass,
+along with locked format and strict clippy validation (scheduler run
+`9dc55651fb97bf2ade8727a89f929893`). A tiny in-memory journal applies the same
+semantic receipt idempotently and rejects a different receipt at the same
+predecessor.
+
+This closes only the typed hand-off seam. The scratch adapter still has no
+certificate serialization, filesystem persistence, crash recovery, network
+admission, validator rotation or finality claim. The next adapter must preserve
+bounded canonical certificate bytes and connect the typed hand-off to the
+fault-tested durable journal ordering.
+
 ### Current implementation evidence
 
 The room-registry reference now includes an application-value seam in
