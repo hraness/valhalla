@@ -240,9 +240,10 @@ The next engine spike should use **Malachite v0.8.0**, pinned to release commit
 `72143f6c99a98452b587e1c392bdb80944eb2232`, outside the production workspace.
 The [release](https://github.com/circlefin/malachite/releases/tag/v0.8.0)
 and [exact release commit](https://github.com/circlefin/malachite/commit/72143f6c99a98452b587e1c392bdb80944eb2232)
-identify the candidate. This is an integration recommendation from source review
-on 2026-09-13, not a measured comparison or production selection. No engine build,
-network run, resource measurement or browser verification has been performed.
+identify the candidate. This began as an integration recommendation from source
+review. The qualification evidence below now includes a locked native build and
+the maintained integration test binary; it remains a scratch result, not a
+production selection or security audit.
 
 The attraction is its existing channel-based native engine, including networking,
 sync and crash recovery, described in the
@@ -286,6 +287,36 @@ its safety machinery, evaluate the same fixtures against
 [Commonware Simplex v2026.9.0](https://github.com/commonwarexyz/monorepo/releases/tag/v2026.9.0).
 Neither candidate closes R1b authority freshness or R3 finality by dependency choice.
 
+### Malachite qualification evidence — 2026-09-14
+
+A disposable consumer pinned to the exact release commit compiled against the
+actual `core-types` and `signing` APIs with `--locked`; the source archive was
+verified by SHA-256 before use. The consumer ran its bounded certificate checks
+in native and `wasm32-unknown-unknown` builds, and a separate OpenSSL/Python
+fixture generated the same Ed25519 certificate bytes that Rust accepted. The
+consumer's 40-case verdict matrix covers valid quorum, zero/one/two-of-four
+rejections, duplicate and unknown signers, altered domains, stale heights,
+Nil-round rejection, oversized input and threshold-policy changes. This proves
+verification parity and decoder behavior only; it does not grant finality.
+
+The pinned upstream `arc-malachitebft-test` integration binary also ran its
+maintained WAL subset serially: 8 tests passed and 2 intentionally ignored in
+161.56 seconds, including proposer/non-proposer restart, Byzantine-proposer,
+decode-fallback and multi-certificate recovery. The full suite exercised the
+same paths but aborted one crash test after the harness's 60-second concurrent
+warning; rerunning that exact case passed in 6.89 seconds. Treat the full-suite
+warning as a harness/resource qualification issue and retain serial WAL runs in
+the evidence set. No upstream source, validator process or production crate was
+modified.
+
+Source review still found obligations the adapter must enforce itself: immutable
+and unique full validator keys, directory/genesis/config domain binding, full
+value commitments, bounded certificate bytes/counts, no Nil-round application
+commits, checked threshold arithmetic, predecessor/epoch checks, equivocation
+retention and durable application commit ordering. Upstream certificates are
+not room-directory authority until those wrappers and fault-injected recovery
+tests exist.
+
 ### Current implementation evidence
 
 The model has real owner/actor signatures for exact proposals, bounded state,
@@ -303,7 +334,7 @@ disk durability, control rotation, or compatibility with the maintained wire.
 | R0 | Namespace choice; pricing/accounting and conflict counterexamples; independent review | Shared public directory accepted; isolated model implemented |
 | R1 | Versioned signed room/permit/control schema; exact grant rights and bounded decoder; signature/mutation/old-client tests | R1a codec and immutable signature evidence implemented in `vhalla-rooms`; R1b authority assessment pending the committed-control-snapshot contract from R3 |
 | R2 | Deterministic mature social awards from archived evidence, owner attribution, dedup and directory policy; Sybil/collusion simulations and numerical calibration | Model inputs only; authoritative adapter pending |
-| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Pending; signatures alone cannot close it |
+| R3 | Select maintained consensus engine; independent validator keys, ordered slot/name commit, durable locks, partition safety, restart, key rotation and recovery | Malachite v0.8.0 is the qualified candidate for the next adapter spike; engine integration, application commit ordering, key rotation and finality evidence remain pending |
 | R4 | Durable room manifests/tombstones, registry service, CLI quote/create/list/search and source-proof retrieval; same owner across two agent processes | Pending R1–R3 |
 | R5 | Shared Dioxus room directory/creation UI; genuine browser/native journey, offline pending and stale collision UX | Pending R4 |
 | R6 | Final repo gates, operational qualification, distribution, documentation and live verification of the actual released artifact | Pending |
