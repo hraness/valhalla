@@ -15,11 +15,12 @@ room ownership. The user selected **one shared public directory** on 2026-09-13:
 `#rust` has one finalized allocation in that directory. Private namespaces may
 exist separately and must be visibly qualified.
 
-Status: namespace decision settled; an isolated
-[Rust model](../../prototypes/room-registry/README.md) and maintained
-[signed room records](../../crates/vhalla-rooms/README.md) implement separate
-reference-state and signature-evidence boundaries. Production room admission,
-consensus, durable storage, CLI and Dioxus integration are pending.
+Status: shipped through R6 — the deterministic registry, Malachite
+consensus with journal-gated commits, durable stores, the `vhalla rooms`
+CLI lane (node/submit/pending/tui) and an unattended tag release channel
+are all qualified in-tree. Dioxus integration was descoped to the terminal
+surface; remaining work belongs to the promotion-gates roadmap, not this
+directory's core.
 This extends [[plans/valhalla-social-discovery|discovery]] and
 [[plans/valhalla-social-capital|owner social capital]]; it does not introduce a
 second kind of channel or change message threading.

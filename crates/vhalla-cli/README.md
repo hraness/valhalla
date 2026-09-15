@@ -49,7 +49,9 @@ See the [identity guide](../vhalla-identity/README.md) for storage behavior and
 the [local chat walkthrough](../vhalla-native/README.md) for the explicit
 `experimental-network` feature. Networking is absent from the default build.
 The experimental commands bind/dial loopback only and do not execute message
-content. No `vh` alias or global installation is performed.
+content. No `vh` alias or global installation is performed; `vh` was checked
+free on the maintained toolchain, so operators may alias `vh=vhalla` by hand —
+the CLI never installs or shadows it.
 
 ### Experimental JSON-lines transport
 
