@@ -60,17 +60,17 @@ impl SpentFile {
             return Err(SpentError::Malformed);
         }
         let mut spent = BTreeSet::new();
-        for chunk in raw[4..].chunks_exact(32) {
-            let nonce: [u8; 32] = chunk.try_into().map_err(|_| SpentError::Malformed)?;
-            if nonce == [0; 32] || !spent.insert(nonce) {
+        for nonce in raw[4..].as_chunks::<32>().0 {
+            if *nonce == [0; 32] || !spent.insert(*nonce) {
                 // Reserved zero value or a duplicate entry is noncanonical.
                 return Err(SpentError::Malformed);
             }
         }
         if raw[4..]
-            .chunks_exact(32)
-            .zip(raw[4..].chunks_exact(32).skip(1))
-            .any(|(a, b)| a >= b)
+            .as_chunks::<32>()
+            .0
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
         {
             return Err(SpentError::Malformed);
         }
@@ -210,6 +210,6 @@ mod tests {
         let mut file = SpentFile::open(&path).unwrap();
         assert_eq!(file.consume([250; 32]), Err(SpentError::Capacity));
         assert_eq!(file.len(), SPENT_CAPACITY);
-        assert!(file.contains(&[9; 32]) == false);
+        assert!(!file.contains(&[9; 32]));
     }
 }
