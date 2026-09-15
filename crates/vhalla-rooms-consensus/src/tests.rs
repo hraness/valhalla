@@ -582,3 +582,79 @@ fn vrb1_batches_and_bodies_decode_without_transitions() {
     flag0.insert(4 + 8 + 4 + 4, 0);
     assert!(matches!(BatchBody::decode(&flag0), Err(ApplyError::Decode)));
 }
+
+#[test]
+fn decoders_accept_only_canonical_bytes() {
+    // Canonical-form invariant: any input a decoder accepts must re-encode
+    // to the identical bytes. Exercising every truncation, a trailing byte,
+    // and byte mutations of valid encodings therefore covers the whole
+    // noncanonical-input space without a fuzzer — a panic, hang or
+    // decode-then-encode difference is a decoder bug.
+    fn check(mut raws: Vec<Vec<u8>>, decode: impl Fn(&[u8]) -> Option<Vec<u8>>) {
+        for raw in raws.drain(..) {
+            for cut in 0..=raw.len() {
+                if let Some(re) = decode(&raw[..cut]) {
+                    assert_eq!(re, raw[..cut], "accepted prefix {cut} noncanonical");
+                }
+            }
+            for extra in [0u8, 1, 0xFF] {
+                let mut trailing = raw.clone();
+                trailing.push(extra);
+                assert!(decode(&trailing).is_none(), "trailing byte accepted");
+            }
+            for i in 0..raw.len() {
+                for delta in [0x01u8, 0x80, 0xFF] {
+                    let mut mutated = raw.clone();
+                    mutated[i] ^= delta;
+                    if let Some(re) = decode(&mutated) {
+                        assert_eq!(re, mutated, "mutation at {i} accepted noncanonically");
+                    }
+                }
+            }
+        }
+    }
+
+    let scenario = fixture::scenario(2, 4);
+    let checked = scenario.app.prepare(1, vec![], vec![], None).unwrap();
+    let mut transition = checked.batch().clone();
+    transition.eligible = Some(vec![
+        OwnerId::from_bytes([9; 32]),
+        OwnerId::from_bytes([7; 32]),
+    ]);
+    check(vec![checked.batch().encode(), transition.encode()], |raw| {
+        Batch::decode(raw).ok().map(|batch| batch.encode())
+    });
+
+    let body = BatchBody {
+        time: 9,
+        evidence: vec![],
+        records: vec![],
+        eligible: Some(vec![OwnerId::from_bytes([7; 32])]),
+    };
+    check(
+        vec![
+            body.encode(),
+            BatchBody {
+                time: 9,
+                evidence: vec![],
+                records: vec![],
+                eligible: None,
+            }
+            .encode(),
+        ],
+        |raw| BatchBody::decode(raw).ok().map(|body| body.encode()),
+    );
+
+    check(
+        vec![encode_eligible_update(&[
+            OwnerId::from_bytes([9; 32]),
+            OwnerId::from_bytes([7; 32]),
+            OwnerId::from_bytes([9; 32]),
+        ])],
+        |raw| {
+            decode_eligible_update(raw)
+                .ok()
+                .map(|set| encode_eligible_update(&set))
+        },
+    );
+}
