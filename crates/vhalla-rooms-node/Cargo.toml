@@ -7,6 +7,14 @@ publish.workspace = true
 description = "Malachite engine wiring for the room registry: context, codec, node, and the journal-gated application boundary."
 
 [dependencies]
+# Portable certificate-consumer surface: context and cert compile for
+# wasm32 with no engine, filesystem, or socket dependencies.
+arc-malachitebft-core-types = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+arc-malachitebft-signing-ed25519 = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232", default-features = false }
+bytes = { version = "1", default-features = false }
+sha3 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
 vhalla-journal = { path = "../vhalla-journal" }
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus" }
 arc-malachitebft-app = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
@@ -14,18 +22,14 @@ arc-malachitebft-app-channel = { git = "https://github.com/circlefin/malachite",
 arc-malachitebft-codec = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 arc-malachitebft-config = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 arc-malachitebft-core-consensus = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
-arc-malachitebft-core-types = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 arc-malachitebft-engine = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 arc-malachitebft-metrics = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
-arc-malachitebft-peer = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+arc-malachitebft-peer = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232", features = ["rand"] }
 arc-malachitebft-signing = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 arc-malachitebft-sync = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
-arc-malachitebft-test = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 async-trait = "0.1"
-bytes = "1"
 eyre = "0.6"
 ractor = { version = "0.15.10", default-features = false, features = ["async-trait", "tokio_runtime"] }
-sha3 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]

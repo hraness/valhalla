@@ -21,23 +21,35 @@
 //! each bundle.
 
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::cell::RefCell;
+#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(unix)]
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io;
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 const HEAD_MAGIC: &[u8; 4] = b"VHP1";
 const BUNDLE_MAGIC: &[u8; 4] = b"VJB1";
+#[cfg(unix)]
 const HEAD_FILE: &str = "HEAD";
+#[cfg(unix)]
 const HEAD_TMP: &str = "HEAD.tmp";
+#[cfg(unix)]
 const LOCK_FILE: &str = "commit.lock";
+#[cfg(unix)]
 const BUNDLES: &str = "bundles";
+#[cfg(unix)]
 const HEIGHTS: &str = "heights";
 /// Scratch bound on one serialized bundle.
 pub const MAX_BUNDLE_BYTES: usize = 1 << 20;
 const MAX_FIELD_BYTES: usize = 64 * 1024;
+#[cfg(unix)]
 const ZERO: [u8; 32] = [0; 32];
 
 fn sha256(parts: &[&[u8]]) -> [u8; 32] {
@@ -295,6 +307,7 @@ pub enum Outcome {
 }
 
 /// What recovery observed on disk.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct Recovered {
     /// The committed pin as of the last durable rename.
@@ -364,6 +377,7 @@ impl From<io::Error> for JournalError {
 
 /// The labeled protocol steps a store performs. Tests program faults against
 /// these names and assert the observed order.
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Step {
     /// Acquire the exclusive writer lock.
@@ -389,6 +403,7 @@ pub enum Step {
 }
 
 /// Failure behavior a test programs at a step.
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
     /// Step runs normally.
@@ -404,6 +419,7 @@ pub enum Fault {
 
 /// The storage operations the protocol needs, split into individually
 /// faultable steps.
+#[cfg(unix)]
 pub trait Store {
     /// Acquire the exclusive writer lock; released when the returned handle
     /// drops, including on process death.
@@ -449,8 +465,10 @@ pub trait Store {
 }
 
 /// Real filesystem store used in production-shaped runs.
+#[cfg(unix)]
 pub struct FsStore;
 
+#[cfg(unix)]
 impl FsStore {
     fn bundle_path(dir: &Path, id: [u8; 32]) -> PathBuf {
         dir.join(BUNDLES).join(hex(&id))
@@ -461,6 +479,7 @@ impl FsStore {
     }
 }
 
+#[cfg(unix)]
 impl Store for FsStore {
     fn lock(&self, dir: &Path) -> Result<File, JournalError> {
         fs::create_dir_all(dir.join(BUNDLES))?;
@@ -625,6 +644,7 @@ impl Store for FsStore {
     }
 }
 
+#[cfg(unix)]
 fn read_opt(path: &Path) -> io::Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -633,6 +653,7 @@ fn read_opt(path: &Path) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
+#[cfg(unix)]
 fn flock_exclusive(file: &File) -> io::Result<()> {
     // Exclusive nonblocking advisory lock; the OS releases it when the
     // descriptor closes, including on process death. Required so a crashed
@@ -647,6 +668,7 @@ fn flock_exclusive(file: &File) -> io::Result<()> {
 }
 
 /// A store wrapper that records step order and injects programmed faults.
+#[cfg(unix)]
 pub struct FaultingStore<S: Store> {
     inner: S,
     faults: BTreeMap<Step, Fault>,
@@ -654,6 +676,7 @@ pub struct FaultingStore<S: Store> {
     pub log: RefCell<Vec<Step>>,
 }
 
+#[cfg(unix)]
 impl<S: Store> FaultingStore<S> {
     /// Wraps a store with the given per-step fault program.
     pub fn new(inner: S, faults: &[(Step, Fault)]) -> Self {
@@ -682,6 +705,7 @@ impl<S: Store> FaultingStore<S> {
     }
 }
 
+#[cfg(unix)]
 impl<S: Store> Store for FaultingStore<S> {
     fn lock(&self, dir: &Path) -> Result<File, JournalError> {
         self.apply(Step::Lock, || self.inner.lock(dir))
@@ -753,6 +777,7 @@ impl<S: Store> Store for FaultingStore<S> {
 
 /// The durable journal. One instance serializes commits through an exclusive
 /// lock; process death releases the lock and recovery re-reads only disk.
+#[cfg(unix)]
 pub struct Journal<S: Store> {
     dir: PathBuf,
     /// The frontier an empty journal starts from. Callers bind their
@@ -761,6 +786,7 @@ pub struct Journal<S: Store> {
     store: S,
 }
 
+#[cfg(unix)]
 impl<S: Store> Journal<S> {
     /// Opens (or creates on first commit) a journal directory, starting an
     /// empty journal at [`GENESIS_NEXT`].

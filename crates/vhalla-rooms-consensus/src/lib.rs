@@ -24,10 +24,13 @@
 //! journal, and the rooms store can never run ahead of the social store.
 
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use vhalla_core::RealmId;
+#[cfg(unix)]
 use vhalla_journal::{Bundle, BundleParts, FsStore, Journal, JournalError, Outcome, Store};
 use vhalla_rooms::registry::{DirectoryPolicy, Registry, RegistryError};
 use vhalla_rooms::DirectoryId;
@@ -39,7 +42,7 @@ use vhalla_social::OwnerId;
 /// tests and engine-level integration tests in `vhalla-rooms-node`.
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
 
 /// Maximum canonical `Batch::encode` bytes — must fit the journal's 64KiB
@@ -579,6 +582,7 @@ impl Genesis {
 
 /// The adapter: engine channel → real application replay → durable journal
 /// → durable snapshot stores → in-memory apply → ack.
+#[cfg(unix)]
 pub struct Adapter<S: Store> {
     journal: Journal<S>,
     app: Application,
@@ -588,6 +592,7 @@ pub struct Adapter<S: Store> {
     pending: BTreeMap<[u8; 32], Batch>,
 }
 
+#[cfg(unix)]
 impl Adapter<FsStore> {
     /// Opens on a real filesystem journal and both real snapshot stores.
     pub fn open(dir: impl Into<PathBuf>, genesis: &Genesis) -> Result<Self, AdapterError> {
@@ -595,6 +600,7 @@ impl Adapter<FsStore> {
     }
 }
 
+#[cfg(unix)]
 impl<S: Store> Adapter<S> {
     /// Opens `journal/` plus the `social/` and `rooms/` snapshot stores
     /// under `dir`, then rebuilds the exact application state the journal
@@ -992,6 +998,7 @@ pub enum ApplyError {
 }
 
 /// Errors opening, publishing or rebuilding the adapter.
+#[cfg(unix)]
 #[derive(Debug)]
 pub enum AdapterError {
     /// Journal operation failed.
@@ -1010,6 +1017,7 @@ pub enum AdapterError {
     Io(std::io::Error),
 }
 
+#[cfg(unix)]
 impl fmt::Display for AdapterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1026,23 +1034,28 @@ impl fmt::Display for AdapterError {
     }
 }
 
+#[cfg(unix)]
 impl std::error::Error for AdapterError {}
 
+#[cfg(unix)]
 impl From<JournalError> for AdapterError {
     fn from(e: JournalError) -> Self {
         AdapterError::Journal(e)
     }
 }
+#[cfg(unix)]
 impl From<vhalla_social_store::Error> for AdapterError {
     fn from(e: vhalla_social_store::Error) -> Self {
         AdapterError::SocialStore(e)
     }
 }
+#[cfg(unix)]
 impl From<vhalla_rooms_store::Error> for AdapterError {
     fn from(e: vhalla_rooms_store::Error) -> Self {
         AdapterError::RoomsStore(e)
     }
 }
+#[cfg(unix)]
 impl From<std::io::Error> for AdapterError {
     fn from(e: std::io::Error) -> Self {
         AdapterError::Io(e)

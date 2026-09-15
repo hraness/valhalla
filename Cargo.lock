@@ -208,7 +208,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "derive-where",
- "serde",
  "thiserror 2.0.20",
 ]
 
@@ -272,23 +271,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arc-malachitebft-engine-byzantine"
-version = "0.8.0"
-source = "git+https://github.com/circlefin/malachite?rev=72143f6c99a98452b587e1c392bdb80944eb2232#72143f6c99a98452b587e1c392bdb80944eb2232"
-dependencies = [
- "arc-malachitebft-core-consensus",
- "arc-malachitebft-core-types",
- "arc-malachitebft-engine",
- "arc-malachitebft-signing",
- "async-trait",
- "eyre",
- "ractor",
- "rand 0.8.8",
- "serde",
- "tracing",
-]
-
-[[package]]
 name = "arc-malachitebft-metrics"
 version = "0.8.0"
 source = "git+https://github.com/circlefin/malachite?rev=72143f6c99a98452b587e1c392bdb80944eb2232#72143f6c99a98452b587e1c392bdb80944eb2232"
@@ -333,17 +315,6 @@ dependencies = [
  "bs58",
  "multihash",
  "rand 0.8.8",
- "serde",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "arc-malachitebft-proto"
-version = "0.8.0"
-source = "git+https://github.com/circlefin/malachite?rev=72143f6c99a98452b587e1c392bdb80944eb2232#72143f6c99a98452b587e1c392bdb80944eb2232"
-dependencies = [
- "prost 0.13.5",
- "prost-types",
  "thiserror 2.0.20",
 ]
 
@@ -363,10 +334,7 @@ version = "0.8.0"
 source = "git+https://github.com/circlefin/malachite?rev=72143f6c99a98452b587e1c392bdb80944eb2232#72143f6c99a98452b587e1c392bdb80944eb2232"
 dependencies = [
  "arc-malachitebft-core-types",
- "base64",
  "ed25519-consensus",
- "rand 0.8.8",
- "serde",
  "signature 2.2.0",
 ]
 
@@ -389,44 +357,6 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
-name = "arc-malachitebft-test"
-version = "0.8.0"
-source = "git+https://github.com/circlefin/malachite?rev=72143f6c99a98452b587e1c392bdb80944eb2232#72143f6c99a98452b587e1c392bdb80944eb2232"
-dependencies = [
- "arc-malachitebft-app",
- "arc-malachitebft-codec",
- "arc-malachitebft-config",
- "arc-malachitebft-core-consensus",
- "arc-malachitebft-core-types",
- "arc-malachitebft-engine",
- "arc-malachitebft-engine-byzantine",
- "arc-malachitebft-peer",
- "arc-malachitebft-proto",
- "arc-malachitebft-signing",
- "arc-malachitebft-signing-ed25519",
- "arc-malachitebft-sync",
- "async-trait",
- "base64",
- "bytes",
- "ed25519-consensus",
- "eyre",
- "futures",
- "hex",
- "libp2p-identity 0.2.14",
- "prost 0.13.5",
- "prost-build",
- "prost-types",
- "protox",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "sha3",
- "signature 2.2.0",
- "tokio",
  "tracing",
 ]
 
@@ -637,12 +567,6 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
-
-[[package]]
-name = "beef"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a8241f3ebb85c056b509d4327ad0358fbbba6ffb340bf388f26350aeda225b1"
 
 [[package]]
 name = "bit-set"
@@ -1587,12 +1511,6 @@ name = "find-msvc-tools"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
-
-[[package]]
-name = "fixedbitset"
-version = "0.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "fnv"
@@ -2764,7 +2682,7 @@ dependencies = [
  "multistream-select 0.14.0",
  "parking_lot",
  "pin-project",
- "prost 0.14.4",
+ "prost",
  "rand 0.10.2",
  "rw-stream-sink 0.5.0",
  "thiserror 2.0.20",
@@ -2868,7 +2786,7 @@ dependencies = [
  "hkdf 0.12.4",
  "multihash",
  "p256",
- "prost 0.14.4",
+ "prost",
  "rand 0.8.8",
  "sec1",
  "serde",
@@ -2888,7 +2806,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hkdf 0.13.0",
  "multihash",
- "prost 0.14.4",
+ "prost",
  "rand 0.10.2",
  "sha2 0.11.0",
  "thiserror 2.0.20",
@@ -3341,40 +3259,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
-name = "logos"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff472f899b4ec2d99161c51f60ff7075eeb3097069a36050d8037a6325eb8154"
-dependencies = [
- "logos-derive",
-]
-
-[[package]]
-name = "logos-codegen"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "192a3a2b90b0c05b27a0b2c43eecdb7c415e29243acc3f89cc8247a5b693045c"
-dependencies = [
- "beef",
- "fnv",
- "lazy_static",
- "proc-macro2",
- "quote",
- "regex-syntax",
- "rustc_version",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "logos-derive"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "605d9697bcd5ef3a42d38efc51541aa3d6a4a25f7ab6d1ed0da5ac632a26b470"
-dependencies = [
- "logos-codegen",
-]
-
-[[package]]
 name = "lru"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3405,28 +3289,6 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
-
-[[package]]
-name = "miette"
-version = "7.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f98efec8807c63c752b5bd61f862c165c115b0a35685bdcfd9238c7aeb592b7"
-dependencies = [
- "cfg-if",
- "miette-derive",
- "unicode-width 0.1.14",
-]
-
-[[package]]
-name = "miette-derive"
-version = "7.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db5b29714e950dbb20d5e6f74f9dcec4edbcc1067bb7f8ed198c097b8c1a818b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
 
 [[package]]
 name = "minimal-lexical"
@@ -3524,12 +3386,6 @@ dependencies = [
  "serde",
  "unsigned-varint 0.8.0",
 ]
-
-[[package]]
-name = "multimap"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "multistream-select"
@@ -3816,16 +3672,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "petgraph"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
-dependencies = [
- "fixedbitset",
- "indexmap",
-]
-
-[[package]]
 name = "pin-project"
 version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3946,16 +3792,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prettyplease"
-version = "0.2.37"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
-dependencies = [
- "proc-macro2",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "primeorder"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4017,55 +3853,12 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
-dependencies = [
- "bytes",
- "prost-derive 0.13.5",
-]
-
-[[package]]
-name = "prost"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
 dependencies = [
  "bytes",
- "prost-derive 0.14.4",
-]
-
-[[package]]
-name = "prost-build"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
-dependencies = [
- "heck",
- "itertools",
- "log",
- "multimap",
- "once_cell",
- "petgraph",
- "prettyplease",
- "prost 0.13.5",
- "prost-types",
- "regex",
- "syn 2.0.119",
- "tempfile",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
-dependencies = [
- "anyhow",
- "itertools",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "prost-derive",
 ]
 
 [[package]]
@@ -4079,54 +3872,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "prost-reflect"
-version = "0.15.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37587d5a8a1b3dc9863403d084fc2254b91ab75a702207098837950767e2260b"
-dependencies = [
- "logos",
- "miette",
- "prost 0.13.5",
- "prost-types",
-]
-
-[[package]]
-name = "prost-types"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
-dependencies = [
- "prost 0.13.5",
-]
-
-[[package]]
-name = "protox"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "424c2bd294b69c49b949f3619362bc3c5d28298cd1163b6d1a62df37c16461aa"
-dependencies = [
- "bytes",
- "miette",
- "prost 0.13.5",
- "prost-reflect",
- "prost-types",
- "protox-parse",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "protox-parse"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57927f9dbeeffcce7192404deee6157a640cbb3fe8ac11eabbe571565949ab75"
-dependencies = [
- "logos",
- "miette",
- "prost-types",
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4383,7 +4128,7 @@ dependencies = [
  "thiserror 2.0.20",
  "unicode-segmentation",
  "unicode-truncate",
- "unicode-width 0.2.2",
+ "unicode-width",
 ]
 
 [[package]]
@@ -4415,7 +4160,7 @@ dependencies = [
  "strum",
  "time",
  "unicode-segmentation",
- "unicode-width 0.2.2",
+ "unicode-width",
 ]
 
 [[package]]
@@ -5360,14 +5105,8 @@ checksum = "16b380a1238663e5f8a691f9039c73e1cdae598a30e9855f541d29b08b53e9a5"
 dependencies = [
  "itertools",
  "unicode-segmentation",
- "unicode-width 0.2.2",
+ "unicode-width",
 ]
-
-[[package]]
-name = "unicode-width"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
 
 [[package]]
 name = "unicode-width"
@@ -5664,8 +5403,8 @@ dependencies = [
  "arc-malachitebft-metrics",
  "arc-malachitebft-peer",
  "arc-malachitebft-signing",
+ "arc-malachitebft-signing-ed25519",
  "arc-malachitebft-sync",
- "arc-malachitebft-test",
  "async-trait",
  "bytes",
  "ed25519-dalek 2.2.0",

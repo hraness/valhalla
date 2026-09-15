@@ -43,6 +43,8 @@ SOCIAL_STORE is an existing `vhalla social` store; ROOMS_STORE is created by `in
 IDs are full hex. Slot and charge are computed from the current policy quote.
 Read paging: --limit N (1..64). Output is ASCII JSON. The directory clock is
 --now or the local clock; admission still requires the current social basis.
+Recommended launch profile: BASE_COST 8, WINDOW_SEC 86400, MAX_IN_WINDOW 1,
+EPOCH_SEC 86400, MAX_LIFETIME 8, with a committee-curated eligible set.
 `node` hosts a room-consensus validator: NODE_HOME holds its journal, WAL and
 application store; --config names a JSON file with node_key (hex seed), port,
 peers, validators, directory, policy, eligible owners and archive limits.

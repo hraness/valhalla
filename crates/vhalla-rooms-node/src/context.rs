@@ -6,21 +6,123 @@
 //! proposal parts, and the commit certificate's `value_id` field is the
 //! batch's own commitment.
 //!
-//! Reused from the pinned test crate (non-context-generic impls): `Height`,
-//! `Address`, the `Ed25519` signing scheme, and `LinearTimeouts`. Everything
+//! The `Ed25519` scheme and its keys come from the pinned signing crate;
+//! `Height` and `Address` are the local context types below. Everything
 //! else — value, vote, proposal, proposal parts, validators, signer,
-//! verifier, codec — is implemented here for `RoomContext`.
+//! verifier, codec — is implemented here for `RoomContext`. All of it is
+//! portable: no filesystem, sockets, or engine runtime, so a wasm consumer
+//! can verify certificates and replay decided values.
 
 use core::fmt;
 
 use bytes::Bytes;
+use sha3::{Digest, Keccak256};
 
 use arc_malachitebft_core_types::{
     Context, NilOrVal, Proposal as ProposalTrait, ProposalPart as ProposalPartTrait, Round,
     SignedExtension, Validator as ValidatorTrait, ValidatorSet as ValidatorSetTrait,
     Vote as VoteTrait, VoteType,
 };
-pub use arc_malachitebft_test::{Address, Ed25519, Height, PrivateKey, PublicKey, Signature};
+pub use arc_malachitebft_signing_ed25519::{Ed25519, PrivateKey, PublicKey, Signature};
+
+/// A consensus address: the low 20 bytes of the validator public key's
+/// Keccak-256 digest.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Address([u8; Self::LENGTH]);
+
+impl Address {
+    const LENGTH: usize = 20;
+
+    /// Wraps raw address bytes.
+    pub const fn new(value: [u8; Self::LENGTH]) -> Self {
+        Self(value)
+    }
+
+    /// Derives the consensus address for a public key.
+    pub fn from_public_key(public_key: &PublicKey) -> Self {
+        let hash: [u8; 32] = Keccak256::digest(public_key.as_bytes()).into();
+        let mut address = [0; Self::LENGTH];
+        address.copy_from_slice(&hash[..Self::LENGTH]);
+        Self(address)
+    }
+
+    /// The raw address bytes.
+    pub fn into_inner(self) -> [u8; Self::LENGTH] {
+        self.0
+    }
+}
+
+impl fmt::Display for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0.iter() {
+            write!(f, "{byte:02X}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Address({self})")
+    }
+}
+
+impl arc_malachitebft_core_types::Address for Address {}
+
+/// A consensus height.
+#[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Height(u64);
+
+impl Height {
+    /// Wraps a raw height.
+    pub const fn new(height: u64) -> Self {
+        Self(height)
+    }
+
+    /// The raw height number.
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    /// The next height.
+    pub fn increment(&self) -> Self {
+        Self(self.0 + 1)
+    }
+
+    /// The previous height, when above zero.
+    pub fn decrement(&self) -> Option<Self> {
+        self.0.checked_sub(1).map(Self)
+    }
+}
+
+impl fmt::Display for Height {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl fmt::Debug for Height {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Height({})", self.0)
+    }
+}
+
+impl arc_malachitebft_core_types::Height for Height {
+    const ZERO: Self = Self(0);
+    const INITIAL: Self = Self(1);
+
+    fn increment_by(&self, n: u64) -> Self {
+        Self(self.0 + n)
+    }
+
+    fn decrement_by(&self, n: u64) -> Option<Self> {
+        Some(Self(self.0.saturating_sub(n)))
+    }
+
+    fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
 
 /// Maximum canonical value bytes carried inside a proposal. The room
 /// registry's own batch bound is strictly smaller; this is the wire bound.
