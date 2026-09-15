@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use desktop_foundation::{
-    outputs::OutputsSection, AccessibilityMetadata, Host, MenuItem, MenuModel, MenuNode, Options,
+    outputs::OutputsSection, AccessibilityMetadata, DispatchOutcome, Host, MenuItem, MenuModel,
+    MenuNode, Options, RenderError,
 };
 
 /// `~/Library/Application Support/Valhalla` on macOS, matching
@@ -76,8 +77,16 @@ impl Host for ValhallaHost {
         }
     }
 
-    fn dispatch(&self, id: &str) {
-        let _ = self.outputs.dispatch(id);
+    fn dispatch_result(&self, id: &str) -> DispatchOutcome {
+        if self.outputs.dispatch(id) {
+            DispatchOutcome::Accepted
+        } else {
+            DispatchOutcome::Rejected
+        }
+    }
+
+    fn render_failed(&self, error: RenderError) {
+        eprintln!("vhalla-menubar: render failed: {error:?}");
     }
 }
 

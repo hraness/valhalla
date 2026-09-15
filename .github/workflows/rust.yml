@@ -71,3 +71,12 @@ jobs:
       - name: Retained native admission reference integrity
         working-directory: prototypes/browser-records/interop/native-admission-reference
         run: sha256sum --check SHA256SUMS
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Menubar build
+        run: cargo build --locked --manifest-path desktop/Cargo.toml
+      - name: Menubar tests
+        run: cargo test --locked --manifest-path desktop/Cargo.toml
