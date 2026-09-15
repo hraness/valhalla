@@ -1,0 +1,83 @@
+name: Release
+
+# Tag-driven binary releases. The artifacts are unbundled developer
+# binaries: `vhalla` plus the `vhalla-menubar` companion it resolves as a
+# sibling. Nothing here signs, packages, or notarizes — and the whole lane
+# runs on the repository's GITHUB_TOKEN with no interactive step.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build vhalla
+        run: cargo build --release --locked -p vhalla-cli --all-features
+      - name: Smoke check
+        run: ./target/release/vhalla --help
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          out="valhalla-${tag}-${{ matrix.target }}"
+          mkdir "$out"
+          cp target/release/vhalla "$out/"
+          tar -czf "${out}.tar.gz" "$out"
+          shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --generate-notes
+          gh release upload "$tag" \
+            "valhalla-${tag}-${{ matrix.target }}.tar.gz" \
+            "valhalla-${tag}-${{ matrix.target }}.tar.gz.sha256" \
+            --clobber
+
+  menubar:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build vhalla-menubar
+        run: cargo build --release --locked --manifest-path desktop/Cargo.toml
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          out="valhalla-menubar-${tag}-aarch64-apple-darwin"
+          mkdir "$out"
+          cp desktop/target/release/vhalla-menubar "$out/"
+          tar -czf "${out}.tar.gz" "$out"
+          shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --generate-notes
+          gh release upload "$tag" \
+            "valhalla-menubar-${tag}-aarch64-apple-darwin.tar.gz" \
+            "valhalla-menubar-${tag}-aarch64-apple-darwin.tar.gz.sha256" \
+            --clobber
