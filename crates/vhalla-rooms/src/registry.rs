@@ -323,6 +323,11 @@ impl Registry {
             .get(&genesis)
             .and_then(|slug| self.rooms.get(slug))
     }
+    /// The admitted eligible award-source set.
+    #[must_use]
+    pub fn eligible(&self) -> &BTreeSet<OwnerId> {
+        &self.eligible
+    }
     /// Monotonic agreed-clock high-water mark.
     #[must_use]
     pub const fn last_time(&self) -> u64 {
@@ -442,6 +447,26 @@ impl Registry {
             .checked_add(1)
             .ok_or(RegistryError::Capacity)?;
         Ok(Applied::Awarded)
+    }
+
+    /// Replace the eligible award-source set — a committed configuration
+    /// transition under the agreed clock, bounded like the genesis set. The
+    /// set lives inside `snapshot`/`digest`, so the transition commits and
+    /// replays identically on every validator.
+    pub fn set_eligible(&mut self, eligible: &[OwnerId], now: u64) -> Result<(), RegistryError> {
+        if now < self.last_time {
+            return Err(RegistryError::Clock);
+        }
+        if eligible.len() > MAX_OWNERS {
+            return Err(RegistryError::Capacity);
+        }
+        self.eligible = eligible.iter().copied().collect();
+        self.last_time = now;
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(RegistryError::Capacity)?;
+        Ok(())
     }
 
     fn create(

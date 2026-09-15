@@ -38,8 +38,8 @@ use arc_malachitebft_metrics::SharedRegistry;
 use arc_malachitebft_signing::Signer;
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use vhalla_rooms_consensus::{
-    Adapter, Batch, BatchBody, CommitCertificate as RoomCertificate, DecidedOutcome, EngineSink,
-    Genesis,
+    decode_eligible_update, Adapter, Batch, BatchBody, CommitCertificate as RoomCertificate,
+    DecidedOutcome, EngineSink, Genesis,
 };
 
 use crate::cert::verify_commit_certificate;
@@ -352,6 +352,8 @@ impl App {
     /// a complete batch's parent and result claims are recomputed at
     /// assignment, so a stale assembler's value is rescued rather than
     /// rejected outright and can never occupy the queue uncommittable.
+    /// `*.eligible` files are operator-dropped `VBE1` updates: a bare
+    /// replacement eligible-source set queued as a config-only body.
     /// The file stem becomes the pending-marker name (limited to 64
     /// bytes of `[a-zA-Z0-9._-]` so it can never escape the store).
     /// Accepted files unlink; malformed ones rename `.rejected`.
@@ -373,6 +375,7 @@ impl App {
             let Some(stem) = name
                 .strip_suffix(".batch")
                 .or_else(|| name.strip_suffix(".body"))
+                .or_else(|| name.strip_suffix(".eligible"))
             else {
                 continue;
             };
@@ -382,6 +385,17 @@ impl App {
                         time: b.time,
                         evidence: b.evidence,
                         records: b.records,
+                        eligible: b.eligible,
+                    })
+                } else if name.ends_with(".eligible") {
+                    // Operator-dropped eligible-set transition: a bare id list
+                    // becomes a config-only body; the committed clock supplies
+                    // the batch time at assembly.
+                    decode_eligible_update(&bytes).ok().map(|set| BatchBody {
+                        time: 0,
+                        evidence: Vec::new(),
+                        records: Vec::new(),
+                        eligible: Some(set),
                     })
                 } else {
                     BatchBody::decode(&bytes).ok()
@@ -447,7 +461,7 @@ impl App {
                             .lock()
                             .unwrap()
                             .application()
-                            .prepare(b.time, b.evidence, b.records)
+                            .prepare(b.time, b.evidence, b.records, b.eligible)
                             .ok()
                     });
                     match checked {

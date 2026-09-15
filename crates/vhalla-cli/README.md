@@ -325,6 +325,16 @@ Malformed drops and effects that can never apply are renamed
 `*.rejected`; accepted drops unlink once queued. SIGINT stops the
 service.
 
+Operators evolve the committed eligible award-source set the same way:
+`vhalla rooms eligible SOCIAL_STORE NODE_HOME REALM OWNER64,...` writes a
+canonical `*.eligible` file into the intake (the social store and realm
+arguments are unused but keep the shared rooms shape). The node queues it
+as a configuration-only body; the replacement set commits inside the
+decided batch value — authorized by the quorum certificate over the value
+id — and applies after that batch's awards and records, so it governs
+subsequent heights. The wire format is bounded at 256 owner ids and
+canonical (sorted, duplicate-free).
+
 ## Room-directory terminal companion
 
 The `experimental-rooms-tui` feature (which implies

@@ -371,7 +371,10 @@ fn divergent_genesis_rejects_the_first_bundle_on_parent() {
 fn batch_clock_is_monotonic_and_step_bounded() {
     let mut scenario = fixture::scenario(2, 4);
     // The first committed batch anchors the clock at whatever it carries.
-    let anchored = scenario.app.prepare(1_000_000, vec![], vec![]).unwrap();
+    let anchored = scenario
+        .app
+        .prepare(1_000_000, vec![], vec![], None)
+        .unwrap();
     scenario.app.apply_locally(anchored);
     assert_eq!(scenario.app.frontier().time, 1_000_000);
 
@@ -379,7 +382,7 @@ fn batch_clock_is_monotonic_and_step_bounded() {
     // evidence-free batch whose replay would otherwise succeed.
     let mut regressed = scenario
         .app
-        .prepare(1_000_000, vec![], vec![])
+        .prepare(1_000_000, vec![], vec![], None)
         .unwrap()
         .batch()
         .clone();
@@ -400,16 +403,182 @@ fn batch_clock_is_monotonic_and_step_bounded() {
     // The boundary itself is admitted.
     let edge = scenario
         .app
-        .prepare(1_000_000 + MAX_TIME_DRIFT, vec![], vec![])
+        .prepare(1_000_000 + MAX_TIME_DRIFT, vec![], vec![], None)
         .unwrap();
     assert!(scenario.app.validate(edge.batch()).is_ok());
 
     // Producers clamp into the window: an over-shot clock lands on the
     // bound, an under-shot on the frontier — the assembled batch always
     // validates, so a stalled clock ratchets back rather than freezing.
-    let clamped = scenario.app.prepare(u64::MAX, vec![], vec![]).unwrap();
+    let clamped = scenario
+        .app
+        .prepare(u64::MAX, vec![], vec![], None)
+        .unwrap();
     assert_eq!(clamped.batch().time, 1_000_000 + MAX_TIME_DRIFT);
     assert!(scenario.app.validate(clamped.batch()).is_ok());
-    let floored = scenario.app.prepare(7, vec![], vec![]).unwrap();
+    let floored = scenario.app.prepare(7, vec![], vec![], None).unwrap();
     assert_eq!(floored.batch().time, 1_000_000);
+}
+
+#[test]
+fn eligible_transition_commits_in_band_and_governs_next_height() {
+    // A committed-but-ineligible source stands beside the admitted pair.
+    let mut archive = Archive::new(fixture::REALM, fixture::limits()).unwrap();
+    let owners: Vec<_> = (0..2)
+        .map(|i| fixture::beneficiary(&mut archive, 1 + i))
+        .collect();
+    let sources: Vec<_> = (60..62).map(|s| fixture::owner(&mut archive, s)).collect();
+    let mut newcomer = fixture::owner(&mut archive, 62);
+    let mut admitted: Vec<OwnerId> = sources.iter().map(|s| s.id).collect();
+    let genesis = Genesis {
+        directory: fixture::DIRECTORY,
+        realm: fixture::REALM,
+        policy: fixture::policy(),
+        eligible: admitted.clone(),
+        limits: fixture::limits(),
+        archive: archive.clone(),
+    };
+    let mut app = Application::genesis(archive, genesis.registry().unwrap());
+    let beneficiary = owners[0].id;
+
+    // The transition batch carries evidence from the not-yet-admitted source
+    // plus the update admitting it. The update applies last, so this batch's
+    // award is still denied — the new set governs subsequent heights.
+    let mut cursor = 0usize;
+    admitted.push(newcomer.id);
+    let first = app
+        .prepare(
+            1,
+            fixture::evidence_for(
+                app.social(),
+                beneficiary,
+                std::slice::from_mut(&mut newcomer),
+                &mut cursor,
+                1,
+            ),
+            vec![],
+            Some(admitted.clone()),
+        )
+        .unwrap();
+    let batch = first.batch().clone();
+    assert_eq!(batch.eligible, Some(admitted.clone()));
+    assert!(app.validate(&batch).is_ok());
+    app.apply_locally(first);
+    assert_eq!(
+        app.registry().account(beneficiary).earned,
+        0,
+        "the carrying batch's award still sees the old eligible set"
+    );
+    assert!(app.registry().eligible().contains(&newcomer.id));
+
+    // Next height: evidence from the now-admitted source credits.
+    let second = app
+        .prepare(
+            2,
+            fixture::evidence_for(
+                app.social(),
+                beneficiary,
+                std::slice::from_mut(&mut newcomer),
+                &mut cursor,
+                1,
+            ),
+            vec![],
+            None,
+        )
+        .unwrap();
+    app.apply_locally(second);
+    assert_eq!(app.registry().account(beneficiary).earned, 1);
+
+    // An over-bound update can never commit: replay rejects it on every
+    // validator identically.
+    let oversized: Vec<OwnerId> = (0..=vhalla_rooms::registry::MAX_OWNERS)
+        .map(|i| OwnerId::from_bytes([i as u8; 32]))
+        .collect();
+    assert!(matches!(
+        app.prepare(3, vec![], vec![], Some(oversized)),
+        Err(ApplyError::Registry(RegistryError::Capacity))
+    ));
+}
+
+#[test]
+fn vrb1_batches_and_bodies_decode_without_transitions() {
+    // A transition-free batch canonically encodes as `VRB1` — retained V1
+    // journals decode and re-encode to identical bytes, so committed value
+    // ids survive the upgrade.
+    let scenario = fixture::scenario(2, 4);
+    let checked = scenario.app.prepare(1, vec![], vec![], None).unwrap();
+    let batch = checked.batch().clone();
+    let encoded = batch.encode();
+    assert_eq!(&encoded[..4], b"VRB1");
+    let decoded = Batch::decode(&encoded).unwrap();
+    assert!(decoded.eligible.is_none());
+    assert_eq!(decoded.encode(), encoded);
+    assert_eq!(decoded.value_id(), batch.value_id());
+
+    // `VRB2` carrying an empty transition is noncanonical — `None` is `VRB1`.
+    let mut flag0 = encoded.clone();
+    flag0[..4].copy_from_slice(b"VRB2");
+    let flag_at = 4 + FRONTIER_BYTES + 8 + 4 + 4;
+    flag0.insert(flag_at, 0);
+    assert!(matches!(Batch::decode(&flag0), Err(ApplyError::Decode)));
+
+    // A transition batch encodes `VRB2` and round-trips. The wire rejects
+    // noncanonical sets — unsorted or duplicate ids have no byte form.
+    let mut transition = batch.clone();
+    transition.eligible = Some(vec![
+        OwnerId::from_bytes([9; 32]),
+        OwnerId::from_bytes([7; 32]),
+    ]);
+    let raw = transition.encode();
+    assert_eq!(&raw[..4], b"VRB2");
+    let decoded = Batch::decode(&raw).unwrap();
+    assert_eq!(
+        decoded.eligible,
+        Some(vec![
+            OwnerId::from_bytes([7; 32]),
+            OwnerId::from_bytes([9; 32]),
+        ]),
+        "encode normalizes to the canonical sorted-unique form"
+    );
+    assert_eq!(decoded.encode(), raw);
+    assert_eq!(decoded.value_id(), transition.value_id());
+
+    let mut unsorted = raw.clone();
+    let id_at = flag_at + 1 + 4;
+    unsorted[id_at..id_at + 32].copy_from_slice(&[9; 32]);
+    unsorted[id_at + 32..id_at + 64].copy_from_slice(&[7; 32]);
+    assert!(matches!(Batch::decode(&unsorted), Err(ApplyError::Decode)));
+    let mut dup = unsorted.clone();
+    dup[id_at + 32..id_at + 64].copy_from_slice(&[9; 32]);
+    assert!(matches!(Batch::decode(&dup), Err(ApplyError::Decode)));
+
+    // Bodies follow the same convention: `VBB1` iff no transition.
+    let body = BatchBody {
+        time: 9,
+        evidence: vec![],
+        records: vec![],
+        eligible: Some(vec![OwnerId::from_bytes([7; 32])]),
+    };
+    let raw = body.encode();
+    assert_eq!(&raw[..4], b"VBB2");
+    let decoded = BatchBody::decode(&raw).unwrap();
+    assert_eq!(decoded.eligible, body.eligible);
+    assert_eq!(decoded.encode(), raw);
+
+    let plain = BatchBody {
+        time: 9,
+        evidence: vec![],
+        records: vec![],
+        eligible: None,
+    };
+    let raw = plain.encode();
+    assert_eq!(&raw[..4], b"VBB1");
+    let decoded = BatchBody::decode(&raw).unwrap();
+    assert!(decoded.eligible.is_none());
+    assert_eq!(decoded.encode(), raw);
+
+    let mut flag0 = raw.clone();
+    flag0[..4].copy_from_slice(b"VBB2");
+    flag0.insert(4 + 8 + 4 + 4, 0);
+    assert!(matches!(BatchBody::decode(&flag0), Err(ApplyError::Decode)));
 }

@@ -7,7 +7,7 @@
 mod common;
 use common::*;
 use vhalla_rooms::{
-    registry::{Applied, Registry, RegistryError},
+    registry::{Applied, Registry, RegistryError, MAX_OWNERS},
     Denial, Description, PolicyId, RoomGenesisId, RoomRecordId, RoomUpdate, Slug, UpdateAction,
 };
 use vhalla_social::{archive::Archive, control::ControlView, Body, Operation};
@@ -398,4 +398,31 @@ fn snapshot_integrity_and_bounds_are_checked() {
         Registry::restore(&empty.snapshot()).unwrap().digest(),
         empty.digest()
     );
+}
+
+/// The committed eligible-set transition: replaces under the agreed clock,
+/// bounded like genesis, and rejects clock rewind.
+#[test]
+fn eligible_set_transition_replaces_and_bounds() {
+    let mut archive = Archive::new(REALM, limits()).unwrap();
+    let (pool, mut registry) = sources(&mut archive, 60, 2);
+    let keep = pool[0].id;
+    let extra = beneficiary(&mut archive, 7).id;
+    registry.set_eligible(&[keep, extra], 5).unwrap();
+    assert_eq!(registry.eligible().len(), 2);
+    assert!(registry.eligible().contains(&extra));
+
+    // Over the owner bound fails closed; the committed set is untouched.
+    let too_many: Vec<vhalla_social::OwnerId> = (0..=MAX_OWNERS)
+        .map(|i| vhalla_social::OwnerId::from_bytes([i as u8; 32]))
+        .collect();
+    assert_eq!(
+        registry.set_eligible(&too_many, 6),
+        Err(RegistryError::Capacity)
+    );
+    assert_eq!(registry.eligible().len(), 2);
+
+    // The agreed-clock gate holds.
+    assert_eq!(registry.set_eligible(&[keep], 4), Err(RegistryError::Clock));
+    assert_eq!(registry.last_time(), 5);
 }

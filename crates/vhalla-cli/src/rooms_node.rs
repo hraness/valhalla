@@ -18,6 +18,7 @@ use vhalla_social::OwnerId;
 
 use vhalla_social_store::Store as SocialStore;
 
+use crate::json;
 use crate::rooms::{hex32, Args};
 
 /// The JSON node file: local identity and networking plus the shared
@@ -185,5 +186,44 @@ pub fn run(args: &Args) -> Result<(), String> {
         let _ = tokio::signal::ctrl_c().await;
         node.crash().await;
     });
+    Ok(())
+}
+
+/// The `eligible` subcommand: emit an operator intake file carrying a
+/// replacement eligible award-source set into `NODE_HOME/intake/`. The node
+/// drains it as a config-only body and the transition commits — applying
+/// after that batch's records — at the next decided height. The social
+/// store and realm arguments are unused; they keep the shared rooms
+/// argument shape.
+pub fn eligible(args: &Args) -> Result<(), String> {
+    if args.value(1).is_some() {
+        return Err("eligible takes exactly OWNER64,... — the replacement set".into());
+    }
+    let owners: Vec<OwnerId> = args
+        .value(0)
+        .ok_or("eligible takes OWNER64,... — the replacement set")?
+        .split(',')
+        .map(|id| hex32(id).map(OwnerId::from_bytes))
+        .collect::<Result<_, _>>()?;
+    if owners.is_empty() || owners.len() > vhalla_rooms::registry::MAX_OWNERS {
+        return Err("eligible takes 1..=256 owner ids".into());
+    }
+    let bytes = vhalla_rooms_consensus::encode_eligible_update(&owners);
+    let intake = std::path::Path::new(&args.rooms_store).join("intake");
+    std::fs::create_dir_all(&intake).map_err(|e| format!("intake: {e}"))?;
+    // Name the file deterministically from the canonical bytes so a repeated
+    // command converges on one pending marker rather than duplicating work.
+    let stem = format!("eligible-{}", &crate::json::id(&bytes[8..24])[..16]);
+    let target = intake.join(format!("{stem}.eligible"));
+    let tmp = intake.join(format!("{stem}.tmp"));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("write: {e}"))?;
+    std::fs::rename(&tmp, &target).map_err(|e| format!("rename: {e}"))?;
+    println!(
+        "{}",
+        json::object(vec![
+            ("intake", json::string(&target.display().to_string())),
+            ("owners", owners.len().to_string()),
+        ])
+    );
     Ok(())
 }

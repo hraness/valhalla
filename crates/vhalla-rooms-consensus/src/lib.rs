@@ -36,7 +36,8 @@ use vhalla_rooms::registry::{DirectoryPolicy, Registry, RegistryError};
 use vhalla_rooms::DirectoryId;
 use vhalla_social::archive::{Archive, Budget, Limits};
 use vhalla_social::control::ControlView;
-use vhalla_social::OwnerId;
+/// The owner identity carried by eligible-set transitions and genesis.
+pub use vhalla_social::OwnerId;
 
 /// Deterministic signed-record scenario builders shared by this crate's
 /// tests and engine-level integration tests in `vhalla-rooms-node`.
@@ -58,6 +59,86 @@ pub const MAX_TIME_DRIFT: u64 = 86_400;
 
 const FRONTIER_BYTES: usize = 8 + 32 + 32 + 32 + 32 + 8;
 const BATCH_MAGIC: &[u8; 4] = b"VRB1";
+const BATCH_MAGIC_V2: &[u8; 4] = b"VRB2";
+
+/// Bounded decode of a canonical eligible-source set: strictly ascending,
+/// duplicate-free owner ids bounded by `MAX_OWNERS`.
+fn eligible_list(rest: &mut &[u8]) -> Result<Vec<OwnerId>, ApplyError> {
+    let count = u32::from_be_bytes(take(rest, 4)?.try_into().unwrap()) as usize;
+    if count > vhalla_rooms::registry::MAX_OWNERS {
+        return Err(ApplyError::Decode);
+    }
+    let mut set = Vec::with_capacity(count);
+    for _ in 0..count {
+        let owner = OwnerId::from_bytes(take(rest, 32)?.try_into().unwrap());
+        // Canonical order is strictly ascending — reject unsorted or
+        // duplicate ids so each set has exactly one byte form.
+        if set.last() >= Some(&owner) {
+            return Err(ApplyError::Decode);
+        }
+        set.push(owner);
+    }
+    Ok(set)
+}
+
+/// Bounded decode of an optional committed eligible-source set.
+fn eligible_set(rest: &mut &[u8]) -> Result<Option<Vec<OwnerId>>, ApplyError> {
+    match take(rest, 1)?[0] {
+        0 => Ok(None),
+        1 => eligible_list(rest).map(Some),
+        _ => Err(ApplyError::Decode),
+    }
+}
+
+fn encode_eligible(raw: &mut Vec<u8>, eligible: &Option<Vec<OwnerId>>) {
+    match eligible {
+        None => raw.push(0),
+        Some(set) => {
+            let mut set = set.clone();
+            set.sort_unstable();
+            set.dedup();
+            raw.push(1);
+            raw.extend_from_slice(&(set.len() as u32).to_be_bytes());
+            for owner in set {
+                raw.extend_from_slice(owner.as_bytes());
+            }
+        }
+    }
+}
+
+const ELIGIBLE_MAGIC: &[u8; 4] = b"VBE1";
+
+/// Canonical bytes for an operator-dropped `*.eligible` intake file: a bare
+/// replacement eligible-source set the node queues as a config-only body.
+#[must_use]
+pub fn encode_eligible_update(set: &[OwnerId]) -> Vec<u8> {
+    let mut set = set.to_vec();
+    set.sort_unstable();
+    set.dedup();
+    let mut raw = Vec::with_capacity(8 + set.len() * 32);
+    raw.extend_from_slice(ELIGIBLE_MAGIC);
+    raw.extend_from_slice(&(set.len() as u32).to_be_bytes());
+    for owner in set {
+        raw.extend_from_slice(owner.as_bytes());
+    }
+    raw
+}
+
+/// Strict bounded decode of a `*.eligible` intake file.
+pub fn decode_eligible_update(raw: &[u8]) -> Result<Vec<OwnerId>, ApplyError> {
+    if raw.len() < 8
+        || raw.len() > 8 + vhalla_rooms::registry::MAX_OWNERS * 32
+        || raw.get(..4) != Some(ELIGIBLE_MAGIC.as_slice())
+    {
+        return Err(ApplyError::Decode);
+    }
+    let mut rest = &raw[4..];
+    let set = eligible_list(&mut rest)?;
+    if !rest.is_empty() {
+        return Err(ApplyError::Decode);
+    }
+    Ok(set)
+}
 
 fn take<'a>(rest: &mut &'a [u8], n: usize) -> Result<&'a [u8], ApplyError> {
     if rest.len() < n {
@@ -142,6 +223,11 @@ pub struct Batch {
     pub evidence: Vec<Vec<u8>>,
     /// Canonical `vhalla_rooms::SignedRecord` bytes — applied in order.
     pub records: Vec<Vec<u8>>,
+    /// Committed configuration transition: a replacement eligible award-source
+    /// set, applied after this batch's records so it governs subsequent
+    /// heights. Its authorization is the quorum certificate that decides the
+    /// batch's value id — curation is committee vote discipline.
+    pub eligible: Option<Vec<OwnerId>>,
     /// Claimed post-apply `Registry::digest()`.
     pub result_registry: [u8; 32],
     /// Claimed post-merge `Archive::root()`.
@@ -151,10 +237,16 @@ pub struct Batch {
 }
 
 impl Batch {
-    /// Canonical encoding bound by `MAX_BATCH_BYTES`.
+    /// Canonical encoding bound by `MAX_BATCH_BYTES`. The `VRB1` layout is
+    /// emitted iff `eligible` is `None`, so a decoded V1 batch re-encodes to
+    /// identical bytes and its committed `value_id` survives an upgrade.
     pub fn encode(&self) -> Vec<u8> {
         let mut raw = Vec::with_capacity(256);
-        raw.extend_from_slice(BATCH_MAGIC);
+        raw.extend_from_slice(if self.eligible.is_none() {
+            BATCH_MAGIC
+        } else {
+            BATCH_MAGIC_V2
+        });
         raw.extend_from_slice(&self.parent.encode());
         raw.extend_from_slice(&self.time.to_be_bytes());
         raw.extend_from_slice(&(self.evidence.len() as u32).to_be_bytes());
@@ -167,16 +259,23 @@ impl Batch {
             raw.extend_from_slice(&(item.len() as u32).to_be_bytes());
             raw.extend_from_slice(item);
         }
+        if self.eligible.is_some() {
+            encode_eligible(&mut raw, &self.eligible);
+        }
         raw.extend_from_slice(&self.result_registry);
         raw.extend_from_slice(&self.result_social);
         raw.extend_from_slice(&self.result_control);
         raw
     }
-    /// Strict bounded decode of `encode` output.
+    /// Strict bounded decode of `encode` output. `VRB1` batches — written
+    /// before the eligible-transition field existed — still decode with
+    /// `eligible: None`, so retained journals remain readable. A `VRB2`
+    /// batch must carry a transition: `None` canonically encodes as `VRB1`.
     pub fn decode(raw: &[u8]) -> Result<Self, ApplyError> {
+        let v2 = raw.get(..4) == Some(BATCH_MAGIC_V2.as_slice());
         if raw.len() < 4 + FRONTIER_BYTES + 8 + 4 + 4 + 96
             || raw.len() > MAX_BATCH_BYTES
-            || raw.get(..4) != Some(BATCH_MAGIC.as_slice())
+            || !(v2 || raw.get(..4) == Some(BATCH_MAGIC.as_slice()))
         {
             return Err(ApplyError::Decode);
         }
@@ -200,6 +299,11 @@ impl Batch {
         };
         let evidence = items(&mut rest)?;
         let records = items(&mut rest)?;
+        let eligible = if v2 {
+            Some(eligible_set(&mut rest)?.ok_or(ApplyError::Decode)?)
+        } else {
+            None
+        };
         let result_registry = take(&mut rest, 32)?.try_into().unwrap();
         let result_social = take(&mut rest, 32)?.try_into().unwrap();
         let result_control = take(&mut rest, 32)?.try_into().unwrap();
@@ -211,6 +315,7 @@ impl Batch {
             time,
             evidence,
             records,
+            eligible,
             result_registry,
             result_social,
             result_control,
@@ -237,15 +342,25 @@ pub struct BatchBody {
     pub evidence: Vec<Vec<u8>>,
     /// Canonical `vhalla_rooms::SignedRecord` bytes.
     pub records: Vec<Vec<u8>>,
+    /// Optional committed configuration transition — a replacement eligible
+    /// award-source set. Carried on the operator-dropped `*.eligible` intake
+    /// path; ordinary producer submissions leave it `None`.
+    pub eligible: Option<Vec<OwnerId>>,
 }
 
 const BODY_MAGIC: &[u8; 4] = b"VBB1";
+const BODY_MAGIC_V2: &[u8; 4] = b"VBB2";
 
 impl BatchBody {
-    /// Canonical bounded encoding.
+    /// Canonical bounded encoding: `VBB1` iff `eligible` is `None`, matching
+    /// the `Batch` convention so every body value has one byte form.
     pub fn encode(&self) -> Vec<u8> {
         let mut raw = Vec::with_capacity(64);
-        raw.extend_from_slice(BODY_MAGIC);
+        raw.extend_from_slice(if self.eligible.is_none() {
+            BODY_MAGIC
+        } else {
+            BODY_MAGIC_V2
+        });
         raw.extend_from_slice(&self.time.to_be_bytes());
         for items in [&self.evidence, &self.records] {
             raw.extend_from_slice(&(items.len() as u32).to_be_bytes());
@@ -254,13 +369,19 @@ impl BatchBody {
                 raw.extend_from_slice(item);
             }
         }
+        if self.eligible.is_some() {
+            encode_eligible(&mut raw, &self.eligible);
+        }
         raw
     }
-    /// Strict bounded decode of `encode` output.
+    /// Strict bounded decode of `encode` output. `VBB1` bodies still decode
+    /// with `eligible: None`, so older `rooms submit` output stays admissible;
+    /// `VBB2` requires a present transition (`None` encodes as `VBB1`).
     pub fn decode(raw: &[u8]) -> Result<Self, ApplyError> {
+        let v2 = raw.get(..4) == Some(BODY_MAGIC_V2.as_slice());
         if raw.len() < 4 + 8 + 4 + 4
             || raw.len() > MAX_BATCH_BYTES
-            || raw.get(..4) != Some(BODY_MAGIC.as_slice())
+            || !(v2 || raw.get(..4) == Some(BODY_MAGIC.as_slice()))
         {
             return Err(ApplyError::Decode);
         }
@@ -283,6 +404,11 @@ impl BatchBody {
         };
         let evidence = items(&mut rest)?;
         let records = items(&mut rest)?;
+        let eligible = if v2 {
+            Some(eligible_set(&mut rest)?.ok_or(ApplyError::Decode)?)
+        } else {
+            None
+        };
         if !rest.is_empty() {
             return Err(ApplyError::Decode);
         }
@@ -290,6 +416,7 @@ impl BatchBody {
             time,
             evidence,
             records,
+            eligible,
         })
     }
 }
@@ -376,12 +503,15 @@ impl Application {
     }
 
     /// Replays `evidence` + `records` against clones at the agreed clock:
-    /// archive merge, deterministic award harvest, ordered room applies.
+    /// archive merge, deterministic award harvest, ordered room applies, then
+    /// the optional committed configuration transition — applied last so it
+    /// governs subsequent heights, never the batch carrying it.
     fn replay(
         &self,
         time: u64,
         evidence: &[Vec<u8>],
         records: &[Vec<u8>],
+        eligible: Option<&[OwnerId]>,
     ) -> Result<(Archive, Registry), ApplyError> {
         let mut social = self.social.clone();
         let mut budget = Budget::new(evidence.len() * 2, evidence.iter().map(Vec::len).sum())
@@ -411,6 +541,11 @@ impl Application {
                 .apply(&record, &view, time)
                 .map_err(ApplyError::Registry)?;
         }
+        if let Some(eligible) = eligible {
+            registry
+                .set_eligible(eligible, time)
+                .map_err(ApplyError::Registry)?;
+        }
         Ok((social, registry))
     }
 
@@ -421,17 +556,19 @@ impl Application {
         time: u64,
         evidence: Vec<Vec<u8>>,
         records: Vec<Vec<u8>>,
+        eligible: Option<Vec<OwnerId>>,
     ) -> Result<Checked, ApplyError> {
         if evidence.len() > MAX_BATCH_ITEMS || records.len() > MAX_BATCH_ITEMS {
             return Err(ApplyError::Bounds);
         }
         let time = self.bound_time(time);
-        let (social, registry) = self.replay(time, &evidence, &records)?;
+        let (social, registry) = self.replay(time, &evidence, &records, eligible.as_deref())?;
         let batch = Batch {
             parent: self.frontier,
             time,
             evidence,
             records,
+            eligible,
             result_registry: registry.digest(),
             result_social: *social.root().as_bytes(),
             result_control: control_of(&social, &registry, time),
@@ -467,7 +604,12 @@ impl Application {
         if batch.time != self.bound_time(batch.time) {
             return Err(ApplyError::Clock);
         }
-        let (social, registry) = self.replay(batch.time, &batch.evidence, &batch.records)?;
+        let (social, registry) = self.replay(
+            batch.time,
+            &batch.evidence,
+            &batch.records,
+            batch.eligible.as_deref(),
+        )?;
         if registry.digest() != batch.result_registry
             || *social.root().as_bytes() != batch.result_social
             || control_of(&social, &registry, batch.time) != batch.result_control

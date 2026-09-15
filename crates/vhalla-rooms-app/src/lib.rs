@@ -609,6 +609,7 @@ impl Service {
             time,
             evidence,
             records,
+            eligible: None,
         };
         let tmp = path.with_extension("body.tmp");
         std::fs::write(&tmp, body.encode()).map_err(|e| Error::Io(e.to_string()))?;
