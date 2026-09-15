@@ -221,4 +221,53 @@ mod enabled {
             "node stderr must not contain a panic: {err}"
         );
     }
+
+    /// `rooms eligible` emits a canonical `*.eligible` intake file whose
+    /// deterministic name converges across repeated invocations.
+    #[test]
+    fn eligible_command_writes_a_canonical_intake_update() {
+        let temp = Temp::new();
+        let home = temp.path("node-home");
+        let (a, b) = ([7u8; 32], [9u8; 32]);
+        let run = || {
+            Command::new(env!("CARGO_BIN_EXE_vhalla"))
+                .args([
+                    "rooms",
+                    "eligible",
+                    "unused-social",
+                    home.to_str().unwrap(),
+                    REALM_HEX,
+                    &format!("{},{}", hex(&a), hex(&b)),
+                ])
+                .output()
+                .unwrap()
+        };
+        let output = run();
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let files: Vec<_> = fs::read_dir(home.join("intake"))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(files.len(), 1, "one canonical update file");
+        let path = files[0].path();
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("eligible"));
+        let set =
+            vhalla_rooms_consensus::decode_eligible_update(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            set,
+            vec![
+                vhalla_rooms_consensus::OwnerId::from_bytes(a),
+                vhalla_rooms_consensus::OwnerId::from_bytes(b),
+            ]
+        );
+
+        // A repeat converges on the same name — no duplicate drops.
+        assert!(run().status.success());
+        assert_eq!(fs::read_dir(home.join("intake")).unwrap().count(), 1);
+    }
 }

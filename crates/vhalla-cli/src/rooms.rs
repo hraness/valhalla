@@ -34,6 +34,7 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   archive OWNER_KEYDIR SLUG EXPIRY
   list | search QUERY | show SLUG | account OWNER64 | proof RECORD64 | evidence RECORD64 | recover
   node NODE_HOME --config FILE  (build: --features experimental-rooms-node)
+  eligible NODE_HOME OWNER64,... (build: --features experimental-rooms-node)
   tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
   submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
   submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
@@ -49,7 +50,9 @@ EPOCH_SEC 86400, MAX_LIFETIME 8, with a committee-curated eligible set.
 application store; --config names a JSON file with node_key (hex seed), port,
 peers, validators, directory, policy, eligible owners and archive limits.
 Producers submit canonical batches by dropping *.batch files into
-NODE_HOME/intake/; committed state is queryable through the store commands.";
+NODE_HOME/intake/; operators evolve the eligible set by dropping *.eligible
+files there - `rooms eligible NODE_HOME OWNER64,...` writes one. Committed
+state is queryable through the store commands.";
 
 pub(crate) struct Args {
     command: String,
@@ -149,7 +152,7 @@ impl Args {
         self.now
     }
     /// Positional arguments after the fixed four.
-    #[cfg(feature = "experimental-rooms-tui")]
+    #[cfg(feature = "experimental-rooms-node")]
     pub(crate) fn value(&self, n: usize) -> Option<&str> {
         self.values.get(n).map(String::as_str)
     }
@@ -276,6 +279,16 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
                     ""
                 }
             ));
+        }
+    }
+    if args.command == "eligible" {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_node::eligible(&args);
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err("rooms eligible needs --features experimental-rooms-node".into());
         }
     }
     if args.command == "submit" {

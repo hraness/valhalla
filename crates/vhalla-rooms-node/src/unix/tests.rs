@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use vhalla_rooms_consensus::{fixture, Batch};
+use vhalla_rooms_consensus::{encode_eligible_update, fixture, Batch, OwnerId};
 
 /// The shared batch plan: `heights` room creations over 8 beneficiary
 /// owners and 16 eligible award sources — enough credits for two rooms
@@ -661,7 +661,7 @@ async fn competing_slug_loser_never_finalizes() {
         "contested",
         1,
     );
-    let batch_a = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let batch_a = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
 
     // batch_b: SAME slug against the SAME genesis frontier (a second,
     // identical scenario) — stale the moment batch_a lands.
@@ -674,7 +674,12 @@ async fn competing_slug_loser_never_finalizes() {
         "contested",
         2,
     );
-    let batch_b = s2.app.prepare(1, ev_b, rec_b).unwrap().batch().clone();
+    let batch_b = s2
+        .app
+        .prepare(1, ev_b, rec_b, None)
+        .unwrap()
+        .batch()
+        .clone();
     assert_ne!(batch_a.value_id(), batch_b.value_id());
 
     // batch_c: the honest h=2 batch, prepared against genesis + batch_a.
@@ -688,7 +693,7 @@ async fn competing_slug_loser_never_finalizes() {
         "fallback",
         3,
     );
-    let batch_c = s.app.prepare(2, ev_c, rec_c).unwrap().batch().clone();
+    let batch_c = s.app.prepare(2, ev_c, rec_c, None).unwrap().batch().clone();
 
     // The selected proposer for (h, r) is validators[(h + r) % 4].
     // h1r0 -> index 1, h2r0 -> index 2 (the stale batch), h2r1 -> index 3.
@@ -779,7 +784,7 @@ async fn sibling_slot_batch_voted_down_then_honest_batch_commits() {
         "alpha",
         1,
     );
-    let batch_a = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let batch_a = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
     let checked = s.app.validate(&batch_a).unwrap();
     s.app.apply_locally(checked);
 
@@ -795,6 +800,7 @@ async fn sibling_slot_batch_voted_down_then_honest_batch_commits() {
         records: vec![
             fixture::creation_record(&s.owners[0], grant_a, grant_a, "beta", 2, 4, 9).encode(),
         ],
+        eligible: None,
         result_registry: [9; 32],
         result_social: [9; 32],
         result_control: [9; 32],
@@ -809,7 +815,7 @@ async fn sibling_slot_batch_voted_down_then_honest_batch_commits() {
         "fallback",
         3,
     );
-    let batch_c = s.app.prepare(2, ev_c, rec_c).unwrap().batch().clone();
+    let batch_c = s.app.prepare(2, ev_c, rec_c, None).unwrap().batch().clone();
 
     // h2r0 -> sorted index 2 (forged), h2r1 -> sorted index 3 (honest).
     let mut held_for: Vec<BTreeMap<u64, Batch>> = set
@@ -894,7 +900,7 @@ async fn withheld_proposal_times_out_then_honest_batch_commits() {
         "alpha",
         1,
     );
-    let batch_a = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let batch_a = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
     let checked = s.app.validate(&batch_a).unwrap();
     s.app.apply_locally(checked);
     let (ev_c, rec_c, _) = fixture::first_create(
@@ -905,7 +911,7 @@ async fn withheld_proposal_times_out_then_honest_batch_commits() {
         "fallback",
         3,
     );
-    let batch_c = s.app.prepare(2, ev_c, rec_c).unwrap().batch().clone();
+    let batch_c = s.app.prepare(2, ev_c, rec_c, None).unwrap().batch().clone();
 
     // h2r0 -> sorted index 2 holds ONLY the h=1 batch: it must produce
     // nothing for h=2. h2r1 -> sorted index 3 holds the honest batch.
@@ -1216,7 +1222,7 @@ async fn partitioned_validator_rejoins_and_stale_competitor_loses() {
         "contested",
         1,
     );
-    let batch_a = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let batch_a = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
 
     // batch_b: a competing allocation for the SAME slug, prepared
     // against genesis — valid when prepared, stale the moment batch_a
@@ -1230,7 +1236,12 @@ async fn partitioned_validator_rejoins_and_stale_competitor_loses() {
         "contested",
         2,
     );
-    let batch_b = s2.app.prepare(1, ev_b, rec_b).unwrap().batch().clone();
+    let batch_b = s2
+        .app
+        .prepare(1, ev_b, rec_b, None)
+        .unwrap()
+        .batch()
+        .clone();
 
     // batch_c: the honest h=2 batch against genesis + batch_a.
     let checked = s.app.validate(&batch_a).unwrap();
@@ -1243,7 +1254,7 @@ async fn partitioned_validator_rejoins_and_stale_competitor_loses() {
         "fallback",
         3,
     );
-    let batch_c = s.app.prepare(2, ev_c, rec_c).unwrap().batch().clone();
+    let batch_c = s.app.prepare(2, ev_c, rec_c, None).unwrap().batch().clone();
 
     // The connected side (sorted indices 0,1,3) starts with the honest
     // plan. The h2r0 proposer — sorted index 2 — is the partitioned
@@ -1516,7 +1527,7 @@ async fn asymmetric_island_minority_campaigns_then_converges() {
         "isle-a",
         1,
     );
-    let batch_a = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let batch_a = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
 
     // batch_b: the minority island's campaign value — a real batch with
     // the same parent frontier and a different slug, so the island's
@@ -1530,7 +1541,12 @@ async fn asymmetric_island_minority_campaigns_then_converges() {
         "isle-b",
         2,
     );
-    let batch_b = s2.app.prepare(1, ev_b, rec_b).unwrap().batch().clone();
+    let batch_b = s2
+        .app
+        .prepare(1, ev_b, rec_b, None)
+        .unwrap()
+        .batch()
+        .clone();
     assert_ne!(batch_a.value_id(), batch_b.value_id());
 
     // batch_c / batch_d: honest h=2 and h=3 against the batch_a line.
@@ -1544,7 +1560,7 @@ async fn asymmetric_island_minority_campaigns_then_converges() {
         "isle-c",
         3,
     );
-    let batch_c = s.app.prepare(2, ev_c, rec_c).unwrap().batch().clone();
+    let batch_c = s.app.prepare(2, ev_c, rec_c, None).unwrap().batch().clone();
     let checked = s.app.validate(&batch_c).unwrap();
     s.app.apply_locally(checked);
     let (ev_d, rec_d, _) = fixture::first_create(
@@ -1555,7 +1571,7 @@ async fn asymmetric_island_minority_campaigns_then_converges() {
         "isle-d",
         4,
     );
-    let batch_d = s.app.prepare(3, ev_d, rec_d).unwrap().batch().clone();
+    let batch_d = s.app.prepare(3, ev_d, rec_d, None).unwrap().batch().clone();
 
     // Sorted indices: proposer(h, r) = set[(h + r) % 7]. The minority
     // island {1, 2} owns h1r0, h1r1 AND h2r0 — the majority cannot
@@ -1727,7 +1743,7 @@ fn reordered_proposal_parts_still_assemble_and_verify() {
         "alpha",
         1,
     );
-    let batch = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let batch = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
     let proposed = LocallyProposedValue::new(
         Height::new(1),
         Round::new(0),
@@ -1821,7 +1837,7 @@ fn undecided_values_resupply_from_durable_store() {
         "held-room",
         1,
     );
-    let batch = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let batch = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
 
     let mut app = make_app(BTreeMap::new(), BTreeMap::new());
     let id = app.register_batch(batch.clone());
@@ -1955,10 +1971,10 @@ fn pending_markers_reload_only_uncommitted_submissions() {
     let mut cursor = 0usize;
     let (ev, rec, _) =
         fixture::first_create(&s.app, &s.owners[0], &mut s.sources, &mut cursor, "live", 1);
-    let live = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let live = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
     let (ev2, rec2, _) =
         fixture::first_create(&s.app, &s.owners[1], &mut s.sources, &mut cursor, "gone", 2);
-    let gone = s.app.prepare(1, ev2, rec2).unwrap().batch().clone();
+    let gone = s.app.prepare(1, ev2, rec2, None).unwrap().batch().clone();
 
     // Retained + validating: re-queued.
     store_write(
@@ -2050,7 +2066,7 @@ fn intake_files_submit_or_reject_deterministically() {
         "intake",
         1,
     );
-    let batch = s.app.prepare(1, ev, rec).unwrap().batch().clone();
+    let batch = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
 
     std::fs::write(intake.join("good.batch"), batch.encode()).unwrap();
     std::fs::write(intake.join("bad.batch"), b"not a batch").unwrap();
@@ -2161,6 +2177,7 @@ fn losing_body_reassembles_against_live_frontier() {
             time: 1,
             evidence,
             records,
+            eligible: None,
         };
         std::fs::write(intake.join(format!("{name}.body")), body.encode()).unwrap();
     }
@@ -2230,4 +2247,70 @@ fn losing_body_reassembles_against_live_frontier() {
     }
 
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// An operator-dropped `*.eligible` file enters the pending queue as a
+/// config-only body and assembles into a batch carrying the transition.
+#[test]
+fn eligible_intake_file_queues_a_config_transition() {
+    let (keys, set) = validators(1);
+    let base = fixture("eligible-intake");
+    let key = keys[0].clone();
+    let address = Address::from_public_key(&key.public_key());
+    let home = base.join("home");
+    let store = home.join("store");
+    std::fs::create_dir_all(store.join("batches")).unwrap();
+    std::fs::create_dir_all(store.join("seen")).unwrap();
+    std::fs::create_dir_all(store.join("pending")).unwrap();
+    let intake = home.join("intake");
+    std::fs::create_dir_all(&intake).unwrap();
+
+    let mut app = App {
+        ctx: RoomContext,
+        adapter: Arc::new(Mutex::new(
+            Adapter::open(home.join("app"), &genesis()).unwrap(),
+        )),
+        sink: Arc::new(Mutex::new(EngineSink::default())),
+        validator_sets: sched(set),
+        address,
+        private_key: key.clone(),
+        proposals: BTreeMap::new(),
+        pending_proposals: VecDeque::new(),
+        assigned_bodies: BTreeMap::new(),
+        held_by_id: BTreeMap::new(),
+        streams: BTreeMap::new(),
+        parts_cache: BTreeMap::new(),
+        decided: BTreeMap::new(),
+        stream_seq: 0,
+        boundary_latency: Arc::new(Mutex::new(Vec::new())),
+        store,
+        seen: BTreeMap::new(),
+        resupplied: Arc::new(Mutex::new(0)),
+    };
+
+    let admitted = vec![OwnerId::from_bytes([7; 32]), OwnerId::from_bytes([9; 32])];
+    std::fs::write(
+        intake.join("growth.eligible"),
+        encode_eligible_update(&admitted),
+    )
+    .unwrap();
+    std::fs::write(intake.join("bad.eligible"), b"not a set").unwrap();
+
+    app.drain_intake();
+
+    assert_eq!(
+        app.pending_proposals,
+        VecDeque::from([PendingEntry::Body("growth".to_owned())]),
+        "a valid .eligible file queues as a body under its stem"
+    );
+    assert!(!intake.join("growth.eligible").exists());
+    assert!(
+        intake.join("bad.rejected").exists(),
+        "undecodable input is renamed, not retried"
+    );
+
+    let id = app.next_pending().unwrap();
+    let batch = app.held_by_id.get(&id).unwrap();
+    assert_eq!(batch.eligible, Some(admitted));
+    assert!(batch.evidence.is_empty() && batch.records.is_empty());
 }
