@@ -2,7 +2,7 @@
 title: Valhalla social implementation and evidence
 type: plan
 area: owner-social-identity
-status: implemented
+status: completed
 tags: [social, urp, rust, testing, delivery]
 ---
 
@@ -324,3 +324,23 @@ the immutable native repair patch. A path-specific `.gitattributes` setting
 disables only end-of-line whitespace checking for that one hash-verified patch;
 all other whitespace rules and source paths remain checked. Artifact integrity
 continues to verify its exact original SHA-256, rather than rewriting the patch.
+
+## Result
+
+Completed. Every phase shipped: the `vhalla-social` production crate
+(signed URP records, owner control chains, bounded archive, derived views),
+`vhalla-social-store` durable snapshot publication, the `vhalla social` CLI
+service lane, the discovery and attention crates, and the wasm-parity
+consumer surface — each landed behind its phase's reviewed contract and
+evidence log. Promotion-gate work named at close (transport qualification,
+portraits, large-population measurement) is tracked in
+[[plans/valhalla-promotion-gates]], not here.
+
+## Durable memory
+
+The durable contract lives in the crates themselves and their READMEs
+(`crates/vhalla-social`, `crates/vhalla-social-store`, `crates/vhalla-cli`);
+the frozen Phase-2 interface text is retained in
+[[plans/valhalla-social-protocol]] and the ownership rationale in
+[[plans/valhalla-social-capital]]. No separate maintained note was needed —
+the reusable conclusions are the shipped API and its tests.

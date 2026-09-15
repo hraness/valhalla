@@ -39,12 +39,14 @@ record. They can change the description or request archival, never change the
 slug or genesis owner. No API converts a full genesis into legacy `RoomId` routing
 handles, executes these updates, admits creation, or constructs finalized state.
 
-The next authority adapter must check stable affiliation, exact predecessor
-history, current grant/retirement/rotation state, and policy scope against the
-directory's agreed control snapshot. R3 must establish the freshness and finality
-of that snapshot; a locally complete social archive is insufficient. Numerical
-prices, balances, expiry evaluation, slug allocation, atomic slots, durable state
-and network consensus remain outside this crate.
+The authority adapter (`authority.rs`) now checks stable affiliation, exact
+predecessor history, current grant/retirement/rotation state and policy scope
+against the directory's agreed control snapshot; the R3 consensus engine
+(`vhalla-rooms-node`) establishes that snapshot's freshness and finality —
+a locally complete social archive alone is insufficient. Numerical prices,
+balances, expiry evaluation, slug allocation and atomic slots live in
+`registry.rs`; durable state lives in `vhalla-rooms-store`; network
+consensus lives in `vhalla-rooms-consensus`/`vhalla-rooms-node`.
 
 Focused checks after workspace integration:
 

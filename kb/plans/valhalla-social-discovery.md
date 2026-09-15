@@ -436,9 +436,10 @@ policy; an offline proposal remains pending. Public social reputation is a
 separate derived view, not a caller-supplied spendable balance. The namespace is
 selected; an isolated sequential model and bounded signed room records exist.
 Maintained consensus,
-authority/social-evidence adapters, durability and CLI/Dioxus integration remain
-pending in the room plan's R1–R6. Existing discovery phase completion does not
-qualify this new directory.
+authority/social-evidence adapters, durability and the CLI lane have since
+shipped in the room plan's R1–R6 (the Dioxus surface descoped to the
+terminal). Existing discovery phase completion still does not qualify this
+directory's operation.
 
 Public trending lists, arbitrary custom
 ranking code, private messaging, ad metrics and financial rewards are outside this
