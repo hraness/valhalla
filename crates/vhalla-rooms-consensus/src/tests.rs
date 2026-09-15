@@ -319,3 +319,50 @@ fn replica_rejects_unverified_and_misbound_bundles() {
     let _ = std::fs::remove_dir_all(&source_home);
     let _ = std::fs::remove_dir_all(&replica_home);
 }
+
+/// Identical post-genesis evidence is guaranteed by the committed value
+/// itself, so the residual deployment precondition is a shared genesis
+/// archive and config. A replica seeded with a divergent genesis
+/// produces a different genesis frontier commitment and must reject the
+/// first committed bundle on the parent — divergence fails closed
+/// rather than silently forking the registry.
+#[test]
+fn divergent_genesis_rejects_the_first_bundle_on_parent() {
+    let plan = fixture::plan(1, 4, 8);
+    let source_home = dir("src-diverge");
+    {
+        let mut adapter = Adapter::open(&source_home, &plan.genesis).unwrap();
+        let mut sink = EngineSink::default();
+        let batch = plan.batches.values().next().unwrap().clone();
+        adapter.hold(batch.clone());
+        adapter.on_decided(&mut sink, &cert(&batch, 1, "s"));
+    }
+    let source_journal = Journal::new(source_home.join("journal"), FsStore);
+    let bundle = source_journal
+        .bundle(source_journal.at_height(1).unwrap().unwrap())
+        .unwrap()
+        .unwrap();
+    let verify = |bytes: &[u8], height: u64, value: &[u8; 32]| {
+        bytes == format!("cert-s-{height}").as_bytes()
+            && plan
+                .batches
+                .get(&height)
+                .is_some_and(|b| b.value_id() == *value)
+    };
+
+    // Same everything except the admitted policy — a real divergence
+    // surface, since policy is committed into every registry digest.
+    let mut genesis = plan.genesis.clone();
+    genesis.policy.base_cost += 1;
+    let replica_home = dir("replica-diverge");
+    let mut replica = Adapter::open(&replica_home, &genesis).unwrap();
+    assert_eq!(
+        replica.absorb(&bundle, verify),
+        DecidedOutcome::Rejected,
+        "a divergent genesis must reject the first committed bundle"
+    );
+    assert_eq!(replica.frontier().height, 0);
+    assert_eq!(replica.recover().unwrap().pin.height, 0);
+    let _ = std::fs::remove_dir_all(&source_home);
+    let _ = std::fs::remove_dir_all(&replica_home);
+}

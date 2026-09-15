@@ -8,13 +8,15 @@ description = "Journal-gated consensus adapter over the room registry and social
 
 [dependencies]
 vhalla-core = { path = "../vhalla-core" }
-vhalla-journal = { path = "../vhalla-journal" }
 vhalla-rooms = { path = "../vhalla-rooms" }
-vhalla-rooms-store = { path = "../vhalla-rooms-store" }
 vhalla-social = { path = "../vhalla-social" }
-vhalla-social-store = { path = "../vhalla-social-store" }
 sha2 = "0.10"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+vhalla-journal = { path = "../vhalla-journal" }
+vhalla-rooms-store = { path = "../vhalla-rooms-store" }
+vhalla-social-store = { path = "../vhalla-social-store" }
 
 [features]
 # Exposes the deterministic signed-record scenario builders for
