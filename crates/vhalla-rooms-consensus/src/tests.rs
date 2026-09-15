@@ -366,3 +366,50 @@ fn divergent_genesis_rejects_the_first_bundle_on_parent() {
     let _ = std::fs::remove_dir_all(&source_home);
     let _ = std::fs::remove_dir_all(&replica_home);
 }
+
+#[test]
+fn batch_clock_is_monotonic_and_step_bounded() {
+    let mut scenario = fixture::scenario(2, 4);
+    // The first committed batch anchors the clock at whatever it carries.
+    let anchored = scenario.app.prepare(1_000_000, vec![], vec![]).unwrap();
+    scenario.app.apply_locally(anchored);
+    assert_eq!(scenario.app.frontier().time, 1_000_000);
+
+    // A batch must not regress the committed clock — including an
+    // evidence-free batch whose replay would otherwise succeed.
+    let mut regressed = scenario
+        .app
+        .prepare(1_000_000, vec![], vec![])
+        .unwrap()
+        .batch()
+        .clone();
+    regressed.time = 999_999;
+    assert!(matches!(
+        scenario.app.validate(&regressed),
+        Err(ApplyError::Clock)
+    ));
+
+    // Nor advance it more than MAX_TIME_DRIFT per height.
+    let mut jumped = regressed.clone();
+    jumped.time = 1_000_000 + MAX_TIME_DRIFT + 1;
+    assert!(matches!(
+        scenario.app.validate(&jumped),
+        Err(ApplyError::Clock)
+    ));
+
+    // The boundary itself is admitted.
+    let edge = scenario
+        .app
+        .prepare(1_000_000 + MAX_TIME_DRIFT, vec![], vec![])
+        .unwrap();
+    assert!(scenario.app.validate(edge.batch()).is_ok());
+
+    // Producers clamp into the window: an over-shot clock lands on the
+    // bound, an under-shot on the frontier — the assembled batch always
+    // validates, so a stalled clock ratchets back rather than freezing.
+    let clamped = scenario.app.prepare(u64::MAX, vec![], vec![]).unwrap();
+    assert_eq!(clamped.batch().time, 1_000_000 + MAX_TIME_DRIFT);
+    assert!(scenario.app.validate(clamped.batch()).is_ok());
+    let floored = scenario.app.prepare(7, vec![], vec![]).unwrap();
+    assert_eq!(floored.batch().time, 1_000_000);
+}

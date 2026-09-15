@@ -50,6 +50,11 @@ mod tests;
 pub const MAX_BATCH_BYTES: usize = 48 * 1024;
 /// Maximum records per class in one batch.
 pub const MAX_BATCH_ITEMS: usize = 32;
+/// Maximum advance of the committed clock in one batch. Once the first
+/// committed batch anchors the clock, later batches may not regress it and
+/// may not jump more than a day ahead — a stalled clock ratchets back toward
+/// real time at one day per committed height, never freezing.
+pub const MAX_TIME_DRIFT: u64 = 86_400;
 
 const FRONTIER_BYTES: usize = 8 + 32 + 32 + 32 + 32 + 8;
 const BATCH_MAGIC: &[u8; 4] = b"VRB1";
@@ -420,6 +425,7 @@ impl Application {
         if evidence.len() > MAX_BATCH_ITEMS || records.len() > MAX_BATCH_ITEMS {
             return Err(ApplyError::Bounds);
         }
+        let time = self.bound_time(time);
         let (social, registry) = self.replay(time, &evidence, &records)?;
         let batch = Batch {
             parent: self.frontier,
@@ -458,6 +464,9 @@ impl Application {
         if batch.evidence.len() > MAX_BATCH_ITEMS || batch.records.len() > MAX_BATCH_ITEMS {
             return Err(ApplyError::Bounds);
         }
+        if batch.time != self.bound_time(batch.time) {
+            return Err(ApplyError::Clock);
+        }
         let (social, registry) = self.replay(batch.time, &batch.evidence, &batch.records)?;
         if registry.digest() != batch.result_registry
             || *social.root().as_bytes() != batch.result_social
@@ -478,6 +487,20 @@ impl Application {
                 time: batch.time,
             },
         })
+    }
+
+    /// The committed-clock window for the next batch. The genesis frontier
+    /// carries `time: 0` — before the anchor any clock is admitted (the first
+    /// proposer is as trusted as the genesis inputs); afterwards the clock is
+    /// monotonic and advances at most `MAX_TIME_DRIFT` per height.
+    fn bound_time(&self, time: u64) -> u64 {
+        if self.frontier.time == 0 {
+            return time;
+        }
+        time.clamp(
+            self.frontier.time,
+            self.frontier.time.saturating_add(MAX_TIME_DRIFT),
+        )
     }
 
     /// Installs the replayed states and their frontier. Infallible: the
@@ -995,6 +1018,9 @@ pub enum ApplyError {
     Registry(RegistryError),
     /// Batch exceeds item or byte bounds.
     Bounds,
+    /// The batch's clock regressed the committed frontier or advanced more
+    /// than `MAX_TIME_DRIFT`.
+    Clock,
 }
 
 /// Errors opening, publishing or rebuilding the adapter.
