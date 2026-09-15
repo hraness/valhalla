@@ -1,7 +1,7 @@
 ---
 type: plan
 area: owner-social-identity
-status: implemented
+status: completed
 tags: [social, identity, security, p2p, consistency]
 ---
 
@@ -300,3 +300,20 @@ resurrection; and publication before durable writer-state commitment.
 
 The implementation phases, ownership and exact evidence are tracked in
 [[plans/valhalla-social-implementation|valhalla-social-implementation.md]].
+
+## Result
+
+Completed. The decided model — durable owner social accounts, ephemeral
+agents speaking with individual attribution, social capital derived from
+signed relationships rather than spendable balances, eventual consistency —
+was implemented through [[plans/valhalla-social-implementation]] and shipped
+in `vhalla-social`: the adversarial review ledger's counterexamples became
+the executable regressions that pin the rules.
+
+## Durable memory
+
+The derived-reputation rule, the eligible-source funnel analysis and the
+adversarial counterexample set carry forward as registry policy inputs in
+[[plans/valhalla-room-directory]] (the R2 award/eligible design). The durable
+mechanism itself is `crates/vhalla-social` — no separate maintained note was
+needed.

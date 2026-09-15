@@ -2,7 +2,7 @@
 title: Valhalla social protocol contract
 type: plan
 area: owner-social-identity
-status: implemented
+status: completed
 tags: [social, protocol, rust, urp]
 ---
 
@@ -210,3 +210,17 @@ semantics. The root owns model/wire; control, archive and view modules have
 separate workers. Maintained code receives independent signed-fixture tests,
 property tests and review rather than importing unauthenticated fixture models
 as authority.
+
+## Result
+
+Completed. The frozen Phase-2 contract shipped as the `vhalla-social`
+public API: `UnsignedRecord`/`SignedRecord`/`VerifiedRecord` construction
+and decode bounds, the distinct ID and signature domains, `Archive`,
+`ControlView`/`View` and the control/archive/view module split, all under
+signed-fixture and property tests as specified.
+
+## Durable memory
+
+The contract remains the crate's public surface — maintained code and its
+README are the live reference; this plan is retained as the freeze record.
+No separate maintained note was needed.
