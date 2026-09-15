@@ -467,7 +467,7 @@ pub fn plan_with_limits(
                 (evidence, records)
             }
         };
-        let checked = scenario.app.prepare(h, evidence, records).unwrap();
+        let checked = scenario.app.prepare(h, evidence, records, None).unwrap();
         let batch = checked.batch().clone();
         scenario.app.apply_locally(checked);
         batches.insert(h, batch);
