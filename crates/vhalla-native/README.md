@@ -55,7 +55,11 @@ the authenticated session transcript. An invitation's exclusive expiry `T` is
 converted to the existing session/route APIs' inclusive last second `T - 1`.
 Handshakes and messages that arrive at `T` are rejected even if their connection
 started earlier. Invitations are portable claims;
-single-use behavior requires the owner to persist spent nonces.
+single-use behavior requires the redeeming identity to persist spent nonces —
+`SpentFile` (`spent.rs`) is that durable bounded store: the nonce never
+reaches the wire, so single-use is enforced at the local redemption boundary
+before dialing. The `vhalla experimental ... invitation` commands persist it
+as `<identity-directory>.spent`.
 
 ## Boundaries
 
@@ -108,5 +112,5 @@ and message checks on both sides of the exclusive expiry boundary.
 The earlier process-restart replay experiment remains reference evidence; the
 maintained suite separately proves actual process restart and cross-connection
 replay rejection. Physical power loss, Internet/NAT behavior, sustained flooding,
-loss recovery, single-use invitation storage, durable history, origin security,
+loss recovery, owner-side single-use admission evidence, durable history, origin security,
 browser execution and independent review remain open gates.

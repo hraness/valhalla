@@ -8,7 +8,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver},
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 const BIN: &str = env!("CARGO_BIN_EXE_vhalla");
 const WAIT: Duration = Duration::from_secs(12);
@@ -258,6 +258,92 @@ fn pinned_chat_survives_process_restart_and_strangers_cannot_join() {
         .line("message ")
         .contains(&format!("peer={alice_key} ")));
     server.line("peer-closed");
+}
+
+#[test]
+fn invited_send_redeems_once_and_cannot_replay_across_processes() {
+    let tmp = Temp::new();
+    let alice = tmp.0.join("alice");
+    let bob = tmp.0.join("bob");
+    let alice_key = init(&alice);
+    let bob_key = init(&bob);
+    let expiry_t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 60;
+
+    // Bob issues an owner-signed invitation naming Alice's application key.
+    let issued = Process::spawn(&[
+        "experimental",
+        "invite",
+        path(&bob),
+        &alice_key,
+        "0000000000000000000000000000004d",
+        "0000000000000000000000000000004e",
+        "1",
+        &expiry_t.to_string(),
+    ])
+    .finish(true);
+    let invitation = issued
+        .trim()
+        .strip_prefix("invitation ")
+        .unwrap_or_else(|| panic!("invite output: {issued}"));
+    assert_eq!(invitation.len(), 426, "canonical fixed-width invitation");
+
+    // Bob listens on the invitation; Alice redeems it once.
+    let server = Process::spawn(&[
+        "experimental",
+        "listen",
+        path(&bob),
+        "invitation",
+        invitation,
+    ]);
+    let line = server.line("route ");
+    let mut parts = line.split_whitespace();
+    let (route, expiry) = (parts.nth(1).unwrap().to_string(), parts.next().unwrap());
+    let sent = Process::spawn(&[
+        "experimental",
+        "send",
+        path(&alice),
+        "invitation",
+        invitation,
+        &bob_key,
+        &route,
+        expiry,
+        "invited hello",
+    ])
+    .finish(true);
+    assert!(sent.starts_with(&format!("received peer={bob_key}")));
+    server.line("joined ");
+    assert!(server
+        .line("message ")
+        .contains(&format!("peer={alice_key} ")));
+    server.line("peer-closed");
+    drop(server);
+
+    // The durable spent record survives across processes.
+    let spent_path = PathBuf::from(format!("{}.spent", path(&alice)));
+    assert!(spent_path.exists(), "spend persisted beside the identity");
+
+    // A second redemption is rejected before dialing — fresh process, same
+    // identity, same invitation.
+    let replay = Process::spawn(&[
+        "experimental",
+        "send",
+        path(&alice),
+        "invitation",
+        invitation,
+        &bob_key,
+        &route,
+        expiry,
+        "replay",
+    ])
+    .finish(false);
+    assert!(
+        replay.contains("already spent"),
+        "durable replay rejection: {replay}"
+    );
 }
 
 #[test]

@@ -61,6 +61,17 @@ vhalla experimental --json listen <identity-directory> <peer-app-key>
 vhalla experimental --json send <identity-directory> <peer-app-key> <route> <expiry> <message>
 ```
 
+Owner-signed invitations are a separate pairing grant: `experimental invite
+<identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>`
+prints a canonical fixed-width invitation as hex; `listen <identity-directory>
+invitation <invitation-hex>` binds as the invitation's owner, and `send
+<identity-directory> invitation <invitation-hex> <expected-owner-app-key>
+<route> <expiry> <message>` redeems it as the invitee (the expected owner key
+must come from local policy or a trusted handoff, never from the invitation).
+Redemption consumes the invitation's nonce in `<identity-directory>.spent`, a
+bounded durable file — a verified invitation can be redeemed only once by that
+identity, across process restarts.
+
 The default human-readable protocol is unchanged. JSON mode writes one flushed,
 versioned event per line and never evaluates the message body. Every event is a
 JSON object with `v: 1` and a bounded line size (140,000 bytes including the

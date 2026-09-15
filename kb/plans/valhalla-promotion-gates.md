@@ -663,6 +663,20 @@ arbitrary capacities and nonce schedules. This is a local replay primitive,
 scoped to one issuer/authorization domain; durable persistence, crash recovery
 and integration at the owner admission boundary remain separate gates.
 
+Invitation CLI surface and durable spend — 2026-09-15. `vhalla experimental`
+now carries the invitation path end to end: `invite` issues the canonical
+owner-signed token, `listen ... invitation` binds through
+`bind_with_invitation`, and `send ... invitation` redeems through
+`send_message_with_invitation` with an independently pinned expected owner.
+Because the nonce never reaches the wire, single-use is necessarily a local
+redemption boundary: `vhalla-native::SpentFile` persists consumed nonces as a
+bounded (1024-entry) atomically republished `VSN1` file at
+`<identity-directory>.spent`, consumed after verification and before dialing.
+The subprocess e2e proves the full journey — issue, invited listen, invited
+send — and that a second redemption from the same identity in a fresh process
+is rejected `AlreadySpent`. Remaining open gates are unchanged: pairing UX
+review, owner-side admission evidence and public transport.
+
 ### Message and effect authority repair — 2026-09-12
 
 Two isolated tests reproduced the old public-API bypasses against `c373c71`:
