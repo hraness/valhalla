@@ -399,3 +399,64 @@ fn snapshot_integrity_and_bounds_are_checked() {
         empty.digest()
     );
 }
+
+#[test]
+fn snapshot_restore_accepts_only_canonical_bytes() {
+    // Canonical-form invariant: any input `restore` accepts must re-snapshot
+    // to the identical bytes. Exhaustively mutating and truncating a valid
+    // snapshot therefore covers the noncanonical-input space — a panic or a
+    // restore-then-snapshot difference is a codec bug.
+    let mut archive = Archive::new(REALM, limits()).unwrap();
+    let creator = beneficiary(&mut archive, 8);
+    let (mut pool, mut registry) = sources(&mut archive, 40, 3);
+    let head = grant_create(&mut registry, &archive, &creator, 100);
+    award_one(&mut registry, &mut archive, &mut pool[0], &creator, 200);
+    let create = creation(&creator, head, head, "canonical", 1, 1, 5);
+    let genesis: RoomGenesisId = match apply(&mut registry, &archive, &create, 300).unwrap() {
+        Applied::Created(id) => id,
+        other => panic!("expected creation, got {other:?}"),
+    };
+    let describe = RoomUpdate {
+        directory: DIRECTORY,
+        realm: REALM,
+        genesis,
+        previous: create.id(),
+        owner: creator.id,
+        social_control: creator.head,
+        controller_key: creator.key.verifying_key().to_bytes(),
+        expires_at: 1_000_000,
+        nonce: [9; 32],
+        action: UpdateAction::Describe(Description::new("canonical room").unwrap()),
+    }
+    .sign_with_key(&creator.key)
+    .unwrap()
+    .verify()
+    .unwrap();
+    let view = ControlView::new(&archive, 400);
+    assert_eq!(
+        registry.apply(&describe, &view, 400),
+        Ok(Applied::Updated(describe.id()))
+    );
+
+    let snapshot = registry.snapshot();
+    assert_eq!(Registry::restore(&snapshot).unwrap().snapshot(), snapshot);
+
+    for cut in 0..=snapshot.len() {
+        if let Ok(restored) = Registry::restore(&snapshot[..cut]) {
+            assert_eq!(
+                restored.snapshot(),
+                snapshot[..cut],
+                "prefix {cut} noncanonical"
+            );
+        }
+    }
+    for i in 0..snapshot.len() {
+        for delta in [0x01u8, 0x80, 0xFF] {
+            let mut mutated = snapshot.clone();
+            mutated[i] ^= delta;
+            if let Ok(restored) = Registry::restore(&mutated) {
+                assert_eq!(restored.snapshot(), mutated, "mutation at {i} noncanonical");
+            }
+        }
+    }
+}
