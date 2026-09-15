@@ -27,6 +27,10 @@ pub const MAX_ROOMS: usize = 4096;
 pub const MAX_OWNERS: usize = 256;
 /// Maximum retained support dedup entries.
 pub const MAX_SUPPORT: usize = 8192;
+// Every `evidence` entry derives from a record `assess_support` saw Committed
+// in a bounded archive, so live evidence can never exceed the archive's own
+// record bound; keep it strictly under the snapshot restore bound.
+const _: () = assert!(vhalla_social::MAX_RECORDS <= MAX_SUPPORT);
 /// Maximum retained revision records per room.
 pub const MAX_REVISIONS: usize = 256;
 /// Largest bounded search page.
@@ -397,6 +401,13 @@ impl Registry {
             now,
         )
         .map_err(RegistryError::Award)?;
+        // Retention — not only new dedup triples — must respect the snapshot
+        // restore bound: a live state with more evidence than MAX_SUPPORT
+        // could never be restored. Unreachable while committed records stay
+        // bounded by MAX_RECORDS, but fail closed if that ever changes.
+        if self.evidence.len() >= MAX_SUPPORT {
+            return Err(RegistryError::Capacity);
+        }
         let key = (award.beneficiary, award.source_owner, award.activity_epoch);
         if self.support.contains(&key) {
             self.evidence.insert(
