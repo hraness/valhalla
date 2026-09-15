@@ -59,6 +59,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build vhalla-menubar
         run: cargo build --release --locked --manifest-path desktop/Cargo.toml
+      - name: Smoke check
+        # A GUI binary cannot run --help headless; verify the artifact is a
+        # nonzero arm64 Mach-O executable before it ships.
+        run: |
+          set -euo pipefail
+          bin=desktop/target/release/vhalla-menubar
+          test -s "$bin"
+          file "$bin" | grep -q "Mach-O 64-bit executable arm64"
       - name: Package
         shell: bash
         run: |
