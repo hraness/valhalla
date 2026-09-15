@@ -34,6 +34,17 @@ rebuilding then reinstalling is the upgrade path. Resolution for a bare
 launch is `VHALLA_MENUBAR_PATH`, the installed copy, a binary adjacent to
 `vhalla`, then the repository release build.
 
+### Releases
+
+Pushing a `v*` tag builds and publishes unbundled binaries to a GitHub
+Release with no human step: `vhalla` (`--all-features --release --locked`)
+for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`, plus
+`vhalla-menubar` for `aarch64-apple-darwin`, each as a tarball with a
+`.sha256` sidecar. Extracting the macOS CLI and menubar tarballs into the
+same directory gives `vhalla menubar` sibling resolution for free. The
+workflow uses only the repository `GITHUB_TOKEN` — no signing, packaging,
+or notarization exists anywhere in the lane.
+
 See the [identity guide](../vhalla-identity/README.md) for storage behavior and
 the [local chat walkthrough](../vhalla-native/README.md) for the explicit
 `experimental-network` feature. Networking is absent from the default build.
