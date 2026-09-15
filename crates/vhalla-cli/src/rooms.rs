@@ -51,7 +51,7 @@ application store; --config names a JSON file with node_key (hex seed), port,
 peers, validators, directory, policy, eligible owners and archive limits.
 Producers submit canonical batches by dropping *.batch files into
 NODE_HOME/intake/; operators evolve the eligible set by dropping *.eligible
-files there — `rooms eligible NODE_HOME OWNER64,...` writes one. Committed
+files there - `rooms eligible NODE_HOME OWNER64,...` writes one. Committed
 state is queryable through the store commands.";
 
 pub(crate) struct Args {

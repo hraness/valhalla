@@ -197,11 +197,11 @@ pub fn run(args: &Args) -> Result<(), String> {
 /// argument shape.
 pub fn eligible(args: &Args) -> Result<(), String> {
     if args.value(1).is_some() {
-        return Err("eligible takes exactly OWNER64,... — the replacement set".into());
+        return Err("eligible takes exactly OWNER64,... - the replacement set".into());
     }
     let owners: Vec<OwnerId> = args
         .value(0)
-        .ok_or("eligible takes OWNER64,... — the replacement set")?
+        .ok_or("eligible takes OWNER64,... - the replacement set")?
         .split(',')
         .map(|id| hex32(id).map(OwnerId::from_bytes))
         .collect::<Result<_, _>>()?;
