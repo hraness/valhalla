@@ -49,7 +49,7 @@ fn run() -> Result<(), String> {
         );
         println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla menubar [run|install|uninstall|status]\nvhalla outputs");
         #[cfg(feature = "experimental-network")]
-        println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key>\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime. --json emits bounded versioned JSON lines.");
+        println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key>\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\nvhalla experimental [--json] invite <identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>\nvhalla experimental [--json] listen <identity-directory> invitation <invitation-hex>\nvhalla experimental [--json] send <identity-directory> invitation <invitation-hex> <expected-owner-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime. --json emits bounded versioned JSON lines. Invitations are owner-signed; a verified send consumes the invitation nonce in <identity-directory>.spent and cannot redeem it twice.");
         #[cfg(feature = "experimental-social")]
         println!("\n{}", social::help());
         #[cfg(feature = "experimental-rooms")]
@@ -463,10 +463,19 @@ fn menubar_status() -> Result<(), String> {
 #[cfg(all(unix, feature = "experimental-network"))]
 fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
     const MAX_JSON_LINE_BYTES: usize = 140_000;
     use vhalla_native::{Event, Listener, Route};
     fn hex(raw: &[u8]) -> String {
         raw.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    fn hex_bytes(text: &str, len: usize) -> Result<Vec<u8>, String> {
+        if text.len() != len * 2 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("expected {} hex characters", len * 2));
+        }
+        Ok((0..len)
+            .map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).unwrap())
+            .collect())
     }
     fn print_line(line: &str) -> Result<(), String> {
         let mut out = std::io::stdout().lock();
@@ -530,30 +539,79 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     let json = args.get(1).is_some_and(|value| value == "--json");
     let offset = usize::from(json);
     let mode = text(1 + offset)?;
-    if !((mode == "listen" && args.len() == 4 + offset)
-        || (mode == "send" && args.len() == 7 + offset))
+    let invited = args
+        .get(3 + offset)
+        .and_then(|a| a.to_str())
+        .is_some_and(|v| v == "invitation");
+    if !((mode == "listen" && args.len() == 4 + offset && !invited)
+        || (mode == "listen" && args.len() == 5 + offset && invited)
+        || (mode == "send" && args.len() == 7 + offset && !invited)
+        || (mode == "send" && args.len() == 9 + offset && invited)
+        || (mode == "invite" && args.len() == 8 + offset))
     {
         return Err("see vhalla --help for experimental command arguments".into());
     }
-    let peer = text(3 + offset)?;
-    if peer.len() != 64 || !peer.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("expected full 64-hex-digit application key".into());
-    }
-    let mut peer_app = [0; 32];
-    for (i, byte) in peer_app.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&peer[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string())?;
-    }
     let identity = vhalla_identity::Identity::open(&args[2 + offset])
         .map_err(|e| format!("identity: {e:?}"))?;
+    if mode == "invite" {
+        // invite <dir> <invitee64> <realm32> <room32> <epoch> <expiry>
+        let invitee: [u8; 32] = hex_bytes(text(3 + offset)?, 32)?
+            .try_into()
+            .map_err(|_| "invitee key".to_string())?;
+        let realm = vhalla_core::RealmId(u128::from_be_bytes(
+            hex_bytes(text(4 + offset)?, 16)?
+                .try_into()
+                .map_err(|_| "realm".to_string())?,
+        ));
+        let room = vhalla_core::RoomId(u128::from_be_bytes(
+            hex_bytes(text(5 + offset)?, 16)?
+                .try_into()
+                .map_err(|_| "room".to_string())?,
+        ));
+        let epoch = vhalla_core::Epoch(
+            text(6 + offset)?
+                .parse()
+                .map_err(|_| "invalid epoch".to_string())?,
+        );
+        let expires_at = text(7 + offset)?
+            .parse()
+            .map_err(|_| "invalid expiry".to_string())?;
+        let mut nonce = [0; 32];
+        getrandom::fill(&mut nonce).map_err(|_| "entropy unavailable".to_string())?;
+        let invitation = identity
+            .issue_invitation(invitee, realm, room, epoch, expires_at, nonce)
+            .map_err(|e| format!("invitation: {e:?}"))?;
+        let encoded = hex(&invitation.encode());
+        return emit(
+            json,
+            &format!("invitation {encoded}"),
+            "invitation",
+            &format!(",\"invitation\":{}", json_quote(&encoded)),
+        );
+    }
+    let peer_app = |text: &str| -> Result<[u8; 32], String> {
+        hex_bytes(text, 32)?
+            .try_into()
+            .map_err(|_| "application key".to_string())
+    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
         if mode == "listen" {
-            let mut listener = Listener::bind(identity, peer_app)
-                .await
-                .map_err(|e| e.to_string())?;
+            let mut listener = if invited {
+                let raw = hex_bytes(text(4 + offset)?, vhalla_native::INVITATION_BYTES)?;
+                let invitation = vhalla_native::Invitation::decode(&raw)
+                    .map_err(|e| format!("invitation: {e:?}"))?;
+                Listener::bind_with_invitation(identity, invitation)
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                Listener::bind(identity, peer_app(text(3 + offset)?)?)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
             let address = listener.route().address();
             let expires_at = listener.route().expires_at();
             emit(
@@ -608,18 +666,54 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
                 }
             }
         } else {
-            let expires = text(5 + offset)?
-                .parse()
-                .map_err(|_| "invalid expiry".to_string())?;
-            let route = Route::parse(text(4 + offset)?, expires).map_err(|e| e.to_string())?;
-            let result = vhalla_native::send_message(
-                identity,
-                peer_app,
-                route,
-                text(6 + offset)?.as_bytes(),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            let (invitation, owner, route, body) = if invited {
+                // send <dir> invitation <hex> <owner64> <route> <expiry> <msg>
+                let raw = hex_bytes(text(4 + offset)?, vhalla_native::INVITATION_BYTES)?;
+                let invitation = vhalla_native::Invitation::decode(&raw)
+                    .map_err(|e| format!("invitation: {e:?}"))?;
+                let owner = peer_app(text(5 + offset)?)?;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "clock before Unix epoch".to_string())?
+                    .as_secs();
+                invitation
+                    .verify_at(owner, now)
+                    .map_err(|e| format!("invitation: {e:?}"))?;
+                // One local redemption per identity: the nonce is consumed
+                // durably before dialing, so a verified invitation can never
+                // be replayed from this identity after a restart.
+                let spent_path = format!("{}.spent", text(2 + offset)?);
+                let mut spent = vhalla_native::SpentFile::open(&spent_path)
+                    .map_err(|e| format!("spent file: {e:?}"))?;
+                spent
+                    .consume(invitation.claims().nonce)
+                    .map_err(|e| format!("invitation already spent: {e:?}"))?;
+                let expires = text(7 + offset)?
+                    .parse()
+                    .map_err(|_| "invalid expiry".to_string())?;
+                let route = Route::parse(text(6 + offset)?, expires).map_err(|e| e.to_string())?;
+                (Some(invitation), owner, route, text(8 + offset)?)
+            } else {
+                let expires = text(5 + offset)?
+                    .parse()
+                    .map_err(|_| "invalid expiry".to_string())?;
+                let route = Route::parse(text(4 + offset)?, expires).map_err(|e| e.to_string())?;
+                (None, peer_app(text(3 + offset)?)?, route, text(6 + offset)?)
+            };
+            let result = match invitation {
+                Some(invitation) => vhalla_native::send_message_with_invitation(
+                    identity,
+                    owner,
+                    invitation,
+                    route,
+                    body.as_bytes(),
+                )
+                .await
+                .map_err(|e| e.to_string())?,
+                None => vhalla_native::send_message(identity, owner, route, body.as_bytes())
+                    .await
+                    .map_err(|e| e.to_string())?,
+            };
             let peer = hex(result.acknowledgment().signer_key());
             let session = result.acknowledgment().context().session.0;
             let digest = hex(result.digest());

@@ -14,8 +14,11 @@
 mod codec;
 mod connection;
 mod network;
+mod spent;
 
 pub use connection::{send_message, send_message_with_invitation, Delivery, Event, Listener};
+pub use spent::{SpentError, SpentFile, SPENT_CAPACITY};
+pub use vhalla_session::{Invitation, INVITATION_BYTES};
 
 use libp2p::{identity::PublicKey, multiaddr::Protocol, Multiaddr, PeerId};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
