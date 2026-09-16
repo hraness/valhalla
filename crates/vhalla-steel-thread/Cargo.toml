@@ -21,6 +21,7 @@ vhalla-social = { path = "../vhalla-social" }
 vhalla-discovery = { path = "../vhalla-discovery" }
 vhalla-attention = { path = "../vhalla-attention" }
 vhalla-session = { path = "../vhalla-session" }
+hegeltest = "0.46.0"
 
 [target.'cfg(unix)'.dev-dependencies]
 vhalla-identity = { path = "../vhalla-identity" }
