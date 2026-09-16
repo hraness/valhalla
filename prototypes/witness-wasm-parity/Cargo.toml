@@ -1,0 +1,25 @@
+[package]
+name = "witness-wasm-parity"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Spike 3 (nostd-wasm-parity): replays the committed witness vectors natively and under wasm32-unknown-unknown and compares every digest"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+witness-restatement = { path = "../witness-restatement" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.108"
