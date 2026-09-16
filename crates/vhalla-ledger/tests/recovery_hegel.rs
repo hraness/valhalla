@@ -67,6 +67,28 @@ fn restarts_preserve_any_checkpoint_frontier(tc: TestCase) {
     }
 }
 
+/// Recorded proptest regression for this property, promoted to an explicit
+/// example: the two-command trace `(0, checkpoint, [])`, `(0, no checkpoint,
+/// [])` once shrank a real frontier loss. The proptest original in
+/// `recovery.rs` still replays it from `recovery.proptest-regressions`.
+#[test]
+fn recorded_regression_checkpoint_then_append() {
+    let mut ledger = Ledger::new(RealmId(1), Epoch(2), 32);
+    append(&mut ledger, 0, 1, &[]);
+    checkpoint(&mut ledger);
+    let snapshot = ledger.snapshot();
+    let mut restored = Ledger::restore(&snapshot, 32).unwrap();
+    assert_eq!(restored.snapshot(), snapshot);
+    assert_eq!(restored.checkpoint(), ledger.checkpoint());
+    ledger = restored;
+    append(&mut ledger, 0, 2, &[]);
+    let snapshot = ledger.snapshot();
+    restored = Ledger::restore(&snapshot, 32).unwrap();
+    assert_eq!(restored.snapshot(), snapshot);
+    assert_eq!(restored.head(), ledger.head());
+    assert_eq!(restored.checkpoint(), ledger.checkpoint());
+}
+
 /// The same frontier property under a state-dependent command distribution:
 /// each step mostly reuses an actor that has already appended, occasionally
 /// introducing a fresh one. An up-front `Vec<Command>` cannot express this —
