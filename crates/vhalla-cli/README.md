@@ -387,6 +387,51 @@ meshes. Persistent peers are dialed over plain libp2p TCP: reachability,
 firewalls and transport encryption remain the operator's responsibility,
 which is why a private network is the intended first deployment.
 
+### Social sync over the paired channel
+
+The `experimental-sync` feature (which implies `experimental-social` and
+`experimental-network`) adds `vhalla social sync`: one owner serving bounded
+signed pages of the social records another lacks, pulled over the same pinned
+paired QUIC channel as `experimental listen`/`send`. Both directions pin the
+exact peer application key — a stranger gets no response, not an error — and
+every record still has to verify against the social protocol before the local
+store admits it. Sync is a pairwise operator action between two people who
+already exchanged keys out of band; it is not ambient replication.
+
+```console
+# Provider: serve the records REQUESTER lacks for ~60s, on a reachable
+# interface (default 127.0.0.1; a Tailscale or LAN address for a peer on
+# another machine). Prints a route the requester copies.
+vhalla social sync SOCIAL_STORE REALM serve KEYDIR REQUESTER64 [LISTEN_IP]
+
+# Requester: pull until the provider owes nothing. ROUTE and EXPIRY come from
+# the serve output; QUERY is an optional literal query like `posts`.
+vhalla social sync SOCIAL_STORE REALM pull KEYDIR PROVIDER64 ROUTE EXPIRY [QUERY]
+```
+
+Pages are bounded (five records per frame, bounded attempts and bytes), so a
+larger archive arrives over several short sessions on the same route; the
+provider tracks what it already sent and reports `provider_remaining` until it
+reaches zero. Each accepted page commits atomically before the next request,
+and records the requester already holds are never re-sent — a second pull of
+an unchanged store transfers nothing and reports `duplicates: 0`. The pull
+report includes `pages`, `attempts`, `bytes`, `accepted`, `duplicates`,
+`failures`, `remaining` and `complete`.
+
+A stale `EXPIRY` is rejected locally before any dial. The serve window ends
+as soon as the final page is acknowledged at the transport level, so a
+concurrent local writer is only locked out for the serving window itself.
+
+For machines that cannot share a LAN or an existing overlay, `tailcat` is a
+usable external wrapper: it exposes a local UDP port through WireGuard with
+NAT traversal and DERP fallback, needs no account or admin rights, and hands
+the peer an out-of-band `tc` address. Run `tailcat` in front of the serving
+machine's port, forward the route through it, and the requester dials the
+forwarded local address. It changes only how the UDP path is reached — the
+paired channel still authenticates the pinned application keys and every
+frame's signature, so `tailcat` is a connectivity option, not a trust
+decision.
+
 ## Room-directory terminal companion
 
 The `experimental-rooms-tui` feature (which implies

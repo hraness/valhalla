@@ -13,6 +13,7 @@ experimental-social = ["vhalla-identity/social", "dep:vhalla-social", "dep:vhall
 experimental-rooms = ["experimental-social", "vhalla-identity/rooms", "dep:vhalla-rooms", "dep:vhalla-rooms-store", "dep:sha2"]
 experimental-rooms-node = ["experimental-rooms", "dep:vhalla-rooms-node", "dep:vhalla-rooms-consensus", "dep:serde", "dep:serde_json", "dep:tokio", "dep:getrandom"]
 experimental-rooms-tui = ["experimental-rooms-node", "dep:vhalla-rooms-app", "dep:vhalla-rooms-tui"]
+experimental-sync = ["experimental-social", "experimental-network", "dep:vhalla-retrieval"]
 
 [dependencies]
 vhalla-identity = { path = "../vhalla-identity" }
@@ -36,6 +37,7 @@ vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", optional = true }
 vhalla-rooms-node = { path = "../vhalla-rooms-node", optional = true }
 vhalla-rooms-app = { path = "../vhalla-rooms-app", optional = true }
 vhalla-rooms-tui = { path = "../vhalla-rooms-tui", optional = true }
+vhalla-retrieval = { path = "../vhalla-retrieval", optional = true }
 tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "time", "signal"], optional = true }
 
 [dev-dependencies]

@@ -152,6 +152,11 @@ impl Response {
     pub fn hints(&self) -> &[PostRef] {
         &self.hints
     }
+    /// Records the provider still owes after this page; zero ends the round.
+    #[must_use]
+    pub const fn provider_remaining(&self) -> usize {
+        self.provider_remaining
+    }
 }
 
 /// Explicit bounded serving session. Inventory rotation delegates to the
@@ -171,6 +176,22 @@ impl Provider {
             cursor: SyncCursor::default(),
             sequence: 0,
         }
+    }
+    /// Refresh the requester's disclosed inventory within this same round:
+    /// nonce, realm, query and tag must match the original request exactly.
+    /// A truthful growing inventory is how a round converges — records the
+    /// requester reports as held are never re-served, while a page lost or
+    /// rejected in flight stays missing and is naturally re-served.
+    pub fn refresh(&mut self, request: Request) -> Result<(), Error> {
+        if request.nonce != self.request.nonce
+            || request.realm != self.request.realm
+            || request.query != self.request.query
+            || request.tag != self.request.tag
+        {
+            return Err(Error::Context);
+        }
+        self.request.known = request.known;
+        Ok(())
     }
     /// Derive query hints and a bounded ordinary missing-record page. The selected
     /// provider owner is explicit local public identity, never a private reader.
@@ -239,6 +260,9 @@ pub struct PeerStats {
     pub duplicates: usize,
     /// Malformed/correlated/signature/capacity failures, including recorded timeouts.
     pub failures: usize,
+    /// Records the provider still owed after the most recent accepted page.
+    /// The round is complete for that peer when this reaches zero.
+    pub provider_remaining: usize,
 }
 struct Peer {
     stats: PeerStats,
@@ -351,6 +375,7 @@ impl Round {
             return Err(Error::Context);
         };
         peer.next = peer.next.checked_add(1).ok_or(Error::Budget)?;
+        peer.stats.provider_remaining = response.provider_remaining;
         for hint in response.hints {
             if peer.hints.len() < MAX_HINTS || peer.hints.contains(&hint) {
                 peer.hints.insert(hint);

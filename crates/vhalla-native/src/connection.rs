@@ -57,6 +57,10 @@ impl Delivery {
     }
 }
 
+/// Builds the signed response body for a verified inbound message from the
+/// envelope and its raw body.
+type Respond<'a> = dyn FnMut(&VerifiedEnvelope, &[u8]) -> Result<Vec<u8>> + 'a;
+
 enum Inbound {
     Hello {
         transport: [u8; 32],
@@ -77,6 +81,7 @@ impl Inbound {
             Self::Chat(_) => false,
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn receive(
         self,
         identity: &Identity,
@@ -85,6 +90,7 @@ impl Inbound {
         scope: PairingScope,
         raw: &[u8],
         now: u64,
+        respond: &mut Respond<'_>,
     ) -> Result<(Self, Vec<u8>, Option<Event>)> {
         if self.timed_out() {
             return Err(Error::Timeout);
@@ -126,13 +132,11 @@ impl Inbound {
             }
             Self::Chat(mut session) => {
                 let verified = session.receive(raw, now)?;
-                let response = sign_chat(
-                    identity,
-                    &mut session,
-                    &ack_body(raw),
-                    scope.expires_at,
-                    now,
-                )?;
+                let body = respond(&verified, raw)?;
+                if body.len() > vhalla_crypto::MAX_SIGNED_BODY_BYTES {
+                    return Err(Error::Input("response exceeds signed body limit"));
+                }
+                let response = sign_chat(identity, &mut session, &body, scope.expires_at, now)?;
                 Ok((
                     Self::Chat(session),
                     response,
@@ -299,6 +303,24 @@ impl Listener {
     /// Drive bounded network progress until an observation or lifetime failure.
     /// A fatal clock/lifetime error permanently closes this adapter instance.
     pub async fn next(&mut self) -> Result<Event> {
+        self.next_responding(&mut |_, raw| Ok(ack_body(raw))).await
+    }
+
+    /// Like `next`, but each admitted chat is answered with a signed frame
+    /// carrying `respond`'s body instead of the fixed receipt
+    /// acknowledgment. The callback observes the verified envelope before
+    /// its bytes are signed; a callback error rejects only that request's
+    /// connection. Serving still emits `Event::Message` for every admitted
+    /// frame so callers can log what they answered.
+    pub async fn next_serving(
+        &mut self,
+        respond: &mut dyn FnMut(&VerifiedEnvelope) -> Result<Vec<u8>>,
+    ) -> Result<Event> {
+        self.next_responding(&mut |verified, _| respond(verified))
+            .await
+    }
+
+    async fn next_responding(&mut self, respond: &mut Respond<'_>) -> Result<Event> {
         if self.closed {
             return Err(Error::Closed);
         }
@@ -326,7 +348,7 @@ impl Listener {
                         let now = self.check_clock()?;
                         let state = self.connections.remove(&connection_id);
                         let result = match state {
-                            Some(bound) if bound.peer == peer => bound.state.receive(&self.identity, self.peer_app, self.local_transport, self.scope, &request, now),
+                            Some(bound) if bound.peer == peer => bound.state.receive(&self.identity, self.peer_app, self.local_transport, self.scope, &request, now, respond),
                             _ => Err(Error::Input("request does not belong to an admitted connection")),
                         };
                         match result {
@@ -395,7 +417,36 @@ pub async fn send_message(
     route: Route,
     body: &[u8],
 ) -> Result<Delivery> {
-    send_message_scoped(identity, peer_app, route, body, PairingScope::default()).await
+    send_message_scoped(
+        identity,
+        peer_app,
+        route,
+        body,
+        PairingScope::default(),
+        true,
+    )
+    .await
+}
+
+/// Join a fresh connection and send one bounded chat, returning the peer's
+/// signed response envelope whatever its body — the request/response half
+/// of a serving listener. Use when the peer is known to answer with data,
+/// not a receipt; signature, session and replay checks still apply.
+pub async fn exchange_message(
+    identity: Identity,
+    peer_app: [u8; 32],
+    route: Route,
+    body: &[u8],
+) -> Result<Delivery> {
+    send_message_scoped(
+        identity,
+        peer_app,
+        route,
+        body,
+        PairingScope::default(),
+        false,
+    )
+    .await
 }
 
 /// Join a fresh connection using an invitation from an independently pinned
@@ -419,7 +470,7 @@ pub async fn send_message_with_invitation(
     if route.expires_at > scope.expires_at {
         return Err(Error::Input("route exceeds invitation lifetime"));
     }
-    send_message_scoped(identity, expected_owner, route, body, scope).await
+    send_message_scoped(identity, expected_owner, route, body, scope, true).await
 }
 
 async fn send_message_scoped(
@@ -428,6 +479,7 @@ async fn send_message_scoped(
     route: Route,
     body: &[u8],
     mut scope: PairingScope,
+    expect_ack: bool,
 ) -> Result<Delivery> {
     validate_peer(identity.public_key(), peer_app)?;
     if body.len() > vhalla_crypto::MAX_SIGNED_BODY_BYTES {
@@ -440,7 +492,7 @@ async fn send_message_scoped(
     scope.expires_at = route.expires_at;
     tokio::time::timeout(
         REQUEST_DEADLINE,
-        send_inner(identity, peer_app, route, body, scope, clock),
+        send_inner(identity, peer_app, route, body, scope, clock, expect_ack),
     )
     .await
     .map_err(|_| Error::Timeout)?
@@ -453,6 +505,7 @@ async fn send_inner(
     body: &[u8],
     scope: PairingScope,
     mut clock: Clock,
+    expect_ack: bool,
 ) -> Result<Delivery> {
     let mut swarm = network::new(Some(route.peer))?;
     let local_transport = transport_key(*swarm.local_peer_id())?;
@@ -529,7 +582,7 @@ async fn send_inner(
                     }
                     Outbound::Chat(mut session, expected, digest) => {
                         let acknowledgment = session.receive(&response, now)?;
-                        if acknowledgment.envelope().body() != expected {
+                        if expect_ack && acknowledgment.envelope().body() != expected {
                             return Err(Error::Input("acknowledgment does not match sent frame"));
                         }
                         delivery = Some(Delivery {
@@ -960,6 +1013,7 @@ mod tests {
                     scope,
                     &hello,
                     98,
+                    &mut |_, raw| Ok(ack_body(raw)),
                 )
                 .unwrap();
             assert!(event.is_none());
@@ -972,6 +1026,7 @@ mod tests {
                 scope,
                 &confirmation,
                 finish_at,
+                &mut |_, raw| Ok(ack_body(raw)),
             );
             if finish_at == 100 {
                 assert!(matches!(result, Err(Error::Session(Reject::Expired))));
@@ -996,6 +1051,7 @@ mod tests {
                     scope,
                     &message,
                     99,
+                    &mut |_, raw| Ok(ack_body(raw)),
                 )
                 .unwrap();
             assert!(matches!(event, Some(Event::Message(_))));
@@ -1017,7 +1073,8 @@ mod tests {
                     responder_transport,
                     scope,
                     &delayed,
-                    100
+                    100,
+                    &mut |_, raw| Ok(ack_body(raw)),
                 ),
                 Err(Error::Session(Reject::Expired))
             ));
@@ -1076,6 +1133,7 @@ mod tests {
                 },
                 &[],
                 1,
+                &mut |_, raw| Ok(ack_body(raw)),
             ),
             Err(Error::Timeout)
         ));

@@ -3,6 +3,9 @@
 mod discovery;
 #[path = "social_json.rs"]
 mod json;
+#[cfg(feature = "experimental-sync")]
+#[path = "social_sync.rs"]
+mod sync;
 
 use std::{
     collections::BTreeSet,
@@ -41,6 +44,7 @@ vhalla social COMMAND STORE REALM32HEX [arguments] [--now SECONDS]
   rotate OWNER_KEYDIR OWNER64 NEW_KEYDIR
   profile OWNER64 | active-bios OWNER64 | post-show POST64
   posts [PLACEMENT] | timeline OWNER64 | thread ROOT64 | stats OWNER64 | records
+  sync serve KEYDIR REQUESTER64 [LISTEN_IP] | sync pull KEYDIR PROVIDER64 ROUTE EXPIRY [QUERY]
   reaction OWNER64 POST64 | following OWNER64 TARGET64 | repost-show OWNER64 POST64
   votes POST64 REV64 | export NEWFILE | import FILE | recover
 ACTOR is owner:OWNER64 or agent:AGENT64:GRANT64; IDs are full hex.
@@ -53,7 +57,9 @@ faceted, otherwise legacy is the default. Legacy revisions have no facets.
 Register updates default to all visible heads; --heads ID_CSV explicitly resolves
 up to 16 predecessors, including partial resolution discovered through records.
 Use -- before positional text beginning with --. Output is ASCII JSON.
-Owner writes are atomically sealed; agent writes remain provisional until sealed.";
+Owner writes are atomically sealed; agent writes remain provisional until sealed.
+sync needs --features experimental-sync; serve prints a 60s route the peer
+copies into pull. Both sides pin exact application keys; nothing is open.";
 
 pub fn help() -> String {
     format!("{HELP}\n\n{}", discovery::HELP)
@@ -1196,6 +1202,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
                     ("reconciled", publication.reconciled().to_string()),
                 ])
             }
+            "sync" => sync_dispatch(&args, &mut store)?,
             _ => query(&args, &store)?,
         }
     };
@@ -1210,6 +1217,15 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         .map_err(|e| {
             format!("output failed after operation; inspect durable store before retry: {e}")
         })
+}
+
+#[cfg(feature = "experimental-sync")]
+fn sync_dispatch(args: &Args, store: &mut Store) -> Result<String, String> {
+    sync::run(args, store)
+}
+#[cfg(not(feature = "experimental-sync"))]
+fn sync_dispatch(_: &Args, _: &mut Store) -> Result<String, String> {
+    Err("social sync requires an explicit build with --features experimental-sync".into())
 }
 
 #[cfg(test)]

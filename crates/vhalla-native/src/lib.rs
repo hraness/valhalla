@@ -17,7 +17,9 @@ mod connection;
 mod network;
 mod spent;
 
-pub use connection::{send_message, send_message_with_invitation, Delivery, Event, Listener};
+pub use connection::{
+    exchange_message, send_message, send_message_with_invitation, Delivery, Event, Listener,
+};
 pub use spent::{SpentError, SpentFile, SPENT_CAPACITY};
 pub use vhalla_session::{Invitation, INVITATION_BYTES};
 
@@ -35,6 +37,15 @@ const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
 const LIFETIME: u64 = 60;
 const READY: &[u8] = b"vhalla/native/ready/v1";
 
+/// The fixed authenticated context of a directly pinned paired session —
+/// no invitation. Outer-channel consumers such as signed retrieval frames
+/// must expect exactly these values.
+pub const PAIRED_REALM: RealmId = RealmId(1);
+/// Fixed room inside `PAIRED_REALM` for directly pinned paired sessions.
+pub const PAIRED_ROOM: RoomId = RoomId(2);
+/// Fixed epoch inside `PAIRED_REALM`/`PAIRED_ROOM` for paired sessions.
+pub const PAIRED_EPOCH: Epoch = Epoch(1);
+
 #[derive(Clone, Copy)]
 struct PairingScope {
     realm: RealmId,
@@ -45,9 +56,9 @@ struct PairingScope {
 impl PairingScope {
     const fn default() -> Self {
         Self {
-            realm: RealmId(1),
-            room: RoomId(2),
-            epoch: Epoch(1),
+            realm: PAIRED_REALM,
+            room: PAIRED_ROOM,
+            epoch: PAIRED_EPOCH,
             expires_at: 0,
         }
     }
