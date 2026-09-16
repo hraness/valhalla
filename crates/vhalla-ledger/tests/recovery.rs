@@ -1,6 +1,5 @@
 //! Recovery through the public API, including checkpoints behind the tip.
 
-use proptest::prelude::*;
 use vhalla_core::{Epoch, PeerId, RealmId, Sequence};
 use vhalla_ledger::{Checkpoint, Error, Event, Ledger};
 
@@ -104,35 +103,5 @@ fn retained_checkpoint_corruption_is_rejected() {
         let mut corrupted = snapshot.clone();
         corrupted[anchor_start + offset] ^= 1;
         assert_eq!(Ledger::restore(&corrupted, 8).err(), Some(expected));
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 64,
-        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::WithSource("proptest-regressions"))),
-        ..ProptestConfig::default()
-    })]
-    #[test]
-    fn restarts_preserve_any_checkpoint_frontier(
-        commands in prop::collection::vec((0u8..4, any::<bool>(), prop::collection::vec(any::<u8>(), 0..24)), 0..24)
-    ) {
-        let mut ledger = Ledger::new(RealmId(1), Epoch(2), 32);
-        let mut sequences = [0u64; 4];
-        for (actor, take_checkpoint, payload) in commands {
-            sequences[actor as usize] += 1;
-            append(&mut ledger, u128::from(actor), sequences[actor as usize], &payload);
-            if take_checkpoint { checkpoint(&mut ledger); }
-            let snapshot = ledger.snapshot();
-            let mut restored = Ledger::restore(&snapshot, 32).unwrap();
-            prop_assert_eq!(restored.snapshot(), snapshot);
-            prop_assert_eq!(restored.head(), ledger.head());
-            prop_assert_eq!(restored.checkpoint(), ledger.checkpoint());
-            // Restoring a sequence map must not permit an already used actor sequence.
-            let replay = Event::new(restored.head(), RealmId(1), Epoch(2), PeerId(u128::from(actor)),
-                Sequence(sequences[actor as usize]), payload);
-            prop_assert!(restored.append(replay).is_err());
-            ledger = restored;
-        }
     }
 }

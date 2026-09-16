@@ -5392,7 +5392,6 @@ name = "vhalla-ledger"
 version = "0.0.0"
 dependencies = [
  "hegeltest",
- "proptest",
  "sha2 0.10.9",
  "vhalla-core",
 ]
@@ -5575,7 +5574,6 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "hegeltest",
- "proptest",
  "tokio",
  "vhalla-attention",
  "vhalla-core",

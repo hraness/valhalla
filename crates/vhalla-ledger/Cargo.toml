@@ -12,7 +12,6 @@ vhalla-core = { path = "../vhalla-core" }
 
 [dev-dependencies]
 hegeltest = "0.46.0"
-proptest = "1.6"
 
 [lints]
 workspace = true
