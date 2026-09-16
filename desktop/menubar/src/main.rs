@@ -17,10 +17,22 @@ use desktop_foundation::browser::{BrowserOpener, BrowserStatus};
 
 use desktop_foundation::{
     outputs::OutputsSection, AccessibilityMetadata, DispatchOutcome, Host, MenuItem, MenuModel,
-    MenuNode, Options, RenderError,
+    MenuNode, Options, RenderError, RgbaIcon,
 };
 
 const SUPPORT_URL: &str = "https://account.hraness.com/support?product=valhalla&source=desktop#support";
+
+/// Crossed-swords status mark. macOS renders `MARK_TITLE` as native colored
+/// emoji text; icon-only trays use this pre-rendered 32px Twemoji bitmap
+/// (U+2694, CC-BY 4.0 — https://twemoji.twitter.com).
+const MARK_TITLE: &str = "⚔\u{fe0f}";
+fn mark_icon() -> RgbaIcon {
+    RgbaIcon {
+        rgba: include_bytes!("../icons/mark.rgba").to_vec(),
+        width: 32,
+        height: 32,
+    }
+}
 
 /// `~/Library/Application Support/Valhalla` on macOS, matching
 /// `state_directory()` in `crates/vhalla-cli/src/main.rs`.
@@ -78,12 +90,13 @@ impl Host for ValhallaHost {
                     hint: Some("Exit the Valhalla menu bar companion".to_owned()),
                 }),
         ));
-        MenuModel {
-            title: Some("Valhalla".to_owned()),
+        let mut model = MenuModel {
             tooltip: Some("Valhalla — agent outputs".to_owned()),
-            icon: None,
             nodes,
-        }
+            ..MenuModel::default()
+        };
+        model.mark(MARK_TITLE, Some(mark_icon()));
+        model
     }
 
     fn dispatch_result(&self, id: &str) -> DispatchOutcome {
@@ -140,5 +153,22 @@ mod invitation_tests {
         assert_eq!(host.browser.status(), BrowserStatus::Idle);
         assert!(matches!(host.dispatch_result("unknown.action"), DispatchOutcome::Rejected));
         assert_eq!(host.browser.status(), BrowserStatus::Idle);
+    }
+
+    #[test]
+    fn status_mark_is_the_crossed_swords_emoji_with_bundled_tray_art() {
+        let host = ValhallaHost {
+            outputs: OutputsSection::new("/dev/null/absent-outputs"),
+            browser: BrowserOpener::new(),
+        };
+        let model = host.snapshot();
+        model.validate().expect("valid model");
+        if cfg!(target_os = "macos") {
+            assert_eq!(model.title.as_deref(), Some("⚔\u{fe0f}"));
+            assert!(model.icon.is_none());
+        } else {
+            let icon = model.icon.expect("icon tray art");
+            assert_eq!(icon.rgba.len(), 32 * 32 * 4);
+        }
     }
 }
