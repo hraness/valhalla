@@ -2314,3 +2314,39 @@ fn eligible_intake_file_queues_a_config_transition() {
     assert_eq!(batch.eligible, Some(admitted));
     assert!(batch.evidence.is_empty() && batch.records.is_empty());
 }
+
+/// A hosted `service_config` binds the configured listen host: loopback
+/// keeps the single-host per-IP ceiling lift the test meshes rely on,
+/// while any other address falls back to malachite's default per-IP
+/// bound. Peers keep their explicit `host:port` targets either way.
+#[test]
+fn service_config_binds_listen_and_bounds_per_ip() {
+    let local = service_config("svc", "127.0.0.1", 5000, &[("100.64.1.2".to_owned(), 5001)]);
+    assert_eq!(
+        local.consensus.p2p.discovery.max_connections_per_ip,
+        usize::MAX
+    );
+    assert_eq!(
+        local.consensus.p2p.listen_addr.to_string(),
+        "/ip4/127.0.0.1/tcp/5000"
+    );
+    assert_eq!(
+        local.consensus.p2p.persistent_peers[0].to_string(),
+        "/ip4/100.64.1.2/tcp/5001"
+    );
+
+    for listen in ["192.0.2.10", "0.0.0.0", "100.64.1.7"] {
+        let config = service_config("svc", listen, 5000, &[]);
+        assert_eq!(
+            config.consensus.p2p.discovery.max_connections_per_ip,
+            DiscoveryConfig::default().max_connections_per_ip,
+            "non-loopback listen {listen} must keep the default per-IP bound"
+        );
+        assert!(config
+            .consensus
+            .p2p
+            .listen_addr
+            .to_string()
+            .contains(listen));
+    }
+}

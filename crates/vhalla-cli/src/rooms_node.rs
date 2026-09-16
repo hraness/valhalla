@@ -27,8 +27,14 @@ use crate::rooms::{hex32, Args};
 struct NodeFile {
     /// Ed25519 consensus seed, 64 hex characters.
     node_key: String,
-    /// libp2p TCP listen port on localhost.
+    /// libp2p TCP listen port.
     port: usize,
+    /// Optional interface to bind, as a bare host — an IP or resolvable
+    /// name, never `host:port`. Default `127.0.0.1`; a non-loopback bind
+    /// keeps malachite's default per-IP connection bound instead of the
+    /// single-host ceiling lift.
+    #[serde(default)]
+    listen: Option<String>,
     /// Persistent peers as `host:port` strings.
     #[serde(default)]
     peers: Vec<String>,
@@ -154,7 +160,12 @@ pub fn run(args: &Args) -> Result<(), String> {
 
     let spec = NodeSpec {
         home: args.rooms_store.clone().into(),
-        config: service_config("vhalla-rooms-node", file.port, &peers(&file.peers)?),
+        config: service_config(
+            "vhalla-rooms-node",
+            file.listen.as_deref().unwrap_or("127.0.0.1"),
+            file.port,
+            &peers(&file.peers)?,
+        ),
         node_key,
         validator_sets,
         held: BTreeMap::new(),
@@ -223,6 +234,27 @@ pub fn eligible(args: &Args) -> Result<(), String> {
         json::object(vec![
             ("intake", json::string(&target.display().to_string())),
             ("owners", owners.len().to_string()),
+        ])
+    );
+    Ok(())
+}
+
+/// The `keygen` subcommand: print a fresh Ed25519 consensus seed and its
+/// public key for a node config's `node_key`/`validators` entries. The
+/// `node_key` line is the secret seed — keep it in the private config;
+/// only `public_key` is shared with the set's other operators.
+pub fn keygen() -> Result<(), String> {
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|_| "keygen: OS entropy unavailable")?;
+    let key = PrivateKey::from(seed);
+    println!(
+        "{}",
+        json::object(vec![
+            ("node_key", json::string(&json::hex(&seed))),
+            (
+                "public_key",
+                json::string(&json::hex(key.public_key().as_bytes()))
+            ),
         ])
     );
     Ok(())

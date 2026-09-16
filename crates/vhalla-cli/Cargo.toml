@@ -11,7 +11,7 @@ default = []
 experimental-network = ["dep:vhalla-native", "dep:tokio", "dep:vhalla-core", "dep:getrandom"]
 experimental-social = ["vhalla-identity/social", "dep:vhalla-social", "dep:vhalla-social-store", "dep:vhalla-core", "dep:getrandom", "dep:libc", "dep:vhalla-discovery", "dep:vhalla-attention", "dep:vhalla-discovery-store"]
 experimental-rooms = ["experimental-social", "vhalla-identity/rooms", "dep:vhalla-rooms", "dep:vhalla-rooms-store", "dep:sha2"]
-experimental-rooms-node = ["experimental-rooms", "dep:vhalla-rooms-node", "dep:vhalla-rooms-consensus", "dep:serde", "dep:serde_json", "dep:tokio"]
+experimental-rooms-node = ["experimental-rooms", "dep:vhalla-rooms-node", "dep:vhalla-rooms-consensus", "dep:serde", "dep:serde_json", "dep:tokio", "dep:getrandom"]
 experimental-rooms-tui = ["experimental-rooms-node", "dep:vhalla-rooms-app", "dep:vhalla-rooms-tui"]
 
 [dependencies]

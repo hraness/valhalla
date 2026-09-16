@@ -101,7 +101,7 @@ async fn replica_syncs_commits_and_resolves_pending() {
     let set = RoomValidatorSet::new(vec![RoomValidator::new(key.public_key(), 1)]);
     let node = RoomNode::start(NodeSpec {
         home: node_home.clone(),
-        config: service_config("svc-test", 0, &[]),
+        config: service_config("svc-test", "127.0.0.1", 0, &[]),
         node_key: key.clone(),
         validator_sets: BTreeMap::from([(1, set)]),
         held: BTreeMap::new(),

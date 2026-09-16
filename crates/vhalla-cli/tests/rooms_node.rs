@@ -82,6 +82,36 @@ mod enabled {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
+    fn unhex(text: &str) -> Vec<u8> {
+        assert_eq!(text.len() % 2, 0, "hex must have even length");
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// `rooms keygen` prints a fresh consensus seed/public pair; the
+    /// public key must be exactly the seed's Ed25519 verification key so
+    /// the printed values slot straight into a node config.
+    #[test]
+    fn keygen_prints_a_consensus_key_pair() {
+        let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .args(["rooms", "keygen"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        let node_key = value["node_key"].as_str().unwrap();
+        let public_key = value["public_key"].as_str().unwrap();
+        assert_eq!(node_key.len(), 64);
+        assert_eq!(public_key.len(), 64);
+
+        let seed: [u8; 32] = unhex(node_key).try_into().unwrap();
+        let derived = PrivateKey::from(seed).public_key();
+        assert_eq!(hex(derived.as_bytes()), public_key);
+    }
+
     /// `home/app/journal/heights/<016x>` is the durable commit marker.
     fn committed(home: &Path, height: u64) -> bool {
         home.join(format!("app/journal/heights/{height:016x}"))
@@ -118,6 +148,9 @@ mod enabled {
             "node_key": hex(&[7; 32]),
             // Port 0 binds an ephemeral listener — no fixed-port collision.
             "port": 0,
+            // An explicit loopback listen exercises the optional field
+            // without changing the bind.
+            "listen": "127.0.0.1",
             "peers": [],
             "validators": [{
                 "from": 1,
