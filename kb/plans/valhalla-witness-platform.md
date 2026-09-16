@@ -769,3 +769,16 @@ string verbatim; both passed on the first run, so the two implementations agree 
 candidate, manifest, receipt, and challenge layouts and on every digest domain and length prefix.
 The Python oracle does not sign: Python's standard library has no Ed25519, so the challenge vector
 is the transcript, and the Rust test signs and verifies it separately.
+
+### 2026-09-16: Gate 5 witness session in the steel thread
+
+`vhalla-steel-thread` gains `KIND_WITNESS_RESPONSE = 3`, `SteelError::Witness(WitnessError)`, and
+`WitnessSession`, which pins the transport `ReplayWindow` to the subject's verifying key, refuses a
+challenge that names any other key, requires the witness kind on the verified envelope, and hands
+the body to `WitnessVerifier::verify_bytes`. The crate-level `compile_fail` doctest shows
+`RemoteRequest::from_verified(witness, scope)` does not type-check for a `VerifiedWitness`.
+`tests/witness.rs` delivers a real response for the opening-normal vector through a signed frame:
+admitted once, refused by the transport window on an exact resend, refused by the one-use window
+on a re-enveloped resend, refused for a foreign signer or a read-request kind, and a witness frame
+delivered to a `MemorySession` is `Denied::Kind` with `reads()` unchanged. The steel thread now has
+two evidence paths that share a transport window design and no host effect between them.

@@ -271,9 +271,10 @@ pure crates after four discovery spikes.
   one-use window is volatile: a restarted verifier restores it durably or
   starts with a fresh `started_at`, which refuses earlier challenges; two
   verifier instances sharing an issuer key need a shared durable ledger, which
-  is outside these crates. The independent Python vector oracle, the Gate 5
-  steel-thread witness frame, the Slice 5 Platonik session adapter, and
-  Hashcash mode remain open.
+  is outside these crates. The Gate 5 witness frame and the independent Python vector oracle landed the
+  same day (`WitnessSession`, `KIND_WITNESS_RESPONSE`, the `compile_fail` proof
+  against `RemoteRequest::from_verified`, and `/vectors/witness-v1.json`). The
+  Slice 5 Platonik session adapter and Hashcash mode remain open.
 
 ### Shared public room directory — 2026-09-13
 
