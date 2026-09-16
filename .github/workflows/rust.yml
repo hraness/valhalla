@@ -55,6 +55,8 @@ jobs:
           sh prototypes/discovery-parity/verify.sh
       - name: Independent signed facet golden vectors
         run: python3 prototypes/social-facets/verify-vectors.py
+      - name: Independent witness encoding golden vectors
+        run: python3 prototypes/witness-vectors/verify-vectors.py
       - name: Native checkpoint persistence
         run: |
           cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked

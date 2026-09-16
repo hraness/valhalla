@@ -627,7 +627,7 @@ is issuer policy.
 | Proof profile | `ProofProfile::TransparentReceipt = 1` in the response transcript | no profile field until ZK exists | decided |
 | One-use window | 4096 entries keyed by dedup scope `(issuer_key, challenge_id, subject_key)` storing `(response_hash, expires_at)`; same hash `Replay`, different hash `Equivocation`; non-`Clone`, insert last, prune only expired entries | key over the 4-tuple including `response_hash` (makes `Equivocation` undetectable); 1024 with no eviction; `ClaimReplayWindow` | pending spike capability-fences |
 | Boundary proof | `compile_fail` doctests as CI proof, trybuild for error codes | trybuild only | pending spike capability-fences |
-| Vector oracle | per-case corpus vector files under `crates/vhalla-witness/tests/vectors/` (landed) plus `/vectors/witness-v1.json` from Python | Rust-only vectors | Rust files landed; Python oracle pending |
+| Vector oracle | per-case corpus vector files under `crates/vhalla-witness/tests/vectors/` (landed) plus `/vectors/witness-v1.json` from Python | Rust-only vectors | decided (spike 2) |
 | Steel thread | kind 3 and `WitnessSession` in a later Gate 5 entry, never through `RemoteRequest` | wire kind in the first landing; widening `from_verified` | decided |
 | Platonik pin | `5eedec07c84af3b4beb82f22cc6c2b9fa3520d42` | `76ea2db` | decided |
 | Game layer | separate Slice 5 adapter plan for `vhalla-game-platonik` | game types in these crates; porting `prototypes/game-session` | decided |
@@ -757,3 +757,15 @@ scratchpad `stable 1.98.1` toolchain.
   CI.
 - Still open: the Python vector oracle, Gate 5 (`KIND_WITNESS_RESPONSE`, `WitnessSession`, and the
   steel-thread `compile_fail` doctest), the Slice 5 adapter plan, and Hashcash promotion.
+
+### 2026-09-16: spike 2 closes with the independent Python oracle
+
+`prototypes/witness-vectors/generate.py` encodes a hand-authored four-rule program, a one-slot
+candidate, a five-by-three world manifest, a claimed receipt, and a challenge transcript with
+Python `struct` and `hashlib` only, and writes `/vectors/witness-v1.json`; `verify-vectors.py`
+re-derives every digest from the hex in CI beside the social-facets step. `tests/python_vectors.rs`
+in `vhalla-witness` and in `vhalla-botcaptcha` build the same values in Rust and assert every hex
+string verbatim; both passed on the first run, so the two implementations agree on the program,
+candidate, manifest, receipt, and challenge layouts and on every digest domain and length prefix.
+The Python oracle does not sign: Python's standard library has no Ed25519, so the challenge vector
+is the transcript, and the Rust test signs and verifies it separately.
