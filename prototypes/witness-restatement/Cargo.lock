@@ -192,6 +192,7 @@ dependencies = [
  "platonik-core",
  "serde_json",
  "sha2",
+ "witness-restatement",
 ]
 
 [[package]]

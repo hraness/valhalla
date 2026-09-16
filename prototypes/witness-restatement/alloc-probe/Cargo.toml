@@ -16,7 +16,7 @@ missing_docs = "warn"
 all = "warn"
 
 [dependencies]
-witness-restatement = { path = ".." }
+witness-restatement = { path = "..", features = ["std"] }
 
 [dev-dependencies]
 platonik-core = { git = "https://github.com/hraness/platonik", rev = "5eedec07c84af3b4beb82f22cc6c2b9fa3520d42" }

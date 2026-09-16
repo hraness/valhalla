@@ -20,9 +20,13 @@
 #![warn(missing_docs)]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 pub mod bounds;
 pub mod codec;
+#[cfg(feature = "std")]
+pub mod corpus;
 pub mod hash;
 pub mod ledger;
 pub mod manifest;
