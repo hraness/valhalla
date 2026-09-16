@@ -7,6 +7,7 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `botcaptcha` | Signed, context-bound SHA-256 challenge work and one-use replay |
 | `attestation` | Portable, hardware-key, and TEE/RATS evidence policy |
 | `witness` | Bounded deterministic program execution and work receipts |
+| `witness-restatement` | Stage 0 of the witness platform plan: the Platonik habitat-v1 engine restated as a `no_std` library, checked bit for bit against the pinned engine on the `bridge-v1` corpus and random experiments; `alloc-probe/` counts tick-loop allocations |
 | `ledger` | Signed content-addressed event DAG, equivocation, heads, retention |
 | `game-session` | Single-host versus quorum checkpoint authority |
 | `settlement` | Voucher consumption, quorum finality, and light-client continuity |
