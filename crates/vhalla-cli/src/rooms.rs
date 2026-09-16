@@ -34,6 +34,7 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   archive OWNER_KEYDIR SLUG EXPIRY
   list | search QUERY | show SLUG | account OWNER64 | proof RECORD64 | evidence RECORD64 | recover
   node NODE_HOME --config FILE  (build: --features experimental-rooms-node)
+  keygen  (build: --features experimental-rooms-node)
   eligible NODE_HOME OWNER64,... (build: --features experimental-rooms-node)
   tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
   submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
@@ -48,7 +49,9 @@ Recommended launch profile: BASE_COST 8, WINDOW_SEC 86400, MAX_IN_WINDOW 1,
 EPOCH_SEC 86400, MAX_LIFETIME 8, with a committee-curated eligible set.
 `node` hosts a room-consensus validator: NODE_HOME holds its journal, WAL and
 application store; --config names a JSON file with node_key (hex seed), port,
-peers, validators, directory, policy, eligible owners and archive limits.
+optional listen (bare host, default 127.0.0.1), peers, validators, directory,
+policy, eligible owners and archive limits. `keygen` prints a fresh node_key
+seed and the public_key to share for the validators list.
 Producers submit canonical batches by dropping *.batch files into
 NODE_HOME/intake/; operators evolve the eligible set by dropping *.eligible
 files there - `rooms eligible NODE_HOME OWNER64,...` writes one. Committed
@@ -262,6 +265,16 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
     if raw.len() == 2 && (raw[1] == "--help" || raw[1] == "-h") {
         println!("{HELP}");
         return Ok(());
+    }
+    if raw.len() == 2 && raw[1] == "keygen" {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_node::keygen();
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err("rooms keygen needs --features experimental-rooms-node".into());
+        }
     }
     let args = Args::parse(raw)?;
     if args.command == "node" {

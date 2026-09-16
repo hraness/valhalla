@@ -1818,12 +1818,25 @@ async fn run(
 }
 
 /// Service config for a hosted validator: libp2p TCP listening on
-/// `listen_port` (all interfaces off — localhost binds by policy in this
-/// build), persistent peering to `peers`, value sync enabled. This is
-/// the same shape `node_config` produces for tests, without the
-/// index-derived ports.
-pub fn service_config(moniker: &str, listen_port: usize, peers: &[(String, usize)]) -> Config {
+/// `listen` at `listen_port`, persistent peering to `peers`, value sync
+/// enabled. This is the same shape `node_config` produces for tests,
+/// without the index-derived ports.
+///
+/// A loopback `listen` keeps the per-IP connection ceiling lifted so a
+/// single-host validator set still meshes; any other bind address keeps
+/// malachite's default per-IP bound. `listen` is a bare host — an IP or
+/// resolvable name — never `host:port`; the port is `listen_port`.
+pub fn service_config(
+    moniker: &str,
+    listen: &str,
+    listen_port: usize,
+    peers: &[(String, usize)],
+) -> Config {
     let transport = TransportProtocol::Tcp;
+    let loopback = listen
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(listen == "localhost");
     Config {
         moniker: moniker.to_owned(),
         consensus: ConsensusConfig {
@@ -1832,10 +1845,14 @@ pub fn service_config(moniker: &str, listen_port: usize, peers: &[(String, usize
             p2p: P2pConfig {
                 protocol: PubSubProtocol::default(),
                 discovery: DiscoveryConfig {
-                    max_connections_per_ip: usize::MAX,
+                    max_connections_per_ip: if loopback {
+                        usize::MAX
+                    } else {
+                        DiscoveryConfig::default().max_connections_per_ip
+                    },
                     ..DiscoveryConfig::default()
                 },
-                listen_addr: transport.multiaddr("127.0.0.1", listen_port),
+                listen_addr: transport.multiaddr(listen, listen_port),
                 persistent_peers: peers
                     .iter()
                     .map(|(host, port)| transport.multiaddr(host, *port))

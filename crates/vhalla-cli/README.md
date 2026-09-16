@@ -348,6 +348,45 @@ id — and applies after that batch's awards and records, so it governs
 subsequent heights. The wire format is bounded at 256 owner ids and
 canonical (sorted, duplicate-free).
 
+### A private validator set over a real network
+
+The default config binds `127.0.0.1` only. The optional `listen` field —
+a bare host, never `host:port` — binds another interface address, and
+`peers` entries already dial any `host:port`. This is enough for a small
+pre-shared set of validators over a private network such as Tailscale or
+a LAN; it is not open-internet qualification, which remains a
+promotion-gates item.
+
+One workable setup for a group that trusts each other's machines:
+
+1. Each member runs `vhalla social init SOCIAL_STORE IDENTITY_DIR` to
+   create an owner, `vhalla social export SOCIAL_STORE FILE` to capture
+   it, and `vhalla rooms keygen` to print a `node_key` seed and
+   `public_key`. Seeds and identity directories stay private; members
+   share the snapshot file, the printed `owner` id and `public_key`.
+2. One member imports every member's snapshot into their own store
+   (`vhalla social import SOCIAL_STORE FILE`), exports the merged
+   archive, and distributes that single file. Every member imports it
+   too — the merge is a record union over a canonically ordered
+   archive, so all stores then hold identical genesis bytes. The same
+   member authors the shared parameters: `directory` (any 64-hex id,
+   e.g. a spare `keygen` public key), `validators` (every member's
+   `{from, key, power}`), `policy`, `eligible` (the members' owner
+   ids) and `limits`.
+3. Each member writes a `node.json` with their own `node_key`, `port`
+   and `listen` (their reachable interface address, e.g. a Tailscale
+   IP), the shared fields above verbatim, and `peers` naming the other
+   members' `host:port`.
+4. Each member runs `vhalla rooms node SOCIAL_STORE NODE_HOME REALM
+   --config node.json`. The set then decides intake submissions through
+   `rooms submit`/`rooms tui` against any member's `NODE_HOME`.
+
+A non-loopback `listen` keeps malachite's default per-IP connection
+bound rather than the single-host ceiling lift used for local test
+meshes. Persistent peers are dialed over plain libp2p TCP: reachability,
+firewalls and transport encryption remain the operator's responsibility,
+which is why a private network is the intended first deployment.
+
 ## Room-directory terminal companion
 
 The `experimental-rooms-tui` feature (which implies

@@ -20,7 +20,11 @@ consensus with journal-gated commits, durable stores, the `vhalla rooms`
 CLI lane (node/submit/pending/tui) and an unattended tag release channel
 are all qualified in-tree. Dioxus integration was descoped to the terminal
 surface; remaining work belongs to the promotion-gates roadmap, not this
-directory's core.
+directory's core. The node config now accepts an optional non-loopback
+`listen` host (bounded per-IP off loopback) and `rooms keygen` emits the
+consensus seed/public pair, so a private pre-shared validator set can
+reach across machines on a LAN or overlay network; open-internet
+qualification still belongs to the promotion gates.
 This extends [[plans/valhalla-social-discovery|discovery]] and
 [[plans/valhalla-social-capital|owner social capital]]; it does not introduce a
 second kind of channel or change message threading.
