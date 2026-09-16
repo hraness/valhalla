@@ -485,6 +485,45 @@ fn zero_hint_and_zero_hit_queries_preserve_incomplete_history() {
     assert!(!result.network_complete);
 }
 
+#[test]
+fn served_pages_converge_to_zero_remaining_without_resending() {
+    // Seven owner genesis records exceed one five-record page; each page must
+    // grow the effective peer inventory so the round terminates instead of
+    // rotating back over already-served records.
+    let mut archive = Archive::new(REALM, Limits::default()).unwrap();
+    let mut owner = None;
+    for n in 0..7u8 {
+        let genesis = signed(Body::OwnerGenesis {
+            controller: pin(11),
+            recovery: None,
+            nonce: [n + 50; 32],
+        });
+        if n == 0 {
+            owner = Some(OwnerId::from_bytes(*genesis.id().as_bytes()));
+        }
+        add(&mut archive, &genesis);
+    }
+    let owner = owner.unwrap();
+    let request = Request::new([7; 32], REALM, Query::parse("x").unwrap(), None, vec![]).unwrap();
+    let mut provider = Provider::new(request);
+    let mut emitted = std::collections::BTreeSet::new();
+    let mut pages = 0;
+    loop {
+        let page = provider.next(&archive, owner, 10).unwrap();
+        for raw in &page.records {
+            let id = SignedRecord::decode(raw).unwrap().id();
+            assert!(emitted.insert(id), "record resent across pages");
+        }
+        pages += 1;
+        if page.provider_remaining() == 0 {
+            break;
+        }
+        assert!(pages < MAX_ATTEMPTS, "remaining never converged");
+    }
+    assert_eq!(pages, 2);
+    assert_eq!(emitted.len(), 7);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]

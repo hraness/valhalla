@@ -152,14 +152,22 @@ impl Response {
     pub fn hints(&self) -> &[PostRef] {
         &self.hints
     }
+    /// Records the provider still owes after this page; zero ends the round.
+    #[must_use]
+    pub const fn provider_remaining(&self) -> usize {
+        self.provider_remaining
+    }
 }
 
 /// Explicit bounded serving session. Inventory rotation delegates to the
 /// maintained archive's owner/control/dependency scheduler, not a search-specific
 /// unverified import path. It makes no completeness or malicious-peer claim.
+/// Served record IDs grow the effective peer inventory each page, so
+/// `provider_remaining` converges to zero instead of re-sending duplicates.
 pub struct Provider {
     request: Request,
     cursor: SyncCursor,
+    served: BTreeSet<RecordId>,
     sequence: u8,
 }
 impl Provider {
@@ -169,6 +177,7 @@ impl Provider {
         Self {
             request,
             cursor: SyncCursor::default(),
+            served: BTreeSet::new(),
             sequence: 0,
         }
     }
@@ -202,14 +211,27 @@ impl Provider {
         let mut hints: Vec<_> = found.hits.iter().map(|hit| hit.reference).collect();
         hints.sort_unstable();
         hints.dedup();
+        // Everything already served counts as held by the peer, so the
+        // rotating cursor only owes records never sent in this session.
+        let mut inventory: Vec<RecordId> = self
+            .request
+            .known
+            .iter()
+            .copied()
+            .chain(self.served.iter().copied())
+            .collect();
+        inventory.sort_unstable();
+        inventory.dedup();
+        inventory.truncate(vhalla_social::MAX_RECORDS);
         let page = archive
             .next_page(
-                &self.request.known,
+                &inventory,
                 &mut self.cursor,
                 MAX_RECORDS_PER_FRAME,
                 MAX_RECORDS_PER_FRAME * MAX_RECORD_BYTES,
             )
             .map_err(|_| Error::Evidence)?;
+        self.served.extend(page.ids.iter().copied());
         let response = Response {
             nonce: self.request.nonce,
             realm: self.request.realm,
@@ -239,6 +261,9 @@ pub struct PeerStats {
     pub duplicates: usize,
     /// Malformed/correlated/signature/capacity failures, including recorded timeouts.
     pub failures: usize,
+    /// Records the provider still owed after the most recent accepted page.
+    /// The round is complete for that peer when this reaches zero.
+    pub provider_remaining: usize,
 }
 struct Peer {
     stats: PeerStats,
@@ -351,6 +376,7 @@ impl Round {
             return Err(Error::Context);
         };
         peer.next = peer.next.checked_add(1).ok_or(Error::Budget)?;
+        peer.stats.provider_remaining = response.provider_remaining;
         for hint in response.hints {
             if peer.hints.len() < MAX_HINTS || peer.hints.contains(&hint) {
                 peer.hints.insert(hint);

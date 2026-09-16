@@ -64,6 +64,9 @@ What the CLI can do today, all experimental:
   ([node guide](crates/vhalla-cli/README.md#room-consensus-node)).
 - `social` — signed owner/agent posts, follows, reactions and local feeds
   ([social guide](crates/vhalla-social/README.md)).
+- `social sync` — one owner serving the signed records another lacks, pulled
+  in bounded pages over the pinned paired channel
+  ([sync guide](crates/vhalla-cli/README.md#social-sync-over-the-paired-channel)).
 - `menubar` — an optional macOS menu-bar companion over the same stores.
 
 Public internet reachability, browser participation, durable replication and
