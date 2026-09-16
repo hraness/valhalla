@@ -1003,10 +1003,28 @@ impl<S: Store> Adapter<S> {
         match Self::publish(&mut self.social, &mut self.rooms, &checked) {
             Ok(()) => {
                 self.app.apply_locally(checked);
+                self.prune_pending();
                 DecidedOutcome::Acked
             }
             Err(_) => DecidedOutcome::Withheld,
         }
+    }
+
+    /// The committed journal bundle recorded at `height`, when both the
+    /// height marker and the bundle itself are readable — the durable
+    /// record behind `GetDecidedValues` answers after a restart.
+    pub fn committed_at_height(&self, height: u64) -> Option<Bundle> {
+        let id = self.journal.at_height(height).ok().flatten()?;
+        self.journal.bundle(id).ok().flatten()
+    }
+
+    /// Drops retained batches that can never validate again: after a
+    /// commit the pinned frontier advanced, so anything not parented on
+    /// it is dead weight. Called wherever the frontier advances.
+    fn prune_pending(&mut self) {
+        let frontier = self.app.frontier().commitment();
+        self.pending
+            .retain(|_, batch| batch.parent.commitment() == frontier);
     }
 
     /// The shared decide path, exposed to the certificate-translation spike
@@ -1053,6 +1071,7 @@ impl<S: Store> Adapter<S> {
         match Self::publish(&mut self.social, &mut self.rooms, &checked) {
             Ok(()) => {
                 self.app.apply_locally(checked);
+                self.prune_pending();
                 DecidedOutcome::Acked
             }
             Err(_) => DecidedOutcome::Withheld,

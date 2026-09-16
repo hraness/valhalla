@@ -658,3 +658,80 @@ fn decoders_accept_only_canonical_bytes() {
         },
     );
 }
+
+/// Diagnostic: validate the real on-disk batch against the real app state.
+/// Manual tool — needs `DIAG_APP=<adapter dir>` and `DIAG_BATCH=<file>`.
+#[test]
+#[ignore = "requires DIAG_APP and DIAG_BATCH against a live node home"]
+fn diag_validate_live_batch() {
+    let app_dir = std::env::var("DIAG_APP").expect("DIAG_APP");
+    let batch_path = std::env::var("DIAG_BATCH").expect("DIAG_BATCH");
+    let realm = RealmId(0x47);
+    let directory = DirectoryId::from_bytes(hex_literal(
+        "9ba57514cf3136a4572dadce837da2262d84bb67a7a9fbcaf8bf3934f3c53498",
+    ));
+    let eligible = vec![OwnerId::from_bytes(hex_literal(
+        "12a4240e36c6407cf2d6563628869c1c4032e4252c0aa64bdd3b978103048b2b",
+    ))];
+    let limits = Limits {
+        records: 1024,
+        control_reserve: 128,
+        data_per_owner: 128,
+        data_per_writer: 64,
+        control_per_owner: 32,
+        pending: 128,
+        pending_per_signer: 8,
+    };
+    let policy = DirectoryPolicy {
+        base_cost: 1,
+        window_seconds: 60,
+        max_in_window: 4,
+        support_epoch_seconds: 60,
+        max_lifetime_rooms: 8,
+    };
+    let genesis = Genesis {
+        directory,
+        realm,
+        policy,
+        eligible,
+        limits,
+        archive: {
+            // The app's own committed archive is the undrifted genesis input.
+            let app_dir2 = std::path::PathBuf::from(&app_dir);
+            let store =
+                vhalla_social_store::Store::open(app_dir2.join("social"), realm, limits, None)
+                    .unwrap();
+            store.archive().clone()
+        },
+    };
+    let adapter = Adapter::open(app_dir, &genesis).expect("adapter open");
+    eprintln!("frontier: {:?}", adapter.application().frontier());
+    let bytes = std::fs::read(batch_path).unwrap();
+    let batch = Batch::decode(&bytes).expect("batch decode");
+    eprintln!(
+        "batch: parent={:?} time={} evidence={} records={} eligible={:?}",
+        batch.parent,
+        batch.time,
+        batch.evidence.len(),
+        batch.records.len(),
+        batch.eligible.as_ref().map(|e| e.len())
+    );
+    for (i, raw) in batch.records.iter().enumerate() {
+        if let Ok(record) = vhalla_rooms::SignedRecord::decode(raw).and_then(|r| r.verify()) {
+            eprintln!("  record[{i}]: {:?}", record.body());
+        }
+    }
+    match adapter.validate(&batch) {
+        Ok(_) => eprintln!("VERDICT: VALID"),
+        Err(e) => eprintln!("VERDICT: INVALID — {e:?}"),
+    }
+    panic!("show output");
+}
+
+fn hex_literal(s: &str) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+        out[i] = u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap();
+    }
+    out
+}

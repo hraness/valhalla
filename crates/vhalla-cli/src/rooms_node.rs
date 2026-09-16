@@ -98,7 +98,14 @@ fn peers(raw: &[String]) -> Result<Vec<(String, usize)>, String> {
 
 /// The `node` subcommand entry point: parse the config, seed genesis from
 /// the committed social snapshot, host the validator until interrupted.
+/// `RUST_LOG` enables malachite's internal tracing on stderr.
 pub fn run(args: &Args) -> Result<(), String> {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
     let path = args.config.as_deref().ok_or("node needs --config FILE")?;
     let raw = std::fs::read(path).map_err(|e| format!("config: {e}"))?;
     if raw.len() > 64 * 1024 {

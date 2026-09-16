@@ -31,6 +31,7 @@ async-trait = "0.1"
 eyre = "0.6"
 ractor = { version = "0.15.10", default-features = false, features = ["async-trait", "tokio_runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
 
 [dev-dependencies]
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", features = ["fixture"] }
