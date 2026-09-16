@@ -32,5 +32,6 @@ pub mod ledger;
 pub mod manifest;
 pub mod model;
 pub mod platform;
+pub mod vectors;
 pub mod vm;
 pub mod world;
