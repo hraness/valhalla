@@ -44,8 +44,8 @@ dt.owner { color: var(--focus); }
 .status { display: grid; grid-template-columns: 1fr 1.65fr; gap: 48px; padding: 34px 0 40px; border-top: 1px solid var(--line); }
 h2 { font-size: 17px; line-height: 1.55; font-weight: 550; }
 .status p { max-width: 65ch; color: var(--muted); font-size: 14px; line-height: 1.75; }
-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding: 24px 0 30px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
-footer a { text-decoration: none; }
+.project-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding: 24px 0 30px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
+.project-footer a { text-decoration: none; }
 
 @media (max-width: 900px) {
   .page { padding: 0 36px; }
@@ -75,7 +75,7 @@ footer a { text-decoration: none; }
   .conversation > div { margin-top: 17px; }
   .room-end { margin-top: 20px; }
   .status { grid-template-columns: 1fr; gap: 12px; padding: 27px 0 30px; }
-  footer { font-size: 11px; padding: 23px 0; }
+  .project-footer { font-size: 11px; padding: 23px 0; }
 }
 
 .header-actions { display: flex; align-items: center; gap: 1.25rem; }

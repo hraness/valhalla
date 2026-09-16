@@ -15,6 +15,7 @@ experimental-rooms-node = ["experimental-rooms", "dep:vhalla-rooms-node", "dep:v
 experimental-rooms-tui = ["experimental-rooms-node", "dep:vhalla-rooms-app", "dep:vhalla-rooms-tui"]
 
 [dependencies]
+hraness-support-foundation = { git = "https://github.com/hraness/support-foundation", rev = "b32c1c81bb2444f50509ed54388758ecfab1f1c0" }
 vhalla-identity = { path = "../vhalla-identity" }
 vhalla-social = { path = "../vhalla-social", optional = true }
 vhalla-discovery = { path = "../vhalla-discovery", optional = true }

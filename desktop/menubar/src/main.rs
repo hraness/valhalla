@@ -13,11 +13,14 @@ use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use desktop_foundation::browser::{BrowserOpener, BrowserStatus};
 
 use desktop_foundation::{
     outputs::OutputsSection, AccessibilityMetadata, DispatchOutcome, Host, MenuItem, MenuModel,
     MenuNode, Options, RenderError,
 };
+
+const SUPPORT_URL: &str = "https://account.hraness.com/support?product=valhalla&source=desktop#support";
 
 /// `~/Library/Application Support/Valhalla` on macOS, matching
 /// `state_directory()` in `crates/vhalla-cli/src/main.rs`.
@@ -53,12 +56,18 @@ fn acquire_instance_lock() -> Option<File> {
 
 struct ValhallaHost {
     outputs: OutputsSection,
+    browser: BrowserOpener,
 }
 
 impl Host for ValhallaHost {
     fn snapshot(&self) -> MenuModel {
         let mut nodes = vec![MenuNode::disabled("Valhalla"), MenuNode::Separator];
         nodes.extend(self.outputs.nodes());
+        nodes.push(MenuNode::Separator);
+        nodes.push(MenuNode::item("product.support", "Support Valhalla development (optional paid)…"));
+        if matches!(self.browser.status(), BrowserStatus::Failed(_)) {
+            nodes.push(MenuNode::disabled("Browser unavailable — use account.hraness.com"));
+        }
         nodes.push(MenuNode::Separator);
         nodes.push(MenuNode::interactive(
             MenuItem::action(desktop_foundation::QUIT_ACTION_ID, "Quit Valhalla")
@@ -78,6 +87,9 @@ impl Host for ValhallaHost {
     }
 
     fn dispatch_result(&self, id: &str) -> DispatchOutcome {
+        if id == "product.support" {
+            return if self.browser.open(SUPPORT_URL).is_ok() { DispatchOutcome::Accepted } else { DispatchOutcome::Rejected };
+        }
         if self.outputs.dispatch(id) {
             DispatchOutcome::Accepted
         } else {
@@ -99,7 +111,7 @@ fn main() {
         .map(|dir| OutputsSection::new(dir.join("outputs")))
         .unwrap_or_else(|| OutputsSection::new(PathBuf::from("outputs")));
     let _ = std::fs::create_dir_all(outputs.dir());
-    let host = Arc::new(ValhallaHost { outputs });
+    let host = Arc::new(ValhallaHost { outputs, browser: BrowserOpener::new() });
     let options = Options {
         refresh: Duration::from_secs(30),
         companion_window: false,
@@ -107,5 +119,26 @@ fn main() {
     if let Err(error) = desktop_foundation::run(tauri::generate_context!(), host, options, |b| b) {
         eprintln!("vhalla-menubar: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod invitation_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_outputs_offer_optional_support_without_a_newsletter_or_launch() {
+        let host = ValhallaHost {
+            outputs: OutputsSection::new("/dev/null/absent-outputs"),
+            browser: BrowserOpener::new(),
+        };
+        let model = host.snapshot();
+        assert!(model.nodes.iter().any(|node| matches!(node,
+            MenuNode::Item { id: Some(id), enabled: true, .. } if id == "product.support")));
+        assert!(!model.nodes.iter().any(|node| matches!(node,
+            MenuNode::Item { id: Some(id), .. } if id == "product.updates")));
+        assert_eq!(host.browser.status(), BrowserStatus::Idle);
+        assert!(matches!(host.dispatch_result("unknown.action"), DispatchOutcome::Rejected));
+        assert_eq!(host.browser.status(), BrowserStatus::Idle);
     }
 }

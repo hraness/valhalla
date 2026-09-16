@@ -26,6 +26,7 @@ fn cli_initializes_once_and_shows_only_the_same_public_key() {
     let dir = Temp::new();
     let run = |operation: &str| {
         Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .args(["identity", operation])
             .arg(dir.child())
             .output()
@@ -52,6 +53,7 @@ fn cli_initializes_once_and_shows_only_the_same_public_key() {
 #[test]
 fn network_commands_are_absent_from_default_build() {
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .args(["experimental", "listen", "unused", "unused"])
         .output()
         .unwrap();

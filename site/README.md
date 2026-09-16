@@ -16,6 +16,10 @@ Paper palette, Lantern material, marketing texture, Nebula Sans and Instrument
 Serif fonts. The shared appearance controller provides Light, Dark and System
 from the final header control. Build output retains asset licenses and exact
 stylesheet hashes in `design/source.json`. Product content and layout stay here.
+The pinned shared footer renders an optional paid-support link for Valhalla,
+without a newsletter form or client runtime. `bun run check:site` checks that
+boundary and builds the page; `/llms.txt` documents the installed CLI's optional
+support protocol for agents. The existing no-form CSP remains unchanged.
 
 `vercel.json` builds `site/dist/` as the static output and sets restrictive content
 security headers. Deploy from the repository root to the Hraness `valhalla`

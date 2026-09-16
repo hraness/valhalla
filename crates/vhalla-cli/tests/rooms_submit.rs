@@ -11,6 +11,7 @@
 #[test]
 fn submit_command_reports_missing_feature() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .args([
             "rooms",
             "submit",
@@ -119,6 +120,7 @@ mod enabled {
 
     fn run(command: &str, args: &[&str]) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .arg(command)
             .args(args)
             .stdout(Stdio::piped())
@@ -329,6 +331,7 @@ mod enabled {
         let stdout = temp.path("node.stdout");
         let stderr = temp.path("node.stderr");
         let child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .args([
                 "rooms",
                 "node",

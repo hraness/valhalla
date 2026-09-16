@@ -9,6 +9,7 @@
 #[test]
 fn node_command_reports_missing_feature() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .args([
             "rooms",
             "node",
@@ -96,6 +97,7 @@ mod enabled {
     #[test]
     fn keygen_prints_a_consensus_key_pair() {
         let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .args(["rooms", "keygen"])
             .output()
             .unwrap();
@@ -188,6 +190,7 @@ mod enabled {
         let stdout_path = temp.path("node.stdout");
         let stderr_path = temp.path("node.stderr");
         let child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .args([
                 "rooms",
                 "node",
@@ -264,6 +267,7 @@ mod enabled {
         let (a, b) = ([7u8; 32], [9u8; 32]);
         let run = || {
             Command::new(env!("CARGO_BIN_EXE_vhalla"))
+                .env("HRANESS_SUPPORT", "off")
                 .args([
                     "rooms",
                     "eligible",

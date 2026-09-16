@@ -11,6 +11,7 @@
 #[test]
 fn tui_command_reports_missing_feature() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .args([
             "rooms",
             "tui",
@@ -37,6 +38,7 @@ mod enabled {
     #[test]
     fn tui_requires_config() {
         let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .args([
                 "rooms",
                 "tui",
@@ -60,6 +62,7 @@ mod enabled {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&config, "{}").unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .args([
                 "rooms",
                 "tui",
