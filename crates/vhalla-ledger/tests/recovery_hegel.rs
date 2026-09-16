@@ -44,7 +44,12 @@ fn restarts_preserve_any_checkpoint_frontier(tc: TestCase) {
         let take_checkpoint = tc.draw(gs::booleans());
         let payload = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(23));
         sequences[actor as usize] += 1;
-        append(&mut ledger, u128::from(actor), sequences[actor as usize], &payload);
+        append(
+            &mut ledger,
+            u128::from(actor),
+            sequences[actor as usize],
+            &payload,
+        );
         if take_checkpoint {
             checkpoint(&mut ledger);
         }
@@ -111,7 +116,12 @@ fn restarts_preserve_frontier_under_actor_reuse(tc: TestCase) {
         let take_checkpoint = tc.draw(gs::booleans());
         let payload = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(23));
         sequences[actor as usize] += 1;
-        append(&mut ledger, u128::from(actor), sequences[actor as usize], &payload);
+        append(
+            &mut ledger,
+            u128::from(actor),
+            sequences[actor as usize],
+            &payload,
+        );
         if take_checkpoint {
             checkpoint(&mut ledger);
         }

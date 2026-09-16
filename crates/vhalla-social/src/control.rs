@@ -1946,13 +1946,27 @@ mod tests {
     /// replica archive is replayed, matching the proptest original's
     /// `vec(0usize..6, 0..18)` command sequence in interleaved style.
     #[hegel::test(test_cases = 24)]
-    fn signed_delivery_permutations_duplicates_and_expiry_preserve_committed_history(
-        tc: TestCase,
-    ) {
+    fn signed_delivery_permutations_duplicates_and_expiry_preserve_committed_history(tc: TestCase) {
         let mut f = Fixture::new(Rights::ALL);
-        let post = social(f.actor(), 0, None, post("stable exact history"), &f.agent_key);
+        let post = social(
+            f.actor(),
+            0,
+            None,
+            post("stable exact history"),
+            &f.agent_key,
+        );
         let seal = f.seal(f.grant, &[post.id()]);
-        let retire = control(f.owner, seal.id(), ControlAction::Retire { agent: f.agent, realm: REALM, accepted: refs(&[]) }, &f.controller, None);
+        let retire = control(
+            f.owner,
+            seal.id(),
+            ControlAction::Retire {
+                agent: f.agent,
+                realm: REALM,
+                accepted: refs(&[]),
+            },
+            &f.controller,
+            None,
+        );
         f.records.extend([post.clone(), seal, retire]);
         let mut replica = Archive::new(REALM, limits()).unwrap();
         let steps = tc.draw(gs::integers::<usize>().max_value(17));
