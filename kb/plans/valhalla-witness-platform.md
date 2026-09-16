@@ -616,7 +616,7 @@ is issuer policy.
 | Floor and ceiling | floor `useful = Σ beacons[i].delivered` read from replayed state; ceiling `total()`; `require_passed` defaults to `true` | floor `transfers + messages` (`Turn`, unblocked `Move`, `emit`, and inbox expiry charge them without moving a spark); floor including conditions and sensors; single fuel counter; fallback twelfth `useful` counter | pending spike work-contract-separation |
 | Checked arithmetic | no arithmetic operator in v1; all counters `checked_*`; `RunError::Arithmetic` proven unreachable | wrapping arithmetic; reliance on `overflow-checks` | decided |
 | Memory limit | static `MAX_STATE_BYTES` from Platonik v1 limits; no memory counter | dynamic memory counter | decided |
-| `no_std` shape | `no_std` plus `alloc`, every `Vec` pre-bounded, zero allocation in the tick loop | fixed arrays only; `heapless` | pending spike nostd-wasm-parity |
+| `no_std` shape | `no_std` plus `alloc`, every `Vec` pre-bounded, zero allocation in the tick loop | fixed arrays only; `heapless` | decided (spike 3) |
 | Run capability | local, move-only `RunCapability::mint(ManifestHash, ProgramHash, WorkAllowance, RunRole)` in `vhalla-witness` with no challenge input, consumed by `run`; `VerifiedChallenge::run_capability` is its only caller in `vhalla-botcaptcha` | `RunCapability::for_challenge(&VerifiedChallenge, ..)` in `vhalla-witness` (circular dependency, blocks challenge-free replay); capability on the wire; runtime `used` flag; `Copy` grant | decided |
 | Program validation | private fields; `Assignment::validate` is the only path to `run` | public-field `Program` with a validate helper | decided |
 | Receipt shape | private `WitnessReceipt` from `into_receipt(ReceiptBinding)`; `ReceiptBinding { challenge_id, subject_key }` as `Copy` plain bytes in `vhalla-witness`; public `ClaimedReceipt` on the wire; bit-exact compare | `into_receipt(&VerifiedChallenge, subject_key)` in `vhalla-witness`; receipt with a decoder; self-hash inside the receipt | decided |
@@ -691,3 +691,36 @@ Commit `6900d9c` plus the platform-layer commit that follows it; Homebrew `cargo
   `WitnessRun::into_receipt(ReceiptBinding)`, and `ClaimedReceipt::decode` plus bit-exact `matches`
   are implemented and tested; three `compile_fail` doctests cover cloning or forging
   `RunCapability` and decoding into `WitnessReceipt`.
+
+### 2026-09-16: spikes 3 and 4 pass; spike 2's Rust half and vector oracle land
+
+Commits `2ee38b6` (vectors), `3ae7be6` (contract spike), `f7c6bba` (wasm parity); Homebrew
+`cargo 1.97.1` for native gates, a scratchpad rustup `stable 1.98.1` with the
+`wasm32-unknown-unknown` target, `wasm-bindgen-cli 0.2.108`, and Node 24.18.1 for the wasm run.
+
+- Corpus vectors: `prototypes/witness-restatement/vectors/*.txt` hold, for every fixture, every
+  `bridge-v1` case, and the 64 KiB worst case, the canonical manifest and candidate bytes and the
+  expected `ManifestHash`, `ProgramHash`, `OutputHash`, per-case `StateHash`, `useful`, `total`,
+  and `passed`. `tests/vectors.rs` parses, re-renders, and replays every file on each test run.
+- Spike 3 passes: `prototypes/witness-wasm-parity/verify.sh` builds the replay for both targets,
+  runs the wasm through wasm-bindgen under Node, and finds native, wasm32, and committed renderings
+  identical on 28 files. Release profile: the 64 KiB worst case replays in 5.3 ms natively (oracle
+  7.5 ms) and the densest suite case in 34 µs; the whole 28-file corpus replays in 10.9 ms under
+  wasm with a 0.3 MiB wasm heap; native maximum resident set 2.6 MB; the wasm artifact is 238 KB.
+  The pass criteria (native p95 at most 100 ms, wasm at most 500 ms, heap at most 32 MiB) hold
+  with two orders of magnitude to spare. The `no_std` plus `alloc` shape and the pre-bounded
+  allocation rule are decided.
+- Spike 4 passes with the floor `useful = Σ beacons.delivered`: on the five fixtures that deliver,
+  working programs are admitted; unsatisfiable-condition, dead-effect, and unreachable padding
+  within the activation budget preserves the final state and only raises `total`; padding beyond
+  the activation budget (24 unsatisfiable rules against a 64-unit activation budget) makes the
+  program idle and is rejected; `Wait`, `Turn`, `Move`, and two-cell `Send` ping-pong programs
+  deliver nothing and are rejected. The rejected `transfers + messages` floor would have admitted
+  every turn-only spinner (44 to 220 charged units) and the ping-pong pair on the ark fixtures (148
+  messages). `require_passed` defaults to `true`.
+- Spike 2, still pending: the independent Python generator and `/vectors/witness-v1.json`. The
+  Rust vector files above are the oracle until it lands.
+- Deviation recorded: `prototypes/witness-restatement` carries the corpus converter and generators
+  in a `std`-gated `corpus` module (with `platonik-core` as an optional dependency and as the
+  dev-dependency oracle) instead of a separate parity crate; the contract and wasm spikes
+  path-depend on it as the plan requires.
