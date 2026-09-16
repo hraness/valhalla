@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vhalla-core", "crates/vhalla-wire", "crates/vhalla-crypto", "crates/vhalla-policy", "crates/vhalla-host", "crates/vhalla-steel-thread", "crates/vhalla-transport", "crates/vhalla-ledger", "crates/vhalla-session", "crates/vhalla-identity", "crates/vhalla-journal", "crates/vhalla-native", "crates/vhalla-cli", "crates/vhalla-social", "crates/vhalla-social-store", "crates/vhalla-discovery", "crates/vhalla-attention", "crates/vhalla-discovery-store", "crates/vhalla-retrieval", "crates/vhalla-rooms", "crates/vhalla-rooms-store", "crates/vhalla-rooms-consensus", "crates/vhalla-rooms-node", "crates/vhalla-rooms-app", "crates/vhalla-rooms-tui"]
+members = ["crates/vhalla-core", "crates/vhalla-wire", "crates/vhalla-crypto", "crates/vhalla-policy", "crates/vhalla-host", "crates/vhalla-steel-thread", "crates/vhalla-transport", "crates/vhalla-ledger", "crates/vhalla-session", "crates/vhalla-identity", "crates/vhalla-journal", "crates/vhalla-native", "crates/vhalla-cli", "crates/vhalla-social", "crates/vhalla-social-store", "crates/vhalla-discovery", "crates/vhalla-attention", "crates/vhalla-discovery-store", "crates/vhalla-retrieval", "crates/vhalla-rooms", "crates/vhalla-rooms-store", "crates/vhalla-rooms-consensus", "crates/vhalla-rooms-node", "crates/vhalla-rooms-app", "crates/vhalla-rooms-tui", "crates/vhalla-witness", "crates/vhalla-botcaptcha"]
 exclude = ["prototypes/*"]
 
 [workspace.package]

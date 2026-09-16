@@ -2,7 +2,7 @@
 title: Valhalla witness platform
 type: plan
 area: valhalla-witness-platform
-status: proposed
+status: in-progress
 tags:
   - security
   - proof-of-work
@@ -613,7 +613,7 @@ is issuer policy.
 | Canonical encoding | fixed-width binary codec per `vhalla-wire` conventions; bounds derived from the widest variants | serde_json compact bytes; CBOR or postcard | decided (Rust half of spike 2); Python oracle pending |
 | Hashing | SHA-256, `vhalla/witness/<thing>/v1` and `vhalla/botcaptcha/<thing>/v1`, `u32` length prefix | Platonik `sha256:` hex JSON hashes; `vhalla/signed-claim/v1` transcripts | decided |
 | Loading cost | per-case declared `loading_work`, each at least the manifest's canonical length | derive from serializer byte length; one manifest-level value | decided (spike 1) |
-| Floor and ceiling | floor `useful = Σ beacons[i].delivered` read from replayed state; ceiling `total()`; `require_passed` defaults to `true` | floor `transfers + messages` (`Turn`, unblocked `Move`, `emit`, and inbox expiry charge them without moving a spark); floor including conditions and sensors; single fuel counter; fallback twelfth `useful` counter | pending spike work-contract-separation |
+| Floor and ceiling | floor `useful = Σ beacons[i].delivered` read from replayed state; ceiling `total()`; `require_passed` defaults to `true` | floor `transfers + messages` (`Turn`, unblocked `Move`, `emit`, and inbox expiry charge them without moving a spark); floor including conditions and sensors; single fuel counter; fallback twelfth `useful` counter | decided (spike 4) |
 | Checked arithmetic | no arithmetic operator in v1; all counters `checked_*`; `RunError::Arithmetic` proven unreachable | wrapping arithmetic; reliance on `overflow-checks` | decided |
 | Memory limit | static `MAX_STATE_BYTES` from Platonik v1 limits; no memory counter | dynamic memory counter | decided |
 | `no_std` shape | `no_std` plus `alloc`, every `Vec` pre-bounded, zero allocation in the tick loop | fixed arrays only; `heapless` | decided (spike 3) |
@@ -627,7 +627,7 @@ is issuer policy.
 | Proof profile | `ProofProfile::TransparentReceipt = 1` in the response transcript | no profile field until ZK exists | decided |
 | One-use window | 4096 entries keyed by dedup scope `(issuer_key, challenge_id, subject_key)` storing `(response_hash, expires_at)`; same hash `Replay`, different hash `Equivocation`; non-`Clone`, insert last, prune only expired entries | key over the 4-tuple including `response_hash` (makes `Equivocation` undetectable); 1024 with no eviction; `ClaimReplayWindow` | pending spike capability-fences |
 | Boundary proof | `compile_fail` doctests as CI proof, trybuild for error codes | trybuild only | pending spike capability-fences |
-| Vector oracle | `/vectors/witness-v1.json` from Python plus per-crate corpus `.hex` and `.id` | Rust-only vectors | pending spike codec-bounds |
+| Vector oracle | per-case corpus vector files under `crates/vhalla-witness/tests/vectors/` (landed) plus `/vectors/witness-v1.json` from Python | Rust-only vectors | Rust files landed; Python oracle pending |
 | Steel thread | kind 3 and `WitnessSession` in a later Gate 5 entry, never through `RemoteRequest` | wire kind in the first landing; widening `from_verified` | decided |
 | Platonik pin | `5eedec07c84af3b4beb82f22cc6c2b9fa3520d42` | `76ea2db` | decided |
 | Game layer | separate Slice 5 adapter plan for `vhalla-game-platonik` | game types in these crates; porting `prototypes/game-session` | decided |
@@ -724,3 +724,36 @@ Commits `2ee38b6` (vectors), `3ae7be6` (contract spike), `f7c6bba` (wasm parity)
   in a `std`-gated `corpus` module (with `platonik-core` as an optional dependency and as the
   dev-dependency oracle) instead of a separate parity crate; the contract and wasm spikes
   path-depend on it as the plan requires.
+
+### 2026-09-16: `vhalla-witness` and `vhalla-botcaptcha` land
+
+Workspace gates from the repository root: `cargo fmt --all -- --check`, `cargo clippy --workspace
+--all-targets --all-features --locked -- -D warnings`, `cargo test --workspace --all-targets
+--all-features --locked`, `cargo test --workspace --doc --all-features --locked`, and `cargo check
+-p vhalla-witness -p vhalla-botcaptcha --target wasm32-unknown-unknown --locked` with the
+scratchpad `stable 1.98.1` toolchain.
+
+- `crates/vhalla-witness` is the restatement's library promoted as is: `bounds`, `model`, `world`,
+  `ledger`, `vm`, `codec`, `hash`, `manifest`, `platform`, and `vectors`; `sha2` is the only
+  dependency and `proptest` the only dev-dependency. Its tests replay the 28 committed vectors,
+  check both codec laws over the corpus and over 256 generated programs and candidates, reject
+  arbitrary bytes without panicking, exercise the manifest to receipt chain with every refusal and
+  a per-byte receipt tamper loop, and cover manifest validation including the loading-work floor.
+- `crates/vhalla-botcaptcha` implements the challenge section above with these recorded details:
+  `VerifiedChallenge::run_capability` takes the `ProgramHash` as well as the allowance and role,
+  because the challenge does not know the program; `Response` carries `measured_work` as
+  `{useful, total}` and the verifier requires it to equal the claimed receipt; the response hash
+  and the reward digest are over the signed transcript, so two responses differ if any signed
+  field differs; `WitnessVerifier::new` takes the verifier's `WorkAllowance`. Tests cover the
+  happy path on two fixtures, exact resend as `Replay`, a re-signed body as `Equivocation` with
+  the stored entry kept, one reward per scope, expiry pruning, every challenge step refusal,
+  every response step refusal including an honest idle program failing the floor, every
+  single-byte change to either wire form, filling the window to 4096 and `Capacity`, restart with
+  a fresh `started_at` refusing earlier challenges, and a 512-case model check of the window.
+  Five `compile_fail` doctests cover cloning or forging `VerifiedChallenge`, `VerifiedWitness`, and
+  `OneUseWindow`.
+- Spike 5 is settled by `compile_fail` doctests on the one installed stable toolchain rather than
+  trybuild across three; pinning error codes is deferred until a second toolchain is available in
+  CI.
+- Still open: the Python vector oracle, Gate 5 (`KIND_WITNESS_RESPONSE`, `WitnessSession`, and the
+  steel-thread `compile_fail` doctest), the Slice 5 adapter plan, and Hashcash promotion.
