@@ -534,13 +534,15 @@ async fn wal_tail_stays_bounded_over_long_run() {
     }
 
     // Sample after every eighth height — the bounded-tail shape is the
-    // claim, not per-height granularity.
+    // claim, not per-height granularity. The per-sample deadline is
+    // generous because shared CI runners run the debug build several
+    // times slower than a local workstation.
     let mut wal_samples = Vec::new();
     for h in (8..=HEIGHTS).step_by(8) {
         wait_for(
             "all four nodes to commit the sampled height",
             || nodes.iter().all(|n| n.committed_height() >= h),
-            Duration::from_secs(180),
+            Duration::from_secs(300),
         )
         .await;
         wal_samples.push(walk_size(&nodes[0].home.join("wal")));
