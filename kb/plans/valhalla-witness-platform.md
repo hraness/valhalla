@@ -782,3 +782,10 @@ admitted once, refused by the transport window on an exact resend, refused by th
 on a re-enveloped resend, refused for a foreign signer or a read-request kind, and a witness frame
 delivered to a `MemorySession` is `Denied::Kind` with `reads()` unchanged. The steel thread now has
 two evidence paths that share a transport window design and no host effect between them.
+
+### 2026-09-16: vault tooling note
+
+The `wordcell` CLI is not installed on this machine and the repository has no package script for
+it, so the `wordcell percolate`, `refresh`, and `check` steps in the work order were not run. The
+wiki-links in this plan follow the form used by the other plans; the integrating owner runs the
+vault checks when the CLI is available.
