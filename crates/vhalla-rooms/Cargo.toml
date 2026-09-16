@@ -13,7 +13,6 @@ vhalla-core = { path = "../vhalla-core" }
 vhalla-social = { path = "../vhalla-social" }
 
 [dev-dependencies]
-hegeltest = "0.46.0"
 proptest = "1.6"
 
 [lints]

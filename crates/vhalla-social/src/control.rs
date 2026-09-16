@@ -1020,9 +1020,10 @@ mod tests {
         archive::{Budget as InputBudget, Limits},
         wire::UnsignedRecord,
     };
-    use alloc::vec;
+    use alloc::{format, string::ToString, vec};
     use ed25519_dalek::SigningKey;
-    use proptest::prelude::*;
+    use hegel::generators as gs;
+    use hegel::TestCase;
     use vhalla_core::RealmId;
 
     const REALM: RealmId = RealmId(77);
@@ -1941,26 +1942,33 @@ mod tests {
         assert_eq!(view.storage_owner(&forged), None);
     }
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(24))]
-        #[test]
-        fn signed_delivery_permutations_duplicates_and_expiry_preserve_committed_history(
-            order in prop::collection::vec(0usize..6, 0..18), now in 0u64..200,
-        ) {
-            let mut f = Fixture::new(Rights::ALL);
-            let post = social(f.actor(), 0, None, post("stable exact history"), &f.agent_key);
-            let seal = f.seal(f.grant, &[post.id()]);
-            let retire = control(f.owner, seal.id(), ControlAction::Retire { agent: f.agent, realm: REALM, accepted: refs(&[]) }, &f.controller, None);
-            f.records.extend([post.clone(), seal, retire]);
-            let mut replica = Archive::new(REALM, limits()).unwrap();
-            for index in order { put(&mut replica, &f.records[index]); }
-            for record in &f.records { put(&mut replica, record); }
-            let view = ControlView::new(&replica, now);
-            prop_assert!(view.history_complete());
-            prop_assert!(!view.owner(f.owner).unwrap().frozen());
-            prop_assert_eq!(view.social_status(post.id()), SocialStatus::Committed);
-            prop_assert!(!view.agent(f.agent).unwrap().active());
-            prop_assert_eq!(view.accepted_ids().collect::<Vec<_>>(), vec![post.id()]);
+    /// Delivery order, duplicates and evaluation time are drawn while the
+    /// replica archive is replayed, matching the proptest original's
+    /// `vec(0usize..6, 0..18)` command sequence in interleaved style.
+    #[hegel::test(test_cases = 24)]
+    fn signed_delivery_permutations_duplicates_and_expiry_preserve_committed_history(
+        tc: TestCase,
+    ) {
+        let mut f = Fixture::new(Rights::ALL);
+        let post = social(f.actor(), 0, None, post("stable exact history"), &f.agent_key);
+        let seal = f.seal(f.grant, &[post.id()]);
+        let retire = control(f.owner, seal.id(), ControlAction::Retire { agent: f.agent, realm: REALM, accepted: refs(&[]) }, &f.controller, None);
+        f.records.extend([post.clone(), seal, retire]);
+        let mut replica = Archive::new(REALM, limits()).unwrap();
+        let steps = tc.draw(gs::integers::<usize>().max_value(17));
+        for _ in 0..steps {
+            let index = tc.draw(gs::integers::<usize>().max_value(5));
+            put(&mut replica, &f.records[index]);
         }
+        for record in &f.records {
+            put(&mut replica, record);
+        }
+        let now = tc.draw(gs::integers::<u64>().max_value(199));
+        let view = ControlView::new(&replica, now);
+        assert!(view.history_complete());
+        assert!(!view.owner(f.owner).unwrap().frozen());
+        assert_eq!(view.social_status(post.id()), SocialStatus::Committed);
+        assert!(!view.agent(f.agent).unwrap().active());
+        assert_eq!(view.accepted_ids().collect::<Vec<_>>(), vec![post.id()]);
     }
 }

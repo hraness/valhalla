@@ -22,4 +22,6 @@
 - When porting a proptest test that has recorded `.proptest-regressions` entries, promote each recorded shrunk input (named in the `cc` line comments) to an explicit `#[test]` example so the regression survives without its seed.
 - `#[hegel::reproduce_failure("...")]` replays one recorded case. Commit it only to pin a live bug being fixed in the same change; remove it once fixed. Never commit pins for already-fixed bugs.
 - `.hegel/` example databases are local caches, gitignored, never committed.
+- Inside `#![no_std]` crates the `#[hegel::test]` expansion needs `use alloc::format;` and `use alloc::string::ToString;` in the test module.
+- Hegel generator bounds are inclusive: proptest `a..b` maps to `.min_value(a).max_value(b - 1)`, `a..=b` to `.min_value(a).max_value(b)`. `min_value(0)` is redundant and can be dropped.
 - `cargo test --locked` must stay green; Hegel dev-deps are added per-crate through `cargo add --dev hegeltest -p <crate>`.

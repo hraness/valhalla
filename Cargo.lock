@@ -5307,7 +5307,6 @@ dependencies = [
 name = "vhalla-core"
 version = "0.0.0"
 dependencies = [
- "hegeltest",
  "proptest",
  "trybuild",
 ]
@@ -5370,7 +5369,6 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
- "hegeltest",
  "proptest",
  "sha2 0.10.9",
  "vhalla-core",
@@ -5405,7 +5403,6 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "getrandom 0.3.4",
- "hegeltest",
  "libp2p 0.57.0",
  "proptest",
  "sha2 0.10.9",
@@ -5444,7 +5441,6 @@ name = "vhalla-rooms"
 version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
- "hegeltest",
  "proptest",
  "sha2 0.10.9",
  "vhalla-core",
@@ -5566,7 +5562,6 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
- "hegeltest",
  "proptest",
  "sha2 0.10.9",
  "vhalla-core",
@@ -5604,7 +5599,6 @@ version = "0.0.0"
 name = "vhalla-wire"
 version = "0.0.0"
 dependencies = [
- "hegeltest",
  "proptest",
  "vhalla-core",
 ]

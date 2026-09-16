@@ -10,6 +10,5 @@ description = "Pure, authority-free Valhalla protocol types and bounded parsing 
 workspace = true
 
 [dev-dependencies]
-hegeltest = "0.46.0"
 proptest = "1.6"
 trybuild = "1.0"

@@ -1,5 +1,7 @@
 //! Adversarial archive, monotonic-publication, and bounded anti-entropy regressions.
 use ed25519_dalek::SigningKey;
+use hegel::generators as gs;
+use hegel::TestCase;
 use proptest::prelude::*;
 use vhalla_core::RealmId;
 use vhalla_social::{
@@ -782,37 +784,57 @@ fn source_proved_pending_control_descendants_reserve_before_revealing_revocation
     }
 }
 
+/// The proptest `uniform7` sort key becomes seven byte draws taken while the
+/// delivery permutation is assembled; the replay then mutates `received`
+/// across steps exactly as before.
+#[hegel::test(test_cases = 32)]
+fn complete_migration_set_restores_identical_pressure_after_delivery_permutations(tc: TestCase) {
+    let (expected, records, agent) = withheld_rotation_fixture(3);
+    let mut order = [0u8; 7];
+    for byte in &mut order {
+        *byte = tc.draw(gs::integers::<u8>());
+    }
+    let mut indices = [0, 1, 2, 3, 4, 5, 6];
+    indices.sort_by_key(|i| order[*i]);
+    let mut received = Archive::new(REALM, expected.limits()).unwrap();
+    for index in indices {
+        let before = received.root();
+        if insert(&mut received, &records[index]).is_err() {
+            assert_eq!(received.root(), before);
+        }
+    }
+    let received = received.merged_snapshot(&expected.snapshot()).unwrap();
+    assert_eq!(received.root(), expected.root());
+    assert_eq!(received.capacity(), expected.capacity());
+    assert!(!vhalla_social::control::ControlView::new(&received, 1)
+        .agent(agent)
+        .unwrap()
+        .active());
+}
+
+/// Same interleaved style for the four-record `uniform4` delivery order.
+#[hegel::test(test_cases = 32)]
+fn complete_under_cap_event_sets_converge_with_reordering_and_duplicates(tc: TestCase) {
+    let records = fixture();
+    let expected = archive_of(&records, Limits::default());
+    let mut order = [0u8; 4];
+    for byte in &mut order {
+        *byte = tc.draw(gs::integers::<u8>());
+    }
+    let mut indices = [0, 1, 2, 3];
+    indices.sort_by_key(|i| order[*i]);
+    let mut got = Archive::new(REALM, Limits::default()).unwrap();
+    for i in indices {
+        insert(&mut got, &records[i]).unwrap();
+        insert(&mut got, &records[i]).unwrap();
+    }
+    assert_eq!(got.root(), expected.root());
+    assert_eq!(got.snapshot(), expected.snapshot());
+    assert!(got.is_extension_of(&expected));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn complete_migration_set_restores_identical_pressure_after_delivery_permutations(order in prop::array::uniform7(any::<u8>())) {
-        let (expected, records, agent) = withheld_rotation_fixture(3);
-        let mut indices = [0,1,2,3,4,5,6]; indices.sort_by_key(|i| order[*i]);
-        let mut received = Archive::new(REALM, expected.limits()).unwrap();
-        for index in indices {
-            let before = received.root();
-            if insert(&mut received, &records[index]).is_err() { prop_assert_eq!(received.root(), before); }
-        }
-        let received = received.merged_snapshot(&expected.snapshot()).unwrap();
-        prop_assert_eq!(received.root(), expected.root());
-        prop_assert_eq!(received.capacity(), expected.capacity());
-        prop_assert!(!vhalla_social::control::ControlView::new(&received, 1).agent(agent).unwrap().active());
-    }
-    #[test]
-    fn complete_under_cap_event_sets_converge_with_reordering_and_duplicates(order in prop::array::uniform4(any::<u8>())) {
-        let records = fixture();
-        let expected = archive_of(&records, Limits::default());
-        let mut indices = [0,1,2,3];
-        indices.sort_by_key(|i| order[*i]);
-        let mut got = Archive::new(REALM, Limits::default()).unwrap();
-        for i in indices {
-            insert(&mut got, &records[i]).unwrap();
-            insert(&mut got, &records[i]).unwrap();
-        }
-        prop_assert_eq!(got.root(), expected.root());
-        prop_assert_eq!(got.snapshot(), expected.snapshot());
-        prop_assert!(got.is_extension_of(&expected));
-    }
     #[test]
     fn arbitrary_bounded_foreign_bytes_do_not_mutate_an_archive(raw in prop::collection::vec(any::<u8>(), 0..512)) {
         let mut archive = archive_of(&fixture(), Limits::default());

@@ -38,11 +38,11 @@ fn checkpoint(ledger: &mut Ledger) -> Checkpoint {
 fn restarts_preserve_any_checkpoint_frontier(tc: TestCase) {
     let mut ledger = Ledger::new(RealmId(1), Epoch(2), 32);
     let mut sequences = [0u64; 4];
-    let steps = tc.draw(gs::integers::<usize>().min_value(0).max_value(24));
+    let steps = tc.draw(gs::integers::<usize>().max_value(23));
     for _ in 0..steps {
-        let actor = tc.draw(gs::integers::<u8>().min_value(0).max_value(3));
+        let actor = tc.draw(gs::integers::<u8>().max_value(3));
         let take_checkpoint = tc.draw(gs::booleans());
-        let payload = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(24));
+        let payload = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(23));
         sequences[actor as usize] += 1;
         append(&mut ledger, u128::from(actor), sequences[actor as usize], &payload);
         if take_checkpoint {
@@ -76,18 +76,18 @@ fn restarts_preserve_frontier_under_actor_reuse(tc: TestCase) {
     let mut ledger = Ledger::new(RealmId(1), Epoch(2), 32);
     let mut sequences = [0u64; 4];
     let mut active: Vec<u8> = Vec::new();
-    let steps = tc.draw(gs::integers::<usize>().min_value(0).max_value(24));
+    let steps = tc.draw(gs::integers::<usize>().max_value(23));
     for _ in 0..steps {
         let actor = if !active.is_empty() && tc.draw(gs::booleans()) {
             let i = tc.draw(gs::integers::<usize>().max_value(active.len() - 1));
             active[i]
         } else {
-            let fresh = tc.draw(gs::integers::<u8>().min_value(0).max_value(3));
+            let fresh = tc.draw(gs::integers::<u8>().max_value(3));
             active.push(fresh);
             fresh
         };
         let take_checkpoint = tc.draw(gs::booleans());
-        let payload = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(24));
+        let payload = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(23));
         sequences[actor as usize] += 1;
         append(&mut ledger, u128::from(actor), sequences[actor as usize], &payload);
         if take_checkpoint {
