@@ -610,9 +610,9 @@ is issuer policy.
 | Language boundary for Lisp | closed `#[repr(u8)] LanguageId` in manifest, program, challenge, receipt, tags | interpreter trait; compiling rules to a term core | decided |
 | Crate split | `vhalla-witness` (keyless VM) then `vhalla-botcaptcha` (challenge, response, admission) | one crate; VM inside `vhalla-botcaptcha`; VM inside `vhalla-crypto::claims` | decided |
 | Platonik reuse | restate model, sim, policy in production types; pinned engine as test oracle only | production git or path dependency; upstream `std` feature flag | decided |
-| Canonical encoding | fixed-width binary codec per `vhalla-wire` conventions | serde_json compact bytes; CBOR or postcard | pending spike codec-bounds |
+| Canonical encoding | fixed-width binary codec per `vhalla-wire` conventions; bounds derived from the widest variants | serde_json compact bytes; CBOR or postcard | decided (Rust half of spike 2); Python oracle pending |
 | Hashing | SHA-256, `vhalla/witness/<thing>/v1` and `vhalla/botcaptcha/<thing>/v1`, `u32` length prefix | Platonik `sha256:` hex JSON hashes; `vhalla/signed-claim/v1` transcripts | decided |
-| Loading cost | manifest-declared `loading_work >= canonical_len(manifest)` | derive from serializer byte length | pending spike platonik-parity |
+| Loading cost | per-case declared `loading_work`, each at least the manifest's canonical length | derive from serializer byte length; one manifest-level value | decided (spike 1) |
 | Floor and ceiling | floor `useful = Σ beacons[i].delivered` read from replayed state; ceiling `total()`; `require_passed` defaults to `true` | floor `transfers + messages` (`Turn`, unblocked `Move`, `emit`, and inbox expiry charge them without moving a spark); floor including conditions and sensors; single fuel counter; fallback twelfth `useful` counter | pending spike work-contract-separation |
 | Checked arithmetic | no arithmetic operator in v1; all counters `checked_*`; `RunError::Arithmetic` proven unreachable | wrapping arithmetic; reliance on `overflow-checks` | decided |
 | Memory limit | static `MAX_STATE_BYTES` from Platonik v1 limits; no memory counter | dynamic memory counter | decided |
@@ -647,5 +647,47 @@ Applied on 2026-09-16 from the confirmed review; each line is id, lens, and what
 
 ## Execution status
 
-No entries yet. Spike results are appended here as dated subsections in the readiness plan's heading
-form with the commit, toolchain, command, and pass or fail outcome.
+### 2026-09-16: stage 0 and spike 1 pass; codec laws and bounds hold over the corpus
+
+Commit `6900d9c` plus the platform-layer commit that follows it; Homebrew `cargo 1.97.1` on
+`aarch64-apple-darwin`; `cargo test --locked`, `cargo clippy --all-targets --locked -- -D warnings`,
+`cargo test --locked --doc`, and `cargo fmt -- --check` from `prototypes/witness-restatement`, plus
+`cargo test --locked` from its `alloc-probe/` subcrate.
+
+- Stage 0 landed as `prototypes/witness-restatement`: `bounds`, `model`, `world`, `ledger`, `vm`,
+  `codec`, `hash`, `manifest`, and `platform`. The library is `no_std` plus `alloc` with `sha2` as
+  its only dependency. Spike 1 lives in that crate's `tests/parity.rs` rather than a separate
+  `witness-platonik-parity` crate: the parity test is the evidence about stage 0 itself, and one
+  crate keeps one lockfile for the pinned oracle.
+- Spike 1 passes with zero divergence: every fixture, all 21 `bridge-v1` suite cases (equal to the
+  suite's own receipts), 400 deterministic random v1 experiments including fuel exhausted at load,
+  fuel exhausted mid-run, and activation-limit stops, and the densest 16-cell 128-tick case that
+  fits Platonik's 64 KiB input bound. Every frame's state, activations, signal outcomes, outcome,
+  final state, and all thirteen counters match `platonik-core` at `5eedec07`.
+- Ground truth corrections applied to this plan's text: the meter has thirteen counters, not
+  eleven; `copying` and `construction` exist in v1 receipts and are always zero, and the
+  restatement keeps them so `Costs` compares bit for bit. Platonik charges `loading` as the JSON
+  byte length of the whole experiment including every cell's program, so loading depends on the
+  assignment; the restatement declares `loading_work` per case, and `ValidManifest::validate`
+  requires every case to declare at least the manifest's canonical length. `Turn`, unblocked
+  `Move`, `emit`, and inbox expiry charge `transfers` or `messages`, which is why the floor is the
+  outcome quantity `Σ beacons.delivered`.
+- Allocation: the counting allocator in `alloc-probe/` observes zero allocations inside the tick
+  loop across 122 corpus runs totalling 831,709 work units; `tests/no_alloc.rs` shows every state
+  vector keeps its pre-bounded capacity.
+- Timing (unoptimized dev profile, best of 5): densest suite case 838 µs for 6,011 units over 55
+  ticks; the 64 KiB worst case 87.6 ms for 422,061 units over 128 ticks. The release-profile p95
+  figures the spike 3 pass criterion names are still to be measured.
+- Spike 2, Rust half: the fixed-width codec round-trips every corpus program, assignment,
+  manifest, and output (`decode(encode(x)) == x` and `encode(decode(raw)) == raw`), 20,000 random
+  byte strings never panic, and the bounds derived from the widest variants are
+  `MAX_PROGRAM_BYTES = 1059`, `MAX_ASSIGNMENT_BYTES = 16947`, `MAX_MANIFEST_BYTES = 23991`, and
+  `MAX_STATE_BYTES = 9572`; the largest corpus encodings are 313, 2,915, 1,592, and 2,349 bytes. The
+  plan's earlier 42-byte rule and 2048/32832/32768 figures are superseded by these derived
+  constants. `ProgramHash` is over the assignment bytes under `vhalla/witness/assignment/v1`, so no
+  tag names two encodings. The Python oracle and `/vectors/witness-v1.json` are still pending.
+- Platform chain: `ValidManifest::validate`, `assign` (fixed and open slots), keyless
+  `RunCapability::mint`, `run` (refuses a foreign manifest hash, program hash, or short allowance),
+  `WitnessRun::into_receipt(ReceiptBinding)`, and `ClaimedReceipt::decode` plus bit-exact `matches`
+  are implemented and tested; three `compile_fail` doctests cover cloning or forging
+  `RunCapability` and decoding into `WitnessReceipt`.

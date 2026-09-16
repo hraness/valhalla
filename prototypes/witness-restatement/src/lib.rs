@@ -1,9 +1,11 @@
 //! Spike 1 of the Valhalla witness platform plan: the Platonik `habitat-v1`
 //! execution model restated in Valhalla-style production types.
 //!
-//! The library is `no_std` plus `alloc`, has no dependencies, no clock, no
-//! entropy, no floats, no serialization, and no `usize` in any charged
-//! quantity. Every counter and state update uses checked arithmetic and the
+//! The library is `no_std` plus `alloc`, depends only on `sha2`, and has no
+//! clock, no entropy, no floats, and no `usize` in any charged quantity.
+//! `codec` is the canonical binary encoding, `hash` the domain-separated
+//! digests, `manifest` the verifier-authored task, and `platform` the
+//! move-only run capability, the run, and the receipt. Every counter and state update uses checked arithmetic and the
 //! tick loop allocates nothing after [`vm::Machine::new`].
 //!
 //! Only what the Platonik `bridge-v1` suite exercises is restated: the v2
@@ -20,7 +22,11 @@
 extern crate alloc;
 
 pub mod bounds;
+pub mod codec;
+pub mod hash;
 pub mod ledger;
+pub mod manifest;
 pub mod model;
+pub mod platform;
 pub mod vm;
 pub mod world;

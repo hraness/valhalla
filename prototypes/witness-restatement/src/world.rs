@@ -417,7 +417,11 @@ impl World {
         Ok(Self { spec, wall_rows })
     }
 
-    /// Width.
+    /// The validated specification.
+    pub const fn spec(&self) -> &WorldSpec {
+        &self.spec
+    }
+    /// Grid width.
     pub const fn width(&self) -> u8 {
         self.spec.width
     }
@@ -531,7 +535,11 @@ impl Case {
         }
         Ok(Self { spec })
     }
-    /// Seed.
+    /// The validated specification.
+    pub const fn spec(&self) -> &CaseSpec {
+        &self.spec
+    }
+    /// Activation-order seed.
     pub const fn seed(&self) -> u64 {
         self.spec.seed
     }

@@ -16,6 +16,7 @@ missing_docs = "warn"
 all = "warn"
 
 [dependencies]
+sha2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 # The pinned engine is a test oracle only; the library has no dependencies.
