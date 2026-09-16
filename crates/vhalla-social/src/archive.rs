@@ -582,18 +582,16 @@ impl Archive {
                 emitted.insert(id);
             }
         }
-        let remaining = self
-            .records
-            .keys()
-            .filter(|id| !peer.contains(id) && !emitted.contains(id))
-            .count();
         Ok(SyncPage {
             root: self.root(),
             records,
             bytes,
             examined: visited.len(),
-            ids: emitted.into_iter().collect(),
-            remaining,
+            remaining: self
+                .records
+                .keys()
+                .filter(|id| !peer.contains(id) && !emitted.contains(id))
+                .count(),
         })
     }
 }
@@ -666,9 +664,6 @@ pub struct SyncPage {
     pub bytes: usize,
     /// Records inspected against the byte budget, bounded by MAX_PAGE_TURNS.
     pub examined: usize,
-    /// Exact IDs emitted in this page, so a serving driver can grow the
-    /// supplied peer inventory on the next call.
-    pub ids: Vec<RecordId>,
     /// Source records still absent from the supplied peer inventory and this page.
     pub remaining: usize,
 }

@@ -15,10 +15,6 @@ use vhalla_social_store::Store;
 
 use super::{commit, hex32, json, nonce, Args};
 
-/// Continuation frame: after the initial request every further frame in the
-/// same round asks the provider for its next bounded page.
-const NEXT: &[u8] = b"vhalla/social-sync/next/v1";
-
 /// The directly pinned paired session's fixed authenticated context.
 const CHANNEL: ChannelScope = ChannelScope {
     realm: vhalla_native::PAIRED_REALM,
@@ -91,8 +87,11 @@ fn serve(args: &Args, store: &Store) -> Result<String, String> {
                 .next_serving(&mut |envelope| {
                     let page = match &mut provider {
                         Some(provider) => {
-                            if envelope.envelope().body() != NEXT {
-                                return Err(Transport::Input("expected sync continuation frame"));
+                            let request = Request::from_message(envelope, requester, CHANNEL, now)
+                                .map_err(|_| Transport::Input("invalid sync request"))?;
+                            if provider.refresh(request.clone()).is_err() {
+                                // A different nonce opens a new bounded round.
+                                *provider = Provider::new(request);
                             }
                             provider
                                 .next(archive, owner, now)
@@ -161,8 +160,9 @@ fn pull(args: &Args, store: &mut Store) -> Result<String, String> {
     known.sort();
     known.dedup();
     known.truncate(MAX_KNOWN);
-    let request =
-        Request::new(nonce()?, args.realm, query, None, known).map_err(|_| "sync request")?;
+    let nonce_bytes = nonce()?;
+    let request = Request::new(nonce_bytes, args.realm, query.clone(), None, known)
+        .map_err(|_| "sync request")?;
     let mut round =
         Round::new(request.clone(), vec![provider], CHANNEL).map_err(|_| "sync round")?;
     let now = args.now;
@@ -183,7 +183,17 @@ fn pull(args: &Args, store: &mut Store) -> Result<String, String> {
             if stats.provider_remaining == 0 || stats.attempts >= MAX_ATTEMPTS {
                 break;
             }
-            body = NEXT.to_vec();
+            // Continuation is a fresh request frame under the same nonce: the
+            // disclosed inventory now covers every committed page, so the
+            // provider owes only records still missing — a page lost in flight
+            // simply stays missing and is served again.
+            let mut known: Vec<RecordId> = store.archive().records().map(|r| r.id()).collect();
+            known.sort();
+            known.dedup();
+            known.truncate(MAX_KNOWN);
+            body = Request::new(nonce_bytes, args.realm, query.clone(), None, known)
+                .map_err(|_| "sync request")?
+                .encode();
         }
         let stats = round.stats(provider).unwrap_or_default();
         Ok(json::object(vec![

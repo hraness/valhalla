@@ -486,10 +486,11 @@ fn zero_hint_and_zero_hit_queries_preserve_incomplete_history() {
 }
 
 #[test]
-fn served_pages_converge_to_zero_remaining_without_resending() {
-    // Seven owner genesis records exceed one five-record page; each page must
-    // grow the effective peer inventory so the round terminates instead of
-    // rotating back over already-served records.
+fn refreshed_inventory_converges_pages_without_resending() {
+    // Seven owner genesis records exceed one five-record page. A requester that
+    // truthfully reports its growing inventory on each continuation converges to
+    // zero remaining; without refresh the provider keeps re-serving what it
+    // still believes missing, which is the intended recovery for lost pages.
     let mut archive = Archive::new(REALM, Limits::default()).unwrap();
     let mut owner = None;
     for n in 0..7u8 {
@@ -504,24 +505,64 @@ fn served_pages_converge_to_zero_remaining_without_resending() {
         add(&mut archive, &genesis);
     }
     let owner = owner.unwrap();
-    let request = Request::new([7; 32], REALM, Query::parse("x").unwrap(), None, vec![]).unwrap();
-    let mut provider = Provider::new(request);
+    let request =
+        || Request::new([7; 32], REALM, Query::parse("x").unwrap(), None, vec![]).unwrap();
+    let mut provider = Provider::new(request());
     let mut emitted = std::collections::BTreeSet::new();
     let mut pages = 0;
     loop {
         let page = provider.next(&archive, owner, 10).unwrap();
         for raw in &page.records {
             let id = SignedRecord::decode(raw).unwrap().id();
-            assert!(emitted.insert(id), "record resent across pages");
+            assert!(emitted.insert(id), "record resent across refreshed pages");
         }
         pages += 1;
         if page.provider_remaining() == 0 {
             break;
         }
         assert!(pages < MAX_ATTEMPTS, "remaining never converged");
+        let known: Vec<RecordId> = emitted.iter().copied().collect();
+        provider
+            .refresh(Request::new([7; 32], REALM, Query::parse("x").unwrap(), None, known).unwrap())
+            .unwrap();
     }
     assert_eq!(pages, 2);
     assert_eq!(emitted.len(), 7);
+
+    // A mismatched continuation — different nonce, realm, query or tag — is a
+    // context failure, never a silent inventory swap.
+    assert_eq!(
+        provider.refresh(
+            Request::new([8; 32], REALM, Query::parse("x").unwrap(), None, vec![]).unwrap()
+        ),
+        Err(Error::Context)
+    );
+    assert_eq!(
+        provider.refresh(
+            Request::new(
+                [7; 32],
+                RealmId(9),
+                Query::parse("x").unwrap(),
+                None,
+                vec![]
+            )
+            .unwrap()
+        ),
+        Err(Error::Context)
+    );
+
+    // No refresh: the rotating cursor re-serves records the requester never
+    // reported, which is exactly what a lost page needs.
+    let mut unrefreshed = Provider::new(request());
+    let mut resent = std::collections::BTreeSet::new();
+    for _ in 0..3 {
+        let page = unrefreshed.next(&archive, owner, 10).unwrap();
+        assert_ne!(page.provider_remaining(), 0);
+        for raw in &page.records {
+            resent.insert(SignedRecord::decode(raw).unwrap().id());
+        }
+    }
+    assert_eq!(resent.len(), 7);
 }
 
 proptest! {

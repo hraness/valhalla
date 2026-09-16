@@ -162,12 +162,9 @@ impl Response {
 /// Explicit bounded serving session. Inventory rotation delegates to the
 /// maintained archive's owner/control/dependency scheduler, not a search-specific
 /// unverified import path. It makes no completeness or malicious-peer claim.
-/// Served record IDs grow the effective peer inventory each page, so
-/// `provider_remaining` converges to zero instead of re-sending duplicates.
 pub struct Provider {
     request: Request,
     cursor: SyncCursor,
-    served: BTreeSet<RecordId>,
     sequence: u8,
 }
 impl Provider {
@@ -177,9 +174,24 @@ impl Provider {
         Self {
             request,
             cursor: SyncCursor::default(),
-            served: BTreeSet::new(),
             sequence: 0,
         }
+    }
+    /// Refresh the requester's disclosed inventory within this same round:
+    /// nonce, realm, query and tag must match the original request exactly.
+    /// A truthful growing inventory is how a round converges — records the
+    /// requester reports as held are never re-served, while a page lost or
+    /// rejected in flight stays missing and is naturally re-served.
+    pub fn refresh(&mut self, request: Request) -> Result<(), Error> {
+        if request.nonce != self.request.nonce
+            || request.realm != self.request.realm
+            || request.query != self.request.query
+            || request.tag != self.request.tag
+        {
+            return Err(Error::Context);
+        }
+        self.request.known = request.known;
+        Ok(())
     }
     /// Derive query hints and a bounded ordinary missing-record page. The selected
     /// provider owner is explicit local public identity, never a private reader.
@@ -211,27 +223,14 @@ impl Provider {
         let mut hints: Vec<_> = found.hits.iter().map(|hit| hit.reference).collect();
         hints.sort_unstable();
         hints.dedup();
-        // Everything already served counts as held by the peer, so the
-        // rotating cursor only owes records never sent in this session.
-        let mut inventory: Vec<RecordId> = self
-            .request
-            .known
-            .iter()
-            .copied()
-            .chain(self.served.iter().copied())
-            .collect();
-        inventory.sort_unstable();
-        inventory.dedup();
-        inventory.truncate(vhalla_social::MAX_RECORDS);
         let page = archive
             .next_page(
-                &inventory,
+                &self.request.known,
                 &mut self.cursor,
                 MAX_RECORDS_PER_FRAME,
                 MAX_RECORDS_PER_FRAME * MAX_RECORD_BYTES,
             )
             .map_err(|_| Error::Evidence)?;
-        self.served.extend(page.ids.iter().copied());
         let response = Response {
             nonce: self.request.nonce,
             realm: self.request.realm,
