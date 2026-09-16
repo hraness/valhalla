@@ -19,6 +19,7 @@ vhalla-identity = { path = "../vhalla-identity" }
 vhalla-session = { path = "../vhalla-session" }
 
 [dev-dependencies]
+hegeltest = "0.46.0"
 proptest = "1.6"
 
 [lints]

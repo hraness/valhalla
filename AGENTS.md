@@ -12,3 +12,14 @@
 - When a CI or policy gate scans complete Git history, check out the exact governed SHA and fetch only the fully qualified governed refs before scanning. Preserve the complete-history gate and reject unexpected refs instead of importing unrelated concurrent heads.
 - At closeout, record applicable branch, PR, check, merge, release, deployment, and production evidence. Archive only conclusively finished tasks, never from silence alone, and reclaim only freshly revalidated clean merged worktrees through the guarded exact-path flow.
 <!-- oompa-local-efficiency:end -->
+
+## Property testing
+
+- Two frameworks coexist: `proptest` (existing suite) and Hegel (crate `hegeltest`, imported as `hegel`). Hegel is preferred for stateful and command-sequence tests; proptest is retained for pure round-trip and law tests already written — do not churn them without cause.
+- Write stateful tests in Hegel's interleaved style: draw a step count, then `tc.draw(...)` each command inside the execution loop. Generators may depend on state accumulated so far (e.g. draw an actor from the live active set); that is the point of the model. `crates/vhalla-ledger/tests/recovery_hegel.rs` is the reference implementation.
+- Keep case counts at the ported test's original value (usually `#[hegel::test(test_cases = 64)]`) unless there is a reason to change coverage.
+- Prefer plain `assert!`/`assert_eq!` inside `#[hegel::test]`; panics mark the case interesting and drive shrinking. Use `tc.assume(...)` sparingly — prefer generators that cannot produce invalid inputs.
+- When porting a proptest test that has recorded `.proptest-regressions` entries, promote each recorded shrunk input (named in the `cc` line comments) to an explicit `#[test]` example so the regression survives without its seed.
+- `#[hegel::reproduce_failure("...")]` replays one recorded case. Commit it only to pin a live bug being fixed in the same change; remove it once fixed. Never commit pins for already-fixed bugs.
+- `.hegel/` example databases are local caches, gitignored, never committed.
+- `cargo test --locked` must stay green; Hegel dev-deps are added per-crate through `cargo add --dev hegeltest -p <crate>`.
