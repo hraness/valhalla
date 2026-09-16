@@ -4,8 +4,8 @@
 mod common;
 
 use common::{convert, random_experiment, worst_case, Rng};
-use valhalla_witness_platform_alloc_probe::{counts, Counting};
 use witness_restatement::vm::Machine;
+use witness_restatement_alloc_probe::{counts, Counting};
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
