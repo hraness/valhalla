@@ -785,7 +785,8 @@ two evidence paths that share a transport window design and no host effect betwe
 
 ### 2026-09-16: vault tooling note
 
-The `wordcell` CLI is not installed on this machine and the repository has no package script for
-it, so the `wordcell percolate`, `refresh`, and `check` steps in the work order were not run. The
-wiki-links in this plan follow the form used by the other plans; the integrating owner runs the
-vault checks when the CLI is available.
+The `wordcell` CLI is not installed on this machine; the predecessor `kb` CLI (the `@hraness/kb`
+release) is, and it provides the same `percolate`, `refresh`, and `check` commands. `kb percolate
+plans/valhalla-witness-platform.md --root kb`, `kb refresh --root kb`, and `kb check --root kb`
+were run after the last material edit; the check passes with one pre-existing advisory orphan
+(`plans/valhalla-eukaryotic-transition.md`) that this plan does not touch.
