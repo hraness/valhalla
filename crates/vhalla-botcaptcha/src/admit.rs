@@ -76,6 +76,7 @@ impl VerifiedWitness {
 #[derive(Debug)]
 pub struct WitnessVerifier {
     started_at: u64,
+    clock: u64,
     allowance: WorkAllowance,
     window: OneUseWindow,
 }
@@ -86,17 +87,29 @@ impl WitnessVerifier {
     pub const fn new(started_at: u64, allowance: WorkAllowance, window: OneUseWindow) -> Self {
         Self {
             started_at,
+            clock: started_at,
             allowance,
             window,
         }
+    }
+    /// The injected clock never runs backwards inside one verifier: a smaller
+    /// `now` after a prune could otherwise re-admit a pruned scope.
+    fn advance(&mut self, now: u64) -> u64 {
+        self.clock = self.clock.max(now);
+        self.clock
     }
     /// The one-use window.
     #[must_use]
     pub const fn window(&self) -> &OneUseWindow {
         &self.window
     }
+    /// Replaces the allowance for later verifications.
+    pub fn set_allowance(&mut self, allowance: WorkAllowance) {
+        self.allowance = allowance;
+    }
     /// Drops expired entries.
     pub fn prune(&mut self, now: u64) {
+        let now = self.advance(now);
         self.window.prune(now);
     }
     /// Verifies encoded bytes.
@@ -121,6 +134,7 @@ impl WitnessVerifier {
         expected: ChallengeContext,
         now: u64,
     ) -> Result<VerifiedWitness, WitnessError> {
+        let now = self.advance(now);
         let verified = VerifiedChallenge::verify(challenge, expected, self.started_at, now)?;
         let challenge = verified.challenge();
         if manifest.hash() != challenge.task_manifest_hash {
@@ -137,8 +151,16 @@ impl WitnessVerifier {
                 &Signature::from_bytes(&response.signature),
             )
             .map_err(|_| WitnessError::SubjectSignature)?;
+        // Cheap refusal of a replayed or equivocating response before any
+        // replay work; the window is still consumed last.
+        let scope_key = verified.scope_key();
+        let response_hash = response.hash();
+        if let Some(error) = self.window.peek(&scope_key, &response_hash) {
+            return Err(window_error(error));
+        }
         let claimed = response.claimed;
         if response.challenge_id != challenge.challenge_id
+            || response.challenge_hash != challenge.hash()
             || response.subject_key != challenge.subject_key
             || response.task_manifest_hash != challenge.task_manifest_hash
             || claimed.challenge_id != challenge.challenge_id
@@ -183,17 +205,12 @@ impl WitnessVerifier {
         if contract.require_passed && !receipt.passed() {
             return Err(WitnessError::NotPassed);
         }
-        let scope_key = verified.scope_key();
-        let response_hash = response.hash();
         let expires_at = challenge.expires_at;
         let purpose = challenge.purpose;
+        let subject_key = challenge.subject_key;
         self.window
-            .consume(scope_key, response_hash, expires_at)
-            .map_err(|error| match error {
-                WindowError::Replay => WitnessError::Replay,
-                WindowError::Equivocation => WitnessError::Equivocation,
-                WindowError::Capacity => WitnessError::Capacity,
-            })?;
+            .consume(scope_key, subject_key, response_hash, expires_at)
+            .map_err(window_error)?;
         let mut body = Vec::with_capacity(64);
         body.extend_from_slice(&scope_key);
         body.extend_from_slice(&response_hash);
@@ -205,5 +222,14 @@ impl WitnessVerifier {
             purpose,
             expires_at,
         })
+    }
+}
+
+fn window_error(error: WindowError) -> WitnessError {
+    match error {
+        WindowError::Replay => WitnessError::Replay,
+        WindowError::Equivocation => WitnessError::Equivocation,
+        WindowError::Capacity => WitnessError::Capacity,
+        WindowError::SubjectCapacity => WitnessError::SubjectCapacity,
     }
 }

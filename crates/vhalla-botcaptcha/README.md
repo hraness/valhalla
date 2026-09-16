@@ -35,6 +35,14 @@ a game session under a policy that decides those things separately.
   starts with a fresh `started_at`, which refuses every earlier challenge. Two
   verifier instances sharing an issuer key need a shared durable ledger, which
   is outside this crate.
+- A response binds the digest of the exact signed challenge, not only its id,
+  so a re-issued challenge cannot reuse an earlier response.
+- A replayed or equivocating response is refused right after its signature
+  check, before any replay work; the window is still consumed last. One
+  subject key may hold at most 64 open entries, so it cannot fill the shared
+  window; issuing challenges under a rate limit remains issuer policy.
+- The verifier's injected clock never runs backwards within one instance, so a
+  prune cannot be undone by a later call with a smaller `now`.
 - Nothing executes network-supplied code; programs are data interpreted by
   `vhalla-witness` under its static bounds and the verifier's allowance.
 - Hashcash mode is reserved (`Algorithm::Hashcash`) and not implemented here.

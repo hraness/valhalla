@@ -11,7 +11,7 @@ use vhalla_botcaptcha::challenge::{
     CHALLENGE_BYTES,
 };
 use vhalla_botcaptcha::response::{respond, ProveError, Response};
-use vhalla_botcaptcha::window::{OneUseWindow, MAX_OPEN_CHALLENGES};
+use vhalla_botcaptcha::window::{OneUseWindow, MAX_OPEN_CHALLENGES, MAX_OPEN_PER_SUBJECT};
 use vhalla_botcaptcha::MAX_CHALLENGE_LIFETIME;
 use vhalla_core::{RealmId, RoomId};
 use vhalla_witness::manifest::ValidManifest;
@@ -421,20 +421,49 @@ fn any_single_byte_change_to_the_wire_is_refused() {
 fn the_window_fills_to_capacity_and_a_restart_refuses_older_challenges() {
     let fixture = Fixture::new("fixture-opening-normal");
     let mut verifier = verifier(&fixture);
-    for index in 0..MAX_OPEN_CHALLENGES {
-        let mut entropy = [0_u8; 32];
-        entropy[..8].copy_from_slice(&(index as u64).to_be_bytes());
-        let challenge = fixture.issue(entropy, NOW);
-        let response = prove(&fixture, &challenge);
-        verifier
-            .verify_response(
-                challenge,
+    // MAX_OPEN_CHALLENGES / MAX_OPEN_PER_SUBJECT distinct subjects fill the window.
+    let subjects = MAX_OPEN_CHALLENGES / MAX_OPEN_PER_SUBJECT;
+    for subject in 0..subjects {
+        let mut seed = [0_u8; 32];
+        seed[..8].copy_from_slice(&(subject as u64 + 100).to_be_bytes());
+        let key = SigningKey::from_bytes(&seed);
+        let subject_key = key.verifying_key().to_bytes();
+        let context = ChallengeContext {
+            subject_key,
+            ..fixture.context()
+        };
+        for index in 0..MAX_OPEN_PER_SUBJECT {
+            let mut entropy = [0_u8; 32];
+            entropy[..8]
+                .copy_from_slice(&((subject * MAX_OPEN_PER_SUBJECT + index) as u64).to_be_bytes());
+            let challenge = fixture
+                .issuer
+                .issue(
+                    entropy,
+                    NOW,
+                    LIFETIME,
+                    subject_key,
+                    common::REALM,
+                    common::ROOM,
+                    Purpose::RateLimitRelief,
+                    fixture.valid.hash(),
+                    fixture.contract(),
+                )
+                .unwrap();
+            let verified =
+                VerifiedChallenge::verify(challenge.clone(), context, NOW - 10, NOW).unwrap();
+            let response = respond(
+                &verified,
                 &fixture.valid,
-                &response,
-                fixture.context(),
-                NOW + 1,
+                fixture.candidate.clone(),
+                fixture.allowance,
+                &key,
             )
             .unwrap();
+            verifier
+                .verify_response(challenge, &fixture.valid, &response, context, NOW + 1)
+                .unwrap();
+        }
     }
     assert_eq!(verifier.window().len(), MAX_OPEN_CHALLENGES);
     let challenge = fixture.issue([255; 32], NOW);
@@ -478,4 +507,149 @@ fn the_window_fills_to_capacity_and_a_restart_refuses_older_challenges() {
             NOW + 3
         )
         .is_ok());
+}
+
+#[test]
+fn a_replayed_response_is_refused_before_any_replay_work() {
+    let fixture = Fixture::new("fixture-opening-normal");
+    let challenge = fixture.issue(ENTROPY, NOW);
+    let response = prove(&fixture, &challenge);
+    let mut verifier = verifier(&fixture);
+    verifier
+        .verify_response(
+            challenge.clone(),
+            &fixture.valid,
+            &response,
+            fixture.context(),
+            NOW + 1,
+        )
+        .unwrap();
+    // With the allowance made too small, a fresh response would fail at the
+    // allowance step; the consumed one is refused earlier, at the window peek.
+    verifier.set_allowance(WorkAllowance { max_total: 1 });
+    assert_eq!(
+        verifier
+            .verify_response(
+                challenge.clone(),
+                &fixture.valid,
+                &response,
+                fixture.context(),
+                NOW + 2
+            )
+            .err(),
+        Some(WitnessError::Replay)
+    );
+    let mut other = response.clone();
+    other.hashcash_nonce = Some(7);
+    other.signature = ed25519_dalek::Signer::sign(&fixture.subject, &other.transcript()).to_bytes();
+    assert_eq!(
+        verifier
+            .verify_response(
+                challenge,
+                &fixture.valid,
+                &other,
+                fixture.context(),
+                NOW + 3
+            )
+            .err(),
+        Some(WitnessError::Equivocation)
+    );
+}
+
+#[test]
+fn a_response_binds_the_exact_challenge_not_just_its_id() {
+    let fixture = Fixture::new("fixture-opening-normal");
+    let first = fixture.issue(ENTROPY, NOW);
+    let response = prove(&fixture, &first);
+    // The issuer re-issues with the same entropy one second later: same id,
+    // same subject, same manifest, different expiry and signature.
+    let reissued = fixture.issue(ENTROPY, NOW + 1);
+    assert_eq!(reissued.challenge_id, first.challenge_id);
+    assert_ne!(reissued.hash(), first.hash());
+    assert_eq!(
+        verifier(&fixture)
+            .verify_response(
+                reissued,
+                &fixture.valid,
+                &response,
+                fixture.context(),
+                NOW + 2
+            )
+            .err(),
+        Some(WitnessError::Binding)
+    );
+}
+
+#[test]
+fn the_verifier_clock_never_runs_backwards() {
+    let fixture = Fixture::new("fixture-opening-normal");
+    let challenge = fixture.issue(ENTROPY, NOW);
+    let response = prove(&fixture, &challenge);
+    let mut verifier = verifier(&fixture);
+    verifier
+        .verify_response(
+            challenge.clone(),
+            &fixture.valid,
+            &response,
+            fixture.context(),
+            NOW + 1,
+        )
+        .unwrap();
+    verifier.prune(NOW + LIFETIME + 1);
+    assert!(verifier.window().is_empty());
+    // A smaller injected `now` after the prune must not re-admit the response.
+    assert_eq!(
+        verifier
+            .verify_response(
+                challenge,
+                &fixture.valid,
+                &response,
+                fixture.context(),
+                NOW + 2
+            )
+            .err(),
+        Some(WitnessError::Expired)
+    );
+}
+
+#[test]
+fn one_subject_cannot_fill_the_window() {
+    let fixture = Fixture::new("fixture-opening-normal");
+    let mut verifier = verifier(&fixture);
+    for index in 0..MAX_OPEN_PER_SUBJECT {
+        let mut entropy = [1_u8; 32];
+        entropy[..8].copy_from_slice(&(index as u64).to_be_bytes());
+        let challenge = fixture.issue(entropy, NOW);
+        let response = prove(&fixture, &challenge);
+        verifier
+            .verify_response(
+                challenge,
+                &fixture.valid,
+                &response,
+                fixture.context(),
+                NOW + 1,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        verifier.window().held_by(&fixture.subject_key()),
+        MAX_OPEN_PER_SUBJECT
+    );
+    let challenge = fixture.issue([200; 32], NOW);
+    let response = prove(&fixture, &challenge);
+    assert_eq!(
+        verifier
+            .verify_response(
+                challenge.clone(),
+                &fixture.valid,
+                &response,
+                fixture.context(),
+                NOW + 1
+            )
+            .err(),
+        Some(WitnessError::SubjectCapacity)
+    );
+    assert!(verifier.window().len() < MAX_OPEN_CHALLENGES);
+    verifier.prune(NOW + LIFETIME + 1);
+    assert_eq!(verifier.window().held_by(&fixture.subject_key()), 0);
 }

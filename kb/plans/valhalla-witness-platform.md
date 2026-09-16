@@ -205,19 +205,21 @@ and discriminants, uses `checked_add` on offsets, and rejects `Truncated` and `T
 `decode(encode(x)) == x` and `encode(decode(raw)) == raw` are laws.
 
 ```text
-program (vhalla/witness/program/v1):
+program (version, language, body):
 [0x01 version][0x01 language][rule_count u8 1..=32]
   per rule: [cond_count u8 0..=8] per cond: [tag u8][fields]
             [action tag u8][fields]
-            [remember 0|1][slot u8][value u8]
+            [remember tag u8 0|1] then, only when 1: [slot u8][value u8]
 ```
 
-The largest rule is `1 + 8 * 4 + 6 + 3 = 42` bytes (`Route` is a tag, a `u16` valve, and a
-three-byte `BitSource`), so a program is at most `3 + 32 * 42 = 1347` bytes and `MAX_PROGRAM_BYTES =
-2048`. An `Assignment` is `[slot_count u8]` then `[cell_id u16][program]` sorted by cell, at most `1
-+ 16 * 2050 = 32801` bytes, so `MAX_ASSIGNMENT_BYTES = 32832`. That fits with the receipt inside one
-signed body (`MAX_SIGNED_BODY_BYTES = 65341`). `MAX_MANIFEST_BYTES = 32768`. `MAX_STATE_BYTES` is a
-`const` computed from the static bounds and asserted in a test.
+The widest condition is a tag plus two one-byte fields (3 bytes) and the widest action is `Route`
+(a tag, a `u16` valve, and a two-byte `BitSource`: 5 bytes), so the widest rule is `1 + 8 * 3 + 5 +
+3 = 33` bytes and `MAX_PROGRAM_BYTES = 2 + 1 + 32 * 33 = 1059`. A candidate assignment is the
+header, a count, then `[cell_id u16][body]` pairs in strictly ascending cell order:
+`MAX_ASSIGNMENT_BYTES = 16947`. `MAX_MANIFEST_BYTES = 23991` and `MAX_STATE_BYTES = 9572` are
+`const`s derived from the widest variants and the static bounds and asserted against every corpus
+encoding; the largest corpus encodings are 313, 2,915, 1,592, and 2,349 bytes. Everything fits with
+the receipt inside one signed body (`MAX_SIGNED_BODY_BYTES` in `vhalla-crypto`).
 
 Digests are SHA-256 over `b"vhalla/witness/<thing>/v1"` followed by a `u32` length and the canonical
 bytes. The version byte inside the encoding and the tag version move together; other versions are
@@ -225,7 +227,7 @@ rejected, never negotiated.
 
 | Digest | Domain | Over |
 | --- | --- | --- |
-| `ProgramHash` | `vhalla/witness/program/v1` | `encode(Assignment)` |
+| `ProgramHash` | `vhalla/witness/assignment/v1` | `encode(Assignment)` (the candidate bytes) |
 | `ManifestHash` | `vhalla/witness/manifest/v1` | `encode(TaskManifest)` |
 | `StateHash` | `vhalla/witness/state/v1` | `encode(State)` |
 | `OutputHash` | `vhalla/witness/output/v1` | `case_count u8` then each `encode(CaseResult)`; a run that stops early still encodes every case with its status |
@@ -337,7 +339,7 @@ keeps gating on kind 2 only.
 | --- | --- | --- |
 | 1 Witness language | `LanguageId::FiniteRuleV1`, closed enum as the boundary for a later `LispV1`. Rejected: the `prototypes/witness` `Expr` AST; a fresh term bytecode; Platonik v3 and v4. | this plan |
 | 2 Admission default | The crates never decide when to challenge; `ChallengeIssuer` and `WitnessVerifier` are the only surface. Invitations for trusted peers and adaptive Hashcash under load stay in policy and rooms. | policy, rooms |
-| 3 Ledger scope | `VerifiedWitness::as_receipt_claim` produces a `SignedClaim` in `ClaimDomain::Receipt`; no DAG, voucher, or chain here. | `vhalla-ledger` |
+| 3 Ledger scope | No DAG, voucher, or chain here. Exporting a `VerifiedWitness` as a `SignedClaim` needs a signing key the verifier holds and is deferred to the ledger entry; `VerifiedWitness` exposes its reward digest, receipt, purpose, and expiry as plain accessors. | `vhalla-ledger` |
 | 4 Game authority | Out of scope. `TaskManifest`, `Case.events`, `StateHash`, `WorkAllowance`, and `VerifiedWitness` are the readiness plan's smallest shared contract: versioned session input, ruleset identity, explicit work allowance, ordered replay inputs, checkpoint identity, checked-result evidence. | Slice 5 adapter plan |
 | 5 Currency | None. `passed-witness` is a badge minted by policy from `VerifiedWitness`; no value field exists. | policy, settlement |
 
@@ -790,3 +792,36 @@ release) is, and it provides the same `percolate`, `refresh`, and `check` comman
 plans/valhalla-witness-platform.md --root kb`, `kb refresh --root kb`, and `kb check --root kb`
 were run after the last material edit; the check passes with one pre-existing advisory orphan
 (`plans/valhalla-eukaryotic-transition.md`) that this plan does not touch.
+
+## Review findings, round 2
+
+The second round ran six lenses over the revised plan after both crates had landed. Its 44 findings
+were all refuted by the skeptic pair, mostly as settled by a spike, cosmetic, or out of scope, so the
+loop ended dry. Six of the refuted findings were nevertheless cheap to act on in the code and are
+applied here with tests:
+
+- R2-A3 and A1 (threat): the verifier now checks the one-use window for a replayed or equivocating
+  response right after the subject signature and before any replay work (`OneUseWindow::peek`); the
+  window is still consumed last. A replayed copy of an admitted response costs one signature check.
+- R2-A1 and A4 (threat): `Response` carries `challenge_hash`, the digest of the exact signed
+  challenge body, so a response binds the issuer, realm, room, purpose, expiry, and contract as well
+  as the challenge id and subject; a re-issued challenge with the same id is refused as `Binding`.
+- R2-A2 (threat): the verifier's clock is monotone within one instance; a smaller `now` after a
+  prune can no longer re-admit a pruned scope.
+- A3 (threat): `MAX_OPEN_PER_SUBJECT = 64` bounds the open entries one subject key may hold, refused
+  as `SubjectCapacity`, so one subject cannot fill the shared window. Issuing challenges under a
+  rate limit remains issuer policy.
+- N2-4 (conventions): `KIND_WITNESS_RESPONSE` lives in `vhalla-botcaptcha`, the crate that owns the
+  message, and `vhalla-steel-thread` re-exports it as it does `KIND_READ_MEMORY_REQUEST`.
+- E1 through E3 and E7 (codec-math): the application-language section now states the derived byte
+  layout and bounds and the `assignment` digest domain instead of the superseded figures.
+
+Recorded without code changes: A2 (an honest-looking response with a garbage receipt costs one
+bounded replay; the allowance and issuer rate limits bound it, and the receipt comparison makes it
+one-shot per scope), A5 (`Equivocation` is an error the verifier returns and may log; the crate
+defines no reporting channel and a subject can only equivocate against itself), A6 (with
+`require_passed = false` the floor sums over cases, so issuers that need per-case delivery set
+`require_passed`), N2-2 and R2-A8 (the `SignedClaim` export is deferred as the fork 3 row now says),
+P2 (the committed `bridge-v1` corpus has no fuel-exhausted case; the 400 random experiments in
+spike 1 cover fuel exhaustion at load and mid-run and activation stops), and S7 (the vault checks
+run with the installed `kb` CLI).

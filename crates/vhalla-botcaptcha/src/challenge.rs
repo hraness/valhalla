@@ -185,6 +185,12 @@ impl Challenge {
             signature,
         })
     }
+    /// Digest of the signed body: binds a response to this exact challenge,
+    /// including issuer, realm, room, purpose, expiry, and contract.
+    #[must_use]
+    pub fn hash(&self) -> [u8; 32] {
+        digest(CHALLENGE_DOMAIN, &self.body())
+    }
     /// The context this challenge was issued under.
     #[must_use]
     pub const fn context(&self) -> ChallengeContext {
@@ -326,6 +332,8 @@ pub enum WitnessError {
     Equivocation,
     /// The one-use window is full.
     Capacity,
+    /// This subject already holds the most open challenges one key may.
+    SubjectCapacity,
 }
 
 impl From<CodecError> for WitnessError {

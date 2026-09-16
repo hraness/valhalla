@@ -32,7 +32,7 @@ pub struct MeasuredWork {
 }
 
 /// Fixed part of a response before the candidate bytes and the receipt.
-const RESPONSE_FIXED_BYTES: usize = 1 + 1 + 32 * 6 + 8 + 8 + 9 + 2;
+const RESPONSE_FIXED_BYTES: usize = 1 + 1 + 32 * 7 + 8 + 8 + 9 + 2;
 /// Largest response: fixed part, candidate, receipt, signature.
 pub const MAX_RESPONSE_BYTES: usize =
     RESPONSE_FIXED_BYTES + MAX_ASSIGNMENT_BYTES + RECEIPT_BYTES + 64;
@@ -46,6 +46,8 @@ pub struct Response {
     pub proof_profile: ProofProfile,
     /// The challenge answered.
     pub challenge_id: [u8; 32],
+    /// `Challenge::hash()` of the exact challenge answered.
+    pub challenge_hash: [u8; 32],
     /// The subject's full key.
     pub subject_key: [u8; 32],
     /// The manifest run.
@@ -72,6 +74,7 @@ fn put_body(writer: &mut Writer, response: &Response) {
     writer.u8(response.version);
     writer.u8(response.proof_profile as u8);
     writer.bytes(&response.challenge_id);
+    writer.bytes(&response.challenge_hash);
     writer.bytes(&response.subject_key);
     writer.bytes(&response.task_manifest_hash.0);
     writer.bytes(&response.program_hash.0);
@@ -136,6 +139,7 @@ impl Response {
             }
         };
         let challenge_id = reader.hash()?;
+        let challenge_hash = reader.hash()?;
         let subject_key = reader.hash()?;
         let task_manifest_hash = ManifestHash(reader.hash()?);
         let program_hash = ProgramHash(reader.hash()?);
@@ -178,6 +182,7 @@ impl Response {
             version,
             proof_profile,
             challenge_id,
+            challenge_hash,
             subject_key,
             task_manifest_hash,
             program_hash,
@@ -248,6 +253,7 @@ pub fn respond(
         version: VERSION,
         proof_profile: ProofProfile::TransparentReceipt,
         challenge_id: challenge.challenge().challenge_id,
+        challenge_hash: challenge.challenge().hash(),
         subject_key,
         task_manifest_hash: receipt.manifest(),
         program_hash: receipt.program(),

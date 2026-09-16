@@ -25,6 +25,9 @@ pub mod window;
 
 /// Encoding version shared by the challenge and the response.
 pub const VERSION: u8 = 1;
+/// Wire kind of a witness response inside a signed envelope; it is evidence
+/// and is never routed to a host effect.
+pub const KIND_WITNESS_RESPONSE: u8 = 3;
 /// Longest accepted challenge lifetime in seconds.
 pub const MAX_CHALLENGE_LIFETIME: u64 = 15 * 60;
 /// Signing domain for a challenge transcript.

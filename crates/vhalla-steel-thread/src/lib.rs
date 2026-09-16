@@ -50,6 +50,7 @@
 use vhalla_botcaptcha::admit::{VerifiedWitness, WitnessVerifier};
 use vhalla_botcaptcha::challenge::{Challenge, ChallengeContext, WitnessError};
 use vhalla_botcaptcha::window::OneUseWindow;
+pub use vhalla_botcaptcha::KIND_WITNESS_RESPONSE;
 use vhalla_core::{Epoch, EventId, PeerId, RealmId, RoomId, Sequence};
 use vhalla_crypto::{
     peer_id_from_seed, sign, verifying_key_from_seed, DecodeSignedError, ReplayWindow, SessionId,
@@ -62,9 +63,6 @@ use vhalla_transport::{Endpoint, Frame, InMemoryRelay, Path, TransportError};
 use vhalla_wire::Envelope;
 use vhalla_witness::manifest::ValidManifest;
 use vhalla_witness::platform::WorkAllowance;
-
-/// Wire kind of a Botcaptcha witness response; never routed to a host effect.
-pub const KIND_WITNESS_RESPONSE: u8 = 3;
 
 const SIGNING_SEED: [u8; 32] = [7; 32];
 const OWNER: PeerId = PeerId(1);
