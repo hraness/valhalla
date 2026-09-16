@@ -49,7 +49,7 @@ fn run() -> Result<(), String> {
         );
         println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla menubar [run|install|uninstall|status]\nvhalla outputs");
         #[cfg(feature = "experimental-network")]
-        println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key>\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\nvhalla experimental [--json] invite <identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>\nvhalla experimental [--json] listen <identity-directory> invitation <invitation-hex>\nvhalla experimental [--json] send <identity-directory> invitation <invitation-hex> <expected-owner-app-key> <route> <expiry> <message>\n\nExperimental loopback chat; fixed test room, 60-second listener lifetime. --json emits bounded versioned JSON lines. Invitations are owner-signed; a verified send consumes the invitation nonce in <identity-directory>.spent and cannot redeem it twice.");
+        println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key> [listen-host]\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\nvhalla experimental [--json] invite <identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>\nvhalla experimental [--json] listen <identity-directory> invitation <invitation-hex> [listen-host]\nvhalla experimental [--json] send <identity-directory> invitation <invitation-hex> <expected-owner-app-key> <route> <expiry> <message>\n\nExperimental paired chat; fixed test room, 60-second listener lifetime. listen binds 127.0.0.1 unless a bare listen-host (an IPv4 or IPv6 literal, no port) names another interface - the printed route then carries it for a remote peer to dial. --json emits bounded versioned JSON lines. Invitations are owner-signed; a verified send consumes the invitation nonce in <identity-directory>.spent and cannot redeem it twice.");
         #[cfg(feature = "experimental-social")]
         println!("\n{}", social::help());
         #[cfg(feature = "experimental-rooms")]
@@ -543,8 +543,8 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         .get(3 + offset)
         .and_then(|a| a.to_str())
         .is_some_and(|v| v == "invitation");
-    if !((mode == "listen" && args.len() == 4 + offset && !invited)
-        || (mode == "listen" && args.len() == 5 + offset && invited)
+    if !((mode == "listen" && (4..=5).contains(&(args.len() - offset)) && !invited)
+        || (mode == "listen" && (5..=6).contains(&(args.len() - offset)) && invited)
         || (mode == "send" && args.len() == 7 + offset && !invited)
         || (mode == "send" && args.len() == 9 + offset && invited)
         || (mode == "invite" && args.len() == 8 + offset))
@@ -600,15 +600,21 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     runtime.block_on(async {
         if mode == "listen" {
+            // An optional trailing IP literal picks the bind interface; the
+            // advertised route carries it so a remote peer can dial in.
+            let listen = args
+                .get(if invited { 5 + offset } else { 4 + offset })
+                .and_then(|a| a.to_str())
+                .unwrap_or("127.0.0.1");
             let mut listener = if invited {
                 let raw = hex_bytes(text(4 + offset)?, vhalla_native::INVITATION_BYTES)?;
                 let invitation = vhalla_native::Invitation::decode(&raw)
                     .map_err(|e| format!("invitation: {e:?}"))?;
-                Listener::bind_with_invitation(identity, invitation)
+                Listener::bind_with_invitation_on(identity, invitation, listen)
                     .await
                     .map_err(|e| e.to_string())?
             } else {
-                Listener::bind(identity, peer_app(text(3 + offset)?)?)
+                Listener::bind_on(identity, peer_app(text(3 + offset)?)?, listen)
                     .await
                     .map_err(|e| e.to_string())?
             };

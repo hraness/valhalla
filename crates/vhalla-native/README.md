@@ -1,7 +1,8 @@
 # vhalla (valhalla) local chat
 
 The experimental native adapter joins private application identities, fresh
-paired sessions and real QUIC sockets. It is **loopback only**, available through
+paired sessions and real QUIC sockets. It binds **loopback by default**,
+available through
 an explicit CLI build feature. Independent protocol/security review remains
 outstanding. Public networking, browser participation and general rooms are
 still being built.
@@ -21,7 +22,15 @@ directories. In one terminal, start Bob with Alice's public key:
 ./target/debug/vhalla experimental listen ./bob <alice-public-key>
 ```
 
-It prints `route <address> <expiry>`. In another terminal, send Alice's message
+It prints `route <address> <expiry>`. An optional trailing IP literal picks
+the bind interface for a reachable route across machines, e.g. a LAN or
+overlay address:
+
+```console
+./target/debug/vhalla experimental listen ./bob <alice-public-key> 100.64.1.7
+```
+
+In another terminal, send Alice's message
 using Bob's independently obtained public key and those two route fields:
 
 ```console

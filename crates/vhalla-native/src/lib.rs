@@ -2,14 +2,15 @@
 #![warn(missing_docs)]
 #![cfg(unix)]
 
-//! Experimental, loopback-only paired chat over real QUIC sockets.
+//! Experimental paired chat over real QUIC sockets, loopback by default.
 //!
 //! Full application keys are explicit local pins. Route advertisements are
 //! untrusted hints, never membership grants. Fresh transport keys are generated
 //! per process; authenticated QUIC identities bind the application handshake.
 //! This adapter has no policy/host execution API and never evaluates chat text.
-//! Public networking, discovery, browser interoperability and durable delivery
-//! remain separate admission gates.
+//! An explicit `listen` host may bind a non-loopback interface for a private
+//! network; public networking, discovery, browser interoperability and durable
+//! delivery remain separate admission gates.
 
 mod codec;
 mod connection;
@@ -98,7 +99,7 @@ fn transport(error: impl std::fmt::Display) -> Error {
     Error::Transport(error.to_string())
 }
 
-/// Bounded, untrusted loopback address and expiry. It does not identify an
+/// Bounded, untrusted peer address and expiry. It does not identify an
 /// application owner or grant permission to participate.
 #[derive(Clone, Debug)]
 pub struct Route {
@@ -107,8 +108,10 @@ pub struct Route {
     expires_at: u64,
 }
 impl Route {
-    /// Parse only a literal loopback IPv4 QUIC address with an Ed25519 PeerId.
-    /// No DNS, relays, non-loopback targets, extra protocols or unbounded text.
+    /// Parse only a literal IPv4/IPv6 QUIC address with an Ed25519 PeerId.
+    /// No DNS, relays, extra protocols or unbounded text; the operator
+    /// supplies the route out of band and the pinned peer key — not the
+    /// address — is what authenticates the session.
     pub fn parse(address: &str, expires_at: u64) -> Result<Self> {
         if address.len() > 256 {
             return Err(Error::Input("route exceeds 256 bytes"));
@@ -119,16 +122,13 @@ impl Route {
         let address: Multiaddr = address.parse().map_err(transport)?;
         let parts: Vec<_> = address.iter().collect();
         let peer = match parts.as_slice() {
-            [Protocol::Ip4(ip), Protocol::Udp(port), Protocol::QuicV1, Protocol::P2p(peer)]
-                if ip.is_loopback() && *port != 0 =>
+            [Protocol::Ip4(_), Protocol::Udp(port), Protocol::QuicV1, Protocol::P2p(peer)]
+            | [Protocol::Ip6(_), Protocol::Udp(port), Protocol::QuicV1, Protocol::P2p(peer)]
+                if *port != 0 =>
             {
                 *peer
             }
-            _ => {
-                return Err(Error::Input(
-                    "expected loopback IPv4 QUIC route with peer ID",
-                ))
-            }
+            _ => return Err(Error::Input("expected IP QUIC route with peer ID")),
         };
         transport_key(peer)?;
         Ok(Self {
@@ -239,15 +239,22 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     #[test]
-    fn routes_reject_nonlocal_missing_or_extra_protocols() {
+    fn routes_reject_nonliteral_missing_or_extra_protocols() {
         let key = libp2p::identity::Keypair::ed25519_from_bytes([1; 32]).unwrap();
         let peer = key.public().to_peer_id();
-        assert!(Route::parse(&format!("/ip4/127.0.0.1/udp/7/quic-v1/p2p/{peer}"), 1).is_ok());
         for raw in [
+            format!("/ip4/127.0.0.1/udp/7/quic-v1/p2p/{peer}"),
             format!("/ip4/8.8.8.8/udp/7/quic-v1/p2p/{peer}"),
+            format!("/ip6/::1/udp/7/quic-v1/p2p/{peer}"),
+            format!("/ip6/2001:db8::7/udp/7/quic-v1/p2p/{peer}"),
+        ] {
+            assert!(Route::parse(&raw, 1).is_ok(), "literal IP route: {raw}");
+        }
+        for raw in [
             format!("/ip4/127.0.0.1/udp/0/quic-v1/p2p/{peer}"),
             "/ip4/127.0.0.1/udp/7/quic-v1".into(),
             format!("/dns4/localhost/udp/7/quic-v1/p2p/{peer}"),
+            format!("/dnsaddr/example.com/udp/7/quic-v1/p2p/{peer}"),
             format!("/ip4/127.0.0.1/udp/7/quic-v1/p2p/{peer}/p2p-circuit"),
         ] {
             assert!(Route::parse(&raw, 1).is_err());

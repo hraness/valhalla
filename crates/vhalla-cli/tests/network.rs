@@ -366,3 +366,33 @@ fn json_lines_preserve_hostile_bytes_and_bound_each_event() {
     assert_eq!(message["body_hex"], expected);
     assert_eq!(json_line(&server, "peer_closed")["kind"], "peer_closed");
 }
+
+#[test]
+fn listen_binds_a_named_host_and_the_route_is_dialable() {
+    let tmp = Temp::new();
+    let alice = tmp.0.join("alice");
+    let bob = tmp.0.join("bob");
+    let alice_key = init(&alice);
+    let bob_key = init(&bob);
+
+    // A non-default loopback exercises the optional listen host: the
+    // route must advertise exactly what the peer will dial.
+    let server = Process::spawn(&["experimental", "listen", path(&bob), &alice_key, "::1"]);
+    let line = server.line("route ");
+    let mut parts = line.split_whitespace();
+    assert_eq!(parts.next(), Some("route"));
+    let route = parts.next().unwrap().to_string();
+    let expiry = parts.next().unwrap().to_string();
+    assert!(parts.next().is_none());
+    assert!(
+        route.contains("::1"),
+        "route must advertise the bound host: {route}"
+    );
+
+    let received = send(&alice, &bob_key, &route, &expiry, "across interfaces", true);
+    assert!(received.starts_with(&format!("received peer={bob_key} session=")));
+    assert!(server
+        .line("message ")
+        .contains(&format!("peer={alice_key} ")));
+    server.line("peer-closed");
+}
