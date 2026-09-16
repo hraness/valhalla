@@ -6,6 +6,7 @@ use std::process::Command;
 fn outputs_creates_and_prints_the_directory() {
     let home = std::env::temp_dir().join(format!("vhalla-desktop-test-{}", std::process::id()));
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .arg("outputs")
         .env("HOME", &home)
         .output()
@@ -25,6 +26,7 @@ fn outputs_creates_and_prints_the_directory() {
 #[test]
 fn menubar_reports_a_missing_binary() {
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .arg("menubar")
         .env("VHALLA_MENUBAR_PATH", "/definitely/missing/vhalla-menubar")
         .output()
@@ -37,6 +39,7 @@ fn menubar_reports_a_missing_binary() {
 fn menubar_and_outputs_reject_extra_arguments() {
     for command in ["menubar", "outputs"] {
         let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .args([command, "extra"])
             .output()
             .unwrap();
@@ -53,6 +56,7 @@ fn menubar_status_reports_an_uninstalled_companion() {
     let home = std::env::temp_dir().join(format!("vhalla-menubar-test-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .args(["menubar", "status"])
         .env("HOME", &home)
         .env("VHALLA_MENUBAR_PATH", "/definitely/missing/vhalla-menubar")
@@ -75,6 +79,7 @@ fn menubar_status_reports_an_uninstalled_companion() {
 #[test]
 fn menubar_rejects_an_unknown_subcommand() {
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .args(["menubar", "bogus"])
         .output()
         .unwrap();
@@ -89,6 +94,7 @@ fn menubar_install_requires_a_qualified_binary() {
     let home = std::env::temp_dir().join(format!("vhalla-install-test-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .args(["menubar", "install"])
         .env("HOME", &home)
         .env("VHALLA_MENUBAR_PATH", "/definitely/missing/vhalla-menubar")

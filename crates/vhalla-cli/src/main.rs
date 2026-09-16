@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #![allow(missing_docs)]
 
+mod support;
+
 #[cfg(unix)]
 mod intro;
 
@@ -19,10 +21,21 @@ mod rooms_submit;
 mod rooms_tui;
 
 fn main() {
+    let args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
+    if args.first().is_some_and(|arg| arg == "support") && args.len() <= 64 {
+        std::process::exit(support::execute(&args[1..]));
+    }
     #[cfg(unix)]
-    if let Err(error) = run() {
-        eprintln!("vhalla: {error}");
-        std::process::exit(1);
+    {
+        let useful = support::useful_result(&args);
+        match run(args) {
+            Ok(()) if useful => support::completed(),
+            Ok(()) => {}
+            Err(error) => {
+                eprintln!("vhalla: {error}");
+                std::process::exit(1);
+            }
+        }
     }
     #[cfg(not(unix))]
     {
@@ -32,8 +45,7 @@ fn main() {
 }
 
 #[cfg(unix)]
-fn run() -> Result<(), String> {
-    let args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
+fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args.len() > 64 {
         return Err("too many arguments (maximum 64)".into());
     }
@@ -48,6 +60,7 @@ fn run() -> Result<(), String> {
             intro::terminal_intro(std::io::stdout().is_terminal(), term.as_deref(), columns)
         );
         println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla menubar [run|install|uninstall|status]\nvhalla outputs");
+        println!("vhalla support [--json|dismiss|snooze|enable|status --json]\nvhalla support protocol --json  # optional support lifecycle for agents");
         #[cfg(feature = "experimental-network")]
         println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key> [listen-host]\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\nvhalla experimental [--json] invite <identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>\nvhalla experimental [--json] listen <identity-directory> invitation <invitation-hex> [listen-host]\nvhalla experimental [--json] send <identity-directory> invitation <invitation-hex> <expected-owner-app-key> <route> <expiry> <message>\n\nExperimental paired chat; fixed test room, 60-second listener lifetime. listen binds 127.0.0.1 unless a bare listen-host (an IPv4 or IPv6 literal, no port) names another interface - the printed route then carries it for a remote peer to dial. --json emits bounded versioned JSON lines. Invitations are owner-signed; a verified send consumes the invitation nonce in <identity-directory>.spent and cannot redeem it twice.");
         #[cfg(feature = "experimental-social")]

@@ -37,6 +37,7 @@ struct Process {
 impl Process {
     fn spawn(args: &[&str]) -> Self {
         let mut child = Command::new(BIN)
+            .env("HRANESS_SUPPORT", "off")
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

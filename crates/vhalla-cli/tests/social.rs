@@ -5,6 +5,7 @@
 #[test]
 fn social_commands_are_absent_from_the_default_build() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
         .args([
             "social",
             "records",
@@ -122,6 +123,7 @@ mod enabled {
     }
     fn run(store: &Path, realm: &str, command: &str, args: &[&str]) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
             .args(["social", command])
             .arg(store)
             .arg(realm)
