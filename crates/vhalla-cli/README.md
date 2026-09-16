@@ -410,6 +410,31 @@ meshes. Persistent peers are dialed over plain libp2p TCP: reachability,
 firewalls and transport encryption remain the operator's responsibility,
 which is why a private network is the intended first deployment.
 
+### Transport caveats and WAL resets
+
+Two operational findings from running the validator pair over a relayed
+tunnel (tailcat over a DERP relay):
+
+- **Small writes only.** The relayed path truncates any single TCP write
+  above roughly 1.1 KiB. The node accounts for this: proposal `Data`
+  parts are capped at 768 raw bytes and every part in a stream is paced
+  20 ms apart so gossipsub cannot coalesce a burst into one oversized
+  wire write. Do not lower-level "batch" traffic around the node, and
+  expect connection churn on relayed paths — the parts cache re-streams
+  on request, so a proposal that misses one connection window lands on
+  the next.
+- **WAL format epochs.** The consensus WAL records its wire-format epoch
+  in `wal/FORMAT` (`VRW2`). A WAL written by an incompatible build fails
+  fast at startup with an explicit message rather than a mid-replay
+  codec error: remove `<node-home>/wal/consensus.wal` and start again.
+  This is safe — the WAL protects only in-flight consensus votes; all
+  committed state lives in the journal and stores under
+  `<node-home>/app/` and `<node-home>/store/`.
+- **Rejected submissions are loud.** `RUST_LOG=vhalla_rooms_node=warn`
+  surfaces intake rejections with reasons (`unsafe file stem`,
+  `undecodable body`, `prepare failed: …`); the `*.rejected` marker in
+  the intake remains the producer-facing record.
+
 ### Social sync over the paired channel
 
 The `experimental-sync` feature (which implies `experimental-social` and

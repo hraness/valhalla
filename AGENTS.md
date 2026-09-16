@@ -25,3 +25,11 @@
 - Inside `#![no_std]` crates the `#[hegel::test]` expansion needs `use alloc::format;` and `use alloc::string::ToString;` in the test module.
 - Hegel generator bounds are inclusive: proptest `a..b` maps to `.min_value(a).max_value(b - 1)`, `a..=b` to `.min_value(a).max_value(b)`. `min_value(0)` is redundant and can be dropped.
 - `cargo test --locked` must stay green; Hegel dev-deps are added per-crate through `cargo add --dev hegeltest -p <crate>`.
+
+## Rooms consensus node
+
+- Proposal-part transport is sized for the tailcat/WireGuard path: `Data` parts carry at most `PROPOSAL_CHUNK_BYTES` (768) raw bytes and publishes are spaced `PART_PUBLISH_SPACING` (20 ms) apart, because gossipsub coalesces bursts into single writes that the relayed path truncates above ~1.1 KiB. Do not raise the chunk size or drop the pacing without live re-qualification on a relayed tunnel.
+- Never drop a `GetValue` reply oneshot. The Malachite connector processes host messages sequentially, so a dropped reply kills the actor and a permanently held reply parks every subsequent message. Held replies must resolve on submit, on the intake poll, or as a deadline tombstone.
+- Tombstone values are reply-only: their value id is derived from `b"VHTOMB"` + validator address + height + round, and their parts must never be published (`live = false`). A shared or all-zero tombstone id lets an empty value commit.
+- The consensus WAL is versioned by the `wal/FORMAT` marker (`VRW2`). A foreign marker or an unversioned non-empty WAL fails fast; resetting the WAL alone is safe because committed state lives in the journal and stores. Operator detail lives in `crates/vhalla-cli/README.md`.
+- `decided` history is the `GetDecidedValues` sync source and is rebuilt from journal bundles at startup — do not prune it. `seen`, `proposals`, `parts_cache`, `held_by_id`, streams, and `boundary_latency` are all swept or capped; keep new per-height state inside those sweeps.

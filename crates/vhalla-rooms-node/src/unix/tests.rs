@@ -1731,6 +1731,7 @@ fn reordered_proposal_parts_still_assemble_and_verify() {
         store,
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
+        held_replies: Vec::new(),
     };
 
     let mut s = fixture::scenario(8, 16);
@@ -1750,29 +1751,44 @@ fn reordered_proposal_parts_still_assemble_and_verify() {
         RoomValue::new(batch.value_id(), batch.encode().into()),
     );
     let parts = app.build_parts(&proposed);
-    assert_eq!(parts.len(), 3);
+    // Init + `Data` chunks bounded for small-transport writes + Fin.
+    assert!(matches!(parts.first(), Some(RoomPart::Init(_))));
+    assert!(matches!(parts.last(), Some(RoomPart::Fin(_))));
+    let chunk_total: usize = parts[1..parts.len() - 1]
+        .iter()
+        .map(|p| match p {
+            RoomPart::Data(d) => {
+                assert!(
+                    d.len() <= PROPOSAL_CHUNK_BYTES,
+                    "Data chunk exceeds the transport-safe bound"
+                );
+                d.len()
+            }
+            other => panic!("middle part is not Data: {other:?}"),
+        })
+        .sum();
+    assert_eq!(chunk_total, batch.encode().len());
 
     let stream = app.stream_id(Height::new(1), Round::new(0));
     let peer = PeerId::random();
     let msg = |seq, content| StreamMessage::new(stream.clone(), seq, content);
 
-    // Reverse order: Fin part, then Data, then Init, then transport Fin.
-    assert!(
-        app.handle_part(peer, msg(0, StreamContent::Data(parts[2].clone())))
-            .is_none(),
-        "incomplete stream must not produce a value"
-    );
-    assert!(app
-        .handle_part(peer, msg(1, StreamContent::Data(parts[1].clone())))
-        .is_none());
-    assert!(app
-        .handle_part(peer, msg(2, StreamContent::Data(parts[0].clone())))
-        .is_none());
+    // Deliver every part in reverse order but keep each part's ORIGINAL
+    // stream sequence — the assembler must restore emission order, so
+    // permuted Data chunks still concatenate into the canonical bytes.
+    for (i, part) in parts.iter().enumerate().rev() {
+        assert!(
+            app.handle_part(peer, msg(i as u64, StreamContent::Data(part.clone())))
+                .is_none(),
+            "incomplete stream must not produce a value"
+        );
+    }
     let done = app
-        .handle_part(peer, msg(3, StreamContent::Fin))
+        .handle_part(peer, msg(parts.len() as u64, StreamContent::Fin))
         .expect("closed complete stream must assemble");
     assert!(done.validity.is_valid(), "reassembled stream must verify");
     assert_eq!(done.value.id.0, batch.value_id());
+    assert_eq!(&done.value.bytes[..], &batch.encode()[..]);
 
     // A second stream keyed differently stays independent.
     let stream2 = app.stream_id(Height::new(1), Round::new(0));
@@ -1784,6 +1800,214 @@ fn reordered_proposal_parts_still_assemble_and_verify() {
         app.handle_part(peer, msg2(1, StreamContent::Fin)).is_none(),
         "stream missing Data and Fin part must not assemble"
     );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Transport-bound chunking: a value larger than one relayed-write
+/// ceiling (observed ~1.2 KiB over tailcat/DERP) must fan out into
+/// multiple `Data` parts — each under `PROPOSAL_CHUNK_BYTES` of raw
+/// payload so codec + gossipsub framing still fits — and the received
+/// stream must reassemble the exact bytes in sequence order.
+#[test]
+fn large_values_chunk_into_bounded_data_parts() {
+    let (keys, set) = validators(1);
+    let base = fixture("chunked");
+    let key = keys[0].clone();
+    let address = Address::from_public_key(&key.public_key());
+
+    let store = base.join("store");
+    std::fs::create_dir_all(store.join("batches")).unwrap();
+    std::fs::create_dir_all(store.join("seen")).unwrap();
+    let mut app = App {
+        ctx: RoomContext,
+        adapter: Arc::new(Mutex::new(
+            Adapter::open(base.join("app"), &genesis()).unwrap(),
+        )),
+        sink: Arc::new(Mutex::new(EngineSink::default())),
+        validator_sets: sched(set),
+        address,
+        private_key: key.clone(),
+        proposals: BTreeMap::new(),
+        pending_proposals: VecDeque::new(),
+        assigned_bodies: BTreeMap::new(),
+        held_by_id: BTreeMap::new(),
+        streams: BTreeMap::new(),
+        parts_cache: BTreeMap::new(),
+        decided: BTreeMap::new(),
+        stream_seq: 0,
+        boundary_latency: Arc::new(Mutex::new(Vec::new())),
+        store,
+        seen: BTreeMap::new(),
+        resupplied: Arc::new(Mutex::new(0)),
+        held_replies: Vec::new(),
+    };
+
+    // Three full chunks plus a tail — comfortably over the transport
+    // ceiling that truncated a single 3071-byte frame.
+    let data = vec![7u8; PROPOSAL_CHUNK_BYTES * 3 + 100];
+    let proposed = LocallyProposedValue::new(
+        Height::new(1),
+        Round::new(0),
+        RoomValue::new([9; 32], data.clone().into()),
+    );
+    let parts = app.build_parts(&proposed);
+    assert_eq!(parts.len(), 2 + 4);
+    let mut reassembled = Vec::new();
+    for p in &parts[1..parts.len() - 1] {
+        match p {
+            RoomPart::Data(d) => {
+                assert!(d.len() <= PROPOSAL_CHUNK_BYTES);
+                reassembled.extend_from_slice(d);
+            }
+            other => panic!("middle part is not Data: {other:?}"),
+        }
+    }
+    assert_eq!(reassembled, data);
+
+    // In-order delivery of the chunked stream assembles the same bytes.
+    let stream = app.stream_id(Height::new(1), Round::new(0));
+    let peer = PeerId::random();
+    let msg = |seq, content| StreamMessage::new(stream.clone(), seq, content);
+    for (i, part) in parts.iter().enumerate() {
+        assert!(app
+            .handle_part(peer, msg(i as u64, StreamContent::Data(part.clone())))
+            .is_none());
+    }
+    let done = app
+        .handle_part(peer, msg(parts.len() as u64, StreamContent::Fin))
+        .expect("chunked stream must assemble");
+    assert_eq!(&done.value.bytes[..], &data[..]);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A `GetValue` that arrives while the queue is empty must be HELD, not
+/// dropped: the connector awaiting its oneshot dies on `RecvError` and
+/// wedges the whole node. The held reply resolves when a value
+/// materializes — a late submission answers it at the held request's own
+/// height and round — while a still-valueless request past its own
+/// deadline resolves as an undecidable tombstone so the sequential
+/// connector un-parks.
+#[tokio::test]
+async fn held_get_value_reply_resolves_on_late_submit() {
+    let (keys, set) = validators(1);
+    let base = fixture("held-reply");
+    let key = keys[0].clone();
+    let address = Address::from_public_key(&key.public_key());
+
+    let home = base.join("home");
+    let store = home.join("store");
+    std::fs::create_dir_all(store.join("batches")).unwrap();
+    std::fs::create_dir_all(store.join("seen")).unwrap();
+    std::fs::create_dir_all(store.join("pending")).unwrap();
+    let intake = home.join("intake");
+    std::fs::create_dir_all(&intake).unwrap();
+
+    let mut app = App {
+        ctx: RoomContext,
+        adapter: Arc::new(Mutex::new(
+            Adapter::open(home.join("app"), &genesis()).unwrap(),
+        )),
+        sink: Arc::new(Mutex::new(EngineSink::default())),
+        validator_sets: sched(set),
+        address,
+        private_key: key.clone(),
+        proposals: BTreeMap::new(),
+        pending_proposals: VecDeque::new(),
+        assigned_bodies: BTreeMap::new(),
+        held_by_id: BTreeMap::new(),
+        streams: BTreeMap::new(),
+        parts_cache: BTreeMap::new(),
+        decided: BTreeMap::new(),
+        stream_seq: 0,
+        boundary_latency: Arc::new(Mutex::new(Vec::new())),
+        store,
+        seen: BTreeMap::new(),
+        resupplied: Arc::new(Mutex::new(0)),
+        held_replies: Vec::new(),
+    };
+
+    // The engine asks for (h=1, r=0), the same height again at r=1, and
+    // a valueless h=9 whose deadline has already passed — while nothing
+    // is pending. The live h=1 replies stay held, never dropped; the
+    // expired h=9 request resolves immediately as a tombstone.
+    let (tx0, rx0) = tokio::sync::oneshot::channel();
+    let (tx1, rx1) = tokio::sync::oneshot::channel();
+    let (tx9, rx9) = tokio::sync::oneshot::channel();
+    let live = Instant::now() + Duration::from_secs(60);
+    for (height, round, deadline, tx) in [
+        (1u64, Round::new(0), live, tx0),
+        (1u64, Round::new(1), live, tx1),
+        (9u64, Round::new(0), Instant::now(), tx9),
+    ] {
+        app.held_replies.push(HeldReply {
+            height,
+            round,
+            deadline,
+            reply: tx,
+        });
+    }
+
+    let answered = app.drain_answerable_held();
+    assert_eq!(answered.len(), 1, "only the expired request resolves");
+    assert_eq!(app.held_replies.len(), 2);
+    let req9 = answered.into_iter().next().unwrap();
+    assert_eq!(req9.height, 9);
+    assert!(
+        req9.value.bytes.is_empty(),
+        "a deadline-expired request resolves as an empty tombstone"
+    );
+    assert!(!req9.live, "a tombstone's parts must never reach the wire");
+    assert_ne!(
+        req9.value.id.0, [0; 32],
+        "tombstone ids bind (node, height, round) — a peer's own tombstone must never collide"
+    );
+    req9.reply
+        .send(LocallyProposedValue::new(
+            Height::new(9),
+            Round::new(0),
+            req9.value,
+        ))
+        .expect("the expired request's connector still awaits");
+    rx9.await.expect("the tombstone reply lands");
+
+    // A batch lands late through the in-process submission path: every
+    // held request for its height resolves at the request's own round.
+    let mut s = fixture::scenario(8, 16);
+    let mut cursor = 0usize;
+    let (ev, rec, _) = fixture::first_create(
+        &s.app,
+        &s.owners[0],
+        &mut s.sources,
+        &mut cursor,
+        "alpha",
+        1,
+    );
+    let batch = s.app.prepare(1, ev, rec, None).unwrap().batch().clone();
+    app.submit(batch.clone());
+
+    let answered = app.drain_answerable_held();
+    assert_eq!(answered.len(), 2, "both held rounds resolve to the value");
+    assert!(app.held_replies.is_empty());
+    for req in answered {
+        assert!(req.live, "a real value's parts may be published");
+        assert_eq!(req.height, 1);
+        assert_eq!(&req.value.bytes[..], &batch.encode()[..]);
+        req.reply
+            .send(LocallyProposedValue::new(
+                Height::new(req.height),
+                req.round,
+                req.value,
+            ))
+            .expect("the parked connector still awaits its reply");
+    }
+    let got0 = rx0.await.expect("the r0 reply resolves, never dropped");
+    let got1 = rx1.await.expect("the r1 reply resolves, never dropped");
+    assert_eq!(got0.round, Round::new(0));
+    assert_eq!(got1.round, Round::new(1));
+    assert_eq!(&got0.value.bytes[..], &batch.encode()[..]);
+    assert_eq!(&got1.value.bytes[..], &batch.encode()[..]);
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -1825,6 +2049,7 @@ fn undecided_values_resupply_from_durable_store() {
             store: store.clone(),
             seen,
             resupplied: Arc::new(Mutex::new(0)),
+            held_replies: Vec::new(),
         };
 
     let mut s = fixture::scenario(8, 16);
@@ -2054,6 +2279,7 @@ fn intake_files_submit_or_reject_deterministically() {
         store,
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
+        held_replies: Vec::new(),
     };
 
     let mut s = fixture::scenario(8, 16);
@@ -2143,6 +2369,7 @@ fn losing_body_reassembles_against_live_frontier() {
         store,
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
+        held_replies: Vec::new(),
     };
 
     let mut s = fixture::scenario(8, 16);
@@ -2286,6 +2513,7 @@ fn eligible_intake_file_queues_a_config_transition() {
         store,
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
+        held_replies: Vec::new(),
     };
 
     let admitted = vec![OwnerId::from_bytes([7; 32]), OwnerId::from_bytes([9; 32])];
@@ -2349,4 +2577,273 @@ fn service_config_binds_listen_and_bounds_per_ip() {
             .to_string()
             .contains(listen));
     }
+}
+
+/// An `App` wired to a fresh store dir for unit-level state tests.
+fn test_app(tag: &str, key: &PrivateKey, set: &RoomValidatorSet) -> App {
+    let base = fixture(tag);
+    let home = base.join("home");
+    let store = home.join("store");
+    std::fs::create_dir_all(store.join("batches")).unwrap();
+    std::fs::create_dir_all(store.join("seen")).unwrap();
+    std::fs::create_dir_all(store.join("pending")).unwrap();
+    App {
+        ctx: RoomContext,
+        adapter: Arc::new(Mutex::new(
+            Adapter::open(home.join("app"), &genesis()).unwrap(),
+        )),
+        sink: Arc::new(Mutex::new(EngineSink::default())),
+        validator_sets: sched(set.clone()),
+        address: Address::from_public_key(&key.public_key()),
+        private_key: key.clone(),
+        proposals: BTreeMap::new(),
+        pending_proposals: VecDeque::new(),
+        assigned_bodies: BTreeMap::new(),
+        held_by_id: BTreeMap::new(),
+        streams: BTreeMap::new(),
+        parts_cache: BTreeMap::new(),
+        decided: BTreeMap::new(),
+        stream_seq: 0,
+        boundary_latency: Arc::new(Mutex::new(Vec::new())),
+        store,
+        seen: BTreeMap::new(),
+        resupplied: Arc::new(Mutex::new(0)),
+        held_replies: Vec::new(),
+    }
+}
+
+/// Deciding a height retires per-height state that can never be
+/// consulted again: seen records and open streams at or below it,
+/// parts-cache entries below it, and retained batches nothing
+/// references. Anything still live — a queued value, a live-height
+/// assignment, a seen record above the decision — survives.
+#[test]
+fn sweep_decided_retires_dead_state() {
+    let (keys, set) = validators(1);
+    let mut app = test_app("sweep", &keys[0], &set);
+    let proposer = app.address;
+
+    let plan = batch_plan(4);
+    let ids: Vec<RoomValueId> = (1..=4).map(|h| RoomValueId(plan[&h].value_id())).collect();
+    for (i, id) in ids.iter().enumerate() {
+        app.held_by_id.insert(*id, plan[&(i as u64 + 1)].clone());
+    }
+    // id1: committed at h1 — nothing references it after the sweep.
+    // id2: queued pending. id3: seen at h3. id4: assigned to h5.
+    app.pending_proposals.push_back(PendingEntry::Value(ids[1]));
+    app.proposals.insert(5, ids[3]);
+    for (h, id) in [(1u64, ids[0]), (2, ids[1]), (3, ids[2])] {
+        app.seen.entry(h).or_default().push(SeenProposal {
+            round: Round::new(0),
+            pol_round: Round::Nil,
+            proposer,
+            value_id: id,
+        });
+    }
+    app.streams.insert(
+        (b"peer".to_vec(), b"old".to_vec()),
+        StreamState {
+            init: Some(ProposalInit {
+                height: Height::new(1),
+                round: Round::new(0),
+                pol_round: Round::Nil,
+                proposer,
+            }),
+            ..Default::default()
+        },
+    );
+    app.streams.insert(
+        (b"peer".to_vec(), b"headless".to_vec()),
+        StreamState::default(),
+    );
+    app.parts_cache.insert(
+        ids[0],
+        vec![RoomPart::Init(ProposalInit {
+            height: Height::new(1),
+            round: Round::new(0),
+            pol_round: Round::Nil,
+            proposer,
+        })],
+    );
+    app.parts_cache.insert(
+        ids[2],
+        vec![RoomPart::Init(ProposalInit {
+            height: Height::new(3),
+            round: Round::new(0),
+            pol_round: Round::Nil,
+            proposer,
+        })],
+    );
+
+    app.sweep_decided(2);
+
+    assert!(
+        !app.seen.contains_key(&1) && !app.seen.contains_key(&2),
+        "decided heights never resupply"
+    );
+    assert_eq!(app.seen[&3][0].value_id, ids[2]);
+    assert_eq!(
+        app.streams.len(),
+        1,
+        "the init-less stream stays until aged"
+    );
+    assert!(app
+        .streams
+        .contains_key(&(b"peer".to_vec(), b"headless".to_vec())));
+    assert!(
+        !app.parts_cache.contains_key(&ids[0]),
+        "parts below the decided height are dead"
+    );
+    assert!(app.parts_cache.contains_key(&ids[2]));
+    assert!(
+        !app.held_by_id.contains_key(&ids[0]),
+        "the committed batch's copy is dead — `decided` and the journal keep it"
+    );
+    assert!(app.held_by_id.contains_key(&ids[1]), "pending stays");
+    assert!(
+        app.held_by_id.contains_key(&ids[2]),
+        "seen-at-live-height stays"
+    );
+    assert!(app.held_by_id.contains_key(&ids[3]), "assigned stays");
+}
+
+/// A stream whose transport `Fin` never arrives — the common signature
+/// of a dead tunnel connection — must not linger forever.
+#[test]
+fn expire_streams_drops_abandoned_streams() {
+    let (keys, set) = validators(1);
+    let mut app = test_app("expire", &keys[0], &set);
+    app.streams.insert(
+        (b"a".to_vec(), b"old".to_vec()),
+        StreamState {
+            first_seen: Some(Instant::now() - STREAM_STALE - Duration::from_secs(1)),
+            ..Default::default()
+        },
+    );
+    app.streams.insert(
+        (b"a".to_vec(), b"new".to_vec()),
+        StreamState {
+            first_seen: Some(Instant::now()),
+            ..Default::default()
+        },
+    );
+    app.expire_streams();
+    assert_eq!(app.streams.len(), 1);
+    assert!(app.streams.contains_key(&(b"a".to_vec(), b"new".to_vec())));
+}
+
+/// Tombstone ids bind (node, height, round): two nodes resolving the
+/// same request slot MUST produce different ids — a shared id is what
+/// let a peer's slim proposal pair with a local tombstone and commit an
+/// empty value.
+#[test]
+fn tombstone_ids_are_unique_per_node_height_round() {
+    let (keys, set) = validators(2);
+    let a = test_app("tomb-a", &keys[0], &set);
+    let b = test_app("tomb-b", &keys[1], &set);
+    let ta = a.tombstone(7, Round::new(3));
+    assert_ne!(
+        ta.id.0,
+        b.tombstone(7, Round::new(3)).id.0,
+        "same slot across nodes must differ"
+    );
+    assert_ne!(ta.id.0, a.tombstone(8, Round::new(3)).id.0);
+    assert_ne!(ta.id.0, a.tombstone(7, Round::new(4)).id.0);
+    assert_eq!(ta.id.0, a.tombstone(7, Round::new(3)).id.0, "deterministic");
+    assert!(ta.bytes.is_empty());
+}
+
+/// A restarted node serves decided values out of the journal, not
+/// memory: commit a batch through the durable path, then `load_decided`
+/// must rebuild the `RawDecidedValue` — value bytes plus an extended
+/// certificate decoded from the stored `VC2` — so `GetDecidedValues`
+/// still answers for heights the process never saw in memory.
+#[test]
+fn decided_history_rebuilds_from_the_journal() {
+    let (keys, _set) = validators(1);
+    let base = fixture("load-decided");
+    let mut adapter = Adapter::open(base.join("app"), &genesis()).unwrap();
+
+    let plan = batch_plan(1);
+    let batch = plan[&1].clone();
+    adapter.hold(batch.clone());
+
+    // Fabricate the canonical VC2 bytes the bundle stores: the journal
+    // records them verbatim — quorum verification happens upstream.
+    let address = Address::from_public_key(&keys[0].public_key());
+    let mut cert = Vec::new();
+    cert.extend_from_slice(b"VC2");
+    cert.extend_from_slice(&1u64.to_be_bytes());
+    cert.extend_from_slice(&0u32.to_be_bytes());
+    cert.extend_from_slice(&batch.value_id());
+    cert.extend_from_slice(&1u16.to_be_bytes());
+    cert.extend_from_slice(&address.into_inner());
+    cert.extend_from_slice(&[9u8; 64]);
+
+    let outcome = adapter.decide(&RoomCertificate {
+        bytes: cert,
+        value_commitment: batch.value_id(),
+        height: 1,
+    });
+    assert_eq!(outcome, DecidedOutcome::Acked);
+    assert_eq!(adapter.frontier().height, 1);
+
+    let decided = load_decided(&adapter);
+    let raw = decided.get(&1).expect("a committed height serves sync");
+    let value = RoomCodec::decode_value(raw.value_bytes.clone()).unwrap();
+    assert_eq!(&value.bytes[..], &batch.encode()[..]);
+    assert_eq!(raw.certificate.height, Height::new(1));
+    assert_eq!(raw.certificate.value_id.0, batch.value_id());
+    assert_eq!(raw.certificate.commit_signatures.len(), 1);
+    assert_eq!(raw.certificate.commit_signatures[0].address, address);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A WAL written before format epochs — or by a different wire format —
+/// must fail fast with an actionable message instead of a cryptic
+/// mid-replay codec error that safety-hangs the engine.
+#[test]
+fn wal_format_marker_guards_incompatible_replay() {
+    let base = fixture("wal-format");
+    let wal = base.join("wal").join("consensus.wal");
+
+    // Fresh dir: marker is written, no panic.
+    check_wal_format(&wal);
+    assert_eq!(
+        std::fs::read(base.join("wal").join("FORMAT")).unwrap(),
+        b"VRW2"
+    );
+    // Idempotent on restart.
+    check_wal_format(&wal);
+    // An empty legacy WAL is safe to adopt.
+    std::fs::remove_file(base.join("wal").join("FORMAT")).unwrap();
+    std::fs::write(&wal, []).unwrap();
+    check_wal_format(&wal);
+    assert_eq!(
+        std::fs::read(base.join("wal").join("FORMAT")).unwrap(),
+        b"VRW2"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+#[should_panic(expected = "predates format versioning")]
+fn wal_format_rejects_unversioned_nonempty_log() {
+    let base = fixture("wal-legacy");
+    let wal = base.join("wal").join("consensus.wal");
+    std::fs::create_dir_all(wal.parent().unwrap()).unwrap();
+    std::fs::write(&wal, b"legacy entry bytes").unwrap();
+    check_wal_format(&wal);
+}
+
+#[test]
+#[should_panic(expected = "WAL format mismatch")]
+fn wal_format_rejects_foreign_marker() {
+    let base = fixture("wal-foreign");
+    let wal = base.join("wal").join("consensus.wal");
+    std::fs::create_dir_all(wal.parent().unwrap()).unwrap();
+    std::fs::write(wal.parent().unwrap().join("FORMAT"), b"VRW1").unwrap();
+    check_wal_format(&wal);
 }

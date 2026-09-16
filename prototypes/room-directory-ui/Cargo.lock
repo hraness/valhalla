@@ -8052,6 +8052,7 @@ dependencies = [
  "ractor",
  "sha3",
  "tokio",
+ "tracing",
  "vhalla-journal",
  "vhalla-rooms-consensus",
 ]
