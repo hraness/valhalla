@@ -148,10 +148,26 @@ struct BoundConnection {
     state: Inbound,
 }
 
-/// A short-lived, bounded loopback listener for one locally pinned application
-/// peer. Poll `next` to drive it; at most four exact connection states exist.
-/// Invalid input closes only its originating connection. Drop releases sockets
-/// and the exclusive identity lock. No chat is persisted automatically.
+/// The QUIC listen multiaddr for an IP literal: `/ip4/` or `/ip6/` on an
+/// ephemeral UDP port. Names are not bind targets — a socket binds an
+/// interface address — and this transport rejects `/dns4/` anyway, so a
+/// non-IP input fails closed as an input error.
+fn listen_multiaddr(host: &str) -> Result<Multiaddr> {
+    let text = match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(_)) => format!("/ip4/{host}/udp/0/quic-v1"),
+        Ok(std::net::IpAddr::V6(_)) => format!("/ip6/{host}/udp/0/quic-v1"),
+        Err(_) => return Err(Error::Input("listen host must be an IP literal")),
+    };
+    text.parse()
+        .map_err(|_| Error::Input("invalid listen host"))
+}
+
+/// A short-lived, bounded listener for one locally pinned application
+/// peer — loopback unless an explicit `bind_on` host is given. Poll
+/// `next` to drive it; at most four exact connection states exist.
+/// Invalid input closes only its originating connection. Drop releases
+/// sockets and the exclusive identity lock. No chat is persisted
+/// automatically.
 pub struct Listener {
     swarm: Swarm<Network>,
     identity: Identity,
@@ -168,7 +184,16 @@ impl Listener {
     /// Bind an ephemeral loopback UDP port with a fresh OS-generated transport
     /// key. Both parties must independently pin each other's full app key.
     pub async fn bind(identity: Identity, peer_app: [u8; 32]) -> Result<Self> {
-        Self::bind_scoped(identity, peer_app, PairingScope::default(), None).await
+        Self::bind_on(identity, peer_app, "127.0.0.1").await
+    }
+
+    /// Same as [`bind`](Self::bind) but binds `listen` — an IPv4 or IPv6
+    /// literal, never `host:port`. The advertised route carries that
+    /// address, so the remote peer can dial it across machines when
+    /// `listen` is a reachable interface such as a LAN or overlay address.
+    /// An ephemeral port is still chosen; the pairing checks are unchanged.
+    pub async fn bind_on(identity: Identity, peer_app: [u8; 32], listen: &str) -> Result<Self> {
+        Self::bind_scoped(identity, peer_app, PairingScope::default(), None, listen).await
     }
 
     /// Bind using an owner-signed invitation. The local identity must be the
@@ -177,9 +202,26 @@ impl Listener {
     /// pairing scope. Its exclusive expiry is converted to the pairing's
     /// inclusive last second. Verification occurs before any socket is bound.
     pub async fn bind_with_invitation(identity: Identity, invitation: Invitation) -> Result<Self> {
+        Self::bind_with_invitation_on(identity, invitation, "127.0.0.1").await
+    }
+
+    /// Same as [`bind_with_invitation`](Self::bind_with_invitation) but binds
+    /// `listen` like [`bind_on`](Self::bind_on).
+    pub async fn bind_with_invitation_on(
+        identity: Identity,
+        invitation: Invitation,
+        listen: &str,
+    ) -> Result<Self> {
         let claims = invitation.verify_at(identity.public_key(), wall_time()?)?;
         let scope = invitation_scope(claims)?;
-        Self::bind_scoped(identity, claims.invitee, scope, Some(scope.expires_at)).await
+        Self::bind_scoped(
+            identity,
+            claims.invitee,
+            scope,
+            Some(scope.expires_at),
+            listen,
+        )
+        .await
     }
 
     async fn bind_scoped(
@@ -187,6 +229,7 @@ impl Listener {
         peer_app: [u8; 32],
         mut scope: PairingScope,
         invited_expiry: Option<u64>,
+        listen: &str,
     ) -> Result<Self> {
         validate_peer(identity.public_key(), peer_app)?;
         let clock = Clock::new()?;
@@ -201,11 +244,7 @@ impl Listener {
         let mut swarm = network::new(None)?;
         let local_transport = transport_key(*swarm.local_peer_id())?;
         swarm
-            .listen_on(
-                "/ip4/127.0.0.1/udp/0/quic-v1"
-                    .parse()
-                    .expect("literal address"),
-            )
+            .listen_on(listen_multiaddr(listen)?)
             .map_err(transport)?;
         let address = tokio::time::timeout(REQUEST_DEADLINE, async {
             loop {
@@ -1045,5 +1084,27 @@ mod tests {
         assert!(matches!(listener.next().await, Err(Error::Clock)));
         listener.clock.last = wall_time().unwrap();
         assert!(matches!(listener.next().await, Err(Error::Closed)));
+    }
+
+    /// `bind_on` binds the named host and the advertised route carries it,
+    /// so a remote peer can dial what it is given. A malformed host fails
+    /// closed as an input error instead of reaching the socket layer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn bind_on_binds_the_named_host_and_rejects_bad_hosts() {
+        let tmp = Temp::new();
+        let a = tmp.identity("a");
+        let b = tmp.identity("b");
+        let listener = Listener::bind_on(b, a.public_key(), "::1").await.unwrap();
+        assert!(
+            listener.route().address().contains("::1"),
+            "route must advertise the bound host: {}",
+            listener.route().address()
+        );
+
+        let bad = tmp.identity("bad");
+        assert!(matches!(
+            Listener::bind_on(bad, a.public_key(), "not a host!!").await,
+            Err(Error::Input(_))
+        ));
     }
 }
