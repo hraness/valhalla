@@ -1,0 +1,22 @@
+[package]
+name = "witness-contract-spike"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Spike 4 (work-contract-separation): does the delivered-sparks floor separate working, padded, and idle programs on the bridge-v1 fixtures?"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+witness-restatement = { path = "../witness-restatement", features = ["std"] }
+
+[dev-dependencies]
+platonik-core = { git = "https://github.com/hraness/platonik", rev = "5eedec07c84af3b4beb82f22cc6c2b9fa3520d42" }
