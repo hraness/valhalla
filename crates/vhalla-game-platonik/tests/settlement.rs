@@ -634,3 +634,193 @@ fn a_pre_reveal_fill_binds_the_declared_fallback() {
         passed_by_plain_run(&task, vec![(slot, program)])
     );
 }
+
+#[test]
+fn a_verified_settlement_exports_a_receipt_claim_the_verifier_signed() {
+    use vhalla_core::{PeerId, RealmId, Sequence};
+    use vhalla_crypto::{
+        peer_id_from_seed, verifying_key_from_seed, ClaimContext, ClaimDomain, SignedClaim,
+        SubjectDigest,
+    };
+    let Finished {
+        mut session,
+        mut receiver,
+        host,
+        final_checkpoint,
+        passed,
+        receipt,
+    } = finish_live(MissingMember::Pause);
+    let key = session.key();
+    let result = host.settlement(
+        key,
+        &Settlement::Result {
+            session: key,
+            epoch: Epoch(0),
+            checkpoint: final_checkpoint,
+            receipt,
+            passed,
+        },
+    );
+    let verified = receiver.settle(&mut session, &result, 9).unwrap();
+    let seed = [77; 32];
+    let audience = PeerId(9);
+    let claim = verified.export_claim(
+        RealmId(2),
+        vhalla_crypto::SessionId(4),
+        audience,
+        Epoch(1),
+        Sequence(1),
+        1_000,
+        2_000,
+        seed,
+    );
+    let expected = ClaimContext {
+        domain: ClaimDomain::Receipt,
+        realm: RealmId(2),
+        session: vhalla_crypto::SessionId(4),
+        audience,
+        epoch: Epoch(1),
+    };
+    claim
+        .verify(&verifying_key_from_seed(seed), expected, 1_500)
+        .unwrap();
+    assert_eq!(claim.issuer, peer_id_from_seed(seed));
+    assert_eq!(
+        claim.claim.subject,
+        SubjectDigest::from_digest(verified.hash())
+    );
+    // Round trip through the claim codec and under the wrong key or domain.
+    let raw = claim.encode();
+    let back = SignedClaim::decode(&raw).unwrap();
+    assert_eq!(back, claim);
+    assert!(back
+        .verify(&verifying_key_from_seed([78; 32]), expected, 1_500)
+        .is_err());
+    let mut wrong = expected;
+    wrong.domain = ClaimDomain::Session;
+    assert!(back
+        .verify(&verifying_key_from_seed(seed), wrong, 1_500)
+        .is_err());
+}
+
+#[cfg(feature = "quorum")]
+#[test]
+fn a_certificate_attests_only_the_settlement_its_batch_names() {
+    use vhalla_game_platonik::quorum::{attest, bare_hash_record, QuorumError};
+    use vhalla_rooms_consensus::{Batch, CommitCertificate, Frontier};
+    let Finished {
+        mut session,
+        mut receiver,
+        host,
+        final_checkpoint,
+        passed,
+        receipt,
+    } = finish_live(MissingMember::Pause);
+    let key = session.key();
+    let result = host.settlement(
+        key,
+        &Settlement::Result {
+            session: key,
+            epoch: Epoch(0),
+            checkpoint: final_checkpoint,
+            receipt,
+            passed,
+        },
+    );
+    let verified = receiver.settle(&mut session, &result, 9).unwrap();
+    let batch_with = |records: Vec<Vec<u8>>| Batch {
+        parent: Frontier {
+            height: 41,
+            value: [1; 32],
+            registry: [2; 32],
+            social: [3; 32],
+            control: [4; 32],
+            time: 100,
+        },
+        time: 101,
+        evidence: Vec::new(),
+        records,
+        eligible: None,
+        result_registry: [5; 32],
+        result_social: [6; 32],
+        result_control: [7; 32],
+    };
+    let batch = batch_with(vec![verified.hash().to_vec()]);
+    let certificate = CommitCertificate {
+        bytes: vec![0xC3; 96],
+        value_commitment: batch.value_id(),
+        height: 42,
+    };
+    let accept = |bytes: &[u8], height: u64, value: &[u8; 32]| {
+        bytes == [0xC3; 96] && height == 42 && *value == batch.value_id()
+    };
+    let quorum = attest(
+        &verified,
+        &certificate,
+        &batch.encode(),
+        accept,
+        bare_hash_record,
+    )
+    .unwrap();
+    assert_eq!(quorum.hash(), verified.hash());
+    assert_eq!(quorum.session(), key);
+    assert_eq!(quorum.epoch(), 0);
+    assert_eq!(quorum.height(), 42);
+    assert_eq!(quorum.value(), batch.value_id());
+    // The hook refuses: no attestation, whatever the batch says.
+    assert_eq!(
+        attest(
+            &verified,
+            &certificate,
+            &batch.encode(),
+            |_, _, _| false,
+            bare_hash_record
+        )
+        .err(),
+        Some(QuorumError::Certificate)
+    );
+    // A batch the certificate does not decide.
+    let other = batch_with(vec![verified.hash().to_vec(), vec![9; 40]]);
+    assert_eq!(
+        attest(
+            &verified,
+            &certificate,
+            &other.encode(),
+            accept,
+            bare_hash_record
+        )
+        .err(),
+        Some(QuorumError::ValueMismatch)
+    );
+    // A decided batch naming nothing, or another settlement.
+    for (records, expected) in [
+        (Vec::new(), QuorumError::Unbound),
+        (
+            vec![verified.hash().to_vec(), [8; 32].to_vec()],
+            QuorumError::Unbound,
+        ),
+        (vec![[8; 32].to_vec()], QuorumError::Mismatch),
+    ] {
+        let batch = batch_with(records);
+        let certificate = CommitCertificate {
+            bytes: vec![0xC3; 96],
+            value_commitment: batch.value_id(),
+            height: 42,
+        };
+        assert_eq!(
+            attest(
+                &verified,
+                &certificate,
+                &batch.encode(),
+                |_, _, _| true,
+                bare_hash_record
+            )
+            .err(),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        attest(&verified, &certificate, b"VRB1", accept, bare_hash_record).err(),
+        Some(QuorumError::Batch)
+    );
+}

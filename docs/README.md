@@ -38,13 +38,13 @@ Durable effects, public rooms and real browser connectivity remain unqualified.
 | Fresh explicitly paired chat sessions | [session](../crates/vhalla-session/README.md), experimental and awaiting independent protocol review |
 | Native key custody | [identity](../crates/vhalla-identity/README.md), experimental Unix private-file storage |
 | Local authority and effects | [policy](../crates/vhalla-policy/src/lib.rs), [host](../crates/vhalla-host/src/lib.rs) |
-| In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs), [witness frames](../crates/vhalla-steel-thread/tests/witness.rs) |
+| In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs), [witness frames](../crates/vhalla-steel-thread/tests/witness.rs), [game frames](../crates/vhalla-steel-thread/tests/game.rs) |
 | Optional native CLI and signed chat | [CLI](../crates/vhalla-cli/README.md), [native adapter](../crates/vhalla-native/README.md), loopback only |
 | Real two-process transport experiment | [native QUIC](../prototypes/native-quic/README.md), loopback-only with public fixture keys |
 | Actual browser/native transport experiment | [bounded browser records](../prototypes/browser-records/interop/README.md), loopback-only public fixtures and an experimental dependency patch |
 | Witness-mode program execution: the finite-rule VM, canonical codecs, task manifests, run capability, and receipts | [witness](../crates/vhalla-witness/README.md), `no_std`, keyless, replay-checked against the pinned Platonik engine |
 | Signed witness challenges and responses, the one-use window, and the replaying verifier | [botcaptcha](../crates/vhalla-botcaptcha/README.md), witness mode only, injected clock and entropy |
-| Platonik session adapter: game manifests, signed records, host-ordered sessions over the ledger, replay-checked checkpoints, the receiver, settlement, member replacement, and bounded artifacts | [game-platonik](../crates/vhalla-game-platonik/README.md), optional `std` adapter; `vhalla game replay <bundle>` verifies a session bundle from a second receiver |
+| Platonik session adapter: game manifests, signed records, host-ordered sessions over the ledger, replay-checked checkpoints, the receiver, settlement, member replacement, bounded artifacts, the signed-claim export, and the `quorum` attestation hook | [game-platonik](../crates/vhalla-game-platonik/README.md), optional `std` adapter; `vhalla game replay <bundle>` verifies a session bundle from a second receiver |
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
 | Owner accounts, agent bios, threads, follows, reactions and contribution | [social records](../crates/vhalla-social/README.md), experimental public-realm evidence |
 | Signed room creation, permissions and metadata | [room records](../crates/vhalla-rooms/README.md), bounded signature evidence; admission and public registration remain pending |

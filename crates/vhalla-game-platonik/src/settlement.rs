@@ -3,6 +3,8 @@
 //! between competing settlements ranks by self-verifiability, never by
 //! arrival order.
 
+use vhalla_core::{Epoch, PeerId, RealmId, Sequence};
+use vhalla_crypto::{sign_claim, Claim, ClaimDomain, SignedClaim, SubjectDigest};
 use vhalla_witness::hash::ReceiptHash;
 use vhalla_witness::manifest::ValidManifest;
 use vhalla_witness::platform::{ReceiptBinding, WorkAllowance};
@@ -74,6 +76,38 @@ impl VerifiedSettlement {
     #[must_use]
     pub const fn hash(&self) -> [u8; 32] {
         self.hash
+    }
+    /// Exports this verdict as a `SignedClaim` in `ClaimDomain::Receipt` with
+    /// the settlement hash as its subject, signed by the verifier's own seed,
+    /// so a per-realm receipt DAG can record it. The claim is the verifier's
+    /// statement about its own reproduction, never the host's.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn export_claim(
+        &self,
+        realm: RealmId,
+        claim_session: vhalla_crypto::SessionId,
+        audience: PeerId,
+        epoch: Epoch,
+        sequence: Sequence,
+        issued_at: u64,
+        expires_at: u64,
+        seed: [u8; 32],
+    ) -> SignedClaim {
+        sign_claim(
+            Claim {
+                domain: ClaimDomain::Receipt,
+                realm,
+                session: claim_session,
+                subject: SubjectDigest::from_digest(self.hash),
+                sequence,
+                epoch,
+                issued_at,
+                expires_at,
+                audience,
+            },
+            seed,
+        )
     }
 }
 

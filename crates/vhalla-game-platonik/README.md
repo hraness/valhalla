@@ -15,8 +15,16 @@ over `platform::run_observed`), host-ordered sessions over `vhalla-ledger` with
 the two-phase live bind, checkpoints, the receiver, settlement with
 order-independent resolution, pause and member replacement across an epoch
 bump, fills, cancellation, and the bounded artifact assembly with its browser
-record mapping. The `quorum` hook, the signed-claim export, and the
-steel-thread evidence kind are stage 5.
+record mapping. Stage 5 lands `VerifiedSettlement::export_claim` (a
+`SignedClaim` in `ClaimDomain::Receipt` whose subject is the settlement hash,
+signed by the verifier's own seed), the `quorum` feature (`quorum::attest`: a
+rooms-consensus `CommitCertificate` checked through the `Adapter::absorb`
+verify-hook signature, required to decide the batch it is presented with, and
+a caller-supplied locator for the settlement hash the decided batch carries),
+and `KIND_GAME_SETTLEMENT` with `GameSession` in `vhalla-steel-thread`.
+`Authority::Quorum` at session open stays reserved: rooms and social records
+have no game commitment kind yet, so the locator is the caller's until one
+exists.
 
 ## What a verified checkpoint proves
 
@@ -52,6 +60,10 @@ arrival order. Neither is money, finality, or host authority.
 - The `oracle` feature pulls the pinned `platonik-core` as converter source
   and test oracle, never as a receiver requirement. `cargo tree -e normal`
   shows no `platonik-core` on the default path.
+- The `quorum` feature pulls `vhalla-rooms-consensus` for `CommitCertificate`
+  and `Batch` only; the certificate check is the caller's hook, never this
+  crate's, and a certificate never replaces reproduction: `quorum::attest`
+  takes a `VerifiedSettlement` that replay already produced.
 - Every decoder checks its byte bound first, then the version, reads with
   bounds-checked slices, and rejects trailing bytes. The widest `Seal` (512
   ordered digests) and the widest `Reveal` (a full task manifest) both fit
