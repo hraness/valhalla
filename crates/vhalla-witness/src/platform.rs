@@ -217,6 +217,19 @@ pub fn run(
     assignment: &Assignment,
     capability: RunCapability,
 ) -> Result<WitnessRun, RunRefused> {
+    run_observed(manifest, assignment, capability, &mut ())
+}
+
+/// [`run`] with an observer that sees every frame of every case in manifest
+/// order, including each case's tick-0 loading frame, so a caller can chain
+/// per-frame digests without a second run. The observer changes nothing:
+/// results, hashes, and ledgers are identical to [`run`].
+pub fn run_observed<O: vm::Observer>(
+    manifest: &ValidManifest,
+    assignment: &Assignment,
+    capability: RunCapability,
+    observer: &mut O,
+) -> Result<WitnessRun, RunRefused> {
     if capability.manifest != manifest.hash() {
         return Err(RunRefused::Manifest);
     }
@@ -231,7 +244,7 @@ pub fn run(
     let mut useful = 0_u64;
     let mut total = 0_u64;
     for case in manifest.cases() {
-        let result = vm::run(manifest.world(), assignment, case, &mut ())?;
+        let result = vm::run(manifest.world(), assignment, case, observer)?;
         let mut delivered = 0_u64;
         for beacon in &result.final_state.beacons {
             delivered = delivered

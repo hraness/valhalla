@@ -2,7 +2,7 @@
 title: Valhalla Platonik session adapter
 type: plan
 area: valhalla-platonik-session-adapter
-status: proposed
+status: in-progress
 tags:
   - games
   - verification
@@ -1038,3 +1038,19 @@ Applied from the plan review; each line is the finding id, its lens, and what ch
   bullet, the decoder threat row, and a new `Fuzzing` decision row were updated.
 
 ## Execution status
+
+### 2026-09-17: stage 0 lands and spike 1 passes
+
+Owner: this task (Ben's authority, the Claude session that wrote the plan); independent reviewer:
+the two-skeptic adversarial workflow recorded under **Review findings**, with a human review still
+required at PR time. `vhalla-witness` gained `platform::run_observed`; `run` delegates to it and
+the observed and plain runs are proven identical over the 28 vectors (see the witness plan's
+2026-09-17 deviation entry). `prototypes/game-trace-cost` hashes every frame through the seam:
+`FrameDigest` over tick, complete flag, and the encoded state (never the ledger), chained into a
+`TraceHead` seeded with the world digest, `ProgramHash`, and case index. Numbers (release): 1,542
+frames and 499,094 state bytes over the corpus; native p95 0.11 ms and worst case (the 64 KiB
+16-cell, 128-tick vector) 4.4 ms; the whole corpus under wasm32 in 15.0 ms with a 0.3 MiB heap;
+trace heads identical on native and wasm32 and every output hash unchanged under observation.
+Spike 1 passes against its criteria (native p95 at most 100 ms, wasm at most 500 ms, heap at most
+32 MiB) with two orders of magnitude to spare, so v1 hashes every frame; the fallback of hashing
+only at seal ticks is not needed. Stage 1 follows.

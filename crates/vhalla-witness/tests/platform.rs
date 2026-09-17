@@ -189,3 +189,74 @@ fn manifest_validation_refuses_bad_slots_cases_contracts_and_loading_work() {
         Some(ManifestError::World(_))
     ));
 }
+
+struct Counting {
+    frames: u32,
+    tick_zero: u32,
+    last_tick: u32,
+}
+
+impl vhalla_witness::vm::Observer for Counting {
+    fn frame(&mut self, frame: &vhalla_witness::vm::FrameView<'_>) {
+        self.frames += 1;
+        if frame.tick == 0 {
+            self.tick_zero += 1;
+        }
+        self.last_tick = frame.tick;
+    }
+}
+
+#[test]
+fn run_observed_sees_every_frame_and_changes_nothing() {
+    for (path, vector) in common::vectors() {
+        let label = path.display();
+        let valid =
+            ValidManifest::validate(codec::decode_manifest(&vector.manifest).unwrap()).unwrap();
+        let assignment = valid
+            .assign(codec::decode_candidate(&vector.assignment).unwrap())
+            .unwrap();
+        let program = ProgramHash::of(&codec::encode_assignment(&assignment));
+        let allowance = WorkAllowance {
+            max_total: valid.fuel_total(),
+        };
+        let mut counting = Counting {
+            frames: 0,
+            tick_zero: 0,
+            last_tick: 0,
+        };
+        let observed = platform::run_observed(
+            &valid,
+            &assignment,
+            RunCapability::mint(valid.hash(), program, allowance, RunRole::Replay),
+            &mut counting,
+        )
+        .unwrap();
+        let plain = platform::run(
+            &valid,
+            &assignment,
+            RunCapability::mint(valid.hash(), program, allowance, RunRole::Replay),
+        )
+        .unwrap();
+        assert_eq!(observed.cases(), plain.cases(), "{label}");
+        assert_eq!(observed.output_hash(), plain.output_hash(), "{label}");
+        assert_eq!(
+            counting.tick_zero,
+            valid.cases().len() as u32,
+            "{label}: one loading frame per case"
+        );
+        let expected: u32 = observed
+            .cases()
+            .iter()
+            .map(|case| case.ticks_completed + 1)
+            .sum();
+        assert_eq!(
+            counting.frames, expected,
+            "{label}: one frame per completed tick plus loading"
+        );
+        assert_eq!(
+            counting.last_tick,
+            observed.cases().last().unwrap().ticks_completed,
+            "{label}"
+        );
+    }
+}

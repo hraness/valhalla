@@ -11,6 +11,7 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `witness-contract-spike` | Spike 4 of the witness platform plan: the delivered-sparks floor against working, activation-budget-bounded padded, and idle programs on every bridge-v1 fixture; shows why a transfers-plus-messages floor admits turn-only spinners |
 | `witness-wasm-parity` | Spike 3 of the witness platform plan: replays the committed witness vectors natively and under `wasm32-unknown-unknown` through wasm-bindgen and Node, and compares every rendering with the committed expectations (`verify.sh`) |
 | `witness-vectors` | Independent Python `struct`/`hashlib` oracle for the witness-v1 encodings: `generate.py` writes `/vectors/witness-v1.json`, `verify-vectors.py` re-derives every digest in CI, and the crates assert the hex verbatim |
+| `game-trace-cost` | Spike 1 of the Platonik session adapter plan: a hashing frame observer over `platform::run_observed` chaining per-frame digests into per-case trace heads over the 28 witness vectors, timed natively and under wasm32 (`verify.sh`) |
 | `ledger` | Signed content-addressed event DAG, equivocation, heads, retention |
 | `game-session` | Single-host versus quorum checkpoint authority |
 | `settlement` | Voucher consumption, quorum finality, and light-client continuity |
