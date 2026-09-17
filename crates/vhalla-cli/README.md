@@ -420,10 +420,38 @@ One workable setup for a group that trusts each other's machines:
    submissions through `rooms submit`/`rooms tui` against any member's
    `NODE_HOME`.
 
+A running node holds `NODE_HOME/app/rooms` under a lifetime writer lock,
+so the plain `rooms` reads (`list`, `show`, `account`, …) return `Busy`
+against it while the node is up. The live read path is the caller-owned
+replica: `vhalla rooms status SOCIAL_STORE REPLICA_HOME REALM NODE_HOME
+--config NODE_HOME/node.json` syncs the replica from the node's journal
+— locking nothing the node holds — and reports committed `height`, the
+room listing and every local submission marker's resolution in one JSON
+object. `rooms pending` takes the same shape when only marker states
+matter, and `rooms list SOCIAL_STORE REPLICA_HOME/rooms REALM` reads the
+replica's materialized store directly. The same REPLICA_HOME persists
+between calls; a status run never touches the live node's stores.
+
 Size the validator set for absences: quorum is strictly `> 2/3` of total
 power, so an equal-power set of three tolerates **zero** offline members —
 four members tolerate exactly one. `network-init` and `node-check` print
 `quorum_power` and `absent_power_tolerated` for the configured set.
+
+Validator-set rotation is a two-command operator/member flow — a friend
+joining with voting power, or a member leaving, never touches decided
+history. The operator runs `vhalla rooms network-extend network.json
+network-v2.json --from HEIGHT --validators KEY64:POWER,...`, which copies
+every shared field and appends one complete replacement set activating at
+the future `HEIGHT` (never overwriting OUT). Each incumbent runs `vhalla
+rooms node-update NODE_HOME --network network-v2.json`: it preserves the
+local `node_key`, `port`, `listen` and `peers`, refuses any change to the
+genesis-fixed fields (realm, directory, policy, limits, eligible — those
+are the `genesis` fingerprint and still change only via `rooms eligible`
+for the award-source set), reads the committed height from the journal,
+and rejects edits to activations at or below it. A restarted node votes
+under the new set from `HEIGHT` on; a joiner scaffolds straight onto
+`network-v2.json` with `node-init`, whose `node_key_votes_from` then
+reports the activation height.
 
 A non-loopback `listen` keeps malachite's default per-IP connection
 bound rather than the single-host ceiling lift used for local test
