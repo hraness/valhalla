@@ -13,14 +13,9 @@ bounds written in each harness.
 
 | Crate | Harnesses | Properties proven |
 | --- | --- | --- |
-| `vhalla-journal` | `mod proofs` in `src/lib.rs` | `Bundle` codec round-trip with content-identity preservation; decoder totality over small bounded inputs; byte-bound rejections |
+| `vhalla-journal` | `mod proofs` in `src/lib.rs` | `Bundle::decode` rejects inputs past the scratch bound without panicking |
 
-Cryptographic hashes are replaced by deterministic mixer stubs
-(`#[kani::stub]`, enabled in the workspace `Cargo.toml`
-`[workspace.metadata.kani]`). No proven property depends on collision resistance; a
-weaker stub only makes the model more adversarial.
-
-Ledger admission invariants (tip advance, atomicity, per-actor monotonicity, duplicate and capacity rejection) are handled in the unbounded Verus model below. Bounded Kani harnesses on the production `BTreeMap<EventDigest, Event>` implementation proved intractable on this toolchain: CBMC unwinds the standard-library `find_key_index` and node-scan loops far beyond a useful bound even for one- or two-element maps, so the trade-off favors the Verus abstraction for admission logic and Kani for the self-contained codec.
+Ledger admission invariants (tip advance, atomicity, per-actor monotonicity, duplicate and capacity rejection) are handled in the unbounded Verus model below. The journal Kani proof checks that the bundle decoder rejects oversized inputs without panicking. Bounded Kani harnesses on the production `BTreeMap<EventDigest, Event>` implementation proved intractable on this toolchain: CBMC unwinds the standard-library `find_key_index` and node-scan loops far beyond a useful bound even for one- or two-element maps, so the trade-off favors the Verus abstraction for admission logic and a small, fast Kani check for the self-contained codec.
 
 Run:
 
