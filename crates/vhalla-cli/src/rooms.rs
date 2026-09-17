@@ -21,7 +21,6 @@ use vhalla_rooms::{
 };
 use vhalla_rooms_store::Store as RoomStore;
 use vhalla_social::{control::ControlView, AgentId, OwnerId, RecordId};
-use vhalla_social_store::Store as SocialStore;
 
 pub const HELP: &str = "Experimental local room directory (build: --features experimental-rooms):
 vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECONDS]
@@ -193,14 +192,20 @@ fn rooms_error(error: RegistryError) -> String {
     format!("registry: {error:?}")
 }
 
-fn open_social(args: &Args) -> Result<SocialStore, String> {
-    SocialStore::open(
+/// The committed social snapshot under a shared hold: owner commands keep
+/// their exclusive lock while these readers only need the pinned tip.
+fn read_social(args: &Args) -> Result<vhalla_social::archive::Archive, String> {
+    vhalla_social_store::read_archive(
         &args.social_store,
         args.realm,
         vhalla_social::archive::Limits::default(),
-        None,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| match e {
+        vhalla_social_store::Error::RecoveryRequired => {
+            "social store requires explicit social recover first".into()
+        }
+        e => e.to_string(),
+    })
 }
 
 fn open_rooms(args: &Args) -> Result<RoomStore, String> {
@@ -394,15 +399,126 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             ("directory", json::string(args.get(0)?)),
         ]));
     }
-    let social = open_social(&args)?;
-    if social.recovery_required().map_err(|e| e.to_string())? {
-        return Err("social store requires explicit social recover first".into());
+    // Pure registry projections read the committed snapshot under a shared
+    // hold: they neither wait behind a long-lived writer (TUI, replica
+    // service) nor take a lock a writer would queue behind. A retained
+    // intent or torn temps surface as the same recovery error the
+    // exclusive path reports.
+    if matches!(
+        args.command.as_str(),
+        "quote" | "list" | "search" | "show" | "account" | "proof" | "evidence"
+    ) {
+        let registry =
+            vhalla_rooms_store::read_registry(&args.rooms_store).map_err(|e| match e {
+                vhalla_rooms_store::Error::RecoveryRequired => {
+                    "retained publication requires explicit rooms recover first".to_string()
+                }
+                e => e.to_string(),
+            })?;
+        return emit(match args.command.as_str() {
+            "quote" => {
+                args.count(1)?;
+                let owner = OwnerId::from_bytes(hex32(args.get(0)?)?);
+                let (slot, cost) = registry.quote(owner).map_err(rooms_error)?;
+                let account = registry.account(owner);
+                json::object(vec![
+                    ("slot", slot.to_string()),
+                    ("cost", cost.to_string()),
+                    ("earned", account.earned.to_string()),
+                    ("spent", account.spent.to_string()),
+                    ("lifetimeSlots", account.lifetime_slots.to_string()),
+                ])
+            }
+            "list" | "search" => {
+                let query = if args.command == "list" {
+                    args.count(0)?;
+                    ""
+                } else {
+                    args.count(1)?;
+                    args.get(0)?
+                };
+                let page = registry
+                    .search(query, args.limit, vhalla_rooms::registry::MAX_ROOMS)
+                    .map_err(rooms_error)?;
+                let rooms_json: Vec<String> = page
+                    .rooms
+                    .iter()
+                    .map(|room| {
+                        json::object(vec![
+                            ("slug", json::string(room.slug().as_str())),
+                            ("genesis", json::id(room.genesis().as_bytes())),
+                            ("owner", json::id(room.owner().as_bytes())),
+                            ("description", json::string(room.description().as_str())),
+                            ("createdAt", room.created_at().to_string()),
+                        ])
+                    })
+                    .collect();
+                json::object(vec![
+                    ("rooms", json::array(rooms_json)),
+                    ("partial", page.partial.to_string()),
+                    ("retained", page.retained.to_string()),
+                    ("revision", page.revision.to_string()),
+                ])
+            }
+            "show" => {
+                args.count(1)?;
+                let slug = Slug::new(args.get(0)?).map_err(|e| format!("slug: {e:?}"))?;
+                let room = registry
+                    .room(&slug)
+                    .ok_or("room missing from this directory")?;
+                json::object(vec![
+                    ("slug", json::string(room.slug().as_str())),
+                    ("genesis", json::id(room.genesis().as_bytes())),
+                    ("owner", json::id(room.owner().as_bytes())),
+                    ("agent", json::id(room.intent().agent.as_bytes())),
+                    ("description", json::string(room.description().as_str())),
+                    ("slot", room.intent().slot.to_string()),
+                    ("charge", room.intent().charge.to_string()),
+                    ("head", json::id(room.head().as_bytes())),
+                    ("revisions", room.revisions().len().to_string()),
+                    ("createdAt", room.created_at().to_string()),
+                    ("archived", room.archived().to_string()),
+                ])
+            }
+            "account" => {
+                args.count(1)?;
+                let owner = OwnerId::from_bytes(hex32(args.get(0)?)?);
+                let account = registry.account(owner);
+                json::object(vec![
+                    ("earned", account.earned.to_string()),
+                    ("spent", account.spent.to_string()),
+                    ("lifetimeSlots", account.lifetime_slots.to_string()),
+                ])
+            }
+            "proof" => {
+                args.count(1)?;
+                let id = RoomRecordId::from_bytes(hex32(args.get(0)?)?);
+                let bytes = registry
+                    .source_proof(id)
+                    .ok_or("no retained record carries that id")?;
+                json::object(vec![
+                    ("record", json::id(id.as_bytes())),
+                    ("bytes", json::id(&bytes)),
+                ])
+            }
+            _ => {
+                args.count(1)?;
+                let id = RecordId::from_bytes(hex32(args.get(0)?)?);
+                let bytes = registry
+                    .evidence_proof(id)
+                    .ok_or("no retained award evidence carries that id")?;
+                json::object(vec![
+                    ("record", json::id(id.as_bytes())),
+                    ("bytes", json::id(&bytes)),
+                ])
+            }
+        });
     }
+    let archive = read_social(&args)?;
     let mut rooms = open_rooms(&args)?;
     if args.command != "recover" && rooms.recovery_required().map_err(|e| e.to_string())? {
         return Err("retained publication requires explicit rooms recover first".into());
     }
-    let archive = social.archive();
     let output = match args.command.as_str() {
         "grant" => {
             args.count(6)?;
@@ -413,7 +529,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
                 directory: registry.directory(),
                 realm: args.realm,
                 owner,
-                social_control: owner_head(archive, args.now, owner, &owner_key)?,
+                social_control: owner_head(&archive, args.now, owner, &owner_key)?,
                 controller_key: owner_key.public_key(),
                 previous: registry.authority().head(owner),
                 sequence: registry.authority().sequence(owner),
@@ -428,7 +544,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             let record = owner_key
                 .sign_room_control(control)
                 .map_err(|e| format!("sign: {e:?}"))?;
-            let (applied, mut fields) = apply_and_commit(&mut rooms, archive, &record, args.now)?;
+            let (applied, mut fields) = apply_and_commit(&mut rooms, &archive, &record, args.now)?;
             debug_assert_eq!(applied, Applied::Control);
             fields.push(("record", json::id(record.id().as_bytes())));
             json::object(fields)
@@ -436,7 +552,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         "collect" => {
             args.count(0)?;
             let mut candidate = rooms.registry().clone();
-            let view = ControlView::new(archive, args.now);
+            let view = ControlView::new(&archive, args.now);
             let (mut awarded, mut duplicate) = (0u64, 0u64);
             for record in archive.records() {
                 match candidate.award(record, &view, args.now) {
@@ -457,19 +573,6 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             }
             json::object(fields)
         }
-        "quote" => {
-            args.count(1)?;
-            let owner = OwnerId::from_bytes(hex32(args.get(0)?)?);
-            let (slot, cost) = rooms.registry().quote(owner).map_err(rooms_error)?;
-            let account = rooms.registry().account(owner);
-            json::object(vec![
-                ("slot", slot.to_string()),
-                ("cost", cost.to_string()),
-                ("earned", account.earned.to_string()),
-                ("spent", account.spent.to_string()),
-                ("lifetimeSlots", account.lifetime_slots.to_string()),
-            ])
-        }
         "create" => {
             args.count(8)?;
             let owner_key = identity(args.get(0)?)?;
@@ -486,7 +589,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
                 agent: AgentId::from_bytes(hex32(args.get(3)?)?),
                 owner_key: owner_key.public_key(),
                 agent_key: agent_key.public_key(),
-                social_control: owner_head(archive, args.now, owner, &owner_key)?,
+                social_control: owner_head(&archive, args.now, owner, &owner_key)?,
                 room_control: registry
                     .authority()
                     .head(owner)
@@ -506,7 +609,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             let record = agent_key
                 .sign_room_proposal(permit)
                 .map_err(|e| format!("sign: {e:?}"))?;
-            let (applied, mut fields) = apply_and_commit(&mut rooms, archive, &record, args.now)?;
+            let (applied, mut fields) = apply_and_commit(&mut rooms, &archive, &record, args.now)?;
             let genesis = match applied {
                 Applied::Created(id) | Applied::Existing(id) => id,
                 _ => return Err("unexpected apply result".into()),
@@ -531,7 +634,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
                 genesis: room.genesis(),
                 previous: room.head(),
                 owner: room.owner(),
-                social_control: owner_head(archive, args.now, room.owner(), &owner_key)?,
+                social_control: owner_head(&archive, args.now, room.owner(), &owner_key)?,
                 controller_key: owner_key.public_key(),
                 expires_at,
                 nonce: nonce()?,
@@ -549,97 +652,10 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             let record = owner_key
                 .sign_room_update(update)
                 .map_err(|e| format!("sign: {e:?}"))?;
-            let (applied, mut fields) = apply_and_commit(&mut rooms, archive, &record, args.now)?;
+            let (applied, mut fields) = apply_and_commit(&mut rooms, &archive, &record, args.now)?;
             debug_assert!(matches!(applied, Applied::Updated(_)));
             fields.push(("record", json::id(record.id().as_bytes())));
             json::object(fields)
-        }
-        "list" | "search" => {
-            let query = if args.command == "list" {
-                args.count(0)?;
-                ""
-            } else {
-                args.count(1)?;
-                args.get(0)?
-            };
-            let page = rooms
-                .registry()
-                .search(query, args.limit, vhalla_rooms::registry::MAX_ROOMS)
-                .map_err(rooms_error)?;
-            let rooms_json: Vec<String> = page
-                .rooms
-                .iter()
-                .map(|room| {
-                    json::object(vec![
-                        ("slug", json::string(room.slug().as_str())),
-                        ("genesis", json::id(room.genesis().as_bytes())),
-                        ("owner", json::id(room.owner().as_bytes())),
-                        ("description", json::string(room.description().as_str())),
-                        ("createdAt", room.created_at().to_string()),
-                    ])
-                })
-                .collect();
-            json::object(vec![
-                ("rooms", json::array(rooms_json)),
-                ("partial", page.partial.to_string()),
-                ("retained", page.retained.to_string()),
-                ("revision", page.revision.to_string()),
-            ])
-        }
-        "show" => {
-            args.count(1)?;
-            let slug = Slug::new(args.get(0)?).map_err(|e| format!("slug: {e:?}"))?;
-            let room = rooms
-                .registry()
-                .room(&slug)
-                .ok_or("room missing from this directory")?;
-            json::object(vec![
-                ("slug", json::string(room.slug().as_str())),
-                ("genesis", json::id(room.genesis().as_bytes())),
-                ("owner", json::id(room.owner().as_bytes())),
-                ("agent", json::id(room.intent().agent.as_bytes())),
-                ("description", json::string(room.description().as_str())),
-                ("slot", room.intent().slot.to_string()),
-                ("charge", room.intent().charge.to_string()),
-                ("head", json::id(room.head().as_bytes())),
-                ("revisions", room.revisions().len().to_string()),
-                ("createdAt", room.created_at().to_string()),
-                ("archived", room.archived().to_string()),
-            ])
-        }
-        "account" => {
-            args.count(1)?;
-            let owner = OwnerId::from_bytes(hex32(args.get(0)?)?);
-            let account = rooms.registry().account(owner);
-            json::object(vec![
-                ("earned", account.earned.to_string()),
-                ("spent", account.spent.to_string()),
-                ("lifetimeSlots", account.lifetime_slots.to_string()),
-            ])
-        }
-        "proof" => {
-            args.count(1)?;
-            let id = RoomRecordId::from_bytes(hex32(args.get(0)?)?);
-            let bytes = rooms
-                .registry()
-                .source_proof(id)
-                .ok_or("no retained record carries that id")?;
-            json::object(vec![
-                ("record", json::id(id.as_bytes())),
-                ("bytes", json::id(&bytes)),
-            ])
-        }
-        "evidence" => {
-            args.count(1)?;
-            let id = RecordId::from_bytes(hex32(args.get(0)?)?);
-            let bytes = rooms
-                .registry()
-                .evidence_proof(id)
-                .ok_or("no retained award evidence carries that id")?;
-            json::object(vec![
-                ("record", json::id(id.as_bytes())),
-                ("bytes", json::id(&bytes)),
-            ])
         }
         "recover" => {
             args.count(0)?;

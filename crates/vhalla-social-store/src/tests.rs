@@ -376,6 +376,47 @@ fn child_lock_probe() {
 }
 
 #[test]
+fn shared_reader_waits_out_a_writers_lock_and_reads_the_fresh_tip() {
+    let (temp, mut store, records) = setup();
+    let path = temp.store();
+    let reader = std::thread::spawn(move || read_archive(path, REALM, Limits::default()));
+    // The writer still holds its exclusive lock: publish a new tip while
+    // the reader is parked on the shared acquire, then release — the
+    // reader must observe the commit, never a torn or stale pair.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut candidate = store.archive().clone();
+    add(&mut candidate, &records[2]);
+    store.commit(candidate.clone(), store.pin()).unwrap();
+    drop(store);
+    let archive = reader.join().unwrap().unwrap();
+    assert_eq!(archive.root(), candidate.root());
+    assert!(archive.get(id(&records[2])).is_some());
+}
+
+#[test]
+fn shared_readers_proceed_concurrently_and_match_the_committed_tip() {
+    let (temp, store, _) = setup();
+    let tip = store.archive().root();
+    drop(store);
+    let mut readers = Vec::new();
+    for _ in 0..4 {
+        let path = temp.store();
+        readers.push(std::thread::spawn(move || {
+            read_archive(path, REALM, Limits::default())
+        }));
+    }
+    for reader in readers {
+        assert_eq!(reader.join().unwrap().unwrap().root(), tip);
+    }
+}
+
+#[test]
+fn shared_reader_on_a_missing_store_fails_closed() {
+    let temp = Temp::new();
+    assert!(read_archive(temp.store(), REALM, Limits::default()).is_err());
+}
+
+#[test]
 fn external_exact_anchor_rejects_rollback_and_forward_renumbering() {
     let (temp, mut store, records) = setup();
     let old = store.archive().clone();
