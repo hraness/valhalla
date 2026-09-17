@@ -251,9 +251,14 @@ the two-phase live bind, the reveal checks, the input gate, seal planning and
 commit over `vhalla-ledger`, and the receiver with budgets and the prefix
 check. Two end-to-end sessions (a fixture replay and a live session with two
 seals) verify at one receiver, a lying host is refused with the seal retained,
-and equivocation freezes its author. Slice 5's core evidence now exists; the
-settlement, pause and replace, and artifact stages remain before the row
-closes.
+and equivocation freezes its author. Stage 3 followed: settlement admitted only by
+reproducing the receipt, ranked by self-verifiability in either arrival order,
+pause on a missing member with a sealed `Replace` resuming in the next epoch,
+fills carrying their fallback program, cancellation, spike 4 (18 sessions with
+a replace at a random seal, every result equal to the plain run), the
+adversarial mutation corpus, and the stable-toolchain fuzz harness prototype;
+`prototypes/game-session` and `prototypes/settlement` are deleted. The
+bounded-artifact stage remains before the row closes.
 
 ### Witness platform crates — 2026-09-16
 

@@ -93,6 +93,8 @@ pub enum Rejection {
     CaseFuelSlack,
     ReplayKindInput,
     UnknownTarget,
+    FillHashMismatch,
+    NotPaused,
     SealSegment,
     CompetingSeals,
     SealThroughTick,
@@ -141,6 +143,9 @@ pub enum OpenError {
 
 /// The closed commit set and the digest of the `BindClose` that closed it.
 type ClosedCommits = (Vec<(u16, [u8; 32])>, GameEventDigest);
+
+/// The final segment's manifest, candidate programs, and through tick.
+pub type FinalPlan = (TaskManifest, Vec<(u16, Program)>, u32);
 
 /// A pending (admitted, unsealed) event.
 #[derive(Clone, Debug)]
@@ -205,7 +210,11 @@ pub struct Session {
     commits: BTreeMap<u16, [u8; 32]>,
     close: Option<ClosedCommits>,
     reveals: BTreeMap<u16, (Program, [u8; 32])>,
-    fills: BTreeMap<u16, ProgramHash>,
+    fills: BTreeMap<u16, (ProgramHash, Program)>,
+    epoch_orders: u64,
+    missing_slot: Option<u16>,
+    final_plan: Option<FinalPlan>,
+    settled: Option<Verdict>,
     revealed: Option<TaskManifest>,
     inputs: Vec<AdmittedInput>,
     cases: Vec<CaseTrack>,
@@ -363,6 +372,10 @@ impl Session {
             close: None,
             reveals: BTreeMap::new(),
             fills: BTreeMap::new(),
+            epoch_orders: 0,
+            missing_slot: None,
+            final_plan: None,
+            settled: None,
             revealed: None,
             inputs: Vec::new(),
             cases,
@@ -456,7 +469,7 @@ impl Session {
             .unwrap_or(0)
     }
     fn is_player(&self, key: &[u8; 32]) -> bool {
-        self.open.players.iter().any(|player| player.key == *key)
+        self.slot_owner.values().any(|owner| owner == key)
     }
     /// Admits one record carrying a game event. `Seal` events are validated
     /// but not applied: they return a `SealPlan` for the receiver to replay,
@@ -498,7 +511,11 @@ impl Session {
                 }
             }
         }
-        if matches!(self.state, State::Finished | State::Unresolved(_)) {
+        let paused = self.state == State::Unresolved(ForkReason::MemberMissing)
+            && self.missing_slot.is_some();
+        if matches!(self.state, State::Finished | State::Unresolved(_))
+            && !(paused && event.author == self.host)
+        {
             return Err(Rejection::Terminal);
         }
         // Claim table: duplicate, equivocation, monotone sequence.
@@ -655,7 +672,9 @@ impl Session {
                 if !from_host {
                     return Err(Rejection::NotHost);
                 }
-                if !matches!(self.state, State::Running(_) | State::Revealed) {
+                let paused = self.state == State::Unresolved(ForkReason::MemberMissing)
+                    && self.missing_slot == Some(*slot);
+                if !matches!(self.state, State::Running(_) | State::Revealed) && !paused {
                     return Err(Rejection::WrongState);
                 }
                 if self.slot_owner.get(slot) != Some(old) {
@@ -722,9 +741,12 @@ impl Session {
                 self.state = State::Revealed;
             }
             EventBody::Fill {
-                slot, program_hash, ..
+                slot,
+                program_hash,
+                program,
+                ..
             } => {
-                self.fills.insert(*slot, *program_hash);
+                self.fills.insert(*slot, (*program_hash, program.clone()));
             }
             EventBody::Input { .. } | EventBody::Seal { .. } | EventBody::Replace { .. } => {}
         }
@@ -785,7 +807,7 @@ impl Session {
                         SlotRole::Open { fallback } => {
                             if let Some((_, salt)) = self.reveals.get(&game_slot.cell) {
                                 salts.push(*salt);
-                            } else if let Some(filled) = self.fills.get(&game_slot.cell) {
+                            } else if let Some((filled, _)) = self.fills.get(&game_slot.cell) {
                                 let _ = fallback;
                                 salts.push(fill_salt(*filled, game_slot.cell));
                             } else {
@@ -866,12 +888,8 @@ impl Session {
         for slot in self.manifest.open_slots() {
             if let Some((program, _)) = self.reveals.get(&slot) {
                 candidate.push((slot, program.clone()));
-            } else if self.fills.contains_key(&slot) {
-                // A filled slot's program is the fallback the manifest names;
-                // the template carries it only as a hash, so a fill needs the
-                // program bytes to have been published. v1 fills only slots
-                // whose fallback program is fixed in the revealed task.
-                return Err(Rejection::FillNotAllowed);
+            } else if let Some((_, program)) = self.fills.get(&slot) {
+                candidate.push((slot, program.clone()));
             } else {
                 return Err(Rejection::RevealIncomplete);
             }
@@ -904,7 +922,9 @@ impl Session {
         let Some(task) = &self.revealed else {
             return Err(Rejection::WrongState);
         };
-        if !matches!(self.state, State::Revealed | State::Running(_)) {
+        let paused = self.state == State::Unresolved(ForkReason::MemberMissing)
+            && self.missing_slot.is_some();
+        if !matches!(self.state, State::Revealed | State::Running(_)) && !paused {
             return Err(Rejection::WrongState);
         }
         if usize::from(*segment) != self.segments.len()
@@ -984,6 +1004,9 @@ impl Session {
             }
             m
         };
+        if paused && replace.map(|(slot, _, _)| Some(slot)) != Some(self.missing_slot) {
+            return Err(Rejection::NotPaused);
+        }
         Ok(SealPlan {
             seal: digest,
             host_sequence: event.sequence,
@@ -1048,7 +1071,13 @@ impl Session {
         self.through_tick = plan.through_tick;
         self.segments.push((plan.segment, plan.through_tick, hash));
         self.committed_seals.insert(plan.segment, plan.seal);
+        self.epoch_orders += plan.order.len() as u64;
         if plan.is_final {
+            self.final_plan = Some((
+                plan.manifest.clone(),
+                plan.candidate.clone(),
+                plan.through_tick,
+            ));
             self.state = State::Finished;
             return Ok(hash);
         }
@@ -1062,6 +1091,8 @@ impl Session {
             self.last_sealed_sequence.clear();
             self.claims.clear();
             self.pending.clear();
+            self.epoch_orders = 0;
+            self.missing_slot = None;
         } else {
             self.ledger
                 .append_seal(plan.host_sequence, hash)
@@ -1074,6 +1105,41 @@ impl Session {
     pub fn unresolve(&mut self, reason: ForkReason, evidence: &[[u8; 32]]) {
         self.retained.extend_from_slice(evidence);
         self.state = State::Unresolved(reason);
+    }
+    /// Pauses on a missing member of `slot` under `MissingMember::Pause`;
+    /// only a host `Replace` of that slot, sealed, resumes the session.
+    pub fn pause_missing(&mut self, slot: u16, evidence: &[[u8; 32]]) -> Result<(), Rejection> {
+        if self.manifest.limits.missing_member != MissingMember::Pause
+            || !self.slot_owner.contains_key(&slot)
+            || !matches!(self.state, State::Revealed | State::Running(_))
+        {
+            return Err(Rejection::NotPaused);
+        }
+        self.missing_slot = Some(slot);
+        self.unresolve(ForkReason::MemberMissing, evidence);
+        Ok(())
+    }
+    /// Admitted events sealed into the current epoch's ledger so far.
+    #[must_use]
+    pub const fn epoch_orders(&self) -> u64 {
+        self.epoch_orders
+    }
+    /// The final segment's manifest, candidate, and through tick, once sealed.
+    #[must_use]
+    pub const fn final_plan(&self) -> Option<&FinalPlan> {
+        self.final_plan.as_ref()
+    }
+    /// The settlement verdict this receiver holds, if any.
+    #[must_use]
+    pub const fn settled(&self) -> Option<&Verdict> {
+        self.settled.as_ref()
+    }
+    /// Records a verdict; the receiver decides admissibility and ranking.
+    pub fn record_verdict(&mut self, verdict: Verdict) {
+        if let Verdict::Unresolved { reason, .. } = &verdict {
+            self.state = State::Unresolved(*reason);
+        }
+        self.settled = Some(verdict);
     }
     /// The previous checkpoint hash, or zero for segment 0.
     #[must_use]
@@ -1135,4 +1201,27 @@ pub enum Admitted {
     Pending(GameEventDigest),
     /// A seal plan for the receiver to replay and then commit.
     Seal(Box<SealPlan>),
+}
+
+/// A settlement verdict this receiver holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// A result the receiver reproduced itself.
+    Result {
+        /// The final checkpoint.
+        checkpoint: CheckpointHash,
+        /// Whether the contract passed.
+        passed: bool,
+        /// Hash of the reproduced receipt.
+        receipt: [u8; 32],
+    },
+    /// An unresolved fork, host signed or receiver derived.
+    Unresolved {
+        /// Why.
+        reason: ForkReason,
+        /// Heads named.
+        heads: Vec<[u8; 32]>,
+        /// Evidence digests named.
+        evidence: Vec<[u8; 32]>,
+    },
 }

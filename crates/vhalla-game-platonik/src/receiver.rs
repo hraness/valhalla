@@ -41,6 +41,7 @@ pub enum ReceiverError {
     PrefixMismatch(u8),
     StatusRegressed(u8),
     LedgerOffset(u8),
+    Settle(crate::settlement::SettleError),
 }
 
 impl From<Rejection> for ReceiverError {
@@ -130,6 +131,22 @@ impl<E: GameEngine> Receiver<E> {
             budgets: BTreeMap::new(),
             memo: BTreeMap::new(),
         }
+    }
+    /// Advances the monotone step from another module.
+    pub(crate) fn advance_step(&mut self, step: u64) -> Result<(), ReceiverError> {
+        self.advance(step)
+    }
+    /// Charges one replay of `work` against the session's budget.
+    pub(crate) fn charge_replay(
+        &mut self,
+        session: &Session,
+        work: u64,
+    ) -> Result<(), ReceiverError> {
+        self.charge(session, work)
+    }
+    /// The engine.
+    pub(crate) const fn engine(&self) -> &E {
+        &self.engine
     }
     fn advance(&mut self, step: u64) -> Result<(), ReceiverError> {
         if step < self.step {

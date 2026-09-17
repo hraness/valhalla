@@ -1156,3 +1156,53 @@ tally alone, as the plan states, so which input survives is never a function of 
 terminal and sequence gates so two receivers reach the same verdict in either order; the prefix
 re-check reads the replay memo, so a re-sent seal costs no work; an `Input` whose link, valve, or
 cell does not exist in the revealed world is refused at admission as `UnknownTarget`.
+
+### 2026-09-17: stage 3 lands settlement, pause and replace, fills, and cancellation
+
+`settlement` (`Receiver::settle`, `VerifiedSettlement` with private fields and a `compile_fail`
+doctest, `SettleError` with one variant per refusal): a `Result` is admitted only when the host
+signed it, it names the accepted final checkpoint and the current epoch, the pending buffer is
+empty, the epoch's ledger height equals the sealed events plus the `Seal` events appended
+(`epoch_orders + seals_appended`, which is `Σ|order_j| + s`), and the receiver's own replay of the
+final segment produces a receipt the claimed one `matches` with `passed` equal; the replay is
+charged against the budget. An `Unresolved` is admitted when host signed; a `Cancelled` after the
+final checkpoint is `CancelAfterFinal`, a bare unresolved against a held reproduced result is
+`Outranked`, a differing verdict of equal rank is `Contradiction` and moves the session to
+`Unresolved { Equivocation }`, an identical resend is idempotent, and after a cancel nothing further
+is admitted. The session records its `Verdict`. Pause: `Session::pause_missing(slot, evidence)`
+under `MissingMember::Pause` moves to `Unresolved { MemberMissing }`; only host events are then
+admitted, and a seal whose order carries a `Replace` of that slot resumes the session with the epoch
+bump. `Fill` now carries the fallback program itself (its hash must equal both the declared fallback
+and `program_hash`), which lifts the v1 limitation the stage 2 entry recorded; the widest fill is
+about 1.3 KiB and the event bound is unchanged. Player membership follows the current slot owners,
+so a replacement key is a player from its epoch on. Tests: a reproduced result admitted once,
+outranking a late cancel and refusing wrong checkpoint, pass flag, receipt, epoch, and signer; a
+cancel before the final seal ending the session in either order; a paused session resumed by a
+sealed replace with epoch, ledger, and per-epoch height checks and the result settling in epoch 1;
+a pre-reveal fill binding the declared fallback with the fill salt in the seed. Spike 4
+(`tests/spike4.rs`): every fixture, three seeds each, random increasing seal ticks with one
+`Replace` at a random non-final seal and random own-cell inputs between seals: 18 sessions, 18
+epoch bumps, every session's receipt equal to the plain witness run of the same task and inputs.
+The rebind half of spike 4 stays a later-version question. `prototypes/game-session` and
+`prototypes/settlement` are deleted with README notes; the fuzz harness prototype and the
+adversarial mutation corpus are recorded in the next entry.
+
+### 2026-09-17: fuzz harness prototype and adversarial mutation corpus
+
+`prototypes/game-fuzz` is the stable-toolchain crate the decision record chose: an own
+`[workspace]`, a committed `Cargo.lock` with no `platonik-core`, a fixed xorshift generator, the
+mutation operators (bit flip, byte flip, truncate, extend, insert, random bytes), 74 committed
+corpus seeds under `corpus/<decoder>/` drawn from the frozen session vectors and from hand-built
+values covering `Authority::Quorum`, every `InnerKind`, every `ForkReason`, empty and eight-case
+checkpoints, a 128-block artifact manifest, an empty block, four sorted parents, `Replace`, and
+`Fill`, and nine `#[test]` harnesses (one per `wire` decoder and `GameRecord::decode`) that run
+every seed unmutated (a seed that does not decode or does not re-encode to itself fails) and then
+exactly 20,000 mutated candidates each: 180,000 candidates, about a quarter accepted, zero panics,
+zero canonical-law violations, 0.8 s of test time; it passes the existing `prototypes/*/Cargo.toml`
+CI loop with no workflow change. `tests/adversarial.rs::mutate_every_field` rebuilds the frozen live
+session from hex alone, flips all 8 bits of all 2,381 record bytes against a session at each
+record's point (19,048 candidates: 360 refused by decode, 18,688 by signature, none reaching
+admission), mutates every one of the 17 checkpoint fields of both seals into a re-signed seal (34
+forgeries, every one `ReplayMismatch` with the seal retained), and replays the clean vector to
+`Finished` at the end. The prototype also path-depends on `vhalla-core` and `vhalla-ledger`, since
+their id types sit in public game fields and are not re-exported.

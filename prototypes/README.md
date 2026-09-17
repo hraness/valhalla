@@ -12,9 +12,10 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `witness-wasm-parity` | Spike 3 of the witness platform plan: replays the committed witness vectors natively and under `wasm32-unknown-unknown` through wasm-bindgen and Node, and compares every rendering with the committed expectations (`verify.sh`) |
 | `witness-vectors` | Independent Python `struct`/`hashlib` oracle for the witness-v1 encodings: `generate.py` writes `/vectors/witness-v1.json`, `verify-vectors.py` re-derives every digest in CI, and the crates assert the hex verbatim |
 | `game-trace-cost` | Spike 1 of the Platonik session adapter plan: a hashing frame observer over `platform::run_observed` chaining per-frame digests into per-case trace heads over the 28 witness vectors, timed natively and under wasm32 (`verify.sh`) |
+| `game-fuzz` | Stage 3 of the Platonik session adapter plan: stable-toolchain, corpus-seeded mutation harnesses over every `vhalla-game-platonik` decoder (`wire` plus `GameRecord::decode`), driven as ordinary `#[test]`s at a fixed seed and a fixed 20,000-iteration cap from committed corpora under `corpus/<decoder>/`; asserts that no input panics and that every accepted input re-encodes to itself |
 | `ledger` | Signed content-addressed event DAG, equivocation, heads, retention |
-| `game-session` | Single-host versus quorum checkpoint authority |
-| `settlement` | Voucher consumption, quorum finality, and light-client continuity |
+| `game-session` | Deleted at stage 3 of the Platonik session adapter plan; its single-host versus quorum question is answered by `crates/vhalla-game-platonik` (`Authority::Host`, `Quorum` reserved), and its integer approvers and toy hashes were never promoted |
+| `settlement` | Deleted at stage 3 of the Platonik session adapter plan; game settlement is `crates/vhalla-game-platonik::settlement`, vouchers and quorum finality wait for the `quorum` feature and the ledger entry |
 | `zk-profile` | Transparent/SNARK/Nova proof envelopes separated from authority |
 | `control-plane` | Protected policy authority versus hostile execution requests |
 | `membrane` | Realm admission, capability boundaries, queues, and revocation |

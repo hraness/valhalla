@@ -7,13 +7,15 @@ an optional Valhalla session and a receiver independently verifies the result.
 Read the [session adapter plan](../../kb/plans/valhalla-platonik-session-adapter.md)
 for the design, its review record, and the staged delivery.
 
-Stages 1 and 2 land the identifiers and digest domains, the canonical
+Stages 1 through 3 land the identifiers and digest domains, the canonical
 encodings with every bound, the audience-free signed `GameRecord`, the
 `GameManifest` with its limits, the optional Platonik oracle converter, the one
 engine seam (`GameEngine`, implemented only by `PlatonikV1` over
 `platform::run_observed`), host-ordered sessions over `vhalla-ledger` with the
-two-phase live bind, checkpoints, and the receiver. Settlement, pause and
-replace, bounded artifacts, and the fuzz harnesses follow in stages 3 and 4.
+two-phase live bind, checkpoints, the receiver, settlement with
+order-independent resolution, pause and member replacement across an epoch
+bump, fills, and cancellation. Bounded artifacts and the wasm parity of the
+game vectors follow in stage 4.
 
 ## What a verified checkpoint proves
 
@@ -30,6 +32,16 @@ It proves nothing else. A session host has ordering and inclusion authority
 only; multiplayer does not imply permissionless finality; a game object is
 evidence and never host authority, and no verified type here converts into
 one.
+
+## What a verified settlement proves
+
+A `VerifiedSettlement` holding a `Result` proves that this receiver
+reproduced the final segment's receipt itself and found the host's signed
+receipt, checkpoint, and pass flag equal to its own, with every admitted event
+sealed and the epoch's ledger height exactly the sealed events plus the seal
+events. An `Unresolved` verdict is the host's signed fork claim or the
+receiver's own derivation, ranked below any reproduced result in either
+arrival order. Neither is money, finality, or host authority.
 
 ## Boundaries
 

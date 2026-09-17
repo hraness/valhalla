@@ -25,6 +25,7 @@ pub mod platonik;
 pub mod receiver;
 pub mod record;
 pub mod session;
+pub mod settlement;
 pub mod wire;
 
 #[cfg(feature = "oracle")]

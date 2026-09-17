@@ -290,6 +290,7 @@ fn every_object_round_trips_and_fits_its_bound() {
         EventBody::Fill {
             slot: 1,
             program_hash: ProgramHash([3; 32]),
+            program: widest_program(),
             evidence: FillEvidence {
                 author: [4; 32],
                 sequence: Sequence(9),
