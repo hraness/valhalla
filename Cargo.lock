@@ -5479,6 +5479,7 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "getrandom 0.3.4",
+ "hegeltest",
  "libp2p 0.57.0",
  "proptest",
  "sha2 0.10.9",
