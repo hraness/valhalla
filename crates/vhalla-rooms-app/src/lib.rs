@@ -492,6 +492,11 @@ impl Service {
         })
     }
 
+    /// The validator set activations configured for this replica.
+    pub fn validator_schedule(&self) -> &BTreeMap<u64, RoomValidatorSet> {
+        &self.validators
+    }
+
     /// The replica registry — read-only projections use it; the service
     /// never mutates it outside `sync`.
     pub fn registry(&self) -> &Registry {
