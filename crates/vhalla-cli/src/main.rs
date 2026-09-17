@@ -61,7 +61,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             "{}",
             intro::terminal_intro(std::io::stdout().is_terminal(), term.as_deref(), columns)
         );
-        println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla identity backup <existing-directory>\nvhalla identity restore <new-directory>   # mnemonic on stdin\nvhalla menubar [run|install|uninstall|status]\nvhalla outputs");
+        println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla identity backup <existing-directory>\nvhalla identity restore <new-directory>   # mnemonic on stdin\nvhalla menubar [run|install|uninstall|status|refresh]\nvhalla outputs");
         println!("vhalla support [--json|dismiss|snooze|enable|status --json]\nvhalla support protocol --json  # optional support lifecycle for agents");
         #[cfg(feature = "experimental-network")]
         println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key> [listen-host]\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\nvhalla experimental [--json] invite <identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>\nvhalla experimental [--json] listen <identity-directory> invitation <invitation-hex> [listen-host]\nvhalla experimental [--json] send <identity-directory> invitation <invitation-hex> <expected-owner-app-key> <route> <expiry> <message>\n\nExperimental paired chat; fixed test room, 60-second listener lifetime. listen binds 127.0.0.1 unless a bare listen-host (an IPv4 or IPv6 literal, no port) names another interface - the printed route then carries it for a remote peer to dial. --json emits bounded versioned JSON lines. Invitations are owner-signed; a verified send consumes the invitation nonce in <identity-directory>.spent and cannot redeem it twice.");
@@ -174,12 +174,13 @@ fn outputs(args: &[std::ffi::OsString]) -> Result<(), String> {
     Ok(())
 }
 
-/// `vhalla menubar [run|install|uninstall|status]` — the menu-bar
+/// `vhalla menubar [run|install|uninstall|status|refresh]` — the menu-bar
 /// companion lifecycle. The companion is a disposable unbundled client:
 /// `run` launches it once, `install` copies a qualified release binary to
 /// the per-user state directory and registers a LaunchAgent so it
 /// survives login — no `.app` packaging, signing or notarization is
-/// involved anywhere.
+/// involved anywhere. `refresh` captures a `rooms status` snapshot and
+/// writes it to the outputs directory so the menu bar can show it.
 #[cfg(unix)]
 fn menubar(args: &[std::ffi::OsString]) -> Result<(), String> {
     match args.get(1).and_then(|a| a.to_str()) {
@@ -188,7 +189,8 @@ fn menubar(args: &[std::ffi::OsString]) -> Result<(), String> {
         Some("install") if args.len() == 2 => menubar_install(),
         Some("uninstall") if args.len() == 2 => menubar_uninstall(),
         Some("status") if args.len() == 2 => menubar_status(),
-        _ => Err("usage: vhalla menubar [run|install|uninstall|status]".into()),
+        Some("refresh") if args.len() >= 9 => menubar_refresh(&args[3..]),
+        _ => Err("usage: vhalla menubar [run|install|uninstall|status|refresh]".into()),
     }
 }
 
@@ -491,6 +493,36 @@ fn menubar_status() -> Result<(), String> {
         Ok(binary) => println!("launch resolves to: {}", binary.display()),
         Err(_) => println!("launch resolves to: nothing qualified"),
     }
+    Ok(())
+}
+
+/// `vhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME
+/// --config FILE` — captures a `rooms status` snapshot and writes it to
+/// `state_directory()/outputs/rooms-status.json` so the menu bar can list
+/// and open it. This is a read-only wrapper: it never touches identities
+/// or the rooms stores.
+#[cfg(unix)]
+fn menubar_refresh(args: &[std::ffi::OsString]) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate this executable: {e}"))?;
+    let mut rooms_args: Vec<std::ffi::OsString> = vec!["rooms".into(), "status".into()];
+    rooms_args.extend(args.iter().map(|a| a.to_owned()));
+    let out = std::process::Command::new(exe)
+        .args(&rooms_args)
+        .output()
+        .map_err(|e| format!("could not run vhalla rooms status: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("rooms status failed: {err}"));
+    }
+    let directory = state_directory()
+        .ok_or_else(|| "could not resolve the state directory (is HOME set?)".to_owned())?
+        .join("outputs");
+    std::fs::create_dir_all(&directory)
+        .map_err(|e| format!("could not create the outputs directory: {e}"))?;
+    let path = directory.join("rooms-status.json");
+    std::fs::write(&path, &out.stdout)
+        .map_err(|e| format!("could not write {path}: {e}", path = path.display()))?;
+    println!("{}", path.display());
     Ok(())
 }
 

@@ -606,16 +606,15 @@ is the only recoverable secret; if it is lost, the identity is gone.
 
 The menubar is read-only and never opens an identity or store. It renders
 the `vhalla outputs` directory, so the safe integration is to write the
-status JSON there:
+status JSON there with the dedicated refresh subcommand:
 
 ```console
-out=$(vhalla outputs)
-vhalla rooms status ./alice ./replica 00000000000000000000000000000047 ./node \
-  --config ./node/node.json > "$out/rooms-status.json"
+vhalla menubar refresh ./alice ./replica 00000000000000000000000000000047 ./node \
+  --config ./node/node.json
 ```
 
 `vhalla menubar` then lists `rooms-status.json`; selecting it opens the
-file. Re-run the redirect whenever you want an updated view.
+file. Re-run `vhalla menubar refresh` whenever you want an updated view.
 
 ### Transport caveats and WAL resets
 
