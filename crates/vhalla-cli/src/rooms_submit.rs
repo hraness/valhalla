@@ -224,12 +224,59 @@ pub fn status(args: &Args) -> Result<(), String> {
         })
         .collect();
     let quorum = crate::json::optional(service.quorum().as_ref(), quorum_row);
+    let schedule: Vec<String> = service
+        .validator_schedule()
+        .iter()
+        .map(|(h, set)| {
+            let total: u64 = set.validators.iter().map(|v| v.power).sum();
+            let threshold = (2 * total) / 3 + 1;
+            let validators: Vec<String> = set
+                .validators
+                .iter()
+                .map(|v| {
+                    crate::json::object(vec![
+                        ("publicKey", crate::json::id(v.public_key.as_bytes())),
+                        ("power", v.power.to_string()),
+                    ])
+                })
+                .collect();
+            crate::json::object(vec![
+                ("height", h.to_string()),
+                ("totalPower", total.to_string()),
+                ("threshold", threshold.to_string()),
+                ("validators", crate::json::array(validators)),
+            ])
+        })
+        .collect();
+    let mut queued = 0usize;
+    let mut submitted = 0usize;
+    let mut committed = 0usize;
+    let mut collision = 0usize;
+    let mut rejected = 0usize;
+    for p in &pending {
+        match p.state {
+            vhalla_rooms_app::PendingState::Queued => queued += 1,
+            vhalla_rooms_app::PendingState::Submitted => submitted += 1,
+            vhalla_rooms_app::PendingState::Committed => committed += 1,
+            vhalla_rooms_app::PendingState::Collision => collision += 1,
+            vhalla_rooms_app::PendingState::Rejected => rejected += 1,
+        }
+    }
+    let summary = crate::json::object(vec![
+        ("queued", queued.to_string()),
+        ("submitted", submitted.to_string()),
+        ("committed", committed.to_string()),
+        ("collision", collision.to_string()),
+        ("rejected", rejected.to_string()),
+    ]);
     crate::rooms::emit(crate::json::object(vec![
         ("height", height.to_string()),
         ("revision", page.revision.to_string()),
         ("partial", page.partial.to_string()),
         ("quorum", quorum),
+        ("schedule", crate::json::array(schedule)),
         ("rooms", crate::json::array(rooms)),
+        ("pendingSummary", summary),
         (
             "pending",
             crate::json::array(pending.iter().map(pending_row)),
