@@ -29,6 +29,10 @@ application identities and fresh signed sessions. Start with the
 Signed framing is now v2 and rejects the earlier unversioned format. Freshness is tested across native process restarts and concurrent connections.
 Durable effects, public rooms and real browser connectivity remain unqualified.
 
+The ledger and journal additionally carry [formal checks](verification.md):
+Kani harnesses over symbolic inputs and a Verus model of the admission
+machine, each with explicitly stated bounds.
+
 ## Find the code
 
 | Area | Entry point |
