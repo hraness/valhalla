@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::{RoomValidator, RoomValidatorSet};
+use hegel::{generators as gs, HealthCheck, TestCase};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2848,4 +2849,269 @@ fn wal_format_rejects_foreign_marker() {
     std::fs::create_dir_all(wal.parent().unwrap()).unwrap();
     std::fs::write(wal.parent().unwrap().join("FORMAT"), b"VRW1").unwrap();
     check_wal_format(&wal);
+}
+
+/// Generative companion to `tombstone_ids_are_unique_per_node_height_round`:
+/// over any drawn set of (node, height, round) slots the ids stay pairwise
+/// distinct, an identical slot reproduces its id, and the value is always
+/// empty — a shared or nonempty tombstone is what let an empty value commit.
+/// Drawn rounds stay below u32::MAX, which `tombstone` reserves for Nil.
+#[hegel::test(test_cases = 64)]
+fn tombstone_ids_stay_injected_across_drawn_slots(tc: TestCase) {
+    let (keys, set) = validators(3);
+    let apps: Vec<App> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| test_app(&format!("tomb-gen-{i}"), k, &set))
+        .collect();
+    let mut ids: BTreeMap<(usize, u64, u32), [u8; 32]> = BTreeMap::new();
+    let slots = tc.draw(gs::integers::<usize>().min_value(1).max_value(16));
+    for _ in 0..slots {
+        let node = tc.draw(gs::integers::<usize>().max_value(2));
+        let height = tc.draw(gs::integers::<u64>().min_value(1).max_value(64));
+        let round = if tc.draw(gs::booleans()) {
+            Round::Nil
+        } else {
+            Round::new(tc.draw(gs::integers::<u32>().max_value(1024)))
+        };
+        let value = apps[node].tombstone(height, round);
+        assert!(value.bytes.is_empty(), "tombstones never carry bytes");
+        let slot = (node, height, round.as_u32().unwrap_or(u32::MAX));
+        if let Some(previous) = ids.insert(slot, value.id.0) {
+            assert_eq!(previous, value.id.0, "the same slot must replay its id");
+        }
+    }
+    let distinct: HashSet<[u8; 32]> = ids.values().copied().collect();
+    assert_eq!(
+        ids.len(),
+        distinct.len(),
+        "distinct slots must never share a tombstone id"
+    );
+}
+
+/// Generative companion to `expire_streams_drops_abandoned_streams`: over any
+/// drawn stream set the survivors are exactly the entries with no expiry
+/// clock or an age below `STREAM_STALE`.
+#[hegel::test(test_cases = 64)]
+fn expire_streams_retires_exactly_the_stale(tc: TestCase) {
+    let (keys, set) = validators(1);
+    let mut app = test_app("expire-gen", &keys[0], &set);
+    let mut expected: BTreeMap<(Vec<u8>, Vec<u8>), bool> = BTreeMap::new();
+    let count = tc.draw(gs::integers::<usize>().max_value(16));
+    for i in 0..count {
+        let key = (b"peer".to_vec(), format!("s{i}").into_bytes());
+        let first_seen = if tc.draw(gs::booleans()) {
+            let age = Duration::from_secs(tc.draw(gs::integers::<u64>().max_value(120)));
+            Some(Instant::now().checked_sub(age).unwrap_or_else(Instant::now))
+        } else {
+            None
+        };
+        app.streams.insert(
+            key.clone(),
+            StreamState {
+                first_seen,
+                ..Default::default()
+            },
+        );
+        expected.insert(key, first_seen.is_none_or(|t| t.elapsed() < STREAM_STALE));
+    }
+    app.expire_streams();
+    for (key, live) in &expected {
+        assert_eq!(
+            app.streams.contains_key(key),
+            *live,
+            "stream {key:?} retention"
+        );
+    }
+}
+
+/// Generative companion to `sweep_decided_retires_dead_state`: draw a live
+/// height and an arbitrary interleaving of seen records, held batches,
+/// pending entries, assignments, streams, and parts — after the sweep the
+/// retained state is exactly what the live references justify and nothing
+/// below the decided height lingers.
+#[hegel::test(test_cases = 64)]
+fn sweep_decided_retires_exactly_dead_state(tc: TestCase) {
+    let (keys, set) = validators(1);
+    let mut app = test_app("sweep-gen", &keys[0], &set);
+    let proposer = app.address;
+    let plan = batch_plan(8);
+    let ids: Vec<RoomValueId> = (1..=8).map(|h| RoomValueId(plan[&h].value_id())).collect();
+    let pick = |tc: &TestCase| ids[tc.draw(gs::integers::<usize>().max_value(7))];
+
+    let height = tc.draw(gs::integers::<u64>().min_value(1).max_value(6));
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(10)) {
+        let h = tc.draw(gs::integers::<u64>().max_value(8));
+        app.seen.entry(h).or_default().push(SeenProposal {
+            round: Round::new(0),
+            pol_round: Round::Nil,
+            proposer,
+            value_id: pick(&tc),
+        });
+    }
+    let mut pre_held = HashSet::new();
+    for (i, id) in ids.iter().enumerate() {
+        if tc.draw(gs::booleans()) {
+            app.held_by_id.insert(*id, plan[&(i as u64 + 1)].clone());
+            pre_held.insert(*id);
+        }
+    }
+    let mut pending = 0usize;
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        let entry = if tc.draw(gs::booleans()) {
+            PendingEntry::Value(pick(&tc))
+        } else {
+            PendingEntry::Body(format!("body-{}", tc.draw(gs::integers::<u32>())))
+        };
+        app.pending_proposals.push_back(entry);
+        pending += 1;
+    }
+    let mut assigned = 0usize;
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        let h = tc.draw(gs::integers::<u64>().max_value(8));
+        if app.proposals.insert(h, pick(&tc)).is_none() {
+            assigned += 1;
+        }
+    }
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(6)) {
+        let init = if tc.draw(gs::booleans()) {
+            Some(ProposalInit {
+                height: Height::new(tc.draw(gs::integers::<u64>().max_value(8))),
+                round: Round::new(0),
+                pol_round: Round::Nil,
+                proposer,
+            })
+        } else {
+            None
+        };
+        app.streams.insert(
+            (b"peer".to_vec(), format!("gs{i}").into_bytes()),
+            StreamState {
+                init,
+                ..Default::default()
+            },
+        );
+    }
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(6)) {
+        let id = pick(&tc);
+        let parts = if tc.draw(gs::booleans()) {
+            vec![RoomPart::Init(ProposalInit {
+                height: Height::new(tc.draw(gs::integers::<u64>().max_value(8))),
+                round: Round::new(0),
+                pol_round: Round::Nil,
+                proposer,
+            })]
+        } else {
+            Vec::new()
+        };
+        app.parts_cache.insert(id, parts);
+    }
+
+    app.sweep_decided(height);
+
+    assert!(
+        app.seen.keys().all(|h| *h > height),
+        "seen records at or below the decided height are dead"
+    );
+    assert!(
+        app.streams
+            .values()
+            .all(|s| s.init.as_ref().is_none_or(|i| i.height.as_u64() > height)),
+        "streams keep no init at or below the decided height"
+    );
+    assert!(
+        app.parts_cache.values().all(|parts| {
+            parts
+                .iter()
+                .find_map(|p| match p {
+                    RoomPart::Init(init) => Some(init.height.as_u64()),
+                    _ => None,
+                })
+                .is_some_and(|h| h >= height)
+        }),
+        "parts entries survive only with an init at or above the decision"
+    );
+    let live: HashSet<RoomValueId> = app
+        .proposals
+        .values()
+        .copied()
+        .chain(app.pending_proposals.iter().filter_map(|e| e.value_id()))
+        .chain(app.seen.values().flat_map(|v| v.iter().map(|s| s.value_id)))
+        .collect();
+    for id in app.held_by_id.keys() {
+        assert!(live.contains(id), "a held batch must have a live referent");
+    }
+    for id in &pre_held {
+        assert_eq!(
+            app.held_by_id.contains_key(id),
+            live.contains(id),
+            "held retention must match live references exactly"
+        );
+    }
+    assert_eq!(app.pending_proposals.len(), pending);
+    assert_eq!(app.proposals.len(), assigned);
+}
+
+/// Generative companion to `decided_history_rebuilds_from_the_journal`:
+/// interleave drawn commits with drawn restarts, then require the reopened
+/// `load_decided` to serve exactly the committed heights — value bytes and
+/// certificates intact — whatever the crash schedule was. Each case runs real
+/// journal reopen + store reconciliation, so the TooSlow check is suppressed.
+#[hegel::test(test_cases = 32, suppress_health_check = [HealthCheck::TooSlow])]
+fn decided_history_survives_interleaved_restarts(tc: TestCase) {
+    let (keys, _set) = validators(1);
+    let base = fixture("load-decided-gen");
+    let plan = batch_plan(6);
+    let address = Address::from_public_key(&keys[0].public_key());
+    let mut adapter = Adapter::open(base.join("app"), &genesis()).unwrap();
+    let mut committed: Vec<u64> = Vec::new();
+
+    for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(8)) {
+        let restart = tc.draw(gs::booleans());
+        if restart && adapter.frontier().height > 0 {
+            drop(adapter);
+            adapter = Adapter::open(base.join("app"), &genesis()).unwrap();
+            continue;
+        }
+        let height = adapter.frontier().height + 1;
+        if height > 6 {
+            continue;
+        }
+        let batch = plan[&height].clone();
+        adapter.hold(batch.clone());
+        let mut cert = Vec::new();
+        cert.extend_from_slice(b"VC2");
+        cert.extend_from_slice(&height.to_be_bytes());
+        cert.extend_from_slice(&0u32.to_be_bytes());
+        cert.extend_from_slice(&batch.value_id());
+        cert.extend_from_slice(&1u16.to_be_bytes());
+        cert.extend_from_slice(&address.into_inner());
+        cert.extend_from_slice(&[9u8; 64]);
+        let outcome = adapter.decide(&RoomCertificate {
+            bytes: cert,
+            value_commitment: batch.value_id(),
+            height,
+        });
+        assert_eq!(outcome, DecidedOutcome::Acked);
+        committed.push(height);
+    }
+
+    drop(adapter);
+    let adapter = Adapter::open(base.join("app"), &genesis()).unwrap();
+    let decided = load_decided(&adapter);
+    assert_eq!(
+        decided.keys().copied().collect::<Vec<_>>(),
+        committed,
+        "reopened decided history must be exactly the committed heights"
+    );
+    for h in &committed {
+        let raw = &decided[h];
+        let value = RoomCodec::decode_value(raw.value_bytes.clone()).unwrap();
+        assert_eq!(&value.bytes[..], &plan[h].encode()[..]);
+        assert_eq!(raw.certificate.height, Height::new(*h));
+        assert_eq!(raw.certificate.value_id.0, plan[h].value_id());
+        assert_eq!(raw.certificate.commit_signatures.len(), 1);
+        assert_eq!(raw.certificate.commit_signatures[0].address, address);
+    }
+    let _ = std::fs::remove_dir_all(&base);
 }
