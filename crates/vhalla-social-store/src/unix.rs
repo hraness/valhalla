@@ -744,6 +744,70 @@ fn acquire(lock: &File) -> Result<(), Error> {
     }
 }
 
+/// The committed archive under a shared hold: concurrent readers proceed
+/// together while a writer's exclusive lock keeps its whole command atomic.
+/// A writer's hold is waited out across the bound; a wedged holder still
+/// fails `Busy` rather than blocking a reader forever. The verified
+/// pin/bundle pair makes the returned snapshot a real committed state.
+/// A retained intent or torn publication temps are not a reader's to
+/// reconcile: they fail `RecoveryRequired` for explicit `recover` first.
+pub fn read_archive(
+    path: impl AsRef<Path>,
+    realm: RealmId,
+    limits: Limits,
+) -> Result<Archive, Error> {
+    let path = absolute(path.as_ref())?;
+    let uid = check_directory(&path)?;
+    let lock = open_private(&path.join(LOCK), uid, 0)?;
+    if lock.metadata()?.len() != 0 {
+        return Err(Error::Corrupt);
+    }
+    acquire_shared(&lock)?;
+    let pin = Pin::decode(&read_bounded(&path.join(PIN), uid, PIN_BYTES)?)?;
+    let raw = read_bounded(
+        &path.join(bundle_name(pin.physical)),
+        uid,
+        MAX_SNAPSHOT_BYTES,
+    )?;
+    let archive = Archive::from_snapshot(realm, limits, &raw)?;
+    if Pin::for_archive(pin.generation, &archive) != pin {
+        return Err(Error::Corrupt);
+    }
+    if present(&path, uid, INTENT, MAX_INTENT_BYTES)?
+        || present(&path, uid, BUNDLE_TEMP, MAX_SNAPSHOT_BYTES)?
+        || present(&path, uid, PIN_TEMP, PIN_BYTES)?
+    {
+        return Err(Error::RecoveryRequired);
+    }
+    Ok(archive)
+}
+
+fn acquire_shared(lock: &File) -> Result<(), Error> {
+    // ~30s bound covers a writer's longest realistic command hold
+    // (commit, import, sync) while still failing fast on a wedged one.
+    for _ in 0..600 {
+        match lock.try_lock_shared() {
+            Ok(()) => return Ok(()),
+            Err(fs::TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+    }
+    Err(Error::Busy)
+}
+
+fn present(path: &Path, uid: u32, name: &str, max: usize) -> Result<bool, Error> {
+    match fs::symlink_metadata(path.join(name)) {
+        Ok(meta) => {
+            check_regular(&meta, uid, max)?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;

@@ -333,3 +333,41 @@ fn corrupt_bundle_and_wrong_anchor_fail_closed() {
     ));
     let _ = fs::set_permissions(&bundle, fs::Permissions::from_mode(0o600));
 }
+
+#[test]
+fn shared_reader_waits_out_a_writers_lock_and_reads_the_fresh_tip() {
+    let (temp, mut store, archive, owner) = setup();
+    let path = temp.store();
+    let reader = std::thread::spawn(move || read_registry(path));
+    // The writer still holds its exclusive lock: publish a new tip while
+    // the reader is parked on the shared acquire, then release — the
+    // reader must observe the commit, never a torn or stale pair.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let candidate = advance(store.registry(), &archive, &owner, None, 0, 9, 100);
+    store.commit(candidate, store.pin()).unwrap();
+    let tip = store.registry().revision();
+    drop(store);
+    let registry = reader.join().unwrap().unwrap();
+    assert_eq!(registry.revision(), tip);
+}
+
+#[test]
+fn shared_readers_proceed_concurrently_and_match_the_committed_tip() {
+    let (temp, store, ..) = setup();
+    let tip = store.registry().revision();
+    drop(store);
+    let mut readers = Vec::new();
+    for _ in 0..4 {
+        let path = temp.store();
+        readers.push(std::thread::spawn(move || read_registry(path)));
+    }
+    for reader in readers {
+        assert_eq!(reader.join().unwrap().unwrap().revision(), tip);
+    }
+}
+
+#[test]
+fn shared_reader_on_a_missing_store_fails_closed() {
+    let temp = Temp::new();
+    assert!(read_registry(temp.store()).is_err());
+}

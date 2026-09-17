@@ -43,8 +43,6 @@ use vhalla_rooms_node::{
 };
 #[cfg(unix)]
 use vhalla_social::archive::{Archive, Limits};
-#[cfg(unix)]
-use vhalla_social_store::Store as SocialStore;
 
 /// The shared genesis plus trust configuration — the same fields the
 /// node file carries, so one JSON document serves a validator and every
@@ -419,19 +417,16 @@ impl Service {
     ) -> Result<Self, Error> {
         let realm = config.realm_id()?;
         let limits = config.archive_limits();
-        let archive: Archive = {
-            let social = SocialStore::open(social_store, realm, limits, None)
-                .map_err(|e| Error::Io(format!("social store: {e}")))?;
-            if social
-                .recovery_required()
-                .map_err(|e| Error::Io(e.to_string()))?
-            {
-                return Err(Error::Io(
-                    "social store requires explicit social recover first".into(),
-                ));
-            }
-            social.archive().clone()
-        };
+        // The replica reads the committed snapshot under a shared hold:
+        // a concurrent owner command's exclusive lock is waited out, not
+        // raced — startup no longer dies on `Busy` mid-submission.
+        let archive: Archive = vhalla_social_store::read_archive(social_store, realm, limits)
+            .map_err(|e| match e {
+                vhalla_social_store::Error::RecoveryRequired => {
+                    Error::Io("social store requires explicit social recover first".into())
+                }
+                e => Error::Io(format!("{e}")),
+            })?;
         let genesis = Genesis {
             directory: DirectoryId::from_bytes(hex32(&config.directory)?),
             realm,

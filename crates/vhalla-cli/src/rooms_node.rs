@@ -16,7 +16,7 @@ use vhalla_rooms_node::{
 use vhalla_social::archive::Limits;
 use vhalla_social::OwnerId;
 
-use vhalla_social_store::Store as SocialStore;
+use vhalla_social_store::read_archive;
 
 use crate::json;
 use crate::rooms::{hex32, Args};
@@ -154,16 +154,14 @@ pub fn run(args: &Args) -> Result<(), String> {
 
     // Genesis seeds from the committed social snapshot, decoded under the
     // configured limits — the archive's own bounds are a genesis parameter,
-    // not the reader's default. The lock drops with this store so owner
-    // commands keep working on the same directory.
-    let archive = {
-        let social = SocialStore::open(&args.social_store, args.realm, limits, None)
-            .map_err(|e| e.to_string())?;
-        if social.recovery_required().map_err(|e| e.to_string())? {
-            return Err("social store requires explicit social recover first".into());
+    // not the reader's default. A shared read waits out a concurrent owner
+    // command instead of dying on its exclusive lock.
+    let archive = read_archive(&args.social_store, args.realm, limits).map_err(|e| match e {
+        vhalla_social_store::Error::RecoveryRequired => {
+            "social store requires explicit social recover first".to_string()
         }
-        social.archive().clone()
-    };
+        e => e.to_string(),
+    })?;
 
     let spec = NodeSpec {
         home: args.rooms_store.clone().into(),

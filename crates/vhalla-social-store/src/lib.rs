@@ -11,4 +11,4 @@
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{Error, Pin, Publication, Store, PIN_BYTES};
+pub use unix::{read_archive, Error, Pin, Publication, Store, PIN_BYTES};

@@ -511,8 +511,16 @@ committed, collision, rejected) as JSON.
 
 Every mutating command signs a real wire record, applies it to a candidate
 registry, and reports success only after the store's durable pin publication.
-Two agents of one owner share the directory through separate invocations; a
-second concurrent process fails fast on the store lock rather than merging.
+Writers (`init`, `grant`, `collect`, `create`, `describe`, `archive`,
+`recover`) hold the store's lifetime exclusive lock for the whole command —
+a second concurrent writer fails fast `Busy` rather than merging. Readers
+(`quote`, `list`, `search`, `show`, `account`, `proof`, `evidence`) instead
+take a shared hold on the committed pin/bundle pair: they proceed alongside
+other readers and wait out a writer's hold up to a bounded ~30 s rather
+than racing it. Node startup and the replica service read the social
+archive the same way — a concurrent `social` write no longer kills either
+with `Busy`. A retained `intent` or torn publication temps fail every path
+`RecoveryRequired` for explicit `rooms recover` first; readers never repair.
 `--now SECONDS` is the explicit directory clock for tests. This is local
 allocation over retained evidence — consensus agreement and networking remain
 separate unqualified lanes.
