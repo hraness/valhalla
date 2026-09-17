@@ -5457,6 +5457,7 @@ dependencies = [
 name = "vhalla-journal"
 version = "0.0.0"
 dependencies = [
+ "hegeltest",
  "sha2 0.10.9",
 ]
 
