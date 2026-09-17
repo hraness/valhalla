@@ -1,6 +1,7 @@
 //! Public-boundary regressions for authenticated requests and host-owned grants.
 
-use proptest::prelude::*;
+use hegel::generators as gs;
+use hegel::TestCase;
 use vhalla_core::{Epoch, EventId, PeerId, RealmId, RoomId, Sequence};
 use vhalla_crypto::{
     peer_id_from_seed, sign, verifying_key_from_seed, ReplayWindow, SessionId, VerificationContext,
@@ -293,28 +294,42 @@ fn rejected_policy_replacements_preserve_current_grant() {
     );
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
-    #[test]
-    fn arbitrary_peer_prose_cannot_expand_scope(body in prop::collection::vec(any::<u8>(), 0..1024), resource in 0u32..1000) {
-        let base = context(1);
-        let mut host = MemoryHost::new(policy(base, 7, resource));
-        let proof = verified(base, 7, KIND_READ_MEMORY_REQUEST, 100, &body);
-        let hostile = RemoteRequest::from_verified(proof, Scope { operation: Operation::ReadMemory, resource: resource+1 }).unwrap();
-        prop_assert_eq!(hostile.content(), body.as_slice());
-        prop_assert_eq!(host.authorize(hostile).unwrap_err(), Denied::Scope);
-        prop_assert_eq!(host.reads(), 0);
-        let valid = host.authorize(request(base, 7, resource, 100)).unwrap();
-        host.execute(valid, 75).unwrap();
-        prop_assert_eq!(host.reads(), 1);
-    }
-    #[test]
-    fn generated_policy_advancement_always_revokes_prepared_work(epoch in 1u64..1000, advance in 1u64..1000, replacement_resource in any::<u32>()) {
-        let previous = context(epoch);
-        let mut host = MemoryHost::new(policy(previous, 7, 11));
-        let prepared = host.authorize(request(previous, 7, 11, 100)).unwrap();
-        host.replace_policy(policy(context(epoch+advance), 7, replacement_resource)).unwrap();
-        prop_assert_eq!(host.execute(prepared, 75), Err(HostError::Denied(Denied::Epoch)));
-        prop_assert_eq!(host.reads(), 0);
-    }
+#[hegel::test(test_cases = 64)]
+fn arbitrary_peer_prose_cannot_expand_scope(tc: TestCase) {
+    let body = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(1023));
+    let resource = tc.draw(gs::integers::<u32>().max_value(999));
+    let base = context(1);
+    let mut host = MemoryHost::new(policy(base, 7, resource));
+    let proof = verified(base, 7, KIND_READ_MEMORY_REQUEST, 100, &body);
+    let hostile = RemoteRequest::from_verified(
+        proof,
+        Scope {
+            operation: Operation::ReadMemory,
+            resource: resource + 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(hostile.content(), body.as_slice());
+    assert_eq!(host.authorize(hostile).unwrap_err(), Denied::Scope);
+    assert_eq!(host.reads(), 0);
+    let valid = host.authorize(request(base, 7, resource, 100)).unwrap();
+    host.execute(valid, 75).unwrap();
+    assert_eq!(host.reads(), 1);
+}
+
+#[hegel::test(test_cases = 64)]
+fn generated_policy_advancement_always_revokes_prepared_work(tc: TestCase) {
+    let epoch = tc.draw(gs::integers::<u64>().min_value(1).max_value(999));
+    let advance = tc.draw(gs::integers::<u64>().min_value(1).max_value(999));
+    let replacement_resource = tc.draw(gs::integers::<u32>());
+    let previous = context(epoch);
+    let mut host = MemoryHost::new(policy(previous, 7, 11));
+    let prepared = host.authorize(request(previous, 7, 11, 100)).unwrap();
+    host.replace_policy(policy(context(epoch + advance), 7, replacement_resource))
+        .unwrap();
+    assert_eq!(
+        host.execute(prepared, 75),
+        Err(HostError::Denied(Denied::Epoch))
+    );
+    assert_eq!(host.reads(), 0);
 }

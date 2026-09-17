@@ -94,35 +94,38 @@ impl SpentInvitationNonces {
 #[cfg(test)]
 mod tests {
     use super::{SpendError, SpentInvitationNonces};
-    use proptest::prelude::*;
+    use alloc::format;
+    use alloc::string::ToString;
+    use hegel::generators as gs;
+    use hegel::TestCase;
 
-    proptest! {
-        #[test]
-        fn consume_is_idempotently_rejected_and_never_exceeds_capacity(
-            capacity in 0usize..32,
-            nonces in prop::collection::vec(any::<[u8; 32]>(), 0..96),
-        ) {
-            let mut guard = SpentInvitationNonces::new(capacity);
-            for nonce in nonces {
-                let before_len = guard.len();
-                let already = guard.contains(&nonce);
-                let result = guard.consume(nonce);
-                prop_assert!(guard.len() <= capacity);
-                if nonce == [0; 32] {
-                    prop_assert_eq!(result, Err(SpendError::Malformed));
-                    prop_assert_eq!(guard.len(), before_len);
-                } else if already {
-                    prop_assert_eq!(result, Err(SpendError::AlreadySpent));
-                    prop_assert_eq!(guard.len(), before_len);
-                } else if before_len >= capacity {
-                    prop_assert_eq!(result, Err(SpendError::Capacity));
-                    prop_assert_eq!(guard.len(), before_len);
-                    prop_assert!(!guard.contains(&nonce));
-                } else {
-                    prop_assert_eq!(result, Ok(()));
-                    prop_assert_eq!(guard.len(), before_len + 1);
-                    prop_assert!(guard.contains(&nonce));
-                }
+    /// Guard consumption under Hegel's interleaved draw model: each nonce is
+    /// drawn inside the loop while the spent set mutates across steps.
+    #[hegel::test]
+    fn consume_is_idempotently_rejected_and_never_exceeds_capacity(tc: TestCase) {
+        let capacity = tc.draw(gs::integers::<usize>().max_value(31));
+        let steps = tc.draw(gs::integers::<usize>().max_value(95));
+        let mut guard = SpentInvitationNonces::new(capacity);
+        for _ in 0..steps {
+            let nonce: [u8; 32] = tc.draw(gs::arrays(gs::integers::<u8>()));
+            let before_len = guard.len();
+            let already = guard.contains(&nonce);
+            let result = guard.consume(nonce);
+            assert!(guard.len() <= capacity);
+            if nonce == [0; 32] {
+                assert_eq!(result, Err(SpendError::Malformed));
+                assert_eq!(guard.len(), before_len);
+            } else if already {
+                assert_eq!(result, Err(SpendError::AlreadySpent));
+                assert_eq!(guard.len(), before_len);
+            } else if before_len >= capacity {
+                assert_eq!(result, Err(SpendError::Capacity));
+                assert_eq!(guard.len(), before_len);
+                assert!(!guard.contains(&nonce));
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(guard.len(), before_len + 1);
+                assert!(guard.contains(&nonce));
             }
         }
     }

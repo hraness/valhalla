@@ -143,12 +143,39 @@ impl fmt::Display for RoomValueId {
 
 /// The full proposed value: the application value commitment plus the
 /// bounded canonical application bytes that travel inside proposal parts.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// Equality and ordering key on `id` alone: the id is a binding
+/// commitment to `bytes`, so two values with the same id name the same
+/// content. This also lets a parts-assembled value pair with a
+/// wire-received proposal, whose `bytes` are not transmitted.
+#[derive(Clone, Debug)]
 pub struct RoomValue {
     /// The application value commitment (what votes and certificates name).
     pub id: RoomValueId,
-    /// Canonical application bytes (e.g. an encoded room `Batch`).
+    /// Canonical application bytes (e.g. an encoded room `Batch`). Empty
+    /// for a value decoded from a gossip proposal — the bytes arrive via
+    /// the proposal-part stream instead.
     pub bytes: Bytes,
+}
+
+impl PartialEq for RoomValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for RoomValue {}
+
+impl PartialOrd for RoomValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RoomValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
 }
 
 impl RoomValue {
@@ -220,7 +247,9 @@ pub struct RoomProposal {
     pub height: Height,
     /// Consensus round.
     pub round: Round,
-    /// The full proposed value (id + canonical bytes).
+    /// The proposed value commitment. Only `id` crosses the wire — a
+    /// received proposal's `bytes` are empty; the canonical bytes
+    /// arrive via the proposal-part stream.
     pub value: RoomValue,
     /// Proof-of-lock round.
     pub pol_round: Round,

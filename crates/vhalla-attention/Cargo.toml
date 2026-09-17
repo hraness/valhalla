@@ -13,6 +13,7 @@ sha2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+hegeltest = "0.46.0"
 proptest = "1.6"
 
 [lints]

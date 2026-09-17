@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use vhalla_rooms_consensus::fixture;
 use vhalla_rooms_node::{service_config, NodeSpec, PrivateKey, RoomNode};
+use vhalla_social_store::Store as SocialStore;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
