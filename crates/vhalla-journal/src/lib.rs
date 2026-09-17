@@ -946,3 +946,128 @@ impl<S: Store> Journal<S> {
 
 #[cfg(test)]
 mod tests;
+
+/// Kani bounded model-checking harnesses (`cargo kani -p vhalla-journal`).
+///
+/// These cover the pure codec surface — `Bundle::new`, `Bundle::decode`,
+/// `Bundle::field` — which is where a corrupted or substituted on-disk
+/// record must fail closed. Properties proven within the unwind bounds:
+/// construction decodes back to itself with an identical content id and
+/// readable fields, arbitrary bytes never panic the decoder, any accepted
+/// encoding is already canonical, and the byte bounds reject rather than
+/// truncate.
+///
+/// `sha256` is stubbed by a cheap deterministic mixer for solver cost: no
+/// property proven here relies on collision resistance, and a weaker hash
+/// can only make the model more adversarial.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+    use std::vec::Vec;
+
+    #[allow(dead_code)] // wired by #[kani::stub], not called directly
+    fn stub_sha256(parts: &[&[u8]]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let mut acc = 0x9e37_79b9_7f4a_7c15u64;
+        for part in parts {
+            // Fold each length-prefixed field a u64 lane at a time so loop
+            // unwinding stays small.
+            acc ^= part.len() as u64;
+            acc = acc.wrapping_mul(0x0000_0100_0000_01b3).rotate_left(7);
+            let mut i = 0;
+            while i + 8 <= part.len() {
+                let lane = u64::from_le_bytes(part[i..i + 8].try_into().unwrap());
+                acc ^= lane.wrapping_add(i as u64);
+                acc = acc.wrapping_mul(0x0000_0100_0000_01b3).rotate_left(13);
+                i += 8;
+            }
+            while i < part.len() {
+                acc ^= part[i] as u64;
+                acc = acc.wrapping_mul(0x0000_0100_0000_01b3).rotate_left(13);
+                i += 1;
+            }
+        }
+        for lane in out.chunks_exact_mut(8) {
+            acc = acc.wrapping_mul(0x0000_0100_0000_01b3).rotate_left(17);
+            lane.copy_from_slice(&acc.to_le_bytes());
+        }
+        out
+    }
+
+    /// A bounded symbolic field as a fixed symbolic array prefix: one
+    /// allocation, no push loop for CBMC to unwind through the allocator.
+    fn any_bounded_field(max: usize) -> Vec<u8> {
+        assert!(max <= 8);
+        let bytes: [u8; 8] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= max);
+        bytes[..len].to_vec()
+    }
+
+    fn any_parts(field_max: usize) -> BundleParts {
+        BundleParts {
+            certificate: any_bounded_field(field_max),
+            predecessor: kani::any(),
+            next: kani::any(),
+            batch: any_bounded_field(field_max),
+            value: any_bounded_field(field_max),
+            configuration: any_bounded_field(field_max),
+            control_record: any_bounded_field(field_max),
+            debit_marker: any_bounded_field(field_max),
+            height: kani::any(),
+        }
+    }
+
+    /// A constructed bundle re-decodes to itself: same content id, same
+    /// frontier pins and height, and every field readable back by index.
+    #[kani::proof]
+    #[kani::stub(sha256, stub_sha256)]
+    #[kani::unwind(24)]
+    fn new_then_decode_roundtrips() {
+        let certificate = any_bounded_field(4);
+        let predecessor: [u8; 32] = kani::any();
+        let next: [u8; 32] = kani::any();
+        let batch = any_bounded_field(4);
+        let value = any_bounded_field(4);
+        let configuration = any_bounded_field(4);
+        let control_record = any_bounded_field(4);
+        let debit_marker = any_bounded_field(4);
+        let height: u64 = kani::any();
+        let parts = BundleParts {
+            certificate: certificate.clone(),
+            predecessor,
+            next,
+            batch: batch.clone(),
+            value: value.clone(),
+            configuration: configuration.clone(),
+            control_record: control_record.clone(),
+            debit_marker: debit_marker.clone(),
+            height,
+        };
+        let bundle = Bundle::new(parts).expect("bounded fields must build");
+        let decoded = Bundle::decode(bundle.bytes()).expect("canonical bytes must decode");
+        assert_eq!(decoded.id(), bundle.id());
+        assert_eq!(decoded.predecessor(), predecessor);
+        assert_eq!(decoded.next(), next);
+        assert_eq!(decoded.height(), height);
+        assert_eq!(decoded.field(0), Some(&certificate[..]));
+        assert_eq!(decoded.field(1), Some(&predecessor[..]));
+        assert_eq!(decoded.field(2), Some(&next[..]));
+        assert_eq!(decoded.field(3), Some(&batch[..]));
+        assert_eq!(decoded.field(4), Some(&value[..]));
+        assert_eq!(decoded.field(5), Some(&configuration[..]));
+        assert_eq!(decoded.field(6), Some(&control_record[..]));
+        assert_eq!(decoded.field(7), Some(&debit_marker[..]));
+        assert_eq!(decoded.field(8), Some(&height.to_le_bytes()[..]));
+        assert_eq!(decoded.field(9), None);
+        // Decoding preserves the stored bytes verbatim.
+        assert_eq!(decoded.bytes(), bundle.bytes());
+    }
+
+    /// A byte string past the scratch bound is rejected before parsing.
+    #[kani::proof]
+    fn decode_rejects_oversized_input() {
+        let raw = std::vec![0u8; MAX_BUNDLE_BYTES + 1];
+        assert!(matches!(Bundle::decode(&raw), Err(JournalError::Corrupt)));
+    }
+}

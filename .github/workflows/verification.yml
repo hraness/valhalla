@@ -1,0 +1,52 @@
+name: Verification
+
+# Formal checks on the crates that carry Kani harnesses and the Verus
+# model. Scoped to paths that can invalidate a proof so the jobs stay
+# proportional; see docs/verification.md for what each layer proves.
+on:
+  pull_request:
+    paths:
+      - "crates/vhalla-ledger/**"
+      - "crates/vhalla-journal/**"
+      - "verify/**"
+      - ".github/workflows/verification.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/vhalla-ledger/**"
+      - "crates/vhalla-journal/**"
+      - "verify/**"
+      - ".github/workflows/verification.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kani:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Kani 0.68.0
+        run: |
+          curl -sSfL https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz -o kani.tar.gz
+          tar xzf kani.tar.gz
+          ./kani-0.68.0-x86_64-unknown-linux-gnu/setup.sh
+      - run: cargo kani -p vhalla-journal -j --output-format terse
+
+  verus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Install Verus 0.2026.09.13.671956e
+        run: |
+          curl -sSfL https://github.com/verus-lang/verus/releases/download/release/0.2026.09.13.671956e/verus-0.2026.09.13.671956e-x86-linux.zip -o verus.zip
+          unzip -q verus.zip
+      - run: ./verus-x86-linux/verus --crate-type=lib verify/ledger.rs

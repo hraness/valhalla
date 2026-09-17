@@ -11,6 +11,10 @@ publish = false
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[workspace.metadata.kani]
+unstable = { stubbing = true }
 
 [workspace.lints.clippy]
 all = "warn"
