@@ -301,6 +301,9 @@ fn build_validator_sets(
 ) -> Result<BTreeMap<u64, RoomValidatorSet>, String> {
     let mut grouped: BTreeMap<u64, Vec<RoomValidator>> = BTreeMap::new();
     for entry in entries {
+        if entry.from == 0 {
+            return Err("validator activation heights start at 1".into());
+        }
         let key =
             PublicKey::from_bytes(hex32(&entry.key)?).map_err(|e| format!("validator key: {e}"))?;
         if entry.power == 0 {

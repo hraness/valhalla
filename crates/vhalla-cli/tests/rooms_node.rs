@@ -1552,6 +1552,24 @@ mod enabled {
             .unwrap();
         assert!(!rerun.status.success(), "network-extend never overwrites");
 
+        // Heights start at 1 — a zero activation can never take effect.
+        let zero = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "network-extend",
+                net.to_str().unwrap(),
+                temp.path("network-v3.json").to_str().unwrap(),
+                "--from",
+                "0",
+                "--validators",
+                &format!("{}:1", keys[0]),
+            ])
+            .output()
+            .unwrap();
+        assert!(!zero.status.success(), "activation heights start at 1");
+        assert!(String::from_utf8_lossy(&zero.stderr).contains("start at 1"));
+
         // A member joins the extended set: node-init on v1, node-update
         // to v2. Local fields survive; the schedule gains the activation.
         // The seed is keys[0]'s — a validator — so votes_from stays set.
