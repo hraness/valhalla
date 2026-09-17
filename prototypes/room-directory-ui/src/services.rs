@@ -129,16 +129,19 @@ impl FixtureServices {
                     name: hex(&[0xD4; 32]),
                     slug: Some("reading-room".into()),
                     state: vhalla_rooms_app::PendingState::Queued,
+                    reason: None,
                 },
                 Pending {
                     name: hex(&[0xE5; 32]),
                     slug: Some("ledger-nook".into()),
                     state: vhalla_rooms_app::PendingState::Submitted,
+                    reason: None,
                 },
                 Pending {
                     name: hex(&[0xF6; 32]),
                     slug: Some("parlor".into()),
                     state: vhalla_rooms_app::PendingState::Collision,
+                    reason: None,
                 },
             ],
             counter: 1,
@@ -221,6 +224,7 @@ impl RoomServices for FixtureServices {
             name: name.clone(),
             slug,
             state: vhalla_rooms_app::PendingState::Queued,
+            reason: None,
         });
         Ok(name)
     }

@@ -9,7 +9,7 @@ use vhalla_crypto::{sign_with_key, SignError, SignedEnvelope, VerificationContex
 use vhalla_custody::{self as custody, Error as CustodyError};
 use vhalla_session::{ChatSession, Invitation, InvitationError, Pairing, Pending, Reject};
 use vhalla_wire::Envelope;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const MAGIC: &[u8; 8] = b"VHID0001";
 const RECORD_BYTES: usize = 72;
@@ -28,6 +28,8 @@ pub enum IdentityError {
     Entropy,
     /// The explicit pairing or authenticated session transition was rejected.
     Session(Reject),
+    /// The mnemonic phrase is malformed or its checksum is invalid.
+    Phrase(String),
     /// Filesystem operation failed. A failed create may have left a directory
     /// or record; reconcile by explicit open, never regenerate automatically.
     Io(io::Error),
@@ -123,6 +125,55 @@ impl Identity {
     #[must_use]
     pub fn public_key(&self) -> [u8; 32] {
         self.key.verifying_key().to_bytes()
+    }
+
+    /// Encode the 256-bit seed as a 24-word BIP39 mnemonic. The phrase is
+    /// returned in a `Zeroizing` string so the caller can avoid leaking it in
+    /// their own heap; the seed bytes themselves are never exposed.
+    #[must_use]
+    pub fn backup(&self) -> Zeroizing<String> {
+        let mut seed = self.key.to_bytes();
+        let mnemonic =
+            bip39::Mnemonic::from_entropy(&seed).expect("seed is 32 bytes, a valid entropy size");
+        seed.zeroize();
+        Zeroizing::new(mnemonic.to_string())
+    }
+
+    /// Restore an identity from a BIP39 mnemonic, creating the same private
+    /// directory and record format as `create_new`. The caller must provide the
+    /// full path; existing paths are never reused.
+    pub fn restore(phrase: &str, path: impl AsRef<Path>) -> Result<Self, IdentityError> {
+        let path = path.as_ref();
+        let mnemonic =
+            bip39::Mnemonic::parse(phrase).map_err(|e| IdentityError::Phrase(format!("{e}")))?;
+        let entropy = mnemonic.to_entropy();
+        if entropy.len() != 32 {
+            return Err(IdentityError::Phrase(
+                "restored entropy is not 256 bits".into(),
+            ));
+        }
+        let seed = Zeroizing::new(<[u8; 32]>::try_from(entropy).map_err(|_| {
+            IdentityError::Phrase("restored entropy length is not 32 bytes".into())
+        })?);
+        let absolute = custody::absolute(path)?;
+        let parent = absolute.parent().ok_or(IdentityError::UnsafePath)?;
+        let (directory, _uid) = custody::create_private_directory(&absolute)?;
+        let lock = custody::create_private_file(&absolute.join("lock"))?;
+        custody::acquire_exclusive(&lock)?;
+        lock.sync_all()?;
+        let record = encode(&seed);
+        let mut pending = custody::create_private_file(&absolute.join("identity.tmp"))?;
+        pending.write_all(record.as_ref())?;
+        pending.sync_all()?;
+        fs::hard_link(absolute.join("identity.tmp"), absolute.join("identity"))?;
+        directory.sync_all()?;
+        fs::remove_file(absolute.join("identity.tmp"))?;
+        directory.sync_all()?;
+        File::open(parent)?.sync_all()?;
+        Ok(Self {
+            key: SigningKey::from_bytes(&seed),
+            _lock: lock,
+        })
     }
 
     /// Issue an owner-signed pairing invitation without exporting private key
