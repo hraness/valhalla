@@ -1,10 +1,10 @@
 use super::*;
 use ed25519_dalek::SigningKey;
-use std::fs::{DirBuilder, OpenOptions};
-use std::os::unix::fs::DirBuilderExt;
 use hegel::{generators as gs, HealthCheck, TestCase};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
+use std::fs::{DirBuilder, OpenOptions};
+use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use vhalla_social::{
     archive::Budget, Actor, Body, Operation, OwnerId, Placement, RecordId, SignedRecord, Text,

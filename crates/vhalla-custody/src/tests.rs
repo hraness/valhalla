@@ -16,10 +16,7 @@ impl TempDir {
     fn new() -> Self {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut path = std::env::temp_dir();
-        path.push(format!(
-            "vhalla-custody-test-{}-{n}",
-            std::process::id()
-        ));
+        path.push(format!("vhalla-custody-test-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         Self(path)
