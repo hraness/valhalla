@@ -32,9 +32,8 @@ jobs:
           persist-credentials: false
       - name: Install Kani 0.68.0
         run: |
-          curl -sSfL https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz -o kani.tar.gz
-          tar xzf kani.tar.gz
-          ./kani-0.68.0-x86_64-unknown-linux-gnu/setup.sh
+          cargo install --locked kani-verifier
+          cargo kani setup
       - run: cargo kani -p vhalla-journal -j --output-format terse
 
   verus:
