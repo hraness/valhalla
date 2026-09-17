@@ -2,6 +2,8 @@
 //! `Archive` behind the journal and both snapshot stores.
 use super::*;
 use crate::fixture;
+use hegel::{generators as gs, HealthCheck, TestCase};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn dir(tag: &str) -> PathBuf {
@@ -367,6 +369,340 @@ fn divergent_genesis_rejects_the_first_bundle_on_parent() {
     let _ = std::fs::remove_dir_all(&replica_home);
 }
 
+/// The committed-sequence oracle a replica is checked against: the source's
+/// own frontier commitment, applied-transition count and clock after every
+/// committed height, plus the committed bundle each height binds.
+struct CommittedSequence {
+    commitment: Vec<[u8; 32]>,
+    revision: Vec<u64>,
+    time: Vec<u64>,
+    last_time: Vec<u64>,
+    bundles: BTreeMap<u64, Bundle>,
+}
+
+/// Runs `plan` through a fresh source adapter on `home`, records the oracle
+/// per committed height (index 0 is genesis), then drops the adapter so the
+/// journal reads back exactly as a peer would fetch it.
+fn commit_plan(home: &PathBuf, plan: &fixture::Plan, tag: &str) -> CommittedSequence {
+    let mut commitment = Vec::new();
+    let mut revision = Vec::new();
+    let mut time = Vec::new();
+    let mut last_time = Vec::new();
+    {
+        let mut adapter = Adapter::open(home, &plan.genesis).unwrap();
+        let mut sink = EngineSink::default();
+        commitment.push(adapter.frontier().commitment());
+        revision.push(adapter.application().registry().revision());
+        time.push(adapter.frontier().time);
+        last_time.push(adapter.application().registry().last_time());
+        for (height, batch) in &plan.batches {
+            adapter.hold(batch.clone());
+            assert_eq!(
+                adapter.on_decided(&mut sink, &cert(batch, *height, tag)),
+                DecidedOutcome::Acked
+            );
+            commitment.push(adapter.frontier().commitment());
+            revision.push(adapter.application().registry().revision());
+            time.push(adapter.frontier().time);
+            last_time.push(adapter.application().registry().last_time());
+        }
+        // drop: the replica then opens the source's journal read-side
+    }
+    let journal = Journal::new(home.join("journal"), FsStore);
+    let mut bundles = BTreeMap::new();
+    for height in plan.batches.keys() {
+        let id = journal.at_height(*height).unwrap().unwrap();
+        bundles.insert(*height, journal.bundle(id).unwrap().unwrap());
+    }
+    CommittedSequence {
+        commitment,
+        revision,
+        time,
+        last_time,
+        bundles,
+    }
+}
+
+/// The in-memory state must equal the committed prefix exactly: height,
+/// frontier commitment, agreed clock and applied-transition count.
+fn assert_converged(replica: &Adapter<FsStore>, source: &CommittedSequence, committed: u64) {
+    let frontier = replica.frontier();
+    assert_eq!(frontier.height, committed);
+    assert_eq!(frontier.commitment(), source.commitment[committed as usize]);
+    assert_eq!(frontier.time, source.time[committed as usize]);
+    let registry = replica.application().registry();
+    assert_eq!(registry.revision(), source.revision[committed as usize]);
+    assert_eq!(registry.last_time(), source.last_time[committed as usize]);
+}
+
+/// The durable pin — the authority on committed state — must record exactly
+/// the committed prefix, and the retained bundles on disk must be exactly
+/// that prefix: the pin references only the tip, so earlier committed
+/// bundles report as "orphans" of the pin — and a rejected or replayed
+/// input must never add to either set.
+fn assert_pin(replica: &Adapter<FsStore>, source: &CommittedSequence, committed: u64) {
+    let recovered = replica.recover().unwrap();
+    assert_eq!(recovered.pin.height, committed);
+    assert_eq!(recovered.pin.next, source.commitment[committed as usize]);
+    assert_eq!(
+        recovered.pin.predecessor,
+        if committed == 0 {
+            [0; 32]
+        } else {
+            source.commitment[committed as usize - 1]
+        }
+    );
+    assert_eq!(
+        recovered.pin.bundle,
+        if committed == 0 {
+            [0; 32]
+        } else {
+            source.bundles[&committed].id()
+        }
+    );
+    let retained: BTreeSet<[u8; 32]> = recovered.orphans.iter().copied().collect();
+    let expected: BTreeSet<[u8; 32]> = (1..committed).map(|h| source.bundles[&h].id()).collect();
+    assert_eq!(
+        retained, expected,
+        "retained bundles must be exactly the committed prefix"
+    );
+    assert!(
+        !recovered.dropped_tmp && recovered.dropped_heights.is_empty(),
+        "rejected input must leave no unpublished residue"
+    );
+}
+
+/// Generative companion to `replica_absorbs_committed_bundles_and_converges`,
+/// `replica_rejects_unverified_and_misbound_bundles`,
+/// `exact_redelivery_reconciles_without_double_apply` and
+/// `restart_rebuilds_from_journal_and_pinned_snapshots`.
+///
+/// Two replicas sit behind one committed source. Each drawn step picks a
+/// replica and an operation: absorb a bundle at a drawn height (in-order,
+/// redelivery or out-of-order), restart, absorb a forged or misbound bundle,
+/// or take an engine-path certificate (honest or equivocating). The oracle
+/// throughout is the committed sequence itself: a replica's frontier,
+/// applied revision, clock and durable pin must always equal the source's
+/// record of its committed prefix — never more (rejected input never
+/// lands), never twice (no double-apply), never less (exact convergence
+/// with byte-identical evidence).
+///
+/// `held` models `pending`: absorb holds every bundle that passes binding +
+/// verification even when the decide then rejects it, `prune_pending` keeps
+/// only the batch parented on a newly advanced frontier, and a restart
+/// drops the map — that is what makes an engine-path decide at the next
+/// height ack exactly when the batch was previously delivered.
+#[hegel::test(test_cases = 32, suppress_health_check = [HealthCheck::TooSlow])]
+fn replicas_converge_under_drawn_delivery_interleavings(tc: TestCase) {
+    let heights = 4u64;
+    let plan = fixture::plan(heights, 4, 12);
+    let source_home = dir("gen-source");
+    let source = commit_plan(&source_home, &plan, "g");
+    // The stand-in verifier binds the (height, value) pair a real engine
+    // verifier would: the certificate's claimed height and decided value.
+    let verify = |bytes: &[u8], height: u64, value: &[u8; 32]| {
+        bytes == format!("cert-g-{height}").as_bytes()
+            && plan
+                .batches
+                .get(&height)
+                .is_some_and(|b| b.value_id() == *value)
+    };
+    let homes = [dir("gen-r0"), dir("gen-r1")];
+    let mut replicas = [
+        Some(Adapter::open(&homes[0], &plan.genesis).unwrap()),
+        Some(Adapter::open(&homes[1], &plan.genesis).unwrap()),
+    ];
+    let mut committed = [0u64; 2];
+    let mut held: [BTreeSet<u64>; 2] = [BTreeSet::new(), BTreeSet::new()];
+
+    for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(12)) {
+        let which = usize::from(tc.draw(gs::booleans()));
+        let slot = &mut replicas[which];
+        match tc.draw(gs::integers::<u8>().max_value(9)) {
+            // A committed bundle arrives. Near-frontier draws mix in-order
+            // delivery, redelivery and gaps; uniform draws roam farther.
+            0..=4 => {
+                let replica = slot.as_mut().unwrap();
+                let h = if tc.draw(gs::booleans()) {
+                    (committed[which] + tc.draw(gs::integers::<u64>().max_value(3)))
+                        .saturating_sub(1)
+                        .clamp(1, heights)
+                } else {
+                    tc.draw(gs::integers::<u64>().min_value(1).max_value(heights))
+                };
+                let revision_before = replica.application().registry().revision();
+                let outcome = replica.absorb(&source.bundles[&h], verify);
+                // Binding and verification passed, so the batch is now held
+                // whether or not the decide below it committed.
+                held[which].insert(h);
+                if h <= committed[which] {
+                    assert_eq!(
+                        outcome,
+                        DecidedOutcome::Acked,
+                        "an already-committed bundle must reconcile"
+                    );
+                    assert_eq!(
+                        replica.application().registry().revision(),
+                        revision_before,
+                        "a committed batch must never double-apply"
+                    );
+                } else if h == committed[which] + 1 {
+                    assert_eq!(outcome, DecidedOutcome::Acked);
+                    committed[which] = h;
+                    held[which].retain(|&x| x == h + 1);
+                } else {
+                    assert_eq!(
+                        outcome,
+                        DecidedOutcome::Rejected,
+                        "a gap delivery must be rejected, not skipped ahead"
+                    );
+                }
+            }
+            // Restart: rebuild from the journal and pinned snapshots.
+            5..=6 => {
+                drop(slot.take()); // store locks release with the adapter
+                let replica = slot.insert(Adapter::open(&homes[which], &plan.genesis).unwrap());
+                held[which].clear();
+                assert_converged(replica, &source, committed[which]);
+            }
+            // A forged or misbound bundle arrives — every variant must be
+            // rejected before durable state moves.
+            7..=8 => {
+                let replica = slot.as_mut().unwrap();
+                let h = tc.draw(gs::integers::<u64>().min_value(1).max_value(heights));
+                let genuine = &source.bundles[&h];
+                let mut parts = BundleParts {
+                    certificate: genuine.field(0).unwrap().to_vec(),
+                    predecessor: genuine.field(1).unwrap().try_into().unwrap(),
+                    next: genuine.field(2).unwrap().try_into().unwrap(),
+                    batch: genuine.field(3).unwrap().to_vec(),
+                    value: genuine.field(4).unwrap().to_vec(),
+                    configuration: genuine.field(5).unwrap().to_vec(),
+                    control_record: genuine.field(6).unwrap().to_vec(),
+                    debit_marker: genuine.field(7).unwrap().to_vec(),
+                    height: h,
+                };
+                match tc.draw(gs::integers::<u8>().max_value(3)) {
+                    // Misbound: a real batch under a different committed
+                    // value — the binding check rejects before verify runs.
+                    0 => {
+                        parts.value = plan.batches[&(h % heights + 1)].value_id().to_vec();
+                        let forged = Bundle::new(parts).unwrap();
+                        assert_eq!(
+                            replica.absorb(&forged, |_, _, _| panic!("verify must not run")),
+                            DecidedOutcome::Rejected
+                        );
+                    }
+                    // Certificate bytes nobody can verify.
+                    1 => {
+                        parts.certificate = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(48));
+                        if parts.certificate == genuine.field(0).unwrap() {
+                            parts.certificate.push(0);
+                        }
+                        let forged = Bundle::new(parts).unwrap();
+                        assert_eq!(replica.absorb(&forged, verify), DecidedOutcome::Rejected);
+                    }
+                    // The bundle lies about which height it commits.
+                    2 => {
+                        let mut claimed =
+                            tc.draw(gs::integers::<u64>().min_value(1).max_value(heights + 2));
+                        if claimed == h {
+                            claimed += 1;
+                        }
+                        parts.height = claimed;
+                        let forged = Bundle::new(parts).unwrap();
+                        assert_eq!(replica.absorb(&forged, verify), DecidedOutcome::Rejected);
+                    }
+                    // A real certificate shape over a batch with a forged
+                    // claim — the committed (height, value) pair rejects it.
+                    _ => {
+                        let mut batch = Batch::decode(genuine.field(3).unwrap()).unwrap();
+                        match tc.draw(gs::integers::<u8>().max_value(3)) {
+                            0 => batch.result_registry = [0xEE; 32],
+                            1 => batch.result_social = [0xEE; 32],
+                            2 => batch.result_control = [0xEE; 32],
+                            _ => {
+                                batch.time =
+                                    batch.time.wrapping_add(tc.draw(gs::integers::<u64>()) | 1)
+                            }
+                        }
+                        parts.batch = batch.encode();
+                        parts.value = batch.value_id().to_vec();
+                        let forged = Bundle::new(parts).unwrap();
+                        assert_eq!(replica.absorb(&forged, verify), DecidedOutcome::Rejected);
+                    }
+                }
+            }
+            // An engine-path certificate arrives: honest pairs reconcile or
+            // commit a held batch; equivocating values are always rejected.
+            _ => {
+                let replica = slot.as_mut().unwrap();
+                let h = tc.draw(gs::integers::<u64>().min_value(1).max_value(heights));
+                let honest = tc.draw(gs::booleans());
+                let value = if honest {
+                    plan.batches[&h].value_id()
+                } else {
+                    plan.batches[&(h % heights + 1)].value_id()
+                };
+                if tc.draw(gs::booleans()) {
+                    replica.hold(plan.batches[&h].clone());
+                    held[which].insert(h);
+                }
+                let mut sink = EngineSink::default();
+                let outcome = replica.on_decided(
+                    &mut sink,
+                    &CommitCertificate {
+                        bytes: format!("cert-g-{h}").into_bytes(),
+                        value_commitment: value,
+                        height: h,
+                    },
+                );
+                let expected_ack = honest
+                    && (h <= committed[which]
+                        || (h == committed[which] + 1 && held[which].contains(&h)));
+                if expected_ack {
+                    assert_eq!(outcome, DecidedOutcome::Acked);
+                    assert_eq!(sink.sent, vec![EngineMsg::CommitAck { height: h }]);
+                    if h == committed[which] + 1 {
+                        committed[which] = h;
+                        held[which].retain(|&x| x == h + 1);
+                    }
+                } else {
+                    assert_eq!(outcome, DecidedOutcome::Rejected);
+                    assert!(
+                        sink.sent.is_empty(),
+                        "a rejected certificate must emit nothing"
+                    );
+                }
+            }
+        }
+        let replica = replicas[which].as_ref().unwrap();
+        assert_converged(replica, &source, committed[which]);
+        assert_pin(replica, &source, committed[which]);
+    }
+
+    // Whatever the delivery schedule, each replica's journal holds exactly
+    // its committed prefix — the same bundles the deciding quorum committed.
+    for (which, slot) in replicas.iter().enumerate() {
+        let replica = slot.as_ref().unwrap();
+        assert_converged(replica, &source, committed[which]);
+        assert_pin(replica, &source, committed[which]);
+        for h in 1..=committed[which] {
+            assert_eq!(
+                replica.committed_at_height(h).unwrap().id(),
+                source.bundles[&h].id(),
+                "committed evidence must be the byte-identical committed bundle"
+            );
+        }
+        assert!(
+            replica.committed_at_height(committed[which] + 1).is_none(),
+            "no evidence may exist beyond the committed sequence"
+        );
+        let _ = std::fs::remove_dir_all(&homes[which]);
+    }
+    let _ = std::fs::remove_dir_all(&source_home);
+}
+
 #[test]
 fn batch_clock_is_monotonic_and_step_bounded() {
     let mut scenario = fixture::scenario(2, 4);
@@ -418,6 +754,58 @@ fn batch_clock_is_monotonic_and_step_bounded() {
     assert!(scenario.app.validate(clamped.batch()).is_ok());
     let floored = scenario.app.prepare(7, vec![], vec![], None).unwrap();
     assert_eq!(floored.batch().time, 1_000_000);
+}
+
+/// Generative companion to `batch_clock_is_monotonic_and_step_bounded`:
+/// over a drawn sequence of raw clock inputs interleaved with commits, the
+/// producer always clamps into the committed window, the committed clock
+/// never regresses and never advances more than `MAX_TIME_DRIFT` per
+/// height, and a batch claiming a time outside the window fails with
+/// exactly `ApplyError::Clock` — the drawn step count stands in for the
+/// hand-written boundary cases.
+#[hegel::test(test_cases = 64)]
+fn committed_clock_holds_across_drawn_steps(tc: TestCase) {
+    let mut scenario = fixture::scenario(2, 4);
+    let mut committed_time = 0u64;
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(15)) {
+        let raw = tc.draw(gs::integers::<u64>());
+        let checked = scenario.app.prepare(raw, vec![], vec![], None).unwrap();
+        let window_top = committed_time.saturating_add(MAX_TIME_DRIFT);
+        let expected = if committed_time == 0 {
+            raw
+        } else {
+            raw.clamp(committed_time, window_top)
+        };
+        assert_eq!(
+            checked.batch().time,
+            expected,
+            "the producer must clamp the clock into the committed window"
+        );
+        // A drawn out-of-window claim must fail with `Clock` — and only
+        // those claims: in-window claims proceed to the result compare.
+        let mut probe = checked.batch().clone();
+        probe.time = tc.draw(gs::integers::<u64>());
+        let in_window = committed_time == 0 || (committed_time..=window_top).contains(&probe.time);
+        assert_eq!(
+            matches!(scenario.app.validate(&probe), Err(ApplyError::Clock)),
+            !in_window,
+            "Clock rejection must be exactly the out-of-window set"
+        );
+        if tc.draw(gs::booleans()) {
+            let time = checked.batch().time;
+            scenario.app.apply_locally(checked);
+            assert!(
+                time >= committed_time,
+                "the committed clock never regresses"
+            );
+            assert!(
+                committed_time == 0 || time <= window_top,
+                "nor advances more than MAX_TIME_DRIFT per height"
+            );
+            committed_time = time;
+            assert_eq!(scenario.app.frontier().time, committed_time);
+        }
+    }
 }
 
 #[test]
