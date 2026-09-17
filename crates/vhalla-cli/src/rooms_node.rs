@@ -581,7 +581,7 @@ pub fn check(args: &Args) -> Result<(), String> {
     }
     if votes_from.is_none() {
         warnings.push(
-            "node_key is not in any validator set — the node follows but never votes".to_string(),
+            "node_key is not in any validator set - the node follows but never votes".to_string(),
         );
     }
     println!(
@@ -975,7 +975,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     let mut warnings = Vec::new();
     if votes_from.is_none() {
         warnings.push(
-            "this key is not in the validator set — the node follows but never votes; share public_key with the operator to join"
+            "this key is not in the validator set - the node follows but never votes; share public_key with the operator to join"
                 .to_string(),
         );
     }
@@ -1182,7 +1182,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
         || existing.limits != network.limits
     {
         return Err(
-            "network file changed a genesis field (directory, policy or limits) — that is a new network, not an update".into(),
+            "network file changed a genesis field (directory, policy or limits) - that is a new network, not an update".into(),
         );
     }
     let eligible_same = {
@@ -1192,7 +1192,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
     };
     if !eligible_same {
         return Err(
-            "network file changed the eligible set — eligible owners move in-band via `rooms eligible`, not config".into(),
+            "network file changed the eligible set - eligible owners move in-band via `rooms eligible`, not config".into(),
         );
     }
 
@@ -1257,7 +1257,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
     let mut warnings = Vec::new();
     if votes_from.is_none() {
         warnings.push(
-            "node_key is not in any validator set — the node follows but never votes".to_string(),
+            "node_key is not in any validator set - the node follows but never votes".to_string(),
         );
     }
     println!(

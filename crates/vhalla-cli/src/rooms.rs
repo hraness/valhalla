@@ -66,8 +66,8 @@ decode path and reports the genesis fingerprint, seeded archive root,
 per-set quorum arithmetic and whether the node key votes.
 `network-extend` copies a shared-params file plus one complete
 replacement validator set activating at a future height; `node-update`
-merges that file into a member's existing node.json — keeping its key,
-port and peers — and refuses any change to activations at or below the
+merges that file into a member's existing node.json - keeping its key,
+port and peers - and refuses any change to activations at or below the
 committed height. A restarted node picks the new schedule up.
 Producers submit canonical batches by dropping *.batch files into
 NODE_HOME/intake/; operators evolve the eligible set by dropping *.eligible
