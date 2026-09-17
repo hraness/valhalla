@@ -9,6 +9,7 @@ description = "Explicit private-file persistence for bounded signed social archi
 [dependencies]
 vhalla-social = { path = "../vhalla-social" }
 vhalla-core = { path = "../vhalla-core" }
+vhalla-custody = { path = "../vhalla-custody" }
 sha2 = "0.10"
 
 [dev-dependencies]

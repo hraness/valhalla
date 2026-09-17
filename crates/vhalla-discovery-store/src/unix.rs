@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, DirBuilder, File, Metadata, OpenOptions},
-    io::{self, Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    fs::{self, File, Metadata},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 use vhalla_attention::{Attention, ReaderScope};
+use vhalla_custody::{self as custody, Error as CustodyError};
 use vhalla_discovery::DiscoveryState;
 use vhalla_social::RecordId;
 use vhalla_social_store::Store as SocialStore;
@@ -70,6 +70,15 @@ impl From<vhalla_discovery::Error> for Error {
 impl From<vhalla_social_store::Error> for Error {
     fn from(value: vhalla_social_store::Error) -> Self {
         Self::Social(value)
+    }
+}
+fn map_custody(error: CustodyError) -> Error {
+    match error {
+        CustodyError::Io(e) => Error::Io(e),
+        CustodyError::UnsafePath => Error::UnsafePath,
+        CustodyError::Busy => Error::Busy,
+        CustodyError::Capacity => Error::Capacity,
+        CustodyError::Corrupt => Error::Corrupt,
     }
 }
 impl std::fmt::Display for Error {
@@ -345,8 +354,7 @@ impl Store {
             return Err(Error::UnsafePath);
         };
         let path = parent.join(path.file_name().ok_or(Error::UnsafePath)?);
-        DirBuilder::new().mode(0o700).create(&path)?;
-        let (directory, uid) = directory(&path)?;
+        let (directory, uid) = custody::create_private_directory(&path).map_err(map_custody)?;
         let lock = create_private(&path.join(LOCK))?;
         acquire(&lock)?;
         lock.sync_all()?;
@@ -377,7 +385,7 @@ impl Store {
         expected: Option<Pin>,
     ) -> Result<Self, Error> {
         let path = absolute(path.as_ref())?;
-        let (directory, uid) = directory(&path)?;
+        let (directory, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
         let lock = open_private(&path.join(LOCK), uid, 0)?;
         acquire(&lock)?;
         let image = Image::decode(&read_bounded(&path.join(STATE), uid, MAX_BYTES)?, scope)?;
@@ -700,77 +708,26 @@ fn indeterminate(error: Error) -> Error {
     }
 }
 fn absolute(path: &Path) -> Result<PathBuf, Error> {
-    Ok(if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir()?.join(path)
-    })
+    custody::absolute(path).map_err(map_custody)
 }
+#[cfg(test)]
 fn directory(path: &Path) -> Result<(File, u32), Error> {
-    let before = fs::symlink_metadata(path)?;
-    if !before.is_dir() || before.mode() & 0o7777 != 0o700 {
-        return Err(Error::UnsafePath);
-    };
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_DIRECTORY | libc::O_NOCTTY)
-        .open(path)?;
-    let after = file.metadata()?;
-    if before.dev() != after.dev() || before.ino() != after.ino() || after.mode() & 0o7777 != 0o700
-    {
-        return Err(Error::UnsafePath);
-    };
-    Ok((file, after.uid()))
+    custody::open_private_directory(path).map_err(map_custody)
 }
 fn regular(meta: &Metadata, uid: u32, max: usize) -> Result<(), Error> {
-    if !meta.is_file() || meta.mode() & 0o7777 != 0o600 || meta.nlink() != 1 || meta.uid() != uid {
-        return Err(Error::UnsafePath);
-    };
-    if meta.len() > max as u64 {
-        return Err(Error::Capacity);
-    };
-    Ok(())
+    custody::check_regular_file(meta, uid, max).map_err(map_custody)
 }
 fn create_private(path: &Path) -> Result<File, Error> {
-    Ok(OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open(path)?)
+    custody::create_private_file(path).map_err(map_custody)
 }
 fn open_private(path: &Path, uid: u32, max: usize) -> Result<File, Error> {
-    let before = fs::symlink_metadata(path)?;
-    regular(&before, uid, max)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open(path)?;
-    let after = file.metadata()?;
-    regular(&after, uid, max)?;
-    if before.dev() != after.dev() || before.ino() != after.ino() {
-        return Err(Error::UnsafePath);
-    };
-    Ok(file)
+    custody::open_private_file(path, uid, max).map_err(map_custody)
 }
 fn read_bounded(path: &Path, uid: u32, max: usize) -> Result<Vec<u8>, Error> {
-    let mut file = open_private(path, uid, max)?;
-    let len = usize::try_from(file.metadata()?.len()).map_err(|_| Error::Capacity)?;
-    let mut raw = vec![0; len];
-    file.read_exact(&mut raw)?;
-    if file.read(&mut [0])? != 0 {
-        return Err(Error::Corrupt);
-    };
-    Ok(raw)
+    custody::read_private_file(path, uid, max).map_err(map_custody)
 }
 fn acquire(file: &File) -> Result<(), Error> {
-    match file.try_lock() {
-        Ok(()) => Ok(()),
-        Err(fs::TryLockError::WouldBlock) => Err(Error::Busy),
-        Err(fs::TryLockError::Error(e)) => Err(e.into()),
-    }
+    custody::acquire_exclusive(file).map_err(map_custody)
 }
 
 #[cfg(test)]
