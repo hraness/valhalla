@@ -1,14 +1,12 @@
 #![cfg(all(unix, feature = "experimental-rooms-node"))]
-//! Tailcat overlay planner for room-consensus meshes.
+//! Tailcat overlay planner and health check for room-consensus meshes.
 //!
 //! Tailcat (`tailscale/tailcat`) provides account-less, userspace TCP
 //! tunnels that are useful for carrying the libp2p mesh traffic across
-//! different networks. This module is a pure planner: it reads the
-//! per-member `node.json` files produced by `rooms node-init`, allocates
-//! the local forward-port namespace, and emits an executable plan so an
-//! operator (or a supervisor script) can spawn the `tailcat serve` and
-//! `tailcat forward` processes and the matching `peers` CSV for each
-//! member.
+//! different networks. This module reads the per-member `node.json` files
+//! produced by `rooms node-init`, allocates the local forward-port namespace,
+//! emits an executable plan, and can also check whether that plan's serves and
+//! forwards are currently running.
 
 use std::{ffi::OsString, path::Path};
 
@@ -38,19 +36,19 @@ struct Member {
     listen: String,
 }
 
-/// Plan a tailcat mesh from a list of `node.json` files.
+/// Dispatch `vhalla rooms tailcat {plan,status} ...`.
 ///
-/// Usage: `vhalla rooms tailcat plan --nodes NODE.json... --base-port N`
+/// `plan` emits an executable `tailcat serve`/`tailcat forward` mesh and the
+/// matching `peers` CSV for each `node-init --peers` call.
 ///
-/// For N members the plan needs N `tailcat serve` processes and
-/// N*(N-1) `tailcat forward` processes. Each member `i` dials its peers
-/// at `127.0.0.1:<base + i*100 + j>` where `j != i`. The emitted JSON
-/// contains the commands and the resulting `peers` CSV for each
-/// `node-init --peers` call.
+/// `status` checks whether the planned addr files and local forward ports are
+/// live, so an operator can see whether the tunnel mesh is up without parsing
+/// process lists.
 pub fn run(args: Vec<OsString>) -> Result<(), String> {
     let mut nodes: Vec<String> = Vec::new();
     let mut base_port = 17_000u16;
     let mut output = "json".to_string();
+    let mut subcommand = "plan";
     let mut i = 0;
     while i < args.len() {
         let value = args[i]
@@ -58,7 +56,8 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
             .ok_or("tailcat arguments must be UTF-8")?
             .to_owned();
         match value.as_str() {
-            "plan" => {}
+            "plan" => subcommand = "plan",
+            "status" => subcommand = "status",
             "--nodes" => {
                 i += 1;
                 while i < args.len() && !args[i].to_str().unwrap_or("").starts_with("--") {
@@ -97,10 +96,7 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
         i += 1;
     }
     if nodes.len() < 2 {
-        return Err("tailcat plan needs at least two --nodes node.json files".into());
-    }
-    if output != "json" && output != "shell" {
-        return Err("--output must be json or shell".into());
+        return Err("tailcat needs at least two --nodes node.json files".into());
     }
     let mut members = Vec::with_capacity(nodes.len());
     for path in nodes {
@@ -122,14 +118,23 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
             listen: node.listen,
         });
     }
-    if output == "json" {
-        emit_json(&members, base_port)
-    } else {
-        emit_shell(&members, base_port)
+    match subcommand {
+        "plan" => {
+            if output != "json" && output != "shell" {
+                return Err("--output must be json or shell".into());
+            }
+            if output == "json" {
+                emit_json(&members, base_port)
+            } else {
+                emit_shell(&members, base_port)
+            }
+        }
+        "status" => emit_status(&members, base_port),
+        _ => Err(HELP.into()),
     }
 }
 
-const HELP: &str = "vhalla rooms tailcat plan --nodes A/node.json B/node.json ... [--base-port N] [--output json|shell]";
+const HELP: &str = "vhalla rooms tailcat plan --nodes A/node.json B/node.json ... [--base-port N] [--output json|shell]\nvhalla rooms tailcat status --nodes A/node.json B/node.json ... [--base-port N]";
 
 fn emit_json(members: &[Member], base: u16) -> Result<(), String> {
     use crate::json;
@@ -248,4 +253,69 @@ fn emit_shell(members: &[Member], base: u16) -> Result<(), String> {
         ));
     }
     crate::rooms::emit(json::string(&lines.join("\n")))
+}
+
+/// Check whether the planned tailcat serves and forwards appear to be running.
+fn emit_status(members: &[Member], base: u16) -> Result<(), String> {
+    use crate::json;
+    use std::time::Duration;
+    let timeout = Duration::from_millis(100);
+    let serves: Vec<String> = members
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let path = format!("/tmp/tailcat-addr-{i}.txt");
+            let (ready, addr) = match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        (false, None)
+                    } else {
+                        (true, Some(trimmed.to_string()))
+                    }
+                }
+                Err(_) => (false, None),
+            };
+            json::object(vec![
+                ("index", i.to_string()),
+                ("name", json::string(&m.name)),
+                ("addr_file", json::string(&path)),
+                ("ready", ready.to_string()),
+                ("addr", json::optional(addr.as_deref(), json::string)),
+            ])
+        })
+        .collect();
+    let forwards: Vec<String> = members
+        .iter()
+        .enumerate()
+        .flat_map(|(i, _)| {
+            members.iter().enumerate().filter_map(move |(j, _)| {
+                if i == j {
+                    return None;
+                }
+                let local_port = base + (i as u16) * 100 + j as u16;
+                let addr = format!("127.0.0.1:{local_port}");
+                let (connected, error) = match addr
+                    .parse::<std::net::SocketAddr>()
+                    .map_err(|e| e.to_string())
+                    .and_then(|a| {
+                        std::net::TcpStream::connect_timeout(&a, timeout).map_err(|e| e.to_string())
+                    }) {
+                    Ok(_) => (true, None),
+                    Err(e) => (false, Some(e)),
+                };
+                Some(json::object(vec![
+                    ("from", i.to_string()),
+                    ("to", j.to_string()),
+                    ("local_port", local_port.to_string()),
+                    ("connected", connected.to_string()),
+                    ("error", json::optional(error.as_deref(), json::string)),
+                ]))
+            })
+        })
+        .collect();
+    crate::rooms::emit(json::object(vec![
+        ("serves", json::array(serves)),
+        ("forwards", json::array(forwards)),
+    ]))
 }
