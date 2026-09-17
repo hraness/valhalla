@@ -15,11 +15,11 @@ use vhalla_rooms_tui::{form, sign, CREATE_LABELS, DESCRIBE_LABELS};
 
 use crate::rooms::Args;
 
-/// The replica prelude every NODE_HOME-backed command shares: parse the
-/// node config, check the realm, open the caller-owned replica and sync
-/// it to the node's latest committed journal height. `command` names the
-/// caller for error text.
-fn open_service(args: &Args, command: &str) -> Result<Service, String> {
+/// The pure half of the replica prelude: --config and NODE_HOME must be
+/// present, the file must parse, and its realm must match — no I/O yet,
+/// so callers can finish argument validation before opening anything.
+/// `command` names the caller for error text.
+fn service_target<'a>(args: &'a Args, command: &str) -> Result<(&'a str, ServiceConfig), String> {
     let config_path = args
         .config
         .as_deref()
@@ -32,11 +32,17 @@ fn open_service(args: &Args, command: &str) -> Result<Service, String> {
     if config.realm_id().map_err(|e| e.to_string())? != args.realm {
         return Err("config realm does not match the REALM argument".into());
     }
+    Ok((node_home, config))
+}
+
+/// Open the caller-owned replica for a validated target and sync it to
+/// the node's latest committed journal height.
+fn connect(args: &Args, node_home: &str, config: &ServiceConfig) -> Result<Service, String> {
     let mut service = Service::open(
         Path::new(&args.social_store),
         Path::new(node_home),
         Path::new(&args.rooms_store),
-        &config,
+        config,
     )
     .map_err(|e| e.to_string())?;
     // The context must reflect the node's latest committed state, not the
@@ -45,12 +51,22 @@ fn open_service(args: &Args, command: &str) -> Result<Service, String> {
     Ok(service)
 }
 
+/// The replica prelude every NODE_HOME-backed command shares: validate
+/// the target, open the replica, sync to the node's committed height.
+fn open_service(args: &Args, command: &str) -> Result<Service, String> {
+    let (node_home, config) = service_target(args, command)?;
+    connect(args, node_home, &config)
+}
+
 /// Opens the replica, signs the requested operation, drops the body.
 pub fn run(args: &Args) -> Result<(), String> {
+    // Argument precedence is user-visible: --config, then NODE_HOME, then
+    // the kind — and nothing is opened until all three validate.
+    let (node_home, config) = service_target(args, "submit")?;
     let kind = args
         .value(1)
         .ok_or("submit takes a kind: create | describe | archive")?;
-    let mut service = open_service(args, "submit")?;
+    let mut service = connect(args, node_home, &config)?;
     let now = args.now();
 
     let (evidence, records) = match kind {
