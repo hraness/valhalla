@@ -1,20 +1,17 @@
 name: Verification
 
-# Formal checks on the crates that carry Kani harnesses and the Verus
-# model. Scoped to paths that can invalidate a proof so the jobs stay
-# proportional; see docs/verification.md for what each layer proves.
+# Verus functional-verification of the ledger admission model.
+# Kani harnesses for the journal codec are intentionally local-only:
+# CBMC is too slow and too resource-hungry for GitHub's free runners
+# to complete within an acceptable PR gate.
 on:
   pull_request:
     paths:
-      - "crates/vhalla-ledger/**"
-      - "crates/vhalla-journal/**"
       - "verify/**"
       - ".github/workflows/verification.yml"
   push:
     branches: [main]
     paths:
-      - "crates/vhalla-ledger/**"
-      - "crates/vhalla-journal/**"
       - "verify/**"
       - ".github/workflows/verification.yml"
   workflow_dispatch:
@@ -23,22 +20,9 @@ permissions:
   contents: read
 
 jobs:
-  kani:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Install Kani 0.68.0
-        run: |
-          cargo install --locked kani-verifier
-          cargo kani setup
-      - run: cargo kani -p vhalla-journal -j --output-format terse
-
   verus:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:

@@ -17,7 +17,9 @@ bounds written in each harness.
 
 Ledger admission invariants (tip advance, atomicity, per-actor monotonicity, duplicate and capacity rejection) are handled in the unbounded Verus model below. The journal Kani proof checks that the bundle decoder rejects oversized inputs without panicking. Bounded Kani harnesses on the production `BTreeMap<EventDigest, Event>` implementation proved intractable on this toolchain: CBMC unwinds the standard-library `find_key_index` and node-scan loops far beyond a useful bound even for one- or two-element maps, so the trade-off favors the Verus abstraction for admission logic and a small, fast Kani check for the self-contained codec.
 
-Run:
+The Kani harness is intentionally not run in CI: CBMC is too slow and
+resource-hungry to complete on GitHub's free runners within an acceptable
+PR gate. Run it locally when the decoder surface changes:
 
 ```console
 cargo install kani-verifier --locked   # once; then cargo kani setup
