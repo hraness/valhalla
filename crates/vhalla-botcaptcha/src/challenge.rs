@@ -47,6 +47,41 @@ pub struct ChallengeContext {
     pub purpose: Purpose,
 }
 
+/// Highest leading-zero-bit target an issuer may set; adaptive difficulty under
+/// load stays below it so a browser or embedded solver can still finish.
+pub const MAX_DIFFICULTY: u8 = 48;
+
+/// A Hashcash leading-zero-bit target, `1..=MAX_DIFFICULTY`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Difficulty(u8);
+
+impl Difficulty {
+    /// `None` outside `1..=MAX_DIFFICULTY`.
+    #[must_use]
+    pub const fn new(bits: u8) -> Option<Self> {
+        if bits >= 1 && bits <= MAX_DIFFICULTY {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+    /// Required leading zero bits.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+/// `target_or_work_floor`: what the subject must achieve, by algorithm. Both
+/// variants occupy the same seventeen bytes of the transcript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Requirement {
+    /// Witness mode: the work contract.
+    Witness(WorkContract),
+    /// Hashcash mode: the leading-zero-bit target.
+    Hashcash(Difficulty),
+}
+
 /// Fixed encoded width of a challenge.
 pub const CHALLENGE_BYTES: usize = 1 + 1 + 32 + 32 + 32 + 16 + 16 + 1 + 32 + 8 + 8 + 8 + 8 + 1 + 64;
 
@@ -75,8 +110,8 @@ pub struct Challenge {
     pub issued_at: u64,
     /// Expiry, seconds, inclusive.
     pub expires_at: u64,
-    /// `target_or_work_floor` in witness mode: the work contract.
-    pub contract: WorkContract,
+    /// `target_or_work_floor`: the work contract or the Hashcash target.
+    pub requirement: Requirement,
     /// Issuer signature over the transcript.
     pub signature: [u8; 64],
 }
@@ -93,9 +128,18 @@ fn put_body(writer: &mut Writer, challenge: &Challenge) {
     writer.bytes(&challenge.task_manifest_hash.0);
     writer.u64(challenge.issued_at);
     writer.u64(challenge.expires_at);
-    writer.u64(challenge.contract.useful_floor);
-    writer.u64(challenge.contract.total_ceiling);
-    writer.bool(challenge.contract.require_passed);
+    match challenge.requirement {
+        Requirement::Witness(contract) => {
+            writer.u64(contract.useful_floor);
+            writer.u64(contract.total_ceiling);
+            writer.bool(contract.require_passed);
+        }
+        Requirement::Hashcash(difficulty) => {
+            writer.u64(u64::from(difficulty.bits()));
+            writer.u64(0);
+            writer.bool(false);
+        }
+    }
 }
 
 fn read_u128(reader: &mut Reader<'_>) -> Result<u128, CodecError> {
@@ -160,10 +204,26 @@ impl Challenge {
         let task_manifest_hash = ManifestHash(reader.hash()?);
         let issued_at = reader.u64(Field::Contract)?;
         let expires_at = reader.u64(Field::Contract)?;
-        let contract = WorkContract {
-            useful_floor: reader.u64(Field::Contract)?,
-            total_ceiling: reader.u64(Field::Contract)?,
-            require_passed: reader.bool(Field::Contract)?,
+        let first = reader.u64(Field::Contract)?;
+        let second = reader.u64(Field::Contract)?;
+        let third = reader.bool(Field::Contract)?;
+        let requirement = match algorithm {
+            Algorithm::Witness => Requirement::Witness(WorkContract {
+                useful_floor: first,
+                total_ceiling: second,
+                require_passed: third,
+            }),
+            Algorithm::Hashcash => {
+                let bits = u8::try_from(first).ok().and_then(Difficulty::new);
+                match bits {
+                    Some(difficulty) if second == 0 && !third => Requirement::Hashcash(difficulty),
+                    _ => {
+                        return Err(CodecError::Bound {
+                            field: Field::Contract,
+                        })
+                    }
+                }
+            }
         };
         let mut signature = [0_u8; 64];
         signature[..32].copy_from_slice(&reader.hash()?);
@@ -181,9 +241,25 @@ impl Challenge {
             task_manifest_hash,
             issued_at,
             expires_at,
-            contract,
+            requirement,
             signature,
         })
+    }
+    /// The work contract, in witness mode.
+    #[must_use]
+    pub const fn contract(&self) -> Option<WorkContract> {
+        match self.requirement {
+            Requirement::Witness(contract) => Some(contract),
+            Requirement::Hashcash(_) => None,
+        }
+    }
+    /// The leading-zero-bit target, in Hashcash mode.
+    #[must_use]
+    pub const fn difficulty(&self) -> Option<Difficulty> {
+        match self.requirement {
+            Requirement::Witness(_) => None,
+            Requirement::Hashcash(difficulty) => Some(difficulty),
+        }
     }
     /// Digest of the signed body: binds a response to this exact challenge,
     /// including issuer, realm, room, purpose, expiry, and contract.
@@ -255,13 +331,66 @@ impl ChallengeIssuer {
         task_manifest_hash: ManifestHash,
         contract: WorkContract,
     ) -> Result<Challenge, IssueError> {
+        self.issue_with(
+            Algorithm::Witness,
+            entropy,
+            now,
+            lifetime,
+            subject_key,
+            realm,
+            room,
+            purpose,
+            task_manifest_hash,
+            Requirement::Witness(contract),
+        )
+    }
+    /// Issues a Hashcash-mode challenge: no manifest, a leading-zero target.
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_hashcash(
+        &self,
+        entropy: [u8; 32],
+        now: u64,
+        lifetime: u64,
+        subject_key: [u8; 32],
+        realm: RealmId,
+        room: RoomId,
+        purpose: Purpose,
+        difficulty: Difficulty,
+    ) -> Result<Challenge, IssueError> {
+        self.issue_with(
+            Algorithm::Hashcash,
+            entropy,
+            now,
+            lifetime,
+            subject_key,
+            realm,
+            room,
+            purpose,
+            ManifestHash([0; 32]),
+            Requirement::Hashcash(difficulty),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn issue_with(
+        &self,
+        algorithm: Algorithm,
+        entropy: [u8; 32],
+        now: u64,
+        lifetime: u64,
+        subject_key: [u8; 32],
+        realm: RealmId,
+        room: RoomId,
+        purpose: Purpose,
+        task_manifest_hash: ManifestHash,
+        requirement: Requirement,
+    ) -> Result<Challenge, IssueError> {
         if lifetime == 0 || lifetime > MAX_CHALLENGE_LIFETIME {
             return Err(IssueError::Lifetime);
         }
         let expires_at = now.checked_add(lifetime).ok_or(IssueError::Clock)?;
         let mut challenge = Challenge {
             version: VERSION,
-            algorithm: Algorithm::Witness,
+            algorithm,
             challenge_id: entropy,
             issuer_key: self.verifying_key(),
             subject_key,
@@ -271,7 +400,7 @@ impl ChallengeIssuer {
             task_manifest_hash,
             issued_at: now,
             expires_at,
-            contract,
+            requirement,
             signature: [0; 64],
         };
         challenge.signature = self.key.sign(&challenge.transcript()).to_bytes();
@@ -284,7 +413,7 @@ impl ChallengeIssuer {
 pub enum WitnessError {
     /// Bytes did not decode within their bounds.
     Codec(CodecError),
-    /// The algorithm is not witness mode.
+    /// The challenge's algorithm is not the one this verifier path serves.
     Algorithm,
     /// The issuer key is a known weak Ed25519 point.
     WeakIssuerKey,
@@ -334,6 +463,8 @@ pub enum WitnessError {
     Capacity,
     /// This subject already holds the most open challenges one key may.
     SubjectCapacity,
+    /// The Hashcash digest has fewer leading zero bits than the target.
+    InsufficientWork,
 }
 
 impl From<CodecError> for WitnessError {
@@ -364,18 +495,16 @@ pub struct VerifiedChallenge {
 }
 
 impl VerifiedChallenge {
-    /// Steps one to five of the verifier: algorithm, issuer key and signature,
-    /// context equality, and the time window relative to `now` and the
-    /// verifier's `started_at`.
+    /// Steps one to five of the verifier: issuer key and signature, context
+    /// equality, and the time window relative to `now` and the verifier's
+    /// `started_at`. Either algorithm passes here; each response path then
+    /// requires its own.
     pub fn verify(
         challenge: Challenge,
         expected: ChallengeContext,
         started_at: u64,
         now: u64,
     ) -> Result<Self, WitnessError> {
-        if challenge.algorithm != Algorithm::Witness {
-            return Err(WitnessError::Algorithm);
-        }
         let issuer = VerifyingKey::from_bytes(&challenge.issuer_key)
             .map_err(|_| WitnessError::IssuerSignature)?;
         if issuer.is_weak() {

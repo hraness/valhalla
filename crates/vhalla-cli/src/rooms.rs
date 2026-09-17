@@ -40,6 +40,7 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers HOST:PORT,...]  (build: --features experimental-rooms-node)
   network-extend IN OUT --from HEIGHT --validators KEY:POWER,...  (build: --features experimental-rooms-node)
   node-update NODE_HOME --network FILE  (build: --features experimental-rooms-node)
+  tailcat plan --nodes A/node.json B/node.json ... [--base-port N] [--output json|shell]  (build: --features experimental-rooms-node)
   tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
   submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
   submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
@@ -339,6 +340,16 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         #[cfg(not(feature = "experimental-rooms-node"))]
         {
             return Err("rooms node-update needs --features experimental-rooms-node".into());
+        }
+    }
+    if raw.get(1).is_some_and(|s| s == "tailcat") {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_tailcat::run(raw[2..].to_vec());
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err("rooms tailcat needs --features experimental-rooms-node".into());
         }
     }
     let args = Args::parse(raw)?;

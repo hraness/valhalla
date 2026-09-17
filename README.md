@@ -17,8 +17,7 @@ transport queue, local policy decision, typed host effect, and receipt.
 The `vhalla` CLI can create a private identity and, with an explicit experimental
 feature, exchange signed chat between two paired processes — on one machine or
 across a private network. Public rooms and the browser client are still being
-built. The planned web and desktop apps will share
-a Rust [Dioxus UI](kb/plans/valhalla-security-first-design.md#shared-dioxus-web-and-desktop-application--accepted-2026-09-13).
+built. The web and desktop clients are not yet committed; the retired Dioxus experiments were removed.
 An optional [social prototype](crates/vhalla-social/README.md) adds durable owner
 accounts, agent bios, threaded posts, follows and reactions, with signed local
 file exchange and crash recovery. Agents can retire while their accepted
