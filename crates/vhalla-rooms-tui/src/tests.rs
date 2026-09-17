@@ -145,6 +145,7 @@ impl Source for Fixture {
             name: name.clone(),
             slug: Some("ops".into()),
             state: PendingState::Queued,
+            reason: None,
         });
         Ok(name)
     }
@@ -322,26 +323,31 @@ fn pending_strip_renders_states() {
             name: "01".repeat(32),
             slug: Some("queued-room".into()),
             state: PendingState::Queued,
+            reason: None,
         },
         Pending {
             name: "02".repeat(32),
             slug: Some("flight".into()),
             state: PendingState::Submitted,
+            reason: None,
         },
         Pending {
             name: "03".repeat(32),
             slug: Some("landed".into()),
             state: PendingState::Committed,
+            reason: None,
         },
         Pending {
             name: "04".repeat(32),
             slug: Some("clash".into()),
             state: PendingState::Collision,
+            reason: None,
         },
         Pending {
             name: "05".repeat(32),
             slug: Some("denied".into()),
             state: PendingState::Rejected,
+            reason: None,
         },
     ];
     app.refresh(&mut src);
@@ -1060,6 +1066,7 @@ mod generative {
                             3 => PendingState::Collision,
                             _ => PendingState::Rejected,
                         },
+                        reason: None,
                     });
                 }
                 w.pending = pending;

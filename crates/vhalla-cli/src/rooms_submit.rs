@@ -153,6 +153,30 @@ fn pending_row(p: &vhalla_rooms_app::Pending) -> String {
                 vhalla_rooms_app::PendingState::Rejected => "rejected",
             }),
         ),
+        (
+            "reason",
+            crate::json::optional(p.reason.as_deref(), crate::json::string),
+        ),
+    ])
+}
+
+/// JSON object for the validator set active at the committed height.
+fn quorum_row(q: &vhalla_rooms_app::Quorum) -> String {
+    let validators: Vec<String> = q
+        .validators
+        .iter()
+        .map(|(key, power)| {
+            crate::json::object(vec![
+                ("publicKey", crate::json::string(key)),
+                ("power", power.to_string()),
+            ])
+        })
+        .collect();
+    crate::json::object(vec![
+        ("height", q.height.to_string()),
+        ("totalPower", q.total_power.to_string()),
+        ("threshold", q.threshold.to_string()),
+        ("validators", crate::json::array(validators)),
     ])
 }
 
@@ -199,10 +223,12 @@ pub fn status(args: &Args) -> Result<(), String> {
             ])
         })
         .collect();
+    let quorum = crate::json::optional(service.quorum().as_ref(), quorum_row);
     crate::rooms::emit(crate::json::object(vec![
         ("height", height.to_string()),
         ("revision", page.revision.to_string()),
         ("partial", page.partial.to_string()),
+        ("quorum", quorum),
         ("rooms", crate::json::array(rooms)),
         (
             "pending",
