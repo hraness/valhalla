@@ -1,6 +1,8 @@
 //! Native private publication and recovery regression fixtures.
 use super::*;
 use ed25519_dalek::SigningKey;
+use std::fs::{DirBuilder, OpenOptions};
+use std::os::unix::fs::DirBuilderExt;
 use hegel::{generators as gs, HealthCheck, TestCase};
 use std::collections::BTreeSet;
 use std::os::unix::fs::{symlink, PermissionsExt};

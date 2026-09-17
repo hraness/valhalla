@@ -5398,6 +5398,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-custody"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "vhalla-discovery"
 version = "0.0.0"
 dependencies = [
@@ -5416,11 +5423,11 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "hegeltest",
- "libc",
  "proptest",
  "sha2 0.10.9",
  "vhalla-attention",
  "vhalla-core",
+ "vhalla-custody",
  "vhalla-discovery",
  "vhalla-social",
  "vhalla-social-store",
@@ -5449,6 +5456,7 @@ dependencies = [
  "sha2 0.10.9",
  "vhalla-core",
  "vhalla-crypto",
+ "vhalla-custody",
  "vhalla-rooms",
  "vhalla-session",
  "vhalla-social",
@@ -5595,6 +5603,7 @@ dependencies = [
  "hegeltest",
  "sha2 0.10.9",
  "vhalla-core",
+ "vhalla-custody",
  "vhalla-rooms",
  "vhalla-social",
 ]
@@ -5649,6 +5658,7 @@ dependencies = [
  "proptest",
  "sha2 0.10.9",
  "vhalla-core",
+ "vhalla-custody",
  "vhalla-social",
 ]
 

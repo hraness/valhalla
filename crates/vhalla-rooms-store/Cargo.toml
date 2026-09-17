@@ -10,6 +10,7 @@ description = "Explicit private-file persistence for room registry snapshots."
 vhalla-rooms = { path = "../vhalla-rooms" }
 vhalla-social = { path = "../vhalla-social" }
 vhalla-core = { path = "../vhalla-core" }
+vhalla-custody = { path = "../vhalla-custody" }
 sha2 = "0.10"
 
 [dev-dependencies]
