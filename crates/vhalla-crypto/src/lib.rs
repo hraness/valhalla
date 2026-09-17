@@ -409,7 +409,11 @@ fn transcript(signed: &SignedEnvelope) -> Result<Vec<u8>, SignError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+    use alloc::string::ToString;
     use alloc::vec;
+    use hegel::generators as gs;
+    use hegel::TestCase;
     use proptest::prelude::*;
     use vhalla_core::EventId;
 
@@ -747,17 +751,27 @@ mod tests {
         fn arbitrary_bytes_never_panic_or_accept_noncanonical_frames(raw in proptest::collection::vec(any::<u8>(),0..4096)) {
             if let Ok(claim) = SignedEnvelope::decode(&raw) { prop_assert_eq!(claim.encode().unwrap(), raw); }
         }
-        #[test]
-        fn arbitrary_sequences_only_advance_retained_maximum(sequences in proptest::collection::vec(any::<u64>(),0..50)) {
-            let key = verifying_key_from_seed([7;32]);
-            let mut window = ReplayWindow::new(context(),1).unwrap();
-            let mut highest = None;
-            for sequence in sequences {
-                let accepted = window.verify_and_accept(signed([7;32],sequence),&key,1).is_ok();
-                prop_assert_eq!(accepted, highest.is_none_or(|value| sequence > value));
-                if accepted { highest = Some(sequence); }
-                prop_assert_eq!(window.last.get(&key.to_bytes()).map(|v|v.0),highest);
+    }
+
+    /// Stateful replay-window admission, ported from proptest to Hegel's
+    /// interleaved draw model: each sequence is drawn inside the loop while
+    /// the window mutates across steps.
+    #[hegel::test(test_cases = 64)]
+    fn arbitrary_sequences_only_advance_retained_maximum(tc: TestCase) {
+        let key = verifying_key_from_seed([7; 32]);
+        let mut window = ReplayWindow::new(context(), 1).unwrap();
+        let mut highest = None;
+        let steps = tc.draw(gs::integers::<usize>().max_value(49));
+        for _ in 0..steps {
+            let sequence = tc.draw(gs::integers::<u64>());
+            let accepted = window
+                .verify_and_accept(signed([7; 32], sequence), &key, 1)
+                .is_ok();
+            assert_eq!(accepted, highest.is_none_or(|value| sequence > value));
+            if accepted {
+                highest = Some(sequence);
             }
+            assert_eq!(window.last.get(&key.to_bytes()).map(|v| v.0), highest);
         }
     }
 }
