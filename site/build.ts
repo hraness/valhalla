@@ -8,7 +8,7 @@ const output = resolve(root, "dist");
 const kit = dirname(fileURLToPath(import.meta.resolve("@hraness/design-kit/paper-theme.css")));
 await rm(output, { recursive: true, force: true });
 await mkdir(resolve(output, "design"), { recursive: true });
-for (const name of ["styles.css", "icon.png", "apple-icon.png", "robots.txt", "sitemap.xml", "llms.txt"]) await cp(resolve(root, name), resolve(output, name));
+for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "robots.txt", "sitemap.xml", "llms.txt"]) await cp(resolve(root, name), resolve(output, name));
 const html = await readFile(resolve(root, "index.html"), "utf8");
 const footerMarker = "<!-- hraness-site-footer -->";
 if (html.split(footerMarker).length !== 2) throw new Error("Expected one shared footer slot.");
