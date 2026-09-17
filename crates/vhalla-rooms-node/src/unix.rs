@@ -6,10 +6,12 @@
 //! runtime — and stays behind `cfg(unix)` so the portable `context`/`cert`
 //! surface compiles for wasm consumers.
 
-use std::collections::{BTreeMap, VecDeque};
+use bytes::Bytes;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use arc_malachitebft_app::config::NodeConfig;
 use arc_malachitebft_app::spawn::spawn_wal_actor;
@@ -19,7 +21,7 @@ use arc_malachitebft_app::types::sync::RawDecidedValue;
 use arc_malachitebft_app::types::{LocallyProposedValue, PeerId, ProposedValue};
 use arc_malachitebft_app_channel::{
     AppMsg, Channels, ConsensusContext, EngineBuilder, EngineHandle, NetworkContext, NetworkMsg,
-    RequestContext, SyncContext, WalContext,
+    Reply, RequestContext, SyncContext, WalContext,
 };
 use arc_malachitebft_config::{
     ConsensusConfig, DiscoveryConfig, P2pConfig, PubSubProtocol, TransportProtocol, ValuePayload,
@@ -42,7 +44,7 @@ use vhalla_rooms_consensus::{
     DecidedOutcome, EngineSink, Genesis,
 };
 
-use crate::cert::verify_commit_certificate;
+use crate::cert::{ext_certificate_from_canonical, verify_commit_certificate};
 use crate::codec::RoomCodec;
 use crate::context::*;
 use crate::signing::{verify_fin, RoomSigner, RoomVerifier};
@@ -90,13 +92,19 @@ struct AssembledParts {
 }
 
 /// Per-stream accumulation state: parts arrive inside `StreamContent::Data`
-/// until the `StreamContent::Fin` marker closes the stream.
+/// until the `StreamContent::Fin` marker closes the stream. `Data` chunks
+/// are keyed by stream sequence so out-of-order delivery still assembles
+/// in emission order.
 #[derive(Default)]
 struct StreamState {
     init: Option<ProposalInit>,
-    data: Vec<u8>,
+    data: BTreeMap<u64, Vec<u8>>,
+    data_len: usize,
     fin: Option<ProposalFin>,
     closed: bool,
+    /// When the first part of this stream arrived — the expiry clock for
+    /// streams a dead connection never closes.
+    first_seen: Option<std::time::Instant>,
 }
 
 /// One proposal this node observed at a height — locally proposed or
@@ -249,6 +257,36 @@ struct App {
     seen: BTreeMap<u64, Vec<SeenProposal>>,
     /// Total `ProposedValue`s resupplied to the engine at round starts.
     resupplied: Arc<Mutex<u64>>,
+    /// `GetValue` replies held open while no value is available for the
+    /// requested height, each with the deadline the engine gave it. A
+    /// dropped reply is a dropped oneshot — the app-channel connector's
+    /// `rx.await` then errors and kills the host connector, wedging the
+    /// engine. Held replies flush once a value for that height
+    /// materializes; past the deadline they resolve with a tombstone so
+    /// the connector's sequential message loop un-parks and its queued
+    /// backlog (parts, decisions) can drain.
+    held_replies: Vec<HeldReply>,
+}
+
+/// A `GetValue` request held open while no value is available, with the
+/// deadline the engine gave it.
+struct HeldReply {
+    height: u64,
+    round: Round,
+    deadline: std::time::Instant,
+    reply: Reply<LocallyProposedValue<RoomContext>>,
+}
+
+/// A held `GetValue` that can now be answered: `live` marks real values
+/// whose parts may be published; a tombstone is reply-only and its parts
+/// must never reach the wire, or peers could assemble and commit an
+/// empty value.
+struct AnswerableHeld {
+    height: u64,
+    round: Round,
+    value: RoomValue,
+    live: bool,
+    reply: Reply<LocallyProposedValue<RoomContext>>,
 }
 
 /// One queued submission. Bodies are the honest runtime shape: a producer
@@ -284,6 +322,19 @@ impl PendingEntry {
     }
 }
 
+/// Raw payload bound for one `Data` proposal part. Codec and gossipsub
+/// framing ride on top of each part, so the raw chunk stays well under
+/// the ~1.2 KiB per-write ceiling observed on relayed transports (e.g.
+/// tailcat over DERP), where a single larger write is truncated mid-frame.
+const PROPOSAL_CHUNK_BYTES: usize = 768;
+
+/// Slice canonical value bytes into ordered `Data` parts bounded by
+/// `PROPOSAL_CHUNK_BYTES`.
+fn data_parts(data: &[u8]) -> impl Iterator<Item = RoomPart> + '_ {
+    data.chunks(PROPOSAL_CHUNK_BYTES)
+        .map(|chunk| RoomPart::Data(chunk.to_vec().into()))
+}
+
 impl App {
     /// The validator set active at `height`: the entry at or before it.
     fn set_for(&self, height: u64) -> &RoomValidatorSet {
@@ -313,14 +364,8 @@ impl App {
     /// id commits. A batch that can no longer apply — already committed,
     /// stale-parented — writes no marker: nothing durable is owed it.
     fn submit(&mut self, batch: Batch) {
-        if self
-            .adapter
-            .lock()
-            .unwrap()
-            .application()
-            .validate(&batch)
-            .is_err()
-        {
+        if let Err(e) = self.adapter.lock().unwrap().application().validate(&batch) {
+            tracing::debug!(id = %hex(&batch.value_id()), error = ?e, "submission dropped: invalid against live frontier");
             return;
         }
         let id = self.register_batch(batch);
@@ -413,7 +458,12 @@ impl App {
                     // drain — the stem dedup makes that harmless.
                     let _ = std::fs::remove_file(&path);
                 }
-                _ => {
+                (false, _) => {
+                    tracing::warn!(file = %name, "intake rejected: unsafe file stem");
+                    let _ = std::fs::rename(&path, path.with_extension("rejected"));
+                }
+                (true, None) => {
+                    tracing::warn!(file = %name, "intake rejected: undecodable body");
                     let _ = std::fs::rename(&path, path.with_extension("rejected"));
                 }
             }
@@ -456,16 +506,15 @@ impl App {
                     let body = std::fs::read(self.store.join("pending").join(&name))
                         .ok()
                         .and_then(|b| BatchBody::decode(&b).ok());
-                    let checked = body.and_then(|b| {
+                    let checked = body.map(|b| {
                         self.adapter
                             .lock()
                             .unwrap()
                             .application()
                             .prepare(b.time, b.evidence, b.records, b.eligible)
-                            .ok()
                     });
                     match checked {
-                        Some(checked) => {
+                        Some(Ok(checked)) => {
                             let batch = checked.batch().clone();
                             let id = self.register_batch(batch);
                             self.assigned_bodies.insert(id, name);
@@ -473,7 +522,17 @@ impl App {
                             self.pending_proposals.push_front(PendingEntry::Value(id));
                             return Some(id);
                         }
-                        None => {
+                        failed => {
+                            match &failed {
+                                Some(Err(e)) => tracing::warn!(
+                                    marker = %name, error = ?e,
+                                    "pending body rejected: prepare failed"
+                                ),
+                                _ => tracing::warn!(
+                                    marker = %name,
+                                    "pending body rejected: unreadable or undecodable"
+                                ),
+                            }
                             // The effect can never apply — mark it for the
                             // producer exactly like an intake rejection.
                             let intake = self
@@ -490,6 +549,65 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Drain held `GetValue` replies that can now be answered: a held
+    /// request resolves once its height has an assigned, materializable
+    /// value — assigning the oldest pending entry when the height has
+    /// none yet. A request for an already-committed height is answered
+    /// with the decided value: the engine discards it as stale, but the
+    /// connector coroutine parked on the reply resumes. A request that
+    /// is STILL valueless past its own deadline resolves with a
+    /// tombstone — an empty value that can never validate — so a reply
+    /// is sent within the contract's timeout rather than parking the
+    /// sequential connector forever. A held reply is NEVER dropped — the
+    /// dropped oneshot is what kills the connector. Only live, unexpired
+    /// requests without a value stay held.
+    fn drain_answerable_held(&mut self) -> Vec<AnswerableHeld> {
+        let now = std::time::Instant::now();
+        let frontier = self.adapter.lock().unwrap().frontier().height;
+        let held = std::mem::take(&mut self.held_replies);
+        let mut answered = Vec::new();
+        for req in held {
+            let resolved = if req.height <= frontier {
+                self.decided
+                    .get(&req.height)
+                    .and_then(|raw| RoomCodec::decode_value(raw.value_bytes.clone()).ok())
+                    .map(|v| (v, true))
+            } else {
+                if !self.proposals.contains_key(&req.height) {
+                    if let Some(id) = self.next_pending() {
+                        self.proposals.insert(req.height, id);
+                    }
+                }
+                self.proposals
+                    .get(&req.height)
+                    .and_then(|id| self.held_by_id.get(id))
+                    .map(|batch| {
+                        (
+                            RoomValue::new(batch.value_id(), batch.encode().into()),
+                            true,
+                        )
+                    })
+            };
+            let resolved = resolved.or_else(|| {
+                // Past the engine's own deadline the request is already
+                // lost: an empty tombstone un-parks the connector; the
+                // engine discards it or votes it down as undecodable.
+                (now >= req.deadline).then(|| (self.tombstone(req.height, req.round), false))
+            });
+            match resolved {
+                Some((value, live)) => answered.push(AnswerableHeld {
+                    height: req.height,
+                    round: req.round,
+                    value,
+                    live,
+                    reply: req.reply,
+                }),
+                None => self.held_replies.push(req),
+            }
+        }
+        answered
     }
 
     /// fsync the canonical batch bytes under `store/batches/<id>` —
@@ -567,24 +685,34 @@ impl App {
         out
     }
 
+    /// A reply-only value for a `GetValue` that outlived its deadline.
+    /// The id binds THIS node, height, and round — never `[0;32]` — so a
+    /// slim consensus-channel proposal carrying the id can never collide
+    /// with a peer's own tombstone and commit an empty value.
+    fn tombstone(&self, height: u64, round: Round) -> RoomValue {
+        use sha3::Digest;
+        let mut hasher = sha3::Keccak256::new();
+        hasher.update(b"VHTOMB");
+        hasher.update(self.address.into_inner());
+        hasher.update(height.to_be_bytes());
+        hasher.update(round.as_u32().unwrap_or(u32::MAX).to_be_bytes());
+        RoomValue::new(hasher.finalize().into(), Bytes::new())
+    }
+
     /// The validity verdict for a wire-received value: the canonical bytes
     /// must decode to a `Batch` that validates against the current pinned
     /// frontier — and its `value_id` must match the proposed commitment.
     fn verdict_for(&mut self, value: &RoomValue) -> Validity {
         let Ok(batch) = Batch::decode(&value.bytes) else {
+            tracing::debug!(id = %hex(&value.id.0), "value rejected: undecodable bytes");
             return Validity::Invalid;
         };
         if batch.value_id() != value.id.0 {
+            tracing::debug!(id = %hex(&value.id.0), "value rejected: batch/id mismatch");
             return Validity::Invalid;
         }
-        if self
-            .adapter
-            .lock()
-            .unwrap()
-            .application()
-            .validate(&batch)
-            .is_err()
-        {
+        if let Err(e) = self.adapter.lock().unwrap().application().validate(&batch) {
+            tracing::debug!(id = %hex(&value.id.0), error = ?e, "value rejected: replay failed");
             return Validity::Invalid;
         }
         self.register_batch(batch);
@@ -601,41 +729,48 @@ impl App {
     }
 
     /// Build signed proposal parts carrying the real canonical batch
-    /// bytes: `Init`, one `Data` part with the full bounded encoding, and
-    /// `Fin` signing `"RF1" || height || round || keccak256(data)`.
+    /// bytes: `Init`, `Data` chunks bounded by `PROPOSAL_CHUNK_BYTES`,
+    /// and `Fin` signing `"RF1" || height || round || keccak256(data)`
+    /// over the COMPLETE concatenated bytes — chunking is a transport
+    /// detail invisible to the signature.
     fn build_parts(&mut self, proposed: &LocallyProposedValue<RoomContext>) -> Vec<RoomPart> {
         let data = proposed.value.bytes.clone();
-        let mut parts = vec![
-            RoomPart::Init(ProposalInit {
-                height: proposed.height,
-                round: proposed.round,
-                pol_round: Round::Nil,
-                proposer: self.address,
-            }),
-            RoomPart::Data(data.clone()),
-        ];
         let signature = RoomSigner::new(self.private_key.clone()).sign(&fin_sign_bytes(
             proposed.height,
             proposed.round,
             &data,
         ));
+        let mut parts = Vec::with_capacity(2 + data.len() / PROPOSAL_CHUNK_BYTES + 1);
+        parts.push(RoomPart::Init(ProposalInit {
+            height: proposed.height,
+            round: proposed.round,
+            pol_round: Round::Nil,
+            proposer: self.address,
+        }));
+        parts.extend(data_parts(&data));
         parts.push(RoomPart::Fin(ProposalFin { signature }));
         parts
     }
 
     /// Fold a completed stream into `AssembledParts`: exactly `Init`,
-    /// `Data`*, `Fin`, in that order.
+    /// `Data`*, `Fin` — the `Data` chunks concatenated in stream-sequence
+    /// order regardless of arrival order.
     fn assemble(state: StreamState) -> Option<AssembledParts> {
+        let mut data = Vec::with_capacity(state.data_len);
+        for chunk in state.data.values() {
+            data.extend_from_slice(chunk);
+        }
         Some(AssembledParts {
             init: state.init?,
-            data: state.data,
+            data,
             fin: state.fin?,
         })
     }
 
-    /// Consume one streamed proposal part. Parts are stored by kind, not
-    /// by sequence number — Init/Data/Fin may arrive in any order, and
-    /// the transport `StreamContent::Fin` marker triggers assembly.
+    /// Consume one streamed proposal part. `Init`/`Fin` are stored by
+    /// kind; `Data` chunks are keyed by their stream sequence so any
+    /// arrival order still concatenates in emission order. The transport
+    /// `StreamContent::Fin` marker triggers assembly.
     /// Returns the complete `ProposedValue` once the stream closes, or
     /// `None` while the stream is incomplete or was closed oversized.
     fn handle_part(
@@ -644,17 +779,23 @@ impl App {
         part: StreamMessage<RoomPart>,
     ) -> Option<ProposedValue<RoomContext>> {
         let key = (from.to_bytes(), part.stream_id.to_bytes().to_vec());
+        let seq = part.sequence;
         let state = self.streams.entry(key.clone()).or_default();
+        state.first_seen.get_or_insert_with(std::time::Instant::now);
         let done = match part.content {
             StreamContent::Data(RoomPart::Init(init)) => {
                 state.init = Some(init);
                 false
             }
             StreamContent::Data(RoomPart::Data(data)) => {
-                if state.data.len() + data.len() > crate::MAX_VALUE_BYTES {
-                    state.closed = true;
-                } else {
-                    state.data.extend_from_slice(&data);
+                if !state.data.contains_key(&seq) {
+                    if state.data_len + data.len() > crate::MAX_VALUE_BYTES {
+                        tracing::debug!(peer = %from, "proposal stream closed: exceeds MAX_VALUE_BYTES");
+                        state.closed = true;
+                    } else {
+                        state.data_len += data.len();
+                        state.data.insert(seq, data.to_vec());
+                    }
                 }
                 false
             }
@@ -670,6 +811,10 @@ impl App {
         let state = self.streams.remove(&key).unwrap();
         Self::assemble(state).map(|assembled| {
             if !self.verify_parts(&assembled) {
+                tracing::debug!(
+                    peer = %from, height = %assembled.init.height, round = %assembled.init.round,
+                    "assembled stream failed verification: bad proposer or Fin signature"
+                );
                 return ProposedValue {
                     height: assembled.init.height,
                     round: assembled.init.round,
@@ -690,14 +835,12 @@ impl App {
             );
             let validity = self.verdict_for(&value);
             if validity.is_valid() {
-                self.parts_cache.insert(
-                    value.id,
-                    vec![
-                        RoomPart::Init(assembled.init.clone()),
-                        RoomPart::Data(assembled.data.clone().into()),
-                        RoomPart::Fin(assembled.fin.clone()),
-                    ],
-                );
+                let mut cached =
+                    Vec::with_capacity(2 + assembled.data.len() / PROPOSAL_CHUNK_BYTES + 1);
+                cached.push(RoomPart::Init(assembled.init.clone()));
+                cached.extend(data_parts(&assembled.data));
+                cached.push(RoomPart::Fin(assembled.fin.clone()));
+                self.parts_cache.insert(value.id, cached);
                 self.record_seen(&assembled.init, value.id);
             }
             ProposedValue {
@@ -762,9 +905,18 @@ impl App {
             value_commitment: accepted.value_id.0,
             height: accepted.height,
         });
+        if !matches!(outcome, DecidedOutcome::Acked) {
+            tracing::warn!(
+                height = %certificate.height, value_id = %hex(&certificate.value_id.0),
+                outcome = ?outcome,
+                "decision did not commit durably"
+            );
+        }
+        let height = certificate.height.as_u64();
+        // The assignment for this height is dead regardless of outcome —
+        // a rejected/withheld decision restarts the height and reassigns.
+        self.proposals.remove(&height);
         if matches!(outcome, DecidedOutcome::Acked) {
-            let height = certificate.height.as_u64();
-            self.proposals.remove(&height);
             let id = certificate.value_id;
             let _ = std::fs::remove_file(self.store.join("pending").join(hex(&id.0)));
             if let Some(name) = self.assigned_bodies.remove(&id) {
@@ -774,6 +926,84 @@ impl App {
         }
         drop(adapter);
         outcome
+    }
+
+    /// Record a just-decided value into the sync-servable `decided` map,
+    /// then retire per-height state that can never be consulted again:
+    /// `seen` records at or below the decided height (resupply only ever
+    /// serves the engine's CURRENT height), proposal streams and cached
+    /// parts below it (the decided height's parts stay — a lagging peer
+    /// may still request them), and `held_by_id` entries no longer
+    /// referenced by any pending submission, live height assignment, or
+    /// retained seen record. The committed value itself survives in
+    /// `decided` and the journal.
+    fn sweep_decided(&mut self, height: u64) {
+        self.seen.retain(|h, _| *h > height);
+        self.streams
+            .retain(|_, s| s.init.as_ref().is_none_or(|i| i.height.as_u64() > height));
+        self.parts_cache.retain(|_, parts| {
+            parts
+                .iter()
+                .find_map(|p| match p {
+                    RoomPart::Init(init) => Some(init.height.as_u64()),
+                    _ => None,
+                })
+                .is_some_and(|h| h >= height)
+        });
+        let live: BTreeSet<RoomValueId> = self
+            .proposals
+            .values()
+            .copied()
+            .chain(self.pending_proposals.iter().filter_map(|e| e.value_id()))
+            .chain(
+                self.seen
+                    .values()
+                    .flat_map(|v| v.iter().map(|s| s.value_id)),
+            )
+            .collect();
+        self.held_by_id.retain(|id, _| live.contains(id));
+    }
+
+    /// Insert the decided value into `decided` (the `GetDecidedValues`
+    /// source), then sweep dead per-height state. Both `Decided` and
+    /// `Finalized` take this path — the second call is an idempotent
+    /// overwrite with the possibly richer extended certificate.
+    fn record_decided(
+        &mut self,
+        certificate: &arc_malachitebft_app::types::core::CommitCertificate<RoomContext>,
+        extensions: arc_malachitebft_core_types::VoteExtensions<RoomContext>,
+    ) {
+        if let Some(batch) = self.held_by_id.get(&certificate.value_id) {
+            let value = RoomValue::new(batch.value_id(), batch.encode().into());
+            let value_bytes = RoomCodec::encode_value(&value);
+            self.decided.insert(
+                certificate.height.as_u64(),
+                RawDecidedValue::new(
+                    value_bytes,
+                    arc_malachitebft_app::types::core::ExtendedCommitCertificate::from_commit_certificate_and_extensions(
+                        certificate.clone(), extensions,
+                    ),
+                ),
+            );
+        }
+        self.sweep_decided(certificate.height.as_u64());
+    }
+
+    /// Drop proposal streams that never completed: a dead connection
+    /// leaves `Init`/`Data` state behind with no transport `Fin` to close
+    /// it. Anything older than the stale bound is either abandoned or
+    /// will be re-streamed on request.
+    fn expire_streams(&mut self) {
+        let now = std::time::Instant::now();
+        let before = self.streams.len();
+        self.streams.retain(|_, s| {
+            s.first_seen
+                .is_none_or(|t| now.duration_since(t) < STREAM_STALE)
+        });
+        let dropped = before - self.streams.len();
+        if dropped > 0 {
+            tracing::debug!(dropped, "expired abandoned proposal streams");
+        }
     }
 }
 
@@ -1257,6 +1487,7 @@ impl RoomNode {
 
         let wal_path = home.join("wal").join("consensus.wal");
         std::fs::create_dir_all(wal_path.parent().unwrap()).unwrap();
+        check_wal_format(&wal_path);
 
         // When a gate is supplied the real libp2p actor is spawned
         // directly and wrapped in `GateNetwork`; the engine only ever
@@ -1385,8 +1616,13 @@ impl RoomNode {
         let seen_dir = store.join("seen");
         std::fs::create_dir_all(&batches_dir).unwrap();
         std::fs::create_dir_all(&seen_dir).unwrap();
-        let (mut held_by_id, seen) = load_store(&store);
+        let frontier = adapter.lock().unwrap().frontier().height;
+        let (mut held_by_id, mut seen) = load_store(&store);
         let loaded = (held_by_id.len(), seen.values().map(Vec::len).sum());
+        // Seen records at or below the committed frontier can never be
+        // resupplied — `StartedRound` only ever asks for the engine's
+        // current height. The durable files stay; memory drops them.
+        seen.retain(|h, _| *h > frontier);
 
         let pending_proposals = reload_pending(&store, &held_by_id, &adapter);
 
@@ -1404,11 +1640,25 @@ impl RoomNode {
                 proposals.insert(*height, id);
             }
         }
+        // Batches nothing can still reference — not queued, not seen at a
+        // live height, not spec-held — are dead memory: committed values
+        // live in the journal and the rebuilt `decided` map.
+        let live: BTreeSet<RoomValueId> = pending_proposals
+            .iter()
+            .filter_map(|e| e.value_id())
+            .chain(seen.values().flat_map(|v| v.iter().map(|s| s.value_id)))
+            .chain(proposals.values().copied())
+            .collect();
+        held_by_id.retain(|id, _| live.contains(id));
         // Reloaded batches also re-enter the adapter's pending map so a
         // certificate for a pre-crash received value can still land.
         for batch in held_by_id.values() {
             adapter.lock().unwrap().hold(batch.clone());
         }
+        // Rebuild the sync-servable decided history from the journal — a
+        // restarted node must still answer `GetDecidedValues` for heights
+        // its peers may not have reached.
+        let decided = load_decided(&adapter.lock().unwrap());
         let resupplied = Arc::new(Mutex::new(0u64));
 
         let mut app = App {
@@ -1424,12 +1674,13 @@ impl RoomNode {
             held_by_id,
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
-            decided: BTreeMap::new(),
+            decided,
             stream_seq: 0,
             boundary_latency: Arc::clone(&boundary_latency),
             store,
             seen,
             resupplied: Arc::clone(&resupplied),
+            held_replies: Vec::new(),
         };
 
         let (submission_tx, mut submission_rx) = tokio::sync::mpsc::channel::<Batch>(64);
@@ -1549,6 +1800,199 @@ fn net_seed(address: &Address) -> [u8; 32] {
     seed
 }
 
+/// Wire/WAL format epoch: bumped when the consensus codec's persisted
+/// shape changes incompatibly. `wal/FORMAT` records the epoch a WAL was
+/// written under; a mismatch — or a non-empty WAL with no marker —
+/// means the log predates this binary and must be reset. Committed
+/// state is safe either way: it lives in the journal and store, never
+/// in the WAL.
+const WAL_FORMAT: &[u8; 4] = b"VRW2";
+
+/// Fail fast — with an actionable message — before the engine's WAL
+/// replay can hit a cryptic codec error mid-stream and safety-hang.
+fn check_wal_format(wal_path: &Path) {
+    let marker = wal_path.parent().unwrap().join("FORMAT");
+    match std::fs::read(&marker) {
+        Ok(bytes) if bytes == WAL_FORMAT => {}
+        Ok(bytes) => panic!(
+            "WAL format mismatch at {}: marker {:?} was written by a different wire format \
+             (this binary writes {:?}). Committed state is durable in the journal and store — \
+             remove {} to restart on a fresh WAL.",
+            marker.display(),
+            String::from_utf8_lossy(&bytes),
+            String::from_utf8_lossy(WAL_FORMAT),
+            wal_path.display(),
+        ),
+        Err(_) => {
+            // No marker: a non-empty WAL predates format epochs — its
+            // entries cannot replay under this codec.
+            let legacy = std::fs::metadata(wal_path).is_ok_and(|m| m.len() > 0);
+            std::fs::create_dir_all(wal_path.parent().unwrap()).unwrap();
+            if legacy {
+                panic!(
+                    "WAL at {} predates format versioning and cannot be replayed by this binary. \
+                     Committed state is durable in the journal and store — remove it to restart \
+                     on a fresh WAL.",
+                    wal_path.display()
+                );
+            }
+            std::fs::write(&marker, WAL_FORMAT).expect("wal format marker write");
+        }
+    }
+}
+
+/// Rebuild the sync-servable decided history from the durable journal:
+/// every height marker resolves to a bundle carrying the canonical `VC2`
+/// certificate and the committed batch, which together reconstruct the
+/// `RawDecidedValue` a `GetDecidedValues` answer needs. A restarted node
+/// must still serve heights its peers may not have reached — memory was
+/// empty, the journal was not.
+fn load_decided(
+    adapter: &Adapter<vhalla_journal::FsStore>,
+) -> BTreeMap<u64, RawDecidedValue<RoomContext>> {
+    let mut decided = BTreeMap::new();
+    for h in 1..=adapter.frontier().height {
+        let Some(bundle) = adapter.committed_at_height(h) else {
+            continue;
+        };
+        let (Some(cert_raw), Some(batch_raw)) = (bundle.field(0), bundle.field(3)) else {
+            continue;
+        };
+        let (Some(cert), Ok(batch)) = (
+            ext_certificate_from_canonical(cert_raw),
+            Batch::decode(batch_raw),
+        ) else {
+            tracing::warn!(
+                height = h,
+                "journal bundle at committed height failed to decode — sync history gap"
+            );
+            continue;
+        };
+        let value = RoomValue::new(batch.value_id(), batch.encode().into());
+        decided.insert(
+            h,
+            RawDecidedValue::new(RoomCodec::encode_value(&value), cert),
+        );
+    }
+    if !decided.is_empty() {
+        tracing::info!(
+            heights = decided.len(),
+            tip = adapter.frontier().height,
+            "rebuilt decided history from journal"
+        );
+    }
+    decided
+}
+
+/// How often the intake dir is polled while a `GetValue` reply is held.
+/// A held reply parks the app-channel connector on its oneshot, so no
+/// further `GetValue` arrives to drain intake — the poll is what lets a
+/// cross-process producer's file resolve the stall.
+const HELD_REPLY_POLL_MS: u64 = 250;
+
+/// How long an incomplete proposal stream may linger before expiry.
+/// Far beyond any publish pacing; a stream abandoned by a dead
+/// connection can never assemble — a peer that still needs it
+/// re-requests the parts and a fresh stream begins.
+const STREAM_STALE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Cap on the observability latency ring — one entry per decided/finalized
+/// height would otherwise grow without bound over the node's lifetime.
+const BOUNDARY_LATENCY_CAP: usize = 4096;
+
+/// Push one boundary-latency sample, dropping the oldest once past the cap.
+fn push_boundary(latency: &Arc<Mutex<Vec<(u64, u128)>>>, height: u64, t0: std::time::Instant) {
+    let mut v = latency.lock().unwrap();
+    v.push((height, t0.elapsed().as_nanos()));
+    if v.len() > BOUNDARY_LATENCY_CAP {
+        let excess = v.len() - BOUNDARY_LATENCY_CAP;
+        v.drain(..excess);
+    }
+}
+
+/// Delay between proposal-part publishes. Gossipsub coalesces messages
+/// queued within one swarm poll into a single RPC frame, and the tailcat
+/// tunnel truncates any single TCP write above ~1.1KB — an un-paced part
+/// burst dies on the wire. Yielding between sends gives each part its own
+/// wire frame.
+const PART_PUBLISH_SPACING: Duration = Duration::from_millis(20);
+
+/// Publish one proposal-part stream (`parts` then `Fin`), spacing sends so
+/// each message becomes its own wire write. Returns false when the network
+/// channel is closed.
+async fn send_part_stream(
+    app: &mut App,
+    channels: &mut Channels<RoomContext>,
+    height: Height,
+    round: Round,
+    parts: &[RoomPart],
+) -> bool {
+    let stream_id = app.stream_id(height, round);
+    let mut sequence = 0u64;
+    for part in parts {
+        let msg = StreamMessage::new(
+            stream_id.clone(),
+            sequence,
+            StreamContent::Data(part.clone()),
+        );
+        sequence += 1;
+        if channels
+            .network
+            .send(NetworkMsg::PublishProposalPart(msg))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        tokio::time::sleep(PART_PUBLISH_SPACING).await;
+    }
+    let fin = StreamMessage::new(stream_id, sequence, StreamContent::Fin);
+    channels
+        .network
+        .send(NetworkMsg::PublishProposalPart(fin))
+        .await
+        .is_ok()
+}
+
+/// Build, cache, and publish the chunked parts stream for a locally
+/// proposed value: `Init`, bounded `Data` chunks, `Fin`, then the stream
+/// terminator. Returns false when the network channel is closed and the
+/// node is shutting down.
+async fn publish_local_parts(
+    app: &mut App,
+    channels: &mut Channels<RoomContext>,
+    height: Height,
+    round: Round,
+    proposed: &LocallyProposedValue<RoomContext>,
+) -> bool {
+    let value_id = proposed.value.id;
+    let parts = app.build_parts(proposed);
+    if let RoomPart::Init(init) = &parts[0] {
+        app.record_seen(init, value_id);
+    }
+    app.parts_cache.insert(value_id, parts.clone());
+    send_part_stream(app, channels, height, round, &parts).await
+}
+
+/// Answer every held `GetValue` whose value now exists, publishing the
+/// parts stream for each reply the engine is still awaiting. Returns
+/// false when the network channel is closed.
+async fn flush_held(app: &mut App, channels: &mut Channels<RoomContext>) -> bool {
+    for req in app.drain_answerable_held() {
+        let height = Height::new(req.height);
+        let proposed = LocallyProposedValue::new(height, req.round, req.value);
+        if req.reply.send(proposed.clone()).is_err() {
+            continue;
+        }
+        // Tombstone replies un-park the connector only — their parts stay
+        // off the wire so the empty value can never assemble and commit.
+        if req.live && !publish_local_parts(app, channels, height, req.round, &proposed).await {
+            return false;
+        }
+    }
+    true
+}
+
 /// The application boundary loop: every reply that authorizes engine
 /// progress is sent only after the durable layer permits it. Local batch
 /// submissions interleave with engine messages on the same loop so the
@@ -1558,30 +2002,56 @@ async fn run(
     channels: &mut Channels<RoomContext>,
     submissions: &mut tokio::sync::mpsc::Receiver<Batch>,
 ) {
-    /// Either side of the loop's select: a consensus `AppMsg` or a local
-    /// batch submission.
+    /// Either side of the loop's select: a consensus `AppMsg`, a local
+    /// batch submission, or the held-reply intake poll.
     enum Feed {
         Msg(Option<AppMsg<RoomContext>>),
         Submit(Option<Batch>),
+        Tick,
     }
     let mut submissions_open = true;
+    let mut held_tick = tokio::time::interval(std::time::Duration::from_millis(HELD_REPLY_POLL_MS));
+    held_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let feed = if submissions_open {
             tokio::select! {
                 msg = channels.consensus.recv() => Feed::Msg(msg),
                 batch = submissions.recv() => Feed::Submit(batch),
+                _ = held_tick.tick() => Feed::Tick,
             }
         } else {
-            Feed::Msg(channels.consensus.recv().await)
+            tokio::select! {
+                msg = channels.consensus.recv() => Feed::Msg(msg),
+                _ = held_tick.tick() => Feed::Tick,
+            }
         };
         let msg = match feed {
             Feed::Submit(Some(batch)) => {
                 app.submit(batch);
+                // A newly valid submission may resolve a held `GetValue`.
+                if !flush_held(app, channels).await {
+                    return;
+                }
                 continue;
             }
             Feed::Submit(None) => {
                 // The last sender dropped: keep serving consensus.
                 submissions_open = false;
+                continue;
+            }
+            Feed::Tick => {
+                // Streams a dead connection abandoned can never assemble
+                // — expire them whether or not anything else is pending.
+                app.expire_streams();
+                // While a `GetValue` reply is held the connector is
+                // parked, so cross-process intake files would otherwise
+                // never be drained to resolve it.
+                if !app.held_replies.is_empty() {
+                    app.drain_intake();
+                    if !flush_held(app, channels).await {
+                        return;
+                    }
+                }
                 continue;
             }
             Feed::Msg(None) => return,
@@ -1614,8 +2084,8 @@ async fn run(
             AppMsg::GetValue {
                 height,
                 round,
+                timeout,
                 reply,
-                ..
             } => {
                 // Cross-process submissions land here: drain the intake
                 // dir before assigning this height's proposal.
@@ -1628,46 +2098,44 @@ async fn run(
                         app.proposals.insert(height.as_u64(), id);
                     }
                 }
+                let deadline = std::time::Instant::now()
+                    .checked_add(timeout)
+                    .unwrap_or_else(|| {
+                        std::time::Instant::now() + std::time::Duration::from_secs(60)
+                    });
                 let Some(value_id) = app.proposals.get(&height.as_u64()).copied() else {
-                    // Nothing held for this height: stall rather than
-                    // invent a value. The timeout will prevote nil.
+                    // Nothing held for this height: hold the reply open
+                    // rather than drop it — a dropped oneshot kills the
+                    // host connector. The request's own deadline bounds
+                    // the hold; past it the reply resolves as a tombstone.
+                    app.held_replies.push(HeldReply {
+                        height: height.as_u64(),
+                        round,
+                        deadline,
+                        reply,
+                    });
                     continue;
                 };
                 let Some(batch) = app.held_by_id.get(&value_id).cloned() else {
+                    app.held_replies.push(HeldReply {
+                        height: height.as_u64(),
+                        round,
+                        deadline,
+                        reply,
+                    });
                     continue;
                 };
+                // Older held requests may resolve against the queue state
+                // this materialization leaves behind — answer them first.
+                if !flush_held(app, channels).await {
+                    return;
+                }
                 let value = RoomValue::new(batch.value_id(), batch.encode().into());
                 let proposed = LocallyProposedValue::new(height, round, value);
                 let _ = reply.send(proposed.clone());
-
-                let parts = app.build_parts(&proposed);
-                if let RoomPart::Init(init) = &parts[0] {
-                    app.record_seen(init, value_id);
+                if !publish_local_parts(app, channels, height, round, &proposed).await {
+                    return;
                 }
-                app.parts_cache.insert(value_id, parts.clone());
-                let stream_id = app.stream_id(height, round);
-                let mut sequence = 0u64;
-                for part in &parts {
-                    let msg = StreamMessage::new(
-                        stream_id.clone(),
-                        sequence,
-                        StreamContent::Data(part.clone()),
-                    );
-                    sequence += 1;
-                    if channels
-                        .network
-                        .send(NetworkMsg::PublishProposalPart(msg))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                let fin = StreamMessage::new(stream_id, sequence, StreamContent::Fin);
-                let _ = channels
-                    .network
-                    .send(NetworkMsg::PublishProposalPart(fin))
-                    .await;
             }
 
             AppMsg::ReceivedProposalPart { from, part, reply } => {
@@ -1675,7 +2143,10 @@ async fn run(
             }
 
             AppMsg::Decided {
-                certificate, reply, ..
+                certificate,
+                extensions,
+                reply,
+                ..
             } => {
                 let t0 = std::time::Instant::now();
                 let outcome = app.decide(&certificate);
@@ -1687,14 +2158,15 @@ async fn run(
                         });
                     }
                 }
-                app.boundary_latency
-                    .lock()
-                    .unwrap()
-                    .push((certificate.height.as_u64(), t0.elapsed().as_nanos()));
-                // The engine is acknowledged ONLY after the durable
-                // commit lands; any other outcome withholds the reply —
-                // the failed oneshot is the honest stall.
+                push_boundary(&app.boundary_latency, certificate.height.as_u64(), t0);
                 if matches!(outcome, DecidedOutcome::Acked) {
+                    // Serve the decided value to syncing peers now — do
+                    // not wait for `Finalized`, which may lag or never
+                    // arrive when a target time is configured.
+                    app.record_decided(&certificate, extensions);
+                    // The engine is acknowledged ONLY after the durable
+                    // commit lands; any other outcome withholds the reply —
+                    // the failed oneshot is the honest stall.
                     let _ = reply.send(());
                 }
             }
@@ -1715,28 +2187,15 @@ async fn run(
                         });
                     }
                 }
-                app.boundary_latency
-                    .lock()
-                    .unwrap()
-                    .push((certificate.height.as_u64(), t0.elapsed().as_nanos()));
+                push_boundary(&app.boundary_latency, certificate.height.as_u64(), t0);
                 let height = certificate.height;
                 // The NEXT height's params may activate a different set —
                 // this is the finalized configuration transition.
                 let params = height_params(app.set_for(height.as_u64() + 1));
                 if matches!(outcome, DecidedOutcome::Acked) {
-                    if let Some(batch) = app.held_by_id.get(&certificate.value_id) {
-                        let value = RoomValue::new(batch.value_id(), batch.encode().into());
-                        let value_bytes = RoomCodec::encode_value(&value);
-                        app.decided.insert(
-                            height.as_u64(),
-                            RawDecidedValue::new(
-                                value_bytes,
-                                arc_malachitebft_app::types::core::ExtendedCommitCertificate::from_commit_certificate_and_extensions(
-                                    certificate.clone(), extensions,
-                                ),
-                            ),
-                        );
-                    }
+                    // Idempotent after the `Decided`-arm record — the
+                    // extended certificate may carry more signatures.
+                    app.record_decided(&certificate, extensions);
                     let _ = reply.send(Next::Start(height.increment(), params));
                 } else {
                     let _ = reply.send(Next::Restart(height, params));
@@ -1782,29 +2241,19 @@ async fn run(
                 round,
                 value_id,
                 ..
-            } => {
-                if let Some(parts) = app.parts_cache.get(&value_id).cloned() {
-                    let stream_id = app.stream_id(height, round);
-                    let mut sequence = 0u64;
-                    for part in &parts {
-                        let msg = StreamMessage::new(
-                            stream_id.clone(),
-                            sequence,
-                            StreamContent::Data(part.clone()),
-                        );
-                        sequence += 1;
-                        let _ = channels
-                            .network
-                            .send(NetworkMsg::PublishProposalPart(msg))
-                            .await;
+            } => match app.parts_cache.get(&value_id).cloned() {
+                Some(parts) => {
+                    if !send_part_stream(app, channels, height, round, &parts).await {
+                        return;
                     }
-                    let fin = StreamMessage::new(stream_id, sequence, StreamContent::Fin);
-                    let _ = channels
-                        .network
-                        .send(NetworkMsg::PublishProposalPart(fin))
-                        .await;
                 }
-            }
+                None => {
+                    tracing::debug!(
+                        %height, %round, value_id = %hex(&value_id.0),
+                        "restream requested for a value no longer cached"
+                    );
+                }
+            },
 
             AppMsg::ExtendVote { reply, .. } => {
                 let _ = reply.send(None);

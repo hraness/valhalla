@@ -25,6 +25,7 @@ fixture = ["dep:ed25519-dalek"]
 
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+hegeltest = "0.46.0"
 
 [lints]
 workspace = true

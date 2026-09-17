@@ -594,6 +594,13 @@ name = "vhalla-core"
 version = "0.0.0"
 
 [[package]]
+name = "vhalla-custody"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "vhalla-dioxus-controller-spike"
 version = "0.0.0"
 dependencies = [
@@ -637,10 +644,10 @@ dependencies = [
 name = "vhalla-discovery-store"
 version = "0.0.0"
 dependencies = [
- "libc",
  "sha2",
  "vhalla-attention",
  "vhalla-core",
+ "vhalla-custody",
  "vhalla-discovery",
  "vhalla-social",
  "vhalla-social-store",
@@ -661,6 +668,7 @@ version = "0.0.0"
 dependencies = [
  "sha2",
  "vhalla-core",
+ "vhalla-custody",
  "vhalla-social",
 ]
 
