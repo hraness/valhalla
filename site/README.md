@@ -19,7 +19,10 @@ stylesheet hashes in `design/source.json`. Product content and layout stay here.
 The pinned shared footer renders an optional paid-support link for Valhalla,
 without a newsletter form or client runtime. `bun run check:site` checks that
 boundary and builds the page; `/llms.txt` documents the installed CLI's optional
-support protocol for agents. The existing no-form CSP remains unchanged.
+support protocol for agents. The CSP still allows no executable inline script;
+it admits the one checked JSON-LD block by exact SHA-256 hash, which
+`site/metadata.test.ts` keeps in sync with `index.html`. Social previews use the
+committed `social.png` card hashed in `BRAND_ASSETS.md`.
 
 `vercel.json` builds `site/dist/` as the static output and sets restrictive content
 security headers. Deploy from the repository root to the Hraness `valhalla`
