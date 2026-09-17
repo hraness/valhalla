@@ -17,6 +17,8 @@ mod rooms;
 mod rooms_node;
 #[cfg(all(unix, feature = "experimental-rooms-tui"))]
 mod rooms_submit;
+#[cfg(all(unix, feature = "experimental-rooms-node"))]
+mod rooms_tailcat;
 #[cfg(all(unix, feature = "experimental-rooms-tui"))]
 mod rooms_tui;
 
@@ -116,7 +118,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
-        println!("mnemonic {}", &*phrase);
+        println!("mnemonic {}", *phrase);
         println!("application-key {public}");
         return Ok(());
     } else if args[1] == "restore" {

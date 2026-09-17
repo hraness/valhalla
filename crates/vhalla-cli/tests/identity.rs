@@ -88,22 +88,14 @@ fn cli_backup_and_restore_round_trips_the_same_public_key() {
         String::from_utf8_lossy(&backed.stderr)
     );
     let text = String::from_utf8(backed.stdout).unwrap();
-    let (phrase_line, public_line) = text
-        .lines()
-        .next()
-        .and_then(|first| text.lines().nth(1).map(|second| (first, second)))
-        .unwrap();
+    let (phrase_line, public_line) = text.lines().next().zip(text.lines().nth(1)).unwrap();
     let phrase = phrase_line
         .strip_prefix("mnemonic ")
         .expect("backup prints a mnemonic line");
     let public = public_line
         .strip_prefix("application-key ")
         .expect("backup prints the application key");
-    let restored = run(
-        "restore",
-        &[dst.child().to_str().unwrap()],
-        Some(phrase),
-    );
+    let restored = run("restore", &[dst.child().to_str().unwrap()], Some(phrase));
     assert!(
         restored.status.success(),
         "{}",

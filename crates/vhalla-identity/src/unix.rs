@@ -144,8 +144,8 @@ impl Identity {
     /// full path; existing paths are never reused.
     pub fn restore(phrase: &str, path: impl AsRef<Path>) -> Result<Self, IdentityError> {
         let path = path.as_ref();
-        let mnemonic = bip39::Mnemonic::parse(phrase)
-            .map_err(|e| IdentityError::Phrase(format!("{e}")))?;
+        let mnemonic =
+            bip39::Mnemonic::parse(phrase).map_err(|e| IdentityError::Phrase(format!("{e}")))?;
         let entropy = mnemonic.to_entropy();
         if entropy.len() != 32 {
             return Err(IdentityError::Phrase(
