@@ -78,7 +78,10 @@ impl DirectoryPolicy {
             .and_then(|v| v.checked_mul(u64::from(slot)))
             .ok_or(RegistryError::Cost)
     }
-    fn validate(&self) -> Result<(), RegistryError> {
+    /// Rejects a policy whose bounds or slot arithmetic cannot hold —
+    /// exposed so config scaffolding can refuse an invalid shared file
+    /// before it reaches a node.
+    pub fn validate(&self) -> Result<(), RegistryError> {
         if self.base_cost == 0
             || self.window_seconds == 0
             || self.max_in_window == 0

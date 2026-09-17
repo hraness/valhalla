@@ -1,6 +1,7 @@
 //! Signed integration and generated private-state invariants.
 use ed25519_dalek::SigningKey;
-use proptest::prelude::*;
+use hegel::generators as gs;
+use hegel::TestCase;
 use std::collections::{BTreeMap, BTreeSet};
 use vhalla_core::{RealmId, RoomId};
 use vhalla_discovery::{
@@ -973,59 +974,125 @@ fn repost_source_metadata_is_charged_even_without_text_matching() {
     assert_eq!(page.hits[0].reposted_by.len(), 8);
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn signed_search_matches_an_exhaustive_literal_and_filter_oracle(
-        words in prop::collection::vec(0usize..6, 1..20),
-        query in 0usize..6,
-        filter in 0usize..4,
-    ) {
-        let texts = ["root café #rust", "RUST wasm #rust", "cafÉ root #play", "α root", "absent #play", "root café rust #play"];
-        let queries = ["rust", "café", "CAFÉ", "α", "\"root café\"", "root rust"];
-        let terms: &[&str] = match query {
-            0 => &["rust"], 1 => &["café"], 2 => &["CAFÉ"],
-            3 => &["α"], 4 => &["root café"], _ => &["root", "rust"],
-        };
-        let mut f = Fixture::new();
-        let owner = f.owner(1);
-        let mut w = f.writer(owner);
-        let mut inputs = Vec::new();
-        for which in words {
-            inputs.push((f.emit(&mut w, post(texts[which])), texts[which]));
-        }
-        f.seal(owner, &w);
-        let e = Eligibility::default();
-        let v = View::new(&f.archive, 10, &e);
-        let mut state = DiscoveryState::new([1; 32]);
-        state.observe(&v).unwrap();
-        let snap = DiscoverySnapshot::new(&f.archive, &v, owner, &state, Visibility::Committed).unwrap();
-        let filters = match filter {
-            0 => Filters::default(),
-            1 => Filters { tag: Some("rust".into()), ..Filters::default() },
-            2 => Filters { reply: Some(true), ..Filters::default() },
-            _ => Filters { channel: Some(RoomId(99)), ..Filters::default() },
-        };
-        // Independent std substring oracle with known fixture tag/placement data.
-        // It does not call Query::matches, candidate matching or ranking helpers.
-        let mut expected: Vec<_> = inputs.into_iter().filter(|(_, text)| {
-            let folded = text.to_ascii_lowercase();
-            terms.iter().all(|term| folded.contains(&term.to_ascii_lowercase()))
-                && match filter { 0 => true, 1 => text.contains("#rust"), _ => false }
-        }).map(|(id, _)| reference(id)).collect();
-        expected.sort_by_key(|r| (core::cmp::Reverse(state.ordinal(r.post)), *r));
-        let actual = snap.search(&Query::parse(queries[query]).unwrap(), &filters, Budget::default(), 64).unwrap();
-        prop_assert!(actual.coverage.query_complete);
-        prop_assert_eq!(actual.matches, expected.len());
-        prop_assert_eq!(actual.hits.iter().map(|h| h.reference).collect::<Vec<_>>(), expected);
+/// Signed search against an independent oracle under Hegel's interleaved draw
+/// model: each post is drawn inside the loop while the archive and writer
+/// mutate across steps.
+#[hegel::test(test_cases = 32)]
+fn signed_search_matches_an_exhaustive_literal_and_filter_oracle(tc: TestCase) {
+    let texts = [
+        "root café #rust",
+        "RUST wasm #rust",
+        "cafÉ root #play",
+        "α root",
+        "absent #play",
+        "root café rust #play",
+    ];
+    let queries = ["rust", "café", "CAFÉ", "α", "\"root café\"", "root rust"];
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(19));
+    let query = tc.draw(gs::integers::<usize>().max_value(5));
+    let filter = tc.draw(gs::integers::<usize>().max_value(3));
+    let terms: &[&str] = match query {
+        0 => &["rust"],
+        1 => &["café"],
+        2 => &["CAFÉ"],
+        3 => &["α"],
+        4 => &["root café"],
+        _ => &["root", "rust"],
+    };
+    let mut f = Fixture::new();
+    let owner = f.owner(1);
+    let mut w = f.writer(owner);
+    let mut inputs = Vec::new();
+    for _ in 0..steps {
+        let which = tc.draw(gs::integers::<usize>().max_value(5));
+        inputs.push((f.emit(&mut w, post(texts[which])), texts[which]));
     }
+    f.seal(owner, &w);
+    let e = Eligibility::default();
+    let v = View::new(&f.archive, 10, &e);
+    let mut state = DiscoveryState::new([1; 32]);
+    state.observe(&v).unwrap();
+    let snap =
+        DiscoverySnapshot::new(&f.archive, &v, owner, &state, Visibility::Committed).unwrap();
+    let filters = match filter {
+        0 => Filters::default(),
+        1 => Filters {
+            tag: Some("rust".into()),
+            ..Filters::default()
+        },
+        2 => Filters {
+            reply: Some(true),
+            ..Filters::default()
+        },
+        _ => Filters {
+            channel: Some(RoomId(99)),
+            ..Filters::default()
+        },
+    };
+    // Independent std substring oracle with known fixture tag/placement data.
+    // It does not call Query::matches, candidate matching or ranking helpers.
+    let mut expected: Vec<_> = inputs
+        .into_iter()
+        .filter(|(_, text)| {
+            let folded = text.to_ascii_lowercase();
+            terms
+                .iter()
+                .all(|term| folded.contains(&term.to_ascii_lowercase()))
+                && match filter {
+                    0 => true,
+                    1 => text.contains("#rust"),
+                    _ => false,
+                }
+        })
+        .map(|(id, _)| reference(id))
+        .collect();
+    expected.sort_by_key(|r| (core::cmp::Reverse(state.ordinal(r.post)), *r));
+    let actual = snap
+        .search(
+            &Query::parse(queries[query]).unwrap(),
+            &filters,
+            Budget::default(),
+            64,
+        )
+        .unwrap();
+    assert!(actual.coverage.query_complete);
+    assert_eq!(actual.matches, expected.len());
+    assert_eq!(
+        actual.hits.iter().map(|h| h.reference).collect::<Vec<_>>(),
+        expected
+    );
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(80))]
-    #[test]
-    fn private_codec_idempotent_bounded_preferences_roundtrip(changes in prop::collection::vec((0u8..5,0u8..20,any::<bool>()),0..100)){
-        let mut state=DiscoveryState::new([7;32]);for (kind,n,yes) in changes{let id=[n;32];let change=match kind{0=>Change::Subscribe(Subscription::Owner(OwnerId::from_bytes(id)),yes),1=>Change::MuteOwner(OwnerId::from_bytes(id),yes),2=>Change::BlockOwner(OwnerId::from_bytes(id),yes),3=>Change::Subscribe(Subscription::Tag(format!("tag{n}")),yes),_=>Change::Wider(yes)};state.apply(change.clone()).unwrap();let gen=state.generation();state.apply(change).unwrap();prop_assert_eq!(state.generation(),gen);}
-        let raw=state.encode();prop_assert_eq!(DiscoveryState::decode(&raw,[7;32]).unwrap(),state);prop_assert!(DiscoveryState::decode(&raw,[8;32]).is_err());for n in [0,1,7,8,31,raw.len()-1]{prop_assert!(DiscoveryState::decode(&raw[..n],[7;32]).is_err());}let mut trailing=raw;trailing.push(0);prop_assert!(DiscoveryState::decode(&trailing,[7;32]).is_err());
+/// Private codec round-trip under a generated change sequence: each preference
+/// change is drawn inside the loop while the state mutates across steps.
+#[hegel::test(test_cases = 80)]
+fn private_codec_idempotent_bounded_preferences_roundtrip(tc: TestCase) {
+    let mut state = DiscoveryState::new([7; 32]);
+    let steps = tc.draw(gs::integers::<usize>().max_value(99));
+    for _ in 0..steps {
+        let kind = tc.draw(gs::integers::<u8>().max_value(4));
+        let n = tc.draw(gs::integers::<u8>().max_value(19));
+        let yes = tc.draw(gs::booleans());
+        let id = [n; 32];
+        let change = match kind {
+            0 => Change::Subscribe(Subscription::Owner(OwnerId::from_bytes(id)), yes),
+            1 => Change::MuteOwner(OwnerId::from_bytes(id), yes),
+            2 => Change::BlockOwner(OwnerId::from_bytes(id), yes),
+            3 => Change::Subscribe(Subscription::Tag(format!("tag{n}")), yes),
+            _ => Change::Wider(yes),
+        };
+        state.apply(change.clone()).unwrap();
+        let gen = state.generation();
+        state.apply(change).unwrap();
+        assert_eq!(state.generation(), gen);
     }
+    let raw = state.encode();
+    assert_eq!(DiscoveryState::decode(&raw, [7; 32]).unwrap(), state);
+    assert!(DiscoveryState::decode(&raw, [8; 32]).is_err());
+    for n in [0, 1, 7, 8, 31, raw.len() - 1] {
+        assert!(DiscoveryState::decode(&raw[..n], [7; 32]).is_err());
+    }
+    let mut trailing = raw;
+    trailing.push(0);
+    assert!(DiscoveryState::decode(&trailing, [7; 32]).is_err());
 }

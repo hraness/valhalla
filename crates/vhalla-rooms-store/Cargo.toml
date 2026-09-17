@@ -10,11 +10,13 @@ description = "Explicit private-file persistence for room registry snapshots."
 vhalla-rooms = { path = "../vhalla-rooms" }
 vhalla-social = { path = "../vhalla-social" }
 vhalla-core = { path = "../vhalla-core" }
+vhalla-custody = { path = "../vhalla-custody" }
 sha2 = "0.10"
 
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
 getrandom = "0.3"
+hegeltest = "0.46.0"
 
 [lints]
 workspace = true

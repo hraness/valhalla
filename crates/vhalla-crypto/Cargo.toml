@@ -13,6 +13,7 @@ vhalla-core = { path = "../vhalla-core" }
 vhalla-wire = { path = "../vhalla-wire" }
 
 [dev-dependencies]
+hegeltest = "0.46.0"
 proptest = "1.6"
 
 [lints]

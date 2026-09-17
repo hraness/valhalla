@@ -555,7 +555,9 @@ impl<'a> SnapshotReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
+    use alloc::{format, string::ToString};
+    use hegel::generators as gs;
+    use hegel::TestCase;
 
     fn ledger() -> Ledger {
         Ledger::new(RealmId(1), Epoch(2), 8)
@@ -719,23 +721,24 @@ mod tests {
         ));
     }
 
-    proptest! {
-        #[test]
-        fn bounded_linear_schedules_preserve_deterministic_roots(
-            payloads in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..32), 1..8)
-        ) {
-            let mut left = ledger();
-            let mut right = ledger();
-            let mut parent = None;
-            for (index, payload) in payloads.iter().enumerate() {
-                let current = event(parent, index as u64 + 1, payload);
-                let duplicate = current.clone();
-                prop_assert_eq!(left.append(current.clone()), Ok(()));
-                prop_assert_eq!(right.append(duplicate), Ok(()));
-                parent = Some(current.id);
-            }
-            prop_assert_eq!(left.head(), right.head());
-            prop_assert_eq!(left.state_root(parent.unwrap()), right.state_root(parent.unwrap()));
+    #[hegel::test]
+    fn bounded_linear_schedules_preserve_deterministic_roots(tc: TestCase) {
+        let mut left = ledger();
+        let mut right = ledger();
+        let mut parent = None;
+        let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(7));
+        for index in 0..steps {
+            let payload = tc.draw(gs::vecs(gs::integers::<u8>()).max_size(31));
+            let current = event(parent, index as u64 + 1, &payload);
+            let duplicate = current.clone();
+            assert_eq!(left.append(current.clone()), Ok(()));
+            assert_eq!(right.append(duplicate), Ok(()));
+            parent = Some(current.id);
         }
+        assert_eq!(left.head(), right.head());
+        assert_eq!(
+            left.state_root(parent.unwrap()),
+            right.state_root(parent.unwrap())
+        );
     }
 }

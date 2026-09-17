@@ -11,7 +11,8 @@
 use std::collections::BTreeSet;
 
 use arc_malachitebft_core_types::{
-    CommitCertificate, NilOrVal, Round, SigningScheme as _, ValidatorSet as _, VoteType,
+    CommitCertificate, ExtendedCommitCertificate, ExtendedCommitSignature, NilOrVal, Round,
+    SigningScheme as _, ValidatorSet as _, VoteType,
 };
 
 use crate::{
@@ -202,4 +203,40 @@ fn decode_head<'a>(
 /// The round field inside a `VC2` head, already known to be non-Nil.
 fn round_of(raw: &[u8]) -> Round {
     Round::Some(u32::from_be_bytes(raw[11..15].try_into().unwrap()))
+}
+
+/// Rebuilds an `ExtendedCommitCertificate` from the canonical `VC2` bytes
+/// a journal bundle stores — the shape `GetDecidedValues` answers carry.
+/// The canonical form records no vote extensions, so every signature's
+/// `extension` is `None`. Strict length checks only; signature VALIDITY
+/// is the bundle's already-established property, not re-verified here.
+pub fn ext_certificate_from_canonical(
+    raw: &[u8],
+) -> Option<ExtendedCommitCertificate<RoomContext>> {
+    if raw.len() < 49 || raw.get(..3) != Some(b"VC2") {
+        return None;
+    }
+    let height = u64::from_be_bytes(raw[3..11].try_into().unwrap());
+    let round = u32::from_be_bytes(raw[11..15].try_into().unwrap());
+    if round == u32::MAX {
+        return None; // Nil round is never a commit certificate.
+    }
+    let value_id = RoomValueId(raw[15..47].try_into().unwrap());
+    let count = u16::from_be_bytes(raw[47..49].try_into().unwrap()) as usize;
+    let sigs = &raw[49..];
+    if count == 0 || count > MAX_CERT_SIGNATURES || sigs.len() != count * 84 {
+        return None;
+    }
+    let mut commit_signatures = Vec::with_capacity(count);
+    for chunk in sigs.as_chunks::<84>().0 {
+        let address = Address::new(chunk[..20].try_into().unwrap());
+        let signature = Ed25519::decode_signature(&chunk[20..84]).ok()?;
+        commit_signatures.push(ExtendedCommitSignature::new(address, signature, None));
+    }
+    Some(ExtendedCommitCertificate {
+        height: Height::new(height),
+        round: Round::Some(round),
+        value_id,
+        commit_signatures,
+    })
 }

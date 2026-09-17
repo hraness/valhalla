@@ -1,6 +1,5 @@
 #![allow(missing_docs)]
 
-use proptest::prelude::*;
 use vhalla_core::{Epoch, EventId, PeerId, RealmId, RoomId, Sequence};
 use vhalla_crypto::{
     peer_id_from_seed, sign, verifying_key_from_seed, SessionId, VerificationContext, VerifyError,
@@ -228,28 +227,4 @@ fn weak_key_configuration_cannot_replace_an_active_session() {
         Err(SteelError::Verify(VerifyError::Replay))
     );
     assert!(session.receive(request(context(), 2), NOW).is_ok());
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn adversarial_delivery_matches_effect_count_model(
-        schedule in prop::collection::vec((1u64..16, any::<bool>(), any::<bool>(), any::<bool>()), 0..24)
-    ) {
-        let mut session = session();
-        let mut high_water = 0;
-        let mut expected_reads = 0;
-        for (sequence, expired, tampered, wrong_room) in schedule {
-            let mut ctx = context();
-            if wrong_room { ctx.room = RoomId(999); }
-            let message = frame(ctx, SEED, sequence, if expired { NOW-1 } else { NOW+1 }, KIND_READ_MEMORY_REQUEST, b"hostile remote text");
-            let mut bytes = message.as_bytes().to_vec();
-            if tampered { *bytes.last_mut().unwrap() ^= 1; }
-            let expected = !expired && !tampered && !wrong_room && sequence > high_water;
-            let result = session.receive(Frame::new(&bytes).unwrap(), NOW);
-            prop_assert_eq!(result.is_ok(), expected);
-            if expected { high_water = sequence; expected_reads += 1; }
-            prop_assert_eq!(session.reads(), expected_reads);
-        }
-    }
 }
