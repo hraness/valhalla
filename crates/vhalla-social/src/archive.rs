@@ -58,7 +58,9 @@ impl Default for Limits {
     }
 }
 impl Limits {
-    fn check(self) -> Result<Self, Error> {
+    /// Rejects bounds that cannot hold — exposed so config scaffolding
+    /// can refuse an invalid shared file before it reaches a node.
+    pub fn check(self) -> Result<Self, Error> {
         if self.records == 0
             || self.records > MAX_RECORDS
             || self.control_reserve == 0

@@ -1138,4 +1138,48 @@ mod enabled {
             &provisional_id
         ));
     }
+
+    /// The genesis-archive exchange the rooms runbook depends on: two
+    /// members each author records, swap snapshots in both directions,
+    /// and must converge on byte-identical exports — the union is keyed
+    /// by content id over canonical order, never by arrival order. A
+    /// divergence here is exactly what `rooms node-check`'s `archive`
+    /// fingerprint exists to catch.
+    #[test]
+    fn snapshot_exchange_converges_to_identical_bytes() {
+        let temp = Temp::new();
+        let alice = Account::init(&temp, "conv-alice", REALM);
+        let bob = Account::init(&temp, "conv-bob", REALM);
+        ok(
+            &alice.store,
+            REALM,
+            "post",
+            &[path(&alice.key), &alice.actor(), "profile", "alice post"],
+        );
+        ok(
+            &bob.store,
+            REALM,
+            "post",
+            &[path(&bob.key), &bob.actor(), "profile", "bob post"],
+        );
+        // Swap both ways: each store now holds the union of both
+        // archives regardless of which side imported first.
+        let from_alice = temp.path("from-alice.snapshot");
+        let from_bob = temp.path("from-bob.snapshot");
+        export(&alice, &from_alice);
+        export(&bob, &from_bob);
+        ok(&alice.store, REALM, "import", &[path(&from_bob)]);
+        ok(&bob.store, REALM, "import", &[path(&from_alice)]);
+        // Convergence is byte-exact, not merely root-equal: every member
+        // seeds the same genesis archive.
+        let alice_final = temp.path("alice-final.snapshot");
+        let bob_final = temp.path("bob-final.snapshot");
+        export(&alice, &alice_final);
+        export(&bob, &bob_final);
+        assert_eq!(
+            fs::read(&alice_final).unwrap(),
+            fs::read(&bob_final).unwrap(),
+            "exchanged archives must converge to identical bytes"
+        );
+    }
 }

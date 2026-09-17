@@ -15,30 +15,58 @@ use vhalla_rooms_tui::{form, sign, CREATE_LABELS, DESCRIBE_LABELS};
 
 use crate::rooms::Args;
 
-/// Opens the replica, signs the requested operation, drops the body.
-pub fn run(args: &Args) -> Result<(), String> {
-    let config_path = args.config.as_deref().ok_or("submit needs --config FILE")?;
+/// The pure half of the replica prelude: --config and NODE_HOME must be
+/// present, the file must parse, and its realm must match — no I/O yet,
+/// so callers can finish argument validation before opening anything.
+/// `command` names the caller for error text.
+fn service_target<'a>(args: &'a Args, command: &str) -> Result<(&'a str, ServiceConfig), String> {
+    let config_path = args
+        .config
+        .as_deref()
+        .ok_or_else(|| format!("{command} needs --config FILE"))?;
     let node_home = args
         .value(0)
-        .ok_or("submit takes NODE_HOME; see vhalla rooms --help")?;
-    let kind = args
-        .value(1)
-        .ok_or("submit takes a kind: create | describe | archive")?;
+        .ok_or_else(|| format!("{command} takes NODE_HOME; see vhalla rooms --help"))?;
     let raw = std::fs::read(config_path).map_err(|e| format!("config: {e}"))?;
     let config = ServiceConfig::parse(&raw).map_err(|e| e.to_string())?;
     if config.realm_id().map_err(|e| e.to_string())? != args.realm {
         return Err("config realm does not match the REALM argument".into());
     }
+    Ok((node_home, config))
+}
+
+/// Open the caller-owned replica for a validated target and sync it to
+/// the node's latest committed journal height.
+fn connect(args: &Args, node_home: &str, config: &ServiceConfig) -> Result<Service, String> {
     let mut service = Service::open(
         Path::new(&args.social_store),
         Path::new(node_home),
         Path::new(&args.rooms_store),
-        &config,
+        config,
     )
     .map_err(|e| e.to_string())?;
     // The context must reflect the node's latest committed state, not the
     // replica's last sync.
     service.sync().map_err(|e| e.to_string())?;
+    Ok(service)
+}
+
+/// The replica prelude every NODE_HOME-backed command shares: validate
+/// the target, open the replica, sync to the node's committed height.
+fn open_service(args: &Args, command: &str) -> Result<Service, String> {
+    let (node_home, config) = service_target(args, command)?;
+    connect(args, node_home, &config)
+}
+
+/// Opens the replica, signs the requested operation, drops the body.
+pub fn run(args: &Args) -> Result<(), String> {
+    // Argument precedence is user-visible: --config, then NODE_HOME, then
+    // the kind — and nothing is opened until all three validate.
+    let (node_home, config) = service_target(args, "submit")?;
+    let kind = args
+        .value(1)
+        .ok_or("submit takes a kind: create | describe | archive")?;
+    let mut service = connect(args, node_home, &config)?;
     let now = args.now();
 
     let (evidence, records) = match kind {
@@ -107,55 +135,78 @@ pub fn run(args: &Args) -> Result<(), String> {
     ]))
 }
 
+/// One pending marker's JSON row — shared by `pending` and `status`.
+fn pending_row(p: &vhalla_rooms_app::Pending) -> String {
+    crate::json::object(vec![
+        ("marker", crate::json::string(&p.name)),
+        (
+            "slug",
+            crate::json::optional(p.slug.as_deref(), crate::json::string),
+        ),
+        (
+            "state",
+            crate::json::string(match p.state {
+                vhalla_rooms_app::PendingState::Queued => "queued",
+                vhalla_rooms_app::PendingState::Submitted => "submitted",
+                vhalla_rooms_app::PendingState::Committed => "committed",
+                vhalla_rooms_app::PendingState::Collision => "collision",
+                vhalla_rooms_app::PendingState::Rejected => "rejected",
+            }),
+        ),
+    ])
+}
+
 /// `rooms pending` — syncs the replica and reports every local marker's
 /// resolution: the operator-visible counterpart of the TUI pending strip.
 pub fn pending(args: &Args) -> Result<(), String> {
-    let config_path = args
-        .config
-        .as_deref()
-        .ok_or("pending needs --config FILE")?;
-    let node_home = args
-        .value(0)
-        .ok_or("pending takes NODE_HOME; see vhalla rooms --help")?;
-    let raw = std::fs::read(config_path).map_err(|e| format!("config: {e}"))?;
-    let config = ServiceConfig::parse(&raw).map_err(|e| e.to_string())?;
-    if config.realm_id().map_err(|e| e.to_string())? != args.realm {
-        return Err("config realm does not match the REALM argument".into());
-    }
-    let mut service = Service::open(
-        Path::new(&args.social_store),
-        Path::new(node_home),
-        Path::new(&args.rooms_store),
-        &config,
-    )
-    .map_err(|e| e.to_string())?;
-    service.sync().map_err(|e| e.to_string())?;
+    let service = open_service(args, "pending")?;
     let height = service.height();
     let pending = service.pending().map_err(|e| e.to_string())?;
-    let rows: Vec<String> = pending
+    let rows: Vec<String> = pending.iter().map(pending_row).collect();
+    crate::rooms::emit(crate::json::object(vec![
+        ("height", height.to_string()),
+        ("pending", crate::json::array(rows)),
+    ]))
+}
+
+/// `rooms status` — one-shot live-mesh observation: syncs the replica
+/// and reports committed height, the directory's room listing and every
+/// local marker's resolution in a single object. This is the read path a
+/// running node allows — `rooms list` cannot touch `NODE_HOME/app/rooms`
+/// while the node holds its writer lock, so operators keep a REPLICA_HOME
+/// and point `status` at it.
+pub fn status(args: &Args) -> Result<(), String> {
+    let service = open_service(args, "status")?;
+    let height = service.height();
+    let pending = service.pending().map_err(|e| e.to_string())?;
+    let page = service
+        .registry()
+        .search("", args.limit, vhalla_rooms::registry::MAX_ROOMS)
+        .map_err(crate::rooms::rooms_error)?;
+    let rooms: Vec<String> = page
+        .rooms
         .iter()
-        .map(|p| {
+        .map(|room| {
             crate::json::object(vec![
-                ("marker", crate::json::string(&p.name)),
+                ("slug", crate::json::string(room.slug().as_str())),
+                ("genesis", crate::json::id(room.genesis().as_bytes())),
+                ("owner", crate::json::id(room.owner().as_bytes())),
                 (
-                    "slug",
-                    crate::json::optional(p.slug.as_deref(), crate::json::string),
+                    "description",
+                    crate::json::string(room.description().as_str()),
                 ),
-                (
-                    "state",
-                    crate::json::string(match p.state {
-                        vhalla_rooms_app::PendingState::Queued => "queued",
-                        vhalla_rooms_app::PendingState::Submitted => "submitted",
-                        vhalla_rooms_app::PendingState::Committed => "committed",
-                        vhalla_rooms_app::PendingState::Collision => "collision",
-                        vhalla_rooms_app::PendingState::Rejected => "rejected",
-                    }),
-                ),
+                ("createdAt", room.created_at().to_string()),
             ])
         })
         .collect();
     crate::rooms::emit(crate::json::object(vec![
         ("height", height.to_string()),
-        ("pending", crate::json::array(rows)),
+        ("revision", page.revision.to_string()),
+        ("partial", page.partial.to_string()),
+        ("rooms", crate::json::array(rooms)),
+        (
+            "pending",
+            crate::json::array(pending.iter().map(pending_row)),
+        ),
     ]))
 }
