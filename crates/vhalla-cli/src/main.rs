@@ -59,7 +59,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             "{}",
             intro::terminal_intro(std::io::stdout().is_terminal(), term.as_deref(), columns)
         );
-        println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla menubar [run|install|uninstall|status]\nvhalla outputs");
+        println!("vhalla (valhalla)\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla identity backup <existing-directory>\nvhalla identity restore <new-directory>   # mnemonic on stdin\nvhalla menubar [run|install|uninstall|status]\nvhalla outputs");
         println!("vhalla support [--json|dismiss|snooze|enable|status --json]\nvhalla support protocol --json  # optional support lifecycle for agents");
         #[cfg(feature = "experimental-network")]
         println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key> [listen-host]\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\nvhalla experimental [--json] invite <identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>\nvhalla experimental [--json] listen <identity-directory> invitation <invitation-hex> [listen-host]\nvhalla experimental [--json] send <identity-directory> invitation <invitation-hex> <expected-owner-app-key> <route> <expiry> <message>\n\nExperimental paired chat; fixed test room, 60-second listener lifetime. listen binds 127.0.0.1 unless a bare listen-host (an IPv4 or IPv6 literal, no port) names another interface - the printed route then carries it for a remote peer to dial. --json emits bounded versioned JSON lines. Invitations are owner-signed; a verified send consumes the invitation nonce in <identity-directory>.spent and cannot redeem it twice.");
@@ -101,14 +101,33 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         return outputs(&args);
     }
     if args.len() != 3 || args[0] != "identity" {
-        return Err("usage: vhalla identity <init|show> <directory>".into());
+        return Err("usage: vhalla identity <init|show|backup|restore> <directory>".into());
     }
     let identity = if args[1] == "init" {
         vhalla_identity::Identity::create_new(&args[2])
     } else if args[1] == "show" {
         vhalla_identity::Identity::open(&args[2])
+    } else if args[1] == "backup" {
+        let identity = vhalla_identity::Identity::open(&args[2])
+            .map_err(|error| format!("identity operation failed: {error:?}"))?;
+        let phrase = identity.backup();
+        let public = identity
+            .public_key()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        println!("mnemonic {}", &*phrase);
+        println!("application-key {public}");
+        return Ok(());
+    } else if args[1] == "restore" {
+        use std::io::Read;
+        let mut phrase = String::new();
+        std::io::stdin()
+            .read_to_string(&mut phrase)
+            .map_err(|e| format!("failed to read mnemonic from stdin: {e}"))?;
+        vhalla_identity::Identity::restore(&phrase, &args[2])
     } else {
-        return Err("identity command must be init or show".into());
+        return Err("identity command must be init, show, backup or restore".into());
     }
     .map_err(|error| format!("identity operation failed: {error:?}"))?;
     let public = identity
