@@ -33,8 +33,11 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   archive OWNER_KEYDIR SLUG EXPIRY
   list | search QUERY | show SLUG | account OWNER64 | proof RECORD64 | evidence RECORD64 | recover
   node NODE_HOME --config FILE  (build: --features experimental-rooms-node)
+  node-check NODE_HOME --config FILE  (build: --features experimental-rooms-node)
   keygen  (build: --features experimental-rooms-node)
   eligible NODE_HOME OWNER64,... (build: --features experimental-rooms-node)
+  network-init OUT --realm R32 --directory D64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]  (build: --features experimental-rooms-node)
+  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers HOST:PORT,...]  (build: --features experimental-rooms-node)
   tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
   submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
   submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
@@ -51,6 +54,13 @@ application store; --config names a JSON file with node_key (hex seed), port,
 optional listen (bare host, default 127.0.0.1), peers, validators, directory,
 policy, eligible owners and archive limits. `keygen` prints a fresh node_key
 seed and the public_key to share for the validators list.
+`network-init` writes the one shared-params file (realm, directory,
+policy, limits, eligible, validator activations) every member must carry
+identically; `node-init` merges that file with a member's own node_key,
+port, listen and peers into NODE_HOME/node.json and prints the
+fingerprint to compare across the set. `node-check` runs the full node
+decode path and reports the genesis fingerprint, seeded archive root,
+per-set quorum arithmetic and whether the node key votes.
 Producers submit canonical batches by dropping *.batch files into
 NODE_HOME/intake/; operators evolve the eligible set by dropping *.eligible
 files there - `rooms eligible NODE_HOME OWNER64,...` writes one. Committed
@@ -160,7 +170,7 @@ impl Args {
     }
 }
 
-fn hex128(text: &str) -> Result<u128, String> {
+pub(crate) fn hex128(text: &str) -> Result<u128, String> {
     let raw = hex_decode(text)?;
     if raw.len() != 16 {
         return Err("expected 32 hex characters".into());
@@ -281,6 +291,28 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             return Err("rooms keygen needs --features experimental-rooms-node".into());
         }
     }
+    // The scaffolding commands carry their own flag shapes rather than
+    // the shared SOCIAL_STORE ROOMS_STORE REALM positionals.
+    if raw.get(1).is_some_and(|s| s == "network-init") {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_node::network_init(&raw[2..]);
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err("rooms network-init needs --features experimental-rooms-node".into());
+        }
+    }
+    if raw.get(1).is_some_and(|s| s == "node-init") {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_node::node_init(&raw[2..]);
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err("rooms node-init needs --features experimental-rooms-node".into());
+        }
+    }
     let args = Args::parse(raw)?;
     if args.command == "node" {
         #[cfg(feature = "experimental-rooms-node")]
@@ -291,6 +323,23 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         {
             return Err(format!(
                 "rooms node needs --features experimental-rooms-node{}",
+                if args.config.is_some() {
+                    " (config ignored)"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    if args.command == "node-check" {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_node::check(&args);
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err(format!(
+                "rooms node-check needs --features experimental-rooms-node{}",
                 if args.config.is_some() {
                     " (config ignored)"
                 } else {
