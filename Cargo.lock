@@ -5570,6 +5570,7 @@ dependencies = [
  "bytes",
  "ed25519-dalek 2.2.0",
  "eyre",
+ "hegeltest",
  "ractor",
  "sha3",
  "tokio",

@@ -25,6 +25,7 @@
 - Inside `#![no_std]` crates the `#[hegel::test]` expansion needs `use alloc::format;` and `use alloc::string::ToString;` in the test module.
 - Hegel generator bounds are inclusive: proptest `a..b` maps to `.min_value(a).max_value(b - 1)`, `a..=b` to `.min_value(a).max_value(b)`. `min_value(0)` is redundant and can be dropped.
 - `cargo test --locked` must stay green; Hegel dev-deps are added per-crate through `cargo add --dev hegeltest -p <crate>`.
+- A test doing real I/O per case (journal reopen, store reconcile) can trip `FailedHealthCheck: TooSlow`. Suppress only that check — `#[hegel::test(test_cases = N, suppress_health_check = [HealthCheck::TooSlow])]` — never lower coverage to dodge it.
 
 ## Rooms consensus node
 
