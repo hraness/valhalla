@@ -469,7 +469,9 @@ pub fn eligible(args: &Args) -> Result<(), String> {
     std::fs::create_dir_all(&intake).map_err(|e| format!("intake: {e}"))?;
     // Name the file deterministically from the canonical bytes so a repeated
     // command converges on one pending marker rather than duplicating work.
-    let stem = format!("eligible-{}", &crate::json::id(&bytes[8..24])[..16]);
+    // Plain hex, never `json::id` — the intake stem filter admits only
+    // `[a-zA-Z0-9._-]`, and a quoted id would rename the drop `.rejected`.
+    let stem = format!("eligible-{}", crate::json::hex(&bytes[8..24]));
     let target = intake.join(format!("{stem}.eligible"));
     let tmp = intake.join(format!("{stem}.tmp"));
     std::fs::write(&tmp, &bytes).map_err(|e| format!("write: {e}"))?;
