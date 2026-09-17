@@ -1,6 +1,8 @@
 use super::*;
 use ed25519_dalek::SigningKey;
+use hegel::{generators as gs, HealthCheck, TestCase};
 use proptest::prelude::*;
+use std::collections::BTreeSet;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use vhalla_social::{
     archive::Budget, Actor, Body, Operation, OwnerId, Placement, RecordId, SignedRecord, Text,
@@ -484,4 +486,572 @@ proptest! {
         raw[offset] ^= 1 << bit;
         prop_assert!(Pin::decode(&raw).is_err());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Generative Hegel properties over the archive lifecycle. Each case draws an
+// interleaved command sequence — create owner identities, grow their signed
+// post chains in a staging pool, re-ingest retained records, commit a fresh
+// generation, restart under drawn anchors, attempt stale/divergent
+// publications, interrupt a commit at a drawn boundary step — with generators
+// fed from the state accumulated so far (created owners, pool records,
+// published pins, committed snapshots). `recovery_hegel.rs` in vhalla-ledger
+// is the reference for the draw-inside-the-loop style.
+// ---------------------------------------------------------------------------
+
+/// Every publication-boundary step a case can inject, mirroring `Step`.
+const STEPS: [Step; 13] = [
+    Step::IntentCreated,
+    Step::IntentWritten,
+    Step::IntentDurable,
+    Step::BundleWritten,
+    Step::BundleSynced,
+    Step::BundleRenamed,
+    Step::BundleDurable,
+    Step::PinWritten,
+    Step::PinSynced,
+    Step::PinRenamed,
+    Step::PinDurable,
+    Step::IntentRemoved,
+    Step::CleanupDurable,
+];
+
+/// Drawn seeds space distinct owner keys; any byte pattern derives a key.
+const MAX_SEED: u8 = 200;
+
+/// An owner identity root and its linear post chain, all under one key.
+struct Owner {
+    key: SigningKey,
+    id: OwnerId,
+    root: SignedRecord,
+    posts: Vec<SignedRecord>,
+}
+
+/// A self-signed owner genesis; its record id is the owner id.
+fn owner(seed: u8) -> Owner {
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let root = UnsignedRecord::new(
+        key.verifying_key().to_bytes(),
+        Body::OwnerGenesis {
+            controller: key.verifying_key().to_bytes(),
+            recovery: None,
+            nonce: [seed; 32],
+        },
+    )
+    .unwrap()
+    .sign_with_key(&key)
+    .unwrap()
+    .finish()
+    .unwrap();
+    Owner {
+        key,
+        id: OwnerId::from_bytes(*root.id().as_bytes()),
+        root,
+        posts: Vec::new(),
+    }
+}
+
+/// The next post in `owner`'s chain; `sequence`/`previous` keep every record
+/// distinct, so each is always a fresh insert into any archive lacking it.
+fn chain_post(owner: &Owner) -> SignedRecord {
+    UnsignedRecord::new(
+        owner.key.verifying_key().to_bytes(),
+        Body::Social {
+            actor: Actor::Owner {
+                owner: owner.id,
+                control: owner.root.id(),
+            },
+            realm: REALM,
+            sequence: owner.posts.len() as u64,
+            previous: owner.posts.last().map(|record| record.id()),
+            operation: Operation::Post {
+                placement: Placement::Profile,
+                text: Text::new(&format!("chain-{}", owner.posts.len())).unwrap(),
+                reply: None,
+                quote: None,
+            },
+        },
+    )
+    .unwrap()
+    .sign_with_key(&owner.key)
+    .unwrap()
+    .finish()
+    .unwrap()
+}
+
+/// Retain `owner`'s genesis and first `depth` chain posts in `target`; records
+/// already retained are exact duplicates and change nothing. Keeping the
+/// genesis first also keeps the chain out of the bounded pending bucket.
+fn include(target: &mut Archive, owner: &Owner, depth: usize) {
+    add(target, &owner.root);
+    for record in owner.posts.iter().take(depth) {
+        add(target, record);
+    }
+}
+
+/// State accumulated across one drawn trace; command generators read from it.
+struct Trace {
+    /// Owners whose identity root was signed and pooled.
+    owners: Vec<Owner>,
+    /// Seeds already drawn for an owner identity.
+    owner_seeds: BTreeSet<u8>,
+    /// Every pin ever published, oldest first; `pins.last()` is current.
+    pins: Vec<Pin>,
+    /// Canonical committed snapshot behind each published pin.
+    history: Vec<Vec<u8>>,
+}
+
+impl Trace {
+    /// Draw the first owner's seed, create the pool and store, and pin the
+    /// empty genesis archive at generation zero.
+    fn open(tc: &TestCase) -> (Temp, Archive, Store, Self) {
+        let temp = Temp::new();
+        let mut pool = Archive::new(REALM, Limits::default()).unwrap();
+        let seed = tc.draw(gs::integers::<u8>().max_value(MAX_SEED));
+        let first = owner(seed);
+        pool.ingest(
+            &first.root.encode(),
+            &mut Budget::new(1, MAX_RECORD_BYTES).unwrap(),
+        )
+        .unwrap();
+        let store = Store::create(temp.store(), REALM, Limits::default()).unwrap();
+        let trace = Self {
+            owners: vec![first],
+            owner_seeds: BTreeSet::from([seed]),
+            pins: vec![store.pin()],
+            history: vec![store.archive().snapshot()],
+        };
+        (temp, pool, store, trace)
+    }
+
+    /// Draw a seed's owner genesis into the pool: `inserted` iff that exact
+    /// signed record is new to the archive. A fresh seed joins the owner set.
+    fn create_owner(&mut self, tc: &TestCase, pool: &mut Archive) {
+        let seed = tc.draw(gs::integers::<u8>().max_value(MAX_SEED));
+        let fresh = self.owner_seeds.insert(seed);
+        let drawn = owner(seed);
+        let receipt = pool
+            .ingest(
+                &drawn.root.encode(),
+                &mut Budget::new(1, MAX_RECORD_BYTES).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(receipt.inserted, fresh);
+        if fresh {
+            self.owners.push(drawn);
+        }
+    }
+
+    /// Sign and pool-retain the next post in owner `i`'s chain.
+    fn extend_chain(&mut self, i: usize, pool: &mut Archive) {
+        let post = chain_post(&self.owners[i]);
+        let receipt = pool
+            .ingest(
+                &post.encode(),
+                &mut Budget::new(1, MAX_RECORD_BYTES).unwrap(),
+            )
+            .unwrap();
+        assert!(receipt.inserted);
+        self.owners[i].posts.push(post);
+    }
+
+    /// Extend a drawn owner's chain by one fresh pooled post.
+    fn post(&mut self, tc: &TestCase, pool: &mut Archive) {
+        let i = tc.draw(gs::integers::<usize>().max_value(self.owners.len() - 1));
+        self.extend_chain(i, pool);
+    }
+
+    /// Re-ingest one retained record drawn by canonical index; always a
+    /// duplicate that changes nothing.
+    fn reingest(&mut self, tc: &TestCase, pool: &mut Archive) {
+        let n = pool.len();
+        let raw = pool
+            .records()
+            .nth(tc.draw(gs::integers::<usize>().max_value(n - 1)))
+            .unwrap()
+            .encode();
+        let receipt = pool
+            .ingest(&raw, &mut Budget::new(1, MAX_RECORD_BYTES).unwrap())
+            .unwrap();
+        assert!(!receipt.inserted);
+        assert_eq!(pool.len(), n);
+    }
+
+    /// Commit a fresh extension of the committed archive — a drawn owner's
+    /// whole chain, lengthened by one new post — under the exact pin. The
+    /// only lawful outcome is a non-reconciled publication one generation up.
+    fn commit(&mut self, tc: &TestCase, pool: &mut Archive, store: &mut Store) {
+        let i = tc.draw(gs::integers::<usize>().max_value(self.owners.len() - 1));
+        self.extend_chain(i, pool);
+        let mut candidate = store.archive().clone();
+        include(&mut candidate, &self.owners[i], usize::MAX);
+        let prior = store.pin();
+        let publication = store.commit(candidate, prior).unwrap();
+        assert!(!publication.reconciled());
+        assert_eq!(publication.pin().generation(), prior.generation() + 1);
+        assert_eq!(publication.snapshot(), store.archive().snapshot());
+        assert_eq!(store.pin(), publication.pin());
+        self.pins.push(publication.pin());
+        self.history.push(publication.snapshot().to_vec());
+    }
+
+    /// Re-commit the exact committed archive: a reconciled readback that
+    /// leaves the pin untouched — by design the expected anchor is not
+    /// consulted, so a drawn stale pin reconciles the same.
+    fn readback(&mut self, tc: &TestCase, store: &mut Store) {
+        let prior = store.pin();
+        let expected = if self.pins.len() > 1 && tc.draw(gs::booleans()) {
+            self.pins[tc.draw(gs::integers::<usize>().max_value(self.pins.len() - 2))]
+        } else {
+            prior
+        };
+        let same =
+            Archive::from_snapshot(REALM, Limits::default(), &store.archive().snapshot()).unwrap();
+        let publication = store.commit(same, expected).unwrap();
+        assert!(publication.reconciled());
+        assert_eq!(publication.pin(), prior);
+        assert_eq!(store.pin(), prior);
+    }
+
+    /// Drop and reopen under a drawn anchor — none, the exact pin, or a stale
+    /// pin that must fail freshness — then assert complete readback equality.
+    /// A live writer refuses a second handle and a shared reader sees exactly
+    /// the committed tip.
+    fn restart(&mut self, tc: &TestCase, temp: &Temp, store: Store) -> Store {
+        let pin = store.pin();
+        let snapshot = store.archive().snapshot();
+        let root = store.archive().root();
+        let len = store.archive().len();
+        if tc.draw(gs::booleans()) {
+            assert!(matches!(
+                Store::open(temp.store(), REALM, Limits::default(), None),
+                Err(Error::Busy)
+            ));
+        }
+        drop(store);
+        if tc.draw(gs::integers::<u8>().max_value(2)) == 2 && self.pins.len() > 1 {
+            let stale = self.pins[tc.draw(gs::integers::<usize>().max_value(self.pins.len() - 2))];
+            assert!(matches!(
+                Store::open(temp.store(), REALM, Limits::default(), Some(stale)),
+                Err(Error::Freshness)
+            ));
+        }
+        if tc.draw(gs::booleans()) {
+            let shared = read_archive(temp.store(), REALM, Limits::default()).unwrap();
+            assert_eq!(shared.snapshot(), snapshot);
+            assert_eq!(shared.root(), root);
+        }
+        let store = if tc.draw(gs::booleans()) {
+            Store::open(temp.store(), REALM, Limits::default(), Some(pin)).unwrap()
+        } else {
+            Store::open(temp.store(), REALM, Limits::default(), None).unwrap()
+        };
+        assert_eq!(store.pin(), pin);
+        assert!(!store.recovery_required().unwrap());
+        assert_eq!(store.archive().snapshot(), snapshot);
+        assert_eq!(store.archive().root(), root);
+        assert_eq!(store.archive().len(), len);
+        // Reconciliation left exactly the lock, pin and current bundle.
+        assert_eq!(fs::read_dir(temp.store()).unwrap().count(), 3);
+        store
+    }
+
+    /// A commit attempt under a drawn basis and expected anchor. The outcome
+    /// oracle mirrors `commit_inner`: a candidate that is not an extension of
+    /// the committed archive is a conflict, an extension identical to the
+    /// committed archive reconciles in place on any anchor, and any other
+    /// extension publishes only under the exact current pin.
+    fn commit_attempt(&mut self, tc: &TestCase, pool: &mut Archive, store: &mut Store) {
+        let i = tc.draw(gs::integers::<usize>().max_value(self.owners.len() - 1));
+        // Basis: a foreign realm, the committed records under different local
+        // limits, a fresh archive, the live committed state, or a committed
+        // snapshot drawn by index — only the live basis can grow into a
+        // publishable descendant.
+        let mut candidate = match tc.draw(gs::integers::<u8>().max_value(4)) {
+            0 => Archive::new(RealmId(97), Limits::default()).unwrap(),
+            1 => Archive::from_snapshot(
+                REALM,
+                Limits {
+                    records: 512,
+                    ..Limits::default()
+                },
+                self.history.last().unwrap(),
+            )
+            .unwrap(),
+            2 => Archive::new(REALM, Limits::default()).unwrap(),
+            3 => Archive::from_snapshot(REALM, Limits::default(), self.history.last().unwrap())
+                .unwrap(),
+            _ => Archive::from_snapshot(
+                REALM,
+                Limits::default(),
+                &self.history[tc.draw(gs::integers::<usize>().max_value(self.history.len() - 1))],
+            )
+            .unwrap(),
+        };
+        if candidate.realm() == REALM {
+            match tc.draw(gs::integers::<u8>().max_value(2)) {
+                // The bare basis: identical whenever the basis is current.
+                0 => {}
+                // A drawn chain prefix — committed prefixes change nothing.
+                1 => {
+                    let depth =
+                        tc.draw(gs::integers::<usize>().max_value(self.owners[i].posts.len()));
+                    include(&mut candidate, &self.owners[i], depth);
+                }
+                // A fresh post plus the whole chain always extends the live
+                // archive by a record no committed state ever contained.
+                _ => {
+                    self.extend_chain(i, pool);
+                    include(&mut candidate, &self.owners[i], usize::MAX);
+                }
+            }
+        } else {
+            // A foreign realm retains only realm-free identity records and is
+            // never an extension of the committed archive.
+            add(&mut candidate, &self.owners[i].root);
+        }
+        // Expected anchor: the current pin, or a drawn stale published pin —
+        // stale twice as often so rejection paths exercise often.
+        let expected = if self.pins.len() > 1 && tc.draw(gs::integers::<u8>().max_value(2)) != 0 {
+            self.pins[tc.draw(gs::integers::<usize>().max_value(self.pins.len() - 2))]
+        } else {
+            store.pin()
+        };
+        let prior = store.pin();
+        let prior_snapshot = store.archive().snapshot();
+        let extension = candidate.is_extension_of(store.archive());
+        let identical =
+            candidate.physical_digest() == prior.physical() && candidate.root() == prior.logical();
+        let candidate_snapshot = candidate.snapshot();
+        match store.commit(candidate, expected) {
+            Ok(publication) if extension && !identical => {
+                assert_eq!(expected, prior, "a fresh extension needs the exact pin");
+                assert!(!publication.reconciled());
+                assert_eq!(publication.pin().generation(), prior.generation() + 1);
+                assert_eq!(publication.snapshot(), candidate_snapshot);
+                self.pins.push(publication.pin());
+                self.history.push(publication.snapshot().to_vec());
+            }
+            Ok(publication) => {
+                // Only an extension that is the exact committed archive may
+                // reconcile in place; anything else reaching here is a bug.
+                assert!(extension && identical);
+                assert!(publication.reconciled());
+                assert_eq!(publication.pin(), prior);
+                assert_eq!(store.archive().snapshot(), prior_snapshot);
+            }
+            Err(Error::Conflict) => {
+                // Rejection is lawful only for a non-extension or a fresh
+                // extension under a stale anchor — never for a readback or an
+                // exact-anchored descendant.
+                assert!(
+                    !(extension && identical),
+                    "the committed archive is a readback"
+                );
+                assert!(
+                    !(extension && !identical && expected == prior),
+                    "an exact-anchored extension must publish"
+                );
+                assert_eq!(store.pin(), prior);
+                assert_eq!(store.archive().snapshot(), prior_snapshot);
+            }
+            Err(other) => panic!("unexpected publication failure: {other:?}"),
+        }
+    }
+
+    /// Interrupt one fresh-extension commit at a drawn boundary step, then
+    /// drive reopen/commit/recover until the exact retained intent lands.
+    /// Returns the reopened store, or `None` when the drawn step left a torn
+    /// intent that fails closed forever (`Step::IntentCreated`).
+    fn faulted_commit(
+        &mut self,
+        tc: &TestCase,
+        pool: &mut Archive,
+        temp: &Temp,
+        store: Store,
+    ) -> Option<Store> {
+        let i = tc.draw(gs::integers::<usize>().max_value(self.owners.len() - 1));
+        self.extend_chain(i, pool);
+        let mut candidate = store.archive().clone();
+        include(&mut candidate, &self.owners[i], usize::MAX);
+        let prior = store.pin();
+        let step = STEPS[tc.draw(gs::integers::<usize>().max_value(STEPS.len() - 1))];
+        let mut store = store;
+        store.fault = Some(step);
+        assert!(matches!(
+            store.commit(candidate.clone(), prior),
+            Err(Error::Indeterminate(_))
+        ));
+        store.fault = None;
+        drop(store);
+        if step == Step::IntentCreated {
+            // The torn intent is preserved and fails closed on every reopen.
+            assert!(matches!(
+                Store::open(temp.store(), REALM, Limits::default(), None),
+                Err(Error::Corrupt)
+            ));
+            assert_eq!(
+                fs::read(temp.store().join(INTENT)).unwrap(),
+                Vec::<u8>::new()
+            );
+            assert_eq!(
+                Pin::decode(&fs::read(temp.store().join(PIN)).unwrap()).unwrap(),
+                prior
+            );
+            // Even a shared reader fails closed on the retained torn intent.
+            assert!(matches!(
+                read_archive(temp.store(), REALM, Limits::default()),
+                Err(Error::RecoveryRequired)
+            ));
+            return None;
+        }
+        // A shared reader sees a retained intent as `RecoveryRequired`, never
+        // torn bytes; once the pin already advanced it reads the new tip.
+        match read_archive(temp.store(), REALM, Limits::default()) {
+            Err(Error::RecoveryRequired) => {
+                assert!(
+                    !matches!(step, Step::IntentRemoved | Step::CleanupDurable),
+                    "a resolved intent leaves nothing to recover"
+                );
+            }
+            Ok(archive) => {
+                assert!(matches!(step, Step::IntentRemoved | Step::CleanupDurable));
+                assert_eq!(archive.snapshot(), candidate.snapshot());
+            }
+            Err(other) => panic!("unexpected shared-read failure: {other:?}"),
+        }
+        // Reopen and reconcile: a retained intent may be finished by
+        // re-committing the exact candidate, must reject any different one,
+        // and tolerates further drawn interruptions during recover.
+        let (mut reopened, publication) = 'reconcile: {
+            for round in 0..3u8 {
+                let mut reopened =
+                    Store::open(temp.store(), REALM, Limits::default(), None).unwrap();
+                let mut publication = None;
+                if reopened.recovery_required().unwrap() {
+                    match tc.draw(gs::integers::<u8>().max_value(2)) {
+                        0 => {
+                            // A different candidate cannot displace the intent.
+                            self.extend_chain(i, pool);
+                            let mut other = reopened.archive().clone();
+                            add(&mut other, self.owners[i].posts.last().unwrap());
+                            assert!(matches!(
+                                reopened.commit(other, prior),
+                                Err(Error::RecoveryRequired)
+                            ));
+                        }
+                        // The intent binds its expected pin: a stale anchor is
+                        // refused with the exact candidate too.
+                        1 if self.pins.len() > 1 => {
+                            let stale = self.pins
+                                [tc.draw(gs::integers::<usize>().max_value(self.pins.len() - 2))];
+                            assert!(matches!(
+                                reopened.commit(candidate.clone(), stale),
+                                Err(Error::RecoveryRequired)
+                            ));
+                        }
+                        2 => {
+                            // Re-committing the exact intent finishes it.
+                            let p = reopened.commit(candidate.clone(), prior).unwrap();
+                            assert!(p.reconciled());
+                            publication = Some(p);
+                        }
+                        _ => {}
+                    }
+                }
+                if publication.is_none() {
+                    if round < 2 && tc.draw(gs::booleans()) {
+                        reopened.fault = Some(
+                            STEPS[tc.draw(gs::integers::<usize>().max_value(STEPS.len() - 1))],
+                        );
+                    }
+                    match reopened.recover() {
+                        Ok(p) => publication = Some(p),
+                        Err(Error::Indeterminate(_)) => {
+                            drop(reopened);
+                            continue;
+                        }
+                        Err(other) => {
+                            panic!("reconciling the exact intent must not fail: {other:?}")
+                        }
+                    }
+                }
+                reopened.fault = None;
+                break 'reconcile (reopened, publication.unwrap());
+            }
+            unreachable!("the final reconciliation round runs clean");
+        };
+        assert!(publication.reconciled());
+        assert_eq!(publication.pin().generation(), prior.generation() + 1);
+        assert_eq!(reopened.pin(), publication.pin());
+        assert_eq!(reopened.archive().snapshot(), candidate.snapshot());
+        assert_eq!(fs::read_dir(temp.store()).unwrap().count(), 3);
+        // Re-committing the published intent is a reconciled readback.
+        let again = reopened.commit(candidate, prior).unwrap();
+        assert!(again.reconciled());
+        assert_eq!(again.pin(), publication.pin());
+        self.pins.push(reopened.pin());
+        self.history.push(reopened.archive().snapshot());
+        Some(reopened)
+    }
+}
+
+/// Property (a): drawn interleavings of ingests, commits and readbacks —
+/// every restart preserves exactly the committed archive.
+///
+/// Each case does real filesystem I/O per command — create, commit, reopen —
+/// so only the TooSlow health check is suppressed.
+#[hegel::test(test_cases = 64, suppress_health_check = [HealthCheck::TooSlow])]
+fn restarts_preserve_exactly_the_committed_archive(tc: TestCase) {
+    let (temp, mut pool, mut store, mut trace) = Trace::open(&tc);
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(12)) {
+        match tc.draw(gs::integers::<u8>().max_value(9)) {
+            0..=2 => trace.commit(&tc, &mut pool, &mut store),
+            3 => trace.create_owner(&tc, &mut pool),
+            4 => trace.post(&tc, &mut pool),
+            5 => trace.reingest(&tc, &mut pool),
+            6 => trace.readback(&tc, &mut store),
+            _ => store = trace.restart(&tc, &temp, store),
+        }
+    }
+    let _ = temp;
+}
+
+/// Property (b): drawn commit attempts on drawn bases and anchors — a stale
+/// or divergent candidate never publishes, whatever the interleaving.
+#[hegel::test(test_cases = 64, suppress_health_check = [HealthCheck::TooSlow])]
+fn stale_or_divergent_candidates_never_publish(tc: TestCase) {
+    let (temp, mut pool, mut store, mut trace) = Trace::open(&tc);
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(12)) {
+        match tc.draw(gs::integers::<u8>().max_value(9)) {
+            0..=1 => trace.commit(&tc, &mut pool, &mut store),
+            2 => trace.create_owner(&tc, &mut pool),
+            3 => trace.post(&tc, &mut pool),
+            4..=7 => trace.commit_attempt(&tc, &mut pool, &mut store),
+            _ => store = trace.restart(&tc, &temp, store),
+        }
+    }
+    let _ = temp;
+}
+
+/// Property (c): a commit interrupted at any drawn boundary step reconciles
+/// the exact retained intent — never a substitute — however often the
+/// recovery itself is interrupted again.
+#[hegel::test(test_cases = 64, suppress_health_check = [HealthCheck::TooSlow])]
+fn every_publication_boundary_recovers_the_exact_intent(tc: TestCase) {
+    let (temp, mut pool, mut store, mut trace) = Trace::open(&tc);
+    'trace: for _ in 0..tc.draw(gs::integers::<usize>().max_value(16)) {
+        match tc.draw(gs::integers::<u8>().max_value(9)) {
+            0..=1 => trace.commit(&tc, &mut pool, &mut store),
+            2 => trace.create_owner(&tc, &mut pool),
+            3 => trace.post(&tc, &mut pool),
+            4..=5 => store = trace.restart(&tc, &temp, store),
+            _ => match trace.faulted_commit(&tc, &mut pool, &temp, store) {
+                Some(reopened) => store = reopened,
+                // A torn intent fails closed: the store can never reopen.
+                None => break 'trace,
+            },
+        }
+    }
+    let _ = temp;
 }

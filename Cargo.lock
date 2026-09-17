@@ -5415,6 +5415,7 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
+ "hegeltest",
  "libc",
  "proptest",
  "sha2 0.10.9",
@@ -5443,6 +5444,7 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
+ "hegeltest",
  "proptest",
  "sha2 0.10.9",
  "vhalla-core",
@@ -5477,6 +5479,7 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "getrandom 0.3.4",
+ "hegeltest",
  "libp2p 0.57.0",
  "proptest",
  "sha2 0.10.9",
@@ -5602,6 +5605,7 @@ version = "0.0.0"
 dependencies = [
  "crossterm",
  "getrandom 0.3.4",
+ "hegeltest",
  "ratatui",
  "sha2 0.10.9",
  "vhalla-core",
@@ -5641,6 +5645,7 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
+ "hegeltest",
  "proptest",
  "sha2 0.10.9",
  "vhalla-core",
