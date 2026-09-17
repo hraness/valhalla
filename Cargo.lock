@@ -5289,6 +5289,7 @@ dependencies = [
  "vhalla-core",
  "vhalla-discovery",
  "vhalla-discovery-store",
+ "vhalla-game-platonik",
  "vhalla-identity",
  "vhalla-native",
  "vhalla-retrieval",
@@ -5300,6 +5301,7 @@ dependencies = [
  "vhalla-rooms-tui",
  "vhalla-social",
  "vhalla-social-store",
+ "vhalla-witness",
 ]
 
 [[package]]

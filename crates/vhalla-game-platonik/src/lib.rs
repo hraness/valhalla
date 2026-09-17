@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod artifact;
 pub mod checkpoint;
 pub mod engine;
 pub mod ids;

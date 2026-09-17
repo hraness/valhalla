@@ -1206,3 +1206,69 @@ admission), mutates every one of the 17 checkpoint fields of both seals into a r
 forgeries, every one `ReplayMismatch` with the seal retained), and replays the clean vector to
 `Finished` at the end. The prototype also path-depends on `vhalla-core` and `vhalla-ledger`, since
 their id types sit in public game fields and are not re-exported.
+
+### 2026-09-17: stage 4, oracle audit, wasm parity of the game vectors, and the replay command
+
+`oracle/audit.rs` (feature `oracle`): `audit_bytes(kind, bytes)` parses the object the `InnerKind`
+names, requires the bytes to equal their compact `serde_json` form (pretty printing or a trailing
+newline is refused as `NotCompact`), returns the plain SHA-256 tagged with the kind, checks
+`artifact_hash` agrees for experiments, and runs `verify_receipt` for receipts; kinds 4 and 5 are
+`UnsupportedKind`, never guessed at. It is publisher-side and test-side only; the default receiver
+path compares plain SHA-256 to the id of the artifact's own kind and never parses JSON. Spike 6
+(`tests/audit.rs`): 27 sources (six fixtures and 21 `bridge-v1` cases), 81 artifacts audited, every
+experiment id equal to `experiment_hash`, every result id equal to `result_hash`, every receipt id
+equal to `artifact_hash(&receipt)` and different from both; 162 cross-kind audits refused as parse
+failures, 54 non-compact audits refused; 5,200,055 canonical bytes; the largest receipt in the
+corpus is 126,655 bytes; a plain SHA-256 over 8 MiB takes 20.2 ms optimized (criterion 200 ms) and
+421 ms in an unoptimized debug build, so the test asserts the criterion on optimized builds and a
+loose 2 s regression bound on debug builds. Decision: the default path can check inner artifact
+byte identity, the manifest must carry a kind-3 id for any receipt a session moves, and the publisher
+emits it with `receipt_id`.
+
+`prototypes/game-wasm-parity` replays the two frozen session vectors through `Receiver<PlatonikV1>`
+natively and under wasm32 (default features only, no `platonik-core`): identical renderings on 2
+vectors and 3 checkpoints, the whole corpus in 12.8 ms under wasm; its wasm32 `cargo check` joins
+the CI list.
+
+`vhalla game replay <bundle>` (feature `experimental-game` in `vhalla-cli`) rebuilds the session in
+a bundle file (the frozen vector format) and replays every record through a fresh receiver from a
+second point of view, printing one line per record and, per seal, the checkpoint hash this process
+re-derived and whether it matched the bundle's; exit 0 only when every record verified. Its test
+drives the built binary on both committed vectors and on a byte-flipped copy; the invocation joins
+the workspace test step. This is the reproducible user journey the readiness plan's slice 5 row
+asks for.
+
+### 2026-09-17: stage 4, bounded artifacts and spike 2
+
+`artifact.rs`: `ArtifactAssembly` is opened from an `ArtifactRequest` and an `ArtifactManifest`
+naming the same id, `block_len == BLOCK_LEN`, `decompressed_len == total_len`, `total_len` at most
+the request's and the 8 MiB ceiling, and a block count consistent with the length; a block is
+accepted only for the manifest's digest, at `index × block_len`, with the block's plain SHA-256
+equal to the listed digest and the exact length; duplicates are idempotent and cost no hash; a block
+naming another manifest is `Restart` and drops everything; completion checks the whole-artifact
+SHA-256 against the id or discards it; `take()` yields the bytes once; a monotone step and a step
+deadline bound the assembly; `ArtifactSlots` holds one assembly per session and a receiver-wide cap.
+The browser record mapping follows `prototypes/browser-records` exactly (`VR01 | total | offset |
+sha256 | body`, 4,096-byte bodies, the exact final remainder, a header-only record for an empty
+object) and leaves the block digest unchanged. Twenty-seven tests cover every refusal, the 8 MiB
+case, and three property schedules.
+
+Spike 2 (`prototypes/game-artifact-sizes`) measured: over 27 experiments (six fixtures, 21
+`bridge-v1` cases) the largest `Experiment` is 3,292 bytes, the largest `RunResult` 123,351, the
+largest `Receipt` 126,655 (1.51 % of the ceiling, two blocks); the plan's largest known Platonik
+receipt of 7,141,362 bytes needs 109 of 128 blocks; the adapter frame trace of the 64 KiB worst
+case is 129 frames and 302,508 bytes, five blocks, well under the "about 1.25 MB" estimate; peak
+retained bytes are exactly 1.0 × the artifact because blocks land in one contiguous buffer and the
+whole-artifact digest streams over it, so the 1.25 × cap is never approached (8 MiB: 8,454,144
+combined with the native transport buffer, 1.0078 ×, 129 hashes); 64 sequential trace fetches peak
+at 368,044 bytes, 4.39 % of the session budget, where a cumulative reading would have charged 19.4
+MB; the widest `GameManifest` (903 bytes) and `SessionOpen` (1,214 bytes) fit one signed frame with
+margins of 64,438 and 64,127 bytes. Decisions: 64 KiB blocks, 128 blocks, per-`(segment, case)`
+granularity, and 4 KiB browser records stand; the manifest does not become the first non-trace
+artifact; the transport's in-flight buffer (one block natively, block plus records in a browser,
+135,872 bytes) is bounded as a constant beside the ratio rather than folded into it, since folding
+it would make any two-block artifact read as over 1.5 ×.
+
+Stages 1 through 4 are landed. Stage 5 (`quorum` feature, `SignedClaim` export of a
+`VerifiedSettlement`, and a `KIND_GAME_SETTLEMENT` evidence kind in `vhalla-steel-thread`) remains
+a later, separate entry as the work order states.

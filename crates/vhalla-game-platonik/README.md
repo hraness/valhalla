@@ -7,15 +7,16 @@ an optional Valhalla session and a receiver independently verifies the result.
 Read the [session adapter plan](../../kb/plans/valhalla-platonik-session-adapter.md)
 for the design, its review record, and the staged delivery.
 
-Stages 1 through 3 land the identifiers and digest domains, the canonical
+Stages 1 through 4 land the identifiers and digest domains, the canonical
 encodings with every bound, the audience-free signed `GameRecord`, the
-`GameManifest` with its limits, the optional Platonik oracle converter, the one
-engine seam (`GameEngine`, implemented only by `PlatonikV1` over
-`platform::run_observed`), host-ordered sessions over `vhalla-ledger` with the
-two-phase live bind, checkpoints, the receiver, settlement with
+`GameManifest` with its limits, the optional Platonik oracle converter and
+audit, the one engine seam (`GameEngine`, implemented only by `PlatonikV1`
+over `platform::run_observed`), host-ordered sessions over `vhalla-ledger` with
+the two-phase live bind, checkpoints, the receiver, settlement with
 order-independent resolution, pause and member replacement across an epoch
-bump, fills, and cancellation. Bounded artifacts and the wasm parity of the
-game vectors follow in stage 4.
+bump, fills, cancellation, and the bounded artifact assembly with its browser
+record mapping. The `quorum` hook, the signed-claim export, and the
+steel-thread evidence kind are stage 5.
 
 ## What a verified checkpoint proves
 
@@ -64,6 +65,15 @@ arrival order. Neither is money, finality, or host authority.
   replays it, and only a reproduced checkpoint is committed. Every rejection
   leaves the session bit-identical except for retained evidence.
 - No clock: every receiver call takes a caller-supplied monotone step.
+- Anything larger than one room frame is an artifact: 64 KiB blocks, at most
+  128 of them, one assembly in flight per session, 8 MiB charged as peak
+  retained bytes, no compression, and a whole-artifact digest check against
+  the inner artifact id before the bytes are handed over. Browser receivers
+  carry each block as 4 KiB records; the block digest is unchanged.
+- Inner Platonik artifacts are opaque on the default path: the receiver
+  compares plain SHA-256 to the id of the artifact's own kind and never parses
+  JSON. Parsing, re-serialization, and Platonik's own receipt verification live
+  behind the `oracle` feature for publishers and tests.
 
 ## Evidence
 
