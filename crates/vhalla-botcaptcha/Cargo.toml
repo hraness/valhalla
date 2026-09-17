@@ -1,0 +1,19 @@
+[package]
+name = "vhalla-botcaptcha"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Botcaptcha witness mode: the signed challenge and response, the verified challenge that mints run capabilities, the one-use window, and the verifier that replays a witness and admits it once"
+
+[lints]
+workspace = true
+
+[dependencies]
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+vhalla-core = { path = "../vhalla-core" }
+vhalla-witness = { path = "../vhalla-witness" }
+
+[dev-dependencies]
+proptest = "1.6"

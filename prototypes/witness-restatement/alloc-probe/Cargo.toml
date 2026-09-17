@@ -1,0 +1,23 @@
+[package]
+name = "witness-restatement-alloc-probe"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Counting global allocator around the witness-restatement tick loop; separate because GlobalAlloc needs unsafe, which the parent crate forbids"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+witness-restatement = { path = "..", features = ["std"] }
+
+[dev-dependencies]
+platonik-core = { git = "https://github.com/hraness/platonik", rev = "5eedec07c84af3b4beb82f22cc6c2b9fa3520d42" }
+serde_json = "1.0"

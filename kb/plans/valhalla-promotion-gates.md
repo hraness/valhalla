@@ -204,6 +204,8 @@ The production workspace currently contains these crates:
 | `vhalla-steel-thread` | signed envelope → transport → policy → host receipt | integrated proof that provenance, checkpoint, replay, expiry, and recovery boundaries compose |
 | `vhalla-session` | experimental paired chat handshake and directional replay | reviewed app/transport identity binding, real reconnect/restart and browser integration |
 | `vhalla-identity` | experimental Unix private-file application key | qualified secret custody, recovery, transport-key integration and installable native program |
+| `vhalla-witness` | `no_std` witness-mode VM (Platonik habitat-v1 restated), canonical codecs, digests, task manifests, keyless move-only run capability, receipts | the game kernel behind the Slice 5 Platonik adapter and any later witness language, with replay evidence and vectors kept bit-exact across versions |
+| `vhalla-botcaptcha` | signed witness-mode challenge and response, verified challenge as the only capability source, one-use window, and a replaying verifier | steel-thread witness frames (Gate 5), Hashcash mode, and receipt export as a signed claim for a per-realm DAG |
 | `vhalla-native` | explicitly pinned paired loopback chat | qualified public routing, identity lifecycle and browser interoperability |
 | `vhalla-cli` | feature-gated native chat and local signed social/discovery commands | installable client with separately qualified public transport and storage adapters |
 | `vhalla-social` | signed owner/agent records, causal projections, exact facets and bounded archive sync | preserve verified control/history under any future retention or network extension |
@@ -230,6 +232,49 @@ bounded replay primitive, while durable receipt retention remains an explicit
 ledger/host concern.
 
 ## Execution status
+
+### Witness platform crates — 2026-09-16
+
+The [[plans/valhalla-witness-platform|witness platform plan]] applied the
+Roc-style platform/application split to Botcaptcha witness mode and landed two
+pure crates after four discovery spikes.
+
+- `crates/vhalla-witness` restates the Platonik `habitat-v1` engine as a
+  `no_std` library with `sha2` as its only dependency, adds fixed-width canonical
+  codecs with bounds derived from the widest variants, domain-separated SHA-256
+  digests, the validated `TaskManifest` with fixed and open program slots and a
+  per-case loading-work floor, the keyless move-only `RunCapability`, `run`,
+  `WitnessRun`, `WitnessReceipt`, and the decodable `ClaimedReceipt`. Its
+  `tests/vectors/` hold one file per fixture, `bridge-v1` case, and the 64 KiB
+  worst case; every test run replays them.
+- `crates/vhalla-botcaptcha` owns the signed `Challenge` and `Response` with
+  the games plan field names, `VerifiedChallenge` as the crate's only source of
+  run capabilities and receipt bindings (module privacy plus a `clippy.toml`
+  `disallowed-methods` entry), the non-`Clone` `OneUseWindow` keyed by the
+  dedup scope with `Replay` and `Equivocation` distinguished, and
+  `WitnessVerifier` with one error variant per step and window consumption
+  last. Clock and entropy are injected; nothing executes network-supplied code.
+- Evidence: `prototypes/witness-restatement` replays every fixture, all 21
+  `bridge-v1` cases, 400 random experiments, and the worst case bit for bit
+  against `platonik-core` at `5eedec07`, and its allocation probe observes zero
+  tick-loop allocations; `prototypes/witness-wasm-parity` finds native, wasm32,
+  and committed renderings identical on 28 vectors (release: 5.3 ms native
+  worst case, 10.9 ms for the corpus under wasm); `prototypes/witness-contract-spike`
+  shows the delivered-sparks floor admits working programs, tolerates padding
+  within the activation budget, and rejects idle programs that a
+  transfers-plus-messages floor would have admitted. Both crates pass the
+  workspace format, clippy, test, and doctest gates and the wasm32 check, which
+  `rust.yml` now runs for `vhalla-witness`.
+- Limits: `RunCapability` is minted locally from data the caller holds and
+  proves no remote fact. A `VerifiedWitness` is not identity, personhood, or
+  host authority, and cannot enter `RemoteRequest::from_verified`. The
+  one-use window is volatile: a restarted verifier restores it durably or
+  starts with a fresh `started_at`, which refuses earlier challenges; two
+  verifier instances sharing an issuer key need a shared durable ledger, which
+  is outside these crates. The Gate 5 witness frame and the independent Python vector oracle landed the
+  same day (`WitnessSession`, `KIND_WITNESS_RESPONSE`, the `compile_fail` proof
+  against `RemoteRequest::from_verified`, and `/vectors/witness-v1.json`). The
+  Slice 5 Platonik session adapter and Hashcash mode remain open.
 
 ### Shared public room directory — 2026-09-13
 

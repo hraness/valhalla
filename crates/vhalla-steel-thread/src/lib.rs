@@ -36,7 +36,21 @@
 //!     let _ = RemoteRequest::from_verified(notification, scope);
 //! }
 //! ```
+//!
+//! A verified witness is evidence of replayable work, not an effect envelope:
+//!
+//! ```compile_fail
+//! use vhalla_botcaptcha::admit::VerifiedWitness;
+//! use vhalla_policy::{RemoteRequest, Scope};
+//! fn elevate(witness: VerifiedWitness, scope: Scope) {
+//!     let _ = RemoteRequest::from_verified(witness, scope);
+//! }
+//! ```
 
+use vhalla_botcaptcha::admit::{VerifiedWitness, WitnessVerifier};
+use vhalla_botcaptcha::challenge::{Challenge, ChallengeContext, WitnessError};
+use vhalla_botcaptcha::window::OneUseWindow;
+pub use vhalla_botcaptcha::KIND_WITNESS_RESPONSE;
 use vhalla_core::{Epoch, EventId, PeerId, RealmId, RoomId, Sequence};
 use vhalla_crypto::{
     peer_id_from_seed, sign, verifying_key_from_seed, DecodeSignedError, ReplayWindow, SessionId,
@@ -47,6 +61,8 @@ pub use vhalla_policy::KIND_READ_MEMORY_REQUEST;
 use vhalla_policy::{Denied, LocalPolicy, Operation, RemoteRequest, Scope};
 use vhalla_transport::{Endpoint, Frame, InMemoryRelay, Path, TransportError};
 use vhalla_wire::Envelope;
+use vhalla_witness::manifest::ValidManifest;
+use vhalla_witness::platform::WorkAllowance;
 
 const SIGNING_SEED: [u8; 32] = [7; 32];
 const OWNER: PeerId = PeerId(1);
@@ -68,6 +84,14 @@ pub enum SteelError {
     Denied(Denied),
     /// Host-held current policy or execution limits rejected the effect.
     Host(HostError),
+    /// The witness verifier refused the challenge or the response.
+    Witness(WitnessError),
+}
+
+impl From<WitnessError> for SteelError {
+    fn from(error: WitnessError) -> Self {
+        Self::Witness(error)
+    }
 }
 
 impl From<SignError> for SteelError {
@@ -191,6 +215,76 @@ impl MemorySession {
     #[must_use]
     pub fn reads(&self) -> u64 {
         self.host.reads()
+    }
+}
+
+/// One paired-subject witness session: the transport replay window pinned to
+/// the subject's key, one issued challenge, its manifest, and the one-use
+/// window. It has no host and no effect; a frame yields evidence or an error.
+// No Clone: duplicating either window would reopen accepted sequences or scopes.
+pub struct WitnessSession {
+    replay: ReplayWindow,
+    subject_key: VerifyingKey,
+    challenge: Challenge,
+    manifest: ValidManifest,
+    expected: ChallengeContext,
+    verifier: WitnessVerifier,
+}
+
+impl WitnessSession {
+    /// Binds the transport signer to the challenge's subject: frames must be
+    /// signed by `subject_key`, and the challenge must name that key.
+    pub fn new(
+        context: VerificationContext,
+        subject_key: VerifyingKey,
+        challenge: Challenge,
+        manifest: ValidManifest,
+        allowance: WorkAllowance,
+        started_at: u64,
+    ) -> Result<Self, SteelError> {
+        if subject_key.is_weak() {
+            return Err(VerifyError::WeakKey.into());
+        }
+        if challenge.subject_key != subject_key.to_bytes() {
+            return Err(WitnessError::Context.into());
+        }
+        let expected = challenge.context();
+        Ok(Self {
+            replay: ReplayWindow::new(context, 1)?,
+            subject_key,
+            challenge,
+            manifest,
+            expected,
+            verifier: WitnessVerifier::new(started_at, allowance, OneUseWindow::new()),
+        })
+    }
+    /// Verifies the signed envelope under the subject key and the transport
+    /// replay window, requires [`KIND_WITNESS_RESPONSE`], and hands the body
+    /// to the witness verifier. Nothing here can reach `RemoteRequest`.
+    pub fn receive_witness(
+        &mut self,
+        frame: Frame,
+        now: u64,
+    ) -> Result<VerifiedWitness, SteelError> {
+        let signed = SignedEnvelope::decode(frame.as_bytes())?;
+        let verified = self
+            .replay
+            .verify_and_accept(signed, &self.subject_key, now)?;
+        if verified.envelope().kind() != KIND_WITNESS_RESPONSE {
+            return Err(Denied::Kind.into());
+        }
+        Ok(self.verifier.verify_bytes(
+            &self.challenge.encode(),
+            &self.manifest,
+            verified.envelope().body(),
+            self.expected,
+            now,
+        )?)
+    }
+    /// Open one-use entries.
+    #[must_use]
+    pub fn open_challenges(&self) -> usize {
+        self.verifier.window().len()
     }
 }
 

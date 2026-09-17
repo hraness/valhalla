@@ -5393,6 +5393,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-botcaptcha"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "proptest",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-witness",
+]
+
+[[package]]
 name = "vhalla-cli"
 version = "0.0.0"
 dependencies = [
@@ -5717,6 +5728,7 @@ dependencies = [
  "hegeltest",
  "tokio",
  "vhalla-attention",
+ "vhalla-botcaptcha",
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-discovery",
@@ -5728,6 +5740,7 @@ dependencies = [
  "vhalla-social",
  "vhalla-transport",
  "vhalla-wire",
+ "vhalla-witness",
 ]
 
 [[package]]
@@ -5740,6 +5753,14 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "vhalla-core",
+]
+
+[[package]]
+name = "vhalla-witness"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "sha2 0.10.9",
 ]
 
 [[package]]

@@ -13,6 +13,8 @@ vhalla-host = { path = "../vhalla-host" }
 vhalla-policy = { path = "../vhalla-policy" }
 vhalla-wire = { path = "../vhalla-wire" }
 vhalla-transport = { path = "../vhalla-transport" }
+vhalla-witness = { path = "../vhalla-witness" }
+vhalla-botcaptcha = { path = "../vhalla-botcaptcha" }
 
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
