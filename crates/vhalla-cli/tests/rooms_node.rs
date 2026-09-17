@@ -325,6 +325,12 @@ mod enabled {
     /// rounds on shared CPU. Light single-node tests stay parallel.
     static MESH: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Take the mesh gate. A panicking peer test must not poison it for
+    /// the rest of the suite - its children are reaped by Node::drop.
+    fn mesh() -> std::sync::MutexGuard<'static, ()> {
+        MESH.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// One validator member's material: consensus seed and listen port.
     struct Member {
         seed: [u8; 32],
@@ -458,7 +464,7 @@ mod enabled {
     /// fault-tolerance proof.
     #[test]
     fn validator_mesh_commits_and_survives_one_loss() {
-        let _mesh = MESH.lock().unwrap();
+        let _mesh = mesh();
         let temp = Temp::new();
         let plan = fixture::plan(2, 8, 16);
         let base = port_base();
@@ -513,7 +519,7 @@ mod enabled {
     /// synced state really is a live member and not a stale copy.
     #[test]
     fn late_starting_member_syncs_decided_history() {
-        let _mesh = MESH.lock().unwrap();
+        let _mesh = mesh();
         let temp = Temp::new();
         let plan = fixture::plan(3, 8, 16);
         let base = port_base();
@@ -584,7 +590,7 @@ mod enabled {
     /// or fork the set.
     #[test]
     fn restarted_validator_resumes_and_still_decides() {
-        let _mesh = MESH.lock().unwrap();
+        let _mesh = mesh();
         let temp = Temp::new();
         let plan = fixture::plan(3, 8, 16);
         let base = port_base();
@@ -664,7 +670,7 @@ mod enabled {
     /// the mid-flight membership change the runbook hands operators.
     #[test]
     fn live_mesh_commits_an_eligible_transition() {
-        let _mesh = MESH.lock().unwrap();
+        let _mesh = mesh();
         let temp = Temp::new();
         let plan = fixture::plan(3, 8, 16);
         let base = port_base();
@@ -774,7 +780,7 @@ mod enabled {
     /// to reach the five-member quorum.
     #[test]
     fn live_mesh_rotates_validator_set_mid_flight() {
-        let _mesh = MESH.lock().unwrap();
+        let _mesh = mesh();
         let temp = Temp::new();
         let plan = fixture::plan(5, 8, 16);
         let base = port_base();
@@ -1012,6 +1018,438 @@ mod enabled {
         }
     }
 
+    /// The composed soak: several evenings of real use compressed into
+    /// one mesh. A scaffolded four-member set takes an intake drop, a
+    /// duplicate drop racing on two members, an in-band eligible-set
+    /// transition and a malformed drop; the operator then schedules a
+    /// five-validator activation, members rolling-restart onto it while
+    /// traffic flows, the joiner syncs the decided prefix, one member is
+    /// SIGKILLed mid-window and recovers, and two originals die together
+    /// to prove the rotated quorum both stalls and heals. Every fault
+    /// resolves and the mesh converges on identical journals, identical
+    /// materialized rooms and fully drained intake/pending state.
+    #[test]
+    fn live_mesh_soak_duplicate_churn_rotation_converges() {
+        let _mesh = mesh();
+        let temp = Temp::new();
+        // 8 funded batches: one room per drop. 24 sources leave award
+        // headroom for the full sequence plus the post-transition drops.
+        let plan = fixture::plan(8, 8, 24);
+        let base = port_base();
+        let members: Vec<Member> = (0..5u8)
+            .map(|i| Member {
+                seed: [70 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        let key = |m: &Member| hex(PrivateKey::from(m.seed).public_key().as_bytes());
+
+        let validators_v1: String = members[..4]
+            .iter()
+            .map(|m| format!("1:{}:1", key(m)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let eligible: String = plan
+            .genesis
+            .eligible
+            .iter()
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let net = temp.path("network.json");
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            &format!(
+                "{},{},{},{},{}",
+                plan.genesis.policy.base_cost,
+                plan.genesis.policy.window_seconds,
+                plan.genesis.policy.max_in_window,
+                plan.genesis.policy.support_epoch_seconds,
+                plan.genesis.policy.max_lifetime_rooms,
+            ),
+            "--validators",
+            &validators_v1,
+            "--eligible",
+            &eligible,
+        ]);
+
+        let mut homes = Vec::new();
+        let mut socials = Vec::new();
+        for (i, member) in members[..4].iter().enumerate() {
+            let home = temp.path(&format!("home-{i}"));
+            let peers = members[..4]
+                .iter()
+                .filter(|m| m.port != member.port)
+                .map(|m| format!("127.0.0.1:{}", m.port))
+                .collect::<Vec<_>>()
+                .join(",");
+            rooms_ok(&[
+                "node-init",
+                home.to_str().unwrap(),
+                "--network",
+                net.to_str().unwrap(),
+                "--node-key",
+                &hex(&member.seed),
+                "--port",
+                &member.port.to_string(),
+                "--peers",
+                &peers,
+            ]);
+            let social = temp.path(&format!("social-{i}"));
+            seed_social(&social, &plan);
+            homes.push(home);
+            socials.push(social);
+        }
+        // A sequence number keeps each respawn's captured logs distinct.
+        let mut seq = 0usize;
+        let mut spawn = |temp: &Temp, i: usize, socials: &[PathBuf], homes: &[PathBuf]| {
+            seq += 1;
+            spawn_node(
+                temp,
+                &format!("soak-{i}-{seq}"),
+                &socials[i],
+                &homes[i],
+                &homes[i].join("node.json"),
+            )
+        };
+        let mut nodes: Vec<Node> = (0..4).map(|i| spawn(&temp, i, &socials, &homes)).collect();
+        let sigint = |node: &mut Node| {
+            let signaled = Command::new("kill")
+                .args(["-INT", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(signaled.success());
+            assert!(node.child.wait().unwrap().success());
+        };
+        let sigkill = |node: &mut Node| {
+            let killed = Command::new("kill")
+                .args(["-9", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(killed.success());
+            let _ = node.child.wait();
+        };
+        let all_committed = |homes: &[PathBuf], h: u64| homes.iter().all(|home| committed(home, h));
+
+        // h1: an ordinary drop.
+        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        wait_for(Duration::from_secs(150), "h1 set-wide", || {
+            all_committed(&homes, 1)
+        });
+
+        // h2: the same batch lands in two members' intakes at once. Both
+        // assemble the same body; value-id dedup must commit room-2 on
+        // exactly one height - never twice.
+        for i in [0usize, 2] {
+            fs::write(homes[i].join("intake/dup.batch"), plan.batches[&2].encode()).unwrap();
+        }
+        wait_for(Duration::from_secs(150), "h2 set-wide", || {
+            all_committed(&homes, 2)
+        });
+
+        // h3: the operator rotates the award-source set in-band. The new
+        // set keeps every genesis source and adds one newcomer, so all
+        // later fixture batches stay funded under the transition.
+        let mut owners = eligible.clone();
+        owners.push_str(&format!(",{}", hex(&[0xee; 32])));
+        let updated = rooms_ok(&[
+            "eligible",
+            socials[0].to_str().unwrap(),
+            homes[0].to_str().unwrap(),
+            REALM_HEX,
+            &owners,
+        ]);
+        assert_eq!(updated["owners"].as_u64(), Some(25));
+        wait_for(Duration::from_secs(180), "h3 eligible transition", || {
+            all_committed(&homes, 3)
+        });
+
+        // h4: a post-transition drop still funds (sources retained).
+        fs::write(
+            homes[1].join("intake/three.batch"),
+            plan.batches[&3].encode(),
+        )
+        .unwrap();
+        // A malformed drop racing the same window must reject, never
+        // consume a height. A LATE duplicate - batch 2 re-dropped after
+        // room-2 already committed - must fail re-prepare the same way.
+        fs::write(homes[2].join("intake/junk.batch"), b"not a batch").unwrap();
+        fs::write(
+            homes[3].join("intake/late.batch"),
+            plan.batches[&2].encode(),
+        )
+        .unwrap();
+        wait_for(Duration::from_secs(150), "h4 set-wide", || {
+            all_committed(&homes, 4)
+        });
+        wait_for(Duration::from_secs(90), "junk and late rejected", || {
+            homes[2].join("intake/junk.rejected").exists()
+                && homes[3].join("intake/late.rejected").exists()
+        });
+
+        // The operator schedules the rotation: five validators activate
+        // at h7. Incumbents update live - committed=4 freezes the
+        // decided prefix - then rolling-restart to load the schedule,
+        // with h5 dropping mid-restart so member 0 rejoins through sync.
+        let net_v2 = temp.path("network-v2.json");
+        let ext = rooms_ok(&[
+            "network-extend",
+            net.to_str().unwrap(),
+            net_v2.to_str().unwrap(),
+            "--from",
+            "7",
+            "--validators",
+            &members
+                .iter()
+                .map(|m| format!("{}:1", key(m)))
+                .collect::<Vec<_>>()
+                .join(","),
+        ]);
+        assert_eq!(ext["activation_from"].as_u64(), Some(7));
+        for home in homes.iter() {
+            let upd = rooms_ok(&[
+                "node-update",
+                home.to_str().unwrap(),
+                "--network",
+                net_v2.to_str().unwrap(),
+            ]);
+            assert_eq!(upd["committed"].as_u64(), Some(4));
+        }
+
+        sigint(&mut nodes[0]);
+        fs::write(
+            homes[1].join("intake/four.batch"),
+            plan.batches[&4].encode(),
+        )
+        .unwrap();
+        nodes[0] = spawn(&temp, 0, &socials, &homes);
+        wait_for(
+            Duration::from_secs(180),
+            "h5 during member-0 restart",
+            || all_committed(&homes, 5),
+        );
+        for (i, node) in nodes.iter_mut().enumerate().take(4).skip(1) {
+            sigint(node);
+            *node = spawn(&temp, i, &socials, &homes);
+        }
+
+        // The joiner scaffolds onto v2 and syncs the decided prefix.
+        let home4 = temp.path("home-4");
+        let peers4 = members[..4]
+            .iter()
+            .map(|m| format!("127.0.0.1:{}", m.port))
+            .collect::<Vec<_>>()
+            .join(",");
+        let out = rooms_ok(&[
+            "node-init",
+            home4.to_str().unwrap(),
+            "--network",
+            net_v2.to_str().unwrap(),
+            "--node-key",
+            &hex(&members[4].seed),
+            "--port",
+            &members[4].port.to_string(),
+            "--peers",
+            &peers4,
+        ]);
+        assert_eq!(out["node_key_votes_from"].as_u64(), Some(7));
+        let social4 = temp.path("social-4");
+        seed_social(&social4, &plan);
+        homes.push(home4);
+        socials.push(social4);
+        nodes.push(spawn(&temp, 4, &socials, &homes));
+
+        // h6: still the four-member set; the joiner follows on sync.
+        fs::write(
+            homes[2].join("intake/five.batch"),
+            plan.batches[&5].encode(),
+        )
+        .unwrap();
+        wait_for(Duration::from_secs(180), "h6 with joiner synced", || {
+            all_committed(&homes, 6)
+        });
+
+        // h7 is the activation: five-member quorum needs 4 votes. The
+        // drop lands at member 1 the instant member 2 is SIGKILLed - the
+        // survivors are exactly {0,1,3,4}, so the joiner's vote is what
+        // carries the height.
+        fs::write(homes[1].join("intake/six.batch"), plan.batches[&6].encode()).unwrap();
+        sigkill(&mut nodes[2]);
+        wait_for(
+            Duration::from_secs(240),
+            "h7 activates the fifth without member 2",
+            || [0usize, 1, 3, 4].iter().all(|&i| committed(&homes[i], 7)),
+        );
+
+        // Member 2 replays its WAL, syncs the gap and rejoins for h8.
+        nodes[2] = spawn(&temp, 2, &socials, &homes);
+        fs::write(
+            homes[3].join("intake/seven.batch"),
+            plan.batches[&7].encode(),
+        )
+        .unwrap();
+        wait_for(Duration::from_secs(180), "h8 after crash recovery", || {
+            all_committed(&homes, 8)
+        });
+
+        // The rotated quorum is real: kill two originals and the three
+        // survivors {2,3,4} cannot reach 4 votes - h9 must stall even
+        // though member 2's intake holds the drop.
+        sigkill(&mut nodes[0]);
+        sigkill(&mut nodes[1]);
+        fs::write(
+            homes[2].join("intake/eight.batch"),
+            plan.batches[&8].encode(),
+        )
+        .unwrap();
+        thread::sleep(Duration::from_secs(30));
+        assert!(
+            ![2usize, 3, 4].iter().any(|&i| committed(&homes[i], 9)),
+            "three of five must not reach the four-vote quorum"
+        );
+
+        // Heal: both originals return, the stalled drop commits, and the
+        // full set converges on h9.
+        nodes[0] = spawn(&temp, 0, &socials, &homes);
+        nodes[1] = spawn(&temp, 1, &socials, &homes);
+        wait_for(Duration::from_secs(300), "h9 after heal", || {
+            all_committed(&homes, 9)
+        });
+        assert!(
+            !homes.iter().any(|h| committed(h, 10)),
+            "the duplicate must not have burned a second height"
+        );
+
+        for node in nodes.iter_mut() {
+            sigint(node);
+        }
+
+        // Convergence audit: every member committed exactly h1..h9 with
+        // identical committed content — the bundle's certificate field is
+        // per-member evidence (any quorum subset is valid) so equality is
+        // over every other field: frontier pins, batch, value, config,
+        // control record, debit marker, height. The materialized
+        // registries are identical, room-2 exists once, all intake drops
+        // resolved and no pending body is left behind.
+        fn bundle_fields(bytes: &[u8]) -> Vec<&[u8]> {
+            let mut fields = Vec::new();
+            let mut cur = &bytes[4..];
+            while cur.len() >= 8 {
+                let len = u64::from_le_bytes(cur[..8].try_into().unwrap()) as usize;
+                cur = &cur[8..];
+                fields.push(&cur[..len]);
+                cur = &cur[len..];
+            }
+            fields
+        }
+        let mut reference: Option<Vec<serde_json::Value>> = None;
+        let mut journal_reference: Option<Vec<Vec<Vec<u8>>>> = None;
+        for (i, home) in homes.iter().enumerate() {
+            assert!(committed(home, 9), "member {i} must hold h9");
+            let journals: Vec<Vec<Vec<u8>>> = (1..=9u64)
+                .map(|h| {
+                    let id = fs::read(home.join(format!("app/journal/heights/{h:016x}")))
+                        .unwrap_or_else(|_| panic!("member {i} missing height {h}"));
+                    assert_eq!(id.len(), 32, "member {i} h{h} marker corrupt");
+                    let bytes = fs::read(home.join(format!("app/journal/bundles/{}", hex(&id))))
+                        .unwrap_or_else(|_| panic!("member {i} missing bundle for h{h}"));
+                    let fields = bundle_fields(&bytes);
+                    assert_eq!(fields.len(), 9, "member {i} h{h} bundle malformed");
+                    assert!(
+                        !fields[0].is_empty(),
+                        "member {i} h{h} stored no commit certificate"
+                    );
+                    assert_eq!(
+                        fields[8],
+                        h.to_le_bytes(),
+                        "member {i} h{h} bundle commits a different height"
+                    );
+                    fields[1..].iter().map(|f| f.to_vec()).collect()
+                })
+                .collect();
+            if let Some(journal_reference) = &journal_reference {
+                assert_eq!(
+                    &journals, journal_reference,
+                    "member {i} committed different content"
+                );
+            } else {
+                journal_reference = Some(journals);
+            }
+            let listed = rooms_ok(&[
+                "list",
+                socials[i].to_str().unwrap(),
+                home.join("app/rooms").to_str().unwrap(),
+                REALM_HEX,
+            ]);
+            let mut rows = listed["rooms"].as_array().unwrap().clone();
+            rows.sort_by_key(|r| r["slug"].as_str().unwrap_or_default().to_owned());
+            if let Some(reference) = &reference {
+                assert_eq!(&rows, reference, "member {i} diverged: {listed}");
+            } else {
+                let slugs: Vec<&str> = rows.iter().filter_map(|r| r["slug"].as_str()).collect();
+                for n in 1..=8 {
+                    let slug = format!("room-{n}");
+                    assert_eq!(
+                        slugs.iter().filter(|s| **s == slug).count(),
+                        1,
+                        "{slug} must exist exactly once: {listed}"
+                    );
+                }
+                assert_eq!(rows.len(), 8, "exactly the eight rooms: {listed}");
+                reference = Some(rows);
+            }
+            let pending = home.join("store/pending");
+            let leftovers: Vec<_> = fs::read_dir(&pending)
+                .map(|d| d.flatten().collect())
+                .unwrap_or_default();
+            assert!(
+                leftovers.is_empty(),
+                "member {i} has unresolved pending bodies: {leftovers:?}"
+            );
+            let intake_leftovers: Vec<_> = fs::read_dir(home.join("intake"))
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    let name = e.file_name();
+                    let name = name.to_str().unwrap_or_default();
+                    name.ends_with(".batch")
+                        || name.ends_with(".body")
+                        || name.ends_with(".eligible")
+                })
+                .collect();
+            assert!(
+                intake_leftovers.is_empty(),
+                "member {i} has undrained intake drops: {intake_leftovers:?}"
+            );
+        }
+
+        // The joiner's own replica independently materializes the full
+        // history - the `rooms status` live-read path on the member that
+        // synced rather than proposed the early heights.
+        let replica = temp.path("replica-4");
+        let status = rooms_ok(&[
+            "status",
+            socials[4].to_str().unwrap(),
+            replica.to_str().unwrap(),
+            REALM_HEX,
+            homes[4].to_str().unwrap(),
+            "--config",
+            homes[4].join("node.json").to_str().unwrap(),
+        ]);
+        assert_eq!(status["height"].as_u64(), Some(9));
+        assert_eq!(
+            status["rooms"].as_array().unwrap().len(),
+            8,
+            "the joiner's replica must show all eight rooms: {status}"
+        );
+    }
+
     /// A tailcat subprocess bound to the test — killed on drop.
     struct Tailcat {
         child: Child,
@@ -1058,7 +1496,7 @@ mod enabled {
             eprintln!("skipping: set VHALLA_TAILCAT=1 to run the tailcat-tunnel mesh");
             return;
         }
-        let _mesh = MESH.lock().unwrap();
+        let _mesh = mesh();
         let temp = Temp::new();
         let plan = fixture::plan(2, 8, 16);
         let base = port_base();
@@ -1225,7 +1663,7 @@ mod enabled {
     /// journey the README hands a group of friends.
     #[test]
     fn scaffolding_produces_a_working_mesh() {
-        let _mesh = MESH.lock().unwrap();
+        let _mesh = mesh();
         let temp = Temp::new();
         let plan = fixture::plan(2, 8, 16);
         let base = port_base();
