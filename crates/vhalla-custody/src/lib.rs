@@ -72,9 +72,7 @@ pub fn create_private_directory(path: &Path) -> Result<(File, u32), Error> {
 /// caller is responsible for any ancestor syncs.
 pub fn ensure_private_directory(path: &Path) -> Result<(File, u32), Error> {
     let path = absolute(path)?;
-    if fs::symlink_metadata(&path)
-        .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
-    {
+    if fs::symlink_metadata(&path).is_err_and(|e| e.kind() == io::ErrorKind::NotFound) {
         fs::DirBuilder::new().mode(0o700).create(&path)?;
     }
     open_private_directory(&path)
@@ -89,14 +87,10 @@ pub fn open_private_directory(path: &Path) -> Result<(File, u32), Error> {
     }
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(
-            libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_DIRECTORY | libc::O_NOCTTY,
-        )
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_DIRECTORY | libc::O_NOCTTY)
         .open(&path)?;
     let after = file.metadata()?;
-    if before.dev() != after.dev()
-        || before.ino() != after.ino()
-        || after.mode() & 0o7777 != 0o700
+    if before.dev() != after.dev() || before.ino() != after.ino() || after.mode() & 0o7777 != 0o700
     {
         return Err(Error::UnsafePath);
     }

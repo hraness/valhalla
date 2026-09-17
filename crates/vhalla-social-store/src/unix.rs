@@ -232,8 +232,7 @@ impl Store {
     pub fn create(path: impl AsRef<Path>, realm: RealmId, limits: Limits) -> Result<Self, Error> {
         let archive = Archive::new(realm, limits)?;
         let path = absolute(path.as_ref())?;
-        let (directory, uid) =
-            custody::create_private_directory(&path).map_err(map_custody)?;
+        let (directory, uid) = custody::create_private_directory(&path).map_err(map_custody)?;
         let lock = create_private(&path.join(LOCK))?;
         acquire(&lock)?;
         lock.sync_all()?;
@@ -267,8 +266,7 @@ impl Store {
         expected: Option<Pin>,
     ) -> Result<Self, Error> {
         let path = absolute(path.as_ref())?;
-        let (directory, uid) =
-            custody::open_private_directory(&path).map_err(map_custody)?;
+        let (directory, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
         let lock = open_private(&path.join(LOCK), uid, 0)?;
         if lock.metadata()?.len() != 0 {
             return Err(Error::Corrupt);

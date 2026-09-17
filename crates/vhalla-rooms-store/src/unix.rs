@@ -278,8 +278,7 @@ impl Store {
     /// The optional external anchor requires exact equality, including generation.
     pub fn open(path: impl AsRef<Path>, expected: Option<Pin>) -> Result<Self, Error> {
         let path = absolute(path.as_ref())?;
-        let (directory, uid) =
-            custody::open_private_directory(&path).map_err(map_custody)?;
+        let (directory, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
         let lock = open_private(&path.join(LOCK), uid, 0)?;
         if lock.metadata()?.len() != 0 {
             return Err(Error::Corrupt);
