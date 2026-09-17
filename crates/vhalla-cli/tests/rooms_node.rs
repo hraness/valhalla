@@ -1331,7 +1331,7 @@ mod enabled {
         }
 
         // Convergence audit: every member committed exactly h1..h9 with
-        // identical committed content — the bundle's certificate field is
+        // identical committed content - the bundle's certificate field is
         // per-member evidence (any quorum subset is valid) so equality is
         // over every other field: frontier pins, batch, value, config,
         // control record, debit marker, height. The materialized
@@ -1448,6 +1448,117 @@ mod enabled {
             8,
             "the joiner's replica must show all eight rooms: {status}"
         );
+    }
+
+    /// The power-outage scenario: every member dies at once while a drop
+    /// is mid-flight. Whether the body was still in intake, queued under
+    /// `store/pending`, or partially voted through the WAL, the rebooted
+    /// mesh must resume, commit it once, and keep deciding - no lost
+    /// submissions, no divergent state.
+    #[test]
+    fn live_mesh_full_restart_resumes_mid_flight() {
+        let _mesh = mesh();
+        let temp = Temp::new();
+        let plan = fixture::plan(3, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [80 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        let mut homes = Vec::new();
+        let mut socials = Vec::new();
+        let mut nodes = Vec::new();
+        for (i, member) in members.iter().enumerate() {
+            let (social, home) = member_dirs(&temp, i, member, &members, &plan);
+            homes.push(home.clone());
+            socials.push(social.clone());
+            nodes.push(spawn_member(&temp, i, &social, &home));
+        }
+        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        wait_for(Duration::from_secs(150), "h1 set-wide", || {
+            homes.iter().all(|h| committed(h, 1))
+        });
+
+        // The drop must be durably accepted before the kill: wait for
+        // member 1's store/pending marker so the body is queued - or
+        // already assembled into a value mid-vote - rather than still a
+        // loose intake file. Then the whole mesh dies at once.
+        fs::write(homes[1].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
+        wait_for(
+            Duration::from_secs(90),
+            "member 1 persists the body",
+            || {
+                fs::read_dir(homes[1].join("store/pending"))
+                    .map(|mut d| d.next().is_some())
+                    .unwrap_or(false)
+            },
+        );
+        for node in nodes.iter_mut() {
+            let killed = Command::new("kill")
+                .args(["-9", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(killed.success());
+        }
+        for node in nodes.iter_mut() {
+            let _ = node.child.wait();
+        }
+        for (i, node) in nodes.iter_mut().enumerate() {
+            *node = spawn_member(&temp, i, &socials[i], &homes[i]);
+        }
+        wait_for(
+            Duration::from_secs(240),
+            "h2 after full-mesh restart",
+            || homes.iter().all(|h| committed(h, 2)),
+        );
+
+        // And the mesh keeps deciding normally afterwards.
+        fs::write(
+            homes[2].join("intake/three.batch"),
+            plan.batches[&3].encode(),
+        )
+        .unwrap();
+        wait_for(Duration::from_secs(180), "h3 post-restart", || {
+            homes.iter().all(|h| committed(h, 3))
+        });
+
+        for node in nodes.iter_mut() {
+            let signaled = Command::new("kill")
+                .args(["-INT", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(signaled.success());
+            assert!(node.child.wait().unwrap().success());
+        }
+
+        // Every member materialized the same three rooms and left no
+        // unresolved pending body behind.
+        let mut reference: Option<Vec<serde_json::Value>> = None;
+        for (i, home) in homes.iter().enumerate() {
+            let listed = rooms_ok(&[
+                "list",
+                socials[i].to_str().unwrap(),
+                home.join("app/rooms").to_str().unwrap(),
+                REALM_HEX,
+            ]);
+            let mut rows = listed["rooms"].as_array().unwrap().clone();
+            rows.sort_by_key(|r| r["slug"].as_str().unwrap_or_default().to_owned());
+            if let Some(reference) = &reference {
+                assert_eq!(&rows, reference, "member {i} diverged: {listed}");
+            } else {
+                assert_eq!(rows.len(), 3, "all three rooms materialized: {listed}");
+                reference = Some(rows);
+            }
+            let leftovers: Vec<_> = fs::read_dir(home.join("store/pending"))
+                .map(|d| d.flatten().collect())
+                .unwrap_or_default();
+            assert!(
+                leftovers.is_empty(),
+                "member {i} has unresolved pending bodies: {leftovers:?}"
+            );
+        }
     }
 
     /// A tailcat subprocess bound to the test — killed on drop.
