@@ -40,8 +40,10 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers HOST:PORT,...]  (build: --features experimental-rooms-node)
   network-extend IN OUT --from HEIGHT --validators KEY:POWER,...  (build: --features experimental-rooms-node)
   node-update NODE_HOME --network FILE  (build: --features experimental-rooms-node)
-  tailcat plan --nodes A/node.json B/node.json ... [--base-port N] [--output json|shell]
-  tailcat status --nodes A/node.json B/node.json ... [--base-port N]  (build: --features experimental-rooms-node)
+  tailcat {plan|status|up} --nodes A/node.json B/node.json ... [--base-port N]  (build: --features experimental-rooms-node)
+    plan [--output json|shell]
+    status
+    up [--tailcat PATH]
   tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
   submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
   submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
