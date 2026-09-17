@@ -27,6 +27,14 @@
 - `cargo test --locked` must stay green; Hegel dev-deps are added per-crate through `cargo add --dev hegeltest -p <crate>`.
 - A test doing real I/O per case (journal reopen, store reconcile) can trip `FailedHealthCheck: TooSlow`. Suppress only that check — `#[hegel::test(test_cases = N, suppress_health_check = [HealthCheck::TooSlow])]` — never lower coverage to dodge it.
 
+## Kani pilot
+
+- The spent-nonce pilot uses Kani 0.68.0. Install with `cargo install --locked --version 0.68.0 kani-verifier`, then `cargo kani setup`. Run `cargo kani -p vhalla-native --output-format terse -Z unstable-options --harness-timeout 120s`; on this host, wrap it in `oompa-host-run --mode=heavy --lane=compute --label=valhalla-kani --`.
+- Keep `SPENT_CAPACITY = 1024` identical in verification and production. The length predicate and admission decision cover arbitrary machine-sized counts; admission takes membership as an input, not a proof of `BTreeSet::contains`.
+- The entry validator covers every byte string of lengths 0 through 68 by splitting aligned lengths 4, 36, and 68 from malformed lengths. Entry codec round-trips cover zero, one, and two arbitrary nonzero, strictly increasing 32-byte entries. Fixed-length partitions avoid expensive symbolic slice lengths without constraining the entry bytes.
+- These proofs exercise the production entry validator, serializer, and admission decision. They do not prove `BTreeSet` internals, 1024-entry codec execution, filesystem safety, atomic publication, crash durability, or concurrent redemption. Retain the full-capacity unit tests and Hegel restart/fault properties.
+- Keep unwinding, overflow, memory-safety, undefined-function, and assertion-reachability checks enabled. Require successful property results and satisfied cover checks; compilation, a timeout, or an inconclusive run is not verification evidence.
+
 ## Rooms consensus node
 
 - Proposal-part transport is sized for the tailcat/WireGuard path: `Data` parts carry at most `PROPOSAL_CHUNK_BYTES` (768) raw bytes and publishes are spaced `PART_PUBLISH_SPACING` (20 ms) apart, because gossipsub coalesces bursts into single writes that the relayed path truncates above ~1.1 KiB. Do not raise the chunk size or drop the pacing without live re-qualification on a relayed tunnel.
