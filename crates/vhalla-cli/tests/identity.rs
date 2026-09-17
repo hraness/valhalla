@@ -1,6 +1,12 @@
 #![cfg(unix)]
 //! Real CLI identity lifecycle.
-use std::{fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command};
+use std::{
+    fs,
+    io::Write,
+    os::unix::fs::DirBuilderExt,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
@@ -47,6 +53,64 @@ fn cli_initializes_once_and_shows_only_the_same_public_key() {
     assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
     assert!(!run("init").status.success());
     assert_eq!(run("show").stdout, shown.stdout);
+}
+
+#[test]
+fn cli_backup_and_restore_round_trips_the_same_public_key() {
+    let src = Temp::new();
+    let dst = Temp::new();
+    let run = |operation: &str, args: &[&str], input: Option<&str>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_vhalla"));
+        cmd.env("HRANESS_SUPPORT", "off")
+            .args(["identity", operation]);
+        for a in args {
+            cmd.arg(a);
+        }
+        if let Some(s) = input {
+            cmd.stdin(Stdio::piped());
+            let mut child = cmd.spawn().unwrap();
+            child.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
+            child.wait_with_output().unwrap()
+        } else {
+            cmd.output().unwrap()
+        }
+    };
+    let created = run("init", &[src.child().to_str().unwrap()], None);
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let backed = run("backup", &[src.child().to_str().unwrap()], None);
+    assert!(
+        backed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&backed.stderr)
+    );
+    let text = String::from_utf8(backed.stdout).unwrap();
+    let (phrase_line, public_line) = text.lines().next().zip(text.lines().nth(1)).unwrap();
+    let phrase = phrase_line
+        .strip_prefix("mnemonic ")
+        .expect("backup prints a mnemonic line");
+    let public = public_line
+        .strip_prefix("application-key ")
+        .expect("backup prints the application key");
+    let restored = run("restore", &[dst.child().to_str().unwrap()], Some(phrase));
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let shown = run("show", &[dst.child().to_str().unwrap()], None);
+    assert!(shown.status.success());
+    let shown_public = String::from_utf8(shown.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("application-key "))
+        .unwrap()
+        .to_owned();
+    assert_eq!(public, shown_public, "restore must reproduce the same key");
 }
 
 #[cfg(not(feature = "experimental-network"))]

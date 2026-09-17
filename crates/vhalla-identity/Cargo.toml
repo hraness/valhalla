@@ -20,10 +20,13 @@ vhalla-core = { path = "../vhalla-core" }
 vhalla-wire = { path = "../vhalla-wire" }
 vhalla-crypto = { path = "../vhalla-crypto" }
 vhalla-session = { path = "../vhalla-session" }
+vhalla-custody = { path = "../vhalla-custody" }
 vhalla-social = { path = "../vhalla-social", optional = true }
 vhalla-rooms = { path = "../vhalla-rooms", optional = true }
+bip39 = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
 
 [dev-dependencies]
+hegeltest = "0.46.0"
 proptest = "1.6"
 
 [lints]

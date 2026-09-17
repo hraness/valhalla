@@ -420,10 +420,38 @@ One workable setup for a group that trusts each other's machines:
    submissions through `rooms submit`/`rooms tui` against any member's
    `NODE_HOME`.
 
+A running node holds `NODE_HOME/app/rooms` under a lifetime writer lock,
+so the plain `rooms` reads (`list`, `show`, `account`, …) return `Busy`
+against it while the node is up. The live read path is the caller-owned
+replica: `vhalla rooms status SOCIAL_STORE REPLICA_HOME REALM NODE_HOME
+--config NODE_HOME/node.json` syncs the replica from the node's journal
+— locking nothing the node holds — and reports committed `height`, the
+room listing and every local submission marker's resolution in one JSON
+object. `rooms pending` takes the same shape when only marker states
+matter, and `rooms list SOCIAL_STORE REPLICA_HOME/rooms REALM` reads the
+replica's materialized store directly. The same REPLICA_HOME persists
+between calls; a status run never touches the live node's stores.
+
 Size the validator set for absences: quorum is strictly `> 2/3` of total
 power, so an equal-power set of three tolerates **zero** offline members —
 four members tolerate exactly one. `network-init` and `node-check` print
 `quorum_power` and `absent_power_tolerated` for the configured set.
+
+Validator-set rotation is a two-command operator/member flow — a friend
+joining with voting power, or a member leaving, never touches decided
+history. The operator runs `vhalla rooms network-extend network.json
+network-v2.json --from HEIGHT --validators KEY64:POWER,...`, which copies
+every shared field and appends one complete replacement set activating at
+the future `HEIGHT` (never overwriting OUT). Each incumbent runs `vhalla
+rooms node-update NODE_HOME --network network-v2.json`: it preserves the
+local `node_key`, `port`, `listen` and `peers`, refuses any change to the
+genesis-fixed fields (realm, directory, policy, limits, eligible — those
+are the `genesis` fingerprint and still change only via `rooms eligible`
+for the award-source set), reads the committed height from the journal,
+and rejects edits to activations at or below it. A restarted node votes
+under the new set from `HEIGHT` on; a joiner scaffolds straight onto
+`network-v2.json` with `node-init`, whose `node_key_votes_from` then
+reports the activation height.
 
 A non-loopback `listen` keeps malachite's default per-IP connection
 bound rather than the single-host ceiling lift used for local test
@@ -491,15 +519,38 @@ A stale `EXPIRY` is rejected locally before any dial. The serve window ends
 as soon as the final page is acknowledged at the transport level, so a
 concurrent local writer is only locked out for the serving window itself.
 
-For machines that cannot share a LAN or an existing overlay, `tailcat` is a
-usable external wrapper: it exposes a local UDP port through WireGuard with
-NAT traversal and DERP fallback, needs no account or admin rights, and hands
-the peer an out-of-band `tc` address. Run `tailcat` in front of the serving
-machine's port, forward the route through it, and the requester dials the
-forwarded local address. It changes only how the UDP path is reached — the
-paired channel still authenticates the pinned application keys and every
-frame's signature, so `tailcat` is a connectivity option, not a trust
-decision.
+For machines that cannot share a LAN or an existing overlay, the
+requester needs a UDP-capable path to the provider — QUIC cannot ride a
+TCP-only tunnel. A shared Tailscale tailnet (each member's node address
+becomes a routable `100.x` overlay IP) or a LAN reach is the intended
+route; the serving `LISTEN_IP` then names the overlay interface. Whatever
+carries the datagrams changes only how the path is reached — the paired
+channel still authenticates the pinned application keys and every frame's
+signature, so the tunnel is a connectivity option, not a trust decision.
+
+For the validator mesh the answer is simpler, because libp2p peers are
+plain TCP and `tailcat` forwards TCP: it tunnels a local port through
+WireGuard with NAT traversal and DERP fallback, needs no account or admin
+rights, and hands the peer an out-of-band `tc` address. Each member runs
+one server for its node port and one forward per other member, then lists
+the local forward ports as its `peers`:
+
+```console
+# Member i, every member: publish the node port, share the printed tc
+# address with the group out of band.
+tailcat serve NODE_PORT
+
+# Member j, once per other member i: bind a local port that tunnels to
+# member i's node port, then put 127.0.0.1:FWD_PORT in `peers` (or pass
+# it to `node-init --peers`).
+tailcat forward TC_ADDR_OF_MEMBER_I FWD_PORT:NODE_PORT_OF_MEMBER_I
+```
+
+The node's proposal transport is already sized for this path — 768-byte
+parts paced 20 ms apart, qualified over a DERP-relayed tunnel — so no
+config change is needed, and `VHALLA_TAILCAT=1 cargo test -p vhalla-cli
+--test rooms_node live_mesh_decides_over_tailcat_tunnels` re-qualifies a
+four-member mesh deciding through real tunnels on this machine.
 
 ## Room-directory terminal companion
 

@@ -14,13 +14,18 @@ use crate::{App, Modal, Source, View};
 
 /// A scripted replica: directory rows, an account, and a pending list
 /// the test controls. `submit` records the body and enqueues a marker so
-/// the submission journey is observable.
+/// the submission journey is observable. The generative traces also draw
+/// `fail_*` wedges and the reported `height`/`revision`.
 struct Fixture {
     rooms: Vec<RoomRow>,
     account: Option<Account>,
     pending: Vec<Pending>,
     submissions: Vec<crate::sign::Body>,
     syncs: usize,
+    height: u64,
+    revision: u64,
+    fail_sync: bool,
+    fail_project: bool,
 }
 
 impl Fixture {
@@ -39,6 +44,10 @@ impl Fixture {
             pending: Vec::new(),
             submissions: Vec::new(),
             syncs: 0,
+            height: 3,
+            revision: 3,
+            fail_sync: false,
+            fail_project: false,
         }
     }
 }
@@ -62,10 +71,16 @@ fn row(slug: &str, owner: &str, description: &str, archived: bool) -> RoomRow {
 impl Source for Fixture {
     fn sync(&mut self) -> Result<u64, Error> {
         self.syncs += 1;
-        Ok(3)
+        if self.fail_sync {
+            return Err(Error::Io("drawn sync wedge".into()));
+        }
+        Ok(self.height)
     }
 
     fn project(&self, screen: &Screen) -> Result<Projection, Error> {
+        if self.fail_project {
+            return Err(Error::Bounds);
+        }
         let mut rooms = Vec::new();
         let mut account = None;
         let mut quote = None;
@@ -108,8 +123,8 @@ impl Source for Fixture {
             account,
             quote,
             partial: false,
-            revision: 3,
-            height: 3,
+            revision: self.revision,
+            height: self.height,
             pending: self.pending.clone(),
         })
     }
@@ -130,6 +145,7 @@ impl Source for Fixture {
             name: name.clone(),
             slug: Some("ops".into()),
             state: PendingState::Queued,
+            reason: None,
         });
         Ok(name)
     }
@@ -307,26 +323,31 @@ fn pending_strip_renders_states() {
             name: "01".repeat(32),
             slug: Some("queued-room".into()),
             state: PendingState::Queued,
+            reason: None,
         },
         Pending {
             name: "02".repeat(32),
             slug: Some("flight".into()),
             state: PendingState::Submitted,
+            reason: None,
         },
         Pending {
             name: "03".repeat(32),
             slug: Some("landed".into()),
             state: PendingState::Committed,
+            reason: None,
         },
         Pending {
             name: "04".repeat(32),
             slug: Some("clash".into()),
             state: PendingState::Collision,
+            reason: None,
         },
         Pending {
             name: "05".repeat(32),
             slug: Some("denied".into()),
             state: PendingState::Rejected,
+            reason: None,
         },
     ];
     app.refresh(&mut src);
@@ -705,5 +726,703 @@ mod update_signing {
         // A slug the source does not know fails before any signing.
         assert!(sign::archive_body("ghost", key_dir.to_str().unwrap(), 1_000, &mut src).is_err());
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generative Hegel properties over the interaction state machine — a
+// different shape from the store spikes: the model under test is the UI
+// state, not durable data. Each case draws an interleaved trace — key
+// events folded through `App::key`, replica ticks that land new committed
+// rows, pending resolutions, and drawn sync/project wedges — while a
+// step-parallel model of the screen machine tracks what the app must hold.
+// After EVERY drawn step the app is checked against it: the active view, at
+// most one modal bound to the screen that opened it, the live filter text,
+// a selection inside the retained projection's row bounds, and a frame that
+// renders the model without panic. `recovery_hegel.rs` in vhalla-ledger is
+// the reference for the draw-inside-the-loop style.
+// ---------------------------------------------------------------------------
+
+mod generative {
+    use super::*;
+
+    use hegel::{generators as gs, TestCase};
+
+    /// The screen the model believes is on top — the shape of [`View`]
+    /// without the app attached.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum MScreen {
+        Directory,
+        Room(String),
+        Account(String),
+    }
+
+    /// The open modal, if any — its kind and the slug it is bound to.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum MModal {
+        Create,
+        Describe(String),
+        Archive(String),
+    }
+
+    /// Slug pool for drawn rooms: short shared stems so drawn filter text
+    /// both hits and misses.
+    const SLUGS: [&str; 8] = ["aa", "abe", "lob", "ops", "pap", "papers", "pod", "salon"];
+    /// Owner pool — `row` repeats each stem into a 64-hex id.
+    const OWNERS: [&str; 3] = ["aaaa", "bbbb", "cccc"];
+    /// Description pool for drawn and rewritten rooms.
+    const DESCS: [&str; 8] = [
+        "preprints",
+        "incidents",
+        "cold store",
+        "reading room",
+        "idle",
+        "zephyr",
+        "lobby",
+        "notes",
+    ];
+    /// Text bytes the filter line and form fields can receive — mostly slug
+    /// stems plus a few that match nothing.
+    const TEXT: [char; 10] = ['a', 'b', 'e', 'l', 'p', 's', 'z', '5', '?', ' '];
+    /// Modal openers; each is gated on the view that admits it.
+    const OPENERS: [char; 3] = ['n', 'd', 'x'];
+    /// Editing keys that carry no text.
+    const EDITS: [KeyCode; 4] = [
+        KeyCode::Backspace,
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Home,
+    ];
+    /// Movement keys — one binding at the top level, focus moves or literal
+    /// text inside a modal or the filter line.
+    const MOVES: [KeyCode; 4] = [
+        KeyCode::Down,
+        KeyCode::Up,
+        KeyCode::Char('j'),
+        KeyCode::Char('k'),
+    ];
+    /// Keys with no top-level binding — they exercise the `_` arm (or land
+    /// as text where text is live).
+    const QUIET: [KeyCode; 5] = [
+        KeyCode::Left,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::Char('Z'),
+        KeyCode::Char('!'),
+    ];
+
+    /// A step-parallel model of [`App`]: the same folds, minus ratatui. The
+    /// `projected_*` fields are the projection the last successful
+    /// `project` retained — exactly what `App::rows` serves — so a wedged
+    /// replica leaves the previous screen's rows on the table, selection
+    /// included.
+    struct Model {
+        screen: MScreen,
+        modal: Option<MModal>,
+        filter: String,
+        filter_active: bool,
+        selected: usize,
+        quit: bool,
+        /// Whether the error line should be set — refresh failures wedge
+        /// it and only the next key clears it.
+        error: bool,
+        has_projection: bool,
+        projected_rows: Vec<RoomRow>,
+        projected_pending: Vec<Pending>,
+        projected_meta: (u64, u64),
+        projected_account: bool,
+        projected_quote: Option<(u32, u64)>,
+    }
+
+    impl Model {
+        fn new() -> Self {
+            Self {
+                screen: MScreen::Directory,
+                modal: None,
+                filter: String::new(),
+                filter_active: false,
+                selected: 0,
+                quit: false,
+                error: false,
+                has_projection: false,
+                projected_rows: Vec::new(),
+                projected_pending: Vec::new(),
+                projected_meta: (0, 0),
+                projected_account: false,
+                projected_quote: None,
+            }
+        }
+
+        /// The rows `Fixture::project` would commit for the model's current
+        /// screen and filter — mirrors its per-screen filtering exactly.
+        fn world_rows(&self, w: &Fixture) -> Vec<RoomRow> {
+            match &self.screen {
+                MScreen::Directory => w
+                    .rooms
+                    .iter()
+                    .filter(|r| {
+                        !r.archived
+                            && (self.filter.is_empty() || r.slug.contains(self.filter.as_str()))
+                    })
+                    .cloned()
+                    .collect(),
+                MScreen::Room(slug) => w
+                    .rooms
+                    .iter()
+                    .filter(|r| &r.slug == slug && !r.archived)
+                    .cloned()
+                    .collect(),
+                MScreen::Account(owner) => {
+                    if w.rooms.iter().any(|r| &r.owner == owner) {
+                        w.rooms
+                            .iter()
+                            .filter(|r| &r.owner == owner && !r.archived)
+                            .cloned()
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+            }
+        }
+
+        /// `App::refresh`: a sync wedge sets the error line but the project
+        /// still runs; a project wedge keeps the previous projection —
+        /// selection un-clamped against it — and only a successful project
+        /// replaces the retained rows and re-clamps. Nothing here clears a
+        /// standing error; `key` does that.
+        fn refresh(&mut self, w: &Fixture) {
+            if w.fail_sync {
+                self.error = true;
+            }
+            if w.fail_project {
+                self.error = true;
+                return;
+            }
+            self.projected_rows = self.world_rows(w);
+            self.projected_pending = w.pending.clone();
+            self.projected_meta = (w.revision, w.height);
+            match &self.screen {
+                MScreen::Account(owner) => {
+                    let known = w.rooms.iter().any(|r| &r.owner == owner);
+                    self.projected_account = known && w.account.is_some();
+                    self.projected_quote = known.then_some((2, 3));
+                }
+                _ => {
+                    self.projected_account = false;
+                    self.projected_quote = None;
+                }
+            }
+            self.has_projection = true;
+            let rows = self.projected_rows.len();
+            if rows == 0 {
+                self.selected = 0;
+            } else if self.selected >= rows {
+                self.selected = rows - 1;
+            }
+        }
+
+        /// `App::key`: modal first, then the filter line, then the
+        /// top-level bindings — the same dispatch order.
+        fn key(&mut self, k: &KeyEvent, w: &Fixture) {
+            if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+                self.quit = true;
+                return;
+            }
+            self.error = false;
+            if self.modal.is_some() {
+                match k.code {
+                    // Esc cancels; Enter signs — which always fails against
+                    // the keyless fixture — and the modal is gone either way.
+                    KeyCode::Esc => self.modal = None,
+                    KeyCode::Enter => {
+                        self.modal = None;
+                        self.error = true;
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            if self.filter_active {
+                match k.code {
+                    KeyCode::Esc | KeyCode::Enter => self.filter_active = false,
+                    KeyCode::Char(c) => {
+                        self.filter.push(c);
+                        self.selected = 0;
+                        self.refresh(w);
+                    }
+                    KeyCode::Backspace => {
+                        self.filter.pop();
+                        self.selected = 0;
+                        self.refresh(w);
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            match k.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    if matches!(self.screen, MScreen::Directory) {
+                        self.quit = true;
+                    } else {
+                        self.screen = MScreen::Directory;
+                        self.refresh(w);
+                    }
+                }
+                KeyCode::Char('/') => {
+                    if matches!(self.screen, MScreen::Directory) {
+                        self.filter_active = true;
+                    }
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if self.selected + 1 < self.projected_rows.len() {
+                        self.selected += 1;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.selected = self.selected.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if matches!(self.screen, MScreen::Directory) {
+                        if let Some(row) = self.projected_rows.get(self.selected) {
+                            self.screen = MScreen::Room(row.slug.clone());
+                            self.refresh(w);
+                        }
+                    }
+                }
+                KeyCode::Char('n') => {
+                    if matches!(self.screen, MScreen::Directory) {
+                        self.modal = Some(MModal::Create);
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if let MScreen::Room(slug) = &self.screen {
+                        self.modal = Some(MModal::Describe(slug.clone()));
+                    }
+                }
+                KeyCode::Char('x') => {
+                    if let MScreen::Room(slug) = &self.screen {
+                        self.modal = Some(MModal::Archive(slug.clone()));
+                    }
+                }
+                KeyCode::Char('o') => {
+                    if let MScreen::Room(slug) = &self.screen {
+                        if let Some(row) = self.projected_rows.iter().find(|r| &r.slug == slug) {
+                            self.screen = MScreen::Account(row.owner.clone());
+                            self.refresh(w);
+                        }
+                    }
+                }
+                KeyCode::Char('a') => {
+                    if let Some(row) = self.projected_rows.get(self.selected) {
+                        self.screen = MScreen::Account(row.owner.clone());
+                        self.refresh(w);
+                    }
+                }
+                KeyCode::Char('r') => self.refresh(w),
+                _ => {}
+            }
+        }
+    }
+
+    /// One drawn replica tick: committed rooms arrive, get re-described or
+    /// archived; pending markers resolve; the reported height and revision
+    /// drift; sync or project may wedge until a later tick clears it.
+    fn tick(tc: &TestCase, w: &mut Fixture) {
+        match tc.draw(gs::integers::<u8>().max_value(5)) {
+            0 | 1 => {
+                let slug = SLUGS[tc.draw(gs::integers::<usize>().max_value(SLUGS.len() - 1))];
+                if let Some(r) = w.rooms.iter_mut().find(|r| r.slug == slug) {
+                    if tc.draw(gs::booleans()) {
+                        r.archived = !r.archived;
+                    } else {
+                        r.description = DESCS
+                            [tc.draw(gs::integers::<usize>().max_value(DESCS.len() - 1))]
+                        .into();
+                        r.revisions += 1;
+                    }
+                } else if w.rooms.len() < 8 {
+                    let owner =
+                        OWNERS[tc.draw(gs::integers::<usize>().max_value(OWNERS.len() - 1))];
+                    let desc = DESCS[tc.draw(gs::integers::<usize>().max_value(DESCS.len() - 1))];
+                    let archived = tc.draw(gs::integers::<u8>().max_value(3)) == 0;
+                    w.rooms.push(row(slug, owner, desc, archived));
+                }
+            }
+            2 => {
+                let n = tc.draw(gs::integers::<usize>().max_value(4));
+                let mut pending = Vec::with_capacity(n);
+                for _ in 0..n {
+                    pending.push(Pending {
+                        name: format!("{:064x}", tc.draw(gs::integers::<u64>())),
+                        slug: tc.draw(gs::booleans()).then(|| {
+                            SLUGS[tc.draw(gs::integers::<usize>().max_value(SLUGS.len() - 1))]
+                                .to_string()
+                        }),
+                        state: match tc.draw(gs::integers::<u8>().max_value(4)) {
+                            0 => PendingState::Queued,
+                            1 => PendingState::Submitted,
+                            2 => PendingState::Committed,
+                            3 => PendingState::Collision,
+                            _ => PendingState::Rejected,
+                        },
+                        reason: None,
+                    });
+                }
+                w.pending = pending;
+            }
+            3 => {
+                w.account = if tc.draw(gs::integers::<u8>().max_value(4)) == 0 {
+                    None
+                } else {
+                    Some(Account {
+                        earned: tc.draw(gs::integers::<u64>().max_value(50)),
+                        spent: tc.draw(gs::integers::<u64>().max_value(50)),
+                        lifetime_slots: tc.draw(gs::integers::<u32>().max_value(5)),
+                    })
+                };
+            }
+            4 => {
+                w.height += tc.draw(gs::integers::<u64>().max_value(3));
+                w.revision += tc.draw(gs::integers::<u64>().max_value(2));
+            }
+            _ => {
+                w.fail_sync = tc.draw(gs::integers::<u8>().max_value(5)) == 0;
+                w.fail_project = tc.draw(gs::integers::<u8>().max_value(5)) == 0;
+            }
+        }
+    }
+
+    /// A drawn key event; `class` picks the weight band so navigation,
+    /// modal work, text, and quitting all stay reachable.
+    fn draw_key(tc: &TestCase, class: u8) -> KeyEvent {
+        match class {
+            0..=2 => key(MOVES[tc.draw(gs::integers::<usize>().max_value(MOVES.len() - 1))]),
+            3 | 4 => key(if tc.draw(gs::booleans()) {
+                KeyCode::Enter
+            } else {
+                KeyCode::Esc
+            }),
+            5 => key(KeyCode::Char(if tc.draw(gs::booleans()) {
+                'o'
+            } else {
+                'a'
+            })),
+            6 => key(KeyCode::Char(if tc.draw(gs::booleans()) {
+                '/'
+            } else {
+                'r'
+            })),
+            7 | 8 => key(KeyCode::Char(
+                OPENERS[tc.draw(gs::integers::<usize>().max_value(OPENERS.len() - 1))],
+            )),
+            9..=12 => key(KeyCode::Char(
+                TEXT[tc.draw(gs::integers::<usize>().max_value(TEXT.len() - 1))],
+            )),
+            13 => key(EDITS[tc.draw(gs::integers::<usize>().max_value(EDITS.len() - 1))]),
+            16 => key(KeyCode::Char('q')),
+            17 => KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            _ => key(QUIET[tc.draw(gs::integers::<usize>().max_value(QUIET.len() - 1))]),
+        }
+    }
+
+    /// The frame must reflect the model — the modal's own title when one is
+    /// open, else the active screen's body — and the pending strip and the
+    /// error line whenever they exist.
+    fn assert_render(text: &str, app: &App, m: &Model) {
+        match &app.modal {
+            Some(Modal::Create(_)) => assert!(text.contains("create a room"), "{text}"),
+            Some(Modal::Describe { .. }) => {
+                assert!(text.contains("describe room"), "{text}")
+            }
+            Some(Modal::Archive { slug, .. }) => {
+                assert!(text.contains(&format!("Archive \"{slug}\"")), "{text}")
+            }
+            None => {}
+        }
+        if app.modal.is_none() {
+            match &m.screen {
+                MScreen::Directory => {
+                    assert!(text.contains("rooms /"), "{text}");
+                    if !m.filter.is_empty() {
+                        assert!(text.contains(&format!("/{}", m.filter)), "{text}");
+                    }
+                    if m.projected_rows.is_empty() {
+                        assert!(text.contains("No committed rooms"), "{text}");
+                    } else {
+                        let selected = &m.projected_rows[app.selected];
+                        assert!(
+                            text.contains(&selected.slug) || text.contains(&selected.description),
+                            "selected row missing: {text}"
+                        );
+                    }
+                    if m.filter_active {
+                        assert!(text.contains("type to filter"), "{text}");
+                    } else {
+                        assert!(text.contains("enter open"), "{text}");
+                    }
+                }
+                MScreen::Room(slug) => {
+                    if let Some(row) = m.projected_rows.iter().find(|r| &r.slug == slug) {
+                        // An early field — late ones clip under a tall
+                        // pending strip.
+                        assert!(text.contains(&row.description), "{text}");
+                    } else {
+                        assert!(text.contains("No committed room is named"), "{text}");
+                    }
+                }
+                MScreen::Account(_) => {
+                    if !m.has_projection {
+                        assert!(text.contains("loading"), "{text}");
+                    } else if m.projected_account {
+                        assert!(text.contains("earned"), "{text}");
+                    } else {
+                        assert!(text.contains("Owner missing"), "{text}");
+                    }
+                }
+            }
+            for p in &m.projected_pending {
+                let label = match p.state {
+                    PendingState::Queued => "queued",
+                    PendingState::Submitted => "in flight",
+                    PendingState::Committed => "committed",
+                    PendingState::Collision => "collision",
+                    PendingState::Rejected => "rejected",
+                };
+                assert!(text.contains(label), "pending {label} missing: {text}");
+            }
+        }
+        if m.error {
+            assert!(text.contains("error:"), "{text}");
+        }
+    }
+
+    /// The whole invariant bundle, run after EVERY drawn step: the app
+    /// agrees with the model on screen, modal, filter, selection, retained
+    /// projection, error line, and quit — and renders it without panic.
+    fn check(app: &App, m: &Model, src: &Fixture) {
+        match (&app.view, &m.screen) {
+            (View::Directory, MScreen::Directory) => {}
+            (View::Room { slug }, MScreen::Room(s)) => assert_eq!(slug, s),
+            (View::Account { owner }, MScreen::Account(o)) => assert_eq!(owner, o),
+            (view, screen) => panic!("view {view:?} diverged from model {screen:?}"),
+        }
+        assert_eq!(app.filter, m.filter, "filter text diverged");
+        assert_eq!(app.filter_active, m.filter_active, "filter focus diverged");
+        if app.filter_active {
+            assert!(
+                matches!(app.view, View::Directory),
+                "filter focus off the directory"
+            );
+        }
+        match (&app.modal, &m.modal) {
+            (None, None) => {}
+            (Some(Modal::Create(_)), Some(MModal::Create)) => {}
+            (Some(Modal::Describe { slug, .. }), Some(MModal::Describe(s))) => {
+                assert_eq!(slug, s)
+            }
+            (Some(Modal::Archive { slug, .. }), Some(MModal::Archive(s))) => {
+                assert_eq!(slug, s)
+            }
+            (modal, wanted) => panic!("modal {modal:?} diverged from model {wanted:?}"),
+        }
+        match &app.modal {
+            Some(Modal::Create(_)) => assert!(
+                matches!(app.view, View::Directory),
+                "create modal open off the directory"
+            ),
+            Some(Modal::Describe { slug, .. } | Modal::Archive { slug, .. }) => assert!(
+                matches!(&app.view, View::Room { slug: s } if s == slug),
+                "edit modal open off its room"
+            ),
+            None => {}
+        }
+        if app.rows().is_empty() {
+            assert_eq!(app.selected, 0, "phantom selection on empty rows");
+        } else {
+            assert!(
+                app.selected < app.rows().len(),
+                "selection {} out of {} projected rows",
+                app.selected,
+                app.rows().len()
+            );
+        }
+        assert_eq!(app.projection.is_some(), m.has_projection);
+        if let Some(p) = &app.projection {
+            assert_eq!(p.rooms, m.projected_rows, "retained rows diverged");
+            assert_eq!(p.pending, m.projected_pending, "pending strip diverged");
+            assert_eq!(
+                (p.revision, p.height),
+                m.projected_meta,
+                "height/revision diverged"
+            );
+            assert!(!p.partial);
+            assert_eq!(p.account.is_some(), m.projected_account);
+            assert_eq!(p.quote, m.projected_quote);
+        }
+        assert_eq!(app.error.is_some(), m.error, "error line diverged");
+        assert!(
+            app.status.is_none(),
+            "the keyless fixture can never report a queued body"
+        );
+        assert!(
+            src.submissions.is_empty(),
+            "a body reached intake without signing"
+        );
+        assert_eq!(app.quit, m.quit);
+        let text = render(app, 100, 20);
+        assert_render(&text, app, m);
+    }
+
+    /// Property (a): drawn interleavings of keys, ticks, and wedges — every
+    /// step leaves the screen, the modal, the filter, the selection bounds,
+    /// and the retained projection exactly where the model puts them, and
+    /// the frame renders that state without panic.
+    #[hegel::test(test_cases = 64)]
+    fn drawn_traces_never_break_the_screen_model(tc: TestCase) {
+        let mut app = App::new(1_000);
+        let mut src = Fixture::new();
+        app.refresh(&mut src);
+        let mut model = Model::new();
+        model.refresh(&src);
+        let steps = tc.draw(gs::integers::<usize>().max_value(39));
+        for _ in 0..steps {
+            match tc.draw(gs::integers::<u8>().max_value(19)) {
+                // A replica tick: the world moves and the loop refreshes,
+                // modal or no modal — exactly what `run` does every tick.
+                14 | 15 => {
+                    tick(&tc, &mut src);
+                    app.refresh(&mut src);
+                    model.refresh(&src);
+                }
+                class => {
+                    let k = draw_key(&tc, class);
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+            }
+            check(&app, &model, &src);
+            // Odd-shaped frames must not panic either — drawn small and
+            // wide terminals squeeze the modal math hardest.
+            if tc.draw(gs::integers::<u8>().max_value(7)) == 0 {
+                let w = 16 + tc.draw(gs::integers::<u16>().max_value(120));
+                let h = 4 + tc.draw(gs::integers::<u16>().max_value(28));
+                let _ = render(&app, w, h);
+            }
+            if model.quit {
+                break;
+            }
+        }
+    }
+
+    /// Property (b): a churn-weighted distribution — most steps are ticks
+    /// that grow, shrink, archive, and re-describe the committed set while
+    /// the operator moves and navigates — so the selection is hammered
+    /// against the retained rows' bounds across every screen change.
+    #[hegel::test(test_cases = 64)]
+    fn replica_churn_never_strands_the_selection(tc: TestCase) {
+        let mut app = App::new(1_000);
+        let mut src = Fixture::new();
+        app.refresh(&mut src);
+        let mut model = Model::new();
+        model.refresh(&src);
+        let steps = tc.draw(gs::integers::<usize>().max_value(31));
+        for _ in 0..steps {
+            match tc.draw(gs::integers::<u8>().max_value(9)) {
+                0..=4 => {
+                    tick(&tc, &mut src);
+                    app.refresh(&mut src);
+                    model.refresh(&src);
+                }
+                5 | 6 => {
+                    let k = key(MOVES[tc.draw(gs::integers::<usize>().max_value(MOVES.len() - 1))]);
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+                7 => {
+                    let k = key(match tc.draw(gs::integers::<u8>().max_value(3)) {
+                        0 => KeyCode::Enter,
+                        1 => KeyCode::Esc,
+                        _ => KeyCode::Char('a'),
+                    });
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+                _ => {
+                    let k = key(KeyCode::Char(if tc.draw(gs::booleans()) {
+                        '/'
+                    } else {
+                        'r'
+                    }));
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+            }
+            check(&app, &model, &src);
+            if model.quit {
+                break;
+            }
+        }
+    }
+
+    /// Property (c): a modal-weighted distribution — openers, form text,
+    /// Tab/BackTab focus walks, Enter submits and Esc cancels — so the
+    /// create/describe/archive gates open, resolve, and close under churn
+    /// without ever stacking or outliving the screen that opened them.
+    #[hegel::test(test_cases = 64)]
+    fn modal_journeys_never_stack_or_phantom(tc: TestCase) {
+        let mut app = App::new(1_000);
+        let mut src = Fixture::new();
+        app.refresh(&mut src);
+        let mut model = Model::new();
+        model.refresh(&src);
+        let steps = tc.draw(gs::integers::<usize>().max_value(31));
+        for _ in 0..steps {
+            match tc.draw(gs::integers::<u8>().max_value(11)) {
+                0 | 1 => {
+                    tick(&tc, &mut src);
+                    app.refresh(&mut src);
+                    model.refresh(&src);
+                }
+                2 | 3 => {
+                    let k = key(KeyCode::Char(
+                        OPENERS[tc.draw(gs::integers::<usize>().max_value(OPENERS.len() - 1))],
+                    ));
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+                4..=6 => {
+                    let k = key(KeyCode::Char(
+                        TEXT[tc.draw(gs::integers::<usize>().max_value(TEXT.len() - 1))],
+                    ));
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+                7 => {
+                    let k = key(EDITS[tc.draw(gs::integers::<usize>().max_value(EDITS.len() - 1))]);
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+                8 => {
+                    let k = key(KeyCode::Enter);
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+                9 => {
+                    let k = key(KeyCode::Esc);
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+                _ => {
+                    let k = key(MOVES[tc.draw(gs::integers::<usize>().max_value(MOVES.len() - 1))]);
+                    app.key(k, &mut src);
+                    model.key(&k, &src);
+                }
+            }
+            check(&app, &model, &src);
+            if model.quit {
+                break;
+            }
+        }
     }
 }

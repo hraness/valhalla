@@ -1,6 +1,8 @@
 use super::*;
 use ed25519_dalek::SigningKey;
 use hegel::{generators as gs, TestCase};
+use std::fs::DirBuilder;
+use std::os::unix::fs::DirBuilderExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     os::unix::fs::PermissionsExt,

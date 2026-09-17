@@ -12,12 +12,13 @@ vhalla-discovery = { path = "../vhalla-discovery" }
 vhalla-social-store = { path = "../vhalla-social-store" }
 vhalla-social = { path = "../vhalla-social" }
 vhalla-core = { path = "../vhalla-core" }
+vhalla-custody = { path = "../vhalla-custody" }
 sha2 = "0.10"
-libc = "0.2"
 
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
 getrandom = "0.3"
+hegeltest = "0.46.0"
 proptest = "1.6"
 
 [lints]
