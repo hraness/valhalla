@@ -1,6 +1,7 @@
 //! Signed adversarial projection fixtures; no fixture bypasses wire verification.
 use ed25519_dalek::SigningKey;
-use proptest::prelude::*;
+use hegel::generators as gs;
+use hegel::TestCase;
 use std::collections::{BTreeMap, BTreeSet};
 use vhalla_core::{RealmId, RoomId};
 use vhalla_social::{
@@ -1119,33 +1120,77 @@ fn timeline_keeps_missing_and_conflicting_sources_but_ignores_unproved_owner_cla
     );
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
-    #[test]
-    fn signed_permutation_duplicates_and_equal_heads_match_independent_set_oracle(order in prop::collection::vec(any::<u8>(), 0..40)) {
-        let mut f = Fixture::new(); let a = f.owner(1); let b = f.owner(2);
-        let mut author = f.agent(a, 3, Rights::ALL); let mut one = f.agent(b, 4, Rights::REACT); let mut two = f.agent(b, 5, Rights::REACT);
-        let original = f.emit(&mut author, post(Placement::Profile, "target")); f.seal(a, &[original]);
-        let first = f.emit(&mut one, react(original, Reaction::Up(original), &[]));
-        let equal = f.emit(&mut two, react(original, Reaction::Up(original), &[]));
-        let policy = Eligibility::new(vec![b]).unwrap();
-        let before = View::new(&f.archive, 10, &policy).reaction(b, original).unwrap();
-        prop_assert!(matches!(before.observed, Register::Resolved { heads, .. } if heads.len() == 2), "equal values must retain both heads");
-        let contrary = f.emit(&mut one, react(original, Reaction::Down(original), &[first]));
-        f.seal(b, &[contrary, equal]);
-        let expected = oracle(&[(first, Reaction::Up(original), vec![]), (equal, Reaction::Up(original), vec![]), (contrary, Reaction::Down(original), vec![first])]);
-        let mut shuffled = Archive::new(REALM, limits()).unwrap();
-        for index in order { let raw = &f.records[usize::from(index) % f.records.len()]; shuffled.ingest(raw, &mut Budget::new(1, MAX_RECORD_BYTES).unwrap()).unwrap(); }
-        for raw in f.records.iter().rev() { shuffled.ingest(raw, &mut Budget::new(1, MAX_RECORD_BYTES).unwrap()).unwrap(); }
-        let canonical = View::new(&f.archive, 10, &policy); let received = View::new(&shuffled, 10, &policy);
-        prop_assert_eq!(canonical.basis(), received.basis());
-        prop_assert_eq!(canonical.reaction(b, original).unwrap(), received.reaction(b, original).unwrap());
-        match received.reaction(b, original).unwrap().committed {
-            Register::Conflict { heads, alternatives } => { prop_assert_eq!(heads, expected.0); prop_assert_eq!(alternatives.into_iter().collect::<BTreeSet<_>>(), expected.1); },
-            other => prop_assert!(false, "expected independent conflicting heads, got {other:?}"),
-        }
-        prop_assert_eq!(received.stats(a).unwrap().eligible_appreciation, Measured::Known(0));
+/// The proptest `vec(any::<u8>(), 0..40)` command sequence is drawn in
+/// Hegel's interleaved style: a step count, then one index byte per replay
+/// step while the shuffled archive is built.
+#[hegel::test(test_cases = 24)]
+fn signed_permutation_duplicates_and_equal_heads_match_independent_set_oracle(tc: TestCase) {
+    let mut f = Fixture::new();
+    let a = f.owner(1);
+    let b = f.owner(2);
+    let mut author = f.agent(a, 3, Rights::ALL);
+    let mut one = f.agent(b, 4, Rights::REACT);
+    let mut two = f.agent(b, 5, Rights::REACT);
+    let original = f.emit(&mut author, post(Placement::Profile, "target"));
+    f.seal(a, &[original]);
+    let first = f.emit(&mut one, react(original, Reaction::Up(original), &[]));
+    let equal = f.emit(&mut two, react(original, Reaction::Up(original), &[]));
+    let policy = Eligibility::new(vec![b]).unwrap();
+    let before = View::new(&f.archive, 10, &policy)
+        .reaction(b, original)
+        .unwrap();
+    assert!(
+        matches!(before.observed, Register::Resolved { heads, .. } if heads.len() == 2),
+        "equal values must retain both heads"
+    );
+    let contrary = f.emit(
+        &mut one,
+        react(original, Reaction::Down(original), &[first]),
+    );
+    f.seal(b, &[contrary, equal]);
+    let expected = oracle(&[
+        (first, Reaction::Up(original), vec![]),
+        (equal, Reaction::Up(original), vec![]),
+        (contrary, Reaction::Down(original), vec![first]),
+    ]);
+    let mut shuffled = Archive::new(REALM, limits()).unwrap();
+    let steps = tc.draw(gs::integers::<usize>().max_value(39));
+    for _ in 0..steps {
+        let index = tc.draw(gs::integers::<u8>());
+        let raw = &f.records[usize::from(index) % f.records.len()];
+        shuffled
+            .ingest(raw, &mut Budget::new(1, MAX_RECORD_BYTES).unwrap())
+            .unwrap();
     }
+    for raw in f.records.iter().rev() {
+        shuffled
+            .ingest(raw, &mut Budget::new(1, MAX_RECORD_BYTES).unwrap())
+            .unwrap();
+    }
+    let canonical = View::new(&f.archive, 10, &policy);
+    let received = View::new(&shuffled, 10, &policy);
+    assert_eq!(canonical.basis(), received.basis());
+    assert_eq!(
+        canonical.reaction(b, original).unwrap(),
+        received.reaction(b, original).unwrap()
+    );
+    match received.reaction(b, original).unwrap().committed {
+        Register::Conflict {
+            heads,
+            alternatives,
+        } => {
+            assert_eq!(heads, expected.0);
+            assert_eq!(
+                alternatives.into_iter().collect::<BTreeSet<_>>(),
+                expected.1
+            );
+        }
+        other => panic!("expected independent conflicting heads, got {other:?}"),
+    }
+    assert_eq!(
+        received.stats(a).unwrap().eligible_appreciation,
+        Measured::Known(0)
+    );
 }
 
 fn tagged(value: &str) -> FacetedText {

@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, DirBuilder, File, Metadata, OpenOptions},
-    io::{self, Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    fs::{self, File, Metadata},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 use vhalla_core::RealmId;
+use vhalla_custody::{self as custody, Error as CustodyError};
 use vhalla_rooms::{
     registry::{DirectoryPolicy, Registry},
     DirectoryId,
@@ -61,6 +61,15 @@ impl From<io::Error> for Error {
 impl From<vhalla_rooms::RegistryError> for Error {
     fn from(error: vhalla_rooms::RegistryError) -> Self {
         Self::Registry(error)
+    }
+}
+fn map_custody(error: CustodyError) -> Error {
+    match error {
+        CustodyError::Io(e) => Error::Io(e),
+        CustodyError::UnsafePath => Error::UnsafePath,
+        CustodyError::Busy => Error::Busy,
+        CustodyError::Capacity => Error::Corrupt,
+        CustodyError::Corrupt => Error::Corrupt,
     }
 }
 impl std::fmt::Display for Error {
@@ -239,9 +248,8 @@ impl Store {
     ) -> Result<Self, Error> {
         let registry = Registry::new(directory, realm, policy, eligible)?;
         let path = absolute(path.as_ref())?;
-        DirBuilder::new().mode(0o700).create(&path)?;
-        let directory_file = File::open(&path)?;
-        let uid = check_directory(&path)?;
+        let (directory_file, uid) =
+            custody::create_private_directory(&path).map_err(map_custody)?;
         let lock = create_private(&path.join(LOCK))?;
         acquire(&lock)?;
         lock.sync_all()?;
@@ -270,8 +278,7 @@ impl Store {
     /// The optional external anchor requires exact equality, including generation.
     pub fn open(path: impl AsRef<Path>, expected: Option<Pin>) -> Result<Self, Error> {
         let path = absolute(path.as_ref())?;
-        let uid = check_directory(&path)?;
-        let directory = File::open(&path)?;
+        let (directory, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
         let lock = open_private(&path.join(LOCK), uid, 0)?;
         if lock.metadata()?.len() != 0 {
             return Err(Error::Corrupt);
@@ -707,11 +714,7 @@ fn bundle_digest(snapshot: &[u8]) -> [u8; 32] {
     checksum(b"vhalla/rooms/store/bundle/v1\0", snapshot)
 }
 fn absolute(path: &Path) -> Result<PathBuf, Error> {
-    Ok(if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    })
+    custody::absolute(path).map_err(map_custody)
 }
 fn bundle_name(digest: [u8; 32]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -730,56 +733,71 @@ fn is_bundle(name: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
 }
 fn create_private(path: &Path) -> Result<File, Error> {
-    Ok(OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?)
+    custody::create_private_file(path).map_err(map_custody)
 }
 fn check_directory(path: &Path) -> Result<u32, Error> {
-    let meta = fs::symlink_metadata(path)?;
-    if !meta.is_dir() || meta.mode() & 0o7777 != 0o700 {
-        return Err(Error::UnsafePath);
-    }
-    Ok(meta.uid())
+    custody::open_private_directory(path)
+        .map(|(_, uid)| uid)
+        .map_err(map_custody)
 }
 fn check_regular(meta: &Metadata, uid: u32, max: usize) -> Result<(), Error> {
-    if !meta.is_file() || meta.mode() & 0o7777 != 0o600 || meta.nlink() != 1 || meta.uid() != uid {
-        return Err(Error::UnsafePath);
-    }
-    if meta.len() > max as u64 {
-        return Err(Error::Corrupt);
-    }
-    Ok(())
+    custody::check_regular_file(meta, uid, max).map_err(map_custody)
 }
 fn open_private(path: &Path, uid: u32, max: usize) -> Result<File, Error> {
-    let before = fs::symlink_metadata(path)?;
-    check_regular(&before, uid, max)?;
-    let file = OpenOptions::new().read(true).write(true).open(path)?;
-    let after = file.metadata()?;
-    check_regular(&after, uid, max)?;
-    if before.dev() != after.dev() || before.ino() != after.ino() {
-        return Err(Error::UnsafePath);
-    }
-    Ok(file)
+    custody::open_private_file(path, uid, max).map_err(map_custody)
 }
 fn read_bounded(path: &Path, uid: u32, max: usize) -> Result<Vec<u8>, Error> {
-    let mut file = open_private(path, uid, max)?;
-    let len = usize::try_from(file.metadata()?.len()).map_err(|_| Error::Corrupt)?;
-    let mut raw = vec![0; len];
-    file.read_exact(&mut raw)?;
-    if file.read(&mut [0; 1])? != 0 {
-        return Err(Error::Corrupt);
-    }
-    Ok(raw)
+    custody::read_private_file(path, uid, max).map_err(map_custody)
 }
 fn acquire(lock: &File) -> Result<(), Error> {
-    match lock.try_lock() {
-        Ok(()) => Ok(()),
-        Err(fs::TryLockError::WouldBlock) => Err(Error::Busy),
-        Err(fs::TryLockError::Error(e)) => Err(e.into()),
+    custody::acquire_exclusive(lock).map_err(map_custody)
+}
+
+/// The committed registry under a shared hold: concurrent readers proceed
+/// together while a writer's exclusive lock keeps its whole command atomic.
+/// A writer's hold is waited out across the bound; a wedged holder still
+/// fails `Busy` rather than blocking a reader forever. The verified
+/// pin/bundle pair makes the returned snapshot a real committed state.
+/// A retained intent or torn publication temps are not a reader's to
+/// reconcile: they fail `RecoveryRequired` for explicit `recover` first.
+pub fn read_registry(path: impl AsRef<Path>) -> Result<Registry, Error> {
+    let path = absolute(path.as_ref())?;
+    let uid = check_directory(&path)?;
+    let lock = open_private(&path.join(LOCK), uid, 0)?;
+    if lock.metadata()?.len() != 0 {
+        return Err(Error::Corrupt);
     }
+    acquire_shared(&lock)?;
+    let pin = Pin::decode(&read_bounded(&path.join(PIN), uid, PIN_BYTES)?)?;
+    let raw = read_bounded(
+        &path.join(bundle_name(pin.physical)),
+        uid,
+        vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
+    )?;
+    let registry = Registry::restore(&raw).map_err(|_| Error::Corrupt)?;
+    if Pin::for_registry(pin.generation, &registry) != pin {
+        return Err(Error::Corrupt);
+    }
+    if present(&path, uid, INTENT, MAX_INTENT_BYTES)?
+        || present(
+            &path,
+            uid,
+            BUNDLE_TEMP,
+            vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
+        )?
+        || present(&path, uid, PIN_TEMP, PIN_BYTES)?
+    {
+        return Err(Error::RecoveryRequired);
+    }
+    Ok(registry)
+}
+
+fn acquire_shared(lock: &File) -> Result<(), Error> {
+    custody::acquire_shared(lock).map_err(map_custody)
+}
+
+fn present(path: &Path, uid: u32, name: &str, max: usize) -> Result<bool, Error> {
+    custody::private_file_present(&path.join(name), uid, max).map_err(map_custody)
 }
 
 #[cfg(test)]

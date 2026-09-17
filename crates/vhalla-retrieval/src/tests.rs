@@ -1,7 +1,9 @@
 //! Authenticated candidate/hydration regression tests.
 use super::*;
-use alloc::vec;
+use alloc::{format, string::ToString, vec};
 use ed25519_dalek::SigningKey;
+use hegel::generators as gs;
+use hegel::TestCase;
 use proptest::prelude::*;
 use vhalla_core::{Epoch, EventId, PeerId, RoomId, Sequence};
 use vhalla_crypto::{peer_id_from_seed, sign, ReplayWindow, SessionId, VerificationContext};
@@ -572,8 +574,21 @@ proptest! {
         if let Ok(request)=wire::decode_request(&raw) {prop_assert_eq!(request.encode(),raw.clone());}
         if let Ok(response)=wire::decode_response(&raw) {prop_assert_eq!(response.encode(),raw);}
     }
-    #[test]
-    fn arbitrary_failed_attempts_never_gain_credit(failures in 0usize..80) {
-        let mut round=Round::new(request(),vec![pin(1)],channel()).unwrap();for _ in 0..failures {let _=round.failed(pin(1));}prop_assert_eq!(round.stats(pin(1)).unwrap().attempts,failures.min(MAX_ATTEMPTS));prop_assert_eq!(round.stats(pin(1)).unwrap().failures,failures.min(MAX_ATTEMPTS));
+}
+
+#[hegel::test(test_cases = 128)]
+fn arbitrary_failed_attempts_never_gain_credit(tc: TestCase) {
+    let failures = tc.draw(gs::integers::<usize>().max_value(79));
+    let mut round = Round::new(request(), vec![pin(1)], channel()).unwrap();
+    for _ in 0..failures {
+        let _ = round.failed(pin(1));
     }
+    assert_eq!(
+        round.stats(pin(1)).unwrap().attempts,
+        failures.min(MAX_ATTEMPTS)
+    );
+    assert_eq!(
+        round.stats(pin(1)).unwrap().failures,
+        failures.min(MAX_ATTEMPTS)
+    );
 }
