@@ -401,11 +401,11 @@ mod enabled {
         (social, home)
     }
 
-    /// Launch member `i`'s node subprocess with captured output.
-    fn spawn_member(temp: &Temp, i: usize, social: &Path, home: &Path) -> Node {
-        let stdout_path = temp.path(&format!("member-{i}.stdout"));
-        let stderr_path = temp.path(&format!("member-{i}.stderr"));
-        let config_path = temp.path(&format!("node-{i}.json"));
+    /// Launch a node subprocess against an explicit config path with
+    /// captured output.
+    fn spawn_node(temp: &Temp, tag: &str, social: &Path, home: &Path, config: &Path) -> Node {
+        let stdout_path = temp.path(&format!("{tag}.stdout"));
+        let stderr_path = temp.path(&format!("{tag}.stderr"));
         let child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
             .env("HRANESS_SUPPORT", "off")
             .args([
@@ -415,7 +415,7 @@ mod enabled {
                 home.to_str().unwrap(),
                 REALM_HEX,
                 "--config",
-                config_path.to_str().unwrap(),
+                config.to_str().unwrap(),
             ])
             .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
             .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
@@ -426,6 +426,17 @@ mod enabled {
             stdout: stdout_path,
             stderr: stderr_path,
         }
+    }
+
+    /// Launch member `i`'s node subprocess with captured output.
+    fn spawn_member(temp: &Temp, i: usize, social: &Path, home: &Path) -> Node {
+        spawn_node(
+            temp,
+            &format!("member-{i}"),
+            social,
+            home,
+            &temp.path(&format!("node-{i}.json")),
+        )
     }
 
     /// Four real node subprocesses meshing over loopback: an intake drop
@@ -630,6 +641,274 @@ mod enabled {
             assert!(signaled.success());
             assert!(nodes[i].child.wait().unwrap().success());
         }
+    }
+
+    /// The operator/member scaffolding flow end to end on real commands:
+    /// `network-init` authors the shared params once, `node-init` merges
+    /// each member's key and networking into a working node.json,
+    /// `node-check` reports the same genesis fingerprint on every member,
+    /// and the resulting configs boot a deciding mesh. This is the exact
+    /// journey the README hands a group of friends.
+    #[test]
+    fn scaffolding_produces_a_working_mesh() {
+        let _mesh = MESH.lock().unwrap();
+        let temp = Temp::new();
+        let plan = fixture::plan(2, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [40 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+
+        // Operator: one canonical shared-params file covering the
+        // fixture's genesis so the plan's batches stay valid.
+        let validators: String = members
+            .iter()
+            .map(|m| {
+                format!(
+                    "1:{}:1",
+                    hex(PrivateKey::from(m.seed).public_key().as_bytes())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let eligible: String = plan
+            .genesis
+            .eligible
+            .iter()
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let limits = format!(
+            "{},{},{},{},{},{},{}",
+            plan.genesis.limits.records,
+            plan.genesis.limits.control_reserve,
+            plan.genesis.limits.data_per_owner,
+            plan.genesis.limits.data_per_writer,
+            plan.genesis.limits.control_per_owner,
+            plan.genesis.limits.pending,
+            plan.genesis.limits.pending_per_signer,
+        );
+        let net = temp.path("network.json");
+        let init = rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            &format!(
+                "{},{},{},{},{}",
+                plan.genesis.policy.base_cost,
+                plan.genesis.policy.window_seconds,
+                plan.genesis.policy.max_in_window,
+                plan.genesis.policy.support_epoch_seconds,
+                plan.genesis.policy.max_lifetime_rooms,
+            ),
+            "--validators",
+            &validators,
+            "--eligible",
+            &eligible,
+            "--limits",
+            &limits,
+        ]);
+        // 4 equal-power validators: quorum is 3, exactly one loss held.
+        assert_eq!(init["quorum_power"].as_u64(), Some(3));
+        assert_eq!(init["absent_power_tolerated"].as_u64(), Some(1));
+        let genesis = field(&init, "genesis");
+        // A second run refuses to overwrite — the operator's file is
+        // written once and distributed.
+        let rerun = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args(["rooms", "network-init", net.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!rerun.status.success(), "network-init never overwrites");
+
+        // Members: each merges the network file with their own key,
+        // port and peers — never touching the shared fields by hand.
+        let mut homes = Vec::new();
+        let mut socials = Vec::new();
+        for (i, member) in members.iter().enumerate() {
+            let home = temp.path(&format!("home-{i}"));
+            let peers = members
+                .iter()
+                .filter(|m| m.port != member.port)
+                .map(|m| format!("127.0.0.1:{}", m.port))
+                .collect::<Vec<_>>()
+                .join(",");
+            let out = rooms_ok(&[
+                "node-init",
+                home.to_str().unwrap(),
+                "--network",
+                net.to_str().unwrap(),
+                "--node-key",
+                &hex(&member.seed),
+                "--port",
+                &member.port.to_string(),
+                "--peers",
+                &peers,
+            ]);
+            assert_eq!(
+                field(&out, "genesis"),
+                genesis,
+                "member {i} fingerprint must equal the network file's"
+            );
+            assert_eq!(out["node_key_votes_from"].as_u64(), Some(1));
+            assert!(out["warnings"].as_array().unwrap().is_empty());
+            assert!(home.join("intake").is_dir(), "node-init creates intake");
+            assert!(home.join("node.json").is_file());
+            // Idempotency is refused: a second init never overwrites.
+            let again = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+                .env("HRANESS_SUPPORT", "off")
+                .args([
+                    "rooms",
+                    "node-init",
+                    home.to_str().unwrap(),
+                    "--network",
+                    net.to_str().unwrap(),
+                    "--port",
+                    &member.port.to_string(),
+                ])
+                .output()
+                .unwrap();
+            assert!(!again.status.success(), "node-init never overwrites");
+            let social = temp.path(&format!("social-{i}"));
+            seed_social(&social, &plan);
+            homes.push(home);
+            socials.push(social);
+        }
+
+        // node-check on member 0: identical fingerprint, the seeded
+        // archive root, quorum arithmetic and a clean bill.
+        let check = rooms_ok(&[
+            "node-check",
+            socials[0].to_str().unwrap(),
+            homes[0].to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            homes[0].join("node.json").to_str().unwrap(),
+        ]);
+        assert_eq!(field(&check, "genesis"), genesis);
+        assert_eq!(field(&check, "archive").len(), 64);
+        assert_eq!(check["node_key_votes_from"].as_u64(), Some(1));
+        let sets = check["validator_sets"].as_array().unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0]["validators"].as_u64(), Some(4));
+        assert_eq!(sets[0]["quorum_power"].as_u64(), Some(3));
+        assert!(check["warnings"].as_array().unwrap().is_empty());
+
+        // A tampered shared field must move the fingerprint — the whole
+        // point of comparing it across members before boot.
+        let mut tampered: serde_json::Value =
+            serde_json::from_slice(&fs::read(homes[1].join("node.json")).unwrap()).unwrap();
+        tampered["policy"]["base_cost"] = serde_json::json!(99);
+        let bad = temp.path("node-bad.json");
+        fs::write(&bad, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
+        let bad_check = rooms_ok(&[
+            "node-check",
+            socials[1].to_str().unwrap(),
+            homes[1].to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            bad.to_str().unwrap(),
+        ]);
+        assert_ne!(
+            field(&bad_check, "genesis"),
+            genesis,
+            "a divergent policy must change the genesis fingerprint"
+        );
+
+        // A config realm that disagrees with the REALM argument fails
+        // closed — the file pins the realm it was scaffolded with.
+        let wrong_realm = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "node-check",
+                socials[2].to_str().unwrap(),
+                homes[2].to_str().unwrap(),
+                "00000000000000000000000000000099",
+                "--config",
+                homes[2].join("node.json").to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!wrong_realm.status.success());
+        assert!(String::from_utf8_lossy(&wrong_realm.stderr).contains("realm"));
+
+        // The scaffolded configs actually decide: four real subprocesses
+        // mesh over loopback and commit the intake drop.
+        let mut nodes = Vec::new();
+        for (i, home) in homes.iter().enumerate() {
+            nodes.push(spawn_node(
+                &temp,
+                &format!("scaf-{i}"),
+                &socials[i],
+                home,
+                &home.join("node.json"),
+            ));
+        }
+        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        for home in &homes {
+            wait_for(Duration::from_secs(150), "scaffolded mesh decides", || {
+                committed(home, 1)
+            });
+        }
+    }
+
+    /// `node-init` without `--node-key` generates a fresh seed and
+    /// reports it as a non-voter until the operator lists its public key.
+    #[test]
+    fn node_init_without_a_key_scaffolds_a_follower() {
+        let temp = Temp::new();
+        let plan = fixture::plan(1, 8, 16);
+        let validator = PrivateKey::from([77; 32]);
+        let net = temp.path("network.json");
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            "1,86400,8,86400,16",
+            "--validators",
+            &format!("1:{}:1", hex(validator.public_key().as_bytes())),
+        ]);
+        let home = temp.path("home");
+        let out = rooms_ok(&[
+            "node-init",
+            home.to_str().unwrap(),
+            "--network",
+            net.to_str().unwrap(),
+            "--port",
+            "7400",
+        ]);
+        assert_eq!(out["node_key_generated"].as_bool(), Some(true));
+        assert!(out["node_key_votes_from"].is_null());
+        let warnings = out["warnings"].as_array().unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap().contains("never votes")),
+            "a fresh key must warn it does not vote: {out}"
+        );
+        // The generated key round-trips: the config parses and the
+        // reported public key is the seed's real public key.
+        let config: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.join("node.json")).unwrap()).unwrap();
+        let seed: [u8; 32] = unhex(config["node_key"].as_str().unwrap())
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            hex(PrivateKey::from(seed).public_key().as_bytes()),
+            field(&out, "public_key")
+        );
     }
 
     /// Run one `vhalla social` command and unwrap its JSON object; the

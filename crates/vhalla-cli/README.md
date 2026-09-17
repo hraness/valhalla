@@ -392,17 +392,38 @@ One workable setup for a group that trusts each other's machines:
    archive, and distributes that single file. Every member imports it
    too — the merge is a record union over a canonically ordered
    archive, so all stores then hold identical genesis bytes. The same
-   member authors the shared parameters: `directory` (any 64-hex id,
-   e.g. a spare `keygen` public key), `validators` (every member's
-   `{from, key, power}`), `policy`, `eligible` (the members' owner
-   ids) and `limits`.
-3. Each member writes a `node.json` with their own `node_key`, `port`
-   and `listen` (their reachable interface address, e.g. a Tailscale
-   IP), the shared fields above verbatim, and `peers` naming the other
-   members' `host:port`.
-4. Each member runs `vhalla rooms node SOCIAL_STORE NODE_HOME REALM
-   --config node.json`. The set then decides intake submissions through
-   `rooms submit`/`rooms tui` against any member's `NODE_HOME`.
+   member authors the shared parameters once with
+   `vhalla rooms network-init network.json --realm REALM32 --directory
+   DIR64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators
+   FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default]` —
+   `directory` can be any 64-hex id (e.g. a spare `keygen` public key)
+   and `validators` lists every member's `{from, key, power}`. The
+   command prints a `genesis` fingerprint over the canonical encoding
+   of every shared field.
+3. Each member runs `vhalla rooms node-init NODE_HOME --network
+   network.json --node-key SEED --port N --listen LISTEN_IP --peers
+   HOST:PORT,...`, which writes `NODE_HOME/node.json` (never
+   overwriting), creates `NODE_HOME/intake/`, and prints the same
+   `genesis` fingerprint plus `node_key_votes_from` — the height their
+   key starts voting, or `null` with a warning if the operator has not
+   listed their `public_key` yet.
+4. Before booting, each member runs `vhalla rooms node-check
+   SOCIAL_STORE NODE_HOME REALM --config NODE_HOME/node.json`, which
+   runs the identical decode path as `node` — config parse, genesis
+   build, shared archive read — and reports `genesis`, the seeded
+   `archive` root, per-set quorum arithmetic and warnings. Every member
+   must see the same `genesis` and `archive` values; a difference means
+   a shared field or the merged snapshot diverged and the set would
+   stall rather than decide.
+5. Each member runs `vhalla rooms node SOCIAL_STORE NODE_HOME REALM
+   --config NODE_HOME/node.json`. The set then decides intake
+   submissions through `rooms submit`/`rooms tui` against any member's
+   `NODE_HOME`.
+
+Size the validator set for absences: quorum is strictly `> 2/3` of total
+power, so an equal-power set of three tolerates **zero** offline members —
+four members tolerate exactly one. `network-init` and `node-check` print
+`quorum_power` and `absent_power_tolerated` for the configured set.
 
 A non-loopback `listen` keeps malachite's default per-IP connection
 bound rather than the single-host ceiling lift used for local test

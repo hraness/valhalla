@@ -7,8 +7,10 @@
 //! files into `NODE_HOME/intake/`.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 
 use serde::Deserialize;
+use vhalla_core::RealmId;
 use vhalla_rooms::{registry::DirectoryPolicy, DirectoryId};
 use vhalla_rooms_node::{
     service_config, NodeSpec, PrivateKey, PublicKey, RoomNode, RoomValidator, RoomValidatorSet,
@@ -38,6 +40,11 @@ struct NodeFile {
     /// Persistent peers as `host:port` strings.
     #[serde(default)]
     peers: Vec<String>,
+    /// Optional shared realm, 32 hex characters. When present it must
+    /// equal the REALM positional — `node-init` writes it so a member
+    /// cannot boot against the wrong realm by argument.
+    #[serde(default)]
+    realm: Option<String>,
     /// Validator activations — `{from, key, power}` entries grouped by
     /// the height at which the set becomes active.
     validators: Vec<ValidatorEntry>,
@@ -50,6 +57,26 @@ struct NodeFile {
     eligible: Vec<String>,
     /// The shared archive bounds.
     limits: LimitsFile,
+}
+
+/// The shared-params file `rooms network-init` writes and `rooms
+/// node-init` consumes: every genesis field that must be identical
+/// across the set, minus member-local identity and networking.
+#[derive(Deserialize)]
+struct NetworkFile {
+    /// The shared realm, 32 hex characters.
+    realm: String,
+    /// The shared directory identifier, 64 hex characters.
+    directory: String,
+    /// The shared directory policy.
+    policy: PolicyFile,
+    /// Eligible award-source owners, 64 hex each.
+    #[serde(default)]
+    eligible: Vec<String>,
+    /// The shared archive bounds.
+    limits: LimitsFile,
+    /// Validator activations — `{from, key, power}` entries.
+    validators: Vec<ValidatorEntry>,
 }
 
 #[derive(Deserialize)]
@@ -96,37 +123,217 @@ fn peers(raw: &[String]) -> Result<Vec<(String, usize)>, String> {
         .collect()
 }
 
-/// The `node` subcommand entry point: parse the config, seed genesis from
-/// the committed social snapshot, host the validator until interrupted.
-/// `RUST_LOG` enables malachite's internal tracing on stderr.
-pub fn run(args: &Args) -> Result<(), String> {
-    if std::env::var_os("RUST_LOG").is_some() {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .with_writer(std::io::stderr)
-            .try_init();
+/// The parsed node config plus the decoded genesis inputs: everything
+/// `node` needs to build a `NodeSpec` and everything `node check`
+/// reports on, decoded through the identical path so `check` is a real
+/// pre-flight rather than a parallel implementation.
+struct Loaded {
+    file: NodeFile,
+    node_key: PrivateKey,
+    /// Activation height → sorted, deduplicated validator set.
+    validator_sets: BTreeMap<u64, RoomValidatorSet>,
+    limits: Limits,
+    policy: DirectoryPolicy,
+    eligible: Vec<OwnerId>,
+    /// The committed genesis archive read under a shared hold.
+    archive: vhalla_social::archive::Archive,
+    directory: DirectoryId,
+}
+
+/// The consensus-visible quorum boundary: strict `weight * 3 > total * 2`
+/// per decided value. Returns `(quorum_power, absent_power_tolerated)`.
+fn quorum(total: u64) -> (u64, u64) {
+    let needed = total * 2 / 3 + 1;
+    (needed, total.saturating_sub(needed))
+}
+
+/// The genesis fingerprint two members compare: a SHA-256 commitment over
+/// the canonical (order- and duplication-insensitive) encoding of every
+/// shared parameter — realm, directory, policy, limits, eligible set and
+/// every validator activation. Two members with the same fingerprint boot
+/// the same registry and validator sets; a difference means a shared
+/// field diverged before any networking happened.
+fn genesis_fingerprint(
+    realm: RealmId,
+    directory: &DirectoryId,
+    policy: &DirectoryPolicy,
+    eligible: &[OwnerId],
+    limits: &Limits,
+    validator_sets: &BTreeMap<u64, RoomValidatorSet>,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"vhalla/rooms/genesis/v1\0");
+    hash.update(realm.0.to_be_bytes());
+    hash.update(directory.as_bytes());
+    for field in [
+        policy.base_cost,
+        policy.window_seconds,
+        u64::from(policy.max_in_window),
+        policy.support_epoch_seconds,
+        u64::from(policy.max_lifetime_rooms),
+    ] {
+        hash.update(field.to_be_bytes());
     }
+    for field in [
+        limits.records as u64,
+        limits.control_reserve as u64,
+        limits.data_per_owner as u64,
+        limits.data_per_writer as u64,
+        limits.control_per_owner as u64,
+        limits.pending as u64,
+        limits.pending_per_signer as u64,
+    ] {
+        hash.update(field.to_be_bytes());
+    }
+    // Eligibility is a BTreeSet in the registry: canonicalize order and
+    // duplicates so a re-sorted file fingerprints identically.
+    let mut eligible: Vec<[u8; 32]> = eligible.iter().map(|id| *id.as_bytes()).collect();
+    eligible.sort_unstable();
+    eligible.dedup();
+    hash.update((eligible.len() as u32).to_be_bytes());
+    for id in &eligible {
+        hash.update(id);
+    }
+    // Validator sets are already sorted (power desc, address asc) and
+    // deduplicated by `RoomValidatorSet::new` — hashing the built sets
+    // binds exactly what consensus sees.
+    hash.update((validator_sets.len() as u32).to_be_bytes());
+    for (from, set) in validator_sets {
+        hash.update(from.to_be_bytes());
+        hash.update((set.validators.len() as u32).to_be_bytes());
+        for validator in &set.validators {
+            hash.update(validator.public_key.as_bytes());
+            hash.update(validator.power.to_be_bytes());
+        }
+    }
+    hash.finalize().into()
+}
+
+/// Parse a `--policy` CSV in the `rooms init` order: base, window,
+/// max-in-window, epoch, lifetime.
+fn parse_policy(raw: &str) -> Result<DirectoryPolicy, String> {
+    let parts: Vec<&str> = raw.split(',').collect();
+    if parts.len() != 5 {
+        return Err("--policy takes BASE,WINDOW,MAXWIN,EPOCH,LIFETIME".into());
+    }
+    let parse = |s: &str, name: &str| -> Result<u64, String> {
+        s.parse().map_err(|_| format!("invalid --policy {name}"))
+    };
+    Ok(DirectoryPolicy {
+        base_cost: parse(parts[0], "base")?,
+        window_seconds: parse(parts[1], "window")?,
+        max_in_window: parse(parts[2], "maxwin")?
+            .try_into()
+            .map_err(|_| "--policy maxwin out of range")?,
+        support_epoch_seconds: parse(parts[3], "epoch")?,
+        max_lifetime_rooms: parse(parts[4], "lifetime")?
+            .try_into()
+            .map_err(|_| "--policy lifetime out of range")?,
+    })
+}
+
+/// Parse a `--limits` CSV in field order, or the `Limits::default()`
+/// bounds when the flag is absent/`default`.
+fn parse_limits(raw: Option<&str>) -> Result<Limits, String> {
+    let raw = match raw {
+        None | Some("default") => return Ok(Limits::default()),
+        Some(raw) => raw,
+    };
+    let parts: Vec<&str> = raw.split(',').collect();
+    if parts.len() != 7 {
+        return Err(
+            "--limits takes RECORDS,CONTROL_RESERVE,DATA_PER_OWNER,DATA_PER_WRITER,CONTROL_PER_OWNER,PENDING,PENDING_PER_SIGNER".into(),
+        );
+    }
+    let mut fields = [0usize; 7];
+    for (i, part) in parts.iter().enumerate() {
+        fields[i] = part.parse().map_err(|_| "invalid --limits value")?;
+    }
+    Limits {
+        records: fields[0],
+        control_reserve: fields[1],
+        data_per_owner: fields[2],
+        data_per_writer: fields[3],
+        control_per_owner: fields[4],
+        pending: fields[5],
+        pending_per_signer: fields[6],
+    }
+    .check()
+    .map_err(|e| format!("--limits: {e:?}"))
+}
+
+/// Parse `--validators` entries as `FROM:KEY64:POWER` CSV.
+fn parse_validators(raw: &str) -> Result<Vec<ValidatorEntry>, String> {
+    raw.split(',')
+        .map(|entry| {
+            let mut parts = entry.split(':');
+            let from = parts
+                .next()
+                .and_then(|p| p.parse().ok())
+                .ok_or("validator needs FROM:KEY:POWER")?;
+            let key = parts.next().ok_or("validator needs FROM:KEY:POWER")?;
+            if hex32(key).is_err() {
+                return Err("validator key must be 64 hex".into());
+            }
+            let power = parts
+                .next()
+                .and_then(|p| p.parse().ok())
+                .ok_or("validator needs FROM:KEY:POWER")?;
+            if parts.next().is_some() {
+                return Err("validator needs FROM:KEY:POWER".into());
+            }
+            Ok(ValidatorEntry {
+                from,
+                key: key.to_owned(),
+                power,
+            })
+        })
+        .collect()
+}
+
+/// Group validator entries into sorted sets — the decode both `load` and
+/// the scaffolding commands share so a fingerprint binds the exact sets
+/// consensus would see.
+fn build_validator_sets(
+    entries: &[ValidatorEntry],
+) -> Result<BTreeMap<u64, RoomValidatorSet>, String> {
+    let mut grouped: BTreeMap<u64, Vec<RoomValidator>> = BTreeMap::new();
+    for entry in entries {
+        let key =
+            PublicKey::from_bytes(hex32(&entry.key)?).map_err(|e| format!("validator key: {e}"))?;
+        if entry.power == 0 {
+            return Err("validator power must be positive".into());
+        }
+        grouped
+            .entry(entry.from)
+            .or_default()
+            .push(RoomValidator::new(key, entry.power));
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(from, set)| (from, RoomValidatorSet::new(set)))
+        .collect())
+}
+
+/// Parse the config file into typed values and read the genesis archive
+/// under a shared hold — identical to what `node` would do, so `check`
+/// catches every boot-time failure short of opening the port.
+fn load(args: &Args) -> Result<Loaded, String> {
     let path = args.config.as_deref().ok_or("node needs --config FILE")?;
     let raw = std::fs::read(path).map_err(|e| format!("config: {e}"))?;
     if raw.len() > 64 * 1024 {
         return Err("config exceeds 64KiB".into());
     }
     let file: NodeFile = serde_json::from_slice(&raw).map_err(|e| format!("config JSON: {e}"))?;
+    if let Some(realm) = &file.realm {
+        if crate::rooms::hex128(realm)? != args.realm.0 {
+            return Err("config realm does not match the REALM argument".into());
+        }
+    }
 
     let node_key = PrivateKey::from(hex32(&file.node_key)?);
-    let mut validator_sets: BTreeMap<u64, Vec<RoomValidator>> = BTreeMap::new();
-    for entry in &file.validators {
-        let key =
-            PublicKey::from_bytes(hex32(&entry.key)?).map_err(|e| format!("validator key: {e}"))?;
-        validator_sets
-            .entry(entry.from)
-            .or_default()
-            .push(RoomValidator::new(key, entry.power));
-    }
-    let validator_sets: BTreeMap<u64, RoomValidatorSet> = validator_sets
-        .into_iter()
-        .map(|(from, set)| (from, RoomValidatorSet::new(set)))
-        .collect();
+    let validator_sets = build_validator_sets(&file.validators)?;
     if validator_sets.is_empty() {
         return Err("config names no validators".into());
     }
@@ -146,11 +353,21 @@ pub fn run(args: &Args) -> Result<(), String> {
         support_epoch_seconds: file.policy.support_epoch_seconds,
         max_lifetime_rooms: file.policy.max_lifetime_rooms,
     };
+    policy
+        .validate()
+        .map_err(|e| format!("config policy: {e:?}"))?;
+    limits
+        .check()
+        .map_err(|e| format!("config limits: {e:?}"))?;
     let eligible: Vec<OwnerId> = file
         .eligible
         .iter()
         .map(|id| hex32(id).map(OwnerId::from_bytes))
         .collect::<Result<_, _>>()?;
+    if eligible.len() > vhalla_rooms::registry::MAX_OWNERS {
+        return Err("config names too many eligible owners".into());
+    }
+    let directory = DirectoryId::from_bytes(hex32(&file.directory)?);
 
     // Genesis seeds from the committed social snapshot, decoded under the
     // configured limits — the archive's own bounds are a genesis parameter,
@@ -162,25 +379,48 @@ pub fn run(args: &Args) -> Result<(), String> {
         }
         e => e.to_string(),
     })?;
+    Ok(Loaded {
+        file,
+        node_key,
+        validator_sets,
+        limits,
+        policy,
+        eligible,
+        archive,
+        directory,
+    })
+}
+
+/// The `node` subcommand entry point: parse the config, seed genesis from
+/// the committed social snapshot, host the validator until interrupted.
+/// `RUST_LOG` enables malachite's internal tracing on stderr.
+pub fn run(args: &Args) -> Result<(), String> {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
+    let loaded = load(args)?;
 
     let spec = NodeSpec {
         home: args.rooms_store.clone().into(),
         config: service_config(
             "vhalla-rooms-node",
-            file.listen.as_deref().unwrap_or("127.0.0.1"),
-            file.port,
-            &peers(&file.peers)?,
+            loaded.file.listen.as_deref().unwrap_or("127.0.0.1"),
+            loaded.file.port,
+            &peers(&loaded.file.peers)?,
         ),
-        node_key,
-        validator_sets,
+        node_key: loaded.node_key,
+        validator_sets: loaded.validator_sets,
         held: BTreeMap::new(),
         genesis: vhalla_rooms_consensus::Genesis {
-            directory: DirectoryId::from_bytes(hex32(&file.directory)?),
+            directory: loaded.directory,
             realm: args.realm,
-            policy,
-            eligible,
-            limits,
-            archive,
+            policy: loaded.policy,
+            eligible: loaded.eligible,
+            limits: loaded.limits,
+            archive: loaded.archive,
         },
         wal_faults: None,
         net_gate: None,
@@ -195,7 +435,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         let node = RoomNode::start(spec).await;
         println!(
             "{{\"listening\":{},\"address\":\"{:?}\",\"committed\":{}}}",
-            file.port,
+            loaded.file.port,
             node.address,
             node.committed_height()
         );
@@ -239,6 +479,514 @@ pub fn eligible(args: &Args) -> Result<(), String> {
         json::object(vec![
             ("intake", json::string(&target.display().to_string())),
             ("owners", owners.len().to_string()),
+        ])
+    );
+    Ok(())
+}
+
+/// The `node-check` subcommand: run the full `node` decode path — config
+/// parse, genesis-parameter build, shared archive read — then report the
+/// genesis fingerprint, archive root, quorum arithmetic and this key's
+/// voting status instead of serving. Two members whose `genesis` and
+/// `archive` fields match carry identical genesis bases; a member whose
+/// `node_key_votes_from` is null follows but never votes.
+pub fn check(args: &Args) -> Result<(), String> {
+    if args.value(0).is_some() {
+        return Err("node-check takes no positional arguments".into());
+    }
+    let loaded = load(args)?;
+    let genesis = genesis_fingerprint(
+        args.realm,
+        &loaded.directory,
+        &loaded.policy,
+        &loaded.eligible,
+        &loaded.limits,
+        &loaded.validator_sets,
+    );
+    let public = loaded.node_key.public_key();
+    let votes_from = loaded
+        .validator_sets
+        .iter()
+        .find(|(_, set)| {
+            set.validators
+                .iter()
+                .any(|v| v.public_key.as_bytes() == public.as_bytes())
+        })
+        .map(|(from, _)| *from);
+    let mut warnings = Vec::new();
+    let mut sets_json = Vec::new();
+    for (from, set) in &loaded.validator_sets {
+        let total: u64 = set.validators.iter().map(|v| v.power).sum();
+        let (needed, tolerated) = quorum(total);
+        if tolerated == 0 {
+            warnings.push(format!(
+                "validator set active from height {from} cannot lose any member and still decide (strict >2/3 quorum)"
+            ));
+        }
+        if let Some(v) = set.validators.iter().find(|v| v.power >= needed) {
+            warnings.push(format!(
+                "validator {} alone meets quorum in the set active from height {from}",
+                json::hex(v.public_key.as_bytes())
+            ));
+        }
+        sets_json.push(json::object(vec![
+            ("from", from.to_string()),
+            ("validators", set.validators.len().to_string()),
+            ("total_power", total.to_string()),
+            ("quorum_power", needed.to_string()),
+            ("absent_power_tolerated", tolerated.to_string()),
+        ]));
+    }
+    if votes_from.is_none() {
+        warnings.push(
+            "node_key is not in any validator set — the node follows but never votes".to_string(),
+        );
+    }
+    println!(
+        "{}",
+        json::object(vec![
+            ("genesis", json::id(&genesis)),
+            ("archive", json::id(loaded.archive.root().as_bytes())),
+            ("validator_sets", json::array(sets_json)),
+            (
+                "node_key_votes_from",
+                votes_from.map_or("null".into(), |f| f.to_string())
+            ),
+            ("eligible", loaded.eligible.len().to_string()),
+            (
+                "listen",
+                json::string(loaded.file.listen.as_deref().unwrap_or("127.0.0.1"))
+            ),
+            ("port", loaded.file.port.to_string()),
+            ("peers", loaded.file.peers.len().to_string()),
+            (
+                "warnings",
+                json::array(warnings.iter().map(|w| json::string(w)))
+            ),
+        ])
+    );
+    Ok(())
+}
+
+/// Minimal flag parser for the scaffolding commands, which don't fit the
+/// shared four-positional rooms shape. Returns `(positionals, flags)`;
+/// every `--name` needs a value, unknown or repeated flags are rejected.
+fn flags(
+    raw: &[OsString],
+    allowed: &[&str],
+) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
+    let mut positionals = Vec::new();
+    let mut flags = BTreeMap::new();
+    let mut literal = false;
+    let mut args = raw.iter();
+    while let Some(raw) = args.next() {
+        let value = raw.to_str().ok_or("arguments must be UTF-8")?;
+        if value.len() > 8192 {
+            return Err("argument exceeds 8192 bytes".into());
+        }
+        if !literal && value == "--" {
+            literal = true;
+            continue;
+        }
+        if !literal && value.starts_with("--") {
+            let name = &value[2..];
+            if !allowed.contains(&name) {
+                return Err(format!("unknown option --{name}"));
+            }
+            let next = args.next().ok_or(format!("--{name} needs a value"))?;
+            let next = next.to_str().ok_or("option values must be UTF-8")?;
+            if flags.insert(name.to_owned(), next.to_owned()).is_some() {
+                return Err(format!("--{name} given twice"));
+            }
+            continue;
+        }
+        positionals.push(value.to_owned());
+    }
+    Ok((positionals, flags))
+}
+
+/// The canonical shared-params JSON both `network-init` writes and
+/// `node-init` reads back — serialization is fixed-field so the file
+/// itself is diffable across operators.
+fn network_json(file: &NetworkFile) -> String {
+    let validators: Vec<String> = file
+        .validators
+        .iter()
+        .map(|v| {
+            json::object(vec![
+                ("from", v.from.to_string()),
+                ("key", json::string(&v.key)),
+                ("power", v.power.to_string()),
+            ])
+        })
+        .collect();
+    let eligible: Vec<String> = file.eligible.iter().map(|o| json::string(o)).collect();
+    format!(
+        "{{\n  \"realm\": {},\n  \"directory\": {},\n  \"policy\": {},\n  \"eligible\": {},\n  \"limits\": {},\n  \"validators\": {}\n}}\n",
+        json::string(&file.realm),
+        json::string(&file.directory),
+        json::object(vec![
+            ("base_cost", file.policy.base_cost.to_string()),
+            ("window_seconds", file.policy.window_seconds.to_string()),
+            ("max_in_window", file.policy.max_in_window.to_string()),
+            (
+                "support_epoch_seconds",
+                file.policy.support_epoch_seconds.to_string()
+            ),
+            (
+                "max_lifetime_rooms",
+                file.policy.max_lifetime_rooms.to_string()
+            ),
+        ]),
+        json::array(eligible),
+        json::object(vec![
+            ("records", file.limits.records.to_string()),
+            ("control_reserve", file.limits.control_reserve.to_string()),
+            ("data_per_owner", file.limits.data_per_owner.to_string()),
+            ("data_per_writer", file.limits.data_per_writer.to_string()),
+            (
+                "control_per_owner",
+                file.limits.control_per_owner.to_string()
+            ),
+            ("pending", file.limits.pending.to_string()),
+            (
+                "pending_per_signer",
+                file.limits.pending_per_signer.to_string()
+            ),
+        ]),
+        json::array(validators),
+    )
+}
+
+/// The decoded shared-params file: the typed genesis inputs every
+/// member's `node.json` derives from, alongside the file itself for
+/// re-encoding.
+struct Network {
+    file: NetworkFile,
+    realm: RealmId,
+    directory: DirectoryId,
+    policy: DirectoryPolicy,
+    eligible: Vec<OwnerId>,
+    limits: Limits,
+    /// Activation height → sorted, deduplicated validator set.
+    validator_sets: BTreeMap<u64, RoomValidatorSet>,
+}
+
+/// Decode a `NetworkFile` into the typed genesis inputs — the validation
+/// `network-init` reporting, `node-init`, and `node-check` share so a
+/// tampered or hand-edited file fails before it seeds a config.
+fn decode_network(file: NetworkFile) -> Result<Network, String> {
+    let realm = RealmId(crate::rooms::hex128(&file.realm)?);
+    let directory = DirectoryId::from_bytes(hex32(&file.directory)?);
+    let policy = DirectoryPolicy {
+        base_cost: file.policy.base_cost,
+        window_seconds: file.policy.window_seconds,
+        max_in_window: file.policy.max_in_window,
+        support_epoch_seconds: file.policy.support_epoch_seconds,
+        max_lifetime_rooms: file.policy.max_lifetime_rooms,
+    };
+    policy
+        .validate()
+        .map_err(|e| format!("network policy: {e:?}"))?;
+    let limits = Limits {
+        records: file.limits.records,
+        control_reserve: file.limits.control_reserve,
+        data_per_owner: file.limits.data_per_owner,
+        data_per_writer: file.limits.data_per_writer,
+        control_per_owner: file.limits.control_per_owner,
+        pending: file.limits.pending,
+        pending_per_signer: file.limits.pending_per_signer,
+    };
+    limits
+        .check()
+        .map_err(|e| format!("network limits: {e:?}"))?;
+    let eligible: Vec<OwnerId> = file
+        .eligible
+        .iter()
+        .map(|id| hex32(id).map(OwnerId::from_bytes))
+        .collect::<Result<_, _>>()?;
+    if eligible.len() > vhalla_rooms::registry::MAX_OWNERS {
+        return Err("network file names too many eligible owners".into());
+    }
+    let validator_sets = build_validator_sets(&file.validators)?;
+    if validator_sets.is_empty() {
+        return Err("network file names no validators".into());
+    }
+    Ok(Network {
+        file,
+        realm,
+        directory,
+        policy,
+        eligible,
+        limits,
+        validator_sets,
+    })
+}
+
+/// Read and decode the shared-params file.
+fn read_network(path: &str) -> Result<Network, String> {
+    let raw = std::fs::read(path).map_err(|e| format!("network file: {e}"))?;
+    if raw.len() > 64 * 1024 {
+        return Err("network file exceeds 64KiB".into());
+    }
+    let file: NetworkFile =
+        serde_json::from_slice(&raw).map_err(|e| format!("network JSON: {e}"))?;
+    decode_network(file)
+}
+
+/// The `network-init` subcommand — the operator-side half of validator-set
+/// setup. Writes one canonical shared-params file every member consumes
+/// through `node-init`, so no member hand-assembles the fields that must
+/// agree byte-for-byte.
+///
+/// `vhalla rooms network-init OUT --realm R32 --directory D64
+///  --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY:POWER,...
+///  [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]`
+pub fn network_init(raw: &[OsString]) -> Result<(), String> {
+    let (positional, flags) = flags(
+        raw,
+        &[
+            "realm",
+            "directory",
+            "policy",
+            "validators",
+            "eligible",
+            "limits",
+        ],
+    )?;
+    if positional.len() != 1 {
+        return Err("network-init takes exactly one output path".into());
+    }
+    let out = std::path::Path::new(&positional[0]);
+    if out.exists() {
+        return Err("network-init never overwrites an existing file".into());
+    }
+    let realm = flags.get("realm").ok_or("network-init needs --realm")?;
+    crate::rooms::hex128(realm)?;
+    let directory = flags
+        .get("directory")
+        .ok_or("network-init needs --directory")?;
+    hex32(directory)?;
+    let policy = parse_policy(flags.get("policy").ok_or("network-init needs --policy")?)?;
+    policy.validate().map_err(|e| format!("--policy: {e:?}"))?;
+    let validators_raw = flags
+        .get("validators")
+        .ok_or("network-init needs --validators")?;
+    let validators = parse_validators(validators_raw)?;
+    let eligible: Vec<String> = match flags.get("eligible") {
+        None => Vec::new(),
+        Some(csv) if csv.is_empty() => Vec::new(),
+        Some(csv) => csv
+            .split(',')
+            .map(|id| {
+                hex32(id)?;
+                Ok(id.to_owned())
+            })
+            .collect::<Result<_, String>>()?,
+    };
+    let limits = parse_limits(flags.get("limits").map(String::as_str))?;
+    let file = NetworkFile {
+        realm: realm.clone(),
+        directory: directory.clone(),
+        policy: PolicyFile {
+            base_cost: policy.base_cost,
+            window_seconds: policy.window_seconds,
+            max_in_window: policy.max_in_window,
+            support_epoch_seconds: policy.support_epoch_seconds,
+            max_lifetime_rooms: policy.max_lifetime_rooms,
+        },
+        eligible,
+        limits: LimitsFile {
+            records: limits.records,
+            control_reserve: limits.control_reserve,
+            data_per_owner: limits.data_per_owner,
+            data_per_writer: limits.data_per_writer,
+            control_per_owner: limits.control_per_owner,
+            pending: limits.pending,
+            pending_per_signer: limits.pending_per_signer,
+        },
+        validators,
+    };
+    let network = decode_network(file)?;
+    let genesis = genesis_fingerprint(
+        network.realm,
+        &network.directory,
+        &network.policy,
+        &network.eligible,
+        &network.limits,
+        &network.validator_sets,
+    );
+    std::fs::write(out, network_json(&network.file)).map_err(|e| format!("write: {e}"))?;
+    let total: u64 = network
+        .validator_sets
+        .values()
+        .next()
+        .map(|s| s.validators.iter().map(|v| v.power).sum())
+        .unwrap_or(0);
+    let (needed, tolerated) = quorum(total);
+    println!(
+        "{}",
+        json::object(vec![
+            ("wrote", json::string(&out.display().to_string())),
+            ("genesis", json::id(&genesis)),
+            (
+                "validators",
+                network
+                    .validator_sets
+                    .values()
+                    .map(|s| s.validators.len())
+                    .sum::<usize>()
+                    .to_string()
+            ),
+            ("quorum_power", needed.to_string()),
+            ("absent_power_tolerated", tolerated.to_string()),
+        ])
+    );
+    Ok(())
+}
+
+/// The `node-init` subcommand — the member-side half. Merges the shared
+/// network file with the member's own key and networking into
+/// `NODE_HOME/node.json` and creates `NODE_HOME/intake/`. The file is
+/// never overwritten; a second run against the same home fails.
+///
+/// `vhalla rooms node-init NODE_HOME --network FILE --port N
+///  [--node-key HEX64] [--listen HOST] [--peers HOST:PORT,...]`
+pub fn node_init(raw: &[OsString]) -> Result<(), String> {
+    let (positional, flags) = flags(raw, &["network", "node-key", "port", "listen", "peers"])?;
+    if positional.len() != 1 {
+        return Err("node-init takes exactly one NODE_HOME".into());
+    }
+    let home = std::path::Path::new(&positional[0]);
+    let target = home.join("node.json");
+    if target.exists() {
+        return Err("node-init never overwrites an existing node.json".into());
+    }
+    let network_path = flags
+        .get("network")
+        .ok_or("node-init needs --network FILE")?;
+    let network = read_network(network_path)?;
+    let port: usize = flags
+        .get("port")
+        .ok_or("node-init needs --port N")?
+        .parse()
+        .map_err(|_| "invalid --port")?;
+    if port == 0 || port > u16::MAX as usize {
+        return Err("--port must be 1..65535".into());
+    }
+    let (seed, generated) = match flags.get("node-key") {
+        Some(raw) => (hex32(raw)?, false),
+        None => {
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).map_err(|_| "node-init: OS entropy unavailable")?;
+            (seed, true)
+        }
+    };
+    let key = PrivateKey::from(seed);
+    let public = key.public_key();
+    let votes_from = network
+        .validator_sets
+        .iter()
+        .find(|(_, set)| {
+            set.validators
+                .iter()
+                .any(|v| v.public_key.as_bytes() == public.as_bytes())
+        })
+        .map(|(from, _)| *from);
+    let listen = flags.get("listen").cloned();
+    let peer_list: Vec<String> = match flags.get("peers") {
+        None => Vec::new(),
+        Some(csv) if csv.is_empty() => Vec::new(),
+        Some(csv) => csv
+            .split(',')
+            .map(|p| {
+                let (_, port) = p.rsplit_once(':').ok_or("peer must be host:port")?;
+                port.parse::<usize>()
+                    .map_err(|_| "peer port must be numeric")?;
+                Ok(p.to_owned())
+            })
+            .collect::<Result<_, String>>()?,
+    };
+    let genesis = genesis_fingerprint(
+        network.realm,
+        &network.directory,
+        &network.policy,
+        &network.eligible,
+        &network.limits,
+        &network.validator_sets,
+    );
+    // The node file carries realm so `node`/`node-check` reject a REALM
+    // argument that disagrees with the shared params it was scaffolded
+    // from.
+    let node = serde_json::json!({
+        "node_key": json::hex(&seed),
+        "port": port,
+        "listen": listen.as_deref().unwrap_or("127.0.0.1"),
+        "peers": peer_list,
+        "realm": json::hex(&network.realm.0.to_be_bytes()),
+        "validators": network
+            .validator_sets
+            .iter()
+            .flat_map(|(from, set)| {
+                set.validators.iter().map(move |v| {
+                    serde_json::json!({
+                        "from": *from,
+                        "key": json::hex(v.public_key.as_bytes()),
+                        "power": v.power,
+                    })
+                })
+            })
+            .collect::<Vec<_>>(),
+        "directory": json::hex(network.directory.as_bytes()),
+        "policy": {
+            "base_cost": network.policy.base_cost,
+            "window_seconds": network.policy.window_seconds,
+            "max_in_window": network.policy.max_in_window,
+            "support_epoch_seconds": network.policy.support_epoch_seconds,
+            "max_lifetime_rooms": network.policy.max_lifetime_rooms,
+        },
+        "eligible": network
+            .eligible
+            .iter()
+            .map(|id| json::hex(id.as_bytes()))
+            .collect::<Vec<_>>(),
+        "limits": {
+            "records": network.limits.records,
+            "control_reserve": network.limits.control_reserve,
+            "data_per_owner": network.limits.data_per_owner,
+            "data_per_writer": network.limits.data_per_writer,
+            "control_per_owner": network.limits.control_per_owner,
+            "pending": network.limits.pending,
+            "pending_per_signer": network.limits.pending_per_signer,
+        },
+    });
+    std::fs::create_dir_all(home.join("intake")).map_err(|e| format!("node home: {e}"))?;
+    let tmp = home.join(format!(".node.json.tmp-{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&node).unwrap())
+        .map_err(|e| format!("write: {e}"))?;
+    std::fs::rename(&tmp, &target).map_err(|e| format!("write: {e}"))?;
+    let mut warnings = Vec::new();
+    if votes_from.is_none() {
+        warnings.push(
+            "this key is not in the validator set — the node follows but never votes; share public_key with the operator to join"
+                .to_string(),
+        );
+    }
+    println!(
+        "{}",
+        json::object(vec![
+            ("config", json::string(&target.display().to_string())),
+            ("public_key", json::string(&json::hex(public.as_bytes()))),
+            ("genesis", json::id(&genesis)),
+            ("node_key_generated", generated.to_string()),
+            (
+                "node_key_votes_from",
+                votes_from.map_or("null".into(), |f| f.to_string())
+            ),
+            (
+                "warnings",
+                json::array(warnings.iter().map(|w| json::string(w)))
+            ),
         ])
     );
     Ok(())
