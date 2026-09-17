@@ -74,8 +74,7 @@ fn restarts_preserve_any_checkpoint_frontier(tc: TestCase) {
 
 /// Recorded proptest regression for this property, promoted to an explicit
 /// example: the two-command trace `(0, checkpoint, [])`, `(0, no checkpoint,
-/// [])` once shrank a real frontier loss. The proptest original in
-/// `recovery.rs` still replays it from `recovery.proptest-regressions`.
+/// [])` once shrank a real frontier loss.
 #[test]
 fn recorded_regression_checkpoint_then_append() {
     let mut ledger = Ledger::new(RealmId(1), Epoch(2), 32);
