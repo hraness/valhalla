@@ -17,12 +17,12 @@ vhalla-witness = { path = "../vhalla-witness" }
 vhalla-botcaptcha = { path = "../vhalla-botcaptcha" }
 
 [dev-dependencies]
-proptest = "1.6"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
 vhalla-social = { path = "../vhalla-social" }
 vhalla-discovery = { path = "../vhalla-discovery" }
 vhalla-attention = { path = "../vhalla-attention" }
 vhalla-session = { path = "../vhalla-session" }
+hegeltest = "0.46.0"
 
 [target.'cfg(unix)'.dev-dependencies]
 vhalla-identity = { path = "../vhalla-identity" }

@@ -1,12 +1,12 @@
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, DirBuilder, File, OpenOptions},
-    io::{self, Read, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    fs::{self, File},
+    io::{self, Write},
     path::Path,
 };
 use vhalla_crypto::{sign_with_key, SignError, SignedEnvelope, VerificationContext};
+use vhalla_custody::{self as custody, Error as CustodyError};
 use vhalla_session::{ChatSession, Invitation, InvitationError, Pairing, Pending, Reject};
 use vhalla_wire::Envelope;
 use zeroize::Zeroizing;
@@ -39,6 +39,17 @@ impl From<io::Error> for IdentityError {
     }
 }
 
+impl From<CustodyError> for IdentityError {
+    fn from(error: CustodyError) -> Self {
+        match error {
+            CustodyError::Io(e) => Self::Io(e),
+            CustodyError::UnsafePath => Self::UnsafePath,
+            CustodyError::Busy => Self::Busy,
+            CustodyError::Capacity | CustodyError::Corrupt => Self::Corrupt,
+        }
+    }
+}
+
 /// A privately held application signing key and lifetime exclusive file lock.
 /// No seed getter, Clone, Debug, serializer or generic signing oracle is exposed.
 ///
@@ -57,22 +68,16 @@ impl Identity {
     /// errors leave owned partial state available for explicit inspection.
     pub fn create_new(path: impl AsRef<Path>) -> Result<Self, IdentityError> {
         let path = path.as_ref();
-        // Resolve a relative directory before opening its parent for sync.
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()?.join(path)
-        };
+        let absolute = custody::absolute(path)?;
         let parent = absolute.parent().ok_or(IdentityError::UnsafePath)?;
         let mut seed = Zeroizing::new([0u8; 32]);
         getrandom::fill(seed.as_mut()).map_err(|_| IdentityError::Entropy)?;
-        DirBuilder::new().mode(0o700).create(&absolute)?;
-        let directory = File::open(&absolute)?;
-        let lock = create_file(&absolute.join("lock"))?;
-        acquire_lock(&lock)?;
+        let (directory, _uid) = custody::create_private_directory(&absolute)?;
+        let lock = custody::create_private_file(&absolute.join("lock"))?;
+        custody::acquire_exclusive(&lock)?;
         lock.sync_all()?;
         let record = encode(&seed);
-        let mut pending = create_file(&absolute.join("identity.tmp"))?;
+        let mut pending = custody::create_private_file(&absolute.join("identity.tmp"))?;
         pending.write_all(record.as_ref())?;
         pending.sync_all()?;
         // Publish without replacing an existing name, then sync the directory.
@@ -91,14 +96,9 @@ impl Identity {
     /// directory entries, symlinks and hardlinks. Never create or repair files.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, IdentityError> {
         let path = path.as_ref();
-        check_directory(path)?;
-        check_file(&path.join("lock"), 0)?;
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path.join("lock"))?;
-        check_open_file(&lock, 0)?;
-        acquire_lock(&lock)?;
+        let (_, uid) = custody::open_private_directory(path)?;
+        let lock = custody::open_private_file(&path.join("lock"), uid, 0)?;
+        custody::acquire_exclusive(&lock)?;
         let mut count = 0;
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -110,15 +110,7 @@ impl Identity {
         if count != 2 {
             return Err(IdentityError::Corrupt);
         }
-        check_file(&path.join("identity"), RECORD_BYTES as u64)?;
-        let mut file = File::open(path.join("identity"))?;
-        check_open_file(&file, RECORD_BYTES as u64)?;
-        let mut raw = Zeroizing::new([0; RECORD_BYTES]);
-        file.read_exact(raw.as_mut())?;
-        let mut extra = [0; 1];
-        if file.read(&mut extra)? != 0 {
-            return Err(IdentityError::Corrupt);
-        }
+        let raw = custody::read_private_file(&path.join("identity"), uid, RECORD_BYTES)?;
         let seed = decode(raw.as_ref())?;
         Ok(Self {
             key: SigningKey::from_bytes(&seed),
@@ -291,47 +283,6 @@ impl Identity {
             &self.key,
         )
     }
-}
-
-fn create_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-fn acquire_lock(lock: &File) -> Result<(), IdentityError> {
-    match lock.try_lock() {
-        Ok(()) => Ok(()),
-        Err(fs::TryLockError::WouldBlock) => Err(IdentityError::Busy),
-        Err(fs::TryLockError::Error(error)) => Err(IdentityError::Io(error)),
-    }
-}
-
-fn check_directory(path: &Path) -> Result<(), IdentityError> {
-    let meta = fs::symlink_metadata(path)?;
-    if !meta.is_dir() || meta.mode() & 0o7777 != 0o700 {
-        return Err(IdentityError::UnsafePath);
-    }
-    Ok(())
-}
-
-fn check_metadata(meta: fs::Metadata, len: u64) -> Result<(), IdentityError> {
-    if !meta.is_file() || meta.mode() & 0o7777 != 0o600 || meta.nlink() != 1 {
-        return Err(IdentityError::UnsafePath);
-    }
-    if meta.len() != len {
-        return Err(IdentityError::Corrupt);
-    }
-    Ok(())
-}
-fn check_file(path: &Path, len: u64) -> Result<(), IdentityError> {
-    check_metadata(fs::symlink_metadata(path)?, len)
-}
-fn check_open_file(file: &File, len: u64) -> Result<(), IdentityError> {
-    check_metadata(file.metadata()?, len)
 }
 
 fn encode(seed: &[u8; 32]) -> Zeroizing<[u8; RECORD_BYTES]> {

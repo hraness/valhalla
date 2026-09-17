@@ -77,7 +77,8 @@ mod enabled {
             bytes
                 .iter()
                 .all(|byte| *byte == b'\n' || (0x20..=0x7e).contains(byte)),
-            "output contains terminal controls or unescaped Unicode"
+            "output contains terminal controls or unescaped Unicode: {}",
+            String::from_utf8_lossy(bytes)
         );
     }
     fn run(command: &str, args: &[&str]) -> Output {
