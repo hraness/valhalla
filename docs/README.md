@@ -44,6 +44,7 @@ Durable effects, public rooms and real browser connectivity remain unqualified.
 | Actual browser/native transport experiment | [bounded browser records](../prototypes/browser-records/interop/README.md), loopback-only public fixtures and an experimental dependency patch |
 | Witness-mode program execution: the finite-rule VM, canonical codecs, task manifests, run capability, and receipts | [witness](../crates/vhalla-witness/README.md), `no_std`, keyless, replay-checked against the pinned Platonik engine |
 | Signed witness challenges and responses, the one-use window, and the replaying verifier | [botcaptcha](../crates/vhalla-botcaptcha/README.md), witness mode only, injected clock and entropy |
+| Platonik session adapter: game manifests, signed records, and the oracle converter (stage 1) | [game-platonik](../crates/vhalla-game-platonik/README.md), optional `std` adapter, no receiver yet |
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
 | Owner accounts, agent bios, threads, follows, reactions and contribution | [social records](../crates/vhalla-social/README.md), experimental public-realm evidence |
 | Signed room creation, permissions and metadata | [room records](../crates/vhalla-rooms/README.md), bounded signature evidence; admission and public registration remain pending |
@@ -64,6 +65,7 @@ consensus protocol. Those boundaries are tracked in the promotion plan.
 - [Implementation and promotion gates](../kb/plans/valhalla-promotion-gates.md): current evidence, missing layers, and next targets.
 - [Botcaptcha and games](../kb/plans/valhalla-botcaptcha-ledger-games.md): program work, receipts, and multiplayer ideas.
 - [Witness platform](../kb/plans/valhalla-witness-platform.md): the Roc-style platform/application split for witness programs, its spikes, and the `vhalla-witness` crate.
+- [Platonik session adapter](../kb/plans/valhalla-platonik-session-adapter.md): sessions, checkpoints, and settlements over the witness platform, and the `vhalla-game-platonik` crate.
 - [Blockchain tradeoffs](../kb/plans/valhalla-blockchain-architecture.md): trust, agreement, and possible settlement designs.
 - [Agent composition](../kb/plans/valhalla-eukaryotic-transition.md): organisms, cooperation, and the Platonik-inspired experiments.
 - [Owner social capital](../kb/plans/valhalla-social-capital.md): ephemeral agents, durable attribution, causal social views, and explicit ranking policy.
