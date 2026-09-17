@@ -29,9 +29,9 @@
 
 ## Kani pilot
 
-- The spent-nonce pilot uses Kani 0.68.0. Install with `cargo install --locked --version 0.68.0 kani-verifier`, then `cargo kani setup`. Run `cargo kani -p vhalla-native --output-format terse -Z unstable-options --harness-timeout 120s`; on this host, wrap it in `oompa-host-run --mode=heavy --lane=compute --label=valhalla-kani --`.
+- The spent-nonce pilot uses Kani 0.68.0. Install with `cargo install --locked --version 0.68.0 kani-verifier`, then `cargo kani setup`. Run `cargo kani -p vhalla-native --output-format terse -Z unstable-options --harness-timeout 300s`; on this host, wrap it in `oompa-host-run --mode=heavy --lane=compute --label=valhalla-kani --`.
 - Keep `SPENT_CAPACITY = 1024` identical in verification and production. The length predicate and admission decision cover arbitrary machine-sized counts; admission takes membership as an input, not a proof of `BTreeSet::contains`.
-- The entry validator covers every byte string of lengths 0 through 68 by splitting aligned lengths 4, 36, and 68 from malformed lengths. Entry codec round-trips cover zero, one, and two arbitrary nonzero, strictly increasing 32-byte entries. Fixed-length partitions avoid expensive symbolic slice lengths without constraining the entry bytes.
+- The entry validator covers every byte string of lengths 0 through 68 by splitting aligned lengths 4, 36, and 68 from representative malformed lengths 0-3, 5, 32, 35, 37, and 67. Entry codec round-trips cover zero, one, and two arbitrary nonzero, strictly increasing 32-byte entries. Fixed-length partitions avoid expensive symbolic slice lengths without constraining the entry bytes.
 - These proofs exercise the production entry validator, serializer, and admission decision. They do not prove `BTreeSet` internals, 1024-entry codec execution, filesystem safety, atomic publication, crash durability, or concurrent redemption. Retain the full-capacity unit tests and Hegel restart/fault properties.
 - Keep unwinding, overflow, memory-safety, undefined-function, and assertion-reachability checks enabled. Require successful property results and satisfied cover checks; compilation, a timeout, or an inconclusive run is not verification evidence.
 

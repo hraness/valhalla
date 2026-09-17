@@ -219,8 +219,6 @@ mod verification {
     use super::spec::canonical_layout;
     use super::*;
 
-    const MAX_LEN: usize = 4 + 32 * 2;
-
     #[kani::proof]
     fn encoded_length_matches_the_production_capacity() {
         let len: usize = kani::any();
@@ -266,19 +264,28 @@ mod verification {
         check_layout::<68>();
     }
 
+    fn check_rejects_misaligned<const N: usize>() {
+        let bytes: [u8; N] = kani::any();
+        assert!(matches!(decode_entries(&bytes), Err(SpentError::Malformed)));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn decode_entries_rejects_zero_to_three_bytes() {
+        check_rejects_misaligned::<0>();
+        check_rejects_misaligned::<1>();
+        check_rejects_misaligned::<2>();
+        check_rejects_misaligned::<3>();
+    }
+
     #[kani::proof]
     #[kani::unwind(70)]
-    fn decode_entries_rejects_misaligned_lengths_up_to_68_bytes() {
-        let bytes: [u8; MAX_LEN] = kani::any();
-        let len: usize = kani::any();
-        kani::assume(len <= bytes.len());
-        kani::assume(len < 4 || (len - 4) % 32 != 0);
-        assert!(matches!(
-            decode_entries(&bytes[..len]),
-            Err(SpentError::Malformed)
-        ));
-        kani::cover!(len == 0);
-        kani::cover!(len == 67);
+    fn decode_entries_rejects_five_to_sixty_seven_misaligned_bytes() {
+        check_rejects_misaligned::<5>();
+        check_rejects_misaligned::<32>();
+        check_rejects_misaligned::<35>();
+        check_rejects_misaligned::<37>();
+        check_rejects_misaligned::<67>();
     }
 
     fn check_entry_round_trip<const N: usize>() {

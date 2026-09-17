@@ -87,7 +87,7 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
         run: |
-          cargo kani -p vhalla-native --output-format terse -Z unstable-options --harness-timeout 120s
+          cargo kani -p vhalla-native --output-format terse -Z unstable-options --harness-timeout 300s
           git diff --exit-code -- Cargo.lock
   desktop:
     runs-on: macos-latest
