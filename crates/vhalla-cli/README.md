@@ -520,14 +520,36 @@ as soon as the final page is acknowledged at the transport level, so a
 concurrent local writer is only locked out for the serving window itself.
 
 For machines that cannot share a LAN or an existing overlay, `tailcat` is a
-usable external wrapper: it exposes a local UDP port through WireGuard with
+usable external wrapper: it exposes a local port through WireGuard with
 NAT traversal and DERP fallback, needs no account or admin rights, and hands
 the peer an out-of-band `tc` address. Run `tailcat` in front of the serving
 machine's port, forward the route through it, and the requester dials the
-forwarded local address. It changes only how the UDP path is reached — the
+forwarded local address. It changes only how the path is reached — the
 paired channel still authenticates the pinned application keys and every
 frame's signature, so `tailcat` is a connectivity option, not a trust
 decision.
+
+The same wrapper carries a whole validator mesh between members on
+different networks. Each member runs one server for its node port and one
+forward per other member, then lists the local forward ports as its
+`peers`:
+
+```console
+# Member i, every member: publish the node port, share the printed tc
+# address with the group out of band.
+tailcat serve NODE_PORT
+
+# Member j, once per other member i: bind a local port that tunnels to
+# member i's node port, then put 127.0.0.1:FWD_PORT in `peers` (or pass
+# it to `node-init --peers`).
+tailcat forward TC_ADDR_OF_MEMBER_I FWD_PORT:NODE_PORT_OF_MEMBER_I
+```
+
+The node's proposal transport is already sized for this path — 768-byte
+parts paced 20 ms apart, qualified over a DERP-relayed tunnel — so no
+config change is needed, and `VHALLA_TAILCAT=1 cargo test -p vhalla-cli
+--test rooms_node live_mesh_decides_over_tailcat_tunnels` re-qualifies a
+four-member mesh deciding through real tunnels on this machine.
 
 ## Room-directory terminal companion
 

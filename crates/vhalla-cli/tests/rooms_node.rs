@@ -1012,6 +1012,211 @@ mod enabled {
         }
     }
 
+    /// A tailcat subprocess bound to the test — killed on drop.
+    struct Tailcat {
+        child: Child,
+    }
+    impl Drop for Tailcat {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// Spawn `tailcat <args>` with captured output; `addr_file` sets
+    /// TAILCAT_ADDR_FILE so a server publishes its `tc` address for the
+    /// forwards to consume.
+    fn tailcat(temp: &Temp, tag: &str, args: &[String], addr_file: Option<&Path>) -> Tailcat {
+        let mut command = Command::new("tailcat");
+        command.args(["--key=new"]).args(args);
+        if let Some(path) = addr_file {
+            command.env("TAILCAT_ADDR_FILE", path);
+        }
+        let child = command
+            .stdout(Stdio::from(
+                fs::File::create(temp.path(&format!("{tag}.stdout"))).unwrap(),
+            ))
+            .stderr(Stdio::from(
+                fs::File::create(temp.path(&format!("{tag}.stderr"))).unwrap(),
+            ))
+            .spawn()
+            .expect("tailcat must be installed to run this test");
+        Tailcat { child }
+    }
+
+    /// The friends-on-different-networks path: a four-member mesh where
+    /// every peer link runs through a real `tailcat` tunnel — each member
+    /// serves its node port over WireGuard/DERP and reaches the others
+    /// through local `tailcat forward` ports listed as its peers. This
+    /// exercises magicsock NAT traversal and the DERP relay that the
+    /// 768-byte/20 ms proposal pacing was qualified against. It needs
+    /// outbound DERP access and the tailcat binary, so it only runs under
+    /// `VHALLA_TAILCAT=1` — CI has neither.
+    #[test]
+    fn live_mesh_decides_over_tailcat_tunnels() {
+        if std::env::var_os("VHALLA_TAILCAT").is_none() {
+            eprintln!("skipping: set VHALLA_TAILCAT=1 to run the tailcat-tunnel mesh");
+            return;
+        }
+        let _mesh = MESH.lock().unwrap();
+        let temp = Temp::new();
+        let plan = fixture::plan(2, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [70 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+
+        // Each member publishes its node port through a tailcat server
+        // and collects the `tc` address peers will dial.
+        let mut tc_addrs = Vec::new();
+        let mut serves = Vec::new();
+        for (i, member) in members.iter().enumerate() {
+            let addr_file = temp.path(&format!("tc-{i}.addr"));
+            serves.push(tailcat(
+                &temp,
+                &format!("serve-{i}"),
+                &["serve".to_string(), member.port.to_string()],
+                Some(&addr_file),
+            ));
+            tc_addrs.push(addr_file);
+        }
+        wait_for(Duration::from_secs(60), "tailcat addresses", || {
+            tc_addrs
+                .iter()
+                .all(|f| fs::read_to_string(f).is_ok_and(|s| s.starts_with("tc")))
+        });
+        let tc_addrs: Vec<String> = tc_addrs
+            .iter()
+            .map(|f| fs::read_to_string(f).unwrap().trim().to_string())
+            .collect();
+
+        // Member j reaches member i through `tailcat forward tc_i
+        // fwd(j,i):port_i` and lists the local forward port as the peer.
+        // Forward ports are namespaced per member so every binding is
+        // distinct on this one machine; on separate machines each member
+        // could use the same small range.
+        let fwd_base = port_base() + 4000;
+        let fwd_port = |j: usize, i: usize| fwd_base + j * 10 + i;
+        let mut forwards = Vec::new();
+        for j in 0..members.len() {
+            for i in 0..members.len() {
+                if i == j {
+                    continue;
+                }
+                forwards.push(tailcat(
+                    &temp,
+                    &format!("fwd-{j}-{i}"),
+                    &[
+                        "forward".to_string(),
+                        tc_addrs[i].clone(),
+                        format!("{}:{}", fwd_port(j, i), members[i].port),
+                    ],
+                    None,
+                ));
+            }
+        }
+
+        // Scaffold the shared params and member configs with the real
+        // commands; each member's peer list is its forward ports.
+        let key = |m: &Member| hex(PrivateKey::from(m.seed).public_key().as_bytes());
+        let validators: String = members
+            .iter()
+            .map(|m| format!("1:{}:1", key(m)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let eligible: String = plan
+            .genesis
+            .eligible
+            .iter()
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let net = temp.path("network.json");
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            &format!(
+                "{},{},{},{},{}",
+                plan.genesis.policy.base_cost,
+                plan.genesis.policy.window_seconds,
+                plan.genesis.policy.max_in_window,
+                plan.genesis.policy.support_epoch_seconds,
+                plan.genesis.policy.max_lifetime_rooms,
+            ),
+            "--validators",
+            &validators,
+            "--eligible",
+            &eligible,
+        ]);
+        let mut homes = Vec::new();
+        let mut nodes = Vec::new();
+        for (j, member) in members.iter().enumerate() {
+            let home = temp.path(&format!("home-{j}"));
+            let peers = (0..members.len())
+                .filter(|i| *i != j)
+                .map(|i| format!("127.0.0.1:{}", fwd_port(j, i)))
+                .collect::<Vec<_>>()
+                .join(",");
+            rooms_ok(&[
+                "node-init",
+                home.to_str().unwrap(),
+                "--network",
+                net.to_str().unwrap(),
+                "--node-key",
+                &hex(&member.seed),
+                "--port",
+                &member.port.to_string(),
+                "--listen",
+                "127.0.0.1",
+                "--peers",
+                &peers,
+            ]);
+            let social = temp.path(&format!("social-{j}"));
+            seed_social(&social, &plan);
+            nodes.push(spawn_node(
+                &temp,
+                &format!("tc-member-{j}"),
+                &social,
+                &home,
+                &home.join("node.json"),
+            ));
+            homes.push(home);
+        }
+
+        // Two heights decide over the tunnels — the first proves
+        // connectivity, the second proves it survives the parts
+        // re-streaming a churned relay connection forces.
+        for n in 1u64..=2 {
+            fs::write(
+                homes[0].join(format!("intake/h{n}.batch")),
+                plan.batches[&n].encode(),
+            )
+            .unwrap();
+            wait_for(
+                Duration::from_secs(240),
+                &format!("height {n} set-wide over tailcat"),
+                || homes.iter().all(|h| committed(h, n)),
+            );
+        }
+
+        for node in nodes.iter_mut() {
+            let signaled = Command::new("kill")
+                .args(["-INT", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(signaled.success());
+            assert!(node.child.wait().unwrap().success());
+        }
+    }
+
     /// The operator/member scaffolding flow end to end on real commands:
     /// `network-init` authors the shared params once, `node-init` merges
     /// each member's key and networking into a working node.json,
