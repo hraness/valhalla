@@ -62,7 +62,11 @@ mod enabled {
     }
     impl Drop for Temp {
         fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).unwrap();
+            if std::env::var_os("KEEP_TEMP").is_none() {
+                fs::remove_dir_all(&self.0).unwrap();
+            } else {
+                eprintln!("kept {}", self.0.display());
+            }
         }
     }
 
@@ -293,6 +297,14 @@ mod enabled {
         assert_eq!(files.len(), 1, "one canonical update file");
         let path = files[0].path();
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("eligible"));
+        // The stem must survive the node's intake safety filter — a quoted
+        // id in the name would be renamed `.rejected` on first drain.
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        assert!(
+            stem.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+            "intake-safe stem: {stem}"
+        );
         let set =
             vhalla_rooms_consensus::decode_eligible_update(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
@@ -641,6 +653,115 @@ mod enabled {
             assert!(signaled.success());
             assert!(nodes[i].child.wait().unwrap().success());
         }
+    }
+
+    /// An operator-dropped `rooms eligible` update commits as a
+    /// config-only body on the live mesh and governs the NEXT height:
+    /// a batch whose evidence sources were dropped from the set can no
+    /// longer cover its room's charge, so re-prepare fails and the
+    /// intake gains a `.rejected` marker while the height stays
+    /// undecided — only tombstones can ever be proposed for it. This is
+    /// the mid-flight membership change the runbook hands operators.
+    #[test]
+    fn live_mesh_commits_an_eligible_transition() {
+        let _mesh = MESH.lock().unwrap();
+        let temp = Temp::new();
+        let plan = fixture::plan(3, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [60 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        let mut nodes = Vec::new();
+        let mut homes = Vec::new();
+        let mut socials = Vec::new();
+        for (i, member) in members.iter().enumerate() {
+            let (social, home) = member_dirs(&temp, i, member, &members, &plan);
+            homes.push(home.clone());
+            socials.push(social.clone());
+            nodes.push(spawn_member(&temp, i, &social, &home));
+        }
+
+        // Height 1 commits under the genesis eligible set.
+        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        wait_for(Duration::from_secs(150), "height 1 set-wide", || {
+            homes.iter().all(|h| committed(h, 1))
+        });
+
+        // The operator rotates the award-source set mid-flight through
+        // the real command: one fresh owner replaces all sixteen genesis
+        // sources. The file drains on member 0's next proposer round and
+        // the transition decides at height 2.
+        let newcomer = hex(&[0xee; 32]);
+        let updated = rooms_ok(&[
+            "eligible",
+            socials[0].to_str().unwrap(),
+            homes[0].to_str().unwrap(),
+            REALM_HEX,
+            &newcomer,
+        ]);
+        assert_eq!(updated["owners"].as_u64(), Some(1));
+        wait_for(
+            Duration::from_secs(180),
+            "eligible transition at height 2",
+            || homes.iter().all(|h| committed(h, 2)),
+        );
+
+        // The new set governs: batch 3's evidence comes entirely from
+        // the dropped sources, so its room's charge can never be
+        // covered — re-prepare fails on every member and the dropping
+        // member marks the intake file rejected.
+        fs::write(
+            homes[1].join("intake/three.batch"),
+            plan.batches[&3].encode(),
+        )
+        .unwrap();
+        wait_for(
+            Duration::from_secs(180),
+            "post-transition batch rejected at prepare",
+            || homes[1].join("intake/three.rejected").exists(),
+        );
+        assert!(
+            !homes.iter().any(|h| committed(h, 3)),
+            "a value whose charge can never be covered must not decide"
+        );
+
+        // Shut the mesh down cleanly first — a node holds its materialized
+        // `app/rooms` store under a lifetime writer lock, so the shared
+        // reader cannot land until the process exits.
+        for node in &mut nodes {
+            let signaled = Command::new("kill")
+                .args(["-INT", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(signaled.success());
+            assert!(node.child.wait().unwrap().success());
+        }
+
+        // The committed registry shows the genesis-era room and never the
+        // underfunded one — the swap kept state consistent.
+        let listed = rooms_ok(&[
+            "list",
+            socials[0].to_str().unwrap(),
+            homes[0].join("app/rooms").to_str().unwrap(),
+            REALM_HEX,
+        ]);
+        let slugs: Vec<&str> = listed["rooms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["slug"].as_str())
+            .collect();
+        assert!(
+            slugs.contains(&"room-1"),
+            "genesis-era room lists: {listed}"
+        );
+        assert!(
+            !slugs.contains(&"room-3"),
+            "the underfunded room must not list: {listed}"
+        );
     }
 
     /// The operator/member scaffolding flow end to end on real commands:
