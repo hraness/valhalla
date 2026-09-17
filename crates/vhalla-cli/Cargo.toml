@@ -11,7 +11,7 @@ default = []
 experimental-network = ["dep:vhalla-native", "dep:tokio", "dep:vhalla-core", "dep:getrandom"]
 experimental-social = ["vhalla-identity/social", "dep:vhalla-social", "dep:vhalla-social-store", "dep:vhalla-core", "dep:getrandom", "dep:libc", "dep:vhalla-discovery", "dep:vhalla-attention", "dep:vhalla-discovery-store"]
 experimental-rooms = ["experimental-social", "vhalla-identity/rooms", "dep:vhalla-rooms", "dep:vhalla-rooms-store", "dep:sha2"]
-experimental-rooms-node = ["experimental-rooms", "dep:vhalla-rooms-node", "dep:vhalla-rooms-consensus", "dep:serde", "dep:serde_json", "dep:tokio", "dep:getrandom"]
+experimental-rooms-node = ["experimental-rooms", "dep:vhalla-rooms-node", "dep:vhalla-rooms-consensus", "dep:vhalla-journal", "dep:serde", "dep:serde_json", "dep:tokio", "dep:getrandom", "dep:tracing-subscriber"]
 experimental-rooms-tui = ["experimental-rooms-node", "dep:vhalla-rooms-app", "dep:vhalla-rooms-tui"]
 experimental-sync = ["experimental-social", "experimental-network", "dep:vhalla-retrieval"]
 
@@ -35,11 +35,13 @@ vhalla-rooms-store = { path = "../vhalla-rooms-store", optional = true }
 vhalla-discovery-store = { path = "../vhalla-discovery-store", optional = true }
 vhalla-native = { path = "../vhalla-native", optional = true }
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", optional = true }
+vhalla-journal = { path = "../vhalla-journal", optional = true }
 vhalla-rooms-node = { path = "../vhalla-rooms-node", optional = true }
 vhalla-rooms-app = { path = "../vhalla-rooms-app", optional = true }
 vhalla-rooms-tui = { path = "../vhalla-rooms-tui", optional = true }
 vhalla-retrieval = { path = "../vhalla-retrieval", optional = true }
 tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "time", "signal"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
 getrandom = "0.3"

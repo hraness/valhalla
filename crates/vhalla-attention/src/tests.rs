@@ -1,8 +1,11 @@
 //! Signed lifecycle and private attention regression fixtures.
 use super::*;
+use alloc::format;
+use alloc::string::ToString;
 use alloc::vec;
 use ed25519_dalek::SigningKey;
-use proptest::prelude::*;
+use hegel::generators as gs;
+use hegel::TestCase;
 use vhalla_social::{
     archive::{Budget, Limits},
     Actor, Body, ControlAction, Facet, FacetKind, FacetedText, MentionTarget, Operation, Placement,
@@ -736,23 +739,71 @@ fn unknown_precision_tracks_affected_source_owners_before_bounded_global_fallbac
     );
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn signed_archive_reordering_and_replay_produce_identical_notification_ids(order in prop::collection::vec(any::<u8>(),8..24)) {
-        let mut f=Fixture::new();let owner=f.owner(1);let source=f.owner(2);let mut writer=f.agent(source,3);
-        for _ in 0..4 {f.emit(&mut writer,mentioned(MentionTarget::Owner(owner)));}f.seal(source,&[writer.previous.unwrap()]);
-        let state=Attention::new(f.reader(owner,None));let policy=selected(vec![source]);let expected=page(&state,&f,&policy);
-        let mut records:Vec<_>=f.raw.iter().enumerate().collect();records.sort_by_key(|(index,_)|(order[*index%order.len()],core::cmp::Reverse(*index)));
-        let mut other=Archive::new(REALM,f.archive.limits()).unwrap();for (_,raw) in records.iter().chain(records.iter().rev()) {other.ingest(raw,&mut Budget::new(1,MAX_RECORD_BYTES).unwrap()).unwrap();}
-        let actual=state.notifications(&other,10,&policy,0,64).unwrap();prop_assert_eq!(expected.entries(),actual.entries());
-        let read=state.acknowledge(&expected,&f.archive).unwrap();prop_assert_eq!(read.notifications(&other,10,&policy,0,64).unwrap().counts(),Counts::default());
+/// Reorder-and-replay ingest under Hegel's draw model: the generated order
+/// permutes re-ingestion into a second archive, then a reversed replay
+/// exercises dedup while the archive mutates across steps.
+#[hegel::test(test_cases = 32)]
+fn signed_archive_reordering_and_replay_produce_identical_notification_ids(tc: TestCase) {
+    let order = tc.draw(gs::vecs(gs::integers::<u8>()).min_size(8).max_size(23));
+    let mut f = Fixture::new();
+    let owner = f.owner(1);
+    let source = f.owner(2);
+    let mut writer = f.agent(source, 3);
+    for _ in 0..4 {
+        f.emit(&mut writer, mentioned(MentionTarget::Owner(owner)));
     }
-    #[test]
-    fn private_roundtrip_unknown_and_decoder_damage_are_bounded(n in 0usize..MAX_MARKS,flip in 0usize..1000) {
-        let mut f=Fixture::new();let owner=f.owner(1);let source=f.owner(2);let mut state=Attention::new(f.reader(owner,None));
-        for index in 0..n {let mut bytes=[0;32];bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());let event=RecordId::from_bytes(bytes);let group=Group {recipient:owner,source_owner:source,target:event,reason:Reason::Mention};state.selected.groups.insert(group,event);state.selected.updates.insert(Update {group,event});}
-        let bytes=state.encode();prop_assert_eq!(&Attention::decode(&bytes,state.reader()).unwrap(),&state);let mut damaged=bytes.clone();let pos=flip%damaged.len();damaged[pos]^=1;prop_assert!(Attention::decode(&damaged,state.reader()).is_err());
-        let unknown=state.forget_exact_marks().unwrap();prop_assert_eq!(unknown.required_sources(),state.required_sources());
+    f.seal(source, &[writer.previous.unwrap()]);
+    let state = Attention::new(f.reader(owner, None));
+    let policy = selected(vec![source]);
+    let expected = page(&state, &f, &policy);
+    let mut records: Vec<_> = f.raw.iter().enumerate().collect();
+    records.sort_by_key(|(index, _)| (order[*index % order.len()], core::cmp::Reverse(*index)));
+    let mut other = Archive::new(REALM, f.archive.limits()).unwrap();
+    for (_, raw) in records.iter().chain(records.iter().rev()) {
+        other
+            .ingest(raw, &mut Budget::new(1, MAX_RECORD_BYTES).unwrap())
+            .unwrap();
     }
+    let actual = state.notifications(&other, 10, &policy, 0, 64).unwrap();
+    assert_eq!(expected.entries(), actual.entries());
+    let read = state.acknowledge(&expected, &f.archive).unwrap();
+    assert_eq!(
+        read.notifications(&other, 10, &policy, 0, 64)
+            .unwrap()
+            .counts(),
+        Counts::default()
+    );
+}
+
+/// Private-state codec round-trip under a drawn mark count: each mark is
+/// inserted inside a loop bounded by a generated occupancy.
+#[hegel::test(test_cases = 32)]
+fn private_roundtrip_unknown_and_decoder_damage_are_bounded(tc: TestCase) {
+    let n = tc.draw(gs::integers::<usize>().max_value(MAX_MARKS - 1));
+    let flip = tc.draw(gs::integers::<usize>().max_value(999));
+    let mut f = Fixture::new();
+    let owner = f.owner(1);
+    let source = f.owner(2);
+    let mut state = Attention::new(f.reader(owner, None));
+    for index in 0..n {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
+        let event = RecordId::from_bytes(bytes);
+        let group = Group {
+            recipient: owner,
+            source_owner: source,
+            target: event,
+            reason: Reason::Mention,
+        };
+        state.selected.groups.insert(group, event);
+        state.selected.updates.insert(Update { group, event });
+    }
+    let bytes = state.encode();
+    assert_eq!(&Attention::decode(&bytes, state.reader()).unwrap(), &state);
+    let mut damaged = bytes.clone();
+    let pos = flip % damaged.len();
+    damaged[pos] ^= 1;
+    assert!(Attention::decode(&damaged, state.reader()).is_err());
+    let unknown = state.forget_exact_marks().unwrap();
+    assert_eq!(unknown.required_sources(), state.required_sources());
 }

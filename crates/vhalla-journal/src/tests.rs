@@ -1,6 +1,8 @@
 //! Fault-injection and recovery tests for the durable commit journal.
 
 use super::*;
+use hegel::{generators as gs, HealthCheck, TestCase};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn fixture() -> PathBuf {
@@ -358,5 +360,287 @@ fn restart_never_continues_from_uncommitted_memory() {
     assert_eq!(journal.commit(&other).unwrap(), Outcome::Committed);
     let recovered = journal.recover().unwrap();
     assert_eq!(recovered.pin.next, [6; 32]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The outcome of one commit attempt as the caller observes it. `Crashed`
+/// and `Io` are uncertain: the attempt may or may not have published, and
+/// only recovery can say which.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Committed,
+    AlreadyCommitted,
+    Conflict { expected: [u8; 32], found: [u8; 32] },
+    Busy,
+    Crashed,
+    Io,
+}
+
+/// The durable effects one commit attempt left behind, derived from which
+/// protocol steps the fault program allowed to run.
+#[derive(Default)]
+struct Effects {
+    bundle_written: bool,
+    marker_written: bool,
+    pin_tmp_written: bool,
+    renamed: bool,
+}
+
+/// Every step `commit` can attempt, in protocol order.
+const FAULTABLE_STEPS: [Step; 10] = [
+    Step::Lock,
+    Step::ReadPin,
+    Step::CreateBundle,
+    Step::SyncBundle,
+    Step::WriteHeightMarker,
+    Step::SyncHeightMarker,
+    Step::WritePinTmp,
+    Step::SyncPinTmp,
+    Step::RenamePin,
+    Step::SyncDir,
+];
+
+/// Every fault kind a step can be programmed with; `Pass` draws a clean run.
+const FAULT_KINDS: [Fault; 4] = [
+    Fault::Pass,
+    Fault::CrashBefore,
+    Fault::CrashAfter,
+    Fault::FailIo,
+];
+
+/// A bundle distinct from every other `fresh_bundle` call: `seq` feeds both
+/// the bound `next` frontier and the hashed fields, so ids never collide.
+fn fresh_bundle(seq: u64, predecessor: [u8; 32], height: u64) -> Bundle {
+    let mut next = [0u8; 32];
+    next[..8].copy_from_slice(&seq.to_le_bytes());
+    bundle(predecessor, next, height, &format!("gen-{seq}"))
+}
+
+/// Replays `commit` against the model pin under the drawn fault program.
+/// Returns the verdict the caller must observe, the exact step sequence the
+/// store must log (a step is logged even when its fault suppresses the
+/// effect), and the durable effects that ran. This is the same decision
+/// procedure as `Journal::commit`: lock, read pin, reconcile an already
+/// published bundle, reject a mismatched predecessor or height, then the
+/// create/sync/marker/pin-tmp/rename/dir-sync sequence.
+fn simulate(pin: Pin, bundle: &Bundle, fstep: Step, fault: Fault) -> (Verdict, Vec<Step>, Effects) {
+    let mut log = Vec::new();
+    let mut fx = Effects::default();
+    // The lock maps every fault to `Busy`; even `CrashAfter` releases the
+    // handle it acquired, so nothing here is observable on disk.
+    log.push(Step::Lock);
+    if fstep == Step::Lock && fault != Fault::Pass {
+        return (Verdict::Busy, log, fx);
+    }
+    log.push(Step::ReadPin);
+    if fstep == Step::ReadPin && fault != Fault::Pass {
+        let verdict = if fault == Fault::FailIo {
+            Verdict::Io
+        } else {
+            Verdict::Crashed
+        };
+        return (verdict, log, fx);
+    }
+    if pin.bundle == bundle.id() {
+        // The reconcile path only re-syncs the directory.
+        log.push(Step::SyncDir);
+        if fstep == Step::SyncDir && fault != Fault::Pass {
+            let verdict = if fault == Fault::FailIo {
+                Verdict::Io
+            } else {
+                Verdict::Crashed
+            };
+            return (verdict, log, fx);
+        }
+        return (Verdict::AlreadyCommitted, log, fx);
+    }
+    if pin.next != bundle.predecessor() || bundle.height() != pin.height + 1 {
+        return (
+            Verdict::Conflict {
+                expected: bundle.predecessor(),
+                found: pin.next,
+            },
+            log,
+            fx,
+        );
+    }
+    for step in &FAULTABLE_STEPS[2..] {
+        log.push(*step);
+        // The step's effect lands unless the drawn fault suppresses it.
+        if fstep != *step || matches!(fault, Fault::Pass | Fault::CrashAfter) {
+            match step {
+                Step::CreateBundle => fx.bundle_written = true,
+                Step::WriteHeightMarker => fx.marker_written = true,
+                Step::WritePinTmp => fx.pin_tmp_written = true,
+                Step::RenamePin => fx.renamed = true,
+                _ => {}
+            }
+        }
+        if fstep == *step && fault != Fault::Pass {
+            let verdict = if fault == Fault::FailIo {
+                Verdict::Io
+            } else {
+                Verdict::Crashed
+            };
+            return (verdict, log, fx);
+        }
+    }
+    (Verdict::Committed, log, fx)
+}
+
+/// Generative companion to the hand-picked fault-injection tests above: an
+/// interleaved draw of commit attempts — fresh bundles extending the live
+/// frontier, retries of uncertain or already-acknowledged bundles, rivals
+/// extending stale frontiers, and height gaps — each crossed with a drawn
+/// single-step fault program. After every attempt the oracle re-reads
+/// durable state and requires the semantics the deterministic tests prove:
+///
+/// * a commit is atomic: recovery never fails closed and never reports a
+///   half-state — the pin is either the previous frontier or exactly the
+///   attempted bundle's pin;
+/// * the caller's verdict matches the model, so an acknowledged commit is
+///   exactly the pin recovery finds, and a crashed or failed attempt
+///   retries to `Committed`/`AlreadyCommitted` while its predecessor still
+///   holds but is refused as `Conflict` once the frontier moved past;
+/// * the committed set is exactly the acknowledged chain: `at_height`
+///   serves the acknowledged bundle at every height up to the pin and
+///   nothing above it, while orphans, a dropped `pin.tmp`, and unpublished
+///   height markers are exactly the residue the drawn schedule produced.
+///
+/// Each case does real filesystem I/O per attempt, so only the TooSlow
+/// health check is suppressed.
+#[hegel::test(test_cases = 64, suppress_health_check = [HealthCheck::TooSlow])]
+fn interleaved_faults_preserve_commit_recovery_semantics(tc: TestCase) {
+    let dir = fixture();
+    // The durable model: the committed pin, the acknowledged chain by
+    // height, every frontier ever held (stale rivals extend one), the
+    // bundle files and height markers on disk, and whether `pin.tmp` is
+    // published-pending.
+    let mut pin = genesis_pin();
+    let mut history = vec![pin];
+    let mut committed: BTreeMap<u64, [u8; 32]> = BTreeMap::new();
+    let mut files = BTreeSet::new();
+    let mut markers: BTreeMap<u64, [u8; 32]> = BTreeMap::new();
+    let mut pin_tmp = false;
+    // Every bundle built, so retries redraw by index; `uncertain` holds the
+    // pool indices whose last attempt died mid-protocol or failed and whose
+    // retry must still complete — either the bundle published or its
+    // predecessor is still the frontier.
+    let mut pool: Vec<Bundle> = Vec::new();
+    let mut uncertain: Vec<usize> = Vec::new();
+    let mut seq = 0u64;
+
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
+    for _ in 0..steps {
+        let pick = tc.draw(gs::integers::<usize>().max_value(99));
+        let index = if pick < 45 {
+            seq += 1;
+            pool.push(fresh_bundle(seq, pin.next, pin.height + 1));
+            pool.len() - 1
+        } else if pick < 65 && !uncertain.is_empty() {
+            // Retry after a crash: the same logical bundle must complete.
+            uncertain[tc.draw(gs::integers::<usize>().max_value(uncertain.len() - 1))]
+        } else if pick < 80 && !pool.is_empty() {
+            // Any earlier bundle: an ancestor or a superseded candidate
+            // conflicts, the tip reconciles to `AlreadyCommitted`.
+            tc.draw(gs::integers::<usize>().max_value(pool.len() - 1))
+        } else if pick < 90 && history.len() > 1 {
+            // A rival extending a stale frontier can never publish now.
+            let i = tc.draw(gs::integers::<usize>().max_value(history.len() - 2));
+            seq += 1;
+            pool.push(fresh_bundle(seq, history[i].next, history[i].height + 1));
+            pool.len() - 1
+        } else if pick < 95 {
+            // A height gap at the live frontier is always a conflict.
+            seq += 1;
+            pool.push(fresh_bundle(seq, pin.next, pin.height + 2));
+            pool.len() - 1
+        } else {
+            seq += 1;
+            pool.push(fresh_bundle(seq, pin.next, pin.height + 1));
+            pool.len() - 1
+        };
+        let bundle = &pool[index];
+
+        let fstep = FAULTABLE_STEPS[tc.draw(gs::integers::<usize>().max_value(9))];
+        let fault = FAULT_KINDS[tc.draw(gs::integers::<usize>().max_value(3))];
+        let (want, want_log, fx) = simulate(pin, bundle, fstep, fault);
+
+        let journal = fault_journal(&dir, &[(fstep, fault)]);
+        let got = match journal.commit(bundle) {
+            Ok(Outcome::Committed) => Verdict::Committed,
+            Ok(Outcome::AlreadyCommitted) => Verdict::AlreadyCommitted,
+            Err(JournalError::Conflict { expected, found }) => {
+                Verdict::Conflict { expected, found }
+            }
+            Err(JournalError::Busy) => Verdict::Busy,
+            Err(JournalError::Crashed) => Verdict::Crashed,
+            Err(JournalError::Io(_)) => Verdict::Io,
+            Err(e) => panic!("commit failed outside the model: {e}"),
+        };
+        assert_eq!(got, want, "commit verdict diverged from the model");
+        assert_eq!(
+            *journal.store.log.borrow(),
+            want_log,
+            "protocol steps attempted out of order"
+        );
+        drop(journal);
+        if matches!(got, Verdict::Crashed | Verdict::Io) {
+            uncertain.push(index);
+        }
+
+        // Apply the durable effects the drawn fault schedule permitted.
+        if fx.bundle_written {
+            files.insert(bundle.id());
+        }
+        if fx.marker_written {
+            markers.insert(bundle.height(), bundle.id());
+        }
+        if fx.pin_tmp_written {
+            pin_tmp = true;
+        }
+        if fx.renamed {
+            pin_tmp = false;
+            pin = Pin {
+                predecessor: bundle.predecessor(),
+                next: bundle.next(),
+                bundle: bundle.id(),
+                height: bundle.height(),
+            };
+            committed.insert(bundle.height(), bundle.id());
+            history.push(pin);
+        }
+
+        // Recovery must never report a half-state: the pin is exactly the
+        // last published one, and the residue is exactly what ran.
+        let recovered = fs_journal(&dir).recover().unwrap();
+        assert_eq!(recovered.pin, pin);
+        let want_orphans: Vec<[u8; 32]> = files
+            .iter()
+            .copied()
+            .filter(|id| *id != pin.bundle)
+            .collect();
+        assert_eq!(recovered.orphans, want_orphans);
+        assert_eq!(recovered.dropped_tmp, pin_tmp);
+        let want_dropped: Vec<u64> = markers
+            .keys()
+            .copied()
+            .filter(|h| *h > pin.height)
+            .collect();
+        assert_eq!(recovered.dropped_heights, want_dropped);
+        pin_tmp = false;
+        markers.retain(|h, _| *h <= pin.height);
+        uncertain.retain(|&i| {
+            pool[i].id() == pin.bundle
+                || (pool[i].predecessor() == pin.next && pool[i].height() == pin.height + 1)
+        });
+
+        // The committed set is exactly the acknowledged chain, per height.
+        let reader = fs_journal(&dir);
+        for h in 1..=pin.height {
+            assert_eq!(reader.at_height(h).unwrap(), Some(committed[&h]));
+        }
+        assert_eq!(reader.at_height(pin.height + 1).unwrap(), None);
+    }
     let _ = fs::remove_dir_all(&dir);
 }
