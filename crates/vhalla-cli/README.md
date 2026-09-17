@@ -519,20 +519,21 @@ A stale `EXPIRY` is rejected locally before any dial. The serve window ends
 as soon as the final page is acknowledged at the transport level, so a
 concurrent local writer is only locked out for the serving window itself.
 
-For machines that cannot share a LAN or an existing overlay, `tailcat` is a
-usable external wrapper: it exposes a local port through WireGuard with
-NAT traversal and DERP fallback, needs no account or admin rights, and hands
-the peer an out-of-band `tc` address. Run `tailcat` in front of the serving
-machine's port, forward the route through it, and the requester dials the
-forwarded local address. It changes only how the path is reached — the
-paired channel still authenticates the pinned application keys and every
-frame's signature, so `tailcat` is a connectivity option, not a trust
-decision.
+For machines that cannot share a LAN or an existing overlay, the
+requester needs a UDP-capable path to the provider — QUIC cannot ride a
+TCP-only tunnel. A shared Tailscale tailnet (each member's node address
+becomes a routable `100.x` overlay IP) or a LAN reach is the intended
+route; the serving `LISTEN_IP` then names the overlay interface. Whatever
+carries the datagrams changes only how the path is reached — the paired
+channel still authenticates the pinned application keys and every frame's
+signature, so the tunnel is a connectivity option, not a trust decision.
 
-The same wrapper carries a whole validator mesh between members on
-different networks. Each member runs one server for its node port and one
-forward per other member, then lists the local forward ports as its
-`peers`:
+For the validator mesh the answer is simpler, because libp2p peers are
+plain TCP and `tailcat` forwards TCP: it tunnels a local port through
+WireGuard with NAT traversal and DERP fallback, needs no account or admin
+rights, and hands the peer an out-of-band `tc` address. Each member runs
+one server for its node port and one forward per other member, then lists
+the local forward ports as its `peers`:
 
 ```console
 # Member i, every member: publish the node port, share the printed tc
