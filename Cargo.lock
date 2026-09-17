@@ -5605,6 +5605,7 @@ version = "0.0.0"
 dependencies = [
  "crossterm",
  "getrandom 0.3.4",
+ "hegeltest",
  "ratatui",
  "sha2 0.10.9",
  "vhalla-core",
