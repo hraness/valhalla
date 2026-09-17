@@ -38,11 +38,14 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   eligible NODE_HOME OWNER64,... (build: --features experimental-rooms-node)
   network-init OUT --realm R32 --directory D64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]  (build: --features experimental-rooms-node)
   node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers HOST:PORT,...]  (build: --features experimental-rooms-node)
+  network-extend IN OUT --from HEIGHT --validators KEY:POWER,...  (build: --features experimental-rooms-node)
+  node-update NODE_HOME --network FILE  (build: --features experimental-rooms-node)
   tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
   submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
   submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
   submit REPLICA_HOME NODE_HOME archive OWNER_KEYDIR SLUG --config FILE
   pending REPLICA_HOME NODE_HOME --config FILE
+  status REPLICA_HOME NODE_HOME --config FILE
 SOCIAL_STORE is an existing `vhalla social` store; ROOMS_STORE is created by `init`.
 IDs are full hex. Slot and charge are computed from the current policy quote.
 Read paging: --limit N (1..64). Output is ASCII JSON. The directory clock is
@@ -61,6 +64,11 @@ port, listen and peers into NODE_HOME/node.json and prints the
 fingerprint to compare across the set. `node-check` runs the full node
 decode path and reports the genesis fingerprint, seeded archive root,
 per-set quorum arithmetic and whether the node key votes.
+`network-extend` copies a shared-params file plus one complete
+replacement validator set activating at a future height; `node-update`
+merges that file into a member's existing node.json - keeping its key,
+port and peers - and refuses any change to activations at or below the
+committed height. A restarted node picks the new schedule up.
 Producers submit canonical batches by dropping *.batch files into
 NODE_HOME/intake/; operators evolve the eligible set by dropping *.eligible
 files there - `rooms eligible NODE_HOME OWNER64,...` writes one. Committed
@@ -74,7 +82,7 @@ pub(crate) struct Args {
     pub(crate) realm: RealmId,
     values: Vec<String>,
     now: u64,
-    limit: usize,
+    pub(crate) limit: usize,
     pub(crate) config: Option<String>,
 }
 impl Args {
@@ -198,7 +206,7 @@ fn identity(path: &str) -> Result<Identity, String> {
     Identity::open(path).map_err(|e| format!("identity: {e:?}"))
 }
 
-fn rooms_error(error: RegistryError) -> String {
+pub(crate) fn rooms_error(error: RegistryError) -> String {
     format!("registry: {error:?}")
 }
 
@@ -313,6 +321,26 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             return Err("rooms node-init needs --features experimental-rooms-node".into());
         }
     }
+    if raw.get(1).is_some_and(|s| s == "network-extend") {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_node::network_extend(&raw[2..]);
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err("rooms network-extend needs --features experimental-rooms-node".into());
+        }
+    }
+    if raw.get(1).is_some_and(|s| s == "node-update") {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_node::node_update(&raw[2..]);
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err("rooms node-update needs --features experimental-rooms-node".into());
+        }
+    }
     let args = Args::parse(raw)?;
     if args.command == "node" {
         #[cfg(feature = "experimental-rooms-node")]
@@ -375,15 +403,20 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             ));
         }
     }
-    if args.command == "pending" {
+    if matches!(args.command.as_str(), "pending" | "status") {
         #[cfg(feature = "experimental-rooms-tui")]
         {
-            return crate::rooms_submit::pending(&args);
+            return if args.command == "pending" {
+                crate::rooms_submit::pending(&args)
+            } else {
+                crate::rooms_submit::status(&args)
+            };
         }
         #[cfg(not(feature = "experimental-rooms-tui"))]
         {
             return Err(format!(
-                "rooms pending needs --features experimental-rooms-tui{}",
+                "rooms {} needs --features experimental-rooms-tui{}",
+                args.command,
                 if args.config.is_some() {
                     " (config ignored)"
                 } else {

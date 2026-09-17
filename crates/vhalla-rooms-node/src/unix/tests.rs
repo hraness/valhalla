@@ -2856,7 +2856,9 @@ fn wal_format_rejects_foreign_marker() {
 /// distinct, an identical slot reproduces its id, and the value is always
 /// empty — a shared or nonempty tombstone is what let an empty value commit.
 /// Drawn rounds stay below u32::MAX, which `tombstone` reserves for Nil.
-#[hegel::test(test_cases = 64)]
+/// Each case builds three real Apps (store I/O), so generation time
+/// scales with machine load — TooSlow suppression keeps coverage fixed.
+#[hegel::test(test_cases = 64, suppress_health_check = [HealthCheck::TooSlow])]
 fn tombstone_ids_stay_injected_across_drawn_slots(tc: TestCase) {
     let (keys, set) = validators(3);
     let apps: Vec<App> = keys

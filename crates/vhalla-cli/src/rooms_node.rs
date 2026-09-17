@@ -11,6 +11,7 @@ use std::ffi::OsString;
 
 use serde::Deserialize;
 use vhalla_core::RealmId;
+use vhalla_journal::Store as _;
 use vhalla_rooms::{registry::DirectoryPolicy, DirectoryId};
 use vhalla_rooms_node::{
     service_config, NodeSpec, PrivateKey, PublicKey, RoomNode, RoomValidator, RoomValidatorSet,
@@ -79,7 +80,7 @@ struct NetworkFile {
     validators: Vec<ValidatorEntry>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ValidatorEntry {
     /// Activation height.
     from: u64,
@@ -300,6 +301,9 @@ fn build_validator_sets(
 ) -> Result<BTreeMap<u64, RoomValidatorSet>, String> {
     let mut grouped: BTreeMap<u64, Vec<RoomValidator>> = BTreeMap::new();
     for entry in entries {
+        if entry.from == 0 {
+            return Err("validator activation heights start at 1".into());
+        }
         let key =
             PublicKey::from_bytes(hex32(&entry.key)?).map_err(|e| format!("validator key: {e}"))?;
         if entry.power == 0 {
@@ -316,22 +320,30 @@ fn build_validator_sets(
         .collect())
 }
 
-/// Parse the config file into typed values and read the genesis archive
-/// under a shared hold — identical to what `node` would do, so `check`
-/// catches every boot-time failure short of opening the port.
-fn load(args: &Args) -> Result<Loaded, String> {
-    let path = args.config.as_deref().ok_or("node needs --config FILE")?;
-    let raw = std::fs::read(path).map_err(|e| format!("config: {e}"))?;
-    if raw.len() > 64 * 1024 {
-        return Err("config exceeds 64KiB".into());
-    }
-    let file: NodeFile = serde_json::from_slice(&raw).map_err(|e| format!("config JSON: {e}"))?;
-    if let Some(realm) = &file.realm {
-        if crate::rooms::hex128(realm)? != args.realm.0 {
-            return Err("config realm does not match the REALM argument".into());
-        }
-    }
+/// The typed genesis inputs of a `node.json` — everything `load` decodes
+/// except the social archive, so `node-update` re-validates the shared
+/// fields without opening the store.
+struct DecodedNode {
+    node_key: PrivateKey,
+    /// Activation height → sorted, deduplicated validator set.
+    validator_sets: BTreeMap<u64, RoomValidatorSet>,
+    limits: Limits,
+    policy: DirectoryPolicy,
+    eligible: Vec<OwnerId>,
+    directory: DirectoryId,
+    /// The file's optional shared realm, decoded when present.
+    realm: Option<u128>,
+}
 
+/// The shared decode of a `NodeFile`: identical for `node`, `node-check`
+/// and `node-update`, so a config any of them accepts is one all of them
+/// accept.
+fn decode_node(file: &NodeFile) -> Result<DecodedNode, String> {
+    let realm = file
+        .realm
+        .as_deref()
+        .map(crate::rooms::hex128)
+        .transpose()?;
     let node_key = PrivateKey::from(hex32(&file.node_key)?);
     let validator_sets = build_validator_sets(&file.validators)?;
     if validator_sets.is_empty() {
@@ -368,26 +380,54 @@ fn load(args: &Args) -> Result<Loaded, String> {
         return Err("config names too many eligible owners".into());
     }
     let directory = DirectoryId::from_bytes(hex32(&file.directory)?);
-
-    // Genesis seeds from the committed social snapshot, decoded under the
-    // configured limits — the archive's own bounds are a genesis parameter,
-    // not the reader's default. A shared read waits out a concurrent owner
-    // command instead of dying on its exclusive lock.
-    let archive = read_archive(&args.social_store, args.realm, limits).map_err(|e| match e {
-        vhalla_social_store::Error::RecoveryRequired => {
-            "social store requires explicit social recover first".to_string()
-        }
-        e => e.to_string(),
-    })?;
-    Ok(Loaded {
-        file,
+    Ok(DecodedNode {
         node_key,
         validator_sets,
         limits,
         policy,
         eligible,
-        archive,
         directory,
+        realm,
+    })
+}
+
+/// Parse the config file into typed values and read the genesis archive
+/// under a shared hold — identical to what `node` would do, so `check`
+/// catches every boot-time failure short of opening the port.
+fn load(args: &Args) -> Result<Loaded, String> {
+    let path = args.config.as_deref().ok_or("node needs --config FILE")?;
+    let raw = std::fs::read(path).map_err(|e| format!("config: {e}"))?;
+    if raw.len() > 64 * 1024 {
+        return Err("config exceeds 64KiB".into());
+    }
+    let file: NodeFile = serde_json::from_slice(&raw).map_err(|e| format!("config JSON: {e}"))?;
+    let decoded = decode_node(&file)?;
+    if let Some(realm) = decoded.realm {
+        if realm != args.realm.0 {
+            return Err("config realm does not match the REALM argument".into());
+        }
+    }
+
+    // Genesis seeds from the committed social snapshot, decoded under the
+    // configured limits — the archive's own bounds are a genesis parameter,
+    // not the reader's default. A shared read waits out a concurrent owner
+    // command instead of dying on its exclusive lock.
+    let archive =
+        read_archive(&args.social_store, args.realm, decoded.limits).map_err(|e| match e {
+            vhalla_social_store::Error::RecoveryRequired => {
+                "social store requires explicit social recover first".to_string()
+            }
+            e => e.to_string(),
+        })?;
+    Ok(Loaded {
+        file,
+        node_key: decoded.node_key,
+        validator_sets: decoded.validator_sets,
+        limits: decoded.limits,
+        policy: decoded.policy,
+        eligible: decoded.eligible,
+        archive,
+        directory: decoded.directory,
     })
 }
 
@@ -541,7 +581,7 @@ pub fn check(args: &Args) -> Result<(), String> {
     }
     if votes_from.is_none() {
         warnings.push(
-            "node_key is not in any validator set — the node follows but never votes".to_string(),
+            "node_key is not in any validator set - the node follows but never votes".to_string(),
         );
     }
     println!(
@@ -920,11 +960,60 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     // The node file carries realm so `node`/`node-check` reject a REALM
     // argument that disagrees with the shared params it was scaffolded
     // from.
-    let node = serde_json::json!({
-        "node_key": json::hex(&seed),
+    let node = node_json(
+        &json::hex(&seed),
+        port,
+        listen.as_deref(),
+        &peer_list,
+        &network,
+    );
+    std::fs::create_dir_all(home.join("intake")).map_err(|e| format!("node home: {e}"))?;
+    let tmp = home.join(format!(".node.json.tmp-{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&node).unwrap())
+        .map_err(|e| format!("write: {e}"))?;
+    std::fs::rename(&tmp, &target).map_err(|e| format!("write: {e}"))?;
+    let mut warnings = Vec::new();
+    if votes_from.is_none() {
+        warnings.push(
+            "this key is not in the validator set - the node follows but never votes; share public_key with the operator to join"
+                .to_string(),
+        );
+    }
+    println!(
+        "{}",
+        json::object(vec![
+            ("config", json::string(&target.display().to_string())),
+            ("public_key", json::string(&json::hex(public.as_bytes()))),
+            ("genesis", json::id(&genesis)),
+            ("node_key_generated", generated.to_string()),
+            (
+                "node_key_votes_from",
+                votes_from.map_or("null".into(), |f| f.to_string())
+            ),
+            (
+                "warnings",
+                json::array(warnings.iter().map(|w| json::string(w)))
+            ),
+        ])
+    );
+    Ok(())
+}
+
+/// The `node.json` object `node-init` and `node-update` both emit: local
+/// fields verbatim, every shared genesis field from the decoded network
+/// params so the file is exactly what `node`/`node-check` read back.
+fn node_json(
+    node_key: &str,
+    port: usize,
+    listen: Option<&str>,
+    peers: &[String],
+    network: &Network,
+) -> serde_json::Value {
+    serde_json::json!({
+        "node_key": node_key,
         "port": port,
-        "listen": listen.as_deref().unwrap_or("127.0.0.1"),
-        "peers": peer_list,
+        "listen": listen.unwrap_or("127.0.0.1"),
+        "peers": peers,
         "realm": json::hex(&network.realm.0.to_be_bytes()),
         "validators": network
             .validator_sets
@@ -961,26 +1050,223 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
             "pending": network.limits.pending,
             "pending_per_signer": network.limits.pending_per_signer,
         },
-    });
-    std::fs::create_dir_all(home.join("intake")).map_err(|e| format!("node home: {e}"))?;
+    })
+}
+
+/// The `network-extend` subcommand — the operator-side half of a
+/// validator-set rotation. Copies an existing shared-params file and
+/// appends one complete replacement set activating at `--from`, so the
+/// operator never re-types the fields that must stay identical.
+///
+/// `vhalla rooms network-extend IN OUT --from HEIGHT --validators KEY:POWER,...`
+pub fn network_extend(raw: &[OsString]) -> Result<(), String> {
+    let (positional, flags) = flags(raw, &["from", "validators"])?;
+    if positional.len() != 2 {
+        return Err("network-extend takes IN OUT".into());
+    }
+    let out = std::path::Path::new(&positional[1]);
+    if out.exists() {
+        return Err("network-extend never overwrites an existing file".into());
+    }
+    let network = read_network(&positional[0])?;
+    let from: u64 = flags
+        .get("from")
+        .ok_or("network-extend needs --from HEIGHT")?
+        .parse()
+        .map_err(|_| "invalid --from HEIGHT")?;
+    if network.file.validators.iter().any(|v| v.from == from) {
+        return Err(format!(
+            "network already schedules an activation at height {from}"
+        ));
+    }
+    // The activation names the complete set from HEIGHT on — joining keys
+    // add, absent keys leave, powers restate. `parse_validators` wants a
+    // FROM field per entry; prepend it so the one --from applies to all.
+    let set = flags
+        .get("validators")
+        .ok_or("network-extend needs --validators KEY:POWER,...")?;
+    let entries = parse_validators(
+        &set.split(',')
+            .map(|entry| format!("{from}:{entry}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    )?;
+    let mut file = NetworkFile {
+        realm: network.file.realm.clone(),
+        directory: network.file.directory.clone(),
+        policy: network.file.policy,
+        eligible: network.file.eligible.clone(),
+        limits: network.file.limits,
+        validators: network.file.validators.clone(),
+    };
+    file.validators.extend(entries);
+    let network = decode_network(file)?;
+    std::fs::write(out, network_json(&network.file)).map_err(|e| format!("write: {e}"))?;
+    let genesis = genesis_fingerprint(
+        network.realm,
+        &network.directory,
+        &network.policy,
+        &network.eligible,
+        &network.limits,
+        &network.validator_sets,
+    );
+    let set = &network.validator_sets[&from];
+    let total: u64 = set.validators.iter().map(|v| v.power).sum();
+    let (needed, tolerated) = quorum(total);
+    println!(
+        "{}",
+        json::object(vec![
+            ("wrote", json::string(&out.display().to_string())),
+            ("genesis", json::id(&genesis)),
+            ("activation_from", from.to_string()),
+            ("validators", set.validators.len().to_string()),
+            ("quorum_power", needed.to_string()),
+            ("absent_power_tolerated", tolerated.to_string()),
+        ])
+    );
+    Ok(())
+}
+
+/// The highest committed height under a node home's journal, or 0 before
+/// the first decision — the bound below which validator activations are
+/// immutable history.
+fn committed_height(journal: &std::path::Path) -> Result<u64, String> {
+    if !journal.is_dir() {
+        return Ok(0);
+    }
+    let markers = vhalla_journal::FsStore
+        .list_height_markers(journal)
+        .map_err(|e| format!("journal heights: {e:?}"))?;
+    Ok(markers.into_iter().max().unwrap_or(0))
+}
+
+/// The `node-update` subcommand — the member-side half of a rotation.
+/// Replaces `NODE_HOME/node.json`'s shared fields with an extended
+/// network file while preserving the member's own key and networking.
+/// The new file must carry the same realm, directory, policy, limits and
+/// eligible set — those are genesis-fixed — and agree with the existing
+/// config on every validator activation at or below the committed
+/// height: decided history cannot be rescheduled. A running node picks
+/// the new schedule up on restart; activations stay future-dated so the
+/// whole set can converge before the switch.
+///
+/// `vhalla rooms node-update NODE_HOME --network FILE`
+pub fn node_update(raw: &[OsString]) -> Result<(), String> {
+    let (positional, flags) = flags(raw, &["network"])?;
+    if positional.len() != 1 {
+        return Err("node-update takes exactly one NODE_HOME".into());
+    }
+    let home = std::path::Path::new(&positional[0]);
+    let target = home.join("node.json");
+    let raw = std::fs::read(&target).map_err(|e| format!("node.json: {e}"))?;
+    if raw.len() > 64 * 1024 {
+        return Err("node.json exceeds 64KiB".into());
+    }
+    let file: NodeFile = serde_json::from_slice(&raw).map_err(|e| format!("node.json: {e}"))?;
+    let existing = decode_node(&file)?;
+    let network = read_network(
+        flags
+            .get("network")
+            .ok_or("node-update needs --network FILE")?,
+    )?;
+
+    // Shared fields are genesis-fixed — a changed one names a different
+    // network, not an update of this one.
+    if let Some(realm) = existing.realm {
+        if realm != network.realm.0 {
+            return Err("network file names a different realm".into());
+        }
+    }
+    if existing.directory != network.directory
+        || existing.policy != network.policy
+        || existing.limits != network.limits
+    {
+        return Err(
+            "network file changed a genesis field (directory, policy or limits) - that is a new network, not an update".into(),
+        );
+    }
+    let eligible_same = {
+        let a: std::collections::BTreeSet<_> = existing.eligible.iter().collect();
+        let b: std::collections::BTreeSet<_> = network.eligible.iter().collect();
+        a == b
+    };
+    if !eligible_same {
+        return Err(
+            "network file changed the eligible set - eligible owners move in-band via `rooms eligible`, not config".into(),
+        );
+    }
+
+    // Activations at or below the committed height decided real history:
+    // the new file must reproduce that prefix exactly.
+    let committed = committed_height(&home.join("app").join("journal"))?;
+    for from in existing
+        .validator_sets
+        .keys()
+        .chain(network.validator_sets.keys())
+        .filter(|from| **from <= committed)
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        if existing.validator_sets.get(&from) != network.validator_sets.get(&from) {
+            return Err(format!(
+                "network file changes the validator set active at decided height {from}"
+            ));
+        }
+    }
+
+    let node = node_json(
+        &file.node_key,
+        file.port,
+        file.listen.as_deref(),
+        &file.peers,
+        &network,
+    );
     let tmp = home.join(format!(".node.json.tmp-{}", std::process::id()));
     std::fs::write(&tmp, serde_json::to_vec_pretty(&node).unwrap())
         .map_err(|e| format!("write: {e}"))?;
     std::fs::rename(&tmp, &target).map_err(|e| format!("write: {e}"))?;
+
+    let genesis = genesis_fingerprint(
+        network.realm,
+        &network.directory,
+        &network.policy,
+        &network.eligible,
+        &network.limits,
+        &network.validator_sets,
+    );
+    let public = existing.node_key.public_key();
+    let votes_from = network
+        .validator_sets
+        .iter()
+        .find(|(_, set)| {
+            set.validators
+                .iter()
+                .any(|v| v.public_key.as_bytes() == public.as_bytes())
+        })
+        .map(|(from, _)| *from);
+    let future: Vec<String> = network
+        .validator_sets
+        .range(committed + 1..)
+        .map(|(from, set)| {
+            json::object(vec![
+                ("from", from.to_string()),
+                ("validators", set.validators.len().to_string()),
+            ])
+        })
+        .collect();
     let mut warnings = Vec::new();
     if votes_from.is_none() {
         warnings.push(
-            "this key is not in the validator set — the node follows but never votes; share public_key with the operator to join"
-                .to_string(),
+            "node_key is not in any validator set - the node follows but never votes".to_string(),
         );
     }
     println!(
         "{}",
         json::object(vec![
             ("config", json::string(&target.display().to_string())),
-            ("public_key", json::string(&json::hex(public.as_bytes()))),
             ("genesis", json::id(&genesis)),
-            ("node_key_generated", generated.to_string()),
+            ("committed", committed.to_string()),
+            ("scheduled", json::array(future)),
             (
                 "node_key_votes_from",
                 votes_from.map_or("null".into(), |f| f.to_string())

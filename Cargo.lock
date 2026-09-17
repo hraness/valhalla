@@ -5364,6 +5364,7 @@ dependencies = [
  "vhalla-discovery",
  "vhalla-discovery-store",
  "vhalla-identity",
+ "vhalla-journal",
  "vhalla-native",
  "vhalla-retrieval",
  "vhalla-rooms",

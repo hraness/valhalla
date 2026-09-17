@@ -764,6 +764,459 @@ mod enabled {
         );
     }
 
+    /// The friend-joins-with-voting-power journey end to end on real
+    /// commands: a four-member scaffolded mesh commits a height, the
+    /// operator extends the shared params with a fifth validator set
+    /// activating at height 4, existing members `node-update` and
+    /// restart onto it, the joiner `node-init`s fresh and boots, and
+    /// heights past the activation decide under the enlarged set — with
+    /// one original member killed, the survivors need the joiner's vote
+    /// to reach the five-member quorum.
+    #[test]
+    fn live_mesh_rotates_validator_set_mid_flight() {
+        let _mesh = MESH.lock().unwrap();
+        let temp = Temp::new();
+        let plan = fixture::plan(5, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..5u8)
+            .map(|i| Member {
+                seed: [50 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        let key = |m: &Member| hex(PrivateKey::from(m.seed).public_key().as_bytes());
+
+        // v1: the original four vote from genesis. The fifth member is
+        // not in the file yet — it joins later, as a friend would.
+        let validators_v1: String = members[..4]
+            .iter()
+            .map(|m| format!("1:{}:1", key(m)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let eligible: String = plan
+            .genesis
+            .eligible
+            .iter()
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let net = temp.path("network.json");
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            &format!(
+                "{},{},{},{},{}",
+                plan.genesis.policy.base_cost,
+                plan.genesis.policy.window_seconds,
+                plan.genesis.policy.max_in_window,
+                plan.genesis.policy.support_epoch_seconds,
+                plan.genesis.policy.max_lifetime_rooms,
+            ),
+            "--validators",
+            &validators_v1,
+            "--eligible",
+            &eligible,
+        ]);
+
+        // Members 0-3 scaffold and boot on v1.
+        let mut homes = Vec::new();
+        let mut socials = Vec::new();
+        for (i, member) in members[..4].iter().enumerate() {
+            let home = temp.path(&format!("home-{i}"));
+            let peers = members[..4]
+                .iter()
+                .filter(|m| m.port != member.port)
+                .map(|m| format!("127.0.0.1:{}", m.port))
+                .collect::<Vec<_>>()
+                .join(",");
+            let out = rooms_ok(&[
+                "node-init",
+                home.to_str().unwrap(),
+                "--network",
+                net.to_str().unwrap(),
+                "--node-key",
+                &hex(&member.seed),
+                "--port",
+                &member.port.to_string(),
+                "--peers",
+                &peers,
+            ]);
+            assert_eq!(out["node_key_votes_from"].as_u64(), Some(1));
+            let social = temp.path(&format!("social-{i}"));
+            seed_social(&social, &plan);
+            homes.push(home);
+            socials.push(social);
+        }
+        let mut nodes: Vec<Node> = homes
+            .iter()
+            .enumerate()
+            .map(|(i, home)| {
+                spawn_node(
+                    &temp,
+                    &format!("rot-{i}"),
+                    &socials[i],
+                    home,
+                    &home.join("node.json"),
+                )
+            })
+            .collect();
+        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        wait_for(Duration::from_secs(150), "height 1 set-wide", || {
+            homes.iter().all(|h| committed(h, 1))
+        });
+
+        // The operator schedules the rotation: one complete set of five
+        // activates at height 4 — far enough out for everyone to update.
+        let net_v2 = temp.path("network-v2.json");
+        let ext = rooms_ok(&[
+            "network-extend",
+            net.to_str().unwrap(),
+            net_v2.to_str().unwrap(),
+            "--from",
+            "4",
+            "--validators",
+            &members
+                .iter()
+                .map(|m| format!("{}:1", key(m)))
+                .collect::<Vec<_>>()
+                .join(","),
+        ]);
+        assert_eq!(ext["activation_from"].as_u64(), Some(4));
+        assert_eq!(ext["validators"].as_u64(), Some(5));
+
+        // Existing members merge the new schedule while running; the
+        // frozen check sees height 1 committed and leaves it intact.
+        for home in &homes {
+            let upd = rooms_ok(&[
+                "node-update",
+                home.to_str().unwrap(),
+                "--network",
+                net_v2.to_str().unwrap(),
+            ]);
+            assert_eq!(upd["committed"].as_u64(), Some(1));
+        }
+        // The joiner scaffolds straight onto v2 — its key votes from 4.
+        let home4 = temp.path("home-4");
+        let peers4 = members[..4]
+            .iter()
+            .map(|m| format!("127.0.0.1:{}", m.port))
+            .collect::<Vec<_>>()
+            .join(",");
+        let out = rooms_ok(&[
+            "node-init",
+            home4.to_str().unwrap(),
+            "--network",
+            net_v2.to_str().unwrap(),
+            "--node-key",
+            &hex(&members[4].seed),
+            "--port",
+            &members[4].port.to_string(),
+            "--peers",
+            &peers4,
+        ]);
+        assert_eq!(out["node_key_votes_from"].as_u64(), Some(4));
+        let social4 = temp.path("social-4");
+        seed_social(&social4, &plan);
+        homes.push(home4);
+        socials.push(social4);
+
+        // Restart the incumbents so the updated schedule loads; a node
+        // reads its config once at boot.
+        for node in nodes.iter_mut() {
+            let signaled = Command::new("kill")
+                .args(["-INT", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(signaled.success());
+            assert!(node.child.wait().unwrap().success());
+        }
+        for (i, node) in nodes.iter_mut().enumerate() {
+            *node = spawn_node(
+                &temp,
+                &format!("rot-{i}-r"),
+                &socials[i],
+                &homes[i],
+                &homes[i].join("node.json"),
+            );
+        }
+        // The joiner boots and syncs the decided prefix under the sets
+        // each height was actually decided by.
+        nodes.push(spawn_node(
+            &temp,
+            "rot-4",
+            &socials[4],
+            &homes[4],
+            &homes[4].join("node.json"),
+        ));
+
+        // Heights 2 and 3 still decide under the original four; member 4
+        // follows along on sync without voting.
+        for (n, h) in [(2u64, "two"), (3, "three")] {
+            fs::write(
+                homes[0].join(format!("intake/{h}.batch")),
+                plan.batches[&n].encode(),
+            )
+            .unwrap();
+            wait_for(
+                Duration::from_secs(150),
+                &format!("height {n} set-wide"),
+                || homes.iter().all(|home| committed(home, n)),
+            );
+        }
+
+        // Height 4 is the activation: the five-member set needs 4 votes
+        // (strictly over 10/3), so member 4 must vote for it to land.
+        fs::write(
+            homes[0].join("intake/four.batch"),
+            plan.batches[&4].encode(),
+        )
+        .unwrap();
+        wait_for(
+            Duration::from_secs(180),
+            "height 4 activates the fifth",
+            || homes.iter().all(|h| committed(h, 4)),
+        );
+
+        // The discriminating proof: kill an original member and the mesh
+        // still decides — only member 4's vote makes the five-member
+        // quorum reachable at all.
+        let killed = Command::new("kill")
+            .args(["-9", &nodes[0].child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let _ = nodes[0].child.wait();
+        fs::write(
+            homes[1].join("intake/five.batch"),
+            plan.batches[&5].encode(),
+        )
+        .unwrap();
+        wait_for(
+            Duration::from_secs(180),
+            "height 5 on the rotated set",
+            || homes[1..].iter().all(|h| committed(h, 5)),
+        );
+
+        for node in nodes.iter_mut().skip(1) {
+            let signaled = Command::new("kill")
+                .args(["-INT", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(signaled.success());
+            assert!(node.child.wait().unwrap().success());
+        }
+    }
+
+    /// A tailcat subprocess bound to the test — killed on drop.
+    struct Tailcat {
+        child: Child,
+    }
+    impl Drop for Tailcat {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// Spawn `tailcat <args>` with captured output; `addr_file` sets
+    /// TAILCAT_ADDR_FILE so a server publishes its `tc` address for the
+    /// forwards to consume.
+    fn tailcat(temp: &Temp, tag: &str, args: &[String], addr_file: Option<&Path>) -> Tailcat {
+        let mut command = Command::new("tailcat");
+        command.args(["--key=new"]).args(args);
+        if let Some(path) = addr_file {
+            command.env("TAILCAT_ADDR_FILE", path);
+        }
+        let child = command
+            .stdout(Stdio::from(
+                fs::File::create(temp.path(&format!("{tag}.stdout"))).unwrap(),
+            ))
+            .stderr(Stdio::from(
+                fs::File::create(temp.path(&format!("{tag}.stderr"))).unwrap(),
+            ))
+            .spawn()
+            .expect("tailcat must be installed to run this test");
+        Tailcat { child }
+    }
+
+    /// The friends-on-different-networks path: a four-member mesh where
+    /// every peer link runs through a real `tailcat` tunnel — each member
+    /// serves its node port over WireGuard/DERP and reaches the others
+    /// through local `tailcat forward` ports listed as its peers. This
+    /// exercises magicsock NAT traversal and the DERP relay that the
+    /// 768-byte/20 ms proposal pacing was qualified against. It needs
+    /// outbound DERP access and the tailcat binary, so it only runs under
+    /// `VHALLA_TAILCAT=1` — CI has neither.
+    #[test]
+    fn live_mesh_decides_over_tailcat_tunnels() {
+        if std::env::var_os("VHALLA_TAILCAT").is_none() {
+            eprintln!("skipping: set VHALLA_TAILCAT=1 to run the tailcat-tunnel mesh");
+            return;
+        }
+        let _mesh = MESH.lock().unwrap();
+        let temp = Temp::new();
+        let plan = fixture::plan(2, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [70 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+
+        // Each member publishes its node port through a tailcat server
+        // and collects the `tc` address peers will dial.
+        let mut tc_addrs = Vec::new();
+        let mut serves = Vec::new();
+        for (i, member) in members.iter().enumerate() {
+            let addr_file = temp.path(&format!("tc-{i}.addr"));
+            serves.push(tailcat(
+                &temp,
+                &format!("serve-{i}"),
+                &["serve".to_string(), member.port.to_string()],
+                Some(&addr_file),
+            ));
+            tc_addrs.push(addr_file);
+        }
+        wait_for(Duration::from_secs(60), "tailcat addresses", || {
+            tc_addrs
+                .iter()
+                .all(|f| fs::read_to_string(f).is_ok_and(|s| s.starts_with("tc")))
+        });
+        let tc_addrs: Vec<String> = tc_addrs
+            .iter()
+            .map(|f| fs::read_to_string(f).unwrap().trim().to_string())
+            .collect();
+
+        // Member j reaches member i through `tailcat forward tc_i
+        // fwd(j,i):port_i` and lists the local forward port as the peer.
+        // Forward ports are namespaced per member so every binding is
+        // distinct on this one machine; on separate machines each member
+        // could use the same small range.
+        let fwd_base = port_base() + 4000;
+        let fwd_port = |j: usize, i: usize| fwd_base + j * 10 + i;
+        let mut forwards = Vec::new();
+        for j in 0..members.len() {
+            for i in 0..members.len() {
+                if i == j {
+                    continue;
+                }
+                forwards.push(tailcat(
+                    &temp,
+                    &format!("fwd-{j}-{i}"),
+                    &[
+                        "forward".to_string(),
+                        tc_addrs[i].clone(),
+                        format!("{}:{}", fwd_port(j, i), members[i].port),
+                    ],
+                    None,
+                ));
+            }
+        }
+
+        // Scaffold the shared params and member configs with the real
+        // commands; each member's peer list is its forward ports.
+        let key = |m: &Member| hex(PrivateKey::from(m.seed).public_key().as_bytes());
+        let validators: String = members
+            .iter()
+            .map(|m| format!("1:{}:1", key(m)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let eligible: String = plan
+            .genesis
+            .eligible
+            .iter()
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let net = temp.path("network.json");
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            &format!(
+                "{},{},{},{},{}",
+                plan.genesis.policy.base_cost,
+                plan.genesis.policy.window_seconds,
+                plan.genesis.policy.max_in_window,
+                plan.genesis.policy.support_epoch_seconds,
+                plan.genesis.policy.max_lifetime_rooms,
+            ),
+            "--validators",
+            &validators,
+            "--eligible",
+            &eligible,
+        ]);
+        let mut homes = Vec::new();
+        let mut nodes = Vec::new();
+        for (j, member) in members.iter().enumerate() {
+            let home = temp.path(&format!("home-{j}"));
+            let peers = (0..members.len())
+                .filter(|i| *i != j)
+                .map(|i| format!("127.0.0.1:{}", fwd_port(j, i)))
+                .collect::<Vec<_>>()
+                .join(",");
+            rooms_ok(&[
+                "node-init",
+                home.to_str().unwrap(),
+                "--network",
+                net.to_str().unwrap(),
+                "--node-key",
+                &hex(&member.seed),
+                "--port",
+                &member.port.to_string(),
+                "--listen",
+                "127.0.0.1",
+                "--peers",
+                &peers,
+            ]);
+            let social = temp.path(&format!("social-{j}"));
+            seed_social(&social, &plan);
+            nodes.push(spawn_node(
+                &temp,
+                &format!("tc-member-{j}"),
+                &social,
+                &home,
+                &home.join("node.json"),
+            ));
+            homes.push(home);
+        }
+
+        // Two heights decide over the tunnels — the first proves
+        // connectivity, the second proves it survives the parts
+        // re-streaming a churned relay connection forces.
+        for n in 1u64..=2 {
+            fs::write(
+                homes[0].join(format!("intake/h{n}.batch")),
+                plan.batches[&n].encode(),
+            )
+            .unwrap();
+            wait_for(
+                Duration::from_secs(240),
+                &format!("height {n} set-wide over tailcat"),
+                || homes.iter().all(|h| committed(h, n)),
+            );
+        }
+
+        for node in nodes.iter_mut() {
+            let signaled = Command::new("kill")
+                .args(["-INT", &node.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(signaled.success());
+            assert!(node.child.wait().unwrap().success());
+        }
+    }
+
     /// The operator/member scaffolding flow end to end on real commands:
     /// `network-init` authors the shared params once, `node-init` merges
     /// each member's key and networking into a working node.json,
@@ -1032,6 +1485,188 @@ mod enabled {
         );
     }
 
+    /// The rotation commands on real invocations: `network-extend` copies
+    /// shared fields verbatim and appends one future activation,
+    /// `node-update` merges it into a member's existing config while
+    /// refusing to touch decided-height sets or genesis fields.
+    #[test]
+    fn network_extend_and_node_update_rotate_the_schedule() {
+        let temp = Temp::new();
+        let plan = fixture::plan(1, 8, 16);
+        let keys: Vec<String> = (0..4u8)
+            .map(|i| hex(PrivateKey::from([90 + i; 32]).public_key().as_bytes()))
+            .collect();
+        let v1 = format!("1:{}:1,1:{}:1,1:{}:1", keys[0], keys[1], keys[2]);
+        let net = temp.path("network.json");
+        let init = rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            "1,86400,8,86400,16",
+            "--validators",
+            &v1,
+        ]);
+        let genesis_v1 = field(&init, "genesis");
+
+        // The operator extends: one complete replacement set of four at
+        // height 50. Shared fields copy verbatim — only validators grow.
+        let v2 = temp.path("network-v2.json");
+        let ext = rooms_ok(&[
+            "network-extend",
+            net.to_str().unwrap(),
+            v2.to_str().unwrap(),
+            "--from",
+            "50",
+            "--validators",
+            &format!("{}:1,{}:1,{}:1,{}:1", keys[0], keys[1], keys[2], keys[3]),
+        ]);
+        assert_eq!(ext["activation_from"].as_u64(), Some(50));
+        assert_eq!(ext["validators"].as_u64(), Some(4));
+        assert_eq!(ext["quorum_power"].as_u64(), Some(3));
+        let genesis_v2 = field(&ext, "genesis");
+        assert_ne!(
+            genesis_v1, genesis_v2,
+            "a changed schedule changes the fingerprint"
+        );
+        // The new file carries every shared field unchanged plus the
+        // appended activation — and never overwrites.
+        let net_v2: serde_json::Value = serde_json::from_slice(&fs::read(&v2).unwrap()).unwrap();
+        assert_eq!(net_v2["validators"].as_array().unwrap().len(), 7);
+        let rerun = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "network-extend",
+                net.to_str().unwrap(),
+                v2.to_str().unwrap(),
+                "--from",
+                "60",
+                "--validators",
+                &format!("{}:1", keys[0]),
+            ])
+            .output()
+            .unwrap();
+        assert!(!rerun.status.success(), "network-extend never overwrites");
+
+        // Heights start at 1 — a zero activation can never take effect.
+        let zero = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "network-extend",
+                net.to_str().unwrap(),
+                temp.path("network-v3.json").to_str().unwrap(),
+                "--from",
+                "0",
+                "--validators",
+                &format!("{}:1", keys[0]),
+            ])
+            .output()
+            .unwrap();
+        assert!(!zero.status.success(), "activation heights start at 1");
+        assert!(String::from_utf8_lossy(&zero.stderr).contains("start at 1"));
+
+        // A member joins the extended set: node-init on v1, node-update
+        // to v2. Local fields survive; the schedule gains the activation.
+        // The seed is keys[0]'s — a validator — so votes_from stays set.
+        let home = temp.path("home");
+        let seed = [90u8; 32];
+        rooms_ok(&[
+            "node-init",
+            home.to_str().unwrap(),
+            "--network",
+            net.to_str().unwrap(),
+            "--node-key",
+            &hex(&seed),
+            "--port",
+            "7401",
+            "--peers",
+            "10.0.0.9:7000",
+        ]);
+        let upd = rooms_ok(&[
+            "node-update",
+            home.to_str().unwrap(),
+            "--network",
+            v2.to_str().unwrap(),
+        ]);
+        assert_eq!(upd["committed"].as_u64(), Some(0));
+        // Nothing has committed, so both activations are still scheduled.
+        let scheduled = upd["scheduled"].as_array().unwrap();
+        assert_eq!(scheduled.len(), 2);
+        assert_eq!(scheduled[1]["from"].as_u64(), Some(50));
+        assert_eq!(field(&upd, "genesis"), genesis_v2);
+        let node: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.join("node.json")).unwrap()).unwrap();
+        assert_eq!(node["node_key"].as_str().unwrap(), hex(&seed));
+        assert_eq!(node["port"].as_u64(), Some(7401));
+        assert_eq!(node["peers"][0].as_str().unwrap(), "10.0.0.9:7000");
+        assert_eq!(node["validators"].as_array().unwrap().len(), 7);
+        assert_eq!(upd["node_key_votes_from"].as_u64(), Some(1));
+
+        // A shared-field change is a different network, not an update.
+        let mut drifted = net_v2.clone();
+        drifted["policy"]["base_cost"] = serde_json::json!(9);
+        let bad = temp.path("network-drifted.json");
+        fs::write(&bad, serde_json::to_vec_pretty(&drifted).unwrap()).unwrap();
+        let drift = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "node-update",
+                home.to_str().unwrap(),
+                "--network",
+                bad.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!drift.status.success());
+        assert!(String::from_utf8_lossy(&drift.stderr).contains("genesis field"));
+
+        // Once height 1 has committed, its activation is frozen: a file
+        // that reschedules it must be refused. The journal marker names
+        // are `{height:016x}` — an empty file is enough for the bound.
+        fs::create_dir_all(home.join("app/journal/heights")).unwrap();
+        fs::write(home.join("app/journal/heights/0000000000000001"), []).unwrap();
+        let mut rewrote = net_v2.clone();
+        rewrote["validators"] = serde_json::json!([
+            {"from": 1, "key": keys[0], "power": 2},
+            {"from": 50, "key": keys[0], "power": 1},
+        ]);
+        let bad = temp.path("network-rewrote.json");
+        fs::write(&bad, serde_json::to_vec_pretty(&rewrote).unwrap()).unwrap();
+        let rewrite = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "node-update",
+                home.to_str().unwrap(),
+                "--network",
+                bad.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!rewrite.status.success());
+        assert!(
+            String::from_utf8_lossy(&rewrite.stderr).contains("decided height"),
+            "frozen activations must refuse change: {}",
+            String::from_utf8_lossy(&rewrite.stderr)
+        );
+
+        // The honest update still lands: frozen prefix intact, future
+        // activation adopted, and the committed bound reported.
+        let upd = rooms_ok(&[
+            "node-update",
+            home.to_str().unwrap(),
+            "--network",
+            v2.to_str().unwrap(),
+        ]);
+        assert_eq!(upd["committed"].as_u64(), Some(1));
+    }
+
     /// Run one `vhalla social` command and unwrap its JSON object; the
     /// commands are fast one-shot invocations, no streaming needed.
     fn social_ok(store: &Path, command: &str, args: &[&str]) -> serde_json::Value {
@@ -1273,5 +1908,35 @@ mod enabled {
                 .any(|r| r["slug"].as_str() == Some("first-room")),
             "the committed room must list: {listed}"
         );
+
+        // `rooms status` is the live-mesh read: the node still runs and
+        // still holds its `app/rooms` writer lock, yet the replica sync
+        // reports height, the room listing and marker resolution in one
+        // object.
+        let status = rooms_ok(&[
+            "status",
+            net.to_str().unwrap(),
+            replica_store.to_str().unwrap(),
+            REALM_HEX,
+            home.to_str().unwrap(),
+            "--config",
+            config_path.to_str().unwrap(),
+        ]);
+        assert_eq!(status["height"].as_u64(), Some(1));
+        assert!(
+            status["rooms"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["slug"].as_str() == Some("first-room")),
+            "status must list the committed room live: {status}"
+        );
+        let status_marker = status["pending"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["marker"].as_str() == Some(marker.as_str()))
+            .expect("status must resolve the same marker");
+        assert_eq!(status_marker["state"].as_str(), Some("committed"));
     }
 }
