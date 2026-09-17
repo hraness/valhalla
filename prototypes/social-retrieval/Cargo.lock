@@ -2922,6 +2922,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-custody"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "vhalla-discovery"
 version = "0.0.0"
 dependencies = [
@@ -2939,6 +2946,7 @@ dependencies = [
  "sha2 0.10.9",
  "vhalla-core",
  "vhalla-crypto",
+ "vhalla-custody",
  "vhalla-session",
  "vhalla-wire",
  "zeroize",

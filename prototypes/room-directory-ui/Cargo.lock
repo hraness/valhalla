@@ -7975,6 +7975,13 @@ name = "vhalla-core"
 version = "0.0.0"
 
 [[package]]
+name = "vhalla-custody"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "vhalla-journal"
 version = "0.0.0"
 dependencies = [
@@ -8052,6 +8059,7 @@ dependencies = [
  "ractor",
  "sha3",
  "tokio",
+ "tracing",
  "vhalla-journal",
  "vhalla-rooms-consensus",
 ]
@@ -8062,6 +8070,7 @@ version = "0.0.0"
 dependencies = [
  "sha2 0.10.9",
  "vhalla-core",
+ "vhalla-custody",
  "vhalla-rooms",
  "vhalla-social",
 ]
@@ -8081,6 +8090,7 @@ version = "0.0.0"
 dependencies = [
  "sha2 0.10.9",
  "vhalla-core",
+ "vhalla-custody",
  "vhalla-social",
 ]
 

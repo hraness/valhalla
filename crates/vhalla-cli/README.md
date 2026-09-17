@@ -392,23 +392,97 @@ One workable setup for a group that trusts each other's machines:
    archive, and distributes that single file. Every member imports it
    too — the merge is a record union over a canonically ordered
    archive, so all stores then hold identical genesis bytes. The same
-   member authors the shared parameters: `directory` (any 64-hex id,
-   e.g. a spare `keygen` public key), `validators` (every member's
-   `{from, key, power}`), `policy`, `eligible` (the members' owner
-   ids) and `limits`.
-3. Each member writes a `node.json` with their own `node_key`, `port`
-   and `listen` (their reachable interface address, e.g. a Tailscale
-   IP), the shared fields above verbatim, and `peers` naming the other
-   members' `host:port`.
-4. Each member runs `vhalla rooms node SOCIAL_STORE NODE_HOME REALM
-   --config node.json`. The set then decides intake submissions through
-   `rooms submit`/`rooms tui` against any member's `NODE_HOME`.
+   member authors the shared parameters once with
+   `vhalla rooms network-init network.json --realm REALM32 --directory
+   DIR64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators
+   FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default]` —
+   `directory` can be any 64-hex id (e.g. a spare `keygen` public key)
+   and `validators` lists every member's `{from, key, power}`. The
+   command prints a `genesis` fingerprint over the canonical encoding
+   of every shared field.
+3. Each member runs `vhalla rooms node-init NODE_HOME --network
+   network.json --node-key SEED --port N --listen LISTEN_IP --peers
+   HOST:PORT,...`, which writes `NODE_HOME/node.json` (never
+   overwriting), creates `NODE_HOME/intake/`, and prints the same
+   `genesis` fingerprint plus `node_key_votes_from` — the height their
+   key starts voting, or `null` with a warning if the operator has not
+   listed their `public_key` yet.
+4. Before booting, each member runs `vhalla rooms node-check
+   SOCIAL_STORE NODE_HOME REALM --config NODE_HOME/node.json`, which
+   runs the identical decode path as `node` — config parse, genesis
+   build, shared archive read — and reports `genesis`, the seeded
+   `archive` root, per-set quorum arithmetic and warnings. Every member
+   must see the same `genesis` and `archive` values; a difference means
+   a shared field or the merged snapshot diverged and the set would
+   stall rather than decide.
+5. Each member runs `vhalla rooms node SOCIAL_STORE NODE_HOME REALM
+   --config NODE_HOME/node.json`. The set then decides intake
+   submissions through `rooms submit`/`rooms tui` against any member's
+   `NODE_HOME`.
+
+A running node holds `NODE_HOME/app/rooms` under a lifetime writer lock,
+so the plain `rooms` reads (`list`, `show`, `account`, …) return `Busy`
+against it while the node is up. The live read path is the caller-owned
+replica: `vhalla rooms status SOCIAL_STORE REPLICA_HOME REALM NODE_HOME
+--config NODE_HOME/node.json` syncs the replica from the node's journal
+— locking nothing the node holds — and reports committed `height`, the
+room listing and every local submission marker's resolution in one JSON
+object. `rooms pending` takes the same shape when only marker states
+matter, and `rooms list SOCIAL_STORE REPLICA_HOME/rooms REALM` reads the
+replica's materialized store directly. The same REPLICA_HOME persists
+between calls; a status run never touches the live node's stores.
+
+Size the validator set for absences: quorum is strictly `> 2/3` of total
+power, so an equal-power set of three tolerates **zero** offline members —
+four members tolerate exactly one. `network-init` and `node-check` print
+`quorum_power` and `absent_power_tolerated` for the configured set.
+
+Validator-set rotation is a two-command operator/member flow — a friend
+joining with voting power, or a member leaving, never touches decided
+history. The operator runs `vhalla rooms network-extend network.json
+network-v2.json --from HEIGHT --validators KEY64:POWER,...`, which copies
+every shared field and appends one complete replacement set activating at
+the future `HEIGHT` (never overwriting OUT). Each incumbent runs `vhalla
+rooms node-update NODE_HOME --network network-v2.json`: it preserves the
+local `node_key`, `port`, `listen` and `peers`, refuses any change to the
+genesis-fixed fields (realm, directory, policy, limits, eligible — those
+are the `genesis` fingerprint and still change only via `rooms eligible`
+for the award-source set), reads the committed height from the journal,
+and rejects edits to activations at or below it. A restarted node votes
+under the new set from `HEIGHT` on; a joiner scaffolds straight onto
+`network-v2.json` with `node-init`, whose `node_key_votes_from` then
+reports the activation height.
 
 A non-loopback `listen` keeps malachite's default per-IP connection
 bound rather than the single-host ceiling lift used for local test
 meshes. Persistent peers are dialed over plain libp2p TCP: reachability,
 firewalls and transport encryption remain the operator's responsibility,
 which is why a private network is the intended first deployment.
+
+### Transport caveats and WAL resets
+
+Two operational findings from running the validator pair over a relayed
+tunnel (tailcat over a DERP relay):
+
+- **Small writes only.** The relayed path truncates any single TCP write
+  above roughly 1.1 KiB. The node accounts for this: proposal `Data`
+  parts are capped at 768 raw bytes and every part in a stream is paced
+  20 ms apart so gossipsub cannot coalesce a burst into one oversized
+  wire write. Do not lower-level "batch" traffic around the node, and
+  expect connection churn on relayed paths — the parts cache re-streams
+  on request, so a proposal that misses one connection window lands on
+  the next.
+- **WAL format epochs.** The consensus WAL records its wire-format epoch
+  in `wal/FORMAT` (`VRW2`). A WAL written by an incompatible build fails
+  fast at startup with an explicit message rather than a mid-replay
+  codec error: remove `<node-home>/wal/consensus.wal` and start again.
+  This is safe — the WAL protects only in-flight consensus votes; all
+  committed state lives in the journal and stores under
+  `<node-home>/app/` and `<node-home>/store/`.
+- **Rejected submissions are loud.** `RUST_LOG=vhalla_rooms_node=warn`
+  surfaces intake rejections with reasons (`unsafe file stem`,
+  `undecodable body`, `prepare failed: …`); the `*.rejected` marker in
+  the intake remains the producer-facing record.
 
 ### Social sync over the paired channel
 
@@ -445,15 +519,38 @@ A stale `EXPIRY` is rejected locally before any dial. The serve window ends
 as soon as the final page is acknowledged at the transport level, so a
 concurrent local writer is only locked out for the serving window itself.
 
-For machines that cannot share a LAN or an existing overlay, `tailcat` is a
-usable external wrapper: it exposes a local UDP port through WireGuard with
-NAT traversal and DERP fallback, needs no account or admin rights, and hands
-the peer an out-of-band `tc` address. Run `tailcat` in front of the serving
-machine's port, forward the route through it, and the requester dials the
-forwarded local address. It changes only how the UDP path is reached — the
-paired channel still authenticates the pinned application keys and every
-frame's signature, so `tailcat` is a connectivity option, not a trust
-decision.
+For machines that cannot share a LAN or an existing overlay, the
+requester needs a UDP-capable path to the provider — QUIC cannot ride a
+TCP-only tunnel. A shared Tailscale tailnet (each member's node address
+becomes a routable `100.x` overlay IP) or a LAN reach is the intended
+route; the serving `LISTEN_IP` then names the overlay interface. Whatever
+carries the datagrams changes only how the path is reached — the paired
+channel still authenticates the pinned application keys and every frame's
+signature, so the tunnel is a connectivity option, not a trust decision.
+
+For the validator mesh the answer is simpler, because libp2p peers are
+plain TCP and `tailcat` forwards TCP: it tunnels a local port through
+WireGuard with NAT traversal and DERP fallback, needs no account or admin
+rights, and hands the peer an out-of-band `tc` address. Each member runs
+one server for its node port and one forward per other member, then lists
+the local forward ports as its `peers`:
+
+```console
+# Member i, every member: publish the node port, share the printed tc
+# address with the group out of band.
+tailcat serve NODE_PORT
+
+# Member j, once per other member i: bind a local port that tunnels to
+# member i's node port, then put 127.0.0.1:FWD_PORT in `peers` (or pass
+# it to `node-init --peers`).
+tailcat forward TC_ADDR_OF_MEMBER_I FWD_PORT:NODE_PORT_OF_MEMBER_I
+```
+
+The node's proposal transport is already sized for this path — 768-byte
+parts paced 20 ms apart, qualified over a DERP-relayed tunnel — so no
+config change is needed, and `VHALLA_TAILCAT=1 cargo test -p vhalla-cli
+--test rooms_node live_mesh_decides_over_tailcat_tunnels` re-qualifies a
+four-member mesh deciding through real tunnels on this machine.
 
 ## Room-directory terminal companion
 
@@ -486,8 +583,16 @@ committed, collision, rejected) as JSON.
 
 Every mutating command signs a real wire record, applies it to a candidate
 registry, and reports success only after the store's durable pin publication.
-Two agents of one owner share the directory through separate invocations; a
-second concurrent process fails fast on the store lock rather than merging.
+Writers (`init`, `grant`, `collect`, `create`, `describe`, `archive`,
+`recover`) hold the store's lifetime exclusive lock for the whole command —
+a second concurrent writer fails fast `Busy` rather than merging. Readers
+(`quote`, `list`, `search`, `show`, `account`, `proof`, `evidence`) instead
+take a shared hold on the committed pin/bundle pair: they proceed alongside
+other readers and wait out a writer's hold up to a bounded ~30 s rather
+than racing it. Node startup and the replica service read the social
+archive the same way — a concurrent `social` write no longer kills either
+with `Busy`. A retained `intent` or torn publication temps fail every path
+`RecoveryRequired` for explicit `rooms recover` first; readers never repair.
 `--now SECONDS` is the explicit directory clock for tests. This is local
 allocation over retained evidence — consensus agreement and networking remain
 separate unqualified lanes.

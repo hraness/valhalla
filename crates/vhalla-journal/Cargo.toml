@@ -11,3 +11,6 @@ sha2 = "0.10"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+hegeltest = "0.46.0"

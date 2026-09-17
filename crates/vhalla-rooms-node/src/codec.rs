@@ -223,13 +223,17 @@ fn get_vote(rd: &mut Rd<'_>) -> Result<RoomVote, CodecError> {
     })
 }
 
+// The wire proposal carries ONLY the value commitment: the canonical
+// bytes travel in the proposal-part stream (`ProposalAndParts` mode).
+// Embedding the bytes here would put an unbounded-size message on the
+// consensus channel — observed to exceed the per-write ceiling of
+// relayed transports (tailcat/DERP ~1.2 KiB) and wedge the connection.
 fn put_proposal(out: &mut Vec<u8>, p: &RoomProposal) {
     put_height(out, p.height);
     put_round(out, p.round);
     put_round(out, p.pol_round);
     put_addr(out, &p.proposer);
     out.extend_from_slice(&p.value.id.0);
-    put_bytes(out, &p.value.bytes);
 }
 
 fn get_proposal(rd: &mut Rd<'_>) -> Result<RoomProposal, CodecError> {
@@ -238,11 +242,13 @@ fn get_proposal(rd: &mut Rd<'_>) -> Result<RoomProposal, CodecError> {
     let pol_round = rd.round()?;
     let proposer = rd.addr()?;
     let id = RoomValueId(rd.take(32)?.try_into().unwrap());
-    let bytes = Bytes::copy_from_slice(rd.bytes(MAX_VALUE_BYTES)?);
     Ok(RoomProposal {
         height,
         round,
-        value: RoomValue { id, bytes },
+        value: RoomValue {
+            id,
+            bytes: Bytes::new(),
+        },
         pol_round,
         proposer,
     })
