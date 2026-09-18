@@ -9,9 +9,10 @@
 //! `vhalla_social::Archive` it reads evidence from. A decided `Batch`
 //! carries canonical signed record bytes: social evidence (ingested into a
 //! candidate archive, then harvested through `Registry::award`) and room
-//! records (`Registry::apply`), all under the batch's agreed clock. The
-//! batch commits to the resulting `registry.digest()`, `archive.root()`
-//! and committed control snapshot; `validate` replays on clones and
+//! records (`Registry::apply`), plus inert typed game commitments, all under
+//! the batch's agreed clock. The batch commits to the resulting
+//! `registry.digest()`, `archive.root()` and committed control snapshot;
+//! `validate` replays on clones and
 //! compares the claims before anything is durable.
 //!
 //! Durability order is fixed: journal first (the order authority), then
@@ -26,10 +27,11 @@
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::fmt;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
-use vhalla_core::RealmId;
+pub use vhalla_core::{RealmId, RoomId};
 #[cfg(unix)]
 use vhalla_journal::{Bundle, BundleParts, FsStore, Journal, JournalError, Outcome, Store};
 use vhalla_rooms::registry::{DirectoryPolicy, Registry, RegistryError};
@@ -51,6 +53,8 @@ mod tests;
 pub const MAX_BATCH_BYTES: usize = 48 * 1024;
 /// Maximum records per class in one batch.
 pub const MAX_BATCH_ITEMS: usize = 32;
+/// Maximum game-object commitments in one batch.
+pub const MAX_GAME_COMMITMENTS: usize = 32;
 /// Maximum advance of the committed clock in one batch. Once the first
 /// committed batch anchors the clock, later batches may not regress it and
 /// may not jump more than a day ahead — a stalled clock ratchets back toward
@@ -58,8 +62,11 @@ pub const MAX_BATCH_ITEMS: usize = 32;
 pub const MAX_TIME_DRIFT: u64 = 86_400;
 
 const FRONTIER_BYTES: usize = 8 + 32 + 32 + 32 + 32 + 8;
+/// Fixed encoded bytes of one game commitment inside a V3 batch or body.
+pub const GAME_COMMITMENT_BYTES: usize = 16 + 16 + 32 + 8 + 1 + 32;
 const BATCH_MAGIC: &[u8; 4] = b"VRB1";
 const BATCH_MAGIC_V2: &[u8; 4] = b"VRB2";
+const BATCH_MAGIC_V3: &[u8; 4] = b"VRB3";
 
 /// Bounded decode of a canonical eligible-source set: strictly ascending,
 /// duplicate-free owner ids bounded by `MAX_OWNERS`.
@@ -209,9 +216,78 @@ impl Frontier {
     }
 }
 
-/// One consensus-carried batch: canonical signed social evidence and room
-/// records plus the claimed post-state digests, prepared against an exact
-/// parent frontier.
+/// The game object whose digest a consensus batch orders and includes.
+/// Values match the corresponding `vhalla-game-platonik` record tags, while
+/// this crate remains independent of any game engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum GameCommitmentKind {
+    /// A session opening.
+    SessionOpen = 2,
+    /// A signed game event.
+    Event = 3,
+    /// A replay-derived checkpoint.
+    Checkpoint = 4,
+    /// A replay-derived settlement.
+    Settlement = 5,
+}
+
+impl GameCommitmentKind {
+    fn decode(value: u8) -> Result<Self, ApplyError> {
+        match value {
+            2 => Ok(Self::SessionOpen),
+            3 => Ok(Self::Event),
+            4 => Ok(Self::Checkpoint),
+            5 => Ok(Self::Settlement),
+            _ => Err(ApplyError::Decode),
+        }
+    }
+}
+
+/// A fixed-size, game-engine-independent commitment ordered by rooms
+/// consensus. The certificate authorizes inclusion; this value is not a room
+/// controller record and mutates neither the room registry nor social state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameCommitment {
+    /// Exact realm of the session.
+    pub realm: RealmId,
+    /// Exact room routing scope of the session.
+    pub room: RoomId,
+    /// Full game session key.
+    pub session: [u8; 32],
+    /// Game session epoch.
+    pub epoch: u64,
+    /// Kind of game object committed.
+    pub kind: GameCommitmentKind,
+    /// Digest of the canonical game object under its kind-specific domain.
+    pub object: [u8; 32],
+}
+
+impl GameCommitment {
+    fn encode_into(self, raw: &mut Vec<u8>) {
+        raw.extend_from_slice(&self.realm.0.to_be_bytes());
+        raw.extend_from_slice(&self.room.0.to_be_bytes());
+        raw.extend_from_slice(&self.session);
+        raw.extend_from_slice(&self.epoch.to_be_bytes());
+        raw.push(self.kind as u8);
+        raw.extend_from_slice(&self.object);
+    }
+
+    fn decode_from(rest: &mut &[u8]) -> Result<Self, ApplyError> {
+        Ok(Self {
+            realm: RealmId(u128::from_be_bytes(take(rest, 16)?.try_into().unwrap())),
+            room: RoomId(u128::from_be_bytes(take(rest, 16)?.try_into().unwrap())),
+            session: take(rest, 32)?.try_into().unwrap(),
+            epoch: u64::from_be_bytes(take(rest, 8)?.try_into().unwrap()),
+            kind: GameCommitmentKind::decode(take(rest, 1)?[0])?,
+            object: take(rest, 32)?.try_into().unwrap(),
+        })
+    }
+}
+
+/// One consensus-carried batch: canonical signed social evidence, room
+/// records, inert game commitments, and claimed post-state digests, prepared
+/// against an exact parent frontier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Batch {
     /// The complete frontier this batch extends.
@@ -223,6 +299,9 @@ pub struct Batch {
     pub evidence: Vec<Vec<u8>>,
     /// Canonical `vhalla_rooms::SignedRecord` bytes — applied in order.
     pub records: Vec<Vec<u8>>,
+    /// Inert game-object commitments, ordered exactly as listed and authorized
+    /// only by the certificate deciding this batch.
+    pub games: Vec<GameCommitment>,
     /// Committed configuration transition: a replacement eligible award-source
     /// set, applied after this batch's records so it governs subsequent
     /// heights. Its authorization is the quorum certificate that decides the
@@ -237,12 +316,15 @@ pub struct Batch {
 }
 
 impl Batch {
-    /// Canonical encoding bound by `MAX_BATCH_BYTES`. The `VRB1` layout is
-    /// emitted iff `eligible` is `None`, so a decoded V1 batch re-encodes to
-    /// identical bytes and its committed `value_id` survives an upgrade.
+    /// Canonical encoding bound by `MAX_BATCH_BYTES`. Existing batches keep
+    /// their exact `VRB1`/`VRB2` form; `VRB3` is emitted only when at least one
+    /// game commitment is present and carries an explicit eligible-set option.
     pub fn encode(&self) -> Vec<u8> {
-        let mut raw = Vec::with_capacity(256);
-        raw.extend_from_slice(if self.eligible.is_none() {
+        let v3 = !self.games.is_empty();
+        let mut raw = Vec::with_capacity(256 + self.games.len() * GAME_COMMITMENT_BYTES);
+        raw.extend_from_slice(if v3 {
+            BATCH_MAGIC_V3
+        } else if self.eligible.is_none() {
             BATCH_MAGIC
         } else {
             BATCH_MAGIC_V2
@@ -259,7 +341,13 @@ impl Batch {
             raw.extend_from_slice(&(item.len() as u32).to_be_bytes());
             raw.extend_from_slice(item);
         }
-        if self.eligible.is_some() {
+        if v3 {
+            encode_eligible(&mut raw, &self.eligible);
+            raw.extend_from_slice(&(self.games.len() as u32).to_be_bytes());
+            for commitment in &self.games {
+                commitment.encode_into(&mut raw);
+            }
+        } else if self.eligible.is_some() {
             encode_eligible(&mut raw, &self.eligible);
         }
         raw.extend_from_slice(&self.result_registry);
@@ -267,15 +355,15 @@ impl Batch {
         raw.extend_from_slice(&self.result_control);
         raw
     }
-    /// Strict bounded decode of `encode` output. `VRB1` batches — written
-    /// before the eligible-transition field existed — still decode with
-    /// `eligible: None`, so retained journals remain readable. A `VRB2`
-    /// batch must carry a transition: `None` canonically encodes as `VRB1`.
+    /// Strict bounded decode of `encode` output. Retained `VRB1` and `VRB2`
+    /// batches remain byte-identical. `VRB2` requires an eligible transition;
+    /// `VRB3` requires at least one bounded game commitment.
     pub fn decode(raw: &[u8]) -> Result<Self, ApplyError> {
         let v2 = raw.get(..4) == Some(BATCH_MAGIC_V2.as_slice());
+        let v3 = raw.get(..4) == Some(BATCH_MAGIC_V3.as_slice());
         if raw.len() < 4 + FRONTIER_BYTES + 8 + 4 + 4 + 96
             || raw.len() > MAX_BATCH_BYTES
-            || !(v2 || raw.get(..4) == Some(BATCH_MAGIC.as_slice()))
+            || !(v2 || v3 || raw.get(..4) == Some(BATCH_MAGIC.as_slice()))
         {
             return Err(ApplyError::Decode);
         }
@@ -299,10 +387,25 @@ impl Batch {
         };
         let evidence = items(&mut rest)?;
         let records = items(&mut rest)?;
-        let eligible = if v2 {
+        let eligible = if v3 {
+            eligible_set(&mut rest)?
+        } else if v2 {
             Some(eligible_set(&mut rest)?.ok_or(ApplyError::Decode)?)
         } else {
             None
+        };
+        let games = if v3 {
+            let count = u32::from_be_bytes(take(&mut rest, 4)?.try_into().unwrap()) as usize;
+            if count == 0 || count > MAX_GAME_COMMITMENTS {
+                return Err(ApplyError::Decode);
+            }
+            let mut games = Vec::with_capacity(count);
+            for _ in 0..count {
+                games.push(GameCommitment::decode_from(&mut rest)?);
+            }
+            games
+        } else {
+            Vec::new()
         };
         let result_registry = take(&mut rest, 32)?.try_into().unwrap();
         let result_social = take(&mut rest, 32)?.try_into().unwrap();
@@ -315,6 +418,7 @@ impl Batch {
             time,
             evidence,
             records,
+            games,
             eligible,
             result_registry,
             result_social,
@@ -322,7 +426,7 @@ impl Batch {
         })
     }
     /// The value commitment certificates name: a hash of the full canonical
-    /// batch, including the claimed result digests.
+    /// batch, including game commitments and the claimed result digests.
     #[must_use]
     pub fn value_id(&self) -> [u8; 32] {
         sha256(b"vhalla/rooms/live-batch/v1\0", &[&self.encode()])
@@ -330,10 +434,10 @@ impl Batch {
 }
 
 /// A submission body: the parts of a batch a producer owns — agreed clock,
-/// canonical social evidence and room records — without the frontier or
-/// claimed result digests, which only the node holding the current state
-/// can compute. The node's intake drains these and assembles the full
-/// batch against its own frontier at proposal time, so a producer never
+/// canonical social evidence, room records, and game commitments — without
+/// the frontier or claimed result digests, which only the node holding the
+/// current state can compute. The node's intake drains these and assembles the
+/// full batch against its own frontier at proposal time, so a producer never
 /// fabricates parent or result claims.
 pub struct BatchBody {
     /// The agreed consensus clock for the assembled batch.
@@ -342,6 +446,8 @@ pub struct BatchBody {
     pub evidence: Vec<Vec<u8>>,
     /// Canonical `vhalla_rooms::SignedRecord` bytes.
     pub records: Vec<Vec<u8>>,
+    /// Inert game-object commitments in the order consensus should decide.
+    pub games: Vec<GameCommitment>,
     /// Optional committed configuration transition — a replacement eligible
     /// award-source set. Carried on the operator-dropped `*.eligible` intake
     /// path; ordinary producer submissions leave it `None`.
@@ -350,13 +456,18 @@ pub struct BatchBody {
 
 const BODY_MAGIC: &[u8; 4] = b"VBB1";
 const BODY_MAGIC_V2: &[u8; 4] = b"VBB2";
+const BODY_MAGIC_V3: &[u8; 4] = b"VBB3";
 
 impl BatchBody {
-    /// Canonical bounded encoding: `VBB1` iff `eligible` is `None`, matching
-    /// the `Batch` convention so every body value has one byte form.
+    /// Canonical bounded encoding. Existing transition-free and transition
+    /// bodies remain `VBB1` and `VBB2`; `VBB3` is emitted only for a nonempty
+    /// game commitment lane.
     pub fn encode(&self) -> Vec<u8> {
-        let mut raw = Vec::with_capacity(64);
-        raw.extend_from_slice(if self.eligible.is_none() {
+        let v3 = !self.games.is_empty();
+        let mut raw = Vec::with_capacity(64 + self.games.len() * GAME_COMMITMENT_BYTES);
+        raw.extend_from_slice(if v3 {
+            BODY_MAGIC_V3
+        } else if self.eligible.is_none() {
             BODY_MAGIC
         } else {
             BODY_MAGIC_V2
@@ -369,19 +480,26 @@ impl BatchBody {
                 raw.extend_from_slice(item);
             }
         }
-        if self.eligible.is_some() {
+        if v3 {
+            encode_eligible(&mut raw, &self.eligible);
+            raw.extend_from_slice(&(self.games.len() as u32).to_be_bytes());
+            for commitment in &self.games {
+                commitment.encode_into(&mut raw);
+            }
+        } else if self.eligible.is_some() {
             encode_eligible(&mut raw, &self.eligible);
         }
         raw
     }
-    /// Strict bounded decode of `encode` output. `VBB1` bodies still decode
-    /// with `eligible: None`, so older `rooms submit` output stays admissible;
-    /// `VBB2` requires a present transition (`None` encodes as `VBB1`).
+    /// Strict bounded decode of `encode` output. Retained `VBB1` and `VBB2`
+    /// bodies remain byte-identical; `VBB3` requires at least one bounded game
+    /// commitment.
     pub fn decode(raw: &[u8]) -> Result<Self, ApplyError> {
         let v2 = raw.get(..4) == Some(BODY_MAGIC_V2.as_slice());
+        let v3 = raw.get(..4) == Some(BODY_MAGIC_V3.as_slice());
         if raw.len() < 4 + 8 + 4 + 4
             || raw.len() > MAX_BATCH_BYTES
-            || !(v2 || raw.get(..4) == Some(BODY_MAGIC.as_slice()))
+            || !(v2 || v3 || raw.get(..4) == Some(BODY_MAGIC.as_slice()))
         {
             return Err(ApplyError::Decode);
         }
@@ -404,10 +522,25 @@ impl BatchBody {
         };
         let evidence = items(&mut rest)?;
         let records = items(&mut rest)?;
-        let eligible = if v2 {
+        let eligible = if v3 {
+            eligible_set(&mut rest)?
+        } else if v2 {
             Some(eligible_set(&mut rest)?.ok_or(ApplyError::Decode)?)
         } else {
             None
+        };
+        let games = if v3 {
+            let count = u32::from_be_bytes(take(&mut rest, 4)?.try_into().unwrap()) as usize;
+            if count == 0 || count > MAX_GAME_COMMITMENTS {
+                return Err(ApplyError::Decode);
+            }
+            let mut games = Vec::with_capacity(count);
+            for _ in 0..count {
+                games.push(GameCommitment::decode_from(&mut rest)?);
+            }
+            games
+        } else {
+            Vec::new()
         };
         if !rest.is_empty() {
             return Err(ApplyError::Decode);
@@ -416,6 +549,7 @@ impl BatchBody {
             time,
             evidence,
             records,
+            games,
             eligible,
         })
     }
@@ -549,8 +683,8 @@ impl Application {
         Ok((social, registry))
     }
 
-    /// Builds a decided-candidate batch against the current frontier:
-    /// replays, then fills in the claimed result digests.
+    /// Builds a decided-candidate batch without game commitments against the
+    /// current frontier, preserving the original `VRB1`/`VRB2` path.
     pub fn prepare(
         &self,
         time: u64,
@@ -558,7 +692,25 @@ impl Application {
         records: Vec<Vec<u8>>,
         eligible: Option<Vec<OwnerId>>,
     ) -> Result<Checked, ApplyError> {
-        if evidence.len() > MAX_BATCH_ITEMS || records.len() > MAX_BATCH_ITEMS {
+        self.prepare_with_games(time, evidence, records, Vec::new(), eligible)
+    }
+
+    /// Builds a decided-candidate batch with inert game commitments against
+    /// the current frontier: replays application records, then fills in the
+    /// claimed result digests. Game commitments affect the batch value and
+    /// order only, never room or social application state.
+    pub fn prepare_with_games(
+        &self,
+        time: u64,
+        evidence: Vec<Vec<u8>>,
+        records: Vec<Vec<u8>>,
+        games: Vec<GameCommitment>,
+        eligible: Option<Vec<OwnerId>>,
+    ) -> Result<Checked, ApplyError> {
+        if evidence.len() > MAX_BATCH_ITEMS
+            || records.len() > MAX_BATCH_ITEMS
+            || games.len() > MAX_GAME_COMMITMENTS
+        {
             return Err(ApplyError::Bounds);
         }
         let time = self.bound_time(time);
@@ -568,6 +720,7 @@ impl Application {
             time,
             evidence,
             records,
+            games,
             eligible,
             result_registry: registry.digest(),
             result_social: *social.root().as_bytes(),
@@ -598,7 +751,10 @@ impl Application {
         if batch.parent != self.frontier {
             return Err(ApplyError::Parent);
         }
-        if batch.evidence.len() > MAX_BATCH_ITEMS || batch.records.len() > MAX_BATCH_ITEMS {
+        if batch.evidence.len() > MAX_BATCH_ITEMS
+            || batch.records.len() > MAX_BATCH_ITEMS
+            || batch.games.len() > MAX_GAME_COMMITMENTS
+        {
             return Err(ApplyError::Bounds);
         }
         if batch.time != self.bound_time(batch.time) {
@@ -992,6 +1148,18 @@ impl<S: Store> Adapter<S> {
             return DecidedOutcome::Withheld;
         };
         if reflected(&self.app, &batch) {
+            if batch.evidence.is_empty()
+                && batch.records.is_empty()
+                && batch.eligible.is_none()
+                && !batch.games.is_empty()
+            {
+                let checked = match self.app.validate(&batch) {
+                    Ok(checked) => checked,
+                    Err(_) => return DecidedOutcome::Withheld,
+                };
+                self.app.apply_locally(checked);
+                self.prune_pending();
+            }
             return DecidedOutcome::Acked;
         }
         let checked = match self.app.validate(&batch) {

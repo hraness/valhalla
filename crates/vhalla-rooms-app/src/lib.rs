@@ -644,6 +644,7 @@ impl Service {
             time,
             evidence,
             records,
+            games: Vec::new(),
             eligible: None,
         };
         let tmp = path.with_extension("body.tmp");

@@ -13,8 +13,8 @@ workspace = true
 # The pinned Platonik engine as converter source, corpus generator, and test
 # oracle. Never a receiver requirement; the default path has no serde.
 oracle = ["dep:platonik-core", "dep:serde", "dep:serde_json"]
-# Attests a verified settlement under a rooms-consensus certificate through a
-# caller-supplied verify hook. Never a receiver requirement.
+# Attests a verified settlement under a typed rooms-consensus game commitment
+# and caller-supplied certificate verify hook. Never a receiver requirement.
 quorum = ["dep:vhalla-rooms-consensus"]
 
 [dependencies]

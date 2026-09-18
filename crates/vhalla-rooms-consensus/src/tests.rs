@@ -107,6 +107,43 @@ fn exact_redelivery_reconciles_without_double_apply() {
 }
 
 #[test]
+fn committed_game_only_batch_reconciles_an_unadvanced_frontier() {
+    let plan = fixture::plan(0, 4, 8);
+    let home = dir("game-reconcile");
+    let mut adapter = Adapter::open(&home, &plan.genesis).unwrap();
+    let checked = adapter
+        .application()
+        .prepare_with_games(
+            1,
+            vec![],
+            vec![],
+            vec![GameCommitment {
+                realm: plan.genesis.realm,
+                room: RoomId(2),
+                session: [3; 32],
+                epoch: 4,
+                kind: GameCommitmentKind::Event,
+                object: [5; 32],
+            }],
+            None,
+        )
+        .unwrap();
+    let batch = checked.batch().clone();
+    let certificate = cert(&batch, 1, "game");
+    adapter.hold(batch);
+    assert_eq!(adapter.decide(&certificate), DecidedOutcome::Acked);
+    let committed = adapter.frontier();
+    adapter.app = Application::genesis(
+        plan.genesis.archive.clone(),
+        plan.genesis.registry().unwrap(),
+    );
+    assert_eq!(adapter.frontier().height, 0);
+    assert_eq!(adapter.decide(&certificate), DecidedOutcome::Acked);
+    assert_eq!(adapter.frontier(), committed);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn unknown_value_and_equivocation_are_rejected() {
     let plan = fixture::plan(2, 4, 12);
     let home = dir("reject");
@@ -945,6 +982,7 @@ fn vrb1_batches_and_bodies_decode_without_transitions() {
         time: 9,
         evidence: vec![],
         records: vec![],
+        games: vec![],
         eligible: Some(vec![OwnerId::from_bytes([7; 32])]),
     };
     let raw = body.encode();
@@ -957,6 +995,7 @@ fn vrb1_batches_and_bodies_decode_without_transitions() {
         time: 9,
         evidence: vec![],
         records: vec![],
+        games: vec![],
         eligible: None,
     };
     let raw = plain.encode();
@@ -969,6 +1008,102 @@ fn vrb1_batches_and_bodies_decode_without_transitions() {
     flag0[..4].copy_from_slice(b"VBB2");
     flag0.insert(4 + 8 + 4 + 4, 0);
     assert!(matches!(BatchBody::decode(&flag0), Err(ApplyError::Decode)));
+}
+
+#[test]
+fn vrb3_orders_bounded_game_commitments_without_mutating_application_state() {
+    let scenario = fixture::scenario(2, 4);
+    let commitment = GameCommitment {
+        realm: RealmId(11),
+        room: RoomId(12),
+        session: [13; 32],
+        epoch: 14,
+        kind: GameCommitmentKind::Settlement,
+        object: [15; 32],
+    };
+    let checked = scenario
+        .app
+        .prepare_with_games(1, vec![], vec![], vec![commitment], None)
+        .unwrap();
+    let batch = checked.batch();
+    let raw = batch.encode();
+    assert_eq!(&raw[..4], b"VRB3");
+    assert_eq!(batch.result_registry, scenario.app.registry().digest());
+    assert_eq!(
+        batch.result_social,
+        *scenario.app.social().root().as_bytes()
+    );
+    let decoded = Batch::decode(&raw).unwrap();
+    assert_eq!(decoded.games, vec![commitment]);
+    assert_eq!(decoded.encode(), raw);
+    assert!(scenario.app.validate(&decoded).is_ok());
+    let mut with_transition = decoded.clone();
+    with_transition.eligible = Some(vec![
+        OwnerId::from_bytes([9; 32]),
+        OwnerId::from_bytes([7; 32]),
+    ]);
+    let transition_raw = with_transition.encode();
+    assert_eq!(&transition_raw[..4], b"VRB3");
+    assert_eq!(
+        Batch::decode(&transition_raw).unwrap().eligible,
+        Some(vec![
+            OwnerId::from_bytes([7; 32]),
+            OwnerId::from_bytes([9; 32]),
+        ])
+    );
+
+    let another = GameCommitment {
+        kind: GameCommitmentKind::Event,
+        object: [16; 32],
+        ..commitment
+    };
+    let forward = scenario
+        .app
+        .prepare_with_games(1, vec![], vec![], vec![commitment, another], None)
+        .unwrap();
+    let reverse = scenario
+        .app
+        .prepare_with_games(1, vec![], vec![], vec![another, commitment], None)
+        .unwrap();
+    assert_ne!(forward.batch().value_id(), reverse.batch().value_id());
+
+    let body = BatchBody {
+        time: 1,
+        evidence: vec![],
+        records: vec![],
+        games: vec![commitment],
+        eligible: Some(vec![OwnerId::from_bytes([7; 32])]),
+    };
+    let raw = body.encode();
+    assert_eq!(&raw[..4], b"VBB3");
+    let decoded = BatchBody::decode(&raw).unwrap();
+    assert_eq!(decoded.games, body.games);
+    assert_eq!(decoded.eligible, body.eligible);
+    assert_eq!(decoded.encode(), raw);
+
+    assert!(matches!(
+        scenario.app.prepare_with_games(
+            1,
+            vec![],
+            vec![],
+            vec![commitment; MAX_GAME_COMMITMENTS + 1],
+            None,
+        ),
+        Err(ApplyError::Bounds)
+    ));
+
+    let mut bad_kind = batch.encode();
+    let game_at = 4 + FRONTIER_BYTES + 8 + 4 + 4 + 1 + 4;
+    let kind_at = game_at + 16 + 16 + 32 + 8;
+    assert_eq!(bad_kind[kind_at], GameCommitmentKind::Settlement as u8);
+    bad_kind[kind_at] = 1;
+    assert!(matches!(Batch::decode(&bad_kind), Err(ApplyError::Decode)));
+    let mut zero_count = batch.encode();
+    zero_count[game_at - 4..game_at].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(matches!(
+        Batch::decode(&zero_count),
+        Err(ApplyError::Decode)
+    ));
 }
 
 #[test]
@@ -1009,23 +1144,62 @@ fn decoders_accept_only_canonical_bytes() {
         OwnerId::from_bytes([9; 32]),
         OwnerId::from_bytes([7; 32]),
     ]);
-    check(vec![checked.batch().encode(), transition.encode()], |raw| {
-        Batch::decode(raw).ok().map(|batch| batch.encode())
-    });
+    let game = scenario
+        .app
+        .prepare_with_games(
+            1,
+            vec![],
+            vec![],
+            vec![GameCommitment {
+                realm: RealmId(1),
+                room: RoomId(2),
+                session: [3; 32],
+                epoch: 4,
+                kind: GameCommitmentKind::Event,
+                object: [5; 32],
+            }],
+            None,
+        )
+        .unwrap();
+    check(
+        vec![
+            checked.batch().encode(),
+            transition.encode(),
+            game.batch().encode(),
+        ],
+        |raw| Batch::decode(raw).ok().map(|batch| batch.encode()),
+    );
 
     let body = BatchBody {
         time: 9,
         evidence: vec![],
         records: vec![],
+        games: vec![],
         eligible: Some(vec![OwnerId::from_bytes([7; 32])]),
+    };
+    let game_body = BatchBody {
+        time: 9,
+        evidence: vec![],
+        records: vec![],
+        games: vec![GameCommitment {
+            realm: RealmId(1),
+            room: RoomId(2),
+            session: [3; 32],
+            epoch: 4,
+            kind: GameCommitmentKind::Settlement,
+            object: [5; 32],
+        }],
+        eligible: None,
     };
     check(
         vec![
             body.encode(),
+            game_body.encode(),
             BatchBody {
                 time: 9,
                 evidence: vec![],
                 records: vec![],
+                games: vec![],
                 eligible: None,
             }
             .encode(),

@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use vhalla_rooms_consensus::{encode_eligible_update, fixture, Batch, OwnerId};
+use vhalla_rooms_consensus::{
+    encode_eligible_update, fixture, Batch, GameCommitment, GameCommitmentKind, OwnerId,
+};
 
 /// The shared batch plan: `heights` room creations over 8 beneficiary
 /// owners and 16 eligible award sources — enough credits for two rooms
@@ -803,6 +805,7 @@ async fn sibling_slot_batch_voted_down_then_honest_batch_commits() {
         records: vec![
             fixture::creation_record(&s.owners[0], grant_a, grant_a, "beta", 2, 4, 9).encode(),
         ],
+        games: Vec::new(),
         eligible: None,
         result_registry: [9; 32],
         result_social: [9; 32],
@@ -2407,6 +2410,7 @@ fn losing_body_reassembles_against_live_frontier() {
             time: 1,
             evidence,
             records,
+            games: Vec::new(),
             eligible: None,
         };
         std::fs::write(intake.join(format!("{name}.body")), body.encode()).unwrap();
@@ -2613,6 +2617,41 @@ fn test_app(tag: &str, key: &PrivateKey, set: &RoomValidatorSet) -> App {
         resupplied: Arc::new(Mutex::new(0)),
         held_replies: Vec::new(),
     }
+}
+
+#[test]
+fn game_commitment_body_survives_intake_and_live_frontier_assembly() {
+    let (keys, set) = validators(1);
+    let mut app = test_app("game-intake", &keys[0], &set);
+    let intake = app.store.parent().unwrap().join("intake");
+    std::fs::create_dir_all(&intake).unwrap();
+    let commitment = GameCommitment {
+        realm: vhalla_rooms_consensus::RealmId(11),
+        room: vhalla_rooms_consensus::RoomId(12),
+        session: [13; 32],
+        epoch: 14,
+        kind: GameCommitmentKind::Event,
+        object: [15; 32],
+    };
+    let body = BatchBody {
+        time: 1,
+        evidence: Vec::new(),
+        records: Vec::new(),
+        games: vec![commitment],
+        eligible: None,
+    };
+    std::fs::write(intake.join("game.body"), body.encode()).unwrap();
+
+    app.drain_intake();
+    assert_eq!(
+        app.pending_proposals,
+        VecDeque::from([PendingEntry::Body("game".to_owned())])
+    );
+    let id = app.next_pending().unwrap();
+    let batch = app.held_by_id.get(&id).unwrap();
+    assert_eq!(batch.games, vec![commitment]);
+    assert_eq!(&batch.encode()[..4], b"VRB3");
+    assert_eq!(id.0, batch.value_id());
 }
 
 /// Deciding a height retires per-height state that can never be

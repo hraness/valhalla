@@ -5,6 +5,8 @@ mod common;
 
 use common::{live_manifest, passed_by_plain_run, policy, Signer, REALM, ROOM};
 use vhalla_core::Epoch;
+#[cfg(feature = "quorum")]
+use vhalla_game_platonik::ids::SessionKey;
 use vhalla_game_platonik::ids::{CheckpointHash, RulesetId};
 use vhalla_game_platonik::manifest::MissingMember;
 use vhalla_game_platonik::oracle::convert::convert;
@@ -705,9 +707,11 @@ fn a_verified_settlement_exports_a_receipt_claim_the_verifier_signed() {
 
 #[cfg(feature = "quorum")]
 #[test]
-fn a_certificate_attests_only_the_settlement_its_batch_names() {
-    use vhalla_game_platonik::quorum::{attest, bare_hash_record, QuorumError};
-    use vhalla_rooms_consensus::{Batch, CommitCertificate, Frontier};
+fn a_certificate_attests_only_the_scoped_settlement_its_batch_names() {
+    use vhalla_game_platonik::quorum::{attest, commitment, CommitmentError, QuorumError};
+    use vhalla_rooms_consensus::{
+        Batch, CommitCertificate, Frontier, GameCommitment, GameCommitmentKind,
+    };
     let Finished {
         mut session,
         mut receiver,
@@ -728,7 +732,21 @@ fn a_certificate_attests_only_the_settlement_its_batch_names() {
         },
     );
     let verified = receiver.settle(&mut session, &result, 9).unwrap();
-    let batch_with = |records: Vec<Vec<u8>>| Batch {
+    let named = commitment(&session, &result).unwrap();
+    assert_eq!(named.kind, GameCommitmentKind::Settlement);
+    assert_eq!(named.object, verified.hash());
+    let mut invalid = result.clone();
+    invalid.signature = [0; 64];
+    assert_eq!(commitment(&session, &invalid), Err(CommitmentError::Record));
+    let wrong_session = host.settlement(
+        SessionKey([0xEE; 32]),
+        &vhalla_game_platonik::wire::decode_settlement(&result.body).unwrap(),
+    );
+    assert_eq!(
+        commitment(&session, &wrong_session),
+        Err(CommitmentError::Scope)
+    );
+    let batch_with = |games: Vec<GameCommitment>| Batch {
         parent: Frontier {
             height: 41,
             value: [1; 32],
@@ -739,13 +757,14 @@ fn a_certificate_attests_only_the_settlement_its_batch_names() {
         },
         time: 101,
         evidence: Vec::new(),
-        records,
+        records: Vec::new(),
+        games,
         eligible: None,
         result_registry: [5; 32],
         result_social: [6; 32],
         result_control: [7; 32],
     };
-    let batch = batch_with(vec![verified.hash().to_vec()]);
+    let batch = batch_with(vec![named]);
     let certificate = CommitCertificate {
         bytes: vec![0xC3; 96],
         value_commitment: batch.value_id(),
@@ -754,73 +773,58 @@ fn a_certificate_attests_only_the_settlement_its_batch_names() {
     let accept = |bytes: &[u8], height: u64, value: &[u8; 32]| {
         bytes == [0xC3; 96] && height == 42 && *value == batch.value_id()
     };
-    let quorum = attest(
-        &verified,
-        &certificate,
-        &batch.encode(),
-        accept,
-        bare_hash_record,
-    )
-    .unwrap();
+    let quorum = attest(&verified, &certificate, &batch.encode(), accept).unwrap();
     assert_eq!(quorum.hash(), verified.hash());
     assert_eq!(quorum.session(), key);
     assert_eq!(quorum.epoch(), 0);
     assert_eq!(quorum.height(), 42);
     assert_eq!(quorum.value(), batch.value_id());
-    // The hook refuses: no attestation, whatever the batch says.
     assert_eq!(
-        attest(
-            &verified,
-            &certificate,
-            &batch.encode(),
-            |_, _, _| false,
-            bare_hash_record
-        )
-        .err(),
+        attest(&verified, &certificate, &batch.encode(), |_, _, _| false).err(),
         Some(QuorumError::Certificate)
     );
-    // A batch the certificate does not decide.
-    let other = batch_with(vec![verified.hash().to_vec(), vec![9; 40]]);
+    let other = batch_with(vec![
+        named,
+        GameCommitment {
+            object: [9; 32],
+            ..named
+        },
+    ]);
     assert_eq!(
-        attest(
-            &verified,
-            &certificate,
-            &other.encode(),
-            accept,
-            bare_hash_record
-        )
-        .err(),
+        attest(&verified, &certificate, &other.encode(), accept).err(),
         Some(QuorumError::ValueMismatch)
     );
-    // A decided batch naming nothing, or another settlement.
-    for (records, expected) in [
+    for (games, expected) in [
         (Vec::new(), QuorumError::Unbound),
+        (vec![named, named], QuorumError::Unbound),
         (
-            vec![verified.hash().to_vec(), [8; 32].to_vec()],
+            vec![GameCommitment {
+                object: [8; 32],
+                ..named
+            }],
+            QuorumError::Mismatch,
+        ),
+        (
+            vec![GameCommitment {
+                room: vhalla_core::RoomId(verified.room().0 + 1),
+                ..named
+            }],
             QuorumError::Unbound,
         ),
-        (vec![[8; 32].to_vec()], QuorumError::Mismatch),
     ] {
-        let batch = batch_with(records);
+        let batch = batch_with(games);
         let certificate = CommitCertificate {
             bytes: vec![0xC3; 96],
             value_commitment: batch.value_id(),
             height: 42,
         };
         assert_eq!(
-            attest(
-                &verified,
-                &certificate,
-                &batch.encode(),
-                |_, _, _| true,
-                bare_hash_record
-            )
-            .err(),
+            attest(&verified, &certificate, &batch.encode(), |_, _, _| true).err(),
             Some(expected)
         );
     }
     assert_eq!(
-        attest(&verified, &certificate, b"VRB1", accept, bare_hash_record).err(),
+        attest(&verified, &certificate, b"VRB1", accept).err(),
         Some(QuorumError::Batch)
     );
 }

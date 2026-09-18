@@ -1,19 +1,93 @@
 //! Quorum attestation of a verified settlement: a rooms-consensus commit
 //! certificate, checked through the same verify hook `Adapter::absorb` takes,
-//! whose decided batch carries the settlement hash. The certificate never
-//! replaces reproduction: the settlement is verified first, by replay, and the
-//! certificate only says a quorum decided a batch that names that hash.
-//!
-//! The certificate decides a `Batch::value_id`, so the binding to the game is
-//! transitive: the caller says where inside the decided batch the settlement
-//! hash lives. Rooms and social records have no game commitment kind yet, so
-//! the locator is the caller's, not this crate's, and a quorum-ordered session
-//! (`Authority::Quorum` at open) stays reserved until that record kind exists.
+//! whose decided batch carries a typed settlement commitment. The certificate
+//! never replaces reproduction: the settlement is verified first by replay.
 
-use vhalla_rooms_consensus::{Batch, CommitCertificate};
+use vhalla_rooms_consensus::{Batch, CommitCertificate, GameCommitment, GameCommitmentKind};
 
 use crate::ids::SessionKey;
+use crate::record::{GameRecord, RecordKind};
+use crate::session::Session;
 use crate::settlement::VerifiedSettlement;
+use crate::wire::{decode_checkpoint, decode_game_event, decode_session_open, decode_settlement};
+
+/// Why a game record cannot become a rooms-consensus commitment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitmentError {
+    /// The record signature is invalid.
+    Record,
+    /// This game record kind is not ordered through the commitment lane.
+    Kind,
+    /// The record's embedded scope differs from the session.
+    Scope,
+    /// The record body does not decode as its declared kind.
+    Codec,
+}
+
+/// Converts a signed game record into the fixed rooms-consensus commitment for
+/// `session`, deriving scope and epoch from the decoded record rather than from
+/// caller-supplied fields.
+pub fn commitment(
+    session: &Session,
+    record: &GameRecord,
+) -> Result<GameCommitment, CommitmentError> {
+    record.verify().map_err(|_| CommitmentError::Record)?;
+    if record.session != session.key() {
+        return Err(CommitmentError::Scope);
+    }
+    let (epoch, kind) = match record.kind {
+        RecordKind::SessionOpen => {
+            let open = decode_session_open(&record.body).map_err(|_| CommitmentError::Codec)?;
+            if open.key() != session.key()
+                || open.realm != session.realm()
+                || open.room != session.room()
+                || open.epoch != session.epoch()
+            {
+                return Err(CommitmentError::Scope);
+            }
+            (open.epoch.0, GameCommitmentKind::SessionOpen)
+        }
+        RecordKind::Event => {
+            let event = decode_game_event(&record.body).map_err(|_| CommitmentError::Codec)?;
+            if event.session != session.key() || event.epoch != session.epoch() {
+                return Err(CommitmentError::Scope);
+            }
+            (event.epoch.0, GameCommitmentKind::Event)
+        }
+        RecordKind::Checkpoint => {
+            let checkpoint = decode_checkpoint(&record.body).map_err(|_| CommitmentError::Codec)?;
+            if checkpoint.session != session.key()
+                || checkpoint.ledger.realm != session.realm()
+                || checkpoint.ledger.epoch != session.epoch()
+            {
+                return Err(CommitmentError::Scope);
+            }
+            (checkpoint.ledger.epoch.0, GameCommitmentKind::Checkpoint)
+        }
+        RecordKind::Settlement => {
+            let settlement = decode_settlement(&record.body).map_err(|_| CommitmentError::Codec)?;
+            let (named, epoch) = match settlement {
+                crate::wire::Settlement::Result { session, epoch, .. }
+                | crate::wire::Settlement::Unresolved { session, epoch, .. } => (session, epoch),
+            };
+            if named != session.key() || epoch != session.epoch() {
+                return Err(CommitmentError::Scope);
+            }
+            (epoch.0, GameCommitmentKind::Settlement)
+        }
+        RecordKind::Manifest | RecordKind::ArtifactRequest | RecordKind::ArtifactManifest => {
+            return Err(CommitmentError::Kind)
+        }
+    };
+    Ok(GameCommitment {
+        realm: session.realm(),
+        room: session.room(),
+        session: session.key().0,
+        epoch,
+        kind,
+        object: record.object_digest(),
+    })
+}
 
 /// Why a certificate does not attest a settlement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,22 +154,20 @@ impl QuorumSettlement {
 /// (journal bundle field 3).
 ///
 /// `verify` is the certificate check, with the `Adapter::absorb` signature:
-/// `(certificate bytes, height, value commitment) -> accepted`. `locate` reads
-/// the settlement hash the decided batch carries, or `None`.
+/// `(certificate bytes, height, value commitment) -> accepted`.
 ///
 /// Order: decode the batch, require the certificate to decide its value id,
-/// verify the certificate, locate the hash, and require it to equal the
-/// reproduced settlement's hash.
-pub fn attest<V, L>(
+/// verify the certificate, locate exactly one settlement commitment under the
+/// reproduced settlement's full realm/room/session/epoch scope, and require
+/// its object digest to equal the reproduced settlement hash.
+pub fn attest<V>(
     settlement: &VerifiedSettlement,
     certificate: &CommitCertificate,
     batch_bytes: &[u8],
     verify: V,
-    locate: L,
 ) -> Result<QuorumSettlement, QuorumError>
 where
     V: FnOnce(&[u8], u64, &[u8; 32]) -> bool,
-    L: FnOnce(&Batch) -> Option<[u8; 32]>,
 {
     let batch = Batch::decode(batch_bytes).map_err(|_| QuorumError::Batch)?;
     if batch.value_id() != certificate.value_commitment {
@@ -108,7 +180,17 @@ where
     ) {
         return Err(QuorumError::Certificate);
     }
-    let named = locate(&batch).ok_or(QuorumError::Unbound)?;
+    let mut matching = batch.games.iter().filter(|commitment| {
+        commitment.realm == settlement.realm()
+            && commitment.room == settlement.room()
+            && commitment.session == settlement.session().0
+            && commitment.epoch == settlement.epoch()
+            && commitment.kind == GameCommitmentKind::Settlement
+    });
+    let named = matching.next().ok_or(QuorumError::Unbound)?.object;
+    if matching.next().is_some() {
+        return Err(QuorumError::Unbound);
+    }
     if named != settlement.hash() {
         return Err(QuorumError::Mismatch);
     }
@@ -119,20 +201,4 @@ where
         height: certificate.height,
         value: certificate.value_commitment,
     })
-}
-
-/// A locator for a batch whose `records` carry the bare 32-byte settlement
-/// hash as one entry: the stand-in binding until a rooms record kind exists.
-/// Exactly one such entry must be present.
-#[must_use]
-pub fn bare_hash_record(batch: &Batch) -> Option<[u8; 32]> {
-    let mut found: Vec<[u8; 32]> = batch
-        .records
-        .iter()
-        .filter_map(|record| <[u8; 32]>::try_from(record.as_slice()).ok())
-        .collect();
-    match (found.len(), found.pop()) {
-        (1, Some(hash)) => Some(hash),
-        _ => None,
-    }
 }

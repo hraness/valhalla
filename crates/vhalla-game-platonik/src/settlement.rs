@@ -3,7 +3,7 @@
 //! between competing settlements ranks by self-verifiability, never by
 //! arrival order.
 
-use vhalla_core::{Epoch, PeerId, RealmId, Sequence};
+use vhalla_core::{Epoch, PeerId, RealmId, RoomId, Sequence};
 use vhalla_crypto::{sign_claim, Claim, ClaimDomain, SignedClaim, SubjectDigest};
 use vhalla_witness::hash::ReceiptHash;
 use vhalla_witness::manifest::ValidManifest;
@@ -45,6 +45,8 @@ pub enum SettleError {
 /// ```
 #[derive(Debug)]
 pub struct VerifiedSettlement {
+    realm: RealmId,
+    room: RoomId,
     session: SessionKey,
     epoch: u64,
     verdict: Verdict,
@@ -52,6 +54,16 @@ pub struct VerifiedSettlement {
 }
 
 impl VerifiedSettlement {
+    /// Realm scope.
+    #[must_use]
+    pub const fn realm(&self) -> RealmId {
+        self.realm
+    }
+    /// Room scope.
+    #[must_use]
+    pub const fn room(&self) -> RoomId {
+        self.room
+    }
     /// Session.
     #[must_use]
     pub const fn session(&self) -> SessionKey {
@@ -214,6 +226,8 @@ impl<E: GameEngine> Receiver<E> {
                     }
                 }
                 Ok(VerifiedSettlement {
+                    realm: session.realm(),
+                    room: session.room(),
                     session: session.key(),
                     epoch: epoch.0,
                     verdict,
@@ -256,6 +270,8 @@ impl<E: GameEngine> Receiver<E> {
                     _ => session.record_verdict(verdict.clone()),
                 }
                 Ok(VerifiedSettlement {
+                    realm: session.realm(),
+                    room: session.room(),
                     session: session.key(),
                     epoch: epoch.0,
                     verdict,
