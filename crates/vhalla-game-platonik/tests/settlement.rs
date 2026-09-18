@@ -847,8 +847,8 @@ mod quorum_admission {
     use vhalla_game_platonik::receiver::{Receiver, ReceiverError};
     use vhalla_game_platonik::record::{GameRecord, RecordKind};
     use vhalla_game_platonik::session::{
-        bind_commit, derive_seed, quorum_actor, seed_commitment, OpenError, Rejection, Session,
-        State,
+        bind_commit, derive_seed, fill_salt, quorum_actor, seed_commitment, OpenError, Rejection,
+        Session, State,
     };
     use vhalla_game_platonik::settlement::SettleError;
     use vhalla_game_platonik::wire::{
@@ -856,6 +856,7 @@ mod quorum_admission {
         Settlement,
     };
     use vhalla_rooms_consensus::{Batch, CommitCertificate, Frontier, GameCommitment};
+    use vhalla_witness::hash::ProgramHash;
     use vhalla_witness::platform::ClaimedReceipt;
     use vhalla_witness::world::EventKind;
 
@@ -1075,7 +1076,7 @@ mod quorum_admission {
             height += 1;
             out
         };
-        let salt = [3; 32];
+        let salt = fill_salt(ProgramHash::of(&key.0), parts.slot);
         let commit = bind_commit(key, parts.slot, &parts.program, &salt);
         let mut order_digests = Vec::new();
         let (bind, bind_digest) = player.event(
@@ -1292,7 +1293,7 @@ mod quorum_admission {
         let (mut session, _, _) = open_quorum(&parts);
         let mut player = parts.player;
         let key = session.key();
-        let salt = [3; 32];
+        let salt = fill_salt(ProgramHash::of(&key.0), parts.slot);
         let commit = bind_commit(key, parts.slot, &parts.program, &salt);
         let (bind, _) = player.event(
             key,
@@ -1369,7 +1370,7 @@ mod quorum_admission {
         let mut player = parts.player;
         let key = qsession.key();
         let hkey = hsession.key();
-        let salt = [3; 32];
+        let salt = fill_salt(ProgramHash::of(&key.0), parts.slot);
         let commit = bind_commit(key, parts.slot, &parts.program, &salt);
         let (bind, _) = player.event(
             key,
@@ -1542,7 +1543,8 @@ mod quorum_admission {
         parts.open.nonce = [6; 32];
         let (other, _, _) = open_quorum(&parts);
         let mut player2 = parts.player;
-        let commit = bind_commit(other.key(), parts.slot, &parts.program, &[3; 32]);
+        let salt = fill_salt(ProgramHash::of(&other.key().0), parts.slot);
+        let commit = bind_commit(other.key(), parts.slot, &parts.program, &salt);
         let (event, _) = player2.event(
             other.key(),
             Epoch(0),
