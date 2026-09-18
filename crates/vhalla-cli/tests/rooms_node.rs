@@ -31,7 +31,7 @@ mod enabled {
     use std::{
         fs,
         io::Read,
-        os::unix::fs::DirBuilderExt,
+        os::unix::fs::{DirBuilderExt, PermissionsExt},
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         thread,
@@ -1884,6 +1884,12 @@ mod enabled {
             assert!(out["warnings"].as_array().unwrap().is_empty());
             assert!(home.join("intake").is_dir(), "node-init creates intake");
             assert!(home.join("node.json").is_file());
+            // The scaffolded home is owner-private: it holds the validator
+            // seed, and intake is the producer drop boundary.
+            let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&home), 0o700, "node home is owner-private");
+            assert_eq!(mode(&home.join("intake")), 0o700);
+            assert_eq!(mode(&home.join("node.json")), 0o600);
             // Idempotency is refused: a second init never overwrites.
             let again = Command::new(env!("CARGO_BIN_EXE_vhalla"))
                 .env("HRANESS_SUPPORT", "off")
@@ -2155,6 +2161,16 @@ mod enabled {
         assert_eq!(node["peers"][0].as_str().unwrap(), "10.0.0.9:7000");
         assert_eq!(node["validators"].as_array().unwrap().len(), 7);
         assert_eq!(upd["node_key_votes_from"].as_u64(), Some(1));
+        // The rewrite keeps the seed file owner-private — the atomic
+        // rename replaces the inode, so the mode must be restated.
+        assert_eq!(
+            fs::metadata(home.join("node.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
 
         // A shared-field change is a different network, not an update.
         let mut drifted = net_v2.clone();

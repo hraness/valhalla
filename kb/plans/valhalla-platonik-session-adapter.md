@@ -1461,3 +1461,30 @@ submissions.
 Remaining limitation: intake and same-home restart are qualified in-process; crash-recovery
 mid-height with WAL replay under contention, and any remote intake beyond the local filesystem
 contract, stay open.
+
+### 2026-09-18: mid-height WAL crash recovery and intake write-restriction
+
+`live_quorum_mid_height_crash_replays_wal` closes the in-process mid-height gap. Validator B
+reaches height 3 with an empty queue and no file dropped, so its `GetValue` reply stays held
+and the engine cycles height-3 rounds past their request deadlines — live open-height WAL
+state, not a clean boundary. B crashes mid-hold and restarts on the same home: the WAL replays
+the partial height, the engine resumes height 3, the `.body` file written while it was down
+drains at the next `GetValue`, and the canonical batch — never a tombstone — decides and
+certifies. `committed_height() == 2` is asserted at crash time, so the mid-height claim is
+checked rather than narrated; both journals then serve all five heights and the full admission
+path — open, admits, settle, attest — runs on the restarted node's evidence.
+
+The test shares the file's extracted helpers (`spawn_mesh`, `crash_node`/`restart_node`,
+`drop_and_commit`, `verify_for`, `check_journal`, `drive_session`), so all three live tests now
+run the same rotation, journal assertions, and admission driver.
+
+The intake write-restriction guidance is now enforced at scaffolding: `node-init` creates
+`NODE_HOME` at 0700 when it creates the directory (a pre-existing home keeps the operator's
+mode), `NODE_HOME/intake/` at 0700, and `node.json` at 0600 — it carries the validator seed.
+`node-update` routes through the same atomic writer, so the seed file stays 0600 across
+schedule rewrites rather than silently widening to the umask default. Unix-gated assertions in
+the CLI scaffolding and rotation tests pin all three modes.
+
+Remaining limitation: injected WAL faults (`WalPlan` append/flush `Fail`/`Drop` under
+contention) and remote intake beyond the local filesystem contract stay open; the in-process
+mesh cannot speak to real network partitions or multi-round resupply under load.
