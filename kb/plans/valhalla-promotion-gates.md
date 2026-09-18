@@ -206,7 +206,7 @@ The production workspace currently contains these crates:
 | `vhalla-identity` | experimental Unix private-file application key | qualified secret custody, recovery, transport-key integration and installable native program |
 | `vhalla-witness` | `no_std` witness-mode VM (Platonik habitat-v1 restated), canonical codecs, digests, task manifests, keyless move-only run capability, receipts | the game kernel behind the Slice 5 Platonik adapter and any later witness language, with replay evidence and vectors kept bit-exact across versions |
 | `vhalla-botcaptcha` | signed witness-mode challenge and response, verified challenge as the only capability source, one-use window, and a replaying verifier | steel-thread witness frames (Gate 5), Hashcash mode, and receipt export as a signed claim for a per-realm DAG |
-| `vhalla-game-platonik` | game identifiers and domains, canonical encodings with every bound, the audience-free `GameRecord`, the `GameManifest`, the optional Platonik oracle converter, the `PlatonikV1` engine seam, host-ordered sessions over `vhalla-ledger` with the two-phase live bind, replay-checked checkpoints, and the receiver with pre-charged allowances, settlement, pause and replace across an epoch bump, bounded artifacts, the signed-claim export, and typed settlement attestation through the rooms-consensus game-commitment lane | a position-bearing certificate proof consumed at session open and every quorum admission, with an explicit quorum actor and receipt identity, after which `Authority::Quorum` sessions can open |
+| `vhalla-game-platonik` | game identifiers and domains, canonical encodings with every bound, the audience-free `GameRecord`, the `GameManifest`, the optional Platonik oracle converter, the `PlatonikV1` engine seam, host-ordered sessions over `vhalla-ledger` with the two-phase live bind, replay-checked checkpoints, and the receiver with pre-charged allowances, settlement, pause and replace across an epoch bump, bounded artifacts, the signed-claim export, typed settlement attestation through the rooms-consensus game-commitment lane, and `Authority::Quorum` sessions opened and admitted by consumed position-bearing certificate proofs under the unforgeable `quorum_actor` identity | qualification of a live quorum under real certificate issuance and rotation, plus any quorum-mode operational policy |
 | `vhalla-native` | explicitly pinned paired loopback chat | qualified public routing, identity lifecycle and browser interoperability |
 | `vhalla-cli` | feature-gated native chat and local signed social/discovery commands | installable client with separately qualified public transport and storage adapters |
 | `vhalla-social` | signed owner/agent records, causal projections, exact facets and bounded archive sync | preserve verified control/history under any future retention or network extension |
@@ -293,10 +293,21 @@ The 2026-09-18 rooms wire follow-up adds a third inert game-commitment lane to
 `VRB3`/`VBB3` and covered by the decided value without mutating room or social
 state; older `VRB1`/`VRB2` and `VBB1`/`VBB2` bytes remain exact. The quorum
 attestation now locates one exact realm/room/session/epoch settlement itself,
-with no caller locator or bare-hash room-record stand-in. `Authority::Quorum`
-at open remains reserved until certificate evidence is consumed at every
-admission and the host-only actor, receipt, and transport assumptions are
-replaced explicitly.
+with no caller locator or bare-hash room-record stand-in.
+
+The 2026-09-18 quorum-admission follow-up completes the deferred opening:
+`Authority::Quorum` sessions open through `quorum::open` only when the
+`SessionOpen` commitment is decided at the named batch position, and every
+quorum admission consumes a non-`Clone` `ProvenCommitment` minted by
+`quorum::prove` against the exact session/epoch/kind/object. Authority events
+are authored by `quorum_actor(scheme)` — a deterministic unforgeable Ed25519
+point — carrying the zero signature while player records still verify under
+their own keys; bare `admit`/`settle` stay fail-closed (`ProofRequired`) and
+host sessions reject proofs (`ProofMismatch`). Steel-thread splits delivery
+from authority: `GameSession::new` stays host-only while `new_quorum` pins a
+carrier key whose frames authenticate delivery only, the consumed proof
+carrying game authority. A live quorum session drives to a proof-admitted,
+attestable settlement in tests.
 
 ### Witness platform crates — 2026-09-16
 

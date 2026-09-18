@@ -828,3 +828,808 @@ fn a_certificate_attests_only_the_scoped_settlement_its_batch_names() {
         Some(QuorumError::Batch)
     );
 }
+
+#[cfg(feature = "quorum")]
+mod quorum_admission {
+    use super::{
+        finish_live, live_manifest, passed_by_plain_run, policy, Finished, Signer, REALM, ROOM,
+    };
+    use ed25519_dalek::{Signer as _, VerifyingKey};
+    use vhalla_core::{Epoch, Sequence};
+    use vhalla_game_platonik::ids::RulesetId;
+    use vhalla_game_platonik::manifest::MissingMember;
+    use vhalla_game_platonik::oracle::convert::convert;
+    use vhalla_game_platonik::platonik::PlatonikV1;
+    use vhalla_game_platonik::quorum::{
+        commitment, open as quorum_open, open_commitment, prove, CommitmentError, QuorumError,
+        QuorumOpenError,
+    };
+    use vhalla_game_platonik::receiver::{Receiver, ReceiverError};
+    use vhalla_game_platonik::record::{GameRecord, RecordKind};
+    use vhalla_game_platonik::session::{
+        bind_commit, derive_seed, quorum_actor, seed_commitment, OpenError, Rejection, Session,
+        State,
+    };
+    use vhalla_game_platonik::settlement::SettleError;
+    use vhalla_game_platonik::wire::{
+        encode_game_event, encode_settlement, Authority, EventBody, GameEvent, Player, SessionOpen,
+        Settlement,
+    };
+    use vhalla_rooms_consensus::{Batch, CommitCertificate, Frontier, GameCommitment};
+    use vhalla_witness::platform::ClaimedReceipt;
+    use vhalla_witness::world::EventKind;
+
+    const SCHEME: [u8; 32] = [0xA5; 32];
+
+    fn batch_with(games: Vec<GameCommitment>, height: u64) -> Batch {
+        Batch {
+            parent: Frontier {
+                height: height - 1,
+                value: [1; 32],
+                registry: [2; 32],
+                social: [3; 32],
+                control: [4; 32],
+                time: 100,
+            },
+            time: 101,
+            evidence: Vec::new(),
+            records: Vec::new(),
+            games,
+            eligible: None,
+            result_registry: [5; 32],
+            result_social: [6; 32],
+            result_control: [7; 32],
+        }
+    }
+
+    fn decided(games: Vec<GameCommitment>, height: u64) -> (Batch, CommitCertificate) {
+        let batch = batch_with(games, height);
+        let certificate = CommitCertificate {
+            bytes: vec![0xC3; 96],
+            value_commitment: batch.value_id(),
+            height,
+        };
+        (batch, certificate)
+    }
+
+    fn accepts(batch: &Batch, height: u64) -> impl Fn(&[u8], u64, &[u8; 32]) -> bool + '_ {
+        let value = batch.value_id();
+        move |bytes, h, v| bytes == [0xC3; 96] && h == height && *v == value
+    }
+
+    struct QuorumParts {
+        manifest: vhalla_game_platonik::manifest::GameManifest,
+        template: vhalla_witness::manifest::TaskManifest,
+        open: SessionOpen,
+        slot: u16,
+        program: vhalla_witness::model::Program,
+        host_salt: [u8; 32],
+        player: Signer,
+        actor: [u8; 32],
+    }
+
+    fn quorum_parts() -> QuorumParts {
+        let player = Signer::new(2);
+        let converted =
+            convert(&platonik_core::fixtures::experiment("opening-normal").unwrap()).unwrap();
+        let (manifest, template) =
+            live_manifest(&converted, [11; 32], 64, MissingMember::Pause, None);
+        let slot = converted.programs[0].0;
+        let program = converted.programs[0].1.clone();
+        let host_salt = [7; 32];
+        let actor = quorum_actor(&SCHEME);
+        let open = SessionOpen {
+            realm: REALM,
+            room: ROOM,
+            manifest: manifest.hash(),
+            ruleset: RulesetId::V1,
+            seed_commitment: seed_commitment(&host_salt, manifest.world),
+            authority: Authority::Quorum { scheme: SCHEME },
+            players: vec![Player {
+                key: player.public(),
+                slots: vec![slot],
+            }],
+            epoch: Epoch(0),
+            nonce: [5; 32],
+        };
+        QuorumParts {
+            manifest,
+            template,
+            open,
+            slot,
+            program,
+            host_salt,
+            player,
+            actor,
+        }
+    }
+
+    fn open_quorum(parts: &QuorumParts) -> (Session, Batch, CommitCertificate) {
+        let (batch, certificate) = decided(vec![open_commitment(&parts.open)], 42);
+        let session = quorum_open(
+            parts.manifest.clone(),
+            parts.open.clone(),
+            REALM,
+            &certificate,
+            &batch,
+            0,
+            accepts(&batch, 42),
+        )
+        .unwrap();
+        (session, batch, certificate)
+    }
+
+    /// The quorum actor's event record: the actor cannot sign, so the record
+    /// carries the zero signature and consensus proof is its authority.
+    fn actor_event(
+        actor: [u8; 32],
+        session: &Session,
+        sequence: u64,
+        body: EventBody,
+    ) -> (GameRecord, vhalla_game_platonik::ids::GameEventDigest) {
+        let event = GameEvent {
+            session: session.key(),
+            epoch: session.epoch(),
+            author: actor,
+            sequence: Sequence(sequence),
+            parents: Vec::new(),
+            body,
+        };
+        let digest = event.digest();
+        let record = GameRecord::unsigned(
+            RecordKind::Event,
+            session.key(),
+            actor,
+            encode_game_event(&event),
+        )
+        .unwrap();
+        (record, digest)
+    }
+
+    /// The quorum actor's seal: plan and derive like an honest host, then
+    /// carry the event unsigned — the quorum's decided commitment signs.
+    fn actor_seal(
+        actor: [u8; 32],
+        session: &Session,
+        sequence: u64,
+        segment: u8,
+        through_tick: u32,
+        order: Vec<vhalla_game_platonik::ids::GameEventDigest>,
+    ) -> (GameRecord, vhalla_game_platonik::ids::CheckpointHash) {
+        let draft = GameEvent {
+            session: session.key(),
+            epoch: session.epoch(),
+            author: actor,
+            sequence: Sequence(sequence),
+            parents: Vec::new(),
+            body: EventBody::Seal {
+                segment,
+                through_tick,
+                order: order.clone(),
+                checkpoint: vhalla_game_platonik::ids::CheckpointHash([0; 32]),
+            },
+        };
+        let plan = session.plan_seal(&draft).unwrap();
+        let mut scratch = Receiver::new(PlatonikV1, policy());
+        let checkpoint = scratch.derive(session, &plan).unwrap().hash();
+        let (record, _) = actor_event(
+            actor,
+            session,
+            sequence,
+            EventBody::Seal {
+                segment,
+                through_tick,
+                order,
+                checkpoint,
+            },
+        );
+        (record, checkpoint)
+    }
+
+    /// A live quorum session driven to its final seal: every record ordered
+    /// through its own decided batch and admitted by consumed proof.
+    struct QuorumFinished {
+        session: Session,
+        receiver: Receiver<PlatonikV1>,
+        final_checkpoint: vhalla_game_platonik::ids::CheckpointHash,
+        passed: bool,
+        receipt: ClaimedReceipt,
+        actor: [u8; 32],
+        next_height: u64,
+    }
+
+    /// Orders one record through its own decided batch and admits it by
+    /// consumed proof, like a consensus lane that finalizes each record.
+    fn order(
+        session: &mut Session,
+        receiver: &mut Receiver<PlatonikV1>,
+        record: &GameRecord,
+        height: u64,
+        step: u64,
+    ) -> Option<vhalla_game_platonik::receiver::VerifiedCheckpoint> {
+        let named = commitment(session, record).unwrap();
+        let (batch, certificate) = decided(vec![named], height);
+        receiver
+            .admit_quorum(
+                session,
+                record,
+                &certificate,
+                &batch,
+                0,
+                step,
+                accepts(&batch, certificate.height),
+            )
+            .unwrap()
+    }
+
+    fn finish_quorum() -> QuorumFinished {
+        let parts = quorum_parts();
+        let (mut session, _, _) = open_quorum(&parts);
+        let mut receiver = Receiver::new(PlatonikV1, policy());
+        let mut player = parts.player;
+        let actor = parts.actor;
+        let key = session.key();
+        let mut height = 43_u64;
+        let mut admit = |session: &mut Session, record: &GameRecord, step: u64| {
+            let out = order(session, &mut receiver, record, height, step);
+            height += 1;
+            out
+        };
+        let salt = [3; 32];
+        let commit = bind_commit(key, parts.slot, &parts.program, &salt);
+        let mut order_digests = Vec::new();
+        let (bind, bind_digest) = player.event(
+            key,
+            Epoch(0),
+            EventBody::BindCommit {
+                slot: parts.slot,
+                commit,
+            },
+        );
+        admit(&mut session, &bind, 1);
+        order_digests.push(bind_digest);
+        let (bind_close, bind_close_digest) = actor_event(
+            actor,
+            &session,
+            1,
+            EventBody::BindClose {
+                commits: vec![(parts.slot, commit)],
+            },
+        );
+        admit(&mut session, &bind_close, 1);
+        order_digests.push(bind_close_digest);
+        let (reveal_bind, reveal_bind_digest) = player.event(
+            key,
+            Epoch(0),
+            EventBody::BindReveal {
+                slot: parts.slot,
+                program: parts.program.clone(),
+                salt,
+            },
+        );
+        admit(&mut session, &reveal_bind, 1);
+        order_digests.push(reveal_bind_digest);
+        let mut task = parts.template.clone();
+        task.cases[0].seed = derive_seed(&parts.host_salt, &[salt], 0);
+        let (reveal, reveal_digest) = actor_event(
+            actor,
+            &session,
+            2,
+            EventBody::Reveal {
+                task: task.clone(),
+                host_salt: parts.host_salt,
+            },
+        );
+        admit(&mut session, &reveal, 2);
+        order_digests.push(reveal_digest);
+        let (input, input_digest) = player.event(
+            key,
+            Epoch(0),
+            EventBody::Input {
+                case: 0,
+                tick: 2,
+                kind: EventKind::ClearMemory { cell: parts.slot },
+            },
+        );
+        admit(&mut session, &input, 3);
+        order_digests.push(input_digest);
+        let ticks = task.cases[0].ticks;
+        let (seal, final_checkpoint) = actor_seal(actor, &session, 3, 0, ticks, order_digests);
+        let verified = admit(&mut session, &seal, 4).unwrap();
+        assert!(verified.is_final());
+        let mut full = task.clone();
+        full.cases[0].events = vec![vhalla_witness::world::Event {
+            tick: 2,
+            event: EventKind::ClearMemory { cell: parts.slot },
+        }];
+        let passed = passed_by_plain_run(&full, vec![(parts.slot, parts.program.clone())]);
+        let (task_final, candidate, through) = session.final_plan().cloned().unwrap();
+        let valid = vhalla_witness::manifest::ValidManifest::validate(task_final).unwrap();
+        let evidence = vhalla_game_platonik::engine::GameEngine::replay(
+            &PlatonikV1,
+            session.world(),
+            &valid,
+            candidate,
+            vhalla_witness::platform::WorkAllowance {
+                max_total: valid.fuel_total(),
+            },
+            through,
+            vhalla_witness::platform::ReceiptBinding {
+                challenge_id: key.0,
+                subject_key: actor,
+            },
+        )
+        .unwrap();
+        QuorumFinished {
+            session,
+            receiver,
+            final_checkpoint,
+            passed,
+            receipt: ClaimedReceipt::decode(&evidence.receipt.encode()).unwrap(),
+            actor,
+            next_height: height,
+        }
+    }
+
+    #[test]
+    fn the_quorum_actor_is_deterministic_valid_and_scheme_bound() {
+        let actor = quorum_actor(&SCHEME);
+        assert_eq!(actor, quorum_actor(&SCHEME));
+        assert_ne!(actor, quorum_actor(&[0xA6; 32]));
+        let key = VerifyingKey::from_bytes(&actor).unwrap();
+        assert!(!key.is_weak());
+    }
+
+    #[test]
+    fn session_open_still_refuses_a_quorum_authority() {
+        let parts = quorum_parts();
+        assert_eq!(
+            Session::open(parts.manifest.clone(), parts.open.clone(), REALM).err(),
+            Some(OpenError::Authority)
+        );
+    }
+
+    #[test]
+    fn quorum_open_requires_the_decided_opening_at_the_named_position() {
+        let parts = quorum_parts();
+        let (batch, certificate) = decided(vec![open_commitment(&parts.open)], 42);
+        let session = quorum_open(
+            parts.manifest.clone(),
+            parts.open.clone(),
+            REALM,
+            &certificate,
+            &batch,
+            0,
+            accepts(&batch, 42),
+        )
+        .unwrap();
+        assert_eq!(session.host(), parts.actor);
+        assert_eq!(session.state(), State::Opened);
+        for (games, position, expected) in [
+            (Vec::new(), 0, QuorumOpenError::Proof(QuorumError::Unbound)),
+            (
+                vec![open_commitment(&parts.open)],
+                1,
+                QuorumOpenError::Proof(QuorumError::Unbound),
+            ),
+            (
+                vec![GameCommitment {
+                    room: vhalla_core::RoomId(ROOM.0 + 1),
+                    ..open_commitment(&parts.open)
+                }],
+                0,
+                QuorumOpenError::Proof(QuorumError::Unbound),
+            ),
+        ] {
+            let (batch, certificate) = decided(games, 42);
+            assert_eq!(
+                quorum_open(
+                    parts.manifest.clone(),
+                    parts.open.clone(),
+                    REALM,
+                    &certificate,
+                    &batch,
+                    position,
+                    accepts(&batch, 42),
+                )
+                .err(),
+                Some(expected)
+            );
+        }
+        // A verify hook that refuses the certificate rejects the opening.
+        assert_eq!(
+            quorum_open(
+                parts.manifest.clone(),
+                parts.open.clone(),
+                REALM,
+                &certificate,
+                &batch,
+                0,
+                |_, _, _| false,
+            )
+            .err(),
+            Some(QuorumOpenError::Proof(QuorumError::Certificate))
+        );
+        // A certificate deciding a different value is refused.
+        let (other, _) = decided(Vec::new(), 42);
+        assert_eq!(
+            quorum_open(
+                parts.manifest.clone(),
+                parts.open.clone(),
+                REALM,
+                &certificate,
+                &other,
+                0,
+                accepts(&batch, 42),
+            )
+            .err(),
+            Some(QuorumOpenError::Proof(QuorumError::ValueMismatch))
+        );
+        // A host opening is not a quorum opening.
+        let mut host_open = parts.open.clone();
+        host_open.authority = Authority::Host {
+            key: Signer::new(1).public(),
+        };
+        let (batch, certificate) = decided(Vec::new(), 42);
+        assert_eq!(
+            quorum_open(
+                parts.manifest,
+                host_open,
+                REALM,
+                &certificate,
+                &batch,
+                0,
+                |_, _, _| true,
+            )
+            .err(),
+            Some(QuorumOpenError::Open(OpenError::Authority))
+        );
+    }
+
+    #[test]
+    fn every_quorum_admission_consumes_a_proof_bound_to_the_record() {
+        let parts = quorum_parts();
+        let (mut session, _, _) = open_quorum(&parts);
+        let mut player = parts.player;
+        let key = session.key();
+        let salt = [3; 32];
+        let commit = bind_commit(key, parts.slot, &parts.program, &salt);
+        let (bind, _) = player.event(
+            key,
+            Epoch(0),
+            EventBody::BindCommit {
+                slot: parts.slot,
+                commit,
+            },
+        );
+        // No proof: every quorum admission is fail-closed.
+        assert_eq!(session.admit(&bind).err(), Some(Rejection::ProofRequired));
+        let named = commitment(&session, &bind).unwrap();
+        let (batch, certificate) = decided(vec![named], 43);
+        // A proof bound to a different record admits nothing.
+        let (other_record, _) = player.event(
+            key,
+            Epoch(0),
+            EventBody::BindCommit {
+                slot: parts.slot,
+                commit: [9; 32],
+            },
+        );
+        let other_named = commitment(&session, &other_record).unwrap();
+        let (other_batch, other_certificate) = decided(vec![other_named], 44);
+        let mismatched = prove(
+            &session,
+            &other_record,
+            &other_certificate,
+            &other_batch,
+            0,
+            accepts(&other_batch, 44),
+        )
+        .unwrap();
+        assert_eq!(
+            session.admit_proven(&bind, mismatched).err(),
+            Some(Rejection::ProofMismatch)
+        );
+        // A wrong position mints no proof at all.
+        assert_eq!(
+            prove(
+                &session,
+                &bind,
+                &certificate,
+                &batch,
+                1,
+                accepts(&batch, 43),
+            )
+            .err(),
+            Some(QuorumError::Unbound)
+        );
+        // The right proof admits exactly this record.
+        let proof = prove(
+            &session,
+            &bind,
+            &certificate,
+            &batch,
+            0,
+            accepts(&batch, 43),
+        )
+        .unwrap();
+        assert!(session.admit_proven(&bind, proof).is_ok());
+        assert_eq!(session.state(), State::Binding);
+    }
+
+    #[test]
+    fn host_sessions_reject_proofs_and_quorum_rejects_bare_records() {
+        let parts = quorum_parts();
+        let (qsession, _, _) = open_quorum(&parts);
+        // A host session in the same shape.
+        let host = Signer::new(1);
+        let mut host_open = parts.open.clone();
+        host_open.authority = Authority::Host { key: host.public() };
+        let mut hsession = Session::open(parts.manifest.clone(), host_open.clone(), REALM).unwrap();
+        let mut player = parts.player;
+        let key = qsession.key();
+        let hkey = hsession.key();
+        let salt = [3; 32];
+        let commit = bind_commit(key, parts.slot, &parts.program, &salt);
+        let (bind, _) = player.event(
+            key,
+            Epoch(0),
+            EventBody::BindCommit {
+                slot: parts.slot,
+                commit,
+            },
+        );
+        // Mint a proof on the quorum session and offer it to the host session.
+        let named = commitment(&qsession, &bind).unwrap();
+        let (batch, certificate) = decided(vec![named], 43);
+        let proof = prove(
+            &qsession,
+            &bind,
+            &certificate,
+            &batch,
+            0,
+            accepts(&batch, 43),
+        )
+        .unwrap();
+        let hcommit = bind_commit(hkey, parts.slot, &parts.program, &salt);
+        let (hbind, _) = player.event(
+            hkey,
+            Epoch(0),
+            EventBody::BindCommit {
+                slot: parts.slot,
+                commit: hcommit,
+            },
+        );
+        assert_eq!(
+            hsession.admit_proven(&hbind, proof).err(),
+            Some(Rejection::ProofMismatch)
+        );
+        // And the host session still admits its own signed record.
+        assert!(hsession.admit(&hbind).is_ok());
+    }
+
+    #[test]
+    fn the_quorum_actor_never_signs_but_players_still_do() {
+        let parts = quorum_parts();
+        let (mut session, _, _) = open_quorum(&parts);
+        let actor = parts.actor;
+        let key = session.key();
+        // An actor-authored record with a nonzero signature is refused.
+        let (mut forged, _) =
+            actor_event(actor, &session, 1, EventBody::BindClose { commits: vec![] });
+        forged.signature = [1; 64];
+        let named = commitment(&session, &forged).unwrap_err();
+        assert_eq!(named, CommitmentError::Record);
+        // The unsigned actor record proves and admits.
+        let (bind_close, _) =
+            actor_event(actor, &session, 1, EventBody::BindClose { commits: vec![] });
+        let named = commitment(&session, &bind_close).unwrap();
+        let (batch, certificate) = decided(vec![named], 43);
+        let proof = prove(
+            &session,
+            &bind_close,
+            &certificate,
+            &batch,
+            0,
+            accepts(&batch, 43),
+        )
+        .unwrap();
+        // Whatever the content verdict, an empty commit list is a session
+        // rule rejection — never a proof or authority one: the consumed proof
+        // carried the record past the authority gate.
+        if let Err(rejection) = session.admit_proven(&bind_close, proof) {
+            assert!(!matches!(
+                rejection,
+                Rejection::ProofRequired
+                    | Rejection::ProofMismatch
+                    | Rejection::AuthoritySignature
+                    | Rejection::Record(_)
+            ));
+        }
+        // A signed record claiming the actor as signer fails to verify.
+        let (mut claims_actor, _) =
+            actor_event(actor, &session, 2, EventBody::BindClose { commits: vec![] });
+        claims_actor.signature = Signer::new(9)
+            .key
+            .sign(&vhalla_game_platonik::record::transcript(
+                RecordKind::Event,
+                key,
+                &claims_actor.body,
+            ))
+            .to_bytes();
+        assert_eq!(
+            commitment(&session, &claims_actor).err(),
+            Some(CommitmentError::Record)
+        );
+        assert_eq!(
+            session.admit(&claims_actor).err(),
+            Some(Rejection::ProofRequired)
+        );
+    }
+
+    #[test]
+    fn a_quorum_session_runs_to_a_proof_admitted_settlement() {
+        let mut done = finish_quorum();
+        let key = done.session.key();
+        assert_eq!(done.session.state(), State::Finished);
+        // A bare settle still fails closed on a quorum session.
+        let settlement = Settlement::Result {
+            session: key,
+            epoch: Epoch(0),
+            checkpoint: done.final_checkpoint,
+            receipt: done.receipt,
+            passed: done.passed,
+        };
+        let record = GameRecord::unsigned(
+            RecordKind::Settlement,
+            key,
+            done.actor,
+            encode_settlement(&settlement),
+        )
+        .unwrap();
+        assert_eq!(
+            done.receiver.settle(&mut done.session, &record, 5).err(),
+            Some(ReceiverError::Settle(SettleError::ProofRequired))
+        );
+        // The decided settlement commitment admits it.
+        let named = commitment(&done.session, &record).unwrap();
+        let (batch, certificate) = decided(vec![named], done.next_height);
+        let verified = done
+            .receiver
+            .settle_quorum(
+                &mut done.session,
+                &record,
+                &certificate,
+                &batch,
+                0,
+                5,
+                accepts(&batch, certificate.height),
+            )
+            .unwrap();
+        assert_eq!(verified.hash(), named.object);
+        assert_eq!(verified.passed(), done.passed);
+        // The same batch attests the settlement for an observer too.
+        let attested = vhalla_game_platonik::quorum::attest(
+            &verified,
+            &certificate,
+            &batch.encode(),
+            accepts(&batch, certificate.height),
+        )
+        .unwrap();
+        assert_eq!(attested.hash(), verified.hash());
+    }
+
+    #[test]
+    fn proof_bound_to_another_session_or_kind_is_refused() {
+        let mut done = finish_quorum();
+        let key = done.session.key();
+        let settlement = Settlement::Unresolved {
+            session: key,
+            epoch: Epoch(0),
+            reason: vhalla_game_platonik::wire::ForkReason::Cancelled,
+            heads: vec![],
+            evidence: vec![],
+        };
+        let record = GameRecord::unsigned(
+            RecordKind::Settlement,
+            key,
+            done.actor,
+            encode_settlement(&settlement),
+        )
+        .unwrap();
+        // An event-shaped proof cannot settle.
+        let mut parts = quorum_parts();
+        parts.open.nonce = [6; 32];
+        let (other, _, _) = open_quorum(&parts);
+        let mut player2 = parts.player;
+        let commit = bind_commit(other.key(), parts.slot, &parts.program, &[3; 32]);
+        let (event, _) = player2.event(
+            other.key(),
+            Epoch(0),
+            EventBody::BindCommit {
+                slot: parts.slot,
+                commit,
+            },
+        );
+        let named = commitment(&other, &event).unwrap();
+        let (batch, certificate) = decided(vec![named], 99);
+        let event_proof =
+            prove(&other, &event, &certificate, &batch, 0, accepts(&batch, 99)).unwrap();
+        assert_eq!(
+            done.receiver
+                .settle_proven(&mut done.session, &record, event_proof, 6)
+                .err(),
+            Some(ReceiverError::Settle(SettleError::ProofMismatch))
+        );
+        // A proof minted for another session's record mismatches too.
+        let proof = prove(&other, &event, &certificate, &batch, 0, accepts(&batch, 99)).unwrap();
+        assert_eq!(
+            done.session.admit_proven(&event, proof).err(),
+            Some(Rejection::ProofMismatch)
+        );
+    }
+
+    #[test]
+    fn a_host_session_rejects_a_quorum_settlement_proof() {
+        let Finished {
+            mut session,
+            mut receiver,
+            mut host,
+            final_checkpoint,
+            passed,
+            receipt,
+        } = finish_live(MissingMember::Pause);
+        let key = session.key();
+        let record = host.settlement(
+            key,
+            &Settlement::Result {
+                session: key,
+                epoch: Epoch(0),
+                checkpoint: final_checkpoint,
+                receipt,
+                passed,
+            },
+        );
+        // A proof can be minted for any scoped record, but a host session
+        // never consumes one.
+        let named = commitment(&session, &record).unwrap();
+        let (batch, certificate) = decided(vec![named], 55);
+        let proof = prove(
+            &session,
+            &record,
+            &certificate,
+            &batch,
+            0,
+            accepts(&batch, 55),
+        )
+        .unwrap();
+        assert_eq!(
+            receiver
+                .settle_proven(&mut session, &record, proof, 9)
+                .err(),
+            Some(ReceiverError::Settle(SettleError::ProofMismatch))
+        );
+        let (event, _) = host.event(
+            key,
+            session.epoch(),
+            EventBody::BindClose { commits: vec![] },
+        );
+        let named = commitment(&session, &event).unwrap();
+        let (batch, certificate) = decided(vec![named], 56);
+        let proof = prove(
+            &session,
+            &event,
+            &certificate,
+            &batch,
+            0,
+            accepts(&batch, 56),
+        )
+        .unwrap();
+        assert_eq!(
+            session.admit_proven(&event, proof).err(),
+            Some(Rejection::ProofMismatch)
+        );
+        // The plain host path is unchanged.
+        assert!(receiver.settle(&mut session, &record, 10).is_ok());
+    }
+}

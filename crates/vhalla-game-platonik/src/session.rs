@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ed25519_dalek::VerifyingKey;
 use vhalla_core::{Epoch, RealmId, Sequence};
 use vhalla_witness::bounds::MAX_EVENTS;
 use vhalla_witness::codec;
@@ -30,6 +31,8 @@ pub const BIND_COMMIT_DOMAIN: &[u8] = b"vhalla/game/bindcommit/v1";
 pub const SEED_DOMAIN: &[u8] = b"vhalla/game/seed/v1";
 /// Salt contribution of a filled slot.
 pub const FILL_SALT_DOMAIN: &[u8] = b"vhalla/game/fillsalt/v1";
+/// Derivation domain of a quorum session's authority actor.
+pub const QUORUM_ACTOR_DOMAIN: &[u8] = b"vhalla/game/quorum-actor/v1";
 /// Encoded bytes one declared input costs in loading work: tick and kind.
 pub const INPUT_ENCODED_BYTES: u64 = 8;
 /// Most unsealed events one session buffers.
@@ -113,6 +116,9 @@ pub enum Rejection {
     SealApply(SealApplyError),
     ReplayMismatch,
     Terminal,
+    ProofRequired,
+    ProofMismatch,
+    AuthoritySignature,
 }
 
 impl From<RecordError> for Rejection {
@@ -152,6 +158,75 @@ pub type FinalPlan = (TaskManifest, Vec<(u16, Program)>, u32);
 struct Pending {
     digest: GameEventDigest,
     event: GameEvent,
+}
+
+/// Certificate-verified evidence that a consensus decided a game commitment
+/// for one record, bound to that record's session, epoch, kind, and object
+/// digest. Not `Clone` — a proof admits exactly once. `quorum::prove` mints
+/// it; `admit_proven` and `Receiver::settle_proven` consume it. Under
+/// `Authority::Quorum` this is the ordering authority the host signature is
+/// under `Authority::Host`.
+#[derive(Debug)]
+pub struct ProvenCommitment {
+    pub(crate) session: SessionKey,
+    pub(crate) epoch: u64,
+    pub(crate) kind: RecordKind,
+    pub(crate) object: [u8; 32],
+    height: u64,
+    position: usize,
+}
+
+impl ProvenCommitment {
+    /// Mints the consumed proof; only `quorum::prove` may produce one.
+    #[cfg(feature = "quorum")]
+    pub(crate) fn new(
+        session: SessionKey,
+        epoch: u64,
+        kind: RecordKind,
+        object: [u8; 32],
+        height: u64,
+        position: usize,
+    ) -> Self {
+        Self {
+            session,
+            epoch,
+            kind,
+            object,
+            height,
+            position,
+        }
+    }
+    /// The consensus height that decided the commitment.
+    #[must_use]
+    pub const fn height(&self) -> u64 {
+        self.height
+    }
+    /// The commitment's position inside the decided batch's game lane.
+    #[must_use]
+    pub const fn position(&self) -> usize {
+        self.position
+    }
+}
+
+/// The authority identity of an `Authority::Quorum` session: a deterministic
+/// nothing-up-my-sleeve Ed25519 point derived from the certificate scheme.
+/// It verifies structurally everywhere a host key does — ledger actor,
+/// receipt subject, transport pin — but nobody can produce a signature for
+/// it; under quorum the certificate replaces the host signature.
+#[must_use]
+pub fn quorum_actor(scheme: &[u8; 32]) -> [u8; 32] {
+    for counter in 0u16.. {
+        let mut body = Vec::with_capacity(34);
+        body.extend_from_slice(scheme);
+        body.extend_from_slice(&counter.to_be_bytes());
+        let candidate = digest(QUORUM_ACTOR_DOMAIN, &body);
+        if let Ok(key) = VerifyingKey::from_bytes(&candidate) {
+            if !key.is_weak() {
+                return candidate;
+            }
+        }
+    }
+    unreachable!("a bounded search always finds a valid point");
 }
 
 /// What the receiver needs to replay a segment before committing its seal.
@@ -309,7 +384,9 @@ pub fn template_of(task: &TaskManifest) -> TaskManifest {
 }
 
 impl Session {
-    /// Opens a session for a validated manifest and opening.
+    /// Opens a session for a validated manifest and opening. `Authority::Host`
+    /// only: a quorum opening needs `quorum::open` — the certificate proof
+    /// that the opening was consensus-decided.
     pub fn open(
         manifest: GameManifest,
         open: SessionOpen,
@@ -325,6 +402,38 @@ impl Session {
         let Authority::Host { key: host } = open.authority else {
             return Err(OpenError::Authority);
         };
+        Self::open_shared(manifest, open, realm, host)
+    }
+    /// Opens a session whose authority actor the caller resolved and, under
+    /// `Authority::Quorum`, proved consensus-decided. The actor is re-derived
+    /// from the opening so it can never be misbound.
+    #[cfg(feature = "quorum")]
+    pub(crate) fn open_with_actor(
+        manifest: GameManifest,
+        open: SessionOpen,
+        realm: RealmId,
+        actor: [u8; 32],
+    ) -> Result<Self, OpenError> {
+        manifest.validate().map_err(OpenError::Manifest)?;
+        if open.manifest != manifest.hash() {
+            return Err(OpenError::ManifestHash);
+        }
+        if open.ruleset != manifest.ruleset || open.realm != realm {
+            return Err(OpenError::Ruleset);
+        }
+        let host = match open.authority {
+            Authority::Host { key } if key == actor => actor,
+            Authority::Quorum { scheme } if quorum_actor(&scheme) == actor => actor,
+            _ => return Err(OpenError::Authority),
+        };
+        Self::open_shared(manifest, open, realm, host)
+    }
+    fn open_shared(
+        manifest: GameManifest,
+        open: SessionOpen,
+        realm: RealmId,
+        host: [u8; 32],
+    ) -> Result<Self, OpenError> {
         if open.epoch != Epoch(0) {
             return Err(OpenError::Epoch);
         }
@@ -412,7 +521,9 @@ impl Session {
     pub const fn opening(&self) -> &SessionOpen {
         &self.open
     }
-    /// The host key.
+    /// The authority actor: the host key under `Authority::Host`, the
+    /// `quorum_actor` identity under `Authority::Quorum` — an unforgeable
+    /// point, never a signing key.
     #[must_use]
     pub const fn host(&self) -> [u8; 32] {
         self.host
@@ -483,12 +594,56 @@ impl Session {
     }
     /// Admits one record carrying a game event. `Seal` events are validated
     /// but not applied: they return a `SealPlan` for the receiver to replay,
-    /// and `commit_seal` applies them afterwards.
+    /// and `commit_seal` applies them afterwards. Under `Authority::Quorum`
+    /// every admission is quorum-ordered: this entry always fails with
+    /// `ProofRequired` and `admit_proven` is the only path.
     pub fn admit(&mut self, record: &GameRecord) -> Result<Admitted, Rejection> {
+        self.admit_inner(record, None)
+    }
+    /// Admits one record carrying a game event, consuming the certificate
+    /// proof that a quorum decided its commitment. Host sessions do not take
+    /// proofs; quorum sessions require one bound to this record's session,
+    /// epoch, `Event` kind, and object digest.
+    pub fn admit_proven(
+        &mut self,
+        record: &GameRecord,
+        proven: ProvenCommitment,
+    ) -> Result<Admitted, Rejection> {
+        self.admit_inner(record, Some(proven))
+    }
+    fn admit_inner(
+        &mut self,
+        record: &GameRecord,
+        proven: Option<ProvenCommitment>,
+    ) -> Result<Admitted, Rejection> {
         if record.kind != RecordKind::Event {
             return Err(Rejection::NotAnEvent);
         }
-        record.verify()?;
+        let quorum = matches!(self.open.authority, Authority::Quorum { .. });
+        match (quorum, &proven) {
+            (false, None) => {}
+            (true, None) => return Err(Rejection::ProofRequired),
+            (false, Some(_)) => return Err(Rejection::ProofMismatch),
+            (true, Some(proof)) => {
+                if proof.session != self.key
+                    || proof.epoch != self.epoch.0
+                    || proof.kind != RecordKind::Event
+                    || proof.object != record.object_digest()
+                {
+                    return Err(Rejection::ProofMismatch);
+                }
+            }
+        }
+        // Signature policy: the quorum actor can never sign, so its records
+        // carry the zero signature — the proof is the authority. Player
+        // records still verify under their own key in either mode.
+        if quorum && record.signer == self.host {
+            if record.signature != [0; 64] {
+                return Err(Rejection::AuthoritySignature);
+            }
+        } else {
+            record.verify()?;
+        }
         let event = wire::decode_game_event(&record.body)?;
         if event.session != self.key || record.session != self.key {
             return Err(Rejection::WrongSession);

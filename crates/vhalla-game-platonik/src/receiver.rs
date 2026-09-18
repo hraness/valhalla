@@ -14,7 +14,7 @@ use crate::engine::{EngineError, GameEngine, SegmentEvidence};
 use crate::ids::{CheckpointHash, SessionKey};
 use crate::manifest::VerificationAllowance;
 use crate::record::GameRecord;
-use crate::session::{Admitted, Rejection, SealPlan, Session, State};
+use crate::session::{Admitted, ProvenCommitment, Rejection, SealPlan, Session, State};
 use crate::wire::{CaseCheckpoint, Checkpoint, ForkReason, WorkSummary};
 
 /// Receiver-wide policy; the minimum of policy and session limits applies.
@@ -172,7 +172,8 @@ impl<E: GameEngine> Receiver<E> {
         self.budgets.insert(session.key(), budget);
         Ok(())
     }
-    /// Admits one event record; a seal is replayed and committed here.
+    /// Admits one event record; a seal is replayed and committed here. Quorum
+    /// sessions require `admit_proven`: `Session::admit` is fail-closed there.
     pub fn admit(
         &mut self,
         session: &mut Session,
@@ -181,6 +182,23 @@ impl<E: GameEngine> Receiver<E> {
     ) -> Result<Option<VerifiedCheckpoint>, ReceiverError> {
         self.advance(step)?;
         match session.admit(record)? {
+            Admitted::Pending(_) => Ok(None),
+            Admitted::Seal(plan) => self.verify_seal(session, &plan).map(Some),
+        }
+    }
+    /// Admits one event record under `Authority::Quorum`, consuming the
+    /// certificate proof that a quorum decided its commitment. A seal is
+    /// still replayed and committed by this receiver — proof orders it,
+    /// never replaces reproduction.
+    pub fn admit_proven(
+        &mut self,
+        session: &mut Session,
+        record: &GameRecord,
+        proven: ProvenCommitment,
+        step: u64,
+    ) -> Result<Option<VerifiedCheckpoint>, ReceiverError> {
+        self.advance(step)?;
+        match session.admit_proven(record, proven)? {
             Admitted::Pending(_) => Ok(None),
             Admitted::Seal(plan) => self.verify_seal(session, &plan).map(Some),
         }

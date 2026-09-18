@@ -1346,3 +1346,52 @@ record signatures, ledger genesis and seal actors, receipt subject binding, and 
 A certificate-scheme identifier is not necessarily that key. Promotion therefore requires a consumed,
 position-bearing certificate proof at session open and every quorum-ordered admission, plus an explicit
 quorum actor/receipt identity; treating `Authority::Quorum.scheme` as a host key was rejected.
+
+### 2026-09-18: quorum session admission — certificate proofs and the quorum actor
+
+`Authority::Quorum` sessions now open and admit, with the identity separation the deferral
+required. The quorum actor is `quorum_actor(scheme)`: a deterministic nothing-up-my-sleeve Ed25519
+point, `digest(vhalla/game/quorum-actor/v1, scheme ‖ counter)` searched until a valid non-weak
+`VerifyingKey`. It satisfies every structural site a host key occupies — `SessionLedger::actor`,
+`actors_distinct`, `ReceiptBinding.subject_key`, the `session.host()` accessor — and no one can
+sign for it; the consumed certificate proof is the authority the host signature is under
+`Authority::Host`.
+
+Admission evidence is `ProvenCommitment`: not `Clone`, minted only by `quorum::prove` (feature
+`quorum`), bound to one record's session, epoch, kind, and object digest plus the consensus height
+and game-lane position it was decided at. `prove` checks that the certificate decides the batch
+(`batch.value_id == certificate.value_commitment`), calls the caller's certificate verify hook, and
+requires `batch.games[position] == quorum::commitment(session, record)` — so a proof is always
+position-bearing. `Session::admit` on a quorum session is fail-closed (`ProofRequired`); only
+`Session::admit_proven` and `Receiver::settle_proven` consume proofs. Host sessions reject a
+supplied proof (`ProofMismatch`), and a proof bound to another session, epoch, kind, or object is
+`ProofMismatch` before any session rule runs.
+
+Records authored by the quorum actor carry the zero signature (`GameRecord::unsigned`), enforced
+as `AuthoritySignature` — under quorum the certificate, not a signature, authorizes. Player records
+still verify under their own keys in either mode. `quorum::commitment` accepts the zero-signature
+actor record only under a quorum session and verifies every other record as before. A forged
+nonzero signature on an actor record fails `commitment`, so it can never mint a proof.
+
+`quorum::open(manifest, open, realm, certificate, batch, position, verify)` is the only quorum
+opening: the `SessionOpen` commitment (`open_commitment`, object = session key, epoch 0) must be
+decided at `position`, and `Session::open_with_actor` re-derives the actor from `open.authority`
+so the actor cannot be misbound. `Receiver::admit_quorum` and `Receiver::settle_quorum` compose
+`prove` + proven admission; `quorum::attest` still attests an observer-side verified settlement
+against the same batch. The settlement receipt binds `subject_key` to the actor, so the exported
+claim records quorum authority rather than a host's.
+
+`vhalla-steel-thread`: `GameSession::new` refuses a quorum session (`Denied::Kind`) — the actor
+cannot sign transport envelopes. `GameSession::new_quorum(context, session, carrier_key, policy)`
+pins the replay window to a delivery carrier, and `receive_game_quorum(frame, now, proven)`
+verifies the envelope under the carrier key, then consumes the caller-minted
+`ProvenCommitment` — delivery authentication and game authority stay separate, and the crate
+takes no rooms-consensus dependency (the proof type lives in the game crate). `GameSession::
+session()` exposes the session read-only for proof minting.
+
+Tests: the quorum admission suite in `tests/settlement.rs` drives a live quorum session end to
+end — decided `SessionOpen`, player-signed binds, actor-authored close/reveal/seal, and a
+proof-admitted settlement that also attests — plus the negative matrix (bare `admit`, wrong
+position, cross-session/kind/object proofs, host-side proofs, nonzero actor signatures).
+`tests/game.rs` in steel-thread covers both constructor refusals, the carrier `AuthorMismatch`,
+`ProofRequired` without proof, a real proof-admitted `BindCommit`, and a mismatched proof.

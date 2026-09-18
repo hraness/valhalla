@@ -5767,6 +5767,7 @@ dependencies = [
  "vhalla-identity",
  "vhalla-native",
  "vhalla-policy",
+ "vhalla-rooms-consensus",
  "vhalla-session",
  "vhalla-social",
  "vhalla-transport",

@@ -23,9 +23,22 @@ verify-hook signature and required to decide the batch it is presented with),
 and `KIND_GAME_SETTLEMENT` with `GameSession` in `vhalla-steel-thread`.
 Rooms-consensus `VRB3` batches now carry bounded typed game commitments, so
 `attest` locates the exact realm/room/session/epoch settlement itself rather
-than trusting a caller-supplied locator. `Authority::Quorum` at session open
-stays reserved until the adapter replaces its host-key assumptions with a
-certificate-backed admission path.
+than trusting a caller-supplied locator.
+
+`Authority::Quorum` sessions now open and admit. `quorum::open` requires the
+`SessionOpen` commitment decided at a named batch position and derives the
+session's authority actor as `quorum_actor(scheme)` — a deterministic
+unforgeable Ed25519 point that fills every structural host-key site (ledger
+actor, receipt subject, transport identity) while nobody can sign for it.
+Every quorum-ordered admission consumes a non-`Clone` `ProvenCommitment`
+minted by `quorum::prove` against the exact session, epoch, kind, object,
+height, and lane position; `Session::admit` and `Receiver::settle` stay
+fail-closed (`ProofRequired`) on quorum sessions, and host sessions reject
+supplied proofs (`ProofMismatch`). Actor-authored records carry the zero
+signature (`GameRecord::unsigned`); player records still verify under their
+own keys. `Receiver::admit_quorum`/`settle_quorum` compose prove + admission,
+and `vhalla-steel-thread` separates delivery from authority: `GameSession::
+new_quorum` pins a carrier key whose frames authenticate transport only.
 
 ## What a verified checkpoint proves
 
@@ -65,7 +78,9 @@ arrival order. Neither is money, finality, or host authority.
   `Batch`, and its typed game commitments; the certificate check is the
   caller's hook, never this crate's, and a certificate never replaces
   reproduction: `quorum::attest` takes a `VerifiedSettlement` that replay
-  already produced.
+  already produced, `quorum::open` starts a session only behind a decided
+  `SessionOpen` commitment, and `quorum::prove` mints the one-use evidence
+  each quorum admission consumes.
 - Every decoder checks its byte bound first, then the version, reads with
   bounds-checked slices, and rejects trailing bytes. The widest `Seal` (512
   ordered digests) and the widest `Reveal` (a full task manifest) both fit

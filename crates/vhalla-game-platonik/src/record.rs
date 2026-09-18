@@ -149,6 +149,27 @@ impl GameRecord {
             signature,
         })
     }
+    /// A record carrying no signature: `author` names the actor, the
+    /// signature is zero. Admission authority is consensus proof, not this
+    /// record — under `Authority::Quorum` only the quorum actor may author
+    /// these, and only with a `ProvenCommitment`.
+    pub fn unsigned(
+        kind: RecordKind,
+        session: SessionKey,
+        author: [u8; 32],
+        body: Vec<u8>,
+    ) -> Result<Self, RecordError> {
+        if body.len() > kind.max_body_bytes() {
+            return Err(RecordError::BodyTooLarge);
+        }
+        Ok(Self {
+            kind,
+            session,
+            signer: author,
+            body,
+            signature: [0; 64],
+        })
+    }
     /// Verifies the signature under the carried signer key; who that key may
     /// be for this kind is the session's decision, not the carrier's.
     pub fn verify(&self) -> Result<(), RecordError> {
