@@ -7,24 +7,41 @@ an optional Valhalla session and a receiver independently verifies the result.
 Read the [session adapter plan](../../kb/plans/valhalla-platonik-session-adapter.md)
 for the design, its review record, and the staged delivery.
 
-Stage 1 lands the identifiers and digest domains, the canonical encodings with
-every bound, the audience-free signed `GameRecord`, the `GameManifest` with its
-limits, and the optional Platonik oracle converter with six `Replay`-kind
-manifest vectors. The engine seam, sessions, checkpoints, settlement, the
-receiver, and bounded artifacts follow in later stages; nothing here yet
-verifies a checkpoint.
+Stages 1 through 3 land the identifiers and digest domains, the canonical
+encodings with every bound, the audience-free signed `GameRecord`, the
+`GameManifest` with its limits, the optional Platonik oracle converter, the one
+engine seam (`GameEngine`, implemented only by `PlatonikV1` over
+`platform::run_observed`), host-ordered sessions over `vhalla-ledger` with the
+two-phase live bind, checkpoints, the receiver, settlement with
+order-independent resolution, pause and member replacement across an epoch
+bump, fills, and cancellation. Bounded artifacts and the wasm parity of the
+game vectors follow in stage 4.
 
 ## What a verified checkpoint proves
 
-When the receiver lands, a verified checkpoint or settlement will prove that
-the receiver itself replayed the session's revealed task and admitted inputs
-through `vhalla-witness` and reproduced every state hash, trace head, ledger
-total, and the final receipt bit for bit under one explicit session host.
+A `VerifiedCheckpoint` proves that this receiver itself replayed the session's
+revealed task with every admitted input through `vhalla-witness`, reproduced
+every case's state hash, trace head, ledger total, and status at its
+checkpoint read tick, re-derived the ledger root over the host's sealed order,
+and found the host's signed checkpoint hash equal to its own. Across seals it
+also proves the sealed prefix reproduced exactly and the ledger total moved by
+exactly the inputs admitted since. Replays are charged against the session's
+verification allowance before any work.
 
 It proves nothing else. A session host has ordering and inclusion authority
 only; multiplayer does not imply permissionless finality; a game object is
 evidence and never host authority, and no verified type here converts into
 one.
+
+## What a verified settlement proves
+
+A `VerifiedSettlement` holding a `Result` proves that this receiver
+reproduced the final segment's receipt itself and found the host's signed
+receipt, checkpoint, and pass flag equal to its own, with every admitted event
+sealed and the epoch's ledger height exactly the sealed events plus the seal
+events. An `Unresolved` verdict is the host's signed fork claim or the
+receiver's own derivation, ranked below any reproduced result in either
+arrival order. Neither is money, finality, or host authority.
 
 ## Boundaries
 
@@ -41,8 +58,12 @@ one.
 - A `GameRecord` signature covers the kind, the session key, and the object
   digest under the object's own domain, so a record verifies identically at
   every receiver; room envelopes are delivery, never authority.
-- `RunCapability::mint` is fenced by `clippy.toml` to the engine seam that
-  lands in stage 2.
+- `RunCapability::mint` is fenced by `clippy.toml` to its single call site in
+  `PlatonikV1::replay`.
+- The session never runs a program: a seal yields a `SealPlan`, the receiver
+  replays it, and only a reproduced checkpoint is committed. Every rejection
+  leaves the session bit-identical except for retained evidence.
+- No clock: every receiver call takes a caller-supplied monotone step.
 
 ## Evidence
 

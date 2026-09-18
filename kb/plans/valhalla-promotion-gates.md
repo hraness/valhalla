@@ -206,7 +206,7 @@ The production workspace currently contains these crates:
 | `vhalla-identity` | experimental Unix private-file application key | qualified secret custody, recovery, transport-key integration and installable native program |
 | `vhalla-witness` | `no_std` witness-mode VM (Platonik habitat-v1 restated), canonical codecs, digests, task manifests, keyless move-only run capability, receipts | the game kernel behind the Slice 5 Platonik adapter and any later witness language, with replay evidence and vectors kept bit-exact across versions |
 | `vhalla-botcaptcha` | signed witness-mode challenge and response, verified challenge as the only capability source, one-use window, and a replaying verifier | steel-thread witness frames (Gate 5), Hashcash mode, and receipt export as a signed claim for a per-realm DAG |
-| `vhalla-game-platonik` | game identifiers and domains, canonical encodings with every bound, the audience-free `GameRecord`, the `GameManifest`, and the optional Platonik oracle converter with six `Replay` vectors | the engine seam, host-ordered sessions over `vhalla-ledger`, replay-checked checkpoints, settlement, the receiver with allowances, and bounded artifacts, per the session adapter plan |
+| `vhalla-game-platonik` | game identifiers and domains, canonical encodings with every bound, the audience-free `GameRecord`, the `GameManifest`, the optional Platonik oracle converter, the `PlatonikV1` engine seam, host-ordered sessions over `vhalla-ledger` with the two-phase live bind, replay-checked checkpoints, and the receiver with pre-charged allowances | settlement, pause and replace across an epoch bump, bounded artifacts, decoder fuzz harnesses, and the `quorum` hook, per the session adapter plan |
 | `vhalla-native` | explicitly pinned paired loopback chat | qualified public routing, identity lifecycle and browser interoperability |
 | `vhalla-cli` | feature-gated native chat and local signed social/discovery commands | installable client with separately qualified public transport and storage adapters |
 | `vhalla-social` | signed owner/agent records, causal projections, exact facets and bounded archive sync | preserve verified control/history under any future retention or network extension |
@@ -245,8 +245,20 @@ wasm32) and its stage 1 skeleton, `crates/vhalla-game-platonik`: `ids`,
 all 28 witness corpus vectors byte for byte and whose six `Replay`-kind
 manifest vectors carry experiment ids equal to Platonik's `artifact_hash`.
 The default path carries no `platonik-core` on normal dependency edges and
-compiles for wasm32; CI checks both. No engine, session, or receiver code yet;
-slice 5 stays open until stage 2 lands checkpoints a receiver reproduces.
+compiles for wasm32; CI checks both. Stage 2 followed the same day: `PlatonikV1`
+over `run_observed` with the hashing frame observer, sessions with admission,
+the two-phase live bind, the reveal checks, the input gate, seal planning and
+commit over `vhalla-ledger`, and the receiver with budgets and the prefix
+check. Two end-to-end sessions (a fixture replay and a live session with two
+seals) verify at one receiver, a lying host is refused with the seal retained,
+and equivocation freezes its author. Stage 3 followed: settlement admitted only by
+reproducing the receipt, ranked by self-verifiability in either arrival order,
+pause on a missing member with a sealed `Replace` resuming in the next epoch,
+fills carrying their fallback program, cancellation, spike 4 (18 sessions with
+a replace at a random seal, every result equal to the plain run), the
+adversarial mutation corpus, and the stable-toolchain fuzz harness prototype;
+`prototypes/game-session` and `prototypes/settlement` are deleted. The
+bounded-artifact stage remains before the row closes.
 
 ### Witness platform crates — 2026-09-16
 

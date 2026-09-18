@@ -1,0 +1,22 @@
+[package]
+name = "game-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Stage 3 of the Platonik session adapter plan: corpus-seeded, fixed-seed mutation harnesses over every vhalla-game-platonik decoder, checking that no input panics and that every accepted input re-encodes to itself"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+vhalla-core = { path = "../../crates/vhalla-core" }
+vhalla-game-platonik = { path = "../../crates/vhalla-game-platonik" }
+vhalla-ledger = { path = "../../crates/vhalla-ledger" }
+vhalla-witness = { path = "../../crates/vhalla-witness" }

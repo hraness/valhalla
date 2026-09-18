@@ -17,9 +17,15 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod checkpoint;
+pub mod engine;
 pub mod ids;
 pub mod manifest;
+pub mod platonik;
+pub mod receiver;
 pub mod record;
+pub mod session;
+pub mod settlement;
 pub mod wire;
 
 #[cfg(feature = "oracle")]

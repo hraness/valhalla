@@ -564,12 +564,15 @@ pub enum EventBody {
         /// New key.
         new: [u8; 32],
     },
-    /// The host fills an unbound slot with the declared fallback.
+    /// The host fills an unbound slot with the declared fallback, carrying
+    /// the fallback program itself so every receiver can bind it.
     Fill {
         /// Slot cell.
         slot: u16,
-        /// Must equal the manifest's declared fallback.
+        /// Must equal the manifest's declared fallback and hash `program`.
         program_hash: ProgramHash,
+        /// The fallback program.
+        program: Program,
         /// Pending-claim evidence.
         evidence: FillEvidence,
     },
@@ -717,11 +720,15 @@ pub fn encode_game_event(event: &GameEvent) -> Vec<u8> {
         EventBody::Fill {
             slot,
             program_hash,
+            program,
             evidence,
         } => {
             writer.u8(8);
             writer.u16(*slot);
             writer.bytes(&program_hash.0);
+            let bytes = codec::encode_program(program);
+            writer.u16(bytes.len() as u16);
+            writer.bytes(&bytes);
             writer.bytes(&evidence.author);
             writer.u64(evidence.sequence.0);
             writer.u8(evidence.segment);
@@ -829,15 +836,31 @@ pub fn decode_game_event(raw: &[u8]) -> Result<GameEvent, CodecError> {
             old: reader.hash()?,
             new: reader.hash()?,
         },
-        8 => EventBody::Fill {
-            slot: reader.u16(Field::CellId)?,
-            program_hash: ProgramHash(reader.hash()?),
-            evidence: FillEvidence {
-                author: reader.hash()?,
-                sequence: Sequence(reader.u64(Field::Value)?),
-                segment: reader.u8(Field::Count)?,
-            },
-        },
+        8 => {
+            let slot = reader.u16(Field::CellId)?;
+            let program_hash = ProgramHash(reader.hash()?);
+            let len = usize::from(reader.u16(Field::Count)?);
+            if len > MAX_PROGRAM_BYTES {
+                return Err(CodecError::Bound {
+                    field: Field::Count,
+                });
+            }
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                bytes.push(reader.u8(Field::Cell)?);
+            }
+            let program = codec::decode_program(&bytes)?;
+            EventBody::Fill {
+                slot,
+                program_hash,
+                program,
+                evidence: FillEvidence {
+                    author: reader.hash()?,
+                    sequence: Sequence(reader.u64(Field::Value)?),
+                    segment: reader.u8(Field::Count)?,
+                },
+            }
+        }
         found => {
             return Err(CodecError::Discriminant {
                 field: Field::Event,

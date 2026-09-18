@@ -1076,3 +1076,133 @@ and both fit `MAX_GAME_EVENT_BYTES = 24_576` (the test prints the exact sizes); 
 template fixes every slot with its program so the world digest commits the programs a replay
 session reproduces, while the open-slot task the witness corpus carries is what the converter
 compares byte for byte.
+
+### 2026-09-17: stage 2 lands the engine seam, sessions, checkpoints, and the receiver
+
+`engine` (`GameEngine`, `AdmittedInput`, `SegmentEvidence`), `platonik` (`PlatonikV1` with the
+hashing `FrameObserver`: `FrameDigest` over tick, complete flag, and encoded state; `TraceHead`
+seeded with world digest, `ProgramHash`, and case index; status at the read tick derived from the
+frames as the plan states; `RunCapability::mint` at its single fenced call site), `checkpoint`
+(`SessionLedger` with the genesis conventions, all-or-nothing `apply_seal` over `snapshot` and
+`restore`, `append_seal` after acceptance, `open_epoch` anchored on a checkpoint hash, the actor
+bijection check with weak keys refused), `session` (admission with the claim table, pending caps,
+role checks, the two-phase bind with `bind_commit`, `BindClose`, commit matching, the reveal checks
+for world digest, slots, contract, seed commitment, derived seeds, the loading rule, and frame-0
+fuel headroom, the input gate with horizon, staleness, the per-case 64 cap counted across seals, and
+the slack rule, seal planning and commit, the epoch bump on `Replace`), and `receiver`
+(`ReceiverPolicy`, budgets clamped by policy and charged before work, memoized replays, the prefix
+re-check at the previous read tick with the exact ledger offset, status monotonicity,
+`VerifiedCheckpoint` with private fields and a `compile_fail` doctest). Tests: engine parity over the
+28 witness vectors (derived status equals `RunStatus` at the full tick; prefix traces differ), the
+two pinned ledger height vectors, atomic seal application, capacity unreachable at 1033, a `Replay`
+session of `opening-normal` verified and finished, a `Live` session with the two-phase bind, wrong
+seed, horizon, stale tick, a competing seal, and two seals with the prefix check, and equivocation
+freezing the host.
+
+Decisions and deviations recorded here: `INPUT_ENCODED_BYTES = 8` (a `CaseSpec.events` entry is a
+`u32` tick plus a tag and at most three bytes); a `Replay` task may carry the published
+experiment's own events, which are part of what it replays, while a `Live` task declares none; the
+Replay template fixes every slot so the world digest commits the programs; `ClearMemory` inputs are
+admitted only for the author's own cell, link and valve inputs from any listed player; a `Fill` in
+v1 is refused at candidate construction unless the fallback program is fixed in the revealed task,
+because the manifest names the fallback only by hash (recorded as a v1 limitation for stage 3 to
+lift by carrying the fallback program in the manifest); settlement resolution and the artifact
+state machine are stages 3 and 4. The receiver charges one extra replay per non-first seal for the
+prefix re-check, so a full eight-segment session costs at most fifteen replays, inside
+`MAX_REPLAYS = 64`.
+
+### 2026-09-17: stage 2 evidence, vectors frozen, spikes 3 and 5
+
+Vectors: `tests/vectors/game-v1-session-replay.txt` (a `Replay` session of `opening-normal`, two
+records) and `game-v1-session-live.txt` (a `Live` session on the same world, eight records: commit,
+close, reveal bind, reveal, input, mid-tick seal, input, final seal) freeze v1 session encodings;
+`tests/session_vectors.rs` rebuilds each session from the hex alone and replays every record
+through a fresh receiver, asserting every digest, checkpoint hash, verified field, and the 180-byte
+receipt. `prototypes/witness-vectors/ed25519.py` is the committed pure-Python Ed25519 (RFC 8032
+reference style, hashlib only, with a self test and refusals for a changed message, a changed `S`,
+and a small-order key); `verify-game-vectors.py` recomputes every digest and verifies every record
+signature in CI. Regeneration is byte-stable across runs.
+
+Spike 5 (`tests/spike5.rs`, seven schedules, 2.7 s debug): 24 live sessions over `opening-normal`
+and `ark-plan-a` behind a relay that drops 20 %, duplicates 15 %, reorders, and partitions, with
+two receivers, converge after resends to identical segments and checkpoint maps with zero pending
+and zero retained evidence, and never accept two checkpoints for one segment; two host seals for
+one segment end both receivers `Unresolved { CompetingSeals }` with the identical sorted pair
+retained in either delivery order; a second seal for the final segment is a fork, not a late record;
+64 inputs for one case sealed across segments, then the 65th refused at the gate as `CaseEventLimit`
+and a 66-input seal refused at admission as `SealOrderCaseEventLimit` with state unchanged; the
+17th pending event from one author is `AuthorPendingFull`. Decisions from the spike: the 512
+session pending cap is unreachable because `(MAX_PLAYERS + 1) × 16 = 272 < 512`, so the per-author
+cap always binds first (the caps stay as stated; `MAX_GAME_EVENT_BYTES` is unchanged); no per-event
+host acks and no fork-proof object are needed; and convergence under reordering is conditional on
+per-author stream ordering in the transport, because sequence n+1 admitted before n strands n as
+`SequenceNotIncreasing` (recorded as a transport requirement for the room delivery layer).
+
+Spike 3 (`tests/spike3.rs`, 1.7 s debug): every fixture crossed with `max_events` in {1, 16, 64,
+128, 1024} reveals with zero `LoadingRule` and zero `FuelHeadroom` refusals; 48 random live
+sessions (six fixtures, four seeds, corpus and tightened fuel) with 626 admitted inputs and 2 to 5
+seals each pass every prefix check, ledger offset, and status order; the slack rule closed a case
+early in 24 of 48 sessions, only under the tightened budget and never on the corpus budget of
+20,000; a fuel-tight `opening-normal` case closes at `slack_k = 6 < remaining_k = 60`, the next
+input is `CaseFuelSlack`, and two later seals past the fuel stop pass with the terminal case's
+fields byte-identical. Derived fact: the slack condition is independent of `n`, since the `n`
+declared inputs raise `ledger_total(T)` by exactly `n` at frame 0, so a case closes exactly when
+`fuel - base(T) < 64`. `INPUT_ENCODED_BYTES = 8` is confirmed.
+
+Corrections applied to the code from the spikes: the per-case cap at the gate now tests the sealed
+tally alone, as the plan states, so which input survives is never a function of arrival order and
+`SealOrderCaseEventLimit` is reachable; a seal for a committed segment with a different digest is
+`CompetingSeals` (both retained, session unresolved) rather than `SealSegment`, checked ahead of the
+terminal and sequence gates so two receivers reach the same verdict in either order; the prefix
+re-check reads the replay memo, so a re-sent seal costs no work; an `Input` whose link, valve, or
+cell does not exist in the revealed world is refused at admission as `UnknownTarget`.
+
+### 2026-09-17: stage 3 lands settlement, pause and replace, fills, and cancellation
+
+`settlement` (`Receiver::settle`, `VerifiedSettlement` with private fields and a `compile_fail`
+doctest, `SettleError` with one variant per refusal): a `Result` is admitted only when the host
+signed it, it names the accepted final checkpoint and the current epoch, the pending buffer is
+empty, the epoch's ledger height equals the sealed events plus the `Seal` events appended
+(`epoch_orders + seals_appended`, which is `Σ|order_j| + s`), and the receiver's own replay of the
+final segment produces a receipt the claimed one `matches` with `passed` equal; the replay is
+charged against the budget. An `Unresolved` is admitted when host signed; a `Cancelled` after the
+final checkpoint is `CancelAfterFinal`, a bare unresolved against a held reproduced result is
+`Outranked`, a differing verdict of equal rank is `Contradiction` and moves the session to
+`Unresolved { Equivocation }`, an identical resend is idempotent, and after a cancel nothing further
+is admitted. The session records its `Verdict`. Pause: `Session::pause_missing(slot, evidence)`
+under `MissingMember::Pause` moves to `Unresolved { MemberMissing }`; only host events are then
+admitted, and a seal whose order carries a `Replace` of that slot resumes the session with the epoch
+bump. `Fill` now carries the fallback program itself (its hash must equal both the declared fallback
+and `program_hash`), which lifts the v1 limitation the stage 2 entry recorded; the widest fill is
+about 1.3 KiB and the event bound is unchanged. Player membership follows the current slot owners,
+so a replacement key is a player from its epoch on. Tests: a reproduced result admitted once,
+outranking a late cancel and refusing wrong checkpoint, pass flag, receipt, epoch, and signer; a
+cancel before the final seal ending the session in either order; a paused session resumed by a
+sealed replace with epoch, ledger, and per-epoch height checks and the result settling in epoch 1;
+a pre-reveal fill binding the declared fallback with the fill salt in the seed. Spike 4
+(`tests/spike4.rs`): every fixture, three seeds each, random increasing seal ticks with one
+`Replace` at a random non-final seal and random own-cell inputs between seals: 18 sessions, 18
+epoch bumps, every session's receipt equal to the plain witness run of the same task and inputs.
+The rebind half of spike 4 stays a later-version question. `prototypes/game-session` and
+`prototypes/settlement` are deleted with README notes; the fuzz harness prototype and the
+adversarial mutation corpus are recorded in the next entry.
+
+### 2026-09-17: fuzz harness prototype and adversarial mutation corpus
+
+`prototypes/game-fuzz` is the stable-toolchain crate the decision record chose: an own
+`[workspace]`, a committed `Cargo.lock` with no `platonik-core`, a fixed xorshift generator, the
+mutation operators (bit flip, byte flip, truncate, extend, insert, random bytes), 74 committed
+corpus seeds under `corpus/<decoder>/` drawn from the frozen session vectors and from hand-built
+values covering `Authority::Quorum`, every `InnerKind`, every `ForkReason`, empty and eight-case
+checkpoints, a 128-block artifact manifest, an empty block, four sorted parents, `Replace`, and
+`Fill`, and nine `#[test]` harnesses (one per `wire` decoder and `GameRecord::decode`) that run
+every seed unmutated (a seed that does not decode or does not re-encode to itself fails) and then
+exactly 20,000 mutated candidates each: 180,000 candidates, about a quarter accepted, zero panics,
+zero canonical-law violations, 0.8 s of test time; it passes the existing `prototypes/*/Cargo.toml`
+CI loop with no workflow change. `tests/adversarial.rs::mutate_every_field` rebuilds the frozen live
+session from hex alone, flips all 8 bits of all 2,381 record bytes against a session at each
+record's point (19,048 candidates: 360 refused by decode, 18,688 by signature, none reaching
+admission), mutates every one of the 17 checkpoint fields of both seals into a re-signed seal (34
+forgeries, every one `ReplayMismatch` with the seal retained), and replays the clean vector to
+`Finished` at the end. The prototype also path-depends on `vhalla-core` and `vhalla-ledger`, since
+their id types sit in public game fields and are not re-exported.
