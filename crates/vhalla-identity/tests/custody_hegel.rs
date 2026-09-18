@@ -86,6 +86,19 @@ fn create_private_file(path: &Path, bytes: &[u8]) {
     file.write_all(bytes).unwrap();
 }
 
+/// Rewrite a file regardless of its current mode, then restore the mode.
+/// The fault model treats the host as privileged over its own files, so
+/// a prior `expose-record` that set a file read-only must not prevent a
+/// later hostile rewrite.
+fn overwrite(path: &Path, bytes: &[u8]) {
+    let original = path.metadata().unwrap().permissions();
+    let mut writable = original.clone();
+    writable.set_mode(0o600);
+    fs::set_permissions(path, writable).unwrap();
+    fs::write(path, bytes).unwrap();
+    fs::set_permissions(path, original).unwrap();
+}
+
 /// One directory entry as `open` sees it through `symlink_metadata` plus the
 /// record decoder. `inode` groups names sharing one filesystem object —
 /// content and mode changes propagate across hardlinks; `file` is a property
@@ -454,7 +467,7 @@ impl Case {
                 let offset = tc.draw(gs::integers::<usize>().max_value(bytes.len() - 1));
                 let bit = tc.draw(gs::integers::<u8>().max_value(7));
                 bytes[offset] ^= 1 << bit;
-                fs::write(&record, &bytes).unwrap();
+                overwrite(&record, &bytes);
                 let inode = self.dirs[i].entries["identity"].inode;
                 self.wrote(i, inode, bytes.len() as u64, None);
             }
@@ -464,7 +477,7 @@ impl Case {
                 let len = LENS[tc.draw(gs::integers::<usize>().max_value(6))];
                 let fill = tc.draw(gs::integers::<u8>());
                 tc.event("tamper:rewrite");
-                fs::write(&record, vec![fill; len]).unwrap();
+                overwrite(&record, &vec![fill; len]);
                 let inode = self.dirs[i].entries["identity"].inode;
                 self.wrote(i, inode, len as u64, None);
             }
@@ -475,7 +488,7 @@ impl Case {
                 let seed = [tc.draw(gs::integers::<u8>()); 32];
                 let bytes = crafted_record(seed);
                 tc.event("tamper:substitute");
-                fs::write(&record, &bytes).unwrap();
+                overwrite(&record, &bytes);
                 let key = seed_key(seed);
                 let inode = self.dirs[i].entries["identity"].inode;
                 self.wrote(i, inode, RECORD_BYTES as u64, Some(key));
@@ -510,7 +523,7 @@ impl Case {
                 let target = path.join(name);
                 if let Some(existing) = self.dirs[i].entries.get(name) {
                     // Overwrite in place: inode sharing stays intact.
-                    fs::write(&target, &bytes).unwrap();
+                    overwrite(&target, &bytes);
                     let inode = existing.inode;
                     self.wrote(i, inode, bytes.len() as u64, key);
                 } else {
@@ -565,7 +578,7 @@ impl Case {
                         let lock = path.join("lock");
                         match self.dirs[i].entries.get("lock") {
                             Some(entry) if entry.file => {
-                                fs::write(&lock, vec![7; len as usize]).unwrap();
+                                overwrite(&lock, &vec![7; len as usize]);
                                 let inode = entry.inode;
                                 self.wrote(i, inode, len, None);
                             }

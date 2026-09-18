@@ -279,6 +279,8 @@ pub struct Pending {
     pub slug: Option<String>,
     /// Current resolution against committed state.
     pub state: PendingState,
+    /// Human-readable reason for `Rejected` or `Collision`, when known.
+    pub reason: Option<String>,
 }
 
 /// One directory row.
@@ -325,6 +327,19 @@ pub struct Projection {
     pub height: u64,
     /// Local submissions and their resolutions.
     pub pending: Vec<Pending>,
+}
+
+/// Quorum information for the validator set active at a committed height.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quorum {
+    /// The committed height this set applies at.
+    pub height: u64,
+    /// Total voting power of the active validator set.
+    pub total_power: u64,
+    /// Votes strictly greater than 2/3 of total power (i.e. threshold).
+    pub threshold: u64,
+    /// Active validators: hex Ed25519 public key, voting power.
+    pub validators: Vec<(String, u64)>,
 }
 
 /// Everything a create-intent form needs from committed replica state.
@@ -455,6 +470,31 @@ impl Service {
     /// The replica's committed height.
     pub fn height(&self) -> u64 {
         self.adapter.frontier().height
+    }
+
+    /// Quorum information for the validator set active at the committed
+    /// height, if one exists.
+    pub fn quorum(&self) -> Option<Quorum> {
+        let height = self.height();
+        let set = ServiceConfig::validators_at(&self.validators, height)?;
+        let total_power = set.validators.iter().map(|v| v.power).sum();
+        let threshold = (2 * total_power) / 3 + 1;
+        let validators = set
+            .validators
+            .iter()
+            .map(|v| (hex(v.public_key.as_bytes()), v.power))
+            .collect();
+        Some(Quorum {
+            height,
+            total_power,
+            threshold,
+            validators,
+        })
+    }
+
+    /// The validator set activations configured for this replica.
+    pub fn validator_schedule(&self) -> &BTreeMap<u64, RoomValidatorSet> {
+        &self.validators
     }
 
     /// The replica registry — read-only projections use it; the service
@@ -640,6 +680,7 @@ impl Service {
             let Ok(marker) = serde_json::from_slice::<Marker>(&raw) else {
                 continue;
             };
+            let (state, reason) = self.resolve(&marker);
             out.push(Pending {
                 name: marker.record.clone(),
                 slug: marker.slug.clone().or_else(|| {
@@ -651,18 +692,25 @@ impl Service {
                         .and_then(|g| self.registry().room_by_genesis(g))
                         .map(|room| room.slug().as_str().to_owned())
                 }),
-                state: self.resolve(&marker),
+                state,
+                reason,
             });
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
     }
 
-    /// Resolves one marker against committed state and the intake dir.
-    fn resolve(&self, marker: &Marker) -> PendingState {
+    /// Resolves one marker against committed state and the intake dir,
+    /// returning the state and an optional human-readable reason.
+    fn resolve(&self, marker: &Marker) -> (PendingState, Option<String>) {
         let record_id = match hex32(&marker.record) {
             Ok(bytes) => RoomRecordId::from_bytes(bytes),
-            Err(_) => return PendingState::Rejected,
+            Err(_) => {
+                return (
+                    PendingState::Rejected,
+                    Some("marker record id is not 32 hex characters".into()),
+                );
+            }
         };
         let room = match marker.kind.as_str() {
             "create" => marker
@@ -676,52 +724,67 @@ impl Service {
                 .and_then(|g| hex32(g).ok())
                 .map(RoomGenesisId::from_bytes)
                 .and_then(|g| self.registry().room_by_genesis(g)),
-            _ => None,
+            _ => {
+                return (
+                    PendingState::Rejected,
+                    Some(format!("unknown marker kind: {}", marker.kind)),
+                );
+            }
         };
         if let Some(room) = room {
-            match marker.kind.as_str() {
+            return match marker.kind.as_str() {
                 "create" => {
-                    return if room.record().id() == record_id {
-                        PendingState::Committed
+                    if room.record().id() == record_id {
+                        (PendingState::Committed, None)
                     } else {
-                        PendingState::Collision
-                    };
+                        (
+                            PendingState::Collision,
+                            Some("slug already exists with a different record".into()),
+                        )
+                    }
                 }
                 "update" => {
                     if room.revisions().iter().any(|r| r.id() == record_id)
                         || room.record().id() == record_id
                     {
-                        return PendingState::Committed;
-                    }
-                    let base_ok = marker
-                        .base
-                        .as_deref()
-                        .and_then(|b| hex32(b).ok())
-                        .is_some_and(|b| room.head() == RoomRecordId::from_bytes(b));
-                    return if base_ok {
-                        PendingState::Submitted
+                        (PendingState::Committed, None)
                     } else {
-                        PendingState::Collision
-                    };
+                        let base_ok = marker
+                            .base
+                            .as_deref()
+                            .and_then(|b| hex32(b).ok())
+                            .is_some_and(|b| room.head() == RoomRecordId::from_bytes(b));
+                        if base_ok {
+                            (PendingState::Submitted, None)
+                        } else {
+                            (
+                                PendingState::Collision,
+                                Some("room head has moved past the requested base".into()),
+                            )
+                        }
+                    }
                 }
-                _ => {}
-            }
+                _ => unreachable!("kind was validated above"),
+            };
         }
         if self
             .intake_dir
             .join(format!("{}.rejected", marker.intake))
             .exists()
         {
-            return PendingState::Rejected;
+            return (
+                PendingState::Rejected,
+                Some("node rejected the intake drop".into()),
+            );
         }
         if self
             .intake_dir
             .join(format!("{}.body", marker.intake))
             .exists()
         {
-            return PendingState::Queued;
+            return (PendingState::Queued, None);
         }
-        PendingState::Submitted
+        (PendingState::Submitted, None)
     }
 
     /// Projects one screen against the committed replica.
