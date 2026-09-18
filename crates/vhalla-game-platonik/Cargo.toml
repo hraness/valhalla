@@ -1,0 +1,32 @@
+[package]
+name = "vhalla-game-platonik"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Platonik session adapter: game manifests, sessions, checkpoints, and settlements over vhalla-witness, with receiver-side verification and an optional Platonik oracle"
+
+[lints]
+workspace = true
+
+[features]
+# The pinned Platonik engine as converter source, corpus generator, and test
+# oracle. Never a receiver requirement; the default path has no serde.
+oracle = ["dep:platonik-core", "dep:serde", "dep:serde_json"]
+
+[dependencies]
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+vhalla-core = { path = "../vhalla-core" }
+vhalla-crypto = { path = "../vhalla-crypto" }
+vhalla-ledger = { path = "../vhalla-ledger" }
+vhalla-witness = { path = "../vhalla-witness" }
+platonik-core = { git = "https://github.com/hraness/platonik", rev = "5eedec07c84af3b4beb82f22cc6c2b9fa3520d42", optional = true }
+serde = { version = "1.0", optional = true }
+serde_json = { version = "1.0", optional = true }
+
+[dev-dependencies]
+vhalla-game-platonik = { path = ".", features = ["oracle"] }
+platonik-core = { git = "https://github.com/hraness/platonik", rev = "5eedec07c84af3b4beb82f22cc6c2b9fa3520d42" }
+serde_json = "1.0"
+proptest = "1.6"

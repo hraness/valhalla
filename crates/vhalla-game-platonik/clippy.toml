@@ -1,0 +1,3 @@
+disallowed-methods = [
+    { path = "vhalla_witness::platform::RunCapability::mint", reason = "only the PlatonikV1 engine seam mints in this crate" },
+]

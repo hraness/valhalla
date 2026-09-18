@@ -1054,3 +1054,25 @@ trace heads identical on native and wasm32 and every output hash unchanged under
 Spike 1 passes against its criteria (native p95 at most 100 ms, wasm at most 500 ms, heap at most
 32 MiB) with two orders of magnitude to spare, so v1 hashes every frame; the fallback of hashing
 only at seal ticks is not needed. Stage 1 follows.
+
+### 2026-09-17: stage 1 lands the skeleton
+
+`crates/vhalla-game-platonik` with `ids` (domains, `SessionKey`, `SessionId`, `RulesetId`,
+`InnerKind`, `InnerArtifactId`), `wire` (every object's canonical encoding and every `MAX_*`
+bound), `record` (`GameRecord` sign and verify), `manifest` (`GameManifest`, `SessionLimits`,
+validation), `oracle/convert` and `oracle/corpus` behind the `oracle` feature, and `clippy.toml`
+fencing `RunCapability::mint`. The `[dev-dependencies]` self path enables the oracle for every test.
+Evidence: the converter reproduces all 28 witness vectors byte for byte (world, slots, cases
+including `loading_work`, and candidate programs); the six `Replay`-kind vectors under
+`tests/vectors/game-v1-*.txt` carry experiment ids equal to `platonik_core::check::artifact_hash`
+(`opening-normal` is `377b1218…`); every object round-trips and fits its bound; `cargo tree -e
+normal` shows no `platonik-core` on the default path; the crate compiles for wasm32 with default
+features. Owner and reviewer as recorded in the stage 0 entry. Dependency review: `platonik-core`
+(MIT, pinned commit, hraness-owned), `serde` and `serde_json` (MIT or Apache-2.0, exact versions
+already in the lock), `ed25519-dalek` at the version `vhalla-crypto` uses; no new advisories in
+`cargo audit` scope beyond those the repository already tracks. Two corrections to the plan text
+from the bound tests: the widest event body is `Reveal` carrying a full task manifest, not `Seal`,
+and both fit `MAX_GAME_EVENT_BYTES = 24_576` (the test prints the exact sizes); the `Replay`
+template fixes every slot with its program so the world digest commits the programs a replay
+session reproduces, while the open-slot task the witness corpus carries is what the converter
+compares byte for byte.
