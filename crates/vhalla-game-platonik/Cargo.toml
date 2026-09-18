@@ -34,3 +34,11 @@ vhalla-game-platonik = { path = ".", features = ["oracle"] }
 platonik-core = { git = "https://github.com/hraness/platonik", rev = "5eedec07c84af3b4beb82f22cc6c2b9fa3520d42" }
 serde_json = "1.0"
 proptest = "1.6"
+
+# Live-quorum qualification: the in-process validator mesh, journal reads,
+# and a tokio runtime — unix only, like the node itself.
+[target.'cfg(unix)'.dev-dependencies]
+vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", features = ["fixture"] }
+vhalla-rooms-node = { path = "../vhalla-rooms-node" }
+vhalla-journal = { path = "../vhalla-journal" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

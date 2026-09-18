@@ -5511,11 +5511,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-game-platonik",
+ "vhalla-journal",
  "vhalla-ledger",
  "vhalla-rooms-consensus",
+ "vhalla-rooms-node",
  "vhalla-witness",
 ]
 
