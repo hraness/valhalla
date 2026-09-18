@@ -1269,6 +1269,47 @@ artifact; the transport's in-flight buffer (one block natively, block plus recor
 135,872 bytes) is bounded as a constant beside the ratio rather than folded into it, since folding
 it would make any two-block artifact read as over 1.5 ×.
 
-Stages 1 through 4 are landed. Stage 5 (`quorum` feature, `SignedClaim` export of a
-`VerifiedSettlement`, and a `KIND_GAME_SETTLEMENT` evidence kind in `vhalla-steel-thread`) remains
-a later, separate entry as the work order states.
+Stages 1 through 4 are landed; stage 5 follows as its own entry.
+
+### 2026-09-17: stage 5, the signed-claim export, the quorum hook, and the steel-thread evidence kind
+
+`VerifiedSettlement::export_claim(realm, session, audience, epoch, sequence, issued_at, expires_at,
+seed)` signs a `vhalla_crypto::SignedClaim` in `ClaimDomain::Receipt` whose subject is
+`SubjectDigest::from_digest(settlement hash)` and whose issuer is the verifier's own seed: the claim
+is the verifier's statement about its own reproduction, never the host's, and a receipt DAG records
+it like any other claim. It verifies under the exact `ClaimContext` and is refused under another
+key or another domain; the test round-trips it through the claim codec.
+
+`quorum` feature, `quorum.rs`: `attest(settlement, certificate, batch_bytes, verify, locate)`
+decodes the decided `Batch` (journal bundle field 3), requires `certificate.value_commitment ==
+batch.value_id()`, calls `verify(certificate bytes, height, value commitment)` with the exact
+`Adapter::absorb` hook signature, asks `locate(&batch)` for the settlement hash the decided batch
+carries, and yields a `QuorumSettlement` (session, epoch, hash, consensus height, value id; no
+`Clone`) only when that hash equals the reproduced settlement's. Refusals in order: `Batch`,
+`ValueMismatch`, `Certificate`, `Unbound`, `Mismatch`. The certificate never replaces reproduction:
+the input is a `VerifiedSettlement` that replay produced. `bare_hash_record` is the stand-in
+locator (exactly one 32-byte entry in `batch.records`). The feature pulls `vhalla-rooms-consensus`
+for `Batch` and `CommitCertificate` only and is off by default; the wasm32 check stays on the
+default feature set and the workspace gate runs `--all-features`.
+
+Deviation, recorded: `Authority::Quorum` at session open stays reserved (`OpenError::Authority`).
+A quorum-ordered session needs the certificate to stand in for the host's seals, which needs a
+rooms or social record kind that carries a game commitment; `vhalla-rooms` bodies are `Control`,
+`Create`, and `Update` and `vhalla-social` records carry faceted text, so no such kind exists and
+inventing one inside this crate would put a rooms wire change behind a game feature. The locator
+is the caller's until that record kind lands; it is the one open item on the crate's
+promotion-gates row.
+
+`vhalla-steel-thread`: `KIND_GAME_SETTLEMENT = 4` (re-exported from the game crate) and
+`GameSession::new(context, session, policy)`, which pins the transport signer to the session's host
+key, admits frames through the same `ReplayWindow` as the other sessions, requires the game kind,
+decodes the `GameRecord`, and routes `Event` to `Receiver::admit` (yielding `Pending` or
+`Checkpoint`) and `Settlement` to `Receiver::settle` (yielding `Settlement`); any other record kind
+is `Denied::Kind`. Players' records reach the receiver inside the host's frames with their own
+signatures intact, so the transport binding adds the host's ordering without replacing the record
+signature. `VerifiedSettlement` and `VerifiedCheckpoint` cannot enter `RemoteRequest` (two new
+compile-fail doctests beside the witness one). `tests/game.rs` plays the frozen live vector through
+the steel thread to a reproduced `Result` settlement and exports its claim; refuses a player-signed
+frame (`AuthorMismatch`), a relabelled read-request kind and a non-record body (`Denied::Kind`), a
+replayed frame (`Verify::Replay`), and a duplicate claim in a fresh envelope (`Game`); and shows a
+memory session refusing the game kind with zero reads.

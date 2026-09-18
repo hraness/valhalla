@@ -46,6 +46,24 @@
 //!     let _ = RemoteRequest::from_verified(witness, scope);
 //! }
 //! ```
+//!
+//! A verified game settlement or checkpoint is evidence too, never authority:
+//!
+//! ```compile_fail
+//! use vhalla_game_platonik::settlement::VerifiedSettlement;
+//! use vhalla_policy::{RemoteRequest, Scope};
+//! fn elevate(settlement: VerifiedSettlement, scope: Scope) {
+//!     let _ = RemoteRequest::from_verified(settlement, scope);
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use vhalla_game_platonik::receiver::VerifiedCheckpoint;
+//! use vhalla_policy::{RemoteRequest, Scope};
+//! fn elevate(checkpoint: VerifiedCheckpoint, scope: Scope) {
+//!     let _ = RemoteRequest::from_verified(checkpoint, scope);
+//! }
+//! ```
 
 use vhalla_botcaptcha::admit::{VerifiedWitness, WitnessVerifier};
 use vhalla_botcaptcha::challenge::{Challenge, ChallengeContext, WitnessError};
@@ -56,6 +74,12 @@ use vhalla_crypto::{
     peer_id_from_seed, sign, verifying_key_from_seed, DecodeSignedError, ReplayWindow, SessionId,
     SignError, SignedEnvelope, VerificationContext, VerifyError, VerifyingKey,
 };
+use vhalla_game_platonik::platonik::PlatonikV1;
+use vhalla_game_platonik::receiver::{Receiver, ReceiverError, ReceiverPolicy, VerifiedCheckpoint};
+use vhalla_game_platonik::record::{GameRecord, RecordKind};
+use vhalla_game_platonik::session::Session;
+use vhalla_game_platonik::settlement::VerifiedSettlement;
+pub use vhalla_game_platonik::KIND_GAME_SETTLEMENT;
 use vhalla_host::{HostError, MemoryHost, Receipt};
 pub use vhalla_policy::KIND_READ_MEMORY_REQUEST;
 use vhalla_policy::{Denied, LocalPolicy, Operation, RemoteRequest, Scope};
@@ -86,6 +110,14 @@ pub enum SteelError {
     Host(HostError),
     /// The witness verifier refused the challenge or the response.
     Witness(WitnessError),
+    /// The game receiver refused the record.
+    Game(ReceiverError),
+}
+
+impl From<ReceiverError> for SteelError {
+    fn from(error: ReceiverError) -> Self {
+        Self::Game(error)
+    }
 }
 
 impl From<WitnessError> for SteelError {
@@ -285,6 +317,86 @@ impl WitnessSession {
     #[must_use]
     pub fn open_challenges(&self) -> usize {
         self.verifier.window().len()
+    }
+}
+
+/// What a game frame produced.
+#[derive(Debug)]
+pub enum GameEvidence {
+    /// An event admitted and pending a seal.
+    Pending,
+    /// A seal the receiver reproduced.
+    Checkpoint(VerifiedCheckpoint),
+    /// A settlement the receiver reproduced or a host-signed fork.
+    Settlement(VerifiedSettlement),
+}
+
+/// One game session at this receiver behind the transport replay window
+/// pinned to the host key. Frames of [`KIND_GAME_SETTLEMENT`] carry game
+/// records; events go to the receiver's admission, settlements to its
+/// settlement check. There is no host and no effect: a frame yields evidence
+/// or an error, and neither evidence type can enter `RemoteRequest`.
+// No Clone: duplicating the window or the session would reopen accepted state.
+pub struct GameSession {
+    replay: ReplayWindow,
+    host_key: VerifyingKey,
+    session: Session,
+    receiver: Receiver<PlatonikV1>,
+    step: u64,
+}
+
+impl GameSession {
+    /// Binds the transport signer to the session's host: every frame must be
+    /// signed by the host key the opening names. Players' records reach this
+    /// receiver through the host's frames, each still carrying the player's
+    /// own signature inside.
+    pub fn new(
+        context: VerificationContext,
+        session: Session,
+        policy: ReceiverPolicy,
+    ) -> Result<Self, SteelError> {
+        let host_key = VerifyingKey::from_bytes(&session.host())
+            .map_err(|_| SteelError::Verify(VerifyError::WeakKey))?;
+        if host_key.is_weak() {
+            return Err(VerifyError::WeakKey.into());
+        }
+        Ok(Self {
+            replay: ReplayWindow::new(context, 1)?,
+            host_key,
+            session,
+            receiver: Receiver::new(PlatonikV1, policy),
+            step: 0,
+        })
+    }
+    /// Verifies the envelope under the host key and the transport replay
+    /// window, requires [`KIND_GAME_SETTLEMENT`], decodes the game record, and
+    /// routes it. Nothing here can reach `RemoteRequest`.
+    pub fn receive_game(&mut self, frame: Frame, now: u64) -> Result<GameEvidence, SteelError> {
+        let signed = SignedEnvelope::decode(frame.as_bytes())?;
+        let verified = self.replay.verify_and_accept(signed, &self.host_key, now)?;
+        if verified.envelope().kind() != KIND_GAME_SETTLEMENT {
+            return Err(Denied::Kind.into());
+        }
+        let record = GameRecord::decode(verified.envelope().body())
+            .map_err(|_| SteelError::Denied(Denied::Kind))?;
+        self.step += 1;
+        match record.kind {
+            RecordKind::Event => Ok(self
+                .receiver
+                .admit(&mut self.session, &record, self.step)?
+                .map_or(GameEvidence::Pending, GameEvidence::Checkpoint)),
+            RecordKind::Settlement => Ok(GameEvidence::Settlement(self.receiver.settle(
+                &mut self.session,
+                &record,
+                self.step,
+            )?)),
+            _ => Err(SteelError::Denied(Denied::Kind)),
+        }
+    }
+    /// The session state.
+    #[must_use]
+    pub fn state(&self) -> vhalla_game_platonik::session::State {
+        self.session.state()
     }
 }
 

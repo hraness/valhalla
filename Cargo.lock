@@ -5515,6 +5515,7 @@ dependencies = [
  "vhalla-crypto",
  "vhalla-game-platonik",
  "vhalla-ledger",
+ "vhalla-rooms-consensus",
  "vhalla-witness",
 ]
 
@@ -5761,6 +5762,7 @@ dependencies = [
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-discovery",
+ "vhalla-game-platonik",
  "vhalla-host",
  "vhalla-identity",
  "vhalla-native",

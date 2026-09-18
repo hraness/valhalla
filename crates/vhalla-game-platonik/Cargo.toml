@@ -13,6 +13,9 @@ workspace = true
 # The pinned Platonik engine as converter source, corpus generator, and test
 # oracle. Never a receiver requirement; the default path has no serde.
 oracle = ["dep:platonik-core", "dep:serde", "dep:serde_json"]
+# Attests a verified settlement under a rooms-consensus certificate through a
+# caller-supplied verify hook. Never a receiver requirement.
+quorum = ["dep:vhalla-rooms-consensus"]
 
 [dependencies]
 ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
@@ -21,6 +24,7 @@ vhalla-core = { path = "../vhalla-core" }
 vhalla-crypto = { path = "../vhalla-crypto" }
 vhalla-ledger = { path = "../vhalla-ledger" }
 vhalla-witness = { path = "../vhalla-witness" }
+vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", optional = true }
 platonik-core = { git = "https://github.com/hraness/platonik", rev = "5eedec07c84af3b4beb82f22cc6c2b9fa3520d42", optional = true }
 serde = { version = "1.0", optional = true }
 serde_json = { version = "1.0", optional = true }

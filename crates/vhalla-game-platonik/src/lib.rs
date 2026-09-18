@@ -23,11 +23,17 @@ pub mod engine;
 pub mod ids;
 pub mod manifest;
 pub mod platonik;
+#[cfg(feature = "quorum")]
+pub mod quorum;
 pub mod receiver;
 pub mod record;
 pub mod session;
 pub mod settlement;
 pub mod wire;
+
+/// Wire kind of a game record inside a signed transport envelope: evidence,
+/// never routed to a host effect.
+pub const KIND_GAME_SETTLEMENT: u8 = 4;
 
 #[cfg(feature = "oracle")]
 pub mod oracle;

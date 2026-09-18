@@ -17,7 +17,7 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `game-wasm-parity` | Stage 4 of the Platonik session adapter plan: rebuilds each frozen `game-v1-session-*` vector from its hex alone, replays every record through a fresh `Receiver<PlatonikV1>` on the default (no-`oracle`) feature set, and compares every reproduced event digest, checkpoint hash, verified field and final receipt with the committed values natively and under `wasm32-unknown-unknown` (`verify.sh`) |
 | `ledger` | Signed content-addressed event DAG, equivocation, heads, retention |
 | `game-session` | Deleted at stage 3 of the Platonik session adapter plan; its single-host versus quorum question is answered by `crates/vhalla-game-platonik` (`Authority::Host`, `Quorum` reserved), and its integer approvers and toy hashes were never promoted |
-| `settlement` | Deleted at stage 3 of the Platonik session adapter plan; game settlement is `crates/vhalla-game-platonik::settlement`, vouchers and quorum finality wait for the `quorum` feature and the ledger entry |
+| `settlement` | Deleted at stage 3 of the Platonik session adapter plan; game settlement is `crates/vhalla-game-platonik::settlement`, quorum finality is `quorum::attest` behind the `quorum` feature (stage 5), and vouchers were never promoted |
 | `zk-profile` | Transparent/SNARK/Nova proof envelopes separated from authority |
 | `control-plane` | Protected policy authority versus hostile execution requests |
 | `membrane` | Realm admission, capability boundaries, queues, and revocation |

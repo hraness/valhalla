@@ -15,6 +15,7 @@ vhalla-wire = { path = "../vhalla-wire" }
 vhalla-transport = { path = "../vhalla-transport" }
 vhalla-witness = { path = "../vhalla-witness" }
 vhalla-botcaptcha = { path = "../vhalla-botcaptcha" }
+vhalla-game-platonik = { path = "../vhalla-game-platonik" }
 
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
