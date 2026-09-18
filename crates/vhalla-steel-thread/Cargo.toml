@@ -19,6 +19,8 @@ vhalla-game-platonik = { path = "../vhalla-game-platonik" }
 
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+vhalla-game-platonik = { path = "../vhalla-game-platonik", features = ["quorum"] }
+vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus" }
 vhalla-social = { path = "../vhalla-social" }
 vhalla-discovery = { path = "../vhalla-discovery" }
 vhalla-attention = { path = "../vhalla-attention" }

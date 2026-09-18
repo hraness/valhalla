@@ -280,3 +280,261 @@ fn a_game_frame_never_moves_a_host_effect() {
     );
     assert_eq!(memory.reads(), 0);
 }
+
+/// The vector's player is `Signer::new(2)`, the same as the session tests.
+const PLAYER_SEED: [u8; 32] = [2; 32];
+const CARRIER_SEED: [u8; 32] = [9; 32];
+const SCHEME: [u8; 32] = [0xA5; 32];
+
+fn quorum_session(vector: &Vector) -> Session {
+    use vhalla_game_platonik::quorum::{open as quorum_open, open_commitment};
+    use vhalla_game_platonik::wire::Authority;
+    use vhalla_rooms_consensus::{Batch, CommitCertificate, Frontier};
+    let manifest = decode_game_manifest(&bytes(&vector.fields, "game_manifest")).unwrap();
+    let mut open = decode_session_open(&bytes(&vector.fields, "session_open")).unwrap();
+    let realm = open.realm;
+    open.authority = Authority::Quorum { scheme: SCHEME };
+    let batch = Batch {
+        parent: Frontier {
+            height: 41,
+            value: [1; 32],
+            registry: [2; 32],
+            social: [3; 32],
+            control: [4; 32],
+            time: 100,
+        },
+        time: 101,
+        evidence: Vec::new(),
+        records: Vec::new(),
+        games: vec![open_commitment(&open)],
+        eligible: None,
+        result_registry: [5; 32],
+        result_social: [6; 32],
+        result_control: [7; 32],
+    };
+    let certificate = CommitCertificate {
+        bytes: vec![0xC3; 96],
+        value_commitment: batch.value_id(),
+        height: 42,
+    };
+    quorum_open(manifest, open, realm, &certificate, &batch, 0, |_, _, _| {
+        true
+    })
+    .unwrap()
+}
+
+/// A record carrying a player-signed `BindCommit` this test's quorum
+/// session expects: the player still signs its own events; only authority
+/// events come from the unforgeable quorum actor.
+fn player_bind_commit(
+    session_key: vhalla_game_platonik::ids::SessionKey,
+    slot: u16,
+    sequence: u64,
+    commit: [u8; 32],
+) -> Vec<u8> {
+    use vhalla_game_platonik::wire::{encode_game_event, EventBody, GameEvent};
+    let event = GameEvent {
+        session: session_key,
+        epoch: Epoch(0),
+        author: verifying_key_from_seed(PLAYER_SEED).to_bytes(),
+        sequence: Sequence(sequence),
+        parents: Vec::new(),
+        body: EventBody::BindCommit { slot, commit },
+    };
+    GameRecord::sign(
+        RecordKind::Event,
+        session_key,
+        encode_game_event(&event),
+        &SigningKey::from_bytes(&PLAYER_SEED),
+    )
+    .unwrap()
+    .encode()
+}
+
+#[test]
+fn a_quorum_session_needs_proofs_and_a_carrier_not_a_host_signature() {
+    use vhalla_game_platonik::quorum::{commitment, prove};
+    use vhalla_game_platonik::session::{quorum_actor, Rejection};
+    use vhalla_rooms_consensus::{Batch, CommitCertificate, Frontier};
+    let vector = vector();
+    // The host transport constructor refuses a quorum session outright: the
+    // actor is a point, not a signing key.
+    let quorum = quorum_session(&vector);
+    assert_eq!(quorum.host(), quorum_actor(&SCHEME));
+    assert_eq!(
+        GameSession::new(context(), quorum_session(&vector), policy()).err(),
+        Some(SteelError::Denied(Denied::Kind))
+    );
+    // And the quorum constructor refuses a host session.
+    let carrier = verifying_key_from_seed(CARRIER_SEED);
+    assert_eq!(
+        GameSession::new_quorum(context(), open(&vector), &carrier, policy()).err(),
+        Some(SteelError::Denied(Denied::Kind))
+    );
+    let mut steel = GameSession::new_quorum(context(), quorum, &carrier, policy()).unwrap();
+    let slot = steel.session().opening().players[0].slots[0];
+    assert_eq!(
+        steel.session().opening().players[0].key,
+        verifying_key_from_seed(PLAYER_SEED).to_bytes()
+    );
+    let raw = player_bind_commit(steel.session().key(), slot, 1, [7; 32]);
+    // A carrier-signed frame without proof reaches the session and fails
+    // closed: ordering authority is consensus, never the transport.
+    assert_eq!(
+        steel
+            .receive_game(frame(CARRIER_SEED, 1, KIND_GAME_SETTLEMENT, &raw), NOW + 1)
+            .err(),
+        Some(SteelError::Game(ReceiverError::Session(
+            Rejection::ProofRequired
+        )))
+    );
+    // A frame not signed by the pinned carrier never reaches the session.
+    assert_eq!(
+        steel
+            .receive_game(frame([8; 32], 2, KIND_GAME_SETTLEMENT, &raw), NOW + 2)
+            .err(),
+        Some(SteelError::Verify(VerifyError::AuthorMismatch))
+    );
+    // Mint the consumed proof: the record's own commitment decided in a
+    // batch the certificate attests.
+    let record = GameRecord::decode(&raw).unwrap();
+    let named = commitment(steel.session(), &record).unwrap();
+    let batch = Batch {
+        parent: Frontier {
+            height: 42,
+            value: [1; 32],
+            registry: [2; 32],
+            social: [3; 32],
+            control: [4; 32],
+            time: 101,
+        },
+        time: 102,
+        evidence: Vec::new(),
+        records: Vec::new(),
+        games: vec![named],
+        eligible: None,
+        result_registry: [5; 32],
+        result_social: [6; 32],
+        result_control: [7; 32],
+    };
+    let certificate = CommitCertificate {
+        bytes: vec![0xC3; 96],
+        value_commitment: batch.value_id(),
+        height: 43,
+    };
+    let proof = prove(
+        steel.session(),
+        &record,
+        &certificate,
+        &batch,
+        0,
+        |_, _, _| true,
+    )
+    .unwrap();
+    // The carrier delivers the record; the consumed proof is its authority.
+    let evidence = steel
+        .receive_game_quorum(
+            frame(CARRIER_SEED, 3, KIND_GAME_SETTLEMENT, &raw),
+            NOW + 3,
+            proof,
+        )
+        .unwrap();
+    assert!(matches!(evidence, GameEvidence::Pending));
+    assert_eq!(steel.state(), State::Binding);
+    // A proof bound to a different record is refused as a mismatch.
+    let other_raw = player_bind_commit(steel.session().key(), slot, 2, [8; 32]);
+    let other = GameRecord::decode(&other_raw).unwrap();
+    let other_named = commitment(steel.session(), &other).unwrap();
+    let batch2 = Batch {
+        games: vec![other_named],
+        ..batch
+    };
+    let certificate2 = CommitCertificate {
+        bytes: vec![0xC3; 96],
+        value_commitment: batch2.value_id(),
+        height: 44,
+    };
+    let proof2 = prove(
+        steel.session(),
+        &other,
+        &certificate2,
+        &batch2,
+        0,
+        |_, _, _| true,
+    )
+    .unwrap();
+    assert_eq!(
+        steel
+            .receive_game_quorum(
+                frame(CARRIER_SEED, 4, KIND_GAME_SETTLEMENT, &raw),
+                NOW + 4,
+                proof2,
+            )
+            .err(),
+        Some(SteelError::Game(ReceiverError::Session(
+            Rejection::ProofMismatch
+        )))
+    );
+}
+
+#[test]
+fn a_host_session_refuses_quorum_proofs_over_the_transport() {
+    use vhalla_game_platonik::quorum::{commitment, prove};
+    use vhalla_game_platonik::session::Rejection;
+    use vhalla_rooms_consensus::{Batch, CommitCertificate, Frontier};
+    let vector = vector();
+    let mut steel = GameSession::new(context(), open(&vector), policy()).unwrap();
+    let record = GameRecord::decode(&vector.records[0]).unwrap();
+    let named = commitment(steel.session(), &record).unwrap();
+    let batch = Batch {
+        parent: Frontier {
+            height: 41,
+            value: [1; 32],
+            registry: [2; 32],
+            social: [3; 32],
+            control: [4; 32],
+            time: 100,
+        },
+        time: 101,
+        evidence: Vec::new(),
+        records: Vec::new(),
+        games: vec![named],
+        eligible: None,
+        result_registry: [5; 32],
+        result_social: [6; 32],
+        result_control: [7; 32],
+    };
+    let certificate = CommitCertificate {
+        bytes: vec![0xC3; 96],
+        value_commitment: batch.value_id(),
+        height: 42,
+    };
+    let proof = prove(
+        steel.session(),
+        &record,
+        &certificate,
+        &batch,
+        0,
+        |_, _, _| true,
+    )
+    .unwrap();
+    assert_eq!(
+        steel
+            .receive_game_quorum(
+                frame(HOST_SEED, 1, KIND_GAME_SETTLEMENT, &vector.records[0]),
+                NOW + 1,
+                proof,
+            )
+            .err(),
+        Some(SteelError::Game(ReceiverError::Session(
+            Rejection::ProofMismatch
+        )))
+    );
+    // The host path itself is unchanged.
+    assert!(steel
+        .receive_game(
+            frame(HOST_SEED, 2, KIND_GAME_SETTLEMENT, &vector.records[0]),
+            NOW + 2
+        )
+        .is_ok());
+}

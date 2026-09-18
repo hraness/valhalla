@@ -13,8 +13,8 @@ use crate::engine::GameEngine;
 use crate::ids::SessionKey;
 use crate::receiver::{Receiver, ReceiverError};
 use crate::record::{GameRecord, RecordKind};
-use crate::session::{Session, State, Verdict};
-use crate::wire::{decode_settlement, ForkReason, Settlement};
+use crate::session::{ProvenCommitment, Session, State, Verdict};
+use crate::wire::{decode_settlement, Authority, ForkReason, Settlement};
 
 /// Why a settlement is refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +35,9 @@ pub enum SettleError {
     Outranked,
     Contradiction,
     Terminal,
+    ProofRequired,
+    ProofMismatch,
+    AuthoritySignature,
 }
 
 /// Evidence that this receiver settled a session.
@@ -125,19 +128,64 @@ impl VerifiedSettlement {
 
 impl<E: GameEngine> Receiver<E> {
     /// Admits a host-signed settlement record by reproducing what it claims.
+    /// Quorum sessions require `settle_proven`: this entry always fails with
+    /// `ProofRequired` there.
     pub fn settle(
         &mut self,
         session: &mut Session,
         record: &GameRecord,
         step: u64,
     ) -> Result<VerifiedSettlement, ReceiverError> {
+        self.settle_inner(session, record, None, step)
+    }
+    /// Admits a settlement record under `Authority::Quorum`, consuming the
+    /// certificate proof that a quorum decided its commitment. The record is
+    /// authored by the quorum actor with the zero signature; the proof, not a
+    /// signature, is the authority.
+    pub fn settle_proven(
+        &mut self,
+        session: &mut Session,
+        record: &GameRecord,
+        proven: ProvenCommitment,
+        step: u64,
+    ) -> Result<VerifiedSettlement, ReceiverError> {
+        self.settle_inner(session, record, Some(proven), step)
+    }
+    fn settle_inner(
+        &mut self,
+        session: &mut Session,
+        record: &GameRecord,
+        proven: Option<ProvenCommitment>,
+        step: u64,
+    ) -> Result<VerifiedSettlement, ReceiverError> {
         self.advance_step(step)?;
         if record.kind != RecordKind::Settlement {
             return Err(ReceiverError::Settle(SettleError::NotASettlement));
         }
-        record
-            .verify()
-            .map_err(|_| ReceiverError::Settle(SettleError::Signature))?;
+        let quorum = matches!(session.opening().authority, Authority::Quorum { .. });
+        match (quorum, &proven) {
+            (false, None) => {}
+            (true, None) => return Err(ReceiverError::Settle(SettleError::ProofRequired)),
+            (false, Some(_)) => return Err(ReceiverError::Settle(SettleError::ProofMismatch)),
+            (true, Some(proof)) => {
+                if proof.session != session.key()
+                    || proof.epoch != session.epoch().0
+                    || proof.kind != RecordKind::Settlement
+                    || proof.object != record.object_digest()
+                {
+                    return Err(ReceiverError::Settle(SettleError::ProofMismatch));
+                }
+            }
+        }
+        if quorum {
+            if record.signature != [0; 64] {
+                return Err(ReceiverError::Settle(SettleError::AuthoritySignature));
+            }
+        } else {
+            record
+                .verify()
+                .map_err(|_| ReceiverError::Settle(SettleError::Signature))?;
+        }
         if record.signer != session.host() {
             return Err(ReceiverError::Settle(SettleError::NotHost));
         }
