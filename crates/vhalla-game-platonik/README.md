@@ -43,7 +43,12 @@ new_quorum` pins a carrier key whose frames authenticate transport only.
 a two-validator mesh decides every lane height through journaled `VC2`
 certificates verified by `verify_canonical_certificate`, with a whole-set
 rotation mid-session so the seal and settlement are certified by a different
-validator than the session opened under.
+validator than the session opened under. A second test runs the same session
+through the `home/intake/` producer contract — `.batch` and `.body` file
+drops instead of pre-loaded proposals, a fabricated-claims drop rescued to
+the canonical batch, and a crash + same-home restart of the rotated-in
+validator between heights 3 and 4 — so journaled evidence is consumed across
+a recovery boundary.
 
 ## What a verified checkpoint proves
 
