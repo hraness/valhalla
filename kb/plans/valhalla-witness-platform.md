@@ -844,3 +844,17 @@ valid nonce as `Equivocation`, insufficient work, re-issued-challenge binding, a
 signature, every single-byte change to either wire form, mode crossing in both directions, and the
 difficulty bounds; the Python oracle gains the work digest and its leading-zero count.
 `prototypes/botcaptcha` stays as a superseded reference.
+
+### 2026-09-17: deviation, `platform::run_observed`
+
+The [[plans/valhalla-platonik-session-adapter|Platonik session adapter plan]] needs per-frame
+digests without a second run, so `vhalla-witness` gains `platform::run_observed(manifest,
+assignment, capability, &mut impl vm::Observer)`, and `run` delegates to it with `&mut ()`. The
+observer sees every frame of every case in manifest order, including each case's tick-0 loading
+frame, and changes nothing: `tests/platform.rs` shows observed and plain runs produce identical
+case results and output hashes over the 28 vectors, with one loading frame per case and one frame
+per completed tick. No codec, tag, bound, or vector changed, so v1 encodings and digests are
+untouched; the frame trace and trace hash remain outside this crate. Spike 1 of the adapter plan
+(`prototypes/game-trace-cost`) measured hashing every frame through this seam: 1,542 frames and
+499,094 state bytes across the corpus, native release p95 0.11 ms and worst case 4.4 ms, the whole
+corpus under wasm32 in 15.0 ms with a 0.3 MiB heap, trace heads identical on both targets.

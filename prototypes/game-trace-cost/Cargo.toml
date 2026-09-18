@@ -1,0 +1,25 @@
+[package]
+name = "game-trace-cost"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Spike 1 of the Platonik session adapter plan: does hashing every frame through platform::run_observed keep replay within budget?"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+vhalla-witness = { path = "../../crates/vhalla-witness" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.108"
