@@ -1,0 +1,5 @@
+{
+  "protocol": "clankdar-attest-v1",
+  "payload": "{\"challenge\":{\"challengeId\":\"att_xkA7X9ldC9Em\",\"expiresAt\":\"2026-09-18T03:20:31.320Z\",\"family\":\"cryptarithm\",\"kind\":\"challenge\",\"nonce\":\"qLAE8NjaoUzA4hOF\",\"prompt\":\"Each letter stands for a distinct digit 0-9 and no word starts with 0. Solve the addition DFDA + FBA = ABIB. What number does ABIB equal? Reply with only the digits.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"cee0f8aa0bac84581e16581c1c09a63e30b27e5a3c282109bf054915f3eb8244\",\"suiteVersion\":\"clankdar-frontier-v1\",\"tier\":6,\"verifier\":{\"keyId\":\"f8d0c7680889e094\",\"publicKey\":\"Rw1ofwKbwI0Eik4EpJJJx-Jkr7wW5QaFOn5pIIUJRqI\"}},\"expected\":\"2454\",\"kind\":\"receipt\",\"response\":\"9999\",\"seed\":548382622,\"verdict\":{\"answeredAt\":\"2026-09-18T03:15:35.459Z\",\"format\":\"integer\",\"pass\":false}}",
+  "signature": "tixyi3kXPrXTqXADLGr0AN_pk3e2bSOeAKleS4p7cfhfVJHpYMUFyeQcEU6AR9o2NTA2orDqeKmgqA8rDffIDw"
+}

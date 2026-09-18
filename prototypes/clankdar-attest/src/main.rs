@@ -1,0 +1,328 @@
+//! `clankdar-attest` — sealed-seed capability attestation CLI.
+//!
+//!   clankdar-attest keygen --out KEY.json
+//!   clankdar-attest issue --key KEY.json (--suite NAME | --suite-version VER) --family F --tier N [--seed N] [--ttl S] [--context TXT] [--out TICKET.json] [--clankdar DIR]
+//!   clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE [--out RECEIPT.json] [--clankdar DIR]
+//!   clankdar-attest check RECEIPT.json [--deep] [--clankdar DIR]
+//!
+//! `check` is fully offline. `issue`, `verify`, and `check --deep` call the
+//! canonical Clankdar generator oracle (`bun bench/instance.ts`) inside
+//! `--clankdar` (default: `$CLANKDAR_DIR`, then `../clankdar`).
+
+use std::path::{Path, PathBuf};
+use std::process::exit;
+use std::{env, fs};
+
+use ed25519_dalek::SigningKey;
+use serde::Serialize;
+use valhalla_clankdar_attest_prototype::{
+    check_receipt, check_receipt_deep, draw_seed, generate_verifier, issue_challenge, key_id_of,
+    signing_key, verify_response, AttestError, GeneratedInstance, IssueOptions, Receipt, Ticket,
+    VerifierJwk,
+};
+
+const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT.json [--deep] [--clankdar DIR]";
+
+struct Args {
+    flags: std::collections::HashMap<String, String>,
+    switches: std::collections::HashSet<String>,
+    positional: Vec<String>,
+}
+
+fn parse_args(argv: &[String]) -> Result<Args, String> {
+    let mut args = Args {
+        flags: std::collections::HashMap::new(),
+        switches: std::collections::HashSet::new(),
+        positional: Vec::new(),
+    };
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+        if let Some(name) = arg.strip_prefix("--") {
+            if name == "deep" || name == "help" {
+                args.switches.insert(name.to_string());
+            } else {
+                i += 1;
+                let value = argv
+                    .get(i)
+                    .ok_or_else(|| format!("--{name} requires a value"))?;
+                args.flags.insert(name.to_string(), value.clone());
+            }
+        } else {
+            args.positional.push(arg.clone());
+        }
+        i += 1;
+    }
+    Ok(args)
+}
+
+fn clankdar_dir(args: &Args) -> PathBuf {
+    if let Some(dir) = args.flags.get("clankdar") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(dir) = env::var("CLANKDAR_DIR") {
+        return PathBuf::from(dir);
+    }
+    PathBuf::from("../clankdar")
+}
+
+/// The generator oracle: `bun bench/instance.ts` inside the clankdar repo.
+fn oracle(
+    dir: &Path,
+    suite: &str,
+    suite_is_version: bool,
+    family: &str,
+    tier: u32,
+    seed: u64,
+) -> Result<GeneratedInstance, AttestError> {
+    let suite_flag = if suite_is_version {
+        "--suite-version"
+    } else {
+        "--suite"
+    };
+    let output = std::process::Command::new("bun")
+        .args([
+            "bench/instance.ts",
+            suite_flag,
+            suite,
+            "--family",
+            family,
+            "--tier",
+            &tier.to_string(),
+            "--seed",
+            &seed.to_string(),
+        ])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| AttestError::Malformed(format!("cannot run generator oracle: {e}")))?;
+    if !output.status.success() {
+        return Err(AttestError::Malformed(format!(
+            "generator oracle failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| AttestError::Malformed(format!("generator oracle returned bad JSON: {e}")))
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, AttestError> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| AttestError::Malformed(format!("cannot read {path}: {e}")))?;
+    serde_json::from_str(&text)
+        .map_err(|e| AttestError::Malformed(format!("cannot parse {path}: {e}")))
+}
+
+fn write_json(path: &str, value: &impl Serialize, private: bool) -> Result<(), AttestError> {
+    if Path::new(path).exists() {
+        return Err(AttestError::InvalidInput(format!(
+            "refusing to overwrite {path}"
+        )));
+    }
+    let text = format!(
+        "{}\n",
+        serde_json::to_string_pretty(value).map_err(|e| AttestError::Malformed(e.to_string()))?
+    );
+    fs::write(path, text)
+        .map_err(|e| AttestError::Malformed(format!("cannot write {path}: {e}")))?;
+    if private {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+    }
+    Ok(())
+}
+
+fn fail(error: AttestError) -> ! {
+    eprintln!("{error}");
+    exit(2)
+}
+
+fn main() {
+    let argv: Vec<String> = env::args().skip(1).collect();
+    let Some(command) = argv.first() else {
+        println!("{USAGE}");
+        return;
+    };
+    let args = match parse_args(&argv[1..]) {
+        Ok(args) => args,
+        Err(e) => fail(AttestError::InvalidInput(e)),
+    };
+    if args.switches.contains("help") {
+        println!("{USAGE}");
+        return;
+    }
+    match command.as_str() {
+        "keygen" => {
+            let Some(out) = args.flags.get("out") else {
+                fail(AttestError::InvalidInput(
+                    "keygen requires --out".to_string(),
+                ));
+            };
+            let jwk = generate_verifier();
+            if let Err(e) = write_json(out, &jwk, true) {
+                fail(e);
+            }
+            let public_key = jwk.x.clone();
+            let key_id = key_id_of(&public_key).unwrap_or_default();
+            println!(
+                "{}",
+                serde_json::json!({"keyId": key_id, "publicKey": public_key, "privateKeyFile": out})
+            );
+        }
+        "issue" => {
+            let (Some(key_path), Some(family), Some(tier)) = (
+                args.flags.get("key"),
+                args.flags.get("family"),
+                args.flags.get("tier"),
+            ) else {
+                fail(AttestError::InvalidInput(
+                    "issue requires --key --family --tier".to_string(),
+                ));
+            };
+            let (suite, suite_is_version) =
+                match (args.flags.get("suite"), args.flags.get("suite-version")) {
+                    (Some(s), None) => (s.clone(), false),
+                    (None, Some(v)) => (v.clone(), true),
+                    _ => fail(AttestError::InvalidInput(
+                        "issue requires exactly one of --suite or --suite-version".to_string(),
+                    )),
+                };
+            let tier: u32 = match tier.parse() {
+                Ok(t) => t,
+                Err(_) => fail(AttestError::InvalidInput(
+                    "tier must be a non-negative integer".to_string(),
+                )),
+            };
+            let seed: u64 = match args.flags.get("seed") {
+                Some(s) => match s.parse() {
+                    Ok(v) => v,
+                    Err(_) => fail(AttestError::InvalidInput(
+                        "seed must be a uint32".to_string(),
+                    )),
+                },
+                None => draw_seed(),
+            };
+            let jwk: VerifierJwk = match read_json(key_path) {
+                Ok(j) => j,
+                Err(e) => fail(e),
+            };
+            let key: SigningKey = match signing_key(&jwk) {
+                Ok(k) => k,
+                Err(e) => fail(e),
+            };
+            let dir = clankdar_dir(&args);
+            let instance = match oracle(&dir, &suite, suite_is_version, family, tier, seed) {
+                Ok(i) => i,
+                Err(e) => fail(e),
+            };
+            let opts = IssueOptions {
+                family,
+                tier,
+                ttl_seconds: args.flags.get("ttl").and_then(|t| t.parse().ok()),
+                context: args.flags.get("context").cloned(),
+                now: None,
+            };
+            let (challenge, ticket) = match issue_challenge(&opts, seed, &instance, &key) {
+                Ok(v) => v,
+                Err(e) => fail(e),
+            };
+            match args.flags.get("out") {
+                Some(out) => {
+                    if let Err(e) = write_json(out, &ticket, true) {
+                        fail(e);
+                    }
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&challenge).unwrap_or_default()
+                    );
+                }
+                None => println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"challenge": challenge, "ticket": ticket})
+                    )
+                    .unwrap_or_default()
+                ),
+            }
+        }
+        "verify" => {
+            let (Some(key_path), Some(ticket_path), Some(response_path)) = (
+                args.flags.get("key"),
+                args.flags.get("ticket"),
+                args.flags.get("response-file"),
+            ) else {
+                fail(AttestError::InvalidInput(
+                    "verify requires --key --ticket --response-file".to_string(),
+                ));
+            };
+            let jwk: VerifierJwk = match read_json(key_path) {
+                Ok(j) => j,
+                Err(e) => fail(e),
+            };
+            let key = match signing_key(&jwk) {
+                Ok(k) => k,
+                Err(e) => fail(e),
+            };
+            let ticket: Ticket = match read_json(ticket_path) {
+                Ok(t) => t,
+                Err(e) => fail(e),
+            };
+            let response = match fs::read_to_string(response_path) {
+                Ok(r) => r.trim().to_string(),
+                Err(e) => fail(AttestError::Malformed(format!(
+                    "cannot read {response_path}: {e}"
+                ))),
+            };
+            let dir = clankdar_dir(&args);
+            let c = &ticket.challenge;
+            let instance =
+                match oracle(&dir, &c.suite_version, true, &c.family, c.tier, ticket.seed) {
+                    Ok(i) => i,
+                    Err(e) => fail(e),
+                };
+            let receipt = match verify_response(&ticket, &response, &instance, &key, None) {
+                Ok(r) => r,
+                Err(e) => fail(e),
+            };
+            match args.flags.get("out") {
+                Some(out) => {
+                    if let Err(e) = write_json(out, &receipt, false) {
+                        fail(e);
+                    }
+                }
+                None => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&receipt).unwrap_or_default()
+                ),
+            }
+        }
+        "check" => {
+            let Some(path) = args.positional.first() else {
+                fail(AttestError::InvalidInput(
+                    "check requires a receipt file".to_string(),
+                ));
+            };
+            let receipt: Receipt = match read_json(path) {
+                Ok(r) => r,
+                Err(e) => fail(e),
+            };
+            let result = if args.switches.contains("deep") {
+                let dir = clankdar_dir(&args);
+                check_receipt_deep(&receipt, |suite_version, family, tier, seed| {
+                    oracle(&dir, suite_version, true, family, tier, seed).map_err(|e| e.to_string())
+                })
+            } else {
+                check_receipt(&receipt)
+            };
+            println!("{}", serde_json::to_string(&result).unwrap_or_default());
+            if !result.ok {
+                exit(2);
+            }
+        }
+        other => fail(AttestError::InvalidInput(format!(
+            "unknown command: {other}. {USAGE}"
+        ))),
+    }
+}
