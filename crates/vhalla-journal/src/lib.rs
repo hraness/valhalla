@@ -946,3 +946,19 @@ impl<S: Store> Journal<S> {
 
 #[cfg(test)]
 mod tests;
+
+/// Kani bounded model-checking harnesses (`cargo kani -p vhalla-journal`).
+///
+/// Covers the pure decoder surface: a byte string past the scratch bound is
+/// rejected without panicking or allocating unbounded state.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A byte string past the scratch bound is rejected before parsing.
+    #[kani::proof]
+    fn decode_rejects_oversized_input() {
+        let raw = std::vec![0u8; MAX_BUNDLE_BYTES + 1];
+        assert!(matches!(Bundle::decode(&raw), Err(JournalError::Corrupt)));
+    }
+}

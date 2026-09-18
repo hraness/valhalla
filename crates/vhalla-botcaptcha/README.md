@@ -45,4 +45,10 @@ a game session under a policy that decides those things separately.
   prune cannot be undone by a later call with a smaller `now`.
 - Nothing executes network-supplied code; programs are data interpreted by
   `vhalla-witness` under its static bounds and the verifier's allowance.
-- Hashcash mode is reserved (`Algorithm::Hashcash`) and not implemented here.
+- Hashcash mode (`Algorithm::Hashcash`): the challenge carries a leading-zero
+  target of at most 48 bits in the same seventeen transcript bytes the witness
+  contract uses; the subject signs the nonce whose work digest over the exact
+  challenge meets it; the verifier shares the one-use window. It proves key
+  possession and bounded hash work, is hardware-biased and outsourceable, and
+  is not Sybil resistance; the plan reserves it for unknown keys, bursts, and
+  overloaded relays.
