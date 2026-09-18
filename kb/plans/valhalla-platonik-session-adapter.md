@@ -1395,3 +1395,34 @@ proof-admitted settlement that also attests — plus the negative matrix (bare `
 position, cross-session/kind/object proofs, host-side proofs, nonzero actor signatures).
 `tests/game.rs` in steel-thread covers both constructor refusals, the carrier `AuthorMismatch`,
 `ProofRequired` without proof, a real proof-admitted `BindCommit`, and a mismatched proof.
+
+### 2026-09-18: live quorum qualification under real issuance and rotation
+
+`tests/live_quorum.rs` (unix + `quorum` + `oracle`) qualifies the quorum path against the real
+rooms-node validator mesh rather than synthetic acceptance closures. A two-validator in-process
+mesh (`vhalla-rooms-node`'s `NodeSpec`/`RoomNode`, the same harness as the node's own rotation
+tests) runs a whole-set replacement schedule: validator A alone certifies heights 1-2, validator
+B alone certifies heights 3-5 from `ROTATE = 3`, and B joins at genesis so it must sync the
+decided pre-rotation values it never voted on.
+
+The session's game lane is decided height by height through `NodeSpec::held` batches built with
+`Application::prepare_with_games` against the advancing genesis frontier: height 1 carries the
+`SessionOpen` commitment, height 2 the player bind plus actor bind-close and bind-reveal,
+height 3 the actor reveal and player input, height 4 the actor seal, and height 5 the
+settlement. Every commitment is `quorum::commitment`/`open_commitment` output over the exact
+record bytes the session later admits, and lane position is part of the proof.
+
+Qualification reads the journaled `VC2` certificate bytes and decided batch out of the node's
+own `app/journal` store — no fixture signature ever verifies anything — and drives
+`verify_canonical_certificate` under the validator set the schedule activates at the
+certificate's height. `quorum::open` consumes the height-1 certificate under set A; every
+`admit_quorum` re-verifies at its own height; the height-4 seal and height-5
+`settle_quorum`/`attest` are quorum evidence issued by set B, a different validator than the
+session opened under. The negative check confirms the height-5 certificate fails attestation
+under the rotated-out set A. The test also asserts each journaled batch is byte-equal to the
+held plan, so positions cannot drift.
+
+Remaining limitation: this qualifies issuance, verification, and rotation in-process. It does
+not exercise intake-dropped game bodies over the networked intake path, multi-round consensus
+recovery, or an operational policy for who may submit game commitments — those stay with the
+rooms admission policy work.

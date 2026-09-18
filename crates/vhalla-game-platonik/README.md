@@ -39,6 +39,11 @@ signature (`GameRecord::unsigned`); player records still verify under their
 own keys. `Receiver::admit_quorum`/`settle_quorum` compose prove + admission,
 and `vhalla-steel-thread` separates delivery from authority: `GameSession::
 new_quorum` pins a carrier key whose frames authenticate transport only.
+`tests/live_quorum.rs` (unix) qualifies the whole path under real issuance:
+a two-validator mesh decides every lane height through journaled `VC2`
+certificates verified by `verify_canonical_certificate`, with a whole-set
+rotation mid-session so the seal and settlement are certified by a different
+validator than the session opened under.
 
 ## What a verified checkpoint proves
 
