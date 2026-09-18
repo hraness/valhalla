@@ -56,6 +56,33 @@ Tests cover private creation/reopen, distinct generated keys, signed message
 verification, exclusive opens, corrupt/partial records, interrupted
 publication, symlinks/hardlinks, exposed permissions and generated record mutations.
 
+## BIP39 backup and restore
+
+The CLI can encode the 32-byte Ed25519 seed as a 24-word English BIP39
+mnemonic and restore the same key from that phrase:
+
+```console
+vhalla identity init ./my-agent
+vhalla identity backup ./my-agent > my-agent.backup
+
+# The first two lines are the mnemonic and the application public key.
+cat my-agent.backup
+
+# If the original directory is ever lost, create a new one from the phrase:
+vhalla identity restore ./my-agent-restored < my-agent.backup
+vhalla identity show ./my-agent-restored
+```
+
+`backup` only opens the identity and prints the phrase plus public key; it does
+not write a file. Operators should write the mnemonic to durable offline storage
+and keep the public key in a separate convenient place. `restore` reads the
+mnemonic from stdin so the phrase never appears in shell history or process
+arguments. It validates the BIP39 checksum, rejects any phrase that does not
+decode to exactly 32 bytes of entropy, and creates a new private directory with
+the same record format as `init`. The restored `application-key` is byte-for-byte
+identical to the lost one — the mnemonic is the only recoverable secret; if it
+is lost, the identity is gone.
+
 The command entry point and CLI lifecycle tests live in `vhalla-cli`; the identity
 library has no transport dependency. `cargo test -p vhalla-cli --locked` checks the
 default identity commands.

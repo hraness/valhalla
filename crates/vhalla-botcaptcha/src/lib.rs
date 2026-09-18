@@ -11,7 +11,14 @@
 //!
 //! Entropy and the clock are injected; the crate reads neither. Nothing here
 //! executes network-supplied code: programs are data interpreted by
-//! `vhalla-witness`. Hashcash mode is reserved and not implemented here.
+//! `vhalla-witness`.
+//!
+//! Hashcash mode is the small anti-spam primitive from the games plan: the
+//! subject finds a nonce whose SHA-256 work digest over the exact challenge has
+//! a declared number of leading zero bits. It proves key possession and bounded
+//! hash work, is hardware-biased and outsourceable, and is not Sybil
+//! resistance; the plan reserves it for unknown keys, bursts, and overloaded
+//! relays.
 #![no_std]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -20,6 +27,7 @@ extern crate alloc;
 
 pub mod admit;
 pub mod challenge;
+pub mod hashcash;
 pub mod response;
 pub mod window;
 
@@ -38,6 +46,10 @@ pub const RESPONSE_DOMAIN: &[u8] = b"vhalla/botcaptcha/response/v1";
 pub const DEDUP_DOMAIN: &[u8] = b"vhalla/botcaptcha/dedup/v1";
 /// Digest domain for the reward `scope_key || response_hash`.
 pub const REWARD_DOMAIN: &[u8] = b"vhalla/botcaptcha/reward/v1";
+/// Digest domain for Hashcash work: `challenge_hash || subject_key || nonce`.
+pub const WORK_DOMAIN: &[u8] = b"vhalla/botcaptcha/pow/v1";
+/// Signing domain for a Hashcash response transcript.
+pub const HASHCASH_RESPONSE_DOMAIN: &[u8] = b"vhalla/botcaptcha/hashcash-response/v1";
 
 /// `domain || u32 length || bytes`: the message a key signs.
 #[must_use]

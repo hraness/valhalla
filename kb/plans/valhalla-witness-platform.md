@@ -633,7 +633,7 @@ is issuer policy.
 | Steel thread | kind 3 and `WitnessSession` in a later Gate 5 entry, never through `RemoteRequest` | wire kind in the first landing; widening `from_verified` | decided |
 | Platonik pin | `5eedec07c84af3b4beb82f22cc6c2b9fa3520d42` | `76ea2db` | decided |
 | Game layer | separate Slice 5 adapter plan for `vhalla-game-platonik` | game types in these crates; porting `prototypes/game-session` | decided |
-| Hashcash mode | stays in `prototypes/botcaptcha`; `algorithm = 1` reserved | promoted with witness mode | decided |
+| Hashcash mode | promoted into `vhalla-botcaptcha` as `Algorithm::Hashcash` with a `Requirement` enum in the challenge, a `hashcash` module, and the shared one-use window | staying in `prototypes/botcaptcha`; a separate crate | decided |
 | Plan location and Roc | this file plus a dated entry in the readiness plan; Roc as reference design only | section inside the games plan; Roc toolchain or platform host | decided |
 
 ## Review findings
@@ -825,6 +825,25 @@ defines no reporting channel and a subject can only equivocate against itself), 
 P2 (the committed `bridge-v1` corpus has no fuel-exhausted case; the 400 random experiments in
 spike 1 cover fuel exhaustion at load and mid-run and activation stops), and S7 (the vault checks
 run with the installed `kb` CLI).
+
+### 2026-09-16: Hashcash mode promoted into `vhalla-botcaptcha`
+
+`Challenge.contract` became `Challenge.requirement: Requirement`, either `Witness(WorkContract)` or
+`Hashcash(Difficulty)`, encoded in the same seventeen transcript bytes so `CHALLENGE_BYTES` and the
+Python challenge vector are unchanged; the decoder derives the variant from the algorithm byte and
+refuses a Hashcash challenge whose unused ceiling or flag bytes are nonzero or whose target is
+outside `1..=MAX_DIFFICULTY` (48). `ChallengeIssuer::issue_hashcash` issues one with a zero manifest
+hash. The `hashcash` module holds `work_digest` (`vhalla/botcaptcha/pow/v1` over
+`challenge_hash || subject_key || nonce`), `leading_zero_bits`, a bounded `solve`, the fixed-width
+signed `HashcashResponse`, and `respond_hashcash`. `WitnessVerifier::verify_hashcash` runs the
+shared challenge steps, the subject signature, the exact-challenge binding, the early window peek,
+the target check (`InsufficientWork`), and consumes the same one-use window, returning
+`VerifiedHashcash` with private fields and no `Clone`. `respond`, `solve`, and both verifier paths
+refuse the other mode's challenge as `Algorithm`. Tests cover solve and admit once, replay, a second
+valid nonce as `Equivocation`, insufficient work, re-issued-challenge binding, a stranger's
+signature, every single-byte change to either wire form, mode crossing in both directions, and the
+difficulty bounds; the Python oracle gains the work digest and its leading-zero count.
+`prototypes/botcaptcha` stays as a superseded reference.
 
 ### 2026-09-17: deviation, `platform::run_observed`
 

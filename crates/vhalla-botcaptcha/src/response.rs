@@ -11,7 +11,7 @@ use vhalla_witness::platform::{
     self, ClaimedReceipt, RunRefused, RunRole, WitnessReceipt, WorkAllowance, RECEIPT_BYTES,
 };
 
-use crate::challenge::VerifiedChallenge;
+use crate::challenge::{Algorithm, VerifiedChallenge};
 use crate::{transcript, RESPONSE_DOMAIN, VERSION};
 
 /// Closed proof profile set.
@@ -202,6 +202,8 @@ impl Response {
 pub enum ProveError {
     /// The signing key is not the challenge's subject.
     Subject,
+    /// The challenge is not a witness-mode challenge.
+    Algorithm,
     /// The manifest is not the challenge's manifest.
     Manifest,
     /// The candidate was refused.
@@ -238,6 +240,9 @@ pub fn respond(
     let subject_key = key.verifying_key().to_bytes();
     if subject_key != challenge.challenge().subject_key {
         return Err(ProveError::Subject);
+    }
+    if challenge.challenge().algorithm != Algorithm::Witness {
+        return Err(ProveError::Algorithm);
     }
     if manifest.hash() != challenge.challenge().task_manifest_hash {
         return Err(ProveError::Manifest);

@@ -3,7 +3,8 @@
 use std::fs;
 use std::path::Path;
 
-use vhalla_botcaptcha::challenge::{Algorithm, Challenge, Purpose};
+use vhalla_botcaptcha::challenge::{Algorithm, Challenge, Purpose, Requirement};
+use vhalla_botcaptcha::hashcash::{leading_zero_bits, work_digest};
 use vhalla_core::{RealmId, RoomId};
 use vhalla_witness::hash::ManifestHash;
 use vhalla_witness::manifest::WorkContract;
@@ -35,11 +36,11 @@ fn python_challenge_transcript_and_dedup_key_match_byte_for_byte() {
         task_manifest_hash: ManifestHash([1; 32]),
         issued_at: 1_000_000,
         expires_at: 1_000_600,
-        contract: WorkContract {
+        requirement: Requirement::Witness(WorkContract {
             useful_floor: 1,
             total_ceiling: 4000,
             require_passed: false,
-        },
+        }),
         signature: [0; 64],
     };
     assert_eq!(hex(&challenge.body()), field(&json, "challenge_body_hex"));
@@ -49,4 +50,10 @@ fn python_challenge_transcript_and_dedup_key_match_byte_for_byte() {
     );
     assert_eq!(hex(&challenge.scope_key()), field(&json, "dedup_key_hex"));
     assert_eq!(Challenge::decode(&challenge.encode()).unwrap(), challenge);
+    let work = work_digest(challenge.hash(), [9; 32], 12_345);
+    assert_eq!(hex(&work), field(&json, "hashcash_work_digest_hex"));
+    assert_eq!(
+        leading_zero_bits(&work).to_string(),
+        field(&json, "hashcash_leading_zero_bits")
+    );
 }

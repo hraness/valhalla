@@ -459,6 +459,169 @@ meshes. Persistent peers are dialed over plain libp2p TCP: reachability,
 firewalls and transport encryption remain the operator's responsibility,
 which is why a private network is the intended first deployment.
 
+### Friends-and-family operator runbook
+
+This is the shortest safe path through the full release binary for a small
+pre-trusted group. All commands use the `vhalla` build from the release
+tarball and all `--features` are already enabled.
+
+**1. Each person owns one identity and one backup.**
+
+```console
+vhalla identity init ./my-key
+vhalla identity show ./my-key
+vhalla identity backup ./my-key > my-key.backup
+```
+
+The first two lines of `my-key.backup` are the 24-word `mnemonic` and the
+`application-key`. Write the mnemonic down and keep it off the machine that
+holds `./my-key`; the `application-key` is the public name others pin.
+
+**2. Exchange social snapshots so everyone has the same genesis archive.**
+
+```console
+vhalla social init ./alice ./realm000000000000000000000000000047 ./my-key
+vhalla social export ./alice ./realm000000000000000000000000000047 alice.snapshot
+# Give alice.snapshot to Bob; Bob imports it and returns bob.snapshot.
+vhalla social import ./alice ./realm000000000000000000000000000047 bob.snapshot
+```
+
+One person merges every snapshot, exports the merged archive, and
+everyone imports that single file. `rooms node-check` later proves the
+archive is identical everywhere.
+
+**3. One operator authors the shared validator parameters.**
+
+```console
+vhalla rooms keygen
+echo "directory=..."  # any 64-hex id
+vhalla rooms network-init ./network.json \
+  --realm 00000000000000000000000000000047 \
+  --directory <DIR64> \
+  --policy 1,86400,4,86400,8 \
+  --validators 1:<PUBLIC_A>:1,1:<PUBLIC_B>:1,1:<PUBLIC_C>:1 \
+  --eligible <ALICE_OWNER64>,<BOB_OWNER64>
+```
+
+`network.json` contains the `genesis` fingerprint; print it with
+`vhalla rooms node-check` and verify every member sees the same value.
+
+**4. Each member joins the mesh.**
+
+```console
+vhalla rooms node-init ./node \
+  --network ./network.json \
+  --node-key <SEED> \
+  --port 17001 \
+  --listen 127.0.0.1
+
+vhalla rooms node-check ./alice ./node 00000000000000000000000000000047 \
+  --config ./node/node.json
+```
+
+**5. Cross-network TCP with tailcat.**
+
+For a LAN or Tailscale mesh, everyone runs `tailcat serve 17001` and
+shares the printed `tc://` address. For other networks, use the planner
+once `node.json` files exist:
+
+```console
+vhalla rooms tailcat plan \
+  --nodes alice/node.json bob/node.json carol/node.json \
+  --output shell > start-tailcat.sh
+```
+
+Run `start-tailcat.sh`, then pass the printed `--peers` CSV to the next
+member's `node-init`. If you already ran `node-init`, the `peers` line is
+in `node/node.json`; edit it or re-run `node-init` to the same directory.
+Check whether all serves and forwards are actually listening with:
+
+```console
+vhalla rooms tailcat status \
+  --nodes alice/node.json bob/node.json carol/node.json
+```
+
+**6. Start the node and observe it from a replica.**
+
+```console
+vhalla rooms node ./alice ./node 00000000000000000000000000000047 \
+  --config ./node/node.json
+
+# In another shell (the node keeps `node/app` locked; this never touches it)
+vhalla rooms status ./alice ./replica 00000000000000000000000000000047 ./node \
+  --config ./node/node.json
+```
+
+`rooms status` returns `height`, the active `quorum` (total power,
+threshold, validators), the room listing, and every pending marker's
+`state` plus `reason` if it was rejected or collided. Use `rooms pending`
+for only the marker strip.
+
+**7. Submit work through a terminal or the TUI.**
+
+```console
+vhalla rooms submit ./alice ./replica 00000000000000000000000000000047 ./node \
+  create ./my-key ./agent-key <OWNER64> <AGENT64> <GRANT64> \
+  cool-room $(( $(date +%s) + 86400 )) 'A cool room' \
+  --config ./node/node.json
+
+# Wait for commit, then check again
+vhalla rooms pending ./alice ./replica 00000000000000000000000000000047 ./node \
+  --config ./node/node.json
+```
+
+The TUI gives the same commands interactively:
+
+```console
+vhalla rooms tui ./alice ./replica 00000000000000000000000000000047 ./node \
+  --config ./node/node.json
+```
+
+**8. Add or remove a validator without rewriting history.**
+
+The operator copies the shared file and appends a replacement set:
+
+```console
+vhalla rooms network-extend ./network.json ./network-v2.json \
+  --from 10 --validators 10:<PUBLIC_D>:1,10:<PUBLIC_A>:1,...
+```
+
+Each member merges it in:
+
+```console
+vhalla rooms node-update ./node --network ./network-v2.json
+# Restart the node; the new set activates at the chosen height.
+```
+
+`node-update` refuses to touch activations already at or below the
+committed height and rejects any drift in the shared `genesis` fields.
+
+**9. Recover from key loss.**
+
+If the machine holding `./my-key` is lost, use the backup:
+
+```console
+vhalla identity restore ./my-key-restored < my-key.backup
+vhalla identity show ./my-key-restored
+```
+
+The restored `application-key` is identical to the lost one. The mnemonic
+is the only recoverable secret; if it is lost, the identity is gone.
+
+**10. Surface `rooms status` in the menubar.**
+
+The menubar is read-only and never opens an identity or store. It renders
+the `vhalla outputs` directory, so the safe integration is to write the
+status JSON there with the dedicated refresh subcommand:
+
+```console
+vhalla menubar refresh ./alice ./replica 00000000000000000000000000000047 ./node \
+  --config ./node/node.json
+```
+
+`vhalla menubar` then lists `rooms-status.json`; selecting it opens the
+file. Re-run `vhalla menubar refresh` whenever you want an updated view.
+
 ### Transport caveats and WAL resets
 
 Two operational findings from running the validator pair over a relayed
