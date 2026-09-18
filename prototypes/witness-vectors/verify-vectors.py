@@ -30,4 +30,15 @@ assert transcript.hex() == v["challenge_transcript_hex"]
 scope = body[34:66] + body[2:34] + body[66:98]
 assert digest(b"vhalla/botcaptcha/dedup/v1", scope) == v["dedup_key_hex"]
 assert int.from_bytes(manifest[-25:-17], "big") == v["manifest_loading_work"] == len(manifest)
+challenge_hash = bytes.fromhex(digest(b"vhalla/botcaptcha/challenge/v1", body))
+work = bytes.fromhex(digest(b"vhalla/botcaptcha/pow/v1", challenge_hash + body[66:98] + struct.pack(">Q", 12345)))
+assert work.hex() == v["hashcash_work_digest_hex"]
+leading = 0
+for byte in work:
+    if byte == 0:
+        leading += 8
+    else:
+        leading += 8 - byte.bit_length()
+        break
+assert leading == v["hashcash_leading_zero_bits"]
 print(f"witness-v1: program {len(program)} bytes, manifest {len(manifest)} bytes, receipt {len(receipt)} bytes, all digests re-derived")

@@ -249,6 +249,15 @@ def main():
     challenge_body += u64(CHALLENGE["total_ceiling"]) + boolean(CHALLENGE["require_passed"])
     challenge_domain = b"vhalla/botcaptcha/challenge/v1"
     scope = CHALLENGE["issuer_key"] + CHALLENGE["challenge_id"] + CHALLENGE["subject_key"]
+    challenge_hash = digest(challenge_domain, challenge_body)
+    work = digest(b"vhalla/botcaptcha/pow/v1", challenge_hash + CHALLENGE["subject_key"] + u64(12345))
+    leading = 0
+    for byte in work:
+        if byte == 0:
+            leading += 8
+        else:
+            leading += 8 - byte.bit_length()
+            break
     out = {
         "version": 1,
         "source": "Independent Python struct/hashlib encodings of hand-authored witness values; fixed public bytes, never identities for deployment.",
@@ -263,6 +272,8 @@ def main():
         "challenge_body_hex": challenge_body.hex(),
         "challenge_transcript_hex": (challenge_domain + u32(len(challenge_body)) + challenge_body).hex(),
         "dedup_key_hex": digest(b"vhalla/botcaptcha/dedup/v1", scope).hex(),
+        "hashcash_work_digest_hex": work.hex(),
+        "hashcash_leading_zero_bits": leading,
     }
     OUT.write_text(json.dumps(out, indent=2) + "\n")
     print(f"wrote {OUT.relative_to(ROOT)}: program {len(program)} bytes, manifest {length} bytes")

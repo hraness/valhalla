@@ -155,7 +155,8 @@ fn every_challenge_step_has_its_own_refusal() {
     c.algorithm = Algorithm::Hashcash;
     assert_eq!(
         check(c, ctx, NOW - 10, NOW + 1),
-        Some(WitnessError::Algorithm)
+        Some(WitnessError::IssuerSignature),
+        "the signature covers the algorithm byte; a signed Hashcash challenge is refused as Algorithm in tests/hashcash.rs"
     );
     let mut c = challenge.clone();
     c.signature[3] ^= 1;

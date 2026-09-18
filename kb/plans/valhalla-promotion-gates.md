@@ -300,8 +300,9 @@ pure crates after four discovery spikes.
   verifier instances sharing an issuer key need a shared durable ledger, which
   is outside these crates. The Gate 5 witness frame and the independent Python vector oracle landed the
   same day (`WitnessSession`, `KIND_WITNESS_RESPONSE`, the `compile_fail` proof
-  against `RemoteRequest::from_verified`, and `/vectors/witness-v1.json`). The
-  Slice 5 Platonik session adapter and Hashcash mode remain open.
+  against `RemoteRequest::from_verified`, and `/vectors/witness-v1.json`). Hashcash mode
+  followed as `Algorithm::Hashcash` in the same crate. The Slice 5 Platonik
+  session adapter remains open.
 
 ### Shared public room directory — 2026-09-13
 

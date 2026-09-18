@@ -56,24 +56,7 @@ impl SpentFile {
             return Err(SpentError::Malformed);
         }
         let raw = fs::read(&path).map_err(|_| SpentError::Io)?;
-        if raw.len() < 4 || raw.len() % 32 != 4 || &raw[..4] != MAGIC {
-            return Err(SpentError::Malformed);
-        }
-        let mut spent = BTreeSet::new();
-        for nonce in raw[4..].as_chunks::<32>().0 {
-            if *nonce == [0; 32] || !spent.insert(*nonce) {
-                // Reserved zero value or a duplicate entry is noncanonical.
-                return Err(SpentError::Malformed);
-            }
-        }
-        if raw[4..]
-            .as_chunks::<32>()
-            .0
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1])
-        {
-            return Err(SpentError::Malformed);
-        }
+        let spent = decode(&raw)?;
         Ok(Self { path, spent })
     }
 
@@ -106,25 +89,26 @@ impl SpentFile {
     /// Duplicate, reserved and capacity-overflow nonces are rejected before
     /// any write; a consumed nonce is never evicted to admit a new one.
     pub fn consume(&mut self, nonce: [u8; 32]) -> Result<(), SpentError> {
-        if nonce == [0; 32] {
-            return Err(SpentError::Malformed);
-        }
-        if self.spent.contains(&nonce) {
-            return Err(SpentError::AlreadySpent);
-        }
-        if self.spent.len() >= SPENT_CAPACITY {
-            return Err(SpentError::Capacity);
+        if let Some(error) = self.admission_error(&nonce) {
+            return Err(error);
         }
         self.spent.insert(nonce);
         self.publish()
     }
 
+    /// The verdict `consume` gives for `nonce` before any write.
+    fn admission_error(&self, nonce: &[u8; 32]) -> Option<SpentError> {
+        admission_error(nonce, self.spent.contains(nonce), self.spent.len())
+    }
+
+    /// The canonical byte layout `publish` persists: `VSN1` followed by
+    /// the strictly ascending spent nonces.
+    fn encode(&self) -> Vec<u8> {
+        encode_entries(self.spent.iter())
+    }
+
     fn publish(&self) -> Result<(), SpentError> {
-        let mut raw = Vec::with_capacity(4 + 32 * self.spent.len());
-        raw.extend_from_slice(MAGIC);
-        for nonce in &self.spent {
-            raw.extend_from_slice(nonce);
-        }
+        let raw = self.encode();
         let tmp = self.path.with_extension("spent.tmp");
         {
             let mut file = File::create(&tmp).map_err(|_| SpentError::Io)?;
@@ -141,8 +125,234 @@ impl SpentFile {
     }
 }
 
+fn admission_error(nonce: &[u8; 32], already_spent: bool, count: usize) -> Option<SpentError> {
+    if *nonce == [0; 32] {
+        Some(SpentError::Malformed)
+    } else if already_spent {
+        Some(SpentError::AlreadySpent)
+    } else if count >= SPENT_CAPACITY {
+        Some(SpentError::Capacity)
+    } else {
+        None
+    }
+}
+
+/// The canonical layout `open` accepts: `VSN1`, a nonzero-mod-32 length
+/// inside the size bound, then strictly ascending entries with no
+/// reserved zero nonce and no duplicates.
+fn decode(raw: &[u8]) -> Result<BTreeSet<[u8; 32]>, SpentError> {
+    Ok(decode_entries(raw)?.iter().copied().collect())
+}
+
+fn valid_encoded_length(len: usize) -> bool {
+    len >= 4 && len % 32 == 4 && len <= 4 + 32 * SPENT_CAPACITY
+}
+
+fn decode_entries(raw: &[u8]) -> Result<&[[u8; 32]], SpentError> {
+    if !valid_encoded_length(raw.len()) || &raw[..4] != MAGIC {
+        return Err(SpentError::Malformed);
+    }
+    let entries = raw[4..].as_chunks::<32>().0;
+    let mut previous = [0u8; 32];
+    for nonce in entries {
+        if *nonce <= previous {
+            // Reserved zero value or a duplicate entry is noncanonical.
+            return Err(SpentError::Malformed);
+        }
+        previous = *nonce;
+    }
+    Ok(entries)
+}
+
+fn encode_entries<'a>(entries: impl ExactSizeIterator<Item = &'a [u8; 32]>) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(4 + 32 * entries.len());
+    raw.extend_from_slice(MAGIC);
+    for nonce in entries {
+        raw.extend_from_slice(nonce);
+    }
+    raw
+}
+
+/// Independent specification of the spent-file layout, shared between the
+/// test suite and the Kani harnesses: the encoder's canonical bytes and
+/// the exact acceptance predicate `decode` must satisfy.
+#[cfg(any(test, kani))]
+mod spec {
+    use super::*;
+
+    /// The exact byte layout `publish` emits for a spent set.
+    #[cfg(test)]
+    pub(super) fn canonical_bytes(spent: &BTreeSet<[u8; 32]>) -> Vec<u8> {
+        let mut raw = Vec::with_capacity(4 + 32 * spent.len());
+        raw.extend_from_slice(MAGIC);
+        for nonce in spent {
+            raw.extend_from_slice(nonce);
+        }
+        raw
+    }
+
+    /// Independent specification of the layout `open` accepts: the `VSN1`
+    /// marker, a 4 mod 32 length inside the size bound, and strictly
+    /// ascending nonzero entries. Kept slice-only so the Kani harnesses
+    /// never pay for symbolic collection internals in the oracle.
+    pub(super) fn canonical_layout(raw: &[u8]) -> bool {
+        if raw.len() < 4 || raw.len() % 32 != 4 || raw.len() > 4 + 32 * SPENT_CAPACITY {
+            return false;
+        }
+        if &raw[..4] != MAGIC {
+            return false;
+        }
+        let entries = raw[4..].as_chunks::<32>().0;
+        !entries.contains(&[0; 32]) && !entries.windows(2).any(|pair| pair[0] >= pair[1])
+    }
+
+    /// The accepted set under `canonical_layout`; strictly ascending input
+    /// entries iterate in exactly input order.
+    #[cfg(test)]
+    pub(super) fn canonical(raw: &[u8]) -> Option<BTreeSet<[u8; 32]>> {
+        canonical_layout(raw).then(|| raw[4..].as_chunks::<32>().0.iter().copied().collect())
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::spec::canonical_layout;
+    use super::*;
+
+    #[kani::proof]
+    fn encoded_length_matches_the_production_capacity() {
+        let len: usize = kani::any();
+        let expected = len >= 4 && (len - 4) % 32 == 0 && (len - 4) / 32 <= 1024;
+        assert_eq!(valid_encoded_length(len), expected);
+        kani::cover!(len == 32772 && valid_encoded_length(len));
+        kani::cover!(len == 32804 && !valid_encoded_length(len));
+    }
+
+    fn check_layout<const N: usize>() {
+        let bytes: [u8; N] = kani::any();
+        let raw = &bytes[..];
+        let result = decode_entries(raw);
+        assert_eq!(result.is_ok(), canonical_layout(raw));
+        match result {
+            Ok(entries) => {
+                assert_eq!(entries.as_flattened(), &raw[4..]);
+                assert_eq!(entries.len(), (N - 4) / 32);
+                kani::cover!(true);
+            }
+            Err(error) => {
+                assert_eq!(error, SpentError::Malformed);
+                kani::cover!(true);
+            }
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(70)]
+    fn decode_entries_empty_layout() {
+        check_layout::<4>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(70)]
+    fn decode_entries_one_entry_layout() {
+        check_layout::<36>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(70)]
+    fn decode_entries_two_entry_layout() {
+        check_layout::<68>();
+    }
+
+    fn check_rejects_misaligned<const N: usize>() {
+        let bytes: [u8; N] = kani::any();
+        assert!(matches!(decode_entries(&bytes), Err(SpentError::Malformed)));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn decode_entries_rejects_zero_to_three_bytes() {
+        check_rejects_misaligned::<0>();
+        check_rejects_misaligned::<1>();
+        check_rejects_misaligned::<2>();
+        check_rejects_misaligned::<3>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(70)]
+    fn decode_entries_rejects_five_to_sixty_seven_misaligned_bytes() {
+        check_rejects_misaligned::<5>();
+        check_rejects_misaligned::<32>();
+        check_rejects_misaligned::<35>();
+        check_rejects_misaligned::<37>();
+        check_rejects_misaligned::<67>();
+    }
+
+    fn check_entry_round_trip<const N: usize>() {
+        let entries: [[u8; 32]; N] = kani::any();
+        kani::assume(entries.iter().all(|nonce| *nonce != [0; 32]));
+        kani::assume(entries.windows(2).all(|pair| pair[0] < pair[1]));
+        let raw = encode_entries(entries.iter());
+        assert_eq!(raw.len(), 4 + 32 * N);
+        assert_eq!(&raw[..4], b"VSN1");
+        assert_eq!(&raw[4..], entries.as_flattened());
+        assert_eq!(decode_entries(&raw).unwrap(), entries.as_slice());
+        kani::cover!(true);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn entry_codec_empty_round_trip() {
+        let storage = [[1u8; 32]];
+        let entries = &storage[..0];
+        let raw = encode_entries(entries.iter());
+        assert_eq!(raw.as_slice(), b"VSN1");
+        assert!(decode_entries(&raw).unwrap().is_empty());
+        kani::cover!(true);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(70)]
+    fn entry_codec_one_entry_round_trip() {
+        check_entry_round_trip::<1>();
+    }
+
+    #[kani::proof]
+    #[kani::unwind(70)]
+    fn entry_codec_two_entry_round_trip() {
+        check_entry_round_trip::<2>();
+    }
+
+    /// `consume`'s pre-write guard returns precisely the decision table:
+    /// reserved zero, then duplicate, then capacity, else admit.
+    #[kani::proof]
+    #[kani::unwind(70)]
+    fn admission_is_exactly_the_decision_table() {
+        let nonce: [u8; 32] = kani::any();
+        let already_spent: bool = kani::any();
+        let count: usize = kani::any();
+        let result = admission_error(&nonce, already_spent, count);
+        let nonzero = nonce.iter().any(|byte| *byte != 0);
+        assert_eq!(result == Some(SpentError::Malformed), !nonzero);
+        assert_eq!(
+            result == Some(SpentError::AlreadySpent),
+            nonzero && already_spent
+        );
+        assert_eq!(
+            result == Some(SpentError::Capacity),
+            nonzero && !already_spent && count >= 1024
+        );
+        assert_eq!(result.is_none(), nonzero && !already_spent && count < 1024);
+        kani::cover!(result == Some(SpentError::Malformed));
+        kani::cover!(result == Some(SpentError::AlreadySpent));
+        kani::cover!(result == Some(SpentError::Capacity));
+        kani::cover!(result.is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::spec::{canonical, canonical_bytes};
     use super::*;
     use hegel::{generators as gs, HealthCheck, TestCase};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -160,6 +370,34 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn pure_codec_preserves_the_full_capacity_boundary() {
+        let mut spent: BTreeSet<_> = (1..=SPENT_CAPACITY as u64).map(nonce).collect();
+        let raw = encode_entries(spent.iter());
+        assert_eq!(raw, canonical_bytes(&spent));
+        assert_eq!(decode(&raw), Ok(spent.clone()));
+        spent.insert(nonce(SPENT_CAPACITY as u64 + 1));
+        let oversized = encode_entries(spent.iter());
+        assert_eq!(decode(&oversized), Err(SpentError::Malformed));
+    }
+
+    #[test]
+    fn pure_admission_preserves_error_precedence_at_capacity() {
+        assert_eq!(
+            admission_error(&[0; 32], true, SPENT_CAPACITY),
+            Some(SpentError::Malformed)
+        );
+        assert_eq!(
+            admission_error(&nonce(1), true, SPENT_CAPACITY),
+            Some(SpentError::AlreadySpent)
+        );
+        assert_eq!(
+            admission_error(&nonce(1), false, SPENT_CAPACITY),
+            Some(SpentError::Capacity)
+        );
+        assert_eq!(admission_error(&nonce(1), false, SPENT_CAPACITY - 1), None);
     }
 
     #[test]
@@ -240,38 +478,6 @@ mod tests {
         let mut nonce = [0u8; 32];
         nonce[..8].copy_from_slice(&tag.to_be_bytes());
         nonce
-    }
-
-    /// The exact byte layout `publish` emits for a spent set.
-    fn canonical_bytes(spent: &BTreeSet<[u8; 32]>) -> Vec<u8> {
-        let mut raw = Vec::with_capacity(4 + 32 * spent.len());
-        raw.extend_from_slice(MAGIC);
-        for nonce in spent {
-            raw.extend_from_slice(nonce);
-        }
-        raw
-    }
-
-    /// Independent specification of the layout `open` accepts: the `VSN1`
-    /// marker, a 4 mod 32 length inside the size bound, and strictly
-    /// ascending nonzero entries.
-    fn canonical(raw: &[u8]) -> Option<BTreeSet<[u8; 32]>> {
-        if raw.len() < 4 || raw.len() % 32 != 4 || raw.len() > 4 + 32 * SPENT_CAPACITY {
-            return None;
-        }
-        if &raw[..4] != MAGIC {
-            return None;
-        }
-        let mut spent = BTreeSet::new();
-        let mut previous = [0u8; 32];
-        for (i, nonce) in raw[4..].as_chunks::<32>().0.iter().enumerate() {
-            if *nonce == [0; 32] || (i > 0 && previous >= *nonce) {
-                return None;
-            }
-            previous = *nonce;
-            spent.insert(*nonce);
-        }
-        Some(spent)
     }
 
     /// The first tag-encoded nonce outside the model; always exists
