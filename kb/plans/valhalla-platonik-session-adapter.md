@@ -1426,3 +1426,38 @@ Remaining limitation: this qualifies issuance, verification, and rotation in-pro
 not exercise intake-dropped game bodies over the networked intake path, multi-round consensus
 recovery, or an operational policy for who may submit game commitments — those stay with the
 rooms admission policy work.
+
+### 2026-09-18: intake submission and crash recovery under live quorum
+
+`live_quorum_intake_drops_drive_admission_through_restart` qualifies the producer submission
+contract end to end. `NodeSpec::held` is empty, so every value the mesh decides enters through
+`home/intake/` file drops — the same path an external game daemon uses. Heights 1, 2, 4, and 5
+drop canonical `.batch` files; height 3 drops the native `.body` producer format (body fields
+only). Each drop lands in the schedule-active proposer's intake one height at a time — a single
+file per `drain_intake` pass, the honest cadence for a producer that learns its lane's height by
+watching commits.
+
+Two submission-path properties are proven, not assumed. The height-2 `.batch` file carries
+fabricated `parent.value` and all three result digests: intake discards every claim and
+re-assembles against the live frontier, so the journaled batch is byte-equal to the canonical
+plan — a producer can never smuggle consensus state through the drop. And after height 3,
+validator B crashes and restarts on the same home: the height-4 file written while B was down
+sits in its intake until the restarted engine's first `GetValue` drains it; B resumes from the
+journal frontier and certifies heights 4-5. Both nodes' journals serve all five heights with
+certificates that verify under the schedule-active set, and the session's complete admission
+path — open, every `admit_quorum`, `settle_quorum`, `attest` — runs on the restarted node's
+evidence.
+
+The operational policy this surfaces: intake directories live under `NODE_HOME`, the same trust
+domain as the validator key material, so submission admission is the operator's filesystem
+boundary rather than a transport signature. That is sufficient because correctness is enforced
+downstream — a game commitment only orders bytes; `quorum::prove` re-checks every admission
+against the decided value. An intake writer can still influence ordering or fill heights with
+inert commitments (games do not self-reject the way malformed room records do), so operators
+should treat `NODE_HOME/intake/` as write-restricted to the room's own producers; a cross-room
+or multi-realm producer filter remains future policy if the lane ever carries third-party
+submissions.
+
+Remaining limitation: intake and same-home restart are qualified in-process; crash-recovery
+mid-height with WAL replay under contention, and any remote intake beyond the local filesystem
+contract, stay open.

@@ -369,6 +369,30 @@ fn set_at(schedule: &BTreeMap<u64, RoomValidatorSet>, height: u64) -> RoomValida
     schedule.range(..=height).next_back().unwrap().1.clone()
 }
 
+/// A node's journaled (certificate, batch) pair at `height`: the real `VC2`
+/// certificate bytes and the decided batch, read back out of the node's own
+/// `app/journal` store.
+fn open_journal(home: &std::path::Path) -> Journal<FsStore> {
+    let journal = Journal::new(home.join("app").join("journal"), FsStore);
+    journal.recover().unwrap();
+    journal
+}
+
+fn decided_at(journal: &Journal<FsStore>, height: u64) -> (CommitCertificate, Batch) {
+    let id = journal.at_height(height).unwrap().unwrap();
+    let bundle = journal.bundle(id).unwrap().unwrap();
+    let batch = Batch::decode(bundle.field(3).unwrap()).unwrap();
+    assert_eq!(bundle.height(), height);
+    (
+        CommitCertificate {
+            bytes: bundle.field(0).unwrap().to_vec(),
+            height,
+            value_commitment: batch.value_id(),
+        },
+        batch,
+    )
+}
+
 async fn wait_for(what: &str, mut ready: impl FnMut() -> bool, timeout: Duration) {
     let deadline = std::time::Instant::now() + timeout;
     while !ready() {
@@ -458,26 +482,12 @@ async fn live_quorum_certificates_admit_a_session_across_rotation() {
         )
     };
 
-    // Every decided height carries a real certificate under its active set.
-    let journal = Journal::new(nodes[0].home.join("app").join("journal"), FsStore);
-    journal.recover().unwrap();
-    let decided_at = |height: u64| {
-        let id = journal.at_height(height).unwrap().unwrap();
-        let bundle = journal.bundle(id).unwrap().unwrap();
-        let batch = Batch::decode(bundle.field(3).unwrap()).unwrap();
-        assert_eq!(bundle.height(), height);
-        assert_eq!(&batch, held.get(&height).unwrap());
-        (
-            CommitCertificate {
-                bytes: bundle.field(0).unwrap().to_vec(),
-                height,
-                value_commitment: batch.value_id(),
-            },
-            batch,
-        )
-    };
+    // Every decided height carries a real certificate under its active set,
+    // and the journaled batch is byte-equal to the held plan.
+    let journal = open_journal(&nodes[0].home);
     for h in 1..=HEIGHTS {
-        let (cert, _) = decided_at(h);
+        let (cert, batch) = decided_at(&journal, h);
+        assert_eq!(&batch, held.get(&h).unwrap());
         assert!(
             verify(&cert.bytes, cert.height, &cert.value_commitment),
             "height {h} certificate must verify under its active set"
@@ -486,7 +496,7 @@ async fn live_quorum_certificates_admit_a_session_across_rotation() {
 
     // Open under the first set's certificate, order every record under the
     // set active at its height, settle and attest under the rotated set.
-    let (c1, b1) = decided_at(1);
+    let (c1, b1) = decided_at(&journal, 1);
     let mut session = quorum_open(
         planned.parts.manifest.clone(),
         planned.parts.open.clone(),
@@ -499,7 +509,7 @@ async fn live_quorum_certificates_admit_a_session_across_rotation() {
     .unwrap();
     let mut receiver = Receiver::new(PlatonikV1, policy());
     for (record, height, position, step) in &planned.admissions {
-        let (cert, batch) = decided_at(*height);
+        let (cert, batch) = decided_at(&journal, *height);
         receiver
             .admit_quorum(
                 &mut session,
@@ -517,7 +527,7 @@ async fn live_quorum_certificates_admit_a_session_across_rotation() {
         vhalla_game_platonik::session::State::Finished
     );
 
-    let (c5, b5) = decided_at(HEIGHTS);
+    let (c5, b5) = decided_at(&journal, HEIGHTS);
     let verified = receiver
         .settle_quorum(&mut session, &planned.settlement, &c5, &b5, 0, 5, &verify)
         .unwrap();
@@ -530,6 +540,260 @@ async fn live_quorum_certificates_admit_a_session_across_rotation() {
         verify_canonical_certificate(bytes, h, &RoomValueId(*v), &stale)
     })
     .is_err());
+
+    for node in nodes {
+        node.crash().await;
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The producer submission contract and recovery: `NodeSpec::held` is empty,
+/// so every value enters through `home/intake/` `.batch` file drops — the
+/// same path an external game daemon uses. Each drop carries only the body
+/// fields; parent and result claims are re-assembled at proposal time, so a
+/// file with fabricated claims still commits the canonical batch. Validator
+/// B (the rotated-in set) crashes after its first certified height and
+/// restarts on the same home, resuming from the journal frontier to decide
+/// the session's last two heights — its journaled certificates survive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn live_quorum_intake_drops_drive_admission_through_restart() {
+    let planned = plan();
+    let genesis = fixture::plan(0, 8, 16).genesis;
+
+    // The canonical batches the intake drops must assemble into — built
+    // against the genesis frontier exactly as in the held-batch test.
+    let mut app = Application::genesis(genesis.archive.clone(), genesis.registry().unwrap());
+    let mut held = BTreeMap::new();
+    for (h, games) in &planned.lanes {
+        let checked = app
+            .prepare_with_games(*h, Vec::new(), Vec::new(), games.clone(), None)
+            .unwrap();
+        held.insert(*h, checked.batch().clone());
+        app.apply_locally(checked);
+    }
+
+    let ka = PrivateKey::from([41; 32]);
+    let kb = PrivateKey::from([87; 32]);
+    let set1 = RoomValidatorSet::new(vec![RoomValidator::new(ka.public_key(), 1)]);
+    let set2 = RoomValidatorSet::new(vec![RoomValidator::new(kb.public_key(), 1)]);
+    let schedule = BTreeMap::from([(1_u64, set1.clone()), (ROTATE, set2.clone())]);
+
+    let base = std::env::temp_dir().join(format!(
+        "live-quorum-intake-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let base_port = 32_000
+        + (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+            % 1_000) as usize;
+
+    // Pre-create each node's intake dir; a drop is a plain file write.
+    let intakes: Vec<_> = (0..2)
+        .map(|i| {
+            let dir = base.join(format!("n{i}")).join("intake");
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        })
+        .collect();
+
+    let mut nodes = Vec::new();
+    for (i, key) in [&ka, &kb].into_iter().enumerate() {
+        nodes.push(
+            RoomNode::start(NodeSpec {
+                home: base.join(format!("n{i}")),
+                config: node_config(i + 1, 2, base_port),
+                node_key: key.clone(),
+                validator_sets: schedule.clone(),
+                held: BTreeMap::new(),
+                genesis: genesis.clone(),
+                wal_faults: None,
+                net_gate: None,
+            })
+            .await,
+        );
+    }
+
+    /// One height's producer drop: the file lands in the active proposer's
+    /// intake, the mesh drains it at `GetValue`, and that node journal-commits
+    /// the height before the next drop. One file per drain keeps queue order
+    /// deterministic — the honest cadence for a producer that only learns its
+    /// lane's height by watching commits.
+    async fn drop_and_commit(
+        nodes: &[RoomNode],
+        intakes: &[std::path::PathBuf],
+        schedule: &BTreeMap<u64, RoomValidatorSet>,
+        height: u64,
+        name: &str,
+        bytes: Vec<u8>,
+    ) {
+        let proposer = if set_at(schedule, height)
+            .validators
+            .iter()
+            .any(|v| v.address == nodes[0].address)
+        {
+            0
+        } else {
+            1
+        };
+        std::fs::write(intakes[proposer].join(name), bytes).unwrap();
+        wait_for(
+            "the dropped body to decide at its height",
+            || nodes[proposer].committed_height() >= height,
+            Duration::from_secs(60),
+        )
+        .await;
+    }
+
+    // Heights 1-2 are A's: the h2 `.batch` drop carries fabricated parent and
+    // result claims — discarded at intake and re-assembled, so the canonical
+    // batch still commits.
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        1,
+        "h1.batch",
+        held[&1].encode(),
+    )
+    .await;
+    let mut forged = held[&2].clone();
+    forged.parent.value = [9; 32];
+    forged.result_registry = [8; 32];
+    forged.result_social = [7; 32];
+    forged.result_control = [6; 32];
+    drop_and_commit(&nodes, &intakes, &schedule, 2, "h2.batch", forged.encode()).await;
+
+    // Height 3 is B's first certified height, dropped in the native `.body`
+    // producer format (body fields only — the node computes every claim).
+    // Then B crashes and restarts on the same home: h4's file waits in the
+    // crashed node's intake and is drained when the restarted engine asks
+    // for h4's value.
+    let h3_body = vhalla_rooms_consensus::BatchBody {
+        time: held[&3].time,
+        evidence: Vec::new(),
+        records: Vec::new(),
+        games: held[&3].games.clone(),
+        eligible: None,
+    };
+    drop_and_commit(&nodes, &intakes, &schedule, 3, "h3.body", h3_body.encode()).await;
+    let victim = nodes.remove(1);
+    victim.crash().await;
+    std::fs::write(intakes[1].join("h4.batch"), held[&4].encode()).unwrap();
+    let restarted = RoomNode::start(NodeSpec {
+        home: base.join("n1"),
+        config: node_config(2, 2, base_port),
+        node_key: kb.clone(),
+        validator_sets: schedule.clone(),
+        held: BTreeMap::new(),
+        genesis: genesis.clone(),
+        wal_faults: None,
+        net_gate: None,
+    })
+    .await;
+    assert!(
+        restarted.loaded.0 >= 3,
+        "the retained batch store must reload the three decided batches, got {}",
+        restarted.loaded.0
+    );
+    let mut nodes = nodes;
+    nodes.push(restarted);
+    wait_for(
+        "the restarted validator to commit the waiting intake height",
+        || nodes[1].committed_height() >= 4,
+        Duration::from_secs(90),
+    )
+    .await;
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        5,
+        "h5.batch",
+        held[&5].encode(),
+    )
+    .await;
+    wait_for(
+        "both nodes to journal-commit every game height",
+        || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
+        Duration::from_secs(60),
+    )
+    .await;
+
+    let schedule_verify = schedule.clone();
+    let verify = move |bytes: &[u8], height: u64, value: &[u8; 32]| {
+        verify_canonical_certificate(
+            bytes,
+            height,
+            &RoomValueId(*value),
+            &set_at(&schedule_verify, height),
+        )
+    };
+
+    // Both journals serve every height: A's (issuer at 1-2, follower after)
+    // and the restarted B's (issuer at 3-5 over a crash boundary). Every
+    // journaled batch is byte-equal to the canonical plan — the fabricated
+    // h2 claims were rescued, not committed.
+    let journal_a = open_journal(&nodes[0].home);
+    let journal_b = open_journal(&nodes[1].home);
+    for h in 1..=HEIGHTS {
+        for journal in [&journal_a, &journal_b] {
+            let (cert, batch) = decided_at(journal, h);
+            assert_eq!(
+                &batch,
+                held.get(&h).unwrap(),
+                "height {h} must journal the re-assembled canonical batch"
+            );
+            assert!(
+                verify(&cert.bytes, cert.height, &cert.value_commitment),
+                "height {h} certificate must verify under its active set"
+            );
+        }
+    }
+
+    // The session consumes the restarted node's evidence end to end.
+    let (c1, b1) = decided_at(&journal_b, 1);
+    let mut session = quorum_open(
+        planned.parts.manifest.clone(),
+        planned.parts.open.clone(),
+        REALM,
+        &c1,
+        &b1,
+        0,
+        &verify,
+    )
+    .unwrap();
+    let mut receiver = Receiver::new(PlatonikV1, policy());
+    for (record, height, position, step) in &planned.admissions {
+        let (cert, batch) = decided_at(&journal_b, *height);
+        receiver
+            .admit_quorum(
+                &mut session,
+                record,
+                &cert,
+                &batch,
+                *position,
+                *step,
+                &verify,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        session.state(),
+        vhalla_game_platonik::session::State::Finished
+    );
+
+    let (c5, b5) = decided_at(&journal_b, HEIGHTS);
+    let verified = receiver
+        .settle_quorum(&mut session, &planned.settlement, &c5, &b5, 0, 5, &verify)
+        .unwrap();
+    let attested = attest(&verified, &c5, &b5.encode(), &verify).unwrap();
+    assert_eq!(attested.hash(), verified.hash());
 
     for node in nodes {
         node.crash().await;
