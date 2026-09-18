@@ -8,28 +8,75 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
+  quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: workspace
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - name: Workspace tests
+
+  workspace-tests:
+    name: Workspace tests (${{ matrix.name }})
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: rooms-node
+            packages: -p vhalla-rooms-node
+          - name: cli
+            packages: -p vhalla-cli
+          - name: stateful-storage
+            packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
+          - name: remaining
+            packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-game-platonik -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: workspace
+      - run: cargo test ${{ matrix.packages }} --all-targets --all-features --locked
+
+  workspace-aux:
+    name: Workspace auxiliary checks
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: workspace-aux
+          cache-all-crates: true
+      - name: Documentation and feature tests
         run: |
-          cargo test --workspace --all-targets --all-features --locked
           cargo test --workspace --doc --all-features --locked
           cargo test -p vhalla-cli --no-default-features --test identity --locked
           cargo test -p vhalla-cli --no-default-features --test social --locked
           cargo test -p vhalla-cli --features experimental-game --test game --locked
       - name: WASM pure crate checks
         run: |
-          rustup target add wasm32-unknown-unknown
           cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
@@ -68,8 +115,27 @@ jobs:
       - name: Retained native admission reference integrity
         working-directory: prototypes/browser-records/interop/native-admission-reference
         run: sha256sum --check SHA256SUMS
+
+  check:
+    if: always()
+    needs: [quality, workspace-tests, workspace-aux, prototype-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every Rust gate
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          WORKSPACE_TESTS: ${{ needs.workspace-tests.result }}
+          WORKSPACE_AUX: ${{ needs.workspace-aux.result }}
+          PROTOTYPES: ${{ needs.prototype-checks.result }}
+        run: |
+          test "$QUALITY" = success
+          test "$WORKSPACE_TESTS" = success
+          test "$WORKSPACE_AUX" = success
+          test "$PROTOTYPES" = success
   list-prototypes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       manifests: ${{ steps.find.outputs.manifests }}
     steps:
@@ -82,8 +148,10 @@ jobs:
     needs: list-prototypes
     if: needs.list-prototypes.outputs.manifests != '[]'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
+      max-parallel: 12
       matrix:
         manifest: ${{ fromJSON(needs.list-prototypes.outputs.manifests) }}
     steps:
@@ -117,9 +185,13 @@ jobs:
           git diff --exit-code -- Cargo.lock
   desktop:
     runs-on: macos-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: desktop
       - name: Menubar build
         run: cargo build --locked --manifest-path desktop/Cargo.toml
       - name: Menubar tests
