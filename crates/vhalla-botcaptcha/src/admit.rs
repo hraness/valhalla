@@ -9,7 +9,10 @@ use vhalla_witness::hash::{digest, ProgramHash, ReceiptHash};
 use vhalla_witness::manifest::ValidManifest;
 use vhalla_witness::platform::{self, RunRole, WitnessReceipt, WorkAllowance};
 
-use crate::challenge::{Challenge, ChallengeContext, Purpose, VerifiedChallenge, WitnessError};
+use crate::challenge::{
+    Challenge, ChallengeContext, Difficulty, Purpose, VerifiedChallenge, WitnessError,
+};
+use crate::hashcash::{work_digest, HashcashResponse};
 use crate::response::{claim, Response};
 use crate::window::{OneUseWindow, WindowError};
 use crate::REWARD_DOMAIN;
@@ -137,6 +140,7 @@ impl WitnessVerifier {
         let now = self.advance(now);
         let verified = VerifiedChallenge::verify(challenge, expected, self.started_at, now)?;
         let challenge = verified.challenge();
+        let contract = challenge.contract().ok_or(WitnessError::Algorithm)?;
         if manifest.hash() != challenge.task_manifest_hash {
             return Err(WitnessError::Manifest);
         }
@@ -195,7 +199,6 @@ impl WitnessVerifier {
         if !claimed.matches(&receipt) || claim(&receipt) != claimed {
             return Err(WitnessError::Receipt);
         }
-        let contract = challenge.contract;
         if receipt.useful() < contract.useful_floor {
             return Err(WitnessError::Floor);
         }
@@ -211,17 +214,133 @@ impl WitnessVerifier {
         self.window
             .consume(scope_key, subject_key, response_hash, expires_at)
             .map_err(window_error)?;
-        let mut body = Vec::with_capacity(64);
-        body.extend_from_slice(&scope_key);
-        body.extend_from_slice(&response_hash);
         Ok(VerifiedWitness {
             scope_key,
             response_hash,
-            reward: digest(REWARD_DOMAIN, &body),
+            reward: reward(scope_key, response_hash),
             receipt,
             purpose,
             expires_at,
         })
+    }
+    /// Every Hashcash verifier step in order: challenge, subject signature,
+    /// binding, window peek, work digest against the target, window consume.
+    pub fn verify_hashcash(
+        &mut self,
+        challenge: Challenge,
+        response: &HashcashResponse,
+        expected: ChallengeContext,
+        now: u64,
+    ) -> Result<VerifiedHashcash, WitnessError> {
+        let now = self.advance(now);
+        let verified = VerifiedChallenge::verify(challenge, expected, self.started_at, now)?;
+        let challenge = verified.challenge();
+        let difficulty = challenge.difficulty().ok_or(WitnessError::Algorithm)?;
+        let subject = VerifyingKey::from_bytes(&challenge.subject_key)
+            .map_err(|_| WitnessError::SubjectSignature)?;
+        if subject.is_weak() {
+            return Err(WitnessError::WeakSubjectKey);
+        }
+        subject
+            .verify_strict(
+                &response.transcript(),
+                &Signature::from_bytes(&response.signature),
+            )
+            .map_err(|_| WitnessError::SubjectSignature)?;
+        if response.challenge_id != challenge.challenge_id
+            || response.challenge_hash != challenge.hash()
+            || response.subject_key != challenge.subject_key
+        {
+            return Err(WitnessError::Binding);
+        }
+        let scope_key = verified.scope_key();
+        let response_hash = response.hash();
+        if let Some(error) = self.window.peek(&scope_key, &response_hash) {
+            return Err(window_error(error));
+        }
+        let work = work_digest(challenge.hash(), challenge.subject_key, response.nonce);
+        if crate::hashcash::leading_zero_bits(&work) < u32::from(difficulty.bits()) {
+            return Err(WitnessError::InsufficientWork);
+        }
+        let expires_at = challenge.expires_at;
+        let purpose = challenge.purpose;
+        let subject_key = challenge.subject_key;
+        self.window
+            .consume(scope_key, subject_key, response_hash, expires_at)
+            .map_err(window_error)?;
+        Ok(VerifiedHashcash {
+            scope_key,
+            response_hash,
+            reward: reward(scope_key, response_hash),
+            work,
+            difficulty,
+            purpose,
+            expires_at,
+        })
+    }
+}
+
+fn reward(scope_key: [u8; 32], response_hash: [u8; 32]) -> [u8; 32] {
+    let mut body = Vec::with_capacity(64);
+    body.extend_from_slice(&scope_key);
+    body.extend_from_slice(&response_hash);
+    digest(REWARD_DOMAIN, &body)
+}
+
+/// Evidence that one Hashcash response met its target and was consumed once.
+/// It proves key possession and bounded hash work, never identity, personhood,
+/// or host authority. Private fields, no `Clone`, no `From`, no decoder.
+///
+/// ```compile_fail
+/// use vhalla_botcaptcha::admit::VerifiedHashcash;
+/// fn dup(h: &VerifiedHashcash) -> VerifiedHashcash { h.clone() }
+/// ```
+#[derive(Debug)]
+pub struct VerifiedHashcash {
+    scope_key: [u8; 32],
+    response_hash: [u8; 32],
+    reward: [u8; 32],
+    work: [u8; 32],
+    difficulty: Difficulty,
+    purpose: Purpose,
+    expires_at: u64,
+}
+
+impl VerifiedHashcash {
+    /// The dedup scope that was consumed.
+    #[must_use]
+    pub const fn scope_key(&self) -> [u8; 32] {
+        self.scope_key
+    }
+    /// The response that was admitted.
+    #[must_use]
+    pub const fn response_hash(&self) -> [u8; 32] {
+        self.response_hash
+    }
+    /// The reward digest over `scope_key || response_hash`.
+    #[must_use]
+    pub const fn reward(&self) -> [u8; 32] {
+        self.reward
+    }
+    /// The work digest that met the target.
+    #[must_use]
+    pub const fn work(&self) -> [u8; 32] {
+        self.work
+    }
+    /// The target that was met.
+    #[must_use]
+    pub const fn difficulty(&self) -> Difficulty {
+        self.difficulty
+    }
+    /// The challenge purpose.
+    #[must_use]
+    pub const fn purpose(&self) -> Purpose {
+        self.purpose
+    }
+    /// The challenge expiry.
+    #[must_use]
+    pub const fn expires_at(&self) -> u64 {
+        self.expires_at
     }
 }
 
