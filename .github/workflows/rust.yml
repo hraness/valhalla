@@ -26,6 +26,7 @@ jobs:
           cargo test --workspace --doc --all-features --locked
           cargo test -p vhalla-cli --no-default-features --test identity --locked
           cargo test -p vhalla-cli --no-default-features --test social --locked
+          cargo test -p vhalla-cli --features experimental-game --test game --locked
       - name: WASM pure crate checks
         run: |
           rustup target add wasm32-unknown-unknown
@@ -37,6 +38,7 @@ jobs:
           cargo check --manifest-path prototypes/social-reducer/Cargo.toml --lib --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/social-sync/Cargo.toml --lib --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/room-registry/Cargo.toml --lib --target wasm32-unknown-unknown --locked
+          cargo check --manifest-path prototypes/game-wasm-parity/Cargo.toml --lib --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/browser-records/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/browser-records/interop/Cargo.toml --lib --target wasm32-unknown-unknown --locked
       - name: Reference prototype tests

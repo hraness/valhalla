@@ -1,0 +1,10 @@
+[
+    (
+        "game-v1-session-replay.txt",
+        include_str!("../../crates/vhalla-game-platonik/tests/vectors/game-v1-session-replay.txt"),
+    ),
+    (
+        "game-v1-session-live.txt",
+        include_str!("../../crates/vhalla-game-platonik/tests/vectors/game-v1-session-live.txt"),
+    ),
+]

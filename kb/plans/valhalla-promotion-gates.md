@@ -257,8 +257,16 @@ pause on a missing member with a sealed `Replace` resuming in the next epoch,
 fills carrying their fallback program, cancellation, spike 4 (18 sessions with
 a replace at a random seal, every result equal to the plain run), the
 adversarial mutation corpus, and the stable-toolchain fuzz harness prototype;
-`prototypes/game-session` and `prototypes/settlement` are deleted. The
-bounded-artifact stage remains before the row closes.
+`prototypes/game-session` and `prototypes/settlement` are deleted. Stage 4 followed: the bounded artifact
+assembly with the browser record mapping (spike 2: the largest corpus artifact
+is 1.5 % of the 8 MiB ceiling, peak retention exactly 1.0 ×), the oracle audit
+(spike 6: 81 artifacts, every id equal to Platonik's own), wasm32 parity of
+the game vectors, and `vhalla game replay <bundle>`, the reproducible user
+journey that verifies a session bundle from a second receiver. Slice 5's
+stated result, Platonik running through an optional Valhalla session adapter
+with a receiver independently verifying the result, is now implemented and
+tested; the row stays open only for stage 5 (quorum hook, signed-claim export,
+steel-thread evidence kind) and human review at merge time.
 
 ### Witness platform crates — 2026-09-16
 
