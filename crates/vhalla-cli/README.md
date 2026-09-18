@@ -534,6 +534,12 @@ vhalla rooms tailcat plan \
 Run `start-tailcat.sh`, then pass the printed `--peers` CSV to the next
 member's `node-init`. If you already ran `node-init`, the `peers` line is
 in `node/node.json`; edit it or re-run `node-init` to the same directory.
+Check whether all serves and forwards are actually listening with:
+
+```console
+vhalla rooms tailcat status \
+  --nodes alice/node.json bob/node.json carol/node.json
+```
 
 **6. Start the node and observe it from a replica.**
 
