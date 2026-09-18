@@ -41,15 +41,6 @@ jobs:
           cargo check --manifest-path prototypes/game-wasm-parity/Cargo.toml --lib --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/browser-records/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/browser-records/interop/Cargo.toml --lib --target wasm32-unknown-unknown --locked
-      - name: Reference prototype tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          for manifest in prototypes/*/Cargo.toml; do
-            cargo fmt --manifest-path "$manifest" -- --check
-            cargo test --manifest-path "$manifest" --locked
-            cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
-          done
       - name: Signed discovery native and WASM execution parity
         run: |
           cargo install wasm-bindgen-cli --version 0.2.108 --locked
@@ -77,6 +68,35 @@ jobs:
       - name: Retained native admission reference integrity
         working-directory: prototypes/browser-records/interop/native-admission-reference
         run: sha256sum --check SHA256SUMS
+  list-prototypes:
+    runs-on: ubuntu-latest
+    outputs:
+      manifests: ${{ steps.find.outputs.manifests }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          manifests=$(find prototypes -maxdepth 2 -name Cargo.toml | jq -R . | jq -cs .)
+          echo "manifests=$manifests" >> "$GITHUB_OUTPUT"
+  prototype-checks:
+    needs: list-prototypes
+    if: needs.list-prototypes.outputs.manifests != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        manifest: ${{ fromJSON(needs.list-prototypes.outputs.manifests) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --manifest-path "${{ matrix.manifest }}" -- --check
+      - name: Test
+        run: cargo test --manifest-path "${{ matrix.manifest }}" --locked
+      - name: Clippy
+        run: cargo clippy --manifest-path "${{ matrix.manifest }}" --all-targets --locked -- -D warnings
   kani-spent:
     runs-on: ubuntu-latest
     timeout-minutes: 30
