@@ -1,14 +1,22 @@
 #![cfg(all(unix, feature = "experimental-rooms-node"))]
-//! Tailcat overlay planner and health check for room-consensus meshes.
+//! Tailcat overlay planner and launcher for room-consensus meshes.
 //!
 //! Tailcat (`tailscale/tailcat`) provides account-less, userspace TCP
 //! tunnels that are useful for carrying the libp2p mesh traffic across
-//! different networks. This module reads the per-member `node.json` files
-//! produced by `rooms node-init`, allocates the local forward-port namespace,
-//! emits an executable plan, and can also check whether that plan's serves and
-//! forwards are currently running.
+//! different networks. This module is a pure planner for `plan`, a live
+//! launcher for `up`, and a health checker for `status`. It reads the
+//! per-member `node.json` files produced by `rooms node-init`, allocates
+//! the local forward-port namespace, and emits an executable plan or
+//! starts the processes and the matching `peers` CSV for each member.
 
-use std::{ffi::OsString, path::Path};
+use std::{
+    ffi::OsString,
+    fs::File,
+    path::Path,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde::Deserialize;
 
@@ -36,19 +44,17 @@ struct Member {
     listen: String,
 }
 
-/// Dispatch `vhalla rooms tailcat {plan,status} ...`.
+/// Dispatch `tailcat` subcommands.
 ///
-/// `plan` emits an executable `tailcat serve`/`tailcat forward` mesh and the
-/// matching `peers` CSV for each `node-init --peers` call.
-///
-/// `status` checks whether the planned addr files and local forward ports are
-/// live, so an operator can see whether the tunnel mesh is up without parsing
-/// process lists.
+/// Supported:
+/// - `plan` emits the mesh commands and peers CSV.
+/// - `up` starts the serves and forwards on this host.
 pub fn run(args: Vec<OsString>) -> Result<(), String> {
+    let mut subcommand = String::new();
     let mut nodes: Vec<String> = Vec::new();
     let mut base_port = 17_000u16;
     let mut output = "json".to_string();
-    let mut subcommand = "plan";
+    let mut tailcat_bin = "tailcat".to_string();
     let mut i = 0;
     while i < args.len() {
         let value = args[i]
@@ -56,8 +62,7 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
             .ok_or("tailcat arguments must be UTF-8")?
             .to_owned();
         match value.as_str() {
-            "plan" => subcommand = "plan",
-            "status" => subcommand = "status",
+            "plan" | "status" | "up" => subcommand = value,
             "--nodes" => {
                 i += 1;
                 while i < args.len() && !args[i].to_str().unwrap_or("").starts_with("--") {
@@ -91,6 +96,15 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
                     .ok_or("--output must be UTF-8")?
                     .to_owned();
             }
+            "--tailcat" => {
+                i += 1;
+                tailcat_bin = args
+                    .get(i)
+                    .ok_or("--tailcat needs a value")?
+                    .to_str()
+                    .ok_or("--tailcat must be UTF-8")?
+                    .to_owned();
+            }
             _ => return Err(HELP.into()),
         }
         i += 1;
@@ -118,7 +132,7 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
             listen: node.listen,
         });
     }
-    match subcommand {
+    match subcommand.as_str() {
         "plan" => {
             if output != "json" && output != "shell" {
                 return Err("--output must be json or shell".into());
@@ -130,11 +144,12 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
             }
         }
         "status" => emit_status(&members, base_port),
+        "up" => emit_up(&members, base_port, &tailcat_bin),
         _ => Err(HELP.into()),
     }
 }
 
-const HELP: &str = "vhalla rooms tailcat plan --nodes A/node.json B/node.json ... [--base-port N] [--output json|shell]\nvhalla rooms tailcat status --nodes A/node.json B/node.json ... [--base-port N]";
+const HELP: &str = "vhalla rooms tailcat {plan|status|up} --nodes A/node.json B/node.json ... [--base-port N]\n  plan [--output json|shell]\n  status\n  up [--tailcat PATH]";
 
 fn emit_json(members: &[Member], base: u16) -> Result<(), String> {
     use crate::json;
@@ -258,7 +273,6 @@ fn emit_shell(members: &[Member], base: u16) -> Result<(), String> {
 /// Check whether the planned tailcat serves and forwards appear to be running.
 fn emit_status(members: &[Member], base: u16) -> Result<(), String> {
     use crate::json;
-    use std::time::Duration;
     let timeout = Duration::from_millis(100);
     let serves: Vec<String> = members
         .iter()
@@ -318,4 +332,121 @@ fn emit_status(members: &[Member], base: u16) -> Result<(), String> {
         ("serves", json::array(serves)),
         ("forwards", json::array(forwards)),
     ]))
+}
+
+fn emit_up(members: &[Member], base: u16, tailcat_bin: &str) -> Result<(), String> {
+    use crate::json;
+
+    let mut serve_children: Vec<std::process::Child> = Vec::new();
+    let mut serve_objects: Vec<String> = Vec::new();
+
+    for (i, m) in members.iter().enumerate() {
+        let addr_file = format!("/tmp/tailcat-addr-{i}.txt");
+        let log_file = format!("/tmp/tailcat-serve-{i}.log");
+        let log = File::create(&log_file).map_err(|e| format!("{log_file}: {e}"))?;
+        let mut cmd = Command::new(tailcat_bin);
+        cmd.arg("--key=new")
+            .arg("serve")
+            .arg(m.port.to_string())
+            .env("TAILCAT_ADDR_FILE", &addr_file)
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(
+                File::create(format!("/tmp/tailcat-serve-{i}.err"))
+                    .map_err(|e| format!("stderr log {i}: {e}"))?,
+            ));
+        let child = cmd.spawn().map_err(|e| format!("{tailcat_bin}: {e}"))?;
+        serve_children.push(child);
+        serve_objects.push(json::object(vec![
+            ("index", i.to_string()),
+            ("name", json::string(&m.name)),
+            ("port", m.port.to_string()),
+            ("pid", serve_children[i].id().to_string()),
+            ("addr_file", json::string(&addr_file)),
+            ("log", json::string(&log_file)),
+        ]));
+    }
+
+    let addrs = wait_for_tailcat_addresses(members.len())?;
+
+    let mut forward_children: Vec<std::process::Child> = Vec::new();
+    let mut forward_objects: Vec<String> = Vec::new();
+
+    for (i, _) in members.iter().enumerate() {
+        for (j, to) in members.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let fwd = base + (i as u16) * 100 + j as u16;
+            let log_file = format!("/tmp/tailcat-fwd-{i}-{j}.log");
+            let log = File::create(&log_file).map_err(|e| format!("{log_file}: {e}"))?;
+            let mut cmd = Command::new(tailcat_bin);
+            cmd.arg("--key=new")
+                .arg("forward")
+                .arg(&addrs[j])
+                .arg(format!("{fwd}:{}:{}", to.listen, to.port))
+                .stdout(Stdio::from(log))
+                .stderr(Stdio::from(
+                    File::create(format!("/tmp/tailcat-fwd-{i}-{j}.err"))
+                        .map_err(|e| format!("stderr log {i}-{j}: {e}"))?,
+                ));
+            let child = cmd.spawn().map_err(|e| format!("{tailcat_bin}: {e}"))?;
+            forward_children.push(child);
+            forward_objects.push(json::object(vec![
+                ("from", i.to_string()),
+                ("to", j.to_string()),
+                ("local_port", fwd.to_string()),
+                (
+                    "pid",
+                    forward_children[forward_children.len() - 1]
+                        .id()
+                        .to_string(),
+                ),
+                ("remote_addr", json::string(&addrs[j])),
+                ("remote_host", json::string(&to.listen)),
+                ("remote_port", to.port.to_string()),
+                ("log", json::string(&log_file)),
+            ]));
+        }
+    }
+
+    let _children = (serve_children, forward_children);
+    crate::rooms::emit(json::object(vec![
+        ("serves", json::array(serve_objects)),
+        ("forwards", json::array(forward_objects)),
+    ]))
+}
+
+fn wait_for_tailcat_addresses(count: usize) -> Result<Vec<String>, String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut addrs: Vec<Option<String>> = vec![None; count];
+    while Instant::now() < deadline {
+        for (i, slot) in addrs.iter_mut().enumerate() {
+            if slot.is_some() {
+                continue;
+            }
+            let path = format!("/tmp/tailcat-addr-{i}.txt");
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    *slot = Some(trimmed.to_owned());
+                }
+            }
+        }
+        if addrs.iter().all(|a| a.is_some()) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let missing: Vec<usize> = addrs
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "tailcat serve(s) never wrote an address: {missing:?}. Check /tmp/tailcat-serve-*.log"
+        ));
+    }
+    Ok(addrs.into_iter().flatten().collect())
 }

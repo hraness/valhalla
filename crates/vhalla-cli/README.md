@@ -526,12 +526,17 @@ shares the printed `tc://` address. For other networks, use the planner
 once `node.json` files exist:
 
 ```console
+# For a one-machine rehearsal, start all serves and forwards:
+vhalla rooms tailcat up --nodes alice/node.json bob/node.json carol/node.json
+
+# For real per-member hosts, generate a shell plan first:
 vhalla rooms tailcat plan \
   --nodes alice/node.json bob/node.json carol/node.json \
   --output shell > start-tailcat.sh
 ```
 
-Run `start-tailcat.sh`, then pass the printed `--peers` CSV to the next
+Run `start-tailcat.sh` on each host after sharing the printed `tc://`
+addresses out of band, then pass the printed `--peers` CSV to the next
 member's `node-init`. If you already ran `node-init`, the `peers` line is
 in `node/node.json`; edit it or re-run `node-init` to the same directory.
 Check whether all serves and forwards are actually listening with:
@@ -540,6 +545,10 @@ Check whether all serves and forwards are actually listening with:
 vhalla rooms tailcat status \
   --nodes alice/node.json bob/node.json carol/node.json
 ```
+
+`tailcat up` is a convenience for loopback rehearsal; production meshes
+should still run `tailcat serve` and `tailcat forward` per member so each
+host owns its own key and address.
 
 **6. Start the node and observe it from a replica.**
 
