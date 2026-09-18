@@ -1313,3 +1313,36 @@ the steel thread to a reproduced `Result` settlement and exports its claim; refu
 frame (`AuthorMismatch`), a relabelled read-request kind and a non-record body (`Denied::Kind`), a
 replayed frame (`Verify::Replay`), and a duplicate claim in a fresh envelope (`Game`); and shows a
 memory session refusing the game kind with zero reads.
+
+### 2026-09-18: rooms-consensus game commitment wire
+
+The promoted binding is a third, inert lane in `vhalla-rooms-consensus::Batch`, not a new
+`vhalla-rooms::SignedRecord` body. `GameCommitment` is fixed at 105 bytes and carries the exact
+`RealmId`, `RoomId`, 32-byte session key, epoch, one closed object kind (`SessionOpen`, `Event`,
+`Checkpoint`, or `Settlement`), and the kind-domain object digest. At most 32 commitments occur in
+one batch. Their vector order is consensus order and the complete vector is inside `Batch::value_id`.
+They mutate neither `Registry` nor `Archive`; the deciding certificate is their inclusion authority.
+This avoids requiring a room controller to countersign every game event and avoids changing the
+room-directory digest for game-only traffic.
+
+Wire compatibility is additive. Batches and producer bodies without game commitments retain their
+exact `VRB1`/`VRB2` and `VBB1`/`VBB2` bytes. A nonempty game lane emits `VRB3`/`VBB3`, carries an
+explicit optional eligible transition, and is rejected for zero entries, more than 32 entries,
+unknown kinds, truncation, trailing bytes, or total size above 48 KiB. Node intake preserves the
+lane when reassembling either a body or complete batch against the live frontier. The committed
+redelivery path explicitly advances an in-memory frontier for a game-only batch whose unchanged
+application roots already reflect, rather than acknowledging while leaving the frontier behind.
+
+`quorum::attest` no longer accepts a caller-owned locator and no longer recognizes bare 32-byte
+room records. After checking that the certificate decides the decoded batch and calling the
+certificate verifier, it requires exactly one `Settlement` commitment matching the replayed
+settlement's complete realm/room/session/epoch scope and exact hash. A missing, cross-room, or
+ambiguous commitment is `Unbound`; a uniquely scoped different hash is `Mismatch`. Replay remains
+mandatory before attestation.
+
+`Authority::Quorum` opening remains fail-closed for a separate adapter change. The wire now supplies
+ordered commitments, but the session state machine still uses one Ed25519 host key for administrative
+record signatures, ledger genesis and seal actors, receipt subject binding, and steel-thread transport.
+A certificate-scheme identifier is not necessarily that key. Promotion therefore requires a consumed,
+position-bearing certificate proof at session open and every quorum-ordered admission, plus an explicit
+quorum actor/receipt identity; treating `Authority::Quorum.scheme` as a host key was rejected.

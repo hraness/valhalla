@@ -392,6 +392,16 @@ impl Session {
     pub const fn key(&self) -> SessionKey {
         self.key
     }
+    /// Realm scope.
+    #[must_use]
+    pub const fn realm(&self) -> RealmId {
+        self.realm
+    }
+    /// Room scope.
+    #[must_use]
+    pub const fn room(&self) -> vhalla_core::RoomId {
+        self.open.room
+    }
     /// The manifest.
     #[must_use]
     pub const fn manifest(&self) -> &GameManifest {

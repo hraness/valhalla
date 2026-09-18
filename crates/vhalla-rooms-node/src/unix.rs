@@ -430,6 +430,7 @@ impl App {
                         time: b.time,
                         evidence: b.evidence,
                         records: b.records,
+                        games: b.games,
                         eligible: b.eligible,
                     })
                 } else if name.ends_with(".eligible") {
@@ -440,6 +441,7 @@ impl App {
                         time: 0,
                         evidence: Vec::new(),
                         records: Vec::new(),
+                        games: Vec::new(),
                         eligible: Some(set),
                     })
                 } else {
@@ -511,7 +513,7 @@ impl App {
                             .lock()
                             .unwrap()
                             .application()
-                            .prepare(b.time, b.evidence, b.records, b.eligible)
+                            .prepare_with_games(b.time, b.evidence, b.records, b.games, b.eligible)
                     });
                     match checked {
                         Some(Ok(checked)) => {

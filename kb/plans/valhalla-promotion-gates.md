@@ -206,7 +206,7 @@ The production workspace currently contains these crates:
 | `vhalla-identity` | experimental Unix private-file application key | qualified secret custody, recovery, transport-key integration and installable native program |
 | `vhalla-witness` | `no_std` witness-mode VM (Platonik habitat-v1 restated), canonical codecs, digests, task manifests, keyless move-only run capability, receipts | the game kernel behind the Slice 5 Platonik adapter and any later witness language, with replay evidence and vectors kept bit-exact across versions |
 | `vhalla-botcaptcha` | signed witness-mode challenge and response, verified challenge as the only capability source, one-use window, and a replaying verifier | steel-thread witness frames (Gate 5), Hashcash mode, and receipt export as a signed claim for a per-realm DAG |
-| `vhalla-game-platonik` | game identifiers and domains, canonical encodings with every bound, the audience-free `GameRecord`, the `GameManifest`, the optional Platonik oracle converter, the `PlatonikV1` engine seam, host-ordered sessions over `vhalla-ledger` with the two-phase live bind, replay-checked checkpoints, and the receiver with pre-charged allowances, settlement, pause and replace across an epoch bump, bounded artifacts, the signed-claim export, and the `quorum` attestation hook | a rooms record kind carrying a game commitment, after which `Authority::Quorum` sessions can open |
+| `vhalla-game-platonik` | game identifiers and domains, canonical encodings with every bound, the audience-free `GameRecord`, the `GameManifest`, the optional Platonik oracle converter, the `PlatonikV1` engine seam, host-ordered sessions over `vhalla-ledger` with the two-phase live bind, replay-checked checkpoints, and the receiver with pre-charged allowances, settlement, pause and replace across an epoch bump, bounded artifacts, the signed-claim export, and typed settlement attestation through the rooms-consensus game-commitment lane | a position-bearing certificate proof consumed at session open and every quorum admission, with an explicit quorum actor and receipt identity, after which `Authority::Quorum` sessions can open |
 | `vhalla-native` | explicitly pinned paired loopback chat | qualified public routing, identity lifecycle and browser interoperability |
 | `vhalla-cli` | feature-gated native chat and local signed social/discovery commands | installable client with separately qualified public transport and storage adapters |
 | `vhalla-social` | signed owner/agent records, causal projections, exact facets and bounded archive sync | preserve verified control/history under any future retention or network extension |
@@ -286,8 +286,17 @@ settlements to the settlement check, and whose evidence types cannot enter
 the steel thread to a reproduced settlement; a player-signed frame, a
 relabelled kind, a non-record body, a transport replay, and a duplicate claim
 are each refused at their own layer, and a memory session refuses the kind
-with zero reads. `Authority::Quorum` at open stays reserved: no rooms or
-social record kind carries a game commitment yet.
+with zero reads.
+
+The 2026-09-18 rooms wire follow-up adds a third inert game-commitment lane to
+`vhalla-rooms-consensus`: bounded fixed-size commitments are ordered inside
+`VRB3`/`VBB3` and covered by the decided value without mutating room or social
+state; older `VRB1`/`VRB2` and `VBB1`/`VBB2` bytes remain exact. The quorum
+attestation now locates one exact realm/room/session/epoch settlement itself,
+with no caller locator or bare-hash room-record stand-in. `Authority::Quorum`
+at open remains reserved until certificate evidence is consumed at every
+admission and the host-only actor, receipt, and transport assumptions are
+replaced explicitly.
 
 ### Witness platform crates — 2026-09-16
 
