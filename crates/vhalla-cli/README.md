@@ -407,7 +407,11 @@ One workable setup for a group that trusts each other's machines:
    overwriting), creates `NODE_HOME/intake/`, and prints the same
    `genesis` fingerprint plus `node_key_votes_from` — the height their
    key starts voting, or `null` with a warning if the operator has not
-   listed their `public_key` yet.
+   listed their `public_key` yet. On unix the scaffolded home is
+   owner-private: a freshly created `NODE_HOME` and `intake/` are mode
+   0700, and `node.json` — which carries the seed — is mode 0600 (a
+   pre-existing home keeps the operator's own mode, and `node-update`
+   restates 0600 on every rewrite).
 4. Before booting, each member runs `vhalla rooms node-check
    SOCIAL_STORE NODE_HOME REALM --config NODE_HOME/node.json`, which
    runs the identical decode path as `node` — config parse, genesis

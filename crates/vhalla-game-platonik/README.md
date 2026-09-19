@@ -48,7 +48,12 @@ through the `home/intake/` producer contract — `.batch` and `.body` file
 drops instead of pre-loaded proposals, a fabricated-claims drop rescued to
 the canonical batch, and a crash + same-home restart of the rotated-in
 validator between heights 3 and 4 — so journaled evidence is consumed across
-a recovery boundary.
+a recovery boundary. A third test crashes the rotated-in validator
+mid-height: its `GetValue` holds on an empty queue while open-height rounds
+accumulate in the WAL, the same-home restart replays the partial height,
+and the waiting `.body` drop decides and certifies under the replayed
+engine — the mid-height claim is asserted (`committed_height` still 2 at
+crash time), not narrated.
 
 ## What a verified checkpoint proves
 

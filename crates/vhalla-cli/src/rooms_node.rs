@@ -890,7 +890,9 @@ pub fn network_init(raw: &[OsString]) -> Result<(), String> {
 /// The `node-init` subcommand — the member-side half. Merges the shared
 /// network file with the member's own key and networking into
 /// `NODE_HOME/node.json` and creates `NODE_HOME/intake/`. The file is
-/// never overwritten; a second run against the same home fails.
+/// never overwritten; a second run against the same home fails. On unix a
+/// scaffolded home is owner-private: the home itself when init creates it,
+/// `intake/` always, and `node.json` at 0600 — it carries the seed.
 ///
 /// `vhalla rooms node-init NODE_HOME --network FILE --port N
 ///  [--node-key HEX64] [--listen HOST] [--peers HOST:PORT,...]`
@@ -967,11 +969,20 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
         &peer_list,
         &network,
     );
+    // node.json carries the validator seed and intake/ is the producer
+    // drop boundary, so a scaffolded home is owner-private from creation.
+    // A pre-existing home keeps the operator's own mode.
+    #[cfg(unix)]
+    let fresh_home = !home.exists();
     std::fs::create_dir_all(home.join("intake")).map_err(|e| format!("node home: {e}"))?;
-    let tmp = home.join(format!(".node.json.tmp-{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&node).unwrap())
-        .map_err(|e| format!("write: {e}"))?;
-    std::fs::rename(&tmp, &target).map_err(|e| format!("write: {e}"))?;
+    #[cfg(unix)]
+    {
+        if fresh_home {
+            restrict(home, 0o700)?;
+        }
+        restrict(&home.join("intake"), 0o700)?;
+    }
+    write_node_json(&target, &node)?;
     let mut warnings = Vec::new();
     if votes_from.is_none() {
         warnings.push(
@@ -996,6 +1007,49 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
             ),
         ])
     );
+    Ok(())
+}
+
+/// Restrict `path` to `mode` — the owner-private boundary `node-init`
+/// scaffolds around the seed file and the producer drop dir.
+#[cfg(unix)]
+fn restrict(path: &std::path::Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Write `node.json` atomically (same-directory temp + rename), 0600 on
+/// unix — the file carries the validator seed, and the rename replaces
+/// the inode, so every write must restate the mode.
+fn write_node_json(target: &std::path::Path, node: &serde_json::Value) -> Result<(), String> {
+    let tmp = target.with_file_name(format!(".node.json.tmp-{}", std::process::id()));
+    let write = || -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o600)
+                .open(&tmp)
+                .and_then(|mut f| {
+                    f.write_all(&serde_json::to_vec_pretty(node).unwrap())
+                        .and_then(|()| f.sync_all())
+                })
+                .map_err(|e| format!("write: {e}"))?;
+        }
+        #[cfg(not(unix))]
+        std::fs::write(&tmp, serde_json::to_vec_pretty(node).unwrap())
+            .map_err(|e| format!("write: {e}"))?;
+        std::fs::rename(&tmp, target).map_err(|e| format!("write: {e}"))
+    };
+    if let Err(error) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -1221,10 +1275,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
         &file.peers,
         &network,
     );
-    let tmp = home.join(format!(".node.json.tmp-{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&node).unwrap())
-        .map_err(|e| format!("write: {e}"))?;
-    std::fs::rename(&tmp, &target).map_err(|e| format!("write: {e}"))?;
+    write_node_json(&target, &node)?;
 
     let genesis = genesis_fingerprint(
         network.realm,
