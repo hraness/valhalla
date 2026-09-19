@@ -148,34 +148,58 @@ fn proposal_sign_verify_round_trip() {
 }
 
 #[test]
-fn fin_part_binds_streamed_bytes() {
+fn fin_part_binds_every_init_field_and_streamed_bytes() {
     let (keys, _set) = set4();
     let data = b"full canonical batch bytes";
-    let sig =
-        RoomSigner::new(keys[0].clone()).sign(&fin_sign_bytes(Height::new(2), Round::new(1), data));
-    assert!(verify_fin(
-        &keys[0].public_key(),
-        Height::new(2),
-        Round::new(1),
-        data,
-        &sig
-    ));
-    // Different bytes fail.
+    let init = ProposalInit {
+        height: Height::new(2),
+        round: Round::new(3),
+        pol_round: Round::new(1),
+        proposer: Address::from_public_key(&keys[0].public_key()),
+    };
+    let preimage = fin_sign_bytes(&init, data);
+    assert_eq!(preimage.len(), 79);
+    assert_eq!(&preimage[..3], b"RF2");
+    assert_eq!(&preimage[3..11], &2u64.to_be_bytes());
+    assert_eq!(&preimage[11..19], &3i64.to_be_bytes());
+    assert_eq!(&preimage[19..39], &init.proposer.into_inner());
+    assert_eq!(&preimage[39..47], &1i64.to_be_bytes());
+    let sig = RoomSigner::new(keys[0].clone()).sign(&preimage);
+    assert!(verify_fin(&keys[0].public_key(), &init, data, &sig));
     assert!(!verify_fin(
         &keys[0].public_key(),
-        Height::new(2),
-        Round::new(1),
+        &init,
         b"other bytes",
         &sig
     ));
-    // Different height fails.
-    assert!(!verify_fin(
-        &keys[0].public_key(),
-        Height::new(3),
-        Round::new(1),
-        data,
-        &sig
-    ));
+    assert!(!verify_fin(&keys[1].public_key(), &init, data, &sig));
+    let mut changed = init.clone();
+    changed.height = Height::new(3);
+    assert!(!verify_fin(&keys[0].public_key(), &changed, data, &sig));
+    let mut changed = init.clone();
+    changed.round = Round::new(4);
+    assert!(!verify_fin(&keys[0].public_key(), &changed, data, &sig));
+    let mut changed = init.clone();
+    changed.proposer = Address::from_public_key(&keys[1].public_key());
+    assert!(!verify_fin(&keys[0].public_key(), &changed, data, &sig));
+    let mut changed = init.clone();
+    changed.pol_round = Round::Nil;
+    assert!(!verify_fin(&keys[0].public_key(), &changed, data, &sig));
+    let nil = fin_sign_bytes(&changed, data);
+    assert_eq!(&nil[39..47], &(-1i64).to_be_bytes());
+    changed.pol_round = Round::new(u32::MAX);
+    assert_ne!(nil, fin_sign_bytes(&changed, data));
+    changed.round = Round::Nil;
+    let nil = fin_sign_bytes(&changed, data);
+    changed.round = Round::new(u32::MAX);
+    assert_ne!(nil, fin_sign_bytes(&changed, data));
+    // The prior live domain must not be accepted after the migration.
+    let mut legacy = b"RF1".to_vec();
+    legacy.extend_from_slice(&init.height.as_u64().to_be_bytes());
+    legacy.extend_from_slice(&init.round.as_u32().unwrap().to_be_bytes());
+    legacy.extend_from_slice(&preimage[47..]);
+    let old_sig = RoomSigner::new(keys[0].clone()).sign(&legacy);
+    assert!(!verify_fin(&keys[0].public_key(), &init, data, &old_sig));
 }
 
 #[test]

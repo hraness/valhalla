@@ -8,7 +8,7 @@
 
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -111,8 +111,9 @@ struct StreamState {
 /// One proposal this node observed at a height — locally proposed or
 /// wire-received and verified. Persisted under `store/seen/` so a
 /// restarted node can resupply the engine with the `ProposedValue`s it
-/// had already seen: the WAL restores votes and locks, this store
-/// restores the VALUE content those locks refer to.
+/// had already seen. The engine WAL also carries full proposed values;
+/// this store re-registers their batches with the application adapter so
+/// a replayed lock can still cross the durable commit boundary.
 #[derive(Clone)]
 struct SeenProposal {
     round: Round,
@@ -157,9 +158,93 @@ fn store_write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Load the durable application store: every retained batch plus every
-/// seen-proposal record. Records whose batch bytes are absent or fail
-/// to decode are skipped — the resupply path re-validates anyway.
+/// Read one fixed-size seen record without allocating from its file size.
+fn read_seen_body(path: &Path) -> std::io::Result<[u8; 40]> {
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err(std::io::Error::other("seen record is not a regular file"));
+    }
+    let mut body = Vec::with_capacity(41);
+    std::fs::File::open(path)?.take(41).read_to_end(&mut body)?;
+    body.try_into()
+        .map_err(|_| std::io::Error::other("seen record must contain exactly 40 bytes"))
+}
+
+/// Publish immutable proposal evidence without replacing any existing file.
+/// An identical retry checks the saved bytes and completes both fsyncs; a
+/// conflicting or partial record halts admission and remains untouched.
+fn persist_seen(dir: &Path, name: &str, body: &[u8; 40]) -> std::io::Result<()> {
+    let target = dir.join(name);
+    let verify_existing = || -> std::io::Result<()> {
+        if read_seen_body(&target)? != *body {
+            return Err(std::io::Error::other("conflicting durable seen record"));
+        }
+        std::fs::File::open(&target)?.sync_all()?;
+        std::fs::File::open(dir)?.sync_all()
+    };
+    if target.try_exists()? {
+        return verify_existing();
+    }
+    static NEXT_TMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let (tmp, mut file) = loop {
+        let sequence = NEXT_TMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = dir.join(format!(".{name}.{}.{sequence}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => break (tmp, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    file.write_all(body)?;
+    file.sync_all()?;
+    // hard_link publishes the already-fsynced inode atomically and refuses
+    // to replace a name. A crash before publication leaves only an ignored
+    // temporary file; after publication, a retry verifies the exact bytes.
+    match std::fs::hard_link(&tmp, &target) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => verify_existing()?,
+        Err(error) => return Err(error),
+    }
+    std::fs::File::open(dir)?.sync_all()?;
+    std::fs::remove_file(tmp)?; // only the temporary inode created by this call
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// Both legacy h_round_proposer and immutable h_round_proposer_value names
+/// are readable. A new name must bind the same value as its record body.
+fn decode_seen(name: &str, body: &[u8; 40]) -> Option<(u64, SeenProposal)> {
+    let mut parts = name.split('_');
+    let height = parts.next()?.parse::<u64>().ok()?;
+    let round = parts.next()?.parse::<i64>().ok()?;
+    let proposer = unhex(parts.next()?)?.try_into().ok()?;
+    let value_id = RoomValueId(body[..32].try_into().ok()?);
+    if let Some(named_id) = parts.next() {
+        if unhex(named_id)?.as_slice() != value_id.0 || parts.next().is_some() {
+            return None;
+        }
+    }
+    let to_round = |value| match value {
+        -1 => Some(Round::Nil),
+        0..=4_294_967_295 => Some(Round::new(value as u32)),
+        _ => None,
+    };
+    Some((
+        height,
+        SeenProposal {
+            round: to_round(round)?,
+            pol_round: to_round(i64::from_be_bytes(body[32..].try_into().ok()?))?,
+            proposer: Address::new(proposer),
+            value_id,
+        },
+    ))
+}
+
+/// Load retained batches and proposal metadata. Invalid records are never
+/// resupplied. Legacy records cannot recover earlier metadata that an old
+/// binary overwrote; live-parent batches are conservatively retained below.
 fn load_store(
     store: &Path,
 ) -> (
@@ -181,44 +266,40 @@ fn load_store(
     let mut seen: BTreeMap<u64, Vec<SeenProposal>> = BTreeMap::new();
     if let Ok(entries) = std::fs::read_dir(store.join("seen")) {
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let mut parts = name.split('_');
-            let (Some(h), Some(r), Some(p), None) = (
-                parts.next().and_then(|s| s.parse::<u64>().ok()),
-                parts.next().and_then(|s| s.parse::<i64>().ok()),
-                parts.next().and_then(unhex),
-                parts.next(),
-            ) else {
+            let Ok(body) = read_seen_body(&entry.path()) else {
                 continue;
             };
-            let Ok(body) = std::fs::read(entry.path()) else {
+            let Some((height, record)) = decode_seen(&entry.file_name().to_string_lossy(), &body)
+            else {
                 continue;
             };
-            if body.len() != 40 || p.len() != 20 {
-                continue;
+            let records = seen.entry(height).or_default();
+            if let Some(existing) = records.iter().find(|seen| {
+                seen.round == record.round
+                    && seen.proposer == record.proposer
+                    && seen.value_id == record.value_id
+            }) {
+                assert_eq!(
+                    existing.pol_round, record.pol_round,
+                    "conflicting durable seen metadata; preserve the node home for recovery"
+                );
+            } else {
+                records.push(record);
             }
-            let mut proposer = [0; 20];
-            proposer.copy_from_slice(&p);
-            let mut value_id = [0; 32];
-            value_id.copy_from_slice(&body[..32]);
-            let pol = i64::from_be_bytes(body[32..40].try_into().unwrap());
-            let to_round = |v: i64| {
-                if v < 0 {
-                    Round::Nil
-                } else {
-                    Round::new(v as u32)
-                }
-            };
-            seen.entry(h).or_default().push(SeenProposal {
-                round: to_round(r),
-                pol_round: to_round(pol),
-                proposer: Address::new(proposer),
-                value_id: RoomValueId(value_id),
-            });
         }
     }
     (held, seen)
+}
+
+/// An older binary may have overwritten the only seen reference to an
+/// undecided value. Keep every batch extending the exact durable frontier,
+/// even without metadata; do not fabricate a round or proposer for it.
+fn retain_recoverable_batches(
+    held: &mut BTreeMap<RoomValueId, Batch>,
+    referenced: &BTreeSet<RoomValueId>,
+    frontier: vhalla_rooms_consensus::Frontier,
+) {
+    held.retain(|id, batch| referenced.contains(id) || batch.parent == frontier);
 }
 
 /// Per-node application state owned by the channel loop.
@@ -637,35 +718,40 @@ impl App {
     /// Dedup is on (round, proposer, value id): the same value re-proposed
     /// at a later round earns a second record, which the resupply path
     /// needs to report each round's proposal faithfully.
-    fn record_seen(&mut self, init: &ProposalInit, value_id: RoomValueId) {
+    fn record_seen(&mut self, init: &ProposalInit, value_id: RoomValueId) -> bool {
         let entry = self.seen.entry(init.height.as_u64()).or_default();
-        if entry
-            .iter()
-            .any(|s| s.round == init.round && s.proposer == init.proposer && s.value_id == value_id)
-        {
-            return;
+        let existing = entry.iter().find(|seen| {
+            seen.round == init.round && seen.proposer == init.proposer && seen.value_id == value_id
+        });
+        if existing.is_some_and(|seen| seen.pol_round != init.pol_round) {
+            // Preserve the first admitted header; never tell the engine a
+            // conflicting duplicate is recoverable from that same record.
+            return false;
         }
-        let record = SeenProposal {
-            round: init.round,
-            pol_round: init.pol_round,
-            proposer: init.proposer,
-            value_id,
-        };
-        let mut body = Vec::with_capacity(40);
-        body.extend_from_slice(&value_id.0);
-        body.extend_from_slice(&init.pol_round.as_i64().to_be_bytes());
-        store_write(
+        let mut body = [0; 40];
+        body[..32].copy_from_slice(&value_id.0);
+        body[32..].copy_from_slice(&init.pol_round.as_i64().to_be_bytes());
+        persist_seen(
             &self.store.join("seen"),
             &format!(
-                "{}_{}_{}",
+                "{}_{}_{}_{}",
                 init.height.as_u64(),
                 init.round.as_i64(),
-                hex(&init.proposer.into_inner())
+                hex(&init.proposer.into_inner()),
+                hex(&value_id.0)
             ),
             &body,
         )
-        .expect("seen store write");
-        entry.push(record);
+        .expect("seen store write; preserve the node home for recovery");
+        if existing.is_none() {
+            entry.push(SeenProposal {
+                round: init.round,
+                pol_round: init.pol_round,
+                proposer: init.proposer,
+                value_id,
+            });
+        }
+        true
     }
 
     /// The `StartedRound` resupply: every value this node observed at
@@ -738,28 +824,86 @@ impl App {
         StreamId::new(bytes.into())
     }
 
-    /// Build signed proposal parts carrying the real canonical batch
-    /// bytes: `Init`, `Data` chunks bounded by `PROPOSAL_CHUNK_BYTES`,
-    /// and `Fin` signing `"RF1" || height || round || keccak256(data)`
-    /// over the COMPLETE concatenated bytes — chunking is a transport
-    /// detail invisible to the signature.
+    /// Build signed proposal parts carrying the real canonical batch.
+    /// RF2 authenticates the complete finalized Init and concatenated data;
+    /// chunking remains a transport detail invisible to the signature.
     fn build_parts(&mut self, proposed: &LocallyProposedValue<RoomContext>) -> Vec<RoomPart> {
-        let data = proposed.value.bytes.clone();
-        let signature = RoomSigner::new(self.private_key.clone()).sign(&fin_sign_bytes(
-            proposed.height,
-            proposed.round,
-            &data,
-        ));
-        let mut parts = Vec::with_capacity(2 + data.len() / PROPOSAL_CHUNK_BYTES + 1);
-        parts.push(RoomPart::Init(ProposalInit {
+        let init = ProposalInit {
             height: proposed.height,
             round: proposed.round,
             pol_round: Round::Nil,
             proposer: self.address,
-        }));
-        parts.extend(data_parts(&data));
+        };
+        self.sign_parts(init, &proposed.value.bytes)
+    }
+
+    fn sign_parts(&self, init: ProposalInit, data: &[u8]) -> Vec<RoomPart> {
+        assert_eq!(
+            init.proposer, self.address,
+            "cannot sign for another proposer"
+        );
+        let signature =
+            RoomSigner::new(self.private_key.clone()).sign(&fin_sign_bytes(&init, data));
+        let mut parts = Vec::with_capacity(2 + data.len() / PROPOSAL_CHUNK_BYTES + 1);
+        parts.push(RoomPart::Init(init));
+        parts.extend(data_parts(data));
         parts.push(RoomPart::Fin(ProposalFin { signature }));
         parts
+    }
+
+    /// Re-stream an exact cached header, or freshly sign our own locked
+    /// re-proposal at the engine-requested round. Never sign for another
+    /// proposer or replay an unrelated cached round for the same value.
+    fn restream_parts(
+        &mut self,
+        height: Height,
+        round: Round,
+        valid_round: Round,
+        address: Address,
+        value_id: RoomValueId,
+    ) -> Option<Vec<RoomPart>> {
+        if let Some(parts) = self.parts_cache.get(&value_id) {
+            if matches!(parts.first(), Some(RoomPart::Init(init))
+                if init.height == height && init.round == round
+                    && init.pol_round == valid_round && init.proposer == address)
+            {
+                return Some(parts.clone());
+            }
+        }
+        let init = ProposalInit {
+            height,
+            round,
+            pol_round: valid_round,
+            proposer: address,
+        };
+        if address != self.address || !self.valid_part_header(&init) {
+            return None;
+        }
+        let set = self.set_for(height.as_u64());
+        if set.validators.is_empty()
+            || self.ctx.select_proposer(set, height, round).address != address
+        {
+            return None;
+        }
+        let batch = self.held_by_id.get(&value_id)?;
+        if batch.parent.height.checked_add(1) != Some(height.as_u64())
+            || self
+                .adapter
+                .lock()
+                .unwrap()
+                .application()
+                .validate(batch)
+                .is_err()
+        {
+            return None;
+        }
+        // The requested proof-of-lock round is finalized before signing.
+        let parts = self.sign_parts(init.clone(), &batch.encode());
+        if !self.record_seen(&init, value_id) {
+            return None;
+        }
+        self.parts_cache.insert(value_id, parts.clone());
+        Some(parts)
     }
 
     /// Fold a completed stream into `AssembledParts`: exactly `Init`,
@@ -902,20 +1046,20 @@ impl App {
         from: PeerId,
         state: StreamState,
     ) -> Option<ProposedValue<RoomContext>> {
-        Self::assemble(state).map(|assembled| {
+        Self::assemble(state).and_then(|assembled| {
             if !self.verify_parts(&assembled) {
                 tracing::debug!(
                     peer = %from, height = %assembled.init.height, round = %assembled.init.round,
                     "assembled stream failed verification: bad proposer or Fin signature"
                 );
-                return ProposedValue {
+                return Some(ProposedValue {
                     height: assembled.init.height,
                     round: assembled.init.round,
                     valid_round: Round::Nil,
                     proposer: assembled.init.proposer,
                     value: RoomValue::new([0; 32], Vec::new().into()),
                     validity: Validity::Invalid,
-                };
+                });
             }
             let batch = Batch::decode(&assembled.data);
             // The signed stream height must be the height this batch can
@@ -935,22 +1079,24 @@ impl App {
                 Validity::Invalid
             };
             if validity.is_valid() {
+                if !self.record_seen(&assembled.init, value.id) {
+                    return None;
+                }
                 let mut cached =
                     Vec::with_capacity(2 + assembled.data.len() / PROPOSAL_CHUNK_BYTES + 1);
                 cached.push(RoomPart::Init(assembled.init.clone()));
                 cached.extend(data_parts(&assembled.data));
                 cached.push(RoomPart::Fin(assembled.fin.clone()));
                 self.parts_cache.insert(value.id, cached);
-                self.record_seen(&assembled.init, value.id);
             }
-            ProposedValue {
+            Some(ProposedValue {
                 height: assembled.init.height,
                 round: assembled.init.round,
                 valid_round: assembled.init.pol_round,
                 proposer: assembled.init.proposer,
                 value,
                 validity,
-            }
+            })
         })
     }
 
@@ -993,8 +1139,7 @@ impl App {
         };
         verify_fin(
             &proposer.public_key,
-            parts.init.height,
-            parts.init.round,
+            &parts.init,
             &parts.data,
             &parts.fin.signature,
         )
@@ -1078,7 +1223,12 @@ impl App {
                     .flat_map(|v| v.iter().map(|s| s.value_id)),
             )
             .collect();
-        self.held_by_id.retain(|id, _| live.contains(id));
+        // A repeated notification for the committed height must not drop
+        // a legacy-unreferenced batch for the still-undecided next height.
+        let frontier = self.adapter.lock().unwrap().frontier();
+        self.held_by_id.retain(|id, batch| {
+            live.contains(id) || (batch.parent == frontier && batch.parent.height >= height)
+        });
     }
 
     /// Insert the decided value into `decided` (the `GetDecidedValues`
@@ -1754,16 +1904,16 @@ impl RoomNode {
                 proposals.insert(*height, id);
             }
         }
-        // Batches nothing can still reference — not queued, not seen at a
-        // live height, not spec-held — are dead memory: committed values
-        // live in the journal and the rebuilt `decided` map.
+        // Retire only unreferenced historical batches. An unreferenced batch
+        // extending the current frontier may have lost its legacy seen record
+        // to an overwrite, so keep its content without inventing metadata.
         let live: BTreeSet<RoomValueId> = pending_proposals
             .iter()
             .filter_map(|e| e.value_id())
             .chain(seen.values().flat_map(|v| v.iter().map(|s| s.value_id)))
             .chain(proposals.values().copied())
             .collect();
-        held_by_id.retain(|id, _| live.contains(id));
+        retain_recoverable_batches(&mut held_by_id, &live, adapter.lock().unwrap().frontier());
         // Reloaded batches also re-enter the adapter's pending map so a
         // certificate for a pre-crash received value can still land.
         for batch in held_by_id.values() {
@@ -2107,24 +2257,22 @@ async fn send_part_stream(
         .is_ok()
 }
 
-/// Build, cache, and publish the chunked parts stream for a locally
-/// proposed value: `Init`, bounded `Data` chunks, `Fin`, then the stream
-/// terminator. Returns false when the network channel is closed and the
-/// node is shutting down.
-async fn publish_local_parts(
+/// Prepare and durably record a local proposal before its engine reply.
+/// Network pacing starts only after the engine has received that reply.
+fn prepare_local_parts(
     app: &mut App,
-    channels: &mut Channels<RoomContext>,
-    height: Height,
-    round: Round,
     proposed: &LocallyProposedValue<RoomContext>,
-) -> bool {
+) -> Vec<RoomPart> {
     let value_id = proposed.value.id;
     let parts = app.build_parts(proposed);
     if let RoomPart::Init(init) = &parts[0] {
-        app.record_seen(init, value_id);
+        assert!(
+            app.record_seen(init, value_id),
+            "conflicting local proposal metadata"
+        );
     }
     app.parts_cache.insert(value_id, parts.clone());
-    send_part_stream(app, channels, height, round, &parts).await
+    parts
 }
 
 /// Answer every held `GetValue` whose value now exists, publishing the
@@ -2134,13 +2282,16 @@ async fn flush_held(app: &mut App, channels: &mut Channels<RoomContext>) -> bool
     for req in app.drain_answerable_held() {
         let height = Height::new(req.height);
         let proposed = LocallyProposedValue::new(height, req.round, req.value);
-        if req.reply.send(proposed.clone()).is_err() {
+        let parts = req.live.then(|| prepare_local_parts(app, &proposed));
+        if req.reply.send(proposed).is_err() {
             continue;
         }
         // Tombstone replies un-park the connector only — their parts stay
         // off the wire so the empty value can never assemble and commit.
-        if req.live && !publish_local_parts(app, channels, height, req.round, &proposed).await {
-            return false;
+        if let Some(parts) = parts {
+            if !send_part_stream(app, channels, height, req.round, &parts).await {
+                return false;
+            }
         }
     }
     true
@@ -2227,8 +2378,9 @@ async fn run(
                 // store: every proposal this node observed at the height
                 // — locally proposed or received and verified — survives
                 // restart under `store/`, so the engine gets the real
-                // `ProposedValue`s back (WAL restores votes; the store
-                // restores the content those votes locked on).
+                // `ProposedValue`s back. The WAL also stores full proposed
+                // values; the application store restores adapter holds so
+                // replayed values can still commit through the journal.
                 let resupplied = app.resupply_for(height);
                 *app.resupplied.lock().unwrap() += resupplied.len() as u64;
                 let _ = reply_value.send(resupplied);
@@ -2285,8 +2437,9 @@ async fn run(
                 }
                 let value = RoomValue::new(batch.value_id(), batch.encode().into());
                 let proposed = LocallyProposedValue::new(height, round, value);
-                let _ = reply.send(proposed.clone());
-                if !publish_local_parts(app, channels, height, round, &proposed).await {
+                let parts = prepare_local_parts(app, &proposed);
+                let _ = reply.send(proposed);
+                if !send_part_stream(app, channels, height, round, &parts).await {
                     return;
                 }
             }
@@ -2393,8 +2546,9 @@ async fn run(
                 height,
                 round,
                 value_id,
-                ..
-            } => match app.parts_cache.get(&value_id).cloned() {
+                valid_round,
+                address,
+            } => match app.restream_parts(height, round, valid_round, address, value_id) {
                 Some(parts) => {
                     if !send_part_stream(app, channels, height, round, &parts).await {
                         return;
@@ -2403,7 +2557,7 @@ async fn run(
                 None => {
                     tracing::debug!(
                         %height, %round, value_id = %hex(&value_id.0),
-                        "restream requested for a value no longer cached"
+                        "restream unavailable for the requested proposal identity"
                     );
                 }
             },
@@ -2547,3 +2701,6 @@ mod tests;
 
 #[cfg(test)]
 mod ingress_tests;
+
+#[cfg(test)]
+mod seen_tests;

@@ -1,7 +1,7 @@
 //! `Signer`/`Verifier` implementations for `RoomContext`.
 //!
 //! Every signed message uses the canonical domain-separated preimages from
-//! the crate root: `RV1` for votes, `RP1` for proposals, `RF1` for proposal
+//! the crate root: `RV1` for votes, `RP1` for proposals, `RF2` for proposal
 //! `Fin` parts, and the engine's own `ValidatorProof::signing_bytes` for
 //! proof-of-validatorhood. Vote extensions are unsupported (`Extension` is
 //! `()`) and fail closed.
@@ -143,12 +143,11 @@ impl Verifier<RoomContext> for RoomVerifier {
 /// key — the app-layer check for streamed parts.
 pub fn verify_fin(
     public_key: &PublicKey,
-    height: crate::Height,
-    round: arc_malachitebft_core_types::Round,
+    init: &crate::ProposalInit,
     data: &[u8],
     signature: &Signature,
 ) -> bool {
     public_key
-        .verify(&fin_sign_bytes(height, round, data), signature)
+        .verify(&fin_sign_bytes(init, data), signature)
         .is_ok()
 }
