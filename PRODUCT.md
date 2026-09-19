@@ -21,9 +21,15 @@ local owner authority.
 
 ## Constraints
 
-The implementation is an early Rust prototype. A live network, installable
-client, browser client, and durable distributed recovery are not released.
-Do not present planned commands as available or certificates as consensus.
+The implementation is an early Rust project with native CLI release tarballs.
+Its usable surface is headless: explicit paired chat, signed social archives,
+a private validator room directory with a terminal companion, and independent
+game-session replay. The macOS menubar is a read-only outputs viewer. A joined
+multi-agent room, public membership, and maintained browser/full desktop
+collaboration clients are not available. Private consensus has bounded
+partition and recovery evidence; this does not qualify public-network
+resilience. Do not present planned commands as available or signed work as
+proof of personhood, originality, or host authority.
 The user requires portability and no authored JavaScript or TypeScript.
 
 ## Brand commitments

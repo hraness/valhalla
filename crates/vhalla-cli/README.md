@@ -224,6 +224,24 @@ If stdout fails after a write, inspect the durable store before repeating it;
 an output error does not imply the operation was absent. There is no automatic
 key recovery, archive truncation or hostile-host rollback protection.
 
+To create a new replica from an existing signed snapshot without creating
+an extra owner or private key, use:
+
+```console
+vhalla social restore-new ./new-replica REALM32HEX genesis.snapshot
+```
+
+The source must be a bounded regular file. The command checks canonical
+encoding, signatures, the requested realm and the CLI's default archive
+limits before creating the destination. It preserves the snapshot's exact
+records and evidence root; it does not establish that this is the latest
+snapshot or grant any signing authority. All social CLI commands currently
+use the default limits (including 1,024 retained records); an archive above
+those limits is rejected in full, never truncated. The destination must not
+exist, including as a directory, file or symlink. On a publication/I/O failure,
+partial destination state is retained for explicit inspection/recovery;
+never delete it and repeat the command to infer that nothing was written.
+
 ## Local discovery and owner notifications
 
 The same experimental feature adds a Following feed, a private Discover ranking,
@@ -351,7 +369,11 @@ config supplies the consensus key, listen port, persistent peers, validator
 activations and the shared genesis parameters (directory, policy, eligible
 sources, archive limits). The genesis archive is read from the committed
 social snapshot named on the command line, decoded under the configured
-limits. Producers submit work by dropping `*.body` files into
+limits. Give the node and every replica a dedicated frozen genesis social
+store restored from the agreed snapshot; keep ordinary owner social writes
+in a separate working store. A newly created replica must reconstruct the
+same initial archive even after owners publish more work. Producers submit
+work by dropping `*.body` files into
 `<node-home>/intake/` — a canonical `BatchBody` carries only the agreed
 time, award evidence, signed room records, and optional bounded game-object
 commitments; the node assembles parent and result claims against its own live
@@ -381,18 +403,22 @@ pre-shared set of validators over a private network such as Tailscale or
 a LAN; it is not open-internet qualification, which remains a
 promotion-gates item.
 
-One workable setup for a group that trusts each other's machines:
+One workable setup for a group that trusts each other's machines (the
+complete command sequence is in the runbook below):
 
-1. Each member runs `vhalla social init SOCIAL_STORE IDENTITY_DIR` to
-   create an owner, `vhalla social export SOCIAL_STORE FILE` to capture
+1. Each member runs `vhalla social init SOCIAL_STORE REALM32 IDENTITY_DIR` to
+   create an owner and a new key, `vhalla social export SOCIAL_STORE REALM32 FILE` to capture
    it, and `vhalla rooms keygen` to print a `node_key` seed and
    `public_key`. Seeds and identity directories stay private; members
    share the snapshot file, the printed `owner` id and `public_key`.
 2. One member imports every member's snapshot into their own store
-   (`vhalla social import SOCIAL_STORE FILE`), exports the merged
+   (`vhalla social import SOCIAL_STORE REALM32 FILE`), exports the merged
    archive, and distributes that single file. Every member imports it
    too — the merge is a record union over a canonically ordered
-   archive, so all stores then hold identical genesis bytes. The same
+   archive, so all stores then hold identical genesis bytes. Each member
+   also runs `vhalla social restore-new GENESIS_STORE REALM32 FILE` to
+   preserve that exact archive separately from later owner activity.
+   `node`, `node-check` and replica commands use this frozen store. The same
    member authors the shared parameters once with
    `vhalla rooms network-init network.json --realm REALM32 --directory
    DIR64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators
@@ -479,48 +505,133 @@ deployment.
 
 This is the shortest safe path through the full release binary for a small
 pre-trusted group. All commands use the `vhalla` build from the release
-tarball and all `--features` are already enabled.
+tarball and all `--features` are already enabled. It creates a shared
+**room directory**; room chat and automatic agent execution are separate
+features. Use a POSIX shell and `jq`, replace the named public IDs with
+values exchanged by your group, and retain every private key locally.
 
-**1. Each person owns one identity and one backup.**
+The reference group has four equal-power validators: Alice, Bob, Carol and
+Dave. Its strict `> 2/3` quorum is three, so it can continue with one member
+offline. Three equal-power validators require all three online. This is
+private membership, not permissionless admission or a claim that two
+partitioned groups can both keep deciding.
 
-```console
-vhalla identity init ./my-key
+For an existing installation, first read the
+[transport identity upgrade procedure](../../docs/transport-identity-upgrade.md).
+The sequence below initializes new directories and never resets existing state.
+
+**1. Each person creates a social owner and a private backup.**
+
+Use a private working directory. Alice's examples use `./alice`; Bob,
+Carol and Dave use their own store and key paths on their own machines.
+
+```sh
+umask 077
+vhalla_realm=00000000000000000000000000000047
+vhalla_expiry=$(( $(date +%s) + 86400 ))
+vhalla social init ./alice "$vhalla_realm" ./my-key > alice-owner.json
+vhalla_owner=$(jq -r .owner alice-owner.json)
 vhalla identity show ./my-key
 vhalla identity backup ./my-key > my-key.backup
 ```
 
+`social init` creates both the owner store and its identity; both paths must
+be new. Do not run `identity init ./my-key` first. Standalone `identity init`
+is available for a separate paired-chat identity, not for importing an
+existing key into a new social owner.
+
 The first two lines of `my-key.backup` are the 24-word `mnemonic` and the
 `application-key`. Write the mnemonic down and keep it off the machine that
-holds `./my-key`; the `application-key` is the public name others pin.
+holds `./my-key`. It recovers the application key, not the signed social
+archive, validator seed or consensus journal. Keep those separate recovery
+materials private too. Application public keys, owner IDs and validator
+public keys have different roles; never substitute one for another.
 
-**2. Exchange social snapshots so everyone has the same genesis archive.**
+**2. Enroll an agent, accept its work, and exchange signed support.**
 
-```console
-vhalla social init ./alice ./realm000000000000000000000000000047 ./my-key
-vhalla social export ./alice ./realm000000000000000000000000000047 alice.snapshot
-# Give alice.snapshot to Bob; Bob imports it and returns bob.snapshot.
-vhalla social import ./alice ./realm000000000000000000000000000047 bob.snapshot
+Alice creates a new agent identity and grants it social writing rights:
+
+```sh
+vhalla social enroll ./alice "$vhalla_realm" ./my-key "$vhalla_owner" \
+  ./agent-key all "$vhalla_expiry" > alice-agent.json
+vhalla_agent=$(jq -r .agent alice-agent.json)
+vhalla_grant=$(jq -r .grant alice-agent.json)
+vhalla social post ./alice "$vhalla_realm" ./agent-key \
+  "agent:$vhalla_agent:$vhalla_grant" profile \
+  'A reproducible simulation for our private group.' > alice-post.json
+vhalla_post=$(jq -r .event alice-post.json)
+vhalla social seal ./alice "$vhalla_realm" ./my-key "$vhalla_owner" "$vhalla_post"
+vhalla social export ./alice "$vhalla_realm" alice.snapshot
 ```
 
-One person merges every snapshot, exports the merged archive, and
-everyone imports that single file. `rooms node-check` later proves the
-archive is identical everywhere.
+The post is provisional until Alice seals its exact history. Give Bob
+`alice.snapshot` and the public `alice-post.json` receipt. Bob imports the
+snapshot into his own initialized store, reviews the work, and can sign
+an up-reaction with his own key:
+
+```sh
+vhalla social import ./bob "$vhalla_realm" alice.snapshot
+vhalla_bob_owner=$(jq -r .owner bob-owner.json)
+vhalla_alice_post=$(jq -r .event alice-post.json)
+vhalla social react ./bob "$vhalla_realm" ./bob-key "owner:$vhalla_bob_owner" \
+  "$vhalla_alice_post" up "$vhalla_alice_post"
+vhalla social export ./bob "$vhalla_realm" bob.snapshot
+```
+
+Bob, Carol and Dave each export their store and send the snapshot to Alice.
+She imports all three and exports one merged archive:
+
+```sh
+vhalla social import ./alice "$vhalla_realm" bob.snapshot
+vhalla social import ./alice "$vhalla_realm" carol.snapshot
+vhalla social import ./alice "$vhalla_realm" dave.snapshot
+vhalla social export ./alice "$vhalla_realm" genesis.snapshot
+# Every member imports genesis.snapshot into their own store, including Alice.
+vhalla social import ./alice "$vhalla_realm" genesis.snapshot
+vhalla social restore-new ./genesis-social "$vhalla_realm" genesis.snapshot
+```
+
+Every member creates their own dedicated `./genesis-social` from that same
+snapshot. Preserve it unchanged: use `./alice`, `./bob`, and the other
+owner stores for later posts/imports, and `./genesis-social` for every node
+and replica command below. A fresh replica bootstraps from the supplied
+genesis archive; pointing it at a changed owner store can make historical
+journal verification fail. Retain `genesis.snapshot` for recovery and future
+members. Later social evidence enters directory consensus through explicit
+submission evidence, not by rewriting the genesis store.
+
+The operator explicitly includes Bob's owner ID in `--eligible` below.
+His committed support then supplies the first room's one-credit charge
+when `genesis.snapshot` is attached to the submission. A bare owner
+registration has no earned creation credit. `node-check` later reports
+the archive root for comparison; matching local reports establish a
+common genesis archive, not live peer connectivity.
 
 **3. One operator authors the shared validator parameters.**
 
+Each member generates their own **validator** key under the private umask
+from step 1, then shares only its public key:
+
+```sh
+vhalla rooms keygen > validator-key.json
+jq -r .public_key validator-key.json
+```
+
+The operator chooses a shared 64-hex directory ID and uses all four public
+validator keys. `--eligible` names social **owner IDs**, not validator keys.
+
 ```console
-vhalla rooms keygen
-echo "directory=..."  # any 64-hex id
 vhalla rooms network-init ./network.json \
   --realm 00000000000000000000000000000047 \
   --directory <DIR64> \
   --policy 1,86400,4,86400,8 \
-  --validators 1:<PUBLIC_A>:1,1:<PUBLIC_B>:1,1:<PUBLIC_C>:1 \
-  --eligible <ALICE_OWNER64>,<BOB_OWNER64>
+  --validators 1:<PUBLIC_A>:1,1:<PUBLIC_B>:1,1:<PUBLIC_C>:1,1:<PUBLIC_D>:1 \
+  --eligible <BOB_OWNER64>
 ```
 
-`network.json` contains the `genesis` fingerprint; print it with
-`vhalla rooms node-check` and verify every member sees the same value.
+The command prints the shared `genesis` fingerprint and quorum arithmetic.
+Distribute the public `network.json` parameters. Each member checks their
+merged config and social archive in step 4 before starting any node.
 
 **4. Choose reachability and initialize each member.**
 
@@ -566,7 +677,8 @@ exchanged for `network-init`:
 vhalla rooms overlay plan --profile tailscale --members \
   alice=<PUBLIC_A>@100.64.0.1:17001 \
   bob=<PUBLIC_B>@100.64.0.2:17002 \
-  carol=<PUBLIC_C>@100.64.0.3:17003
+  carol=<PUBLIC_C>@100.64.0.3:17003 \
+  dave=<PUBLIC_D>@100.64.0.4:17004
 ```
 
 For each `members[]` result, its owner passes `listen`, `peers`, and
@@ -596,7 +708,8 @@ Mesh IPv4 address:
 vhalla rooms overlay plan --profile cloudflare-mesh --members \
   alice=<PUBLIC_A>@100.96.0.1:17001 \
   bob=<PUBLIC_B>@100.96.0.2:17002 \
-  carol=<PUBLIC_C>@100.96.0.3:17003
+  carol=<PUBLIC_C>@100.96.0.3:17003 \
+  dave=<PUBLIC_D>@100.96.0.4:17004
 ```
 
 Use each result with the same `node-init` shape above. Mesh carries TCP
@@ -617,21 +730,24 @@ multi-host path passes live qualification.
 Before booting, every member runs:
 
 ```console
-vhalla rooms node-check ./alice ./node 00000000000000000000000000000047 \
+vhalla rooms node-check ./genesis-social ./node 00000000000000000000000000000047 \
   --config ./node/node.json
 ```
 
 Compare the `genesis` and archive values across the set and require no
-unexpected peer warnings.
+unexpected peer warnings. Expect `node_key_votes_from: 1`, three pinned
+remote peers, `peers_only: true`, `quorum_power: 3` and
+`absent_power_tolerated: 1`. A successful command exit only means the
+configuration decoded; inspect the report and its warnings.
 
 **5. Start the node and observe it from a replica.**
 
 ```console
-vhalla rooms node ./alice ./node 00000000000000000000000000000047 \
+vhalla rooms node ./genesis-social ./node 00000000000000000000000000000047 \
   --config ./node/node.json
 
 # In another shell (the node keeps `node/app` locked; this never touches it)
-vhalla rooms status ./alice ./replica 00000000000000000000000000000047 ./node \
+vhalla rooms status ./genesis-social ./replica 00000000000000000000000000000047 ./node \
   --config ./node/node.json
 ```
 
@@ -643,20 +759,28 @@ for only the marker strip.
 **6. Submit work through a terminal or the TUI.**
 
 ```console
-vhalla rooms submit ./alice ./replica 00000000000000000000000000000047 ./node \
-  create ./my-key ./agent-key <OWNER64> <AGENT64> <GRANT64> \
-  cool-room $(( $(date +%s) + 86400 )) 'A cool room' \
+vhalla rooms submit ./genesis-social ./replica 00000000000000000000000000000047 ./node \
+  create ./my-key ./agent-key <OWNER64> <AGENT64> \
+  cool-room $(( $(date +%s) + 86400 )) 'A cool room' genesis.snapshot \
   --config ./node/node.json
 
 # Wait for commit, then check again
-vhalla rooms pending ./alice ./replica 00000000000000000000000000000047 ./node \
+vhalla rooms pending ./genesis-social ./replica 00000000000000000000000000000047 ./node \
   --config ./node/node.json
 ```
+
+Use Alice's owner and agent IDs from step 2. `submit create` constructs the
+first room-control grant when needed; there is no grant positional
+argument. The snapshot supplies signed award evidence as well as its
+dependencies. The returned marker means queued/submitted until
+`rooms pending` reports `committed`. Other members can confirm the room
+through `rooms status` using their own node and replica paths. Directory
+creation does not open a chat session or wake an agent.
 
 The TUI gives the same commands interactively:
 
 ```console
-vhalla rooms tui ./alice ./replica 00000000000000000000000000000047 ./node \
+vhalla rooms tui ./genesis-social ./replica 00000000000000000000000000000047 ./node \
   --config ./node/node.json
 ```
 
@@ -666,7 +790,7 @@ The operator copies the shared file and appends a replacement set:
 
 ```console
 vhalla rooms network-extend ./network.json ./network-v2.json \
-  --from 10 --validators 10:<PUBLIC_D>:1,10:<PUBLIC_A>:1,...
+  --from 10 --validators <PUBLIC_A>:1,<PUBLIC_B>:1,<PUBLIC_C>:1,<PUBLIC_E>:1
 ```
 
 Each member merges it in:
@@ -678,6 +802,38 @@ vhalla rooms node-update ./node --network ./network-v2.json
 
 `node-update` refuses to touch activations already at or below the
 committed height and rejects any drift in the shared `genesis` fields.
+Choose an activation height beyond every member's committed frontier.
+The example replaces Dave with Eve while preserving four equal-power
+members; it is a complete replacement set, not an added-member delta.
+
+Validator schedule and transport membership are separate. `node-update`
+preserves the local `peers`, `peers_only`, listen address and key. Before
+the activation, coordinate a reviewed update of each private `node.json`
+peer list and its overlay forwards/allow rules so incumbents and Eve have
+the required pinned paths; give the joiner the shared schedule and genesis
+archive, never another member's private config. Plan the restart together,
+keep the required current quorum available, and run `node-check` again.
+Changing the schedule alone does not connect a new key into a closed mesh.
+
+A joiner restores the exact original public genesis archive into a new
+store, with no new social owner or private key:
+
+```console
+vhalla social restore-new ./eve-genesis-social 00000000000000000000000000000047 genesis.snapshot
+vhalla rooms node-init ./eve-node --network network-v2.json \
+  --node-key <EVE_SEED> --port <EVE_PORT> --listen <EVE_LISTEN_IP> \
+  --peers <PINNED_PEERS_CSV> --peers-only true
+vhalla rooms node-check ./eve-genesis-social ./eve-node 00000000000000000000000000000047 \
+  --config ./eve-node/node.json
+```
+
+Compare both the `genesis` and `archive` readbacks with updated incumbents;
+`node_key_votes_from` should equal the intended future activation height.
+`social init` followed by importing the old snapshot would add a new owner
+record and produce a different genesis. Retain the original
+`genesis.snapshot` for future members; a later social export may contain
+additional records. The local rehearsal checks exact snapshot restoration
+and a schedule update, not multi-host or live newcomer activation.
 
 **8. Recover from key loss.**
 
@@ -689,7 +845,9 @@ vhalla identity show ./my-key-restored
 ```
 
 The restored `application-key` is identical to the lost one. The mnemonic
-is the only recoverable secret; if it is lost, the identity is gone.
+recovers only this application identity. Signed archives, spent invitation
+state and validator recovery have separate persistence requirements; do
+not interpret a restored signing key as complete network-state recovery.
 
 **9. Surface `rooms status` in the menubar.**
 
@@ -698,33 +856,64 @@ the `vhalla outputs` directory, so the safe integration is to write the
 status JSON there with the dedicated refresh subcommand:
 
 ```console
-vhalla menubar refresh ./alice ./replica 00000000000000000000000000000047 ./node \
+vhalla menubar refresh ./genesis-social ./replica 00000000000000000000000000000047 ./node \
   --config ./node/node.json
 ```
 
 `vhalla menubar` then lists `rooms-status.json`; selecting it opens the
 file. Re-run `vhalla menubar refresh` whenever you want an updated view.
 
-### Transport caveats and WAL resets
+### Executable local onboarding rehearsal
 
-Two operational findings from running the validator pair over a relayed
-tunnel (tailcat over a DERP relay):
+From a checkout with the Rust toolchain, run:
 
-- **Small writes only.** The relayed path truncates any single TCP write
-  above roughly 1.1 KiB. The node accounts for this: proposal `Data`
+```console
+cargo test -p vhalla-cli --all-features --locked --test rooms_submit clean_state_four_member_onboarding_rehearsal -- --nocapture
+```
+
+The test creates private disposable identities and social stores through
+the CLI, enrolls an agent, seals its work, exchanges Bob's signed support,
+merges four genesis snapshots into dedicated frozen stores, checks four
+pinned node configurations, and commits a room through three live loopback validators while the
+fourth is absent. After the owner publishes more work in its separate
+working store, fresh replicas still read the committed directory from
+the unchanged genesis sources. The test round-trips an application-key
+backup and rehearses a future whole-set
+schedule update while preserving local peer configuration. A new member
+restores the exact public genesis snapshot with `social restore-new`,
+scaffolds its own node, and verifies the future activation height and
+matching archive root. Children are reaped before the test's temporary
+directory is removed.
+
+The fixed evaluation clock and short credit epoch make this reproducible.
+It does not qualify an overlay provider, multi-host firewall/NAT behavior,
+live membership rotation, joined chat, or browser participation.
+
+### Transport caveats and WAL compatibility
+
+Operational constraints from the validator implementation and a tested
+relayed tunnel (Tailcat over a DERP relay):
+
+- **Bounded, paced writes.** One tested relayed path truncated TCP writes
+  above roughly 1.1 KiB; this is an observation of that path, not a universal
+  TCP or DERP limit. The node accounts for it: proposal `Data`
   parts are capped at 768 raw bytes and every part in a stream is paced
   20 ms apart so gossipsub cannot coalesce a burst into one oversized
   wire write. Do not lower-level "batch" traffic around the node, and
   expect connection churn on relayed paths — the parts cache re-streams
   on request, so a proposal that misses one connection window lands on
   the next.
-- **WAL format epochs.** The consensus WAL records its wire-format epoch
-  in `wal/FORMAT` (`VRW2`). A WAL written by an incompatible build fails
-  fast at startup with an explicit message rather than a mid-replay
-  codec error: remove `<node-home>/wal/consensus.wal` and start again.
-  This is safe — the WAL protects only in-flight consensus votes; all
-  committed state lives in the journal and stores under
-  `<node-home>/app/` and `<node-home>/store/`.
+- **Preserve voting history on format refusal.** The consensus WAL records
+  its wire-format epoch in `wal/FORMAT` (`VRW2`). A foreign marker or an
+  unversioned non-empty WAL fails at startup. Preserve both the WAL and
+  marker, together with the node's journal and stores. The WAL retains
+  undecided-height votes and locks; deleting it can let the same key sign
+  conflicting votes after restart, even when committed history is intact.
+  Keep the node stopped, retain a consistent backup, and use a compatible
+  binary or a reviewed migration that preserves this anti-equivocation
+  state. This release does not provide an incompatible-WAL migration.
+  Never delete or roll back a WAL, or rewrite its marker to make a newer
+  binary start. A stale backup is not a safe replacement for newer votes.
 - **Rejected submissions are loud.** `RUST_LOG=vhalla_rooms_node=warn`
   surfaces intake rejections with reasons (`unsafe file stem`,
   `undecodable body`, `prepare failed: …`); the `*.rejected` marker in

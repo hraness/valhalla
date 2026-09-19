@@ -220,6 +220,147 @@ mod enabled {
     }
 
     #[test]
+    fn restore_new_preserves_exact_genesis_and_follows_later_signed_history() {
+        let temp = Temp::new();
+        let alice = Account::init(&temp, "alice", REALM);
+        ok(
+            &alice.store,
+            REALM,
+            "post",
+            &[path(&alice.key), &alice.actor(), "profile", "original work"],
+        );
+        let source = temp.path("genesis.snapshot");
+        let archive = export(&alice, &source);
+        let replica = temp.path("replica");
+        let restored = ok(&replica, REALM, "restore-new", &[path(&source)]);
+        assert_eq!(restored["durable"], true);
+        assert_eq!(
+            digest(&field(&restored, "root")),
+            *archive.root().as_bytes()
+        );
+        assert_eq!(restored["records"].as_u64(), Some(archive.len() as u64));
+        assert!(restored.get("owner").is_none());
+        assert!(restored.get("controller").is_none());
+        let copy = temp.path("restored.snapshot");
+        ok(&replica, REALM, "export", &[path(&copy)]);
+        assert_eq!(fs::read(&copy).unwrap(), fs::read(&source).unwrap());
+
+        // Evidence alone cannot sign as the archived owner. A missing key
+        // fails without creating custody or changing the restored archive.
+        let absent_key = temp.path("not-a-restored-private-key");
+        fails(
+            &replica,
+            REALM,
+            "post",
+            &[
+                path(&absent_key),
+                &alice.actor(),
+                "profile",
+                "not authorized",
+            ],
+        );
+        assert!(!absent_key.exists());
+        let unchanged = temp.path("after-refused-write.snapshot");
+        ok(&replica, REALM, "export", &[path(&unchanged)]);
+        assert_eq!(fs::read(&unchanged).unwrap(), fs::read(&source).unwrap());
+
+        // The original owner continues signing in the original store. The
+        // restored replica imports those records without an extra genesis.
+        ok(
+            &alice.store,
+            REALM,
+            "post",
+            &[
+                path(&alice.key),
+                &alice.actor(),
+                "profile",
+                "continued work",
+            ],
+        );
+        let later = temp.path("later.snapshot");
+        let latest = export(&alice, &later);
+        let imported = ok(&replica, REALM, "import", &[path(&later)]);
+        assert_eq!(digest(&field(&imported, "root")), *latest.root().as_bytes());
+        let caught_up = temp.path("caught-up.snapshot");
+        ok(&replica, REALM, "export", &[path(&caught_up)]);
+        assert_eq!(fs::read(&caught_up).unwrap(), fs::read(&later).unwrap());
+    }
+
+    #[test]
+    fn restore_new_rejects_invalid_sources_before_creating_a_destination() {
+        let temp = Temp::new();
+        let alice = Account::init(&temp, "alice", REALM);
+        let source = temp.path("genesis.snapshot");
+        export(&alice, &source);
+        let raw = fs::read(&source).unwrap();
+        let corrupt = temp.path("corrupt.snapshot");
+        let mut bad = raw.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 1;
+        fs::write(&corrupt, bad).unwrap();
+        let oversized = temp.path("oversized.snapshot");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_SNAPSHOT_BYTES as u64 + 1)
+            .unwrap();
+        let linked = temp.path("linked.snapshot");
+        symlink(&source, &linked).unwrap();
+        let fifo = temp.path("snapshot.fifo");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        for (index, input) in [&corrupt, &oversized, &linked, &fifo].iter().enumerate() {
+            let destination = temp.path(&format!("refused-{index}"));
+            fails(&destination, REALM, "restore-new", &[path(input)]);
+            assert!(!destination.exists());
+        }
+        let wrong_realm = temp.path("wrong-realm");
+        fails(&wrong_realm, OTHER_REALM, "restore-new", &[path(&source)]);
+        assert!(!wrong_realm.exists());
+        assert_eq!(fs::read(&source).unwrap(), raw);
+    }
+
+    #[test]
+    fn restore_new_preserves_existing_stores_keys_files_and_symlinks() {
+        let temp = Temp::new();
+        let alice = Account::init(&temp, "alice", REALM);
+        let source = temp.path("genesis.snapshot");
+        export(&alice, &source);
+        let replica = temp.path("replica");
+        ok(&replica, REALM, "restore-new", &[path(&source)]);
+        fails(&replica, REALM, "restore-new", &[path(&source)]);
+        let after = temp.path("after-repeated-restore.snapshot");
+        ok(&replica, REALM, "export", &[path(&after)]);
+        assert_eq!(fs::read(&after).unwrap(), fs::read(&source).unwrap());
+
+        // A key directory is not a restore destination. Signing still works
+        // with that same identity after the refused attempt.
+        fails(&alice.key, REALM, "restore-new", &[path(&source)]);
+        ok(
+            &alice.store,
+            REALM,
+            "post",
+            &[path(&alice.key), &alice.actor(), "profile", "key preserved"],
+        );
+        let existing_file = temp.path("existing-file");
+        fs::write(&existing_file, b"retain this file").unwrap();
+        fails(&existing_file, REALM, "restore-new", &[path(&source)]);
+        assert_eq!(fs::read(&existing_file).unwrap(), b"retain this file");
+        let existing_directory = temp.path("existing-directory");
+        fs::create_dir(&existing_directory).unwrap();
+        fails(&existing_directory, REALM, "restore-new", &[path(&source)]);
+        assert_eq!(fs::read_dir(&existing_directory).unwrap().count(), 0);
+        let absent = temp.path("absent-target");
+        let link = temp.path("destination-link");
+        symlink(&absent, &link).unwrap();
+        fails(&link, REALM, "restore-new", &[path(&source)]);
+        assert_eq!(fs::read_link(&link).unwrap(), absent);
+        assert!(!absent.exists());
+    }
+
+    #[test]
     fn agent_lifecycle_persists_committed_history_and_escapes_hostile_text() {
         let temp = Temp::new();
         let account = Account::init(&temp, "owner", REALM);
