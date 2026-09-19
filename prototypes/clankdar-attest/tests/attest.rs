@@ -375,14 +375,15 @@ fn score_answer_matches_ts_semantics() {
 /// the gate session rather than the standalone challengeId + nonce.
 fn issue_session_challenge(now: OffsetDateTime) -> (Challenge, Ticket, GeneratedInstance) {
     let key = signing();
-    let inst = instance(
+    let mut inst = instance(
         "clankdar-frontier-v1",
         "cryptarithm",
         6,
         424243,
         "solve: CD + DC = EE",
-        &format!("{}{}", 35, 73),
+        "",
     );
+    inst.answer = format!("{}", inst.seed % 10_000);
     let opts = IssueOptions {
         family: "cryptarithm",
         tier: 6,
