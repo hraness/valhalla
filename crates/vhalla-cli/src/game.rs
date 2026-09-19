@@ -174,7 +174,7 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
     }
     let mut policy = policy();
     let mut seen = std::collections::BTreeSet::new();
-    for pair in args[3..].chunks_exact(2) {
+    for pair in args[3..].as_chunks::<2>().0 {
         let flag = pair[0].to_str().ok_or(usage)?;
         let value: u64 = pair[1]
             .to_str()
