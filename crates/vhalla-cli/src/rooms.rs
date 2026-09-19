@@ -44,6 +44,7 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
     plan [--output json|shell]
     status
     up [--tailcat PATH]
+  overlay plan --profile tailscale|cloudflare-mesh --members NAME=KEY64@IP:PORT ...  (build: --features experimental-rooms-node)
   tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
   submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
   submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
@@ -357,6 +358,16 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         #[cfg(not(feature = "experimental-rooms-node"))]
         {
             return Err("rooms tailcat needs --features experimental-rooms-node".into());
+        }
+    }
+    if raw.get(1).is_some_and(|s| s == "overlay") {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return crate::rooms_overlay::run(raw[2..].to_vec());
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err("rooms overlay needs --features experimental-rooms-node".into());
         }
     }
     let args = Args::parse(raw)?;
