@@ -223,7 +223,7 @@ pub struct ProposalInit {
 }
 
 /// The `Fin` proposal part: signature over
-/// `"RF1" || height || round || keccak256(data)`.
+/// the RF2 preimage from [`fin_sign_bytes`], binding all `Init` fields and data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalFin {
     /// The proposer's Ed25519 signature over the content preimage.
@@ -634,20 +634,23 @@ pub fn proposal_sign_bytes(proposal: &RoomProposal) -> Vec<u8> {
 }
 
 /// Canonical sign bytes for a `Fin` proposal part:
-/// `"RF1" || height || round || keccak256(concat data bytes)`. The expected
-/// proposer is bound by the verifier resolving `select_proposer` for
-/// `(height, round)` and checking this signature against that validator's
-/// key.
-pub fn fin_sign_bytes(height: Height, round: Round, data: &[u8]) -> Vec<u8> {
+/// `"RF2" || height:u64be || round:i64be || proposer:20bytes ||
+/// pol_round:i64be || keccak256(concat data bytes)`.
+/// Both rounds use -1 for Nil; every u32 round remains distinct from Nil.
+/// The verifier additionally resolves the scheduled proposer for this height
+/// and round. RF1 signatures are not accepted on the live network.
+pub fn fin_sign_bytes(init: &ProposalInit, data: &[u8]) -> Vec<u8> {
     use sha3::Digest;
     let mut hasher = sha3::Keccak256::new();
     hasher.update(data);
     let content_hash = hasher.finalize();
 
-    let mut out = Vec::with_capacity(3 + 8 + 4 + 32);
-    out.extend_from_slice(b"RF1");
-    out.extend_from_slice(&height.as_u64().to_be_bytes());
-    out.extend_from_slice(&round.as_u32().unwrap_or(u32::MAX).to_be_bytes());
+    let mut out = Vec::with_capacity(3 + 8 + 8 + 20 + 8 + 32);
+    out.extend_from_slice(b"RF2");
+    out.extend_from_slice(&init.height.as_u64().to_be_bytes());
+    out.extend_from_slice(&init.round.as_i64().to_be_bytes());
+    out.extend_from_slice(&init.proposer.into_inner());
+    out.extend_from_slice(&init.pol_round.as_i64().to_be_bytes());
     out.extend_from_slice(&content_hash);
     out
 }

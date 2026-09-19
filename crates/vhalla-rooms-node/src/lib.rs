@@ -15,10 +15,15 @@
 //! Undecided proposals replay from an application-owned store:
 //! `home/store/batches/` retains every verified batch (fsync'd on
 //! receipt) and `home/store/seen/` retains one record per observed
-//! proposal (height, round, proposer -> value id + polka round), so a
+//! proposal (height, round, proposer, value id -> polka round), so a
 //! restarted node answers `StartedRound` with the real `ProposedValue`s
-//! it held rather than an empty set — the WAL restores votes, this
-//! store restores the value content those votes locked on.
+//! it held rather than an empty set. The WAL also retains full proposed
+//! values, votes and locks; the application store re-registers retained
+//! batches with the durable adapter. Legacy batches extending the current
+//! frontier remain available even if an older binary overwrote their seen
+//! metadata. Local metadata is durable before the engine reply. RF2 stream
+//! signatures authenticate the complete proposal header and value bytes;
+//! recovered proposers rebuild locked-value streams under their own key.
 //!
 //! `NetGate`, `WalPlan`/`WalFault` and the observation surfaces on
 //! [`RoomNode`] are the qualification harness: they drive the runtime

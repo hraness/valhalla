@@ -18,7 +18,19 @@ browser participation, or a general public service.
   in [the transport upgrade guide](transport-identity-upgrade.md).
 - Proposal input must reject invalid rounds and bound streams, parts and
   retained bytes before accumulating them. Bounds do not establish fairness
-  under sustained hostile traffic.
+  under sustained hostile traffic. Stream signatures bind the full header,
+  including its proof-of-lock round, so a relay cannot poison retained metadata
+  before the authentic header arrives. Consensus separately authenticates its
+  signed proposal; the missing stream binding was not evidence of a forged
+  consensus decision.
+- Proposal recovery must retain each distinct value from a validator and round.
+  Immutable per-value records prevent equivocation from overwriting earlier
+  metadata, and local proposals reach durable storage before the engine reply.
+  Recovery retains batches extending the committed frontier even when an older
+  binary lost their metadata; it cannot reconstruct overwritten headers. A
+  restarted proposer can re-stream its retained value with the exact requested
+  round and its own authority. This does not bound a hostile validator's durable
+  same-height history.
 - Validator configuration must have distinct identities, positive powers,
   at most 64 members in canonical order, and a total power no greater than
   `u64::MAX / 3`. Direct library callers are checked before storage or networking
@@ -57,6 +69,8 @@ The initial audit used `cargo-audit 0.22.2` and RustSec database commit
 the root and desktop lockfiles and 49 prototype lockfiles, including the
 separately retained native WebRTC reference. The older 2026-09-13 receipt
 does not certify the current dependency tree.
+The final gate also covers the vendored DNS adapter's standalone lockfile:
+51 maintained lockfiles and one frozen historical reference in total.
 
 The maintained root and browser interoperability lockfiles upgrade Rustls
 from 0.23.44 to 0.23.45 for
@@ -95,9 +109,9 @@ resolved advisory or a qualified Linux desktop product.
 Public participation and open membership are still unsupported. The retained
 social-record hard bound is 4,096 records (the CLI defaults to 1,024), without
 semantic garbage collection.
-A hostile validator's repeated signed proposals at one height also require
-further durable-metadata accounting and a safe locked-value resupply design;
-blindly pruning that history would risk consensus recovery.
+A hostile validator's repeated signed proposals at one height still require
+bounded durable-metadata accounting and a tested retention protocol that
+preserves locked-value recovery; blindly pruning that history is unsafe.
 
 Relayed-network qualification requires the explicit live harness and owned
 network endpoints. Ordinary green CI does not imply that harness ran. End-to-end
