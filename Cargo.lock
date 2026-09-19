@@ -5677,6 +5677,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "eyre",
  "hegeltest",
+ "libp2p-identity 0.2.14",
  "ractor",
  "sha3",
  "tokio",

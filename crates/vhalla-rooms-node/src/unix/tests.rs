@@ -1489,16 +1489,9 @@ async fn runtime_partition_isolates_then_heals_and_rejoins() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// The libp2p peer id a node will dial with: the network identity derives
-/// deterministically from the consensus address (`net_seed`).
-fn peer_id_of(address: &Address) -> PeerId {
-    let net_key = PrivateKey::from(net_seed(address));
-    let libp2p_id =
-        arc_malachitebft_app::types::Keypair::ed25519_from_bytes(net_key.inner().to_bytes())
-            .unwrap()
-            .public()
-            .to_peer_id();
-    PeerId::from_bytes(&libp2p_id.to_bytes()).unwrap()
+/// The public validator pin used by the real transport.
+fn peer_id_of(public_key: &PublicKey) -> PeerId {
+    net_peer_id(public_key).parse().unwrap()
 }
 
 /// Asymmetric divergence at the fault bound: N=7 (f=2, quorum 5) splits
@@ -1584,7 +1577,11 @@ async fn asymmetric_island_minority_campaigns_then_converges() {
     // commit h=1 before round 2 and h=2 before round 1.
     let minority: HashSet<usize> = [1usize, 2].into_iter().collect();
     let sorted_addresses: Vec<Address> = set.validators.iter().map(|v| v.address).collect();
-    let sorted_peers: Vec<PeerId> = sorted_addresses.iter().map(peer_id_of).collect();
+    let sorted_peers: Vec<PeerId> = set
+        .validators
+        .iter()
+        .map(|validator| peer_id_of(&validator.public_key))
+        .collect();
 
     let honest = BTreeMap::from([
         (1u64, batch_a.clone()),

@@ -101,7 +101,8 @@ struct StreamState {
     data: BTreeMap<u64, Vec<u8>>,
     data_len: usize,
     fin: Option<ProposalFin>,
-    closed: bool,
+    fin_sequence: Option<u64>,
+    end_sequence: Option<u64>,
     /// When the first part of this stream arrived — the expiry clock for
     /// streams a dead connection never closes.
     first_seen: Option<std::time::Instant>,
@@ -327,6 +328,13 @@ impl PendingEntry {
 /// the ~1.2 KiB per-write ceiling observed on relayed transports (e.g.
 /// tailcat over DERP), where a single larger write is truncated mid-frame.
 const PROPOSAL_CHUNK_BYTES: usize = 768;
+
+// Bound allocations before authenticating a proposal: at most 32 MiB of
+// payload globally and 1 MiB per peer, plus bounded map metadata. Expiry
+// is recovery for abandoned streams, not the primary resource fence.
+const MAX_PROPOSAL_STREAMS: usize = 128;
+const MAX_PROPOSAL_STREAMS_PER_PEER: usize = 4;
+const MAX_PROPOSAL_CHUNKS: usize = crate::MAX_VALUE_BYTES.div_ceil(PROPOSAL_CHUNK_BYTES);
 
 /// Slice canonical value bytes into ordered `Data` parts bounded by
 /// `PROPOSAL_CHUNK_BYTES`.
@@ -772,45 +780,128 @@ impl App {
     /// Consume one streamed proposal part. `Init`/`Fin` are stored by
     /// kind; `Data` chunks are keyed by their stream sequence so any
     /// arrival order still concatenates in emission order. The transport
-    /// `StreamContent::Fin` marker triggers assembly.
-    /// Returns the complete `ProposedValue` once the stream closes, or
-    /// `None` while the stream is incomplete or was closed oversized.
+    /// `StreamContent::Fin` marker fixes the final sequence; assembly waits
+    /// for every preceding slot, even when the marker arrives first.
+    /// Returns the complete `ProposedValue` once every slot is present, or
+    /// `None` while the stream is incomplete or has been rejected.
     fn handle_part(
         &mut self,
         from: PeerId,
         part: StreamMessage<RoomPart>,
     ) -> Option<ProposedValue<RoomContext>> {
-        let key = (from.to_bytes(), part.stream_id.to_bytes().to_vec());
-        let seq = part.sequence;
-        let state = self.streams.entry(key.clone()).or_default();
-        state.first_seen.get_or_insert_with(std::time::Instant::now);
-        let done = match part.content {
-            StreamContent::Data(RoomPart::Init(init)) => {
-                state.init = Some(init);
-                false
-            }
-            StreamContent::Data(RoomPart::Data(data)) => {
-                if !state.data.contains_key(&seq) {
-                    if state.data_len + data.len() > crate::MAX_VALUE_BYTES {
-                        tracing::debug!(peer = %from, "proposal stream closed: exceeds MAX_VALUE_BYTES");
-                        state.closed = true;
-                    } else {
-                        state.data_len += data.len();
-                        state.data.insert(seq, data.to_vec());
-                    }
-                }
-                false
-            }
-            StreamContent::Data(RoomPart::Fin(fin)) => {
-                state.fin = Some(fin);
-                false
-            }
-            StreamContent::Fin => true,
-        };
-        if !done || state.closed {
+        let stream_id = part.stream_id.to_bytes();
+        if stream_id.is_empty() || stream_id.len() > 64 {
             return None;
         }
-        let state = self.streams.remove(&key).unwrap();
+        let key = (from.to_bytes(), stream_id.to_vec());
+        let seq = part.sequence;
+        // Enforce the stream shape emitted by send_part_stream. Parts may
+        // arrive in any order, but their sequence slots must remain unique.
+        let shape_ok = match &part.content {
+            StreamContent::Data(RoomPart::Init(init)) => seq == 0 && self.valid_part_header(init),
+            StreamContent::Data(RoomPart::Data(data)) => {
+                (1..=MAX_PROPOSAL_CHUNKS as u64).contains(&seq)
+                    && !data.is_empty()
+                    && data.len() <= PROPOSAL_CHUNK_BYTES
+            }
+            StreamContent::Data(RoomPart::Fin(_)) => {
+                (2..=MAX_PROPOSAL_CHUNKS as u64 + 1).contains(&seq)
+            }
+            StreamContent::Fin => (3..=MAX_PROPOSAL_CHUNKS as u64 + 2).contains(&seq),
+        };
+        if !shape_ok {
+            self.streams.remove(&key);
+            return None;
+        }
+        // Even the terminator can arrive first. New streams cannot evict
+        // another peer's live work; admitted streams keep making progress.
+        if !self.streams.contains_key(&key)
+            && (self.streams.len() >= MAX_PROPOSAL_STREAMS
+                || self
+                    .streams
+                    .keys()
+                    .filter(|(peer, _)| peer == &key.0)
+                    .count()
+                    >= MAX_PROPOSAL_STREAMS_PER_PEER)
+        {
+            return None;
+        }
+        let state = self.streams.entry(key.clone()).or_default();
+        state.first_seen.get_or_insert_with(std::time::Instant::now);
+        let accepted = match part.content {
+            StreamContent::Data(RoomPart::Init(init)) => {
+                if state.init.as_ref().is_some_and(|old| old != &init) {
+                    false
+                } else {
+                    state.init = Some(init);
+                    true
+                }
+            }
+            StreamContent::Data(RoomPart::Data(data)) => {
+                if state.fin_sequence.is_some_and(|fin| seq >= fin)
+                    || state.end_sequence.is_some_and(|end| seq >= end - 1)
+                {
+                    false
+                } else if let Some(old) = state.data.get(&seq) {
+                    old.as_slice() == data.as_ref()
+                } else if state.data.len() >= MAX_PROPOSAL_CHUNKS
+                    || state.data_len + data.len() > crate::MAX_VALUE_BYTES
+                {
+                    false
+                } else {
+                    state.data_len += data.len();
+                    state.data.insert(seq, data.to_vec());
+                    true
+                }
+            }
+            StreamContent::Data(RoomPart::Fin(fin)) => {
+                if state.fin_sequence.is_some_and(|old| old != seq)
+                    || state.end_sequence.is_some_and(|end| seq != end - 1)
+                    || state.fin.as_ref().is_some_and(|old| old != &fin)
+                    || state.data.keys().any(|data_seq| *data_seq >= seq)
+                {
+                    false
+                } else {
+                    state.fin = Some(fin);
+                    state.fin_sequence = Some(seq);
+                    true
+                }
+            }
+            StreamContent::Fin => {
+                if state.end_sequence.is_some_and(|old| old != seq)
+                    || state.fin_sequence.is_some_and(|fin| fin != seq - 1)
+                    || state.data.keys().any(|data_seq| *data_seq >= seq - 1)
+                {
+                    false
+                } else {
+                    state.end_sequence = Some(seq);
+                    true
+                }
+            }
+        };
+        if !accepted {
+            // Invalid streams release all their buffers immediately.
+            self.streams.remove(&key);
+            return None;
+        }
+        let complete = state.end_sequence.is_some_and(|end| {
+            state.init.is_some()
+                && state.fin_sequence == Some(end - 1)
+                && state.data.len() as u64 + 2 == end
+                && state.data.keys().copied().eq(1..end - 1)
+        });
+        if complete {
+            let state = self.streams.remove(&key).unwrap();
+            return self.complete_part_stream(from, state);
+        }
+        None
+    }
+
+    fn complete_part_stream(
+        &mut self,
+        from: PeerId,
+        state: StreamState,
+    ) -> Option<ProposedValue<RoomContext>> {
         Self::assemble(state).map(|assembled| {
             if !self.verify_parts(&assembled) {
                 tracing::debug!(
@@ -826,16 +917,23 @@ impl App {
                     validity: Validity::Invalid,
                 };
             }
+            let batch = Batch::decode(&assembled.data);
+            // The signed stream height must be the height this batch can
+            // actually extend. Check before verdict_for persists anything:
+            // a valid current batch replayed under future signed headers
+            // must not create immortal seen records or cached proposals.
+            let matches_height = batch.as_ref().is_ok_and(|batch| {
+                batch.parent.height.checked_add(1) == Some(assembled.init.height.as_u64())
+            });
             let value = RoomValue::new(
-                // The id arrives only via the decided certificate —
-                // derive it from the decoded batch so the proposal
-                // names the real commitment.
-                Batch::decode(&assembled.data)
-                    .map(|b| b.value_id())
-                    .unwrap_or([0; 32]),
+                batch.as_ref().map(|b| b.value_id()).unwrap_or([0; 32]),
                 assembled.data.clone().into(),
             );
-            let validity = self.verdict_for(&value);
+            let validity = if matches_height {
+                self.verdict_for(&value)
+            } else {
+                Validity::Invalid
+            };
             if validity.is_valid() {
                 let mut cached =
                     Vec::with_capacity(2 + assembled.data.len() / PROPOSAL_CHUNK_BYTES + 1);
@@ -860,8 +958,25 @@ impl App {
     /// the EXPECTED proposer for (height, round) under the active set,
     /// and the `Fin` signature over the streamed content must verify
     /// against that proposer's key.
+    // Header checks precede proposer selection, whose context trait
+    // assumes a non-Nil round and overflow-free height/round arithmetic.
+    fn valid_part_header(&self, init: &ProposalInit) -> bool {
+        let Some(round) = init.round.as_u32() else {
+            return false;
+        };
+        init.height.as_u64() > 0
+            && init.height.as_u64().checked_add(u64::from(round)).is_some()
+            && init.pol_round.as_u32().is_none_or(|pol| pol < round)
+    }
+
     fn verify_parts(&self, parts: &AssembledParts) -> bool {
+        if !self.valid_part_header(&parts.init) {
+            return false;
+        }
         let set = self.set_for(parts.init.height.as_u64());
+        if set.validators.is_empty() {
+            return false;
+        }
         let expected = self
             .ctx
             .select_proposer(set, parts.init.height, parts.init.round)
@@ -1468,9 +1583,9 @@ impl RoomNode {
         let address = Address::from_public_key(&public_key);
         let signer = RoomSigner::new(node_key.clone());
 
-        // Network identity: separate keypair, validator proof binding the
-        // consensus public key to the peer id.
-        let keypair = net_keypair(&address);
+        // Noise must prove possession of the validator's private key.
+        // Public-key-derived peer pins need no separate identity directory.
+        let keypair = net_keypair(&node_key);
         let peer_id_bytes = keypair.public().to_peer_id().to_bytes();
         let proof = signer
             .sign_validator_proof(public_key.as_bytes().to_vec(), peer_id_bytes)
@@ -1818,32 +1933,22 @@ fn reload_pending(
     out
 }
 
-fn net_seed(address: &Address) -> [u8; 32] {
-    let inner = address.into_inner();
-    let mut seed = [0xA5; 32];
-    let n = inner.len().min(32);
-    seed[..n].copy_from_slice(&inner[..n]);
-    seed
+/// The transport uses the consensus Ed25519 secret, never its public key
+/// or address as a seed. Noise and consensus retain their own signing
+/// domains; knowing a validator's public identity cannot recreate its signer.
+fn net_keypair(node_key: &PrivateKey) -> arc_malachitebft_app::types::Keypair {
+    arc_malachitebft_app::types::Keypair::ed25519_from_bytes(node_key.inner().to_bytes())
+        .expect("consensus key is a valid ed25519 seed")
 }
 
-/// The libp2p keypair a node whose consensus address is `address`
-/// presents on the wire: derived deterministically from the consensus
-/// identity (`net_seed`), so two nodes computing it for the same
-/// consensus key always agree on the peer id.
-fn net_keypair(address: &Address) -> arc_malachitebft_app::types::Keypair {
-    let net_key = PrivateKey::from(net_seed(address));
-    arc_malachitebft_app::types::Keypair::ed25519_from_bytes(net_key.inner().to_bytes())
-        .expect("net key is a valid ed25519 seed")
-}
-
-/// The libp2p peer id a node running consensus `public_key` presents,
-/// rendered base58 — the form a `/p2p/<peer_id>` multiaddr component
-/// carries. The network identity is derived deterministically from the
-/// consensus key, so a peer pin naming the consensus key authenticates
-/// exactly this id — no separate peer-id directory is needed.
+/// The libp2p peer id for the validator's existing Ed25519 public key,
+/// rendered base58 for a `/p2p/<peer_id>` multiaddr component. This public
+/// derivation never constructs a private key: the matching Noise signer
+/// requires the consensus secret held only by that validator.
 pub fn net_peer_id(public_key: &PublicKey) -> String {
-    net_keypair(&Address::from_public_key(public_key))
-        .public()
+    let key = libp2p_identity::ed25519::PublicKey::try_from_bytes(public_key.as_bytes())
+        .expect("consensus key is a valid ed25519 public key");
+    libp2p_identity::PublicKey::from(key)
         .to_peer_id()
         .to_base58()
 }
@@ -2435,4 +2540,10 @@ pub fn node_config(node: usize, nodes: usize, base_port: usize) -> Config {
 }
 
 #[cfg(test)]
+mod identity_tests;
+
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ingress_tests;
