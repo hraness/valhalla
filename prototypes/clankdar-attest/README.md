@@ -2,7 +2,8 @@
 
 An independent Rust implementation of `clankdar-attest-v1`, the sealed-seed
 capability attestation protocol defined by the Clankdar benchmark
-(`bench/attest.ts` in the clankdar repository is the reference).
+(`bench/attest.ts` in the clankdar repository is the reference), plus
+`clankdar-gate-v1` admission checking (`bench/gate.ts`).
 
 A verifier issues a challenge whose generator seed is committed but
 unrevealed: the puzzle instance has never existed publicly, so it cannot be
@@ -22,30 +23,81 @@ clankdar-attest keygen --out KEY.json
 clankdar-attest issue --key KEY.json --suite frontier --family automata --tier 6 \
     [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR]
 clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE \
-    [--out RECEIPT.json] [--clankdar DIR]
-clankdar-attest check RECEIPT.json [--deep] [--clankdar DIR]
+    [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR]
+clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR]
 ```
 
-`check` is fully offline: signature, key identity, seed commitment, response
-format, verdict rescore, and answer-before-expiry. `check --deep`, `issue`,
-and `verify` additionally call the canonical generator oracle —
-`bun bench/instance.ts` inside the clankdar repository located by
-`--clankdar`, `$CLANKDAR_DIR`, or `../clankdar` — so the recorded prompt and
-expected answer must regenerate exactly.
+`check` on a receipt is fully offline: signature, key identity, seed
+commitment, response format, verdict rescore, and answer-before-expiry.
+`check --deep`, `issue`, and `verify` additionally call the canonical
+generator oracle — `bun bench/instance.ts` inside the clankdar repository
+located by `--clankdar`, `$CLANKDAR_DIR`, or `../clankdar` — so the recorded
+prompt and expected answer must regenerate exactly. `check` on a
+`clankdar-gate-v1` admission always takes the deep path: every embedded
+receipt regenerates through the oracle, so the clankdar checkout is required.
 
 Keys are Ed25519 OKP JWKs (`{kty, crv, x, d}`), byte-compatible with the
-TypeScript `keygen`. Receipts verify across implementations: the Rust tests
-replay TypeScript-issued receipts, and `bun bench/attest.ts check` replays
-Rust-issued receipts.
+TypeScript `keygen`. Receipts and admissions verify across implementations:
+the Rust tests replay TypeScript-issued receipts and admissions, and
+`bun bench/attest.ts check` / `bun bench/gate.ts check` replay the Rust
+verdicts.
+
+## Gate admissions (clankdar-gate-v1)
+
+A gate session mints N sealed challenges under one session id and one shared
+deadline, drawn from a policy (`suite`, `cells`, `challenges`, `minPass`,
+`ttlSeconds`). A single submit consumes the session: each format-canonical
+response verifies into a receipt, and the issuer signs an admission binding
+the complete challenge list, the receipts, and the verdict
+(`passed >= minPass`).
+
+`check_admission` mirrors `checkAdmission` in `bench/gate.ts` step for step:
+envelope and payload shape, the embedded policy, per-challenge session
+binding / suite version / cell coverage / shared deadline / shared verifier
+key / `keyId` recompute / subject-context binding / unique ids, the payload
+signature, every embedded receipt through the deep regeneration check plus
+canonical equality with a listed challenge, one subject key across proofed
+receipts, and verdict arithmetic with `decidedAt <= expiresAt`. Challenge
+parsing tolerates unknown members, as the protocol requires for forward
+compatibility.
+
+### Subject binding (optional)
+
+A receipt may carry a `subjectProof` — `{publicKey, signature}` — binding the
+response to an Ed25519 key the respondent controls (the same JWK shape as
+verifier keys; `verify --subject-key KEY.json` mints one). The signature
+covers a domain-separated transcript: `["clankdar/subject/v1", sessionId,
+publicKey]` for session-bound challenges — one proof then serves the whole
+gate session — or `["clankdar/subject/v1", challengeId, nonce, publicKey]`
+standalone. `check_receipt`/`check_receipt_deep` replay embedded proofs
+exactly like `checkReceipt`: a present `subjectProof` must be well-formed
+`{publicKey, signature}` strings and must verify over the recorded
+challenge's transcript. `check_admission` additionally requires every
+proofed receipt in a session to share one `publicKey` — one subject per
+session. Receipts and admissions without proofs remain fully valid.
+
+**Documented divergence from the TypeScript checker.** `GatePolicy` (and the
+embedded policy inside an admission) validates cell *shape* —
+`family:tier` with the family-name charset — but does not check that the
+cell exists in the suite pool, where `parsePolicy` rejects unknown cells
+outright. The Rust side regenerates instances through the oracle rather than
+embedding the pools, so "cell exists" is enforced by receipt regeneration
+instead: a session cell that cannot regenerate can never produce a counted
+pass, only a failed challenge. A policy naming a nonexistent cell therefore
+parses here but is unpassable in practice — matching the spirit, not the
+letter, of the TypeScript floor.
 
 ## Honest scope
 
 A receipt attests that **one signed response satisfied one challenge inside
-one time window**. It does not prove that a model, an AI, or any particular
-principal produced the response — the answer can be outsourced or delegated.
-It is not a liveness credential, grants no authority, and provides no durable
-replay protection; consumers should issue fresh challenges and bind `context`
-to their own scope. It must never mint host/tool capability by itself.
+one time window**; with a `subjectProof` it additionally attests that the
+holder of that key signed the challenge's subject transcript. It does not
+prove that a model, an AI, or any particular principal produced the response
+— the answer can be outsourced or delegated, and a proof binds a key to a
+response, never a model or a person. It is not a liveness credential, grants
+no authority, and provides no durable replay protection; consumers should
+issue fresh challenges and bind `context` to their own scope. It must never
+mint host/tool capability by itself.
 
 Run tests with
 `cargo test --manifest-path prototypes/clankdar-attest/Cargo.toml --locked`.

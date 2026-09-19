@@ -1,5 +1,8 @@
 //! Protocol and scorer-parity tests for the clankdar-attest prototype.
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use ed25519_dalek::Signer;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use valhalla_clankdar_attest_prototype::*;
@@ -45,6 +48,8 @@ fn issue(now: OffsetDateTime) -> (Challenge, Ticket, GeneratedInstance) {
         tier: 6,
         ttl_seconds: Some(300),
         context: None,
+        subject: None,
+        session_id: None,
         now: Some(now),
     };
     let (challenge, ticket) = issue_challenge(&opts, 424242, &inst, &key).unwrap();
@@ -90,6 +95,7 @@ fn a_correct_response_produces_a_passing_receipt_that_replays() {
         "2454",
         &inst,
         &key,
+        None,
         Some(at("2026-09-18T00:01:00Z")),
     )
     .unwrap();
@@ -107,6 +113,7 @@ fn a_wrong_response_produces_a_truthful_failing_receipt() {
         "9999",
         &inst,
         &key,
+        None,
         Some(at("2026-09-18T00:01:00Z")),
     )
     .unwrap();
@@ -126,6 +133,7 @@ fn check_rejects_tampering_at_every_layer() {
         "2454",
         &inst,
         &key,
+        None,
         Some(at("2026-09-18T00:01:00Z")),
     )
     .unwrap();
@@ -180,6 +188,7 @@ fn a_receipt_signed_under_a_different_key_fails() {
         "2454",
         &inst,
         &other,
+        None,
         Some(at("2026-09-18T00:01:00Z")),
     )
     .unwrap();
@@ -190,13 +199,21 @@ fn a_receipt_signed_under_a_different_key_fails() {
 fn expired_tickets_refuse_verification_and_late_answers_fail_check() {
     let (_, ticket, inst) = issue(at("2026-09-18T00:00:00Z"));
     let key = signing();
-    let expired = verify_response(&ticket, "1", &inst, &key, Some(at("2026-09-18T00:10:00Z")));
+    let expired = verify_response(
+        &ticket,
+        "1",
+        &inst,
+        &key,
+        None,
+        Some(at("2026-09-18T00:10:00Z")),
+    );
     assert_eq!(expired.unwrap_err(), AttestError::Expired);
     let late = verify_response(
         &ticket,
         "2454",
         &inst,
         &key,
+        None,
         Some(at("2026-09-18T00:04:59Z")),
     )
     .unwrap();
@@ -218,6 +235,8 @@ fn bad_options_fail_at_issue() {
         tier: 6,
         ttl_seconds: Some(300),
         context: None,
+        subject: None,
+        session_id: None,
         now: Some(at("2026-09-18T00:00:00Z")),
     };
     assert!(issue_challenge(&base(), 1, &inst, &key).is_ok());
@@ -348,6 +367,205 @@ fn score_answer_matches_ts_semantics() {
     assert!(!s.pass && s.final_answer_match && s.format_only);
     let s = score_answer("42", "41", AnswerFormat::Integer);
     assert!(!s.pass && !s.final_answer_match && !s.format_only);
+}
+
+// --- subject binding (clankdar-attest-v1 §7) ---
+
+/// Issue a session-bound challenge, so its subject transcript is scoped to
+/// the gate session rather than the standalone challengeId + nonce.
+fn issue_session_challenge(now: OffsetDateTime) -> (Challenge, Ticket, GeneratedInstance) {
+    let key = signing();
+    let mut inst = instance(
+        "clankdar-frontier-v1",
+        "cryptarithm",
+        6,
+        424243,
+        "solve: CD + DC = EE",
+        "",
+    );
+    inst.answer = format!("{}", inst.seed % 10_000);
+    let opts = IssueOptions {
+        family: "cryptarithm",
+        tier: 6,
+        ttl_seconds: Some(300),
+        context: None,
+        subject: None,
+        session_id: Some("gs_aaaaaaaaaaaa".to_string()),
+        now: Some(now),
+    };
+    let (challenge, ticket) = issue_challenge(&opts, 424243, &inst, &key).unwrap();
+    (challenge, ticket, inst)
+}
+
+/// Re-sign a tampered payload with the session key, so a check isolates the
+/// tampered member rather than the payload signature.
+fn resign(payload: &serde_json::Value, receipt: &Receipt) -> Receipt {
+    let payload = canonical_json(payload);
+    let signature = URL_SAFE_NO_PAD.encode(signing().sign(payload.as_bytes()).to_bytes());
+    Receipt {
+        payload,
+        signature,
+        ..receipt.clone()
+    }
+}
+
+#[test]
+fn a_subject_proof_binds_the_receipt_and_replays() {
+    let (challenge, ticket, inst) = issue(at("2026-09-18T00:00:00Z"));
+    let key = signing();
+    let respondent = generate_verifier();
+    let proof = subject_proof_for(&challenge, &respondent).unwrap();
+    let receipt = verify_response(
+        &ticket,
+        "2454",
+        &inst,
+        &key,
+        Some(&proof),
+        Some(at("2026-09-18T00:01:00Z")),
+    )
+    .unwrap();
+    let body: ReceiptBody = serde_json::from_str(&receipt.payload).unwrap();
+    let embedded: SubjectProof =
+        serde_json::from_value(body.subject_proof.expect("proof embedded")).unwrap();
+    assert_eq!(embedded.public_key, proof.public_key);
+    assert_eq!(embedded.signature, proof.signature);
+    let result = check_receipt(&receipt);
+    assert!(result.ok, "check failed: {:?}", result.reason);
+    let deep = check_receipt_deep(&receipt, |sv, family, tier, seed| {
+        assert_eq!((family, tier, seed), ("cryptarithm", 6, 424242));
+        assert_eq!(sv, "clankdar-frontier-v1");
+        Ok(inst.clone())
+    });
+    assert!(deep.ok, "deep check failed: {:?}", deep.reason);
+}
+
+#[test]
+fn session_scoped_proofs_cover_the_whole_session() {
+    let (challenge, ticket, inst) = issue_session_challenge(at("2026-09-18T00:00:00Z"));
+    let key = signing();
+    let respondent = generate_verifier();
+    let proof = subject_proof_for(&challenge, &respondent).unwrap();
+    // The transcript is the session tuple, not the challenge tuple.
+    assert_eq!(
+        subject_transcript(&challenge, &proof.public_key),
+        canonical_json(&serde_json::json!([
+            "clankdar/subject/v1",
+            "gs_aaaaaaaaaaaa",
+            proof.public_key
+        ]))
+    );
+    let receipt = verify_response(
+        &ticket,
+        "3573",
+        &inst,
+        &key,
+        Some(&proof),
+        Some(at("2026-09-18T00:01:00Z")),
+    )
+    .unwrap();
+    assert!(check_receipt(&receipt).ok);
+    // A standalone-scoped signature over the same key does not verify here.
+    let standalone = subject_transcript(
+        &Challenge {
+            session_id: None,
+            ..challenge.clone()
+        },
+        &proof.public_key,
+    );
+    let respondent_key = signing_key(&respondent).unwrap();
+    let wrong_scope = SubjectProof {
+        public_key: proof.public_key.clone(),
+        signature: URL_SAFE_NO_PAD.encode(respondent_key.sign(standalone.as_bytes()).to_bytes()),
+    };
+    assert!(!check_subject_proof(&challenge, &wrong_scope));
+}
+
+#[test]
+fn minting_refuses_a_proof_that_does_not_verify() {
+    let (challenge, ticket, inst) = issue(at("2026-09-18T00:00:00Z"));
+    let key = signing();
+    // A proof minted for a different challenge must not embed.
+    let proof = subject_proof_for(&challenge, &generate_verifier()).unwrap();
+    let mut wrong_challenge = challenge.clone();
+    wrong_challenge.nonce = "differentnonce".to_string();
+    let foreign = subject_proof_for(&wrong_challenge, &generate_verifier()).unwrap();
+    assert!(check_subject_proof(&challenge, &proof));
+    assert!(!check_subject_proof(&challenge, &foreign));
+    assert!(verify_response(
+        &ticket,
+        "2454",
+        &inst,
+        &key,
+        Some(&foreign),
+        Some(at("2026-09-18T00:01:00Z")),
+    )
+    .is_err());
+}
+
+#[test]
+fn check_replays_embedded_proofs_strictly() {
+    let (challenge, ticket, inst) = issue(at("2026-09-18T00:00:00Z"));
+    let key = signing();
+    let proof = subject_proof_for(&challenge, &generate_verifier()).unwrap();
+    let receipt = verify_response(
+        &ticket,
+        "2454",
+        &inst,
+        &key,
+        Some(&proof),
+        Some(at("2026-09-18T00:01:00Z")),
+    )
+    .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&receipt.payload).unwrap();
+
+    // A swapped subject key makes the signature not cover the transcript.
+    let mut tampered = body.clone();
+    tampered["subjectProof"]["publicKey"] = serde_json::json!(generate_verifier().x);
+    let bad = resign(&tampered, &receipt);
+    let result = check_receipt(&bad);
+    assert_eq!(
+        result.reason.as_deref(),
+        Some("subject proof does not verify")
+    );
+
+    // A proof signed for another challenge fails the transcript binding.
+    let mut other = challenge.clone();
+    other.nonce = "othernonce00".to_string();
+    let foreign = subject_proof_for(&other, &generate_verifier()).unwrap();
+    let mut tampered = body.clone();
+    tampered["subjectProof"] = serde_json::to_value(&foreign).unwrap();
+    let bad = resign(&tampered, &receipt);
+    let result = check_receipt(&bad);
+    assert_eq!(
+        result.reason.as_deref(),
+        Some("subject proof does not verify")
+    );
+
+    // A present `subjectProof` must be well-formed — `null` counts as
+    // present (`!== undefined`), never as absent.
+    for member in [
+        serde_json::json!(null),
+        serde_json::json!("proof"),
+        serde_json::json!({"publicKey": proof.public_key}),
+        serde_json::json!({"publicKey": 5, "signature": "x"}),
+    ] {
+        let mut tampered = body.clone();
+        tampered["subjectProof"] = member.clone();
+        let bad = resign(&tampered, &receipt);
+        let result = check_receipt(&bad);
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("malformed subject proof"),
+            "{member}"
+        );
+    }
+
+    // Removing the member entirely keeps the receipt valid — proofs are
+    // additive, never required.
+    let mut unproofed = body.clone();
+    unproofed.as_object_mut().unwrap().remove("subjectProof");
+    let unsigned = resign(&unproofed, &receipt);
+    assert!(check_receipt(&unsigned).ok);
 }
 
 // --- TypeScript interop: receipts produced by bench/attest.ts ---
