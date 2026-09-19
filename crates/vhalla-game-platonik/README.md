@@ -59,7 +59,12 @@ fsync-lie case — replay reconstructs no open-height state, the journal
 frontier carries the decided truth) and a reported append failure pushed
 mid-run via the shared plan (the safety path halts by construction —
 deciding needs the vote appends the fault intercepts — and the clean
-restart resumes and certifies).
+restart resumes and certifies). `vhalla-cli`'s
+`remote_intake_decides_game_lanes_and_opens_a_quorum_session` qualifies the
+process boundary: two real `rooms node` subprocesses mesh over loopback,
+game commitments arrive through real `NODE_HOME/intake/` drops, and
+`quorum::open`/`prove` consume `VC2` certificates read out of the *other*
+process's journal.
 
 ## What a verified checkpoint proves
 

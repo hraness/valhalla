@@ -50,9 +50,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 getrandom = "0.3"
 serde_json = "1"
 sha2 = "0.10"
+vhalla-core = { path = "../vhalla-core" }
+vhalla-game-platonik = { path = "../vhalla-game-platonik", features = ["quorum"] }
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", features = ["fixture"] }
 vhalla-rooms-node = { path = "../vhalla-rooms-node" }
 vhalla-social-store = { path = "../vhalla-social-store" }
+vhalla-witness = { path = "../vhalla-witness" }
 
 [[bin]]
 name = "vhalla"

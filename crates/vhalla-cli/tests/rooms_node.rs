@@ -2232,6 +2232,222 @@ mod enabled {
         assert_eq!(upd["committed"].as_u64(), Some(1));
     }
 
+    /// Read one journaled (certificate, batch) pair out of a node home's
+    /// own `app/journal` store — the real `VC2` bytes a separate process
+    /// wrote, not a fixture.
+    fn read_decided(
+        home: &Path,
+        height: u64,
+    ) -> (
+        vhalla_rooms_consensus::CommitCertificate,
+        vhalla_rooms_consensus::Batch,
+    ) {
+        let journal =
+            vhalla_journal::Journal::new(home.join("app/journal"), vhalla_journal::FsStore);
+        journal.recover().unwrap();
+        let id = journal.at_height(height).unwrap().unwrap();
+        let bundle = journal.bundle(id).unwrap().unwrap();
+        let batch = vhalla_rooms_consensus::Batch::decode(bundle.field(3).unwrap()).unwrap();
+        (
+            vhalla_rooms_consensus::CommitCertificate {
+                bytes: bundle.field(0).unwrap().to_vec(),
+                height,
+                value_commitment: batch.value_id(),
+            },
+            batch,
+        )
+    }
+
+    /// Two real `rooms node` subprocesses mesh over loopback while `.body`
+    /// drops carry game-commitment lanes: the decided values journal `VC2`
+    /// certificates that verify under the committed two-key set, the
+    /// `SessionOpen` commitment read back cross-process opens a quorum
+    /// session, and a record commitment decided at the next height mints a
+    /// `prove` proof. Remote qualification ends at open + prove — the
+    /// full session drive (binds, seals, settlement, attestation) is the
+    /// in-process suite's job.
+    #[test]
+    fn remote_intake_decides_game_lanes_and_opens_a_quorum_session() {
+        use vhalla_core::{Epoch, RealmId, RoomId, Sequence};
+        use vhalla_game_platonik::ids::RulesetId;
+        use vhalla_game_platonik::manifest::{
+            GameManifest, GameSlot, MissingMember, SessionKind, SessionLimits, SlotRole,
+            VerificationAllowance,
+        };
+        use vhalla_game_platonik::quorum::{
+            commitment, open as quorum_open, open_commitment, prove,
+        };
+        use vhalla_game_platonik::record::{GameRecord, RecordKind};
+        use vhalla_game_platonik::session::{quorum_actor, seed_commitment};
+        use vhalla_game_platonik::wire::{
+            encode_game_event, Authority, EventBody, GameEvent, Player, SessionOpen,
+        };
+        use vhalla_rooms_consensus::{BatchBody, GameCommitmentKind};
+        use vhalla_rooms_node::cert::verify_canonical_certificate;
+        use vhalla_rooms_node::{RoomValidator, RoomValidatorSet, RoomValueId};
+        use vhalla_witness::hash::{ManifestHash, ProgramHash};
+        use vhalla_witness::manifest::WorkContract;
+        use vhalla_witness::platform::WorkAllowance;
+
+        let _mesh = mesh();
+        let temp = Temp::new();
+        let plan = fixture::plan(2, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..2u8)
+            .map(|i| Member {
+                seed: [60 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        let (socials, homes): (Vec<_>, Vec<_>) = (0..2)
+            .map(|i| member_dirs(&temp, i, &members[i], &members, &plan))
+            .unzip();
+        let nodes: Vec<Node> = (0..2)
+            .map(|i| spawn_member(&temp, i, &socials[i], &homes[i]))
+            .collect();
+
+        // The session the lane will decide: a structurally valid manifest
+        // and a quorum `SessionOpen`. `open.key()` fixes the session
+        // identity before any certificate exists, so every lane value is
+        // computable up front or once the session opens.
+        let scheme = ProgramHash::of(b"remote-game-scheme/v1").0;
+        let world = ManifestHash::of(b"remote-game-world/v1");
+        let host_salt = ProgramHash::of(b"remote-game-host-salt/v1").0;
+        let manifest = GameManifest {
+            ruleset: RulesetId::V1,
+            world,
+            slots: vec![GameSlot {
+                cell: 3,
+                role: SlotRole::Open { fallback: None },
+            }],
+            contract: WorkContract {
+                useful_floor: 0,
+                total_ceiling: 1_000,
+                require_passed: true,
+            },
+            loading_work: vec![1],
+            artifacts: Vec::new(),
+            limits: SessionLimits {
+                max_events: 64,
+                max_segments: 4,
+                replay: WorkAllowance { max_total: 1_000 },
+                verification: VerificationAllowance {
+                    max_replays: 4,
+                    max_work: 4_000,
+                    max_event_bytes: 1_024,
+                    max_artifact_bytes: 1_024,
+                },
+                missing_member: MissingMember::Pause,
+                kind: SessionKind::Live,
+            },
+            publisher: ProgramHash::of(b"remote-game-publisher/v1").0,
+        };
+        let open = SessionOpen {
+            realm: RealmId(3),
+            room: RoomId(4),
+            manifest: manifest.hash(),
+            ruleset: RulesetId::V1,
+            seed_commitment: seed_commitment(&host_salt, world),
+            authority: Authority::Quorum { scheme },
+            players: vec![Player {
+                key: *PrivateKey::from([71; 32]).public_key().as_bytes(),
+                slots: vec![3],
+            }],
+            epoch: Epoch(0),
+            nonce: ProgramHash::of(b"remote-game-nonce/v1").0,
+        };
+
+        // The certificate verify hook a consumer runs: the committed set
+        // both member configs carry.
+        let set = RoomValidatorSet::new(
+            members
+                .iter()
+                .map(|m| RoomValidator::new(PrivateKey::from(m.seed).public_key(), 1))
+                .collect(),
+        );
+        let verify = |bytes: &[u8], height: u64, value: &[u8; 32]| {
+            verify_canonical_certificate(bytes, height, &RoomValueId(*value), &set)
+        };
+
+        // Height 1: the SessionOpen commitment drops into member 0's
+        // intake in the native `.body` producer format and decides on
+        // both processes' journals.
+        let h1 = BatchBody {
+            time: plan.batches[&1].time,
+            evidence: Vec::new(),
+            records: Vec::new(),
+            games: vec![open_commitment(&open)],
+            eligible: None,
+        };
+        fs::write(homes[0].join("intake/h1.body"), h1.encode()).unwrap();
+        for home in &homes {
+            wait_for(Duration::from_secs(150), "h1 game lane to decide", || {
+                committed(home, 1)
+            });
+        }
+        let (c1, b1) = read_decided(&homes[0], 1);
+        assert!(verify(&c1.bytes, 1, &c1.value_commitment));
+        assert_eq!(b1.games, vec![open_commitment(&open)]);
+        let session = quorum_open(
+            manifest.clone(),
+            open.clone(),
+            RealmId(3),
+            &c1,
+            &b1,
+            0,
+            verify,
+        )
+        .unwrap();
+        // The same evidence at the wrong lane position cannot open.
+        assert!(quorum_open(manifest, open, RealmId(3), &c1, &b1, 1, verify).is_err());
+
+        // Height 2: an actor-authored event record's commitment — the
+        // quorum actor is unforgeable, so the record carries the enforced
+        // zero signature — drops into member 1's intake and decides.
+        let actor = quorum_actor(&scheme);
+        let event = GameEvent {
+            session: session.key(),
+            epoch: Epoch(0),
+            author: actor,
+            sequence: Sequence(1),
+            parents: Vec::new(),
+            body: EventBody::BindClose {
+                commits: Vec::new(),
+            },
+        };
+        let record = GameRecord::unsigned(
+            RecordKind::Event,
+            session.key(),
+            actor,
+            encode_game_event(&event),
+        )
+        .unwrap();
+        let lane = commitment(&session, &record).unwrap();
+        assert_eq!(lane.kind, GameCommitmentKind::Event);
+        let h2 = BatchBody {
+            time: plan.batches[&2].time,
+            evidence: Vec::new(),
+            records: Vec::new(),
+            games: vec![lane],
+            eligible: None,
+        };
+        fs::write(homes[1].join("intake/h2.body"), h2.encode()).unwrap();
+        for home in &homes {
+            wait_for(Duration::from_secs(150), "h2 game lane to decide", || {
+                committed(home, 2)
+            });
+        }
+
+        // Member 1's own journal serves h2: cert bytes written by a
+        // separate process, verified under the same committed set, and
+        // the record's commitment at lane position 0 mints a proof.
+        let (c2, b2) = read_decided(&homes[1], 2);
+        assert!(verify(&c2.bytes, 2, &c2.value_commitment));
+        assert_eq!(b2.games, vec![lane]);
+        let _proof = prove(&session, &record, &c2, &b2, 0, verify).unwrap();
+        drop(nodes);
+    }
+
     /// Run one `vhalla social` command and unwrap its JSON object; the
     /// commands are fast one-shot invocations, no streaming needed.
     fn social_ok(store: &Path, command: &str, args: &[&str]) -> serde_json::Value {
