@@ -50,8 +50,15 @@ jobs:
           - name: rooms-node
             packages: -p vhalla-rooms-node
             args: -- --skip wal_tail_stays_bounded_over_long_run --skip validator_set_rotates_at_activation_boundary --skip decided_history_survives_interleaved_restarts --skip sweep_decided_retires_exactly_dead_state --skip tombstone_ids_stay_injected_across_drawn_slots --skip wal_append_failure_safety_halts_then_recovers
+          # The cli live-mesh suite spawns real `rooms node` subprocesses;
+          # its longest poles run in a dedicated lane while the residual
+          # lane --skips them, same split discipline as rooms-node above.
+          - name: cli-heavy
+            packages: -p vhalla-cli
+            args: -- enabled::live_mesh_soak_duplicate_churn_rotation_converges enabled::live_mesh_full_restart_resumes_mid_flight enabled::live_mesh_rotates_validator_set_mid_flight
           - name: cli
             packages: -p vhalla-cli
+            args: -- --skip enabled::live_mesh_soak_duplicate_churn_rotation_converges --skip enabled::live_mesh_full_restart_resumes_mid_flight --skip enabled::live_mesh_rotates_validator_set_mid_flight
           - name: stateful-storage
             packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
           - name: remaining

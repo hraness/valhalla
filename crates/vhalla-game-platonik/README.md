@@ -68,6 +68,11 @@ process's journal. `remote_game_lanes_cross_a_healed_link_partition` adds a
 real mid-flight TCP partition to that mesh: every directed edge runs through
 a test pipe, a live member is isolated while exactly-quorum peers decide,
 and post-heal value sync — no restart — serves it the journaled evidence.
+`remote_partitioned_members_resync_decided_lanes_under_churn` pushes the same
+boundary across repeated cycles: an isolated member misses three
+consecutively decided lanes and resyncs all of them on heal, then a second
+member survives the same partition/resync cycle on the next height — each
+resynced journal serving verified certificates and `prove` evidence.
 
 ## What a verified checkpoint proves
 
