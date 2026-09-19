@@ -403,15 +403,23 @@ One workable setup for a group that trusts each other's machines:
    of every shared field.
 3. Each member runs `vhalla rooms node-init NODE_HOME --network
    network.json --node-key SEED --port N --listen LISTEN_IP --peers
-   HOST:PORT,...`, which writes `NODE_HOME/node.json` (never
-   overwriting), creates `NODE_HOME/intake/`, and prints the same
-   `genesis` fingerprint plus `node_key_votes_from` — the height their
-   key starts voting, or `null` with a warning if the operator has not
-   listed their `public_key` yet. On unix the scaffolded home is
-   owner-private: a freshly created `NODE_HOME` and `intake/` are mode
-   0700, and `node.json` — which carries the seed — is mode 0600 (a
-   pre-existing home keeps the operator's own mode, and `node-update`
-   restates 0600 on every rewrite).
+   [KEY64@]HOST:PORT,... [--peers-only true]`, which writes
+   `NODE_HOME/node.json` (never overwriting), creates
+   `NODE_HOME/intake/`, and prints the same `genesis` fingerprint plus
+   `node_key_votes_from` — the height their key starts voting, or
+   `null` with a warning if the operator has not listed their
+   `public_key` yet. A `KEY64@` prefix pins the peer's consensus
+   public key (the `keygen` output members already exchange for the
+   validator list): the node derives the peer's deterministic libp2p
+   identity and the Noise handshake verifies it, so a hijacked or
+   misrouted `host:port` cannot impersonate a member. `peers_only`
+   additionally refuses connections from any unconfigured peer — a
+   closed member mesh — and requires every peer entry to carry a pin.
+   On unix the scaffolded home is owner-private: a freshly created
+   `NODE_HOME` and `intake/` are mode 0700, and `node.json` — which
+   carries the seed — is mode 0600 (a pre-existing home keeps the
+   operator's own mode, and `node-update` restates 0600 on every
+   rewrite).
 4. Before booting, each member runs `vhalla rooms node-check
    SOCIAL_STORE NODE_HOME REALM --config NODE_HOME/node.json`, which
    runs the identical decode path as `node` — config parse, genesis
@@ -460,9 +468,12 @@ reports the activation height.
 
 A non-loopback `listen` keeps malachite's default per-IP connection
 bound rather than the single-host ceiling lift used for local test
-meshes. Persistent peers are dialed over plain libp2p TCP: reachability,
-firewalls and transport encryption remain the operator's responsibility,
-which is why a private network is the intended first deployment.
+meshes. Persistent peers are dialed over libp2p TCP with Noise
+encryption; `KEY64@` pins authenticate the remote member's consensus
+identity on every connection, and `peers_only` closes the mesh to the
+configured set. Reachability and firewalls remain the operator's
+responsibility, which is why a private network is the intended first
+deployment.
 
 ### Friends-and-family operator runbook
 
@@ -542,7 +553,11 @@ vhalla rooms tailcat plan \
 
 Run `start-tailcat.sh` on each host after sharing the printed `tc://`
 addresses out of band, then pass the printed `--peers` CSV to the next
-member's `node-init`. If you already ran `node-init`, the `peers` line is
+member's `node-init`. The planner derives each member's consensus public
+key from its `node.json` and emits `KEY64@HOST:PORT` pins, so the
+suggested config authenticates every tunnel endpoint's identity out of
+the box — add `--peers-only true` at `node-init` for a closed member
+mesh. If you already ran `node-init`, the `peers` line is
 in `node/node.json`; edit it or re-run `node-init` to the same directory.
 Check whether all serves and forwards are actually listening with:
 
@@ -718,8 +733,10 @@ the local forward ports as its `peers`:
 tailcat serve NODE_PORT
 
 # Member j, once per other member i: bind a local port that tunnels to
-# member i's node port, then put 127.0.0.1:FWD_PORT in `peers` (or pass
-# it to `node-init --peers`).
+# member i's node port, then put MEMBER_I_KEY64@127.0.0.1:FWD_PORT in
+# `peers` (or pass it to `node-init --peers`). The KEY64 pin matters
+# here: the local forward port is only a path, so the Noise handshake
+# against member i's pinned libp2p identity is what proves who answered.
 tailcat forward TC_ADDR_OF_MEMBER_I FWD_PORT:NODE_PORT_OF_MEMBER_I
 ```
 
@@ -727,7 +744,8 @@ The node's proposal transport is already sized for this path — 768-byte
 parts paced 20 ms apart, qualified over a DERP-relayed tunnel — so no
 config change is needed, and `VHALLA_TAILCAT=1 cargo test -p vhalla-cli
 --test rooms_node live_mesh_decides_over_tailcat_tunnels` re-qualifies a
-four-member mesh deciding through real tunnels on this machine.
+four-member mesh deciding through real tunnels on this machine, with
+every tunnel peer pinned.
 
 ## Room-directory terminal companion
 

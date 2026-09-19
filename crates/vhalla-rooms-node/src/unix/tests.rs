@@ -2556,7 +2556,17 @@ fn eligible_intake_file_queues_a_config_transition() {
 /// bound. Peers keep their explicit `host:port` targets either way.
 #[test]
 fn service_config_binds_listen_and_bounds_per_ip() {
-    let local = service_config("svc", "127.0.0.1", 5000, &[("100.64.1.2".to_owned(), 5001)]);
+    let local = service_config(
+        "svc",
+        "127.0.0.1",
+        5000,
+        &[PeerSpec {
+            host: "100.64.1.2".to_owned(),
+            port: 5001,
+            key: None,
+        }],
+        false,
+    );
     assert_eq!(
         local.consensus.p2p.discovery.max_connections_per_ip,
         usize::MAX
@@ -2569,9 +2579,10 @@ fn service_config_binds_listen_and_bounds_per_ip() {
         local.consensus.p2p.persistent_peers[0].to_string(),
         "/ip4/100.64.1.2/tcp/5001"
     );
+    assert!(!local.consensus.p2p.persistent_peers_only);
 
     for listen in ["192.0.2.10", "0.0.0.0", "100.64.1.7"] {
-        let config = service_config("svc", listen, 5000, &[]);
+        let config = service_config("svc", listen, 5000, &[], false);
         assert_eq!(
             config.consensus.p2p.discovery.max_connections_per_ip,
             DiscoveryConfig::default().max_connections_per_ip,
@@ -2584,6 +2595,33 @@ fn service_config_binds_listen_and_bounds_per_ip() {
             .to_string()
             .contains(listen));
     }
+}
+
+/// A pinned peer names the peer node's consensus key: the persistent
+/// multiaddr carries the `/p2p/` component of the peer id the remote's
+/// network keypair deterministically derives from that same key — the
+/// derivation is one source of truth (`net_peer_id`), so the pin
+/// authenticates exactly the identity the peer will present.
+#[test]
+fn service_config_pins_peer_identity_and_closes_the_mesh() {
+    let key = PrivateKey::from([7; 32]).public_key();
+    let config = service_config(
+        "svc",
+        "127.0.0.1",
+        5000,
+        &[PeerSpec {
+            host: "100.64.1.2".to_owned(),
+            port: 5001,
+            key: Some(key),
+        }],
+        true,
+    );
+    let expected = format!("/ip4/100.64.1.2/tcp/5001/p2p/{}", net_peer_id(&key));
+    assert_eq!(
+        config.consensus.p2p.persistent_peers[0].to_string(),
+        expected
+    );
+    assert!(config.consensus.p2p.persistent_peers_only);
 }
 
 /// An `App` wired to a fresh store dir for unit-level state tests.

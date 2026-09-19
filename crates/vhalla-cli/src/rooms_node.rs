@@ -14,7 +14,8 @@ use vhalla_core::RealmId;
 use vhalla_journal::Store as _;
 use vhalla_rooms::{registry::DirectoryPolicy, DirectoryId};
 use vhalla_rooms_node::{
-    service_config, NodeSpec, PrivateKey, PublicKey, RoomNode, RoomValidator, RoomValidatorSet,
+    net_peer_id, service_config, NodeSpec, PeerSpec, PrivateKey, PublicKey, RoomNode,
+    RoomValidator, RoomValidatorSet,
 };
 use vhalla_social::archive::Limits;
 use vhalla_social::OwnerId;
@@ -38,9 +39,20 @@ struct NodeFile {
     /// single-host ceiling lift.
     #[serde(default)]
     listen: Option<String>,
-    /// Persistent peers as `host:port` strings.
+    /// Persistent peers as `host:port` strings, optionally pinned to the
+    /// peer node's consensus public key as `KEY64@host:port` — the same
+    /// key `validators[].key` carries for a validator peer. A pinned
+    /// peer is dialed with its deterministic libp2p peer id on the
+    /// multiaddr, so the connection authenticates that identity during
+    /// the Noise handshake; an unpinned peer accepts whatever answers.
     #[serde(default)]
     peers: Vec<String>,
+    /// Close the mesh: reject connections to and from peers outside the
+    /// persistent set. Requires every `peers` entry to carry a `KEY@`
+    /// pin — an unpinned address cannot authenticate an inbound peer, so
+    /// the decode fails rather than silently never admitting it.
+    #[serde(default)]
+    peers_only: bool,
     /// Optional shared realm, 32 hex characters. When present it must
     /// equal the REALM positional — `node-init` writes it so a member
     /// cannot boot against the wrong realm by argument.
@@ -110,16 +122,37 @@ struct LimitsFile {
     pending_per_signer: usize,
 }
 
-fn peers(raw: &[String]) -> Result<Vec<(String, usize)>, String> {
+/// A peer entry is `host:port`, optionally pinned to the peer node's
+/// consensus public key as `KEY64@host:port` — the pin names the same
+/// Ed25519 key `validators[].key` carries, never the libp2p peer id
+/// itself: the node derives the peer id from the key (`net_peer_id`),
+/// so the pin cannot drift from the identity the remote's signed
+/// validator proof binds to its consensus key.
+fn peers(raw: &[String]) -> Result<Vec<PeerSpec>, String> {
     raw.iter()
         .map(|p| {
-            let (host, port) = p
+            let (pin, addr) = match p.split_once('@') {
+                Some((key, addr)) => (Some(key), addr),
+                None => (None, p.as_str()),
+            };
+            let (host, port) = addr
                 .rsplit_once(':')
-                .ok_or_else(|| format!("peer {p:?} must be host:port"))?;
-            Ok((
-                host.to_owned(),
-                port.parse().map_err(|_| format!("peer {p:?} port"))?,
-            ))
+                .ok_or_else(|| format!("peer {p:?} must be host:port or KEY@host:port"))?;
+            if host.is_empty() || host.contains('@') {
+                return Err(format!("peer {p:?} must be host:port or KEY@host:port"));
+            }
+            let key = pin
+                .map(|k| {
+                    let bytes = hex32(k).map_err(|_| format!("peer {p:?} key must be 64 hex"))?;
+                    PublicKey::from_bytes(bytes)
+                        .map_err(|_| format!("peer {p:?} key is not an Ed25519 public key"))
+                })
+                .transpose()?;
+            Ok(PeerSpec {
+                host: host.to_owned(),
+                port: port.parse().map_err(|_| format!("peer {p:?} port"))?,
+                key,
+            })
         })
         .collect()
 }
@@ -133,6 +166,9 @@ struct Loaded {
     node_key: PrivateKey,
     /// Activation height → sorted, deduplicated validator set.
     validator_sets: BTreeMap<u64, RoomValidatorSet>,
+    /// Parsed persistent peers, each optionally pinned to the peer
+    /// node's consensus public key.
+    peers: Vec<PeerSpec>,
     limits: Limits,
     policy: DirectoryPolicy,
     eligible: Vec<OwnerId>,
@@ -327,6 +363,9 @@ struct DecodedNode {
     node_key: PrivateKey,
     /// Activation height → sorted, deduplicated validator set.
     validator_sets: BTreeMap<u64, RoomValidatorSet>,
+    /// Parsed persistent peers, each optionally pinned to the peer
+    /// node's consensus public key.
+    peers: Vec<PeerSpec>,
     limits: Limits,
     policy: DirectoryPolicy,
     eligible: Vec<OwnerId>,
@@ -380,9 +419,16 @@ fn decode_node(file: &NodeFile) -> Result<DecodedNode, String> {
         return Err("config names too many eligible owners".into());
     }
     let directory = DirectoryId::from_bytes(hex32(&file.directory)?);
+    let peers = peers(&file.peers)?;
+    if file.peers_only && peers.iter().any(|p| p.key.is_none()) {
+        return Err(
+            "peers_only requires every peer to carry a KEY@host:port pin - an unpinned address cannot authenticate an inbound peer".into(),
+        );
+    }
     Ok(DecodedNode {
         node_key,
         validator_sets,
+        peers,
         limits,
         policy,
         eligible,
@@ -423,6 +469,7 @@ fn load(args: &Args) -> Result<Loaded, String> {
         file,
         node_key: decoded.node_key,
         validator_sets: decoded.validator_sets,
+        peers: decoded.peers,
         limits: decoded.limits,
         policy: decoded.policy,
         eligible: decoded.eligible,
@@ -449,7 +496,8 @@ pub fn run(args: &Args) -> Result<(), String> {
             "vhalla-rooms-node",
             loaded.file.listen.as_deref().unwrap_or("127.0.0.1"),
             loaded.file.port,
-            &peers(&loaded.file.peers)?,
+            &loaded.peers,
+            loaded.file.peers_only,
         ),
         node_key: loaded.node_key,
         validator_sets: loaded.validator_sets,
@@ -584,12 +632,21 @@ pub fn check(args: &Args) -> Result<(), String> {
             "node_key is not in any validator set - the node follows but never votes".to_string(),
         );
     }
+    let pinned = loaded.peers.iter().filter(|p| p.key.is_some()).count();
+    for p in loaded.peers.iter().filter(|p| p.key.is_none()) {
+        warnings.push(format!(
+            "peer {}:{} has no key pin - its transport identity is not authenticated on dial",
+            p.host, p.port
+        ));
+    }
     println!(
         "{}",
         json::object(vec![
             ("genesis", json::id(&genesis)),
             ("archive", json::id(loaded.archive.root().as_bytes())),
             ("validator_sets", json::array(sets_json)),
+            ("public_key", json::string(&json::hex(public.as_bytes()))),
+            ("node_peer_id", json::string(&net_peer_id(&public))),
             (
                 "node_key_votes_from",
                 votes_from.map_or("null".into(), |f| f.to_string())
@@ -600,7 +657,9 @@ pub fn check(args: &Args) -> Result<(), String> {
                 json::string(loaded.file.listen.as_deref().unwrap_or("127.0.0.1"))
             ),
             ("port", loaded.file.port.to_string()),
-            ("peers", loaded.file.peers.len().to_string()),
+            ("peers", loaded.peers.len().to_string()),
+            ("pinned_peers", pinned.to_string()),
+            ("peers_only", loaded.file.peers_only.to_string()),
             (
                 "warnings",
                 json::array(warnings.iter().map(|w| json::string(w)))
@@ -895,9 +954,20 @@ pub fn network_init(raw: &[OsString]) -> Result<(), String> {
 /// `intake/` always, and `node.json` at 0600 — it carries the seed.
 ///
 /// `vhalla rooms node-init NODE_HOME --network FILE --port N
-///  [--node-key HEX64] [--listen HOST] [--peers HOST:PORT,...]`
+///  [--node-key HEX64] [--listen HOST] [--peers [KEY64@]HOST:PORT,...]
+///  [--peers-only true]`
 pub fn node_init(raw: &[OsString]) -> Result<(), String> {
-    let (positional, flags) = flags(raw, &["network", "node-key", "port", "listen", "peers"])?;
+    let (positional, flags) = flags(
+        raw,
+        &[
+            "network",
+            "node-key",
+            "port",
+            "listen",
+            "peers",
+            "peers-only",
+        ],
+    )?;
     if positional.len() != 1 {
         return Err("node-init takes exactly one NODE_HOME".into());
     }
@@ -941,16 +1011,21 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     let peer_list: Vec<String> = match flags.get("peers") {
         None => Vec::new(),
         Some(csv) if csv.is_empty() => Vec::new(),
-        Some(csv) => csv
-            .split(',')
-            .map(|p| {
-                let (_, port) = p.rsplit_once(':').ok_or("peer must be host:port")?;
-                port.parse::<usize>()
-                    .map_err(|_| "peer port must be numeric")?;
-                Ok(p.to_owned())
-            })
-            .collect::<Result<_, String>>()?,
+        Some(csv) => csv.split(',').map(|p| p.to_owned()).collect(),
     };
+    // The scaffold validates through the same parser `node`/`node-check`
+    // decode — a malformed entry or a non-Ed25519 pin fails here, not at
+    // first boot.
+    let parsed_peers = peers(&peer_list)?;
+    let peers_only = match flags.get("peers-only").map(String::as_str) {
+        None => false,
+        Some("true") => true,
+        Some("false") => false,
+        Some(_) => return Err("--peers-only must be true or false".into()),
+    };
+    if peers_only && parsed_peers.iter().any(|p| p.key.is_none()) {
+        return Err("--peers-only requires every peer to carry a KEY@host:port pin".into());
+    }
     let genesis = genesis_fingerprint(
         network.realm,
         &network.directory,
@@ -967,6 +1042,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
         port,
         listen.as_deref(),
         &peer_list,
+        peers_only,
         &network,
     );
     // node.json carries the validator seed and intake/ is the producer
@@ -1061,6 +1137,7 @@ fn node_json(
     port: usize,
     listen: Option<&str>,
     peers: &[String],
+    peers_only: bool,
     network: &Network,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -1068,6 +1145,7 @@ fn node_json(
         "port": port,
         "listen": listen.unwrap_or("127.0.0.1"),
         "peers": peers,
+        "peers_only": peers_only,
         "realm": json::hex(&network.realm.0.to_be_bytes()),
         "validators": network
             .validator_sets
@@ -1273,6 +1351,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
         file.port,
         file.listen.as_deref(),
         &file.peers,
+        file.peers_only,
         &network,
     );
     write_node_json(&target, &node)?;

@@ -22,6 +22,9 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct NodeForTailcat {
+    /// Ed25519 consensus seed, 64 hex characters — the planner derives
+    /// the member's public key to pin its peer entries.
+    node_key: String,
     /// libp2p TCP listen port.
     port: u16,
     /// libp2p TCP listen host.
@@ -40,6 +43,11 @@ fn default_listen() -> String {
 struct Member {
     name: String,
     node_json: String,
+    /// The member's consensus public key, hex — the pin its peer
+    /// entries carry so the dial through the tunnel authenticates the
+    /// member's deterministic libp2p identity, not just the forward
+    /// port.
+    key: String,
     port: u16,
     listen: String,
 }
@@ -120,6 +128,8 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
         }
         let node: NodeForTailcat =
             serde_json::from_slice(&raw).map_err(|e| format!("{path} JSON: {e}"))?;
+        let public =
+            vhalla_rooms_node::PrivateKey::from(crate::rooms::hex32(&node.node_key)?).public_key();
         let name = Path::new(&path)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -128,6 +138,7 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
         members.push(Member {
             name,
             node_json: path,
+            key: crate::json::hex(public.as_bytes()),
             port: node.port,
             listen: node.listen,
         });
@@ -194,6 +205,10 @@ fn emit_json(members: &[Member], base: u16) -> Result<(), String> {
             })
         })
         .collect();
+    // Peers are pinned to each member's consensus key: the dial through
+    // the tunnel authenticates the deterministic libp2p identity behind
+    // the forward port, so a stolen or misrouted port cannot impersonate
+    // the member.
     let peers: Vec<String> = members
         .iter()
         .enumerate()
@@ -202,7 +217,7 @@ fn emit_json(members: &[Member], base: u16) -> Result<(), String> {
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| *j != i)
-                .map(|(j, _)| format!("127.0.0.1:{}", base + (i as u16) * 100 + j as u16))
+                .map(|(j, m)| format!("{}@127.0.0.1:{}", m.key, base + (i as u16) * 100 + j as u16))
                 .collect();
             json::object(vec![
                 ("index", i.to_string()),
@@ -252,13 +267,14 @@ fn emit_shell(members: &[Member], base: u16) -> Result<(), String> {
             ));
         }
     }
-    lines.push("# Suggested peers for each node.json".into());
+    lines.push("# Suggested peers for each node.json (KEY@host:port pins authenticate".into());
+    lines.push("# the member identity through the tunnel)".into());
     for (i, m) in members.iter().enumerate() {
         let list: Vec<String> = members
             .iter()
             .enumerate()
             .filter(|(j, _)| *j != i)
-            .map(|(j, _)| format!("127.0.0.1:{}", base + (i as u16) * 100 + j as u16))
+            .map(|(j, m)| format!("{}@127.0.0.1:{}", m.key, base + (i as u16) * 100 + j as u16))
             .collect();
         lines.push(format!(
             "# {name} (node: {json}): --peers {peers}",
