@@ -169,6 +169,11 @@ fn replay_vector(name: &str) {
         }
         seals += 1;
         let verified = verified.expect("a seal produces a verified checkpoint");
+        assert_eq!(
+            verified.final_receipt_hash().map(|hash| hash.0),
+            is_final.then(|| hash32(&fields, "receipt_hash")),
+            "{name}: final receipt comes from the receiver's charged replay"
+        );
         // The committed checkpoint bytes hash to the committed id and to the
         // one the receiver reproduced from replay alone.
         let checkpoint_raw = bytes(&fields, &at("checkpoint"));
@@ -207,4 +212,38 @@ fn the_replay_session_vector_is_frozen() {
 #[test]
 fn the_live_session_vector_is_frozen() {
     replay_vector("game-v1-session-live.txt");
+}
+
+#[test]
+fn receiver_step_limit_refuses_before_admission_and_preserves_its_frontier() {
+    let fields = parse(include_str!("vectors/game-v1-session-replay.txt"));
+    let manifest = decode_game_manifest(&bytes(&fields, "game_manifest")).unwrap();
+    let open = decode_session_open(&bytes(&fields, "session_open")).unwrap();
+    let realm = open.realm;
+    let mut session = Session::open(manifest, open, realm).unwrap();
+    let record = GameRecord::decode(&bytes(&fields, "record[0].record")).unwrap();
+    let mut limits = policy();
+    limits.max_steps = 1;
+    let mut receiver = Receiver::new(PlatonikV1, limits);
+    assert!(matches!(
+        receiver.admit(&mut session, &record, 2),
+        Err(vhalla_game_platonik::receiver::ReceiverError::BudgetExhausted)
+    ));
+    assert_eq!(receiver.step(), 0);
+    assert!(receiver.admit(&mut session, &record, 1).is_ok());
+    assert_eq!(receiver.step(), 1);
+    // A second session shares the receiver's logical deadline. Starting
+    // it does not reset that clock or silently give it a fresh interval.
+    let other = parse(include_str!("vectors/game-v1-session-live.txt"));
+    let manifest = decode_game_manifest(&bytes(&other, "game_manifest")).unwrap();
+    let open = decode_session_open(&bytes(&other, "session_open")).unwrap();
+    let realm = open.realm;
+    let mut other_session = Session::open(manifest, open, realm).unwrap();
+    assert_ne!(session.key(), other_session.key());
+    let record = GameRecord::decode(&bytes(&other, "record[0].record")).unwrap();
+    assert!(matches!(
+        receiver.admit(&mut other_session, &record, 2),
+        Err(vhalla_game_platonik::receiver::ReceiverError::BudgetExhausted)
+    ));
+    assert!(receiver.admit(&mut other_session, &record, 1).is_ok());
 }

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use vhalla_witness::hash::{ManifestHash, ProgramHash};
+use vhalla_witness::hash::{ManifestHash, ProgramHash, ReceiptHash};
 use vhalla_witness::manifest::ValidManifest;
 use vhalla_witness::platform::{ReceiptBinding, WorkAllowance};
 use vhalla_witness::vm::RunStatus;
@@ -24,7 +24,9 @@ pub struct ReceiverPolicy {
     pub max_replays: u32,
     /// Most replay work per session.
     pub max_work: u64,
-    /// Most steps a session may consume.
+    /// Largest accepted receiver-wide logical step (inclusive).
+    /// This bounds the caller-supplied monotone clock, not the number of
+    /// admission attempts. Every session handled by this receiver shares it.
     pub max_steps: u64,
 }
 
@@ -65,6 +67,7 @@ pub struct VerifiedCheckpoint {
     work: WorkSummary,
     passed: bool,
     is_final: bool,
+    final_receipt_hash: Option<ReceiptHash>,
 }
 
 impl VerifiedCheckpoint {
@@ -97,6 +100,12 @@ impl VerifiedCheckpoint {
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.passed
+    }
+    /// Hash of the final receipt produced by this receiver's charged replay.
+    /// Absent for intermediate seals; reading it never performs more work.
+    #[must_use]
+    pub const fn final_receipt_hash(&self) -> Option<ReceiptHash> {
+        self.final_receipt_hash
     }
     /// Whether this was the final seal.
     #[must_use]
@@ -151,6 +160,9 @@ impl<E: GameEngine> Receiver<E> {
     fn advance(&mut self, step: u64) -> Result<(), ReceiverError> {
         if step < self.step {
             return Err(ReceiverError::StepNotMonotone);
+        }
+        if step > self.policy.max_steps {
+            return Err(ReceiverError::BudgetExhausted);
         }
         self.step = step;
         Ok(())
@@ -365,6 +377,7 @@ impl<E: GameEngine> Receiver<E> {
             work: evidence.work,
             passed: evidence.passed,
             is_final: plan.is_final,
+            final_receipt_hash: plan.is_final.then(|| evidence.receipt.hash()),
         })
     }
     /// Current step.
