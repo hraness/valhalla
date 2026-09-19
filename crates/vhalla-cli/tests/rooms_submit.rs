@@ -445,12 +445,21 @@ mod enabled {
             0o600
         );
         let restored = temp.path("alice-key-restored");
+        let backup_text = std::str::from_utf8(&backup.stdout).unwrap();
+        let mnemonic = backup_text
+            .lines()
+            .find_map(|line| line.strip_prefix("mnemonic "))
+            .expect("backup contains the mnemonic line");
         let restore = run_input(
             "identity",
             &["restore", path(&restored)],
-            Some(&backup.stdout),
+            Some(mnemonic.as_bytes()),
         );
-        assert!(restore.status.success());
+        assert!(
+            restore.status.success(),
+            "{}",
+            String::from_utf8_lossy(&restore.stderr)
+        );
         assert_eq!(
             run("identity", &["show", path(&restored)]).stdout,
             run("identity", &["show", path(&alice.key)]).stdout
