@@ -1,18 +1,24 @@
 name: Release
 
-# Tag-driven binary releases. The artifacts are unbundled developer
-# binaries: `vhalla` plus the `vhalla-menubar` companion it resolves as a
-# sibling. Nothing here signs, packages, or notarizes — and the whole lane
-# runs on the repository's GITHUB_TOKEN with no interactive step.
+# Every tag reuses the complete Rust/site gate at that exact commit. Builders
+# stage all artifacts; only the publisher can write a GitHub release.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  validate:
+    uses: ./.github/workflows/rust.yml
+
   cli:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -22,70 +28,92 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - name: Build vhalla
-        run: cargo build --release --locked -p vhalla-cli --all-features
+        run: cargo build --release --locked -p vhalla-cli --all-features --target "${{ matrix.target }}"
       - name: Smoke check
-        run: ./target/release/vhalla --help
+        run: ./target/${{ matrix.target }}/release/vhalla --help
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          out="valhalla-${tag}-${{ matrix.target }}"
+          out="valhalla-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$out"
-          cp target/release/vhalla "$out/"
+          cp "target/${{ matrix.target }}/release/vhalla" "$out/"
           tar -czf "${out}.tar.gz" "$out"
           shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --generate-notes
-          gh release upload "$tag" \
-            "valhalla-${tag}-${{ matrix.target }}.tar.gz" \
-            "valhalla-${tag}-${{ matrix.target }}.tar.gz.sha256" \
-            --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-cli-${{ matrix.target }}
+          path: |
+            valhalla-*.tar.gz
+            valhalla-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
 
   menubar:
+    needs: validate
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
       - name: Build vhalla-menubar
-        run: cargo build --release --locked --manifest-path desktop/Cargo.toml
+        run: cargo build --release --locked --manifest-path desktop/Cargo.toml --target aarch64-apple-darwin
       - name: Smoke check
-        # A GUI binary cannot run --help headless; verify the artifact is a
-        # nonzero arm64 Mach-O executable before it ships.
+        # The GUI cannot run --help headless; verify its executable format.
         run: |
           set -euo pipefail
-          bin=desktop/target/release/vhalla-menubar
+          bin=desktop/target/aarch64-apple-darwin/release/vhalla-menubar
           test -s "$bin"
           file "$bin" | grep -q "Mach-O 64-bit executable arm64"
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          out="valhalla-menubar-${tag}-aarch64-apple-darwin"
+          out="valhalla-menubar-${GITHUB_REF_NAME}-aarch64-apple-darwin"
           mkdir "$out"
-          cp desktop/target/release/vhalla-menubar "$out/"
+          cp desktop/target/aarch64-apple-darwin/release/vhalla-menubar "$out/"
           tar -czf "${out}.tar.gz" "$out"
           shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
-      - name: Publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-menubar-aarch64-apple-darwin
+          path: |
+            valhalla-menubar-*.tar.gz
+            valhalla-menubar-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [validate, cli, menubar]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      checks: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify gates, stage draft, and publish complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --generate-notes
-          gh release upload "$tag" \
-            "valhalla-menubar-${tag}-aarch64-apple-darwin.tar.gz" \
-            "valhalla-menubar-${tag}-aarch64-apple-darwin.tar.gz.sha256" \
-            --clobber
+          GH_REPO: ${{ github.repository }}
+        run: python3 .github/scripts/publish_release.py release-assets

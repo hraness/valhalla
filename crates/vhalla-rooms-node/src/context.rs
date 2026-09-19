@@ -405,16 +405,85 @@ pub struct RoomValidatorSet {
 }
 
 impl RoomValidatorSet {
-    /// Builds a sorted validator set.
+    /// Builds a sorted, address-deduplicated validator set. Conflicting
+    /// duplicates retain the greatest power; use `try_new` for configuration
+    /// admission, which rejects conflicting powers and unsafe totals.
     pub fn new(mut validators: Vec<RoomValidator>) -> Self {
         validators.sort_by(|a, b| {
             b.power
                 .cmp(&a.power)
                 .then_with(|| a.address.cmp(&b.address))
         });
-        validators.dedup_by(|a, b| a.address == b.address);
+        let mut seen = std::collections::BTreeSet::new();
+        validators.retain(|validator| seen.insert(validator.address));
         RoomValidatorSet { validators }
     }
+
+    /// Admit a configuration, allowing repeated identical entries but never
+    /// two different voting powers for the same identity.
+    pub fn try_new(validators: Vec<RoomValidator>) -> Result<Self, ValidatorSetError> {
+        let mut powers = std::collections::BTreeMap::new();
+        for validator in &validators {
+            if powers
+                .insert(validator.address, validator.power)
+                .is_some_and(|power| power != validator.power)
+            {
+                return Err(ValidatorSetError::ConflictingPower);
+            }
+        }
+        let set = Self::new(validators);
+        set.validate()?;
+        Ok(set)
+    }
+
+    /// Check the trusted set before engine startup or certificate admission.
+    /// The total leaves room for the engine's quorum multiplications in u64.
+    pub fn validate(&self) -> Result<(), ValidatorSetError> {
+        if self.validators.is_empty() {
+            return Err(ValidatorSetError::Empty);
+        }
+        if self.validators.len() > crate::cert::MAX_CERT_SIGNATURES {
+            return Err(ValidatorSetError::TooManyValidators);
+        }
+        // The vector is public, so callers can bypass new(). Identical
+        // membership in a different order would select different proposers.
+        if self.validators.windows(2).any(|pair| {
+            pair[0].power < pair[1].power
+                || (pair[0].power == pair[1].power && pair[0].address >= pair[1].address)
+        }) {
+            return Err(ValidatorSetError::InvalidValidator);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut total = 0u64;
+        for validator in &self.validators {
+            if validator.power == 0
+                || validator.address != Address::from_public_key(&validator.public_key)
+                || !seen.insert(validator.address)
+            {
+                return Err(ValidatorSetError::InvalidValidator);
+            }
+            total = total
+                .checked_add(validator.power)
+                .filter(|total| *total <= u64::MAX / 3)
+                .ok_or(ValidatorSetError::PowerOverflow)?;
+        }
+        Ok(())
+    }
+}
+
+/// Invalid trusted-validator configuration; never a network vote failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValidatorSetError {
+    /// A voting set must contain at least one member.
+    Empty,
+    /// The certificate signature bound cannot represent the entire set.
+    TooManyValidators,
+    /// Membership has zero power, a mismatched/repeated address, or noncanonical order.
+    InvalidValidator,
+    /// Repeated configuration entries assign different powers to one identity.
+    ConflictingPower,
+    /// The total cannot safely support the engine's quorum arithmetic.
+    PowerOverflow,
 }
 
 impl ValidatorSetTrait<RoomContext> for RoomValidatorSet {
@@ -452,7 +521,8 @@ impl RoomContext {
     ) -> &'a RoomValidator {
         assert!(validator_set.count() > 0);
         assert!(round != Round::Nil && round.as_i64() >= 0);
-        let index = (height.as_u64() as usize + round.as_i64() as usize) % validator_set.count();
+        let index = ((u128::from(height.as_u64()) + round.as_i64() as u128)
+            % validator_set.count() as u128) as usize;
         validator_set
             .get_by_index(index)
             .expect("proposer index within validator set")

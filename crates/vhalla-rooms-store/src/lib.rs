@@ -9,9 +9,10 @@
 //! snapshot only after durable intent reconciliation. The retained snapshot
 //! carries every admitted signed record — the durable room manifests and
 //! tombstones — plus a checksum that is integrity evidence, never an external
-//! freshness proof. Registry revision ordering, not snapshot bytes, is the
-//! lineage bound: a stale or divergent candidate is rejected, never silently
-//! reconciled. Other platforms have no filesystem activation in this version.
+//! freshness proof. Exact pins and retained-history continuity guard
+//! publication and cleanup; unchanged revisions may retain additional proof
+//! for already-counted awards only. These guards do not prove consensus
+//! lineage. Other platforms have no filesystem activation in this version.
 
 #[cfg(unix)]
 mod unix;

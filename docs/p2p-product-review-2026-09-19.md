@@ -1,11 +1,9 @@
 # Valhalla product and P2P review — 2026-09-19
 
-This review continues Devin session `amplified-scraper` (currently titled
-`valtail`) from its actual saved conversation and assigned checkout. Its last
-substantive request was to merge and release the private-overlay planner. PR
-#82 merged at `b5eddc014588063c0aadbea54dff66d8f11da08d`; its exact Rust and
-CodeQL runs succeeded. Newly found authentication and denial-of-service bugs
-must be repaired before publishing the pending release.
+This review starts from the private-overlay planner in PR #82, merged at
+`b5eddc014588063c0aadbea54dff66d8f11da08d`. Its exact Rust and CodeQL runs
+succeeded, but the broader review found authentication, resource-bound and
+onboarding problems requiring repair before the next release.
 
 ## Assessment
 
@@ -51,15 +49,17 @@ cannot implement it or that a market-wide novelty search has been completed.
 | --- | --- | --- |
 | Validator transport identity | A public consensus address determined the Noise private seed, allowing transport impersonation despite matching peer pins | Bind transport identity to the actual secret Ed25519 key; derive expected PeerIds from public bytes only; reject the legacy forged identity. See [upgrade procedure](transport-identity-upgrade.md). Consensus signatures remain a separate authority boundary. |
 | Proposal ingress | Nil round could reach a proposer-selection assertion; incomplete streams and empty chunks had no aggregate metadata bound | Reject invalid headers before proposer selection, bound per-peer/global streams and per-stream chunks, handle reordered closure, and bind header height to the canonical batch before durable admission. A single peer cannot exhaust the stream pool; admitted streams can finish at the global cap, and discarded streams release capacity. |
+| Proposal recovery | Same-slot equivocation overwrote durable metadata, local replies preceded metadata durability, and restarted proposers lacked a re-stream cache | Preserve immutable per-value evidence, persist before replying, retain surviving live-frontier batches from legacy homes, and rebuild only correctly scoped proposals under the node's own signing authority. Missing legacy headers cannot be reconstructed; hostile same-height storage remains a separate retention requirement. |
 | Work verification | Unbounded file reading and sender-selected work limits preceded bounded inner decoders; final receipt computation replayed work outside receiver accounting | Bounded regular-file/field/record ingestion, explicit local work policy, enforced receiver step limit, and final receipt readback from charged verification. See [game replay](game-replay.md). |
 | Onboarding | Clean-state identity/social setup, realm formatting, create arguments and rotation syntax were inconsistent; three validators implied resilience they do not provide | Rehearse actual commands, enroll the agent, use four equal-power members, and distinguish a local rehearsal from live provider qualification. |
 | Newcomer and restart genesis | Creating a new owner changes the genesis root; using a mutable owner store as the genesis source can break fresh-replica or height-zero bootstrap after normal activity | `social restore-new` verifies an exact signed archive before creating a fresh store, adds no owner/key and never overwrites. Keep a dedicated genesis archive store separate from evolving owner activity; rehearse fresh-replica catch-up after later owner posts. |
 | WAL recovery | Existing operator and agent instructions described deleting in-flight consensus history as safe | Preserve undecided-height votes and locks. A committed journal cannot replace them; reject incompatible formats and require a compatible binary or reviewed migration. Runtime error wording is corrected in the coordinated integration. |
 | Current scope | Stale plans prescribed a retired Dioxus client and confused directory consensus with room participation | Preserve the headless direction and state current versus planned capabilities explicitly. |
 
-The coordinated `valtail` delivery task owns the combined release, storage
-integrity and validator-set arithmetic changes. Final readiness depends on its
-integrated-tree checks and exact release evidence, not these findings alone.
+The accompanying [security review](security-review-2026-09-19.md) covers
+release publication, storage integrity and validator-set arithmetic. Final
+readiness depends on integrated-tree checks and exact release evidence, not
+these findings alone.
 
 ## Current surface and major remaining gaps
 
@@ -106,8 +106,14 @@ integrated-tree checks and exact release evidence, not these findings alone.
 6. Replace all-history-in-memory sync with a verified disk-backed range/checkpoint
    design before claiming indefinite operation. Preserve decided history until a
    tested retention protocol can recover a long-offline peer without losing
-   evidence. Investigate the repeated `h9 after heal` soak timeout rather than
-   counting successful retries as a diagnosis.
+   evidence. The preceding implementation recorded `h9 after heal` timeouts in
+   `live_mesh_soak_duplicate_churn_rotation_converges` both locally and in
+   [PR #82's initial CI run](https://github.com/hraness/valhalla/actions/runs/35427199712).
+   Retries passed without a recorded root cause. This review closes a test-side
+   publication race by renaming complete fixture files into the intake, and
+   retains per-node failure diagnostics. Historical causality remains unproven;
+   investigate any recurrence rather than counting a successful retry as a
+   diagnosis.
 
 ## Provider dependence is part of the design
 

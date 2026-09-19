@@ -222,8 +222,8 @@ impl Intent {
 /// The adapter requires cooperating writers and owner-controlled path ancestors.
 /// Checks reject observed symlinks/hardlinks and inconsistent ownership; they are
 /// not a sandbox against the directory owner/root replacing paths between calls.
-/// Lineage is revision-monotone and pin-compare-and-swap: a candidate that
-/// rewinds or forks the applied order is rejected rather than merged.
+/// Publication uses pin compare-and-swap and retained-history continuity.
+/// These local guards do not prove the candidate's consensus lineage.
 pub struct Store {
     path: PathBuf,
     directory: File,
@@ -339,7 +339,7 @@ impl Store {
     pub fn recovery_required(&self) -> Result<bool, Error> {
         self.exists(INTENT)
     }
-    /// Publish a revision-descendant candidate under an exact current basis. No
+    /// Publish a retained-history extension under an exact current basis. No
     /// snapshot is returned for outbound delivery until all relevant file and
     /// directory syncs pass. Retrying the same retained intent reconciles it;
     /// a different one is rejected.
@@ -360,18 +360,19 @@ impl Store {
         if self.exists(BUNDLE_TEMP)? || self.exists(PIN_TEMP)? {
             return Err(Error::RecoveryRequired);
         }
-        if candidate.revision() <= self.registry.revision() {
-            if candidate.revision() == self.registry.revision()
-                && candidate.digest() == self.pin.logical
-            {
-                // An exact already-published result is a readback, not a new CAS.
-                self.cleanup_obsolete()?;
-                return Ok(self.publication(true));
-            }
-            // Rewound or divergent-at-same-revision: never merged.
+        if candidate.revision() < self.registry.revision() {
             return Err(Error::Conflict);
         }
-        if expected != self.pin {
+        if candidate.revision() == self.registry.revision()
+            && candidate.digest() == self.pin.logical
+        {
+            // An exact already-published result is a readback, not a new CAS.
+            self.cleanup_obsolete()?;
+            return Ok(self.publication(true));
+        }
+        // A same-revision change is allowed only for additional proof of an
+        // already-counted award with every other canonical field unchanged.
+        if expected != self.pin || !candidate.is_extension_of(&self.registry) {
             return Err(Error::Conflict);
         }
         self.cleanup_obsolete()?;
@@ -416,14 +417,10 @@ impl Store {
         if self.pin != intent.expected && self.pin != intent.next {
             return Err(Error::Conflict);
         }
-        let old_revision = if self.pin == intent.expected {
-            self.registry.revision()
-        } else {
-            self.load_bundle(intent.expected)?.revision()
-        };
-        // The intent must extend the state its expected pin names; equal or
-        // rewound revision would complete a stale or divergent publication.
-        if intent.registry.revision() <= old_revision {
+        // Even after the pin rename, validate continuity against the exact
+        // retained predecessor before reconciling or reclaiming its evidence.
+        let previous = self.load_bundle(intent.expected)?;
+        if !intent.registry.is_extension_of(&previous) {
             return Err(Error::Conflict);
         }
         Ok(intent)
@@ -539,10 +536,9 @@ impl Store {
         fs::remove_file(self.path.join(name))?;
         Ok(())
     }
-    /// Reclaim verified strict ancestors of the pinned revision. A retained
-    /// bundle is content-addressed evidence: only a decodable snapshot whose
-    /// revision the pin has strictly passed is removed. A bundle newer than or
-    /// divergent from the pin is regression evidence and stops the store.
+    /// Reclaim older bundles only when the pinned registry preserves their
+    /// retained history. A numeric revision alone never authorizes deleting
+    /// content-addressed evidence; an unrelated copy stops all cleanup.
     fn cleanup_obsolete(&self) -> Result<(), Error> {
         self.check_pin()?;
         if self.exists(INTENT)? {
@@ -566,7 +562,7 @@ impl Store {
             if bundle_name(bundle_digest(&raw)) != name {
                 return Err(Error::Corrupt);
             }
-            if old.revision() >= self.registry.revision() {
+            if !self.registry.is_extension_of(&old) {
                 return Err(Error::Conflict);
             }
             obsolete.push(name);
@@ -632,7 +628,7 @@ impl Store {
             }) {
                 continue;
             }
-            if copy.revision() > self.registry.revision() {
+            if !self.registry.is_extension_of(&copy) {
                 return Err(Error::Conflict);
             }
         }

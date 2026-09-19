@@ -60,6 +60,23 @@ new PeerId, pin, address, and actual network path. Retain useful logs and stop
 operational activation if those identities disagree. Network reachability,
 provider health, and consensus quorum are separate diagnoses.
 
+The same release also changes proposal evidence from one mutable file per
+height/round/proposer to immutable files that include the value ID. It reads
+both formats without deleting the legacy records. If an older binary already
+overwrote metadata for a competing value, recovery retains any surviving batch
+that extends the committed frontier for application decisions; it cannot
+reconstruct missing proposal headers. Keep the complete node home and consensus
+WAL together. Do not downgrade an upgraded home to a binary that ignores the
+new records or overwrites same-slot evidence, and do not restore an older backup
+to reset a validator's voting history.
+
+Live proposal streams also use the `RF2` signature domain, binding the full
+header and value bytes, including the proof-of-lock round. Old `RF1` stream
+signatures are rejected. This is another reason to upgrade the validator set
+together; it does not change the consensus WAL codec or justify rewriting its
+marker. Existing seen records do not contain stream signatures, so the new
+signature format cannot retroactively authenticate their stored headers.
+
 ## Qualification boundary
 
 Source regressions cover key ownership and rejection of the legacy forged

@@ -264,12 +264,115 @@ fn protocol_steps_are_ordered() {
     let log = journal.store.log.borrow().clone();
     let position = |step: Step| log.iter().position(|s| *s == step).unwrap();
     assert!(position(Step::CreateBundle) < position(Step::SyncBundle));
-    assert!(position(Step::SyncBundle) < position(Step::WriteHeightMarker));
+    assert!(position(Step::SyncBundle) < position(Step::SyncBundlesDir));
+    assert!(position(Step::SyncBundlesDir) < position(Step::WriteHeightMarker));
     assert!(position(Step::WriteHeightMarker) < position(Step::SyncHeightMarker));
-    assert!(position(Step::SyncHeightMarker) < position(Step::WritePinTmp));
+    assert!(position(Step::SyncHeightMarker) < position(Step::SyncHeightsDir));
+    assert!(position(Step::SyncHeightsDir) < position(Step::WritePinTmp));
     assert!(position(Step::SyncPinTmp) < position(Step::RenamePin));
     assert!(position(Step::RenamePin) < position(Step::SyncDir));
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn containing_directory_sync_failure_never_publishes_a_pin() {
+    for step in [Step::SyncBundlesDir, Step::SyncHeightsDir] {
+        let dir = fixture();
+        let b1 = bundle(GENESIS_NEXT, [1; 32], 1, "directory-sync");
+        let journal = fault_journal(&dir, &[(step, Fault::FailIo)]);
+        assert!(matches!(journal.commit(&b1), Err(JournalError::Io(_))));
+        assert!(!dir.join(HEAD_FILE).exists());
+        assert!(!journal.store.log.borrow().contains(&Step::RenamePin));
+        assert_eq!(fs_journal(&dir).recover().unwrap().pin, genesis_pin());
+        assert_eq!(fs_journal(&dir).commit(&b1).unwrap(), Outcome::Committed);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn recovery_syncs_removed_entries_in_their_containing_directories() {
+    let dir = fixture();
+    let b1 = bundle(GENESIS_NEXT, [1; 32], 1, "recovery-sync");
+    let interrupted = fault_journal(&dir, &[(Step::RenamePin, Fault::CrashBefore)]);
+    assert!(matches!(
+        interrupted.commit(&b1),
+        Err(JournalError::Crashed)
+    ));
+    let recovery = fault_journal(&dir, &[]);
+    let result = recovery.recover().unwrap();
+    assert!(result.dropped_tmp);
+    assert_eq!(result.dropped_heights, vec![1]);
+    let log = recovery.store.log.borrow();
+    assert_eq!(*log, [Step::ReadPin, Step::SyncHeightsDir, Step::SyncDir]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recovery_retry_reestablishes_cleanup_durability() {
+    let dir = fixture();
+    let b1 = bundle(GENESIS_NEXT, [1; 32], 1, "recovery-retry");
+    let interrupted = fault_journal(&dir, &[(Step::RenamePin, Fault::CrashBefore)]);
+    assert!(matches!(
+        interrupted.commit(&b1),
+        Err(JournalError::Crashed)
+    ));
+    let failed = fault_journal(&dir, &[(Step::SyncHeightsDir, Fault::FailIo)]);
+    assert!(matches!(failed.recover(), Err(JournalError::Io(_))));
+    let recovery = fault_journal(&dir, &[]);
+    let result = recovery.recover().unwrap();
+    assert!(!result.dropped_tmp);
+    assert!(result.dropped_heights.is_empty());
+    assert_eq!(
+        *recovery.store.log.borrow(),
+        [Step::ReadPin, Step::SyncHeightsDir, Step::SyncDir]
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn oversized_sparse_journal_files_are_rejected_before_reading() {
+    let dir = fixture();
+    let b1 = bundle(GENESIS_NEXT, [1; 32], 1, "oversized");
+    fs_journal(&dir).commit(&b1).unwrap();
+    for path in [
+        dir.join(HEAD_FILE),
+        dir.join(HEAD_TMP),
+        FsStore::height_path(&dir, 1),
+        FsStore::bundle_path(&dir, b1.id()),
+    ] {
+        let original = fs::read(&path).ok();
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        // Sparse length is deliberately much larger than a viable decoder
+        // allocation; only the metadata should be inspected.
+        file.set_len(1u64 << 32).unwrap();
+        assert!(matches!(
+            fs_journal(&dir).recover(),
+            Err(JournalError::Corrupt)
+        ));
+        drop(file);
+        if let Some(bytes) = original {
+            fs::write(&path, bytes).unwrap();
+        } else {
+            fs::remove_file(&path).unwrap();
+        }
+    }
+    assert_eq!(fs_journal(&dir).recover().unwrap().pin.bundle, b1.id());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn commit_initializes_missing_directory_ancestors() {
+    let root = fixture();
+    let dir = root.join("new-owner").join("new-node").join("journal");
+    let b1 = bundle(GENESIS_NEXT, [1; 32], 1, "nested");
+    assert_eq!(fs_journal(&dir).commit(&b1).unwrap(), Outcome::Committed);
+    assert_eq!(fs_journal(&dir).recover().unwrap().pin.bundle, b1.id());
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -387,13 +490,15 @@ struct Effects {
 }
 
 /// Every step `commit` can attempt, in protocol order.
-const FAULTABLE_STEPS: [Step; 10] = [
+const FAULTABLE_STEPS: [Step; 12] = [
     Step::Lock,
     Step::ReadPin,
     Step::CreateBundle,
     Step::SyncBundle,
+    Step::SyncBundlesDir,
     Step::WriteHeightMarker,
     Step::SyncHeightMarker,
+    Step::SyncHeightsDir,
     Step::WritePinTmp,
     Step::SyncPinTmp,
     Step::RenamePin,
@@ -442,15 +547,17 @@ fn simulate(pin: Pin, bundle: &Bundle, fstep: Step, fault: Fault) -> (Verdict, V
         return (verdict, log, fx);
     }
     if pin.bundle == bundle.id() {
-        // The reconcile path only re-syncs the directory.
-        log.push(Step::SyncDir);
-        if fstep == Step::SyncDir && fault != Fault::Pass {
-            let verdict = if fault == Fault::FailIo {
-                Verdict::Io
-            } else {
-                Verdict::Crashed
-            };
-            return (verdict, log, fx);
+        // Reconciliation re-establishes all containing-directory entries.
+        for step in [Step::SyncBundlesDir, Step::SyncHeightsDir, Step::SyncDir] {
+            log.push(step);
+            if fstep == step && fault != Fault::Pass {
+                let verdict = if fault == Fault::FailIo {
+                    Verdict::Io
+                } else {
+                    Verdict::Crashed
+                };
+                return (verdict, log, fx);
+            }
         }
         return (Verdict::AlreadyCommitted, log, fx);
     }
@@ -562,7 +669,8 @@ fn interleaved_faults_preserve_commit_recovery_semantics(tc: TestCase) {
         };
         let bundle = &pool[index];
 
-        let fstep = FAULTABLE_STEPS[tc.draw(gs::integers::<usize>().max_value(9))];
+        let fstep =
+            FAULTABLE_STEPS[tc.draw(gs::integers::<usize>().max_value(FAULTABLE_STEPS.len() - 1))];
         let fault = FAULT_KINDS[tc.draw(gs::integers::<usize>().max_value(3))];
         let (want, want_log, fx) = simulate(pin, bundle, fstep, fault);
 

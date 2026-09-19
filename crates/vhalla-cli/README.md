@@ -59,20 +59,45 @@ launch is `VHALLA_MENUBAR_PATH`, the installed copy, a binary adjacent to
 
 ### Releases
 
-Pushing a `v*` tag builds and publishes unbundled binaries to a GitHub
-Release with no human step: `vhalla` (`--all-features --release --locked`)
+Pushing a version tag such as `v0.1.7` runs the complete Rust, Kani,
+desktop, and site gates at that commit, then builds unbundled binaries:
+`vhalla` (`--all-features --release --locked`)
 for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`, plus
 `vhalla-menubar` for `aarch64-apple-darwin`, each as a tarball with a
-`.sha256` sidecar. Extracting the macOS CLI and menubar tarballs into the
-same directory gives `vhalla menubar` sibling resolution for free. The
-workflow uses only the repository `GITHUB_TOKEN` — no signing, packaging,
-or notarization exists anywhere in the lane.
+`.sha256` sidecar. A single publisher requires that the tag still names
+the current `main` commit and that all four default CodeQL analyses passed
+on that exact SHA. It uploads all six assets to a draft, verifies their
+downloaded bytes, then publishes the complete release. Failed uploads
+leave a draft; retries never overwrite an already published release.
+The workflow uses only the repository `GITHUB_TOKEN`. These are developer
+binaries without application signing or notarization.
+
+Each archive has a different top-level directory. On Apple Silicon macOS,
+download both archives and their checksum sidecars from the same release,
+then verify and extract the binaries into one directory for sibling resolution:
+
+```console
+tag=v0.1.7 # replace with the downloaded release version
+shasum -a 256 -c "valhalla-${tag}-aarch64-apple-darwin.tar.gz.sha256"
+shasum -a 256 -c "valhalla-menubar-${tag}-aarch64-apple-darwin.tar.gz.sha256"
+mkdir -p "valhalla-${tag}/bin"
+tar -xzf "valhalla-${tag}-aarch64-apple-darwin.tar.gz" --strip-components 1 -C "valhalla-${tag}/bin"
+tar -xzf "valhalla-menubar-${tag}-aarch64-apple-darwin.tar.gz" --strip-components 1 -C "valhalla-${tag}/bin"
+"./valhalla-${tag}/bin/vhalla" --help
+"./valhalla-${tag}/bin/vhalla" menubar status
+```
+
+Run `./valhalla-${tag}/bin/vhalla menubar` to launch the companion, or add
+that `bin` directory to your `PATH`. The Linux release contains only the
+CLI; there is no menubar or Intel macOS release artifact.
 
 See the [identity guide](../vhalla-identity/README.md) for storage behavior and
 the [local chat walkthrough](../vhalla-native/README.md) for the explicit
 `experimental-network` feature. Networking is absent from the default build.
-The experimental commands bind/dial loopback only and do not execute message
-content. No `vh` alias or global installation is performed; `vh` was checked
+Experimental listeners default to loopback; an explicit reachable listen
+address supports a pre-paired LAN or overlay peer. The paired channel pins
+application keys and never executes message content. Public-network use
+remains unqualified. No `vh` alias or global installation is performed; `vh` was checked
 free on the maintained toolchain, so operators may alias `vh=vhalla` by hand —
 the CLI never installs or shadows it.
 

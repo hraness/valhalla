@@ -1718,7 +1718,21 @@ impl RoomNode {
     /// adapter opened on `spec.home/journal`. `spec.held` maps height ->
     /// held batch this node may propose; `spec.validator_sets` maps
     /// activation height -> set.
+    ///
+    /// # Panics
+    ///
+    /// Rejects an invalid validator schedule before opening storage or
+    /// starting networking. Activation heights must start at 1 or later,
+    /// and each set must satisfy [`RoomValidatorSet::validate`].
     pub async fn start(spec: NodeSpec) -> Self {
+        assert!(
+            !spec.validator_sets.is_empty(),
+            "room node requires a nonempty validator schedule"
+        );
+        for (from, validators) in &spec.validator_sets {
+            assert!(*from > 0, "validator activation heights start at 1");
+            validators.validate().expect("invalid room validator set");
+        }
         let NodeSpec {
             home,
             config,
@@ -2106,9 +2120,9 @@ pub fn net_peer_id(public_key: &PublicKey) -> String {
 /// Wire/WAL format epoch: bumped when the consensus codec's persisted
 /// shape changes incompatibly. `wal/FORMAT` records the epoch a WAL was
 /// written under; a mismatch — or a non-empty WAL with no marker —
-/// means the log predates this binary and must be reset. Committed
-/// state is safe either way: it lives in the journal and store, never
-/// in the WAL.
+/// prevents this binary from replaying the log. Preserve the WAL: its
+/// in-flight votes and locks are required for safe validator recovery even
+/// when the journal and application stores retain every committed height.
 const WAL_FORMAT: &[u8; 4] = b"VRW2";
 
 /// Fail fast — with an actionable message — before the engine's WAL
@@ -2119,8 +2133,9 @@ fn check_wal_format(wal_path: &Path) {
         Ok(bytes) if bytes == WAL_FORMAT => {}
         Ok(bytes) => panic!(
             "WAL format mismatch at {}: marker {:?} was written by a different wire format \
-             (this binary writes {:?}). Committed state is durable in the journal and store — \
-             remove {} to restart on a fresh WAL.",
+             (this binary writes {:?}). Keep the validator stopped and preserve {} and the \
+             entire node home. Use the compatible binary or a reviewed state-preserving \
+             migration before rejoining; deleting the WAL can lose safety-critical votes and locks.",
             marker.display(),
             String::from_utf8_lossy(&bytes),
             String::from_utf8_lossy(WAL_FORMAT),
@@ -2134,8 +2149,9 @@ fn check_wal_format(wal_path: &Path) {
             if legacy {
                 panic!(
                     "WAL at {} predates format versioning and cannot be replayed by this binary. \
-                     Committed state is durable in the journal and store — remove it to restart \
-                     on a fresh WAL.",
+                     Keep the validator stopped and preserve the entire node home. Use the \
+                     compatible binary or a reviewed state-preserving migration before rejoining; \
+                     deleting the WAL can lose safety-critical votes and locks.",
                     wal_path.display()
                 );
             }

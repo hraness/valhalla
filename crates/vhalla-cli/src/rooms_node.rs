@@ -350,10 +350,14 @@ fn build_validator_sets(
             .or_default()
             .push(RoomValidator::new(key, entry.power));
     }
-    Ok(grouped
+    grouped
         .into_iter()
-        .map(|(from, set)| (from, RoomValidatorSet::new(set)))
-        .collect())
+        .map(|(from, set)| {
+            RoomValidatorSet::try_new(set)
+                .map(|set| (from, set))
+                .map_err(|error| format!("validator set at height {from}: {error:?}"))
+        })
+        .collect()
 }
 
 /// The typed genesis inputs of a `node.json` — everything `load` decodes
@@ -1429,4 +1433,23 @@ pub fn keygen() -> Result<(), String> {
         ])
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod validator_config_tests {
+    use super::*;
+
+    #[test]
+    fn reject_overflowing_or_conflicting_validator_config() {
+        let key = json::hex(PrivateKey::from([1; 32]).public_key().as_bytes());
+        let entry = |power| ValidatorEntry {
+            from: 1,
+            key: key.clone(),
+            power,
+        };
+        assert!(build_validator_sets(&[entry(u64::MAX)]).is_err());
+        assert!(build_validator_sets(&[entry(1), entry(2)]).is_err());
+        let sets = build_validator_sets(&[entry(1), entry(1)]).unwrap();
+        assert_eq!(sets[&1].validators.len(), 1);
+    }
 }

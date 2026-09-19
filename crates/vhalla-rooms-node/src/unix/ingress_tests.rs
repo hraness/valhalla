@@ -422,3 +422,43 @@ fn ingress_signed_wrong_height_cannot_write_future_proposal_state() {
     }
     h.healthy_after(peer, 2);
 }
+
+#[tokio::test]
+async fn startup_rejects_invalid_validator_schedules_before_creating_state() {
+    let key = PrivateKey::from([27; 32]);
+    let valid = RoomValidatorSet::new(vec![RoomValidator::new(key.public_key(), 1)]);
+    let overflow = RoomValidatorSet::new(vec![RoomValidator::new(key.public_key(), u64::MAX)]);
+    let schedules = [
+        BTreeMap::new(),
+        BTreeMap::from([(0, valid)]),
+        BTreeMap::from([(1, RoomValidatorSet::new(Vec::new()))]),
+        BTreeMap::from([(1, overflow)]),
+    ];
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    for (index, validator_sets) in schedules.into_iter().enumerate() {
+        let home = std::env::temp_dir().join(format!(
+            "room-invalid-start-{}-{stamp}-{index}",
+            std::process::id()
+        ));
+        assert!(!home.exists());
+        let spec = NodeSpec {
+            home: home.clone(),
+            config: node_config(1, 1, 0),
+            node_key: key.clone(),
+            validator_sets,
+            held: BTreeMap::new(),
+            genesis: fixture::plan(0, 8, 16).genesis,
+            wal_faults: None,
+            net_gate: None,
+        };
+        let result = tokio::spawn(async move { RoomNode::start(spec).await }).await;
+        assert!(result.is_err_and(|error| error.is_panic()));
+        assert!(
+            !home.exists(),
+            "invalid config must fail before side effects"
+        );
+    }
+}
