@@ -1489,6 +1489,27 @@ Remaining limitation: injected WAL faults (`WalPlan` append/flush `Fail`/`Drop` 
 contention) and remote intake beyond the local filesystem contract stay open; the in-process
 mesh cannot speak to real network partitions or multi-round resupply under load.
 
+### 2026-09-18: remote intake through real `rooms node` subprocesses
+
+`remote_intake_decides_game_lanes_and_opens_a_quorum_session` (in
+`crates/vhalla-cli/tests/rooms_node.rs`) closes the process boundary. Two real
+`vhalla rooms node` subprocesses mesh over loopback — no shared harness state, no in-process
+channels — and game commitments arrive as `*.body` drops into each validator's real
+`NODE_HOME/intake/` directory. A fabricated `SessionOpen` commitment decides at height 1; the
+opening certificate is read back out of the *other* process's `app/journal` bundle as real
+`VC2` bytes, verified by `verify_canonical_certificate` under the committed validator set, and
+consumed by `quorum::open`. A `quorum_actor`-authored `BindClose` record commitment decides at
+height 2 through the second process's intake, its certificate verifies cross-process, and
+`quorum::prove` consumes the decided lane position. The negative checks hold remotely too:
+the height-1 certificate rejects the session-open commitment claimed at the wrong lane
+position.
+
+The session itself is fabricated (`GameManifest` with one open slot, one player, a quorum
+authority over the fixed test scheme) because the test's target is the transport boundary —
+whether evidence decided by one OS process can drive admission in another — not game
+semantics; the full bind/seal/settle/attest path stays with the in-process suite in
+`vhalla-game-platonik`.
+
 ### 2026-09-19: WAL fault injection under mid-height contention
 
 Two further live tests close the injected-fault side of the gap, each ending in the full quorum
@@ -1513,6 +1534,6 @@ intake provably cannot commit — asserted still at height 2 after six seconds, 
 for a live engine. The clean same-home restart replays the real pre-fault WAL entries, resumes
 the partial height, and certifies 3-5.
 
-Remaining limitation: remote intake beyond the local filesystem contract — a multi-process
-validator mesh deciding game lanes over real node homes — and the cross-room producer policy
-stay open; an in-process mesh cannot speak to network partitions or transport authentication.
+Remaining limitation: transport beyond the multi-process loopback mesh — real partitions,
+relayed links, multi-round resupply under load, transport authentication — and the cross-room
+producer policy stay open.
