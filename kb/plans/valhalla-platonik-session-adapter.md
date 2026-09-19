@@ -1569,3 +1569,28 @@ guarantees a durable bundle — and `recover`'s doc records the writer-only cont
 Remaining limitation: relayed transports (the tailcat/WireGuard path the chunking rules were
 sized for), resupply under sustained load rather than a single healed partition, transport
 authentication, and the cross-room producer policy stay open.
+
+### 2026-09-19: multi-round resupply under repeated partition churn
+
+`remote_partitioned_members_resync_decided_lanes_under_churn` (in
+`crates/vhalla-cli/tests/rooms_node.rs`) extends the healed-partition qualification from a
+single recovered height to sustained decision under churn. Four `rooms node` subprocesses
+mesh through the same per-edge TCP pipes; member 3 is isolated while {0,1,2} — exactly
+quorum — decide game-commitment lanes at heights 2, 3, and 4 back to back, each asserted
+absent from the partitioned member's journal. Healing lets member 3 resync all three missed
+heights without a restart; each resynced bundle verifies under the committed set, and the
+middle deficit height's certificate mints a `prove` proof from member 3's own journal.
+
+A second cycle then partitions member 1 instead: {0,2,3} decide height 5, member 1 resyncs
+it on heal, and its journal serves the certificate a second `prove` consumes. The test
+exercises resupply across repeated partition/heal cycles and different members — the gap the
+single-partition case left open.
+
+The session/intake plumbing shared by the three remote tests is factored into helpers
+(`quorum_game_fixture`, `game_verify`, `drop_game_body`, `actor_event_lane`,
+`set_member_isolated`); the remote-intake and link-partition tests now use them, and the
+certificate verify hook is passed by reference so one closure serves every quorum call.
+
+Remaining limitation: this is resupply of decided values over healed loopback links — it
+does not cover relayed transports (the tailcat/WireGuard path the chunking rules were sized
+for), transport authentication, or the cross-room producer policy, which stay open.
