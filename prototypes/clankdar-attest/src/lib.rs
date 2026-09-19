@@ -56,13 +56,30 @@
 //! carry `heldout: {poolKey}` and replay only for a checker holding the
 //! committed pool — everyone else verifies the envelope while the score
 //! stays issuer-claimed (`replayable: false`).
+//!
+//! `clankdar-badge-v1` completes the stack: subject-signed portable badges
+//! aggregating subject-bound admissions across issuers. [`check_badge`]
+//! replays every carried admission through the full gate check, requires
+//! subject binding (every proof-carrying receipt uses the badge's
+//! `subjectKey`, and at least one receipt must carry a proof), replays
+//! optional tlog inclusion proofs against their own logs, and verifies the
+//! subject's signature over the payload bytes. Disclosed holdout pools —
+//! the set may mix issuers — are indexed by `poolKey`; undisclosed scores
+//! stay valid but sum into `unreplayed`. A badge proves the subject key
+//! accumulated these admissions — never that the holder solved them, and
+//! never identity, liveness, or authority.
 
+mod badge;
 mod gate;
 mod holdout;
 mod rooms;
 mod scorer;
 mod tlog;
 
+pub use badge::{
+    check_badge, pack_badge, Badge, BadgeBody, BadgeCheck, BadgeProof, PackBadgeOptions,
+    BADGE_PROTOCOL, MAX_BADGE_ADMISSIONS,
+};
 pub use gate::{
     check_admission, check_admission_with_pool, issue_session, submit_session, suite_version,
     Admission, AdmissionBody, AdmissionCheck, AdmissionVerdict, GatePolicy, GateSession,

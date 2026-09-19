@@ -4,8 +4,10 @@ An independent Rust implementation of `clankdar-attest-v1`, the sealed-seed
 capability attestation protocol defined by the Clankdar benchmark
 (`bench/attest.ts` in the clankdar repository is the reference), plus
 `clankdar-gate-v1` admission checking (`bench/gate.ts`),
-`clankdar-tlog-v1` transparency-log checking (`bench/tlog.ts`), and
-`clankdar-holdout-v1` issuer-private held-out pools (`bench/holdout.ts`).
+`clankdar-tlog-v1` transparency-log checking (`bench/tlog.ts`),
+`clankdar-holdout-v1` issuer-private held-out pools (`bench/holdout.ts`),
+and `clankdar-badge-v1` subject-signed portable badges
+(`bench/badge.ts`).
 
 A verifier issues a challenge whose generator seed is committed but
 unrevealed: the puzzle instance has never existed publicly, so it cannot be
@@ -29,7 +31,8 @@ clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE 
 clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR]
 clankdar-attest tlog check TLOG.json
 clankdar-attest tlog prove TLOG.json --session gs_x
-clankdar-attest tlog admit TLOG.json ADMISSION.json [--clankdar DIR]
+clankdar-attest tlog admit TLOG.json ADMISSION.json [--pool POOL.json] [--clankdar DIR]
+clankdar-attest badge check BADGE.json [--pool POOL.json]... [--clankdar DIR]
 clankdar-attest holdout gen --suite frontier --cells sat:t4,knights:t5 [--out POOL.json] [--clankdar DIR]
 clankdar-attest holdout info POOL.json
 ```
@@ -45,11 +48,16 @@ receipt regenerates through the oracle, so the clankdar checkout is
 required. `tlog check` and `tlog prove` are fully offline — they consume
 `{head, entries}` JSON like the TypeScript check commands; `tlog admit`
 replays the admission's embedded receipts through the oracle like `check`.
+`badge check` replays every carried admission, so it takes the deep path
+too; repeat `--pool` to disclose several pools at once (the TypeScript
+CLI takes one comma-separated `--pools` list — same effect, different
+flag shape).
 
 Keys are Ed25519 OKP JWKs (`{kty, crv, x, d}`), byte-compatible with the
-TypeScript `keygen`. Receipts, admissions, and transparency logs verify
-across implementations: the Rust tests replay TypeScript-issued receipts,
-admissions, and `bench/tlog.ts`-built logs, and `bun bench/attest.ts check`
+TypeScript `keygen`. Receipts, admissions, transparency logs, and badges
+verify across implementations: the Rust tests replay TypeScript-issued
+receipts, admissions, `bench/tlog.ts`-built logs, and
+`bench/badge.ts`-packed badges, and `bun bench/attest.ts check`
 / `bun bench/gate.ts check` / `bun bench/tlog.ts check` replay the Rust
 verdicts.
 
@@ -253,6 +261,44 @@ through the oracle rather than embedding the pools, so a nonexistent base
 cell fails at regeneration instead of at parse. The TypeScript fixtures in
 `tests/fixtures/` exercise real cells both ways, so the observable behavior
 is identical wherever it matters.
+
+## Subject badges (clankdar-badge-v1)
+
+A badge is a portable dossier: a respondent aggregates subject-bound
+admissions — from any issuer — under one Ed25519 key and signs the
+envelope itself. The subject signs, never an issuer, so a badge is a
+curated claim "these signed episodes are bound to my key"; admissions from
+different verifier keys mix freely. Optional tlog inclusion proofs tie a
+carried session to a logged decision, upgrading issuer-claimed admissions
+to logged ones.
+
+`check_badge` mirrors `checkBadge` in `bench/badge.ts` step for step:
+envelope and payload shape, the `subjectKey` public key, 1–64 members each
+through the full `check_admission_with_pool` replay with distinct
+`sessionId`s, subject binding (every proof-carrying receipt uses
+`subjectKey`, and at least one receipt must carry a proof), at most 64
+inclusion proofs each replayed against their own log through
+`prove_session` (indexes and head must match a fresh proof, and the
+session must have a logged decision), `issuedAt` shape, and finally the
+badge signature over the payload bytes verbatim. `passed` counts
+admissions whose recorded verdict is `pass` — not receipt tallies — and
+`logged` counts the distinct sessions a verified proof covers. Disclosed
+pools are indexed by `poolKey` and may mix issuers; each admission replays
+against the pool its `heldout` marker commits, and undisclosed scores stay
+valid but sum into `unreplayed`. Malformed members produce the same
+structured failures the TypeScript checker emits — never a panic.
+`pack_badge` signs a badge and replays it through the checker before
+returning, the same self-check `packBadge` performs.
+
+`badge check BADGE.json` prints the TypeScript command's reshaped result —
+`{ok, subject, admissions, verdicts: {pass}, logged, unreplayed?}` on
+success, `{ok: false, reason}` and a nonzero exit on failure.
+
+**Documented divergence, one step narrower.** The TypeScript `issuedAt`
+check is `Date.parse`, which accepts exotic strings ("Sep 18 2026") that
+RFC 3339 parsing rejects. `check_badge` parses RFC 3339 — the
+`toISOString` output every `packBadge` writes — so a hand-crafted badge
+with a JS-only timestamp passes there and fails here.
 
 ## Honest scope
 

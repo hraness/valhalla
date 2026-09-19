@@ -7,6 +7,7 @@
 //!   clankdar-attest tlog check TLOG.json
 //!   clankdar-attest tlog prove TLOG.json --session gs_x
 //!   clankdar-attest tlog admit TLOG.json ADMISSION.json [--pool POOL.json] [--clankdar DIR]
+//!   clankdar-attest badge check BADGE.json [--pool POOL.json]... [--clankdar DIR]
 //!   clankdar-attest rooms issue --key KEY.json --policy POLICY.json [--subject TXT] [--context TXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR]
 //!   clankdar-attest rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR]
 //!   clankdar-attest rooms prove --key KEY.json --challenge CHALLENGE.json
@@ -24,6 +25,11 @@
 //! `--holdout` carry a `clankdar-holdout-v1` pool: held-out cells regenerate
 //! through secret labels, and checks without the matching pool report
 //! `replayable: false` or `unreplayed` instead of a replayed score.
+//! `badge check` replays a subject-signed `clankdar-badge-v1` dossier:
+//! every carried admission through the deep gate check (so the oracle is
+//! required), subject binding, optional tlog inclusion proofs, and the
+//! badge signature; repeated `--pool` flags disclose holdout pools whose
+//! `poolKey`s may span issuers.
 //!
 //! The `rooms` modes dogfood the room-side gate-v1 flow: a room publishes
 //! a `GatePolicy` floor and verifier key, `rooms issue` mints a session,
@@ -42,19 +48,23 @@ use base64::Engine;
 use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use valhalla_clankdar_attest_prototype::{
-    check_admission_with_pool, check_log, check_logged_admission_with_pool, check_receipt,
-    check_receipt_with_pool, decide_room_admission, draw_seed, generate_verifier, holdout_cell,
-    holdout_instance, instance_for, issue_challenge, issue_room_session, key_id_of, pool_key_of,
-    prove_session, signing_key, subject_proof_for, submit_room_session, suite_version,
+    check_admission_with_pool, check_badge, check_log, check_logged_admission_with_pool,
+    check_receipt, check_receipt_with_pool, decide_room_admission, draw_seed, generate_verifier,
+    holdout_cell, holdout_instance, instance_for, issue_challenge, issue_room_session, key_id_of,
+    pool_key_of, prove_session, signing_key, subject_proof_for, submit_room_session, suite_version,
     verify_response, Admission, AttestError, Challenge, GatePolicy, GeneratedInstance, HoldoutCell,
     HoldoutPool, IssueOptions, Receipt, RoomFloor, RoomSession, RoomSessionOptions, SubjectProof,
     Ticket, VerifierJwk, GATE_PROTOCOL, HOLDOUT_PROTOCOL,
 };
 
-const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--pool POOL.json] [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR] | holdout gen --suite v2|frontier|agent --cells f:t1,g:t2 [--out POOL.json] [--clankdar DIR] | holdout info POOL.json";
+const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--pool POOL.json] [--clankdar DIR] | badge check BADGE.json [--pool POOL.json]... [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR] | holdout gen --suite v2|frontier|agent --cells f:t1,g:t2 [--out POOL.json] [--clankdar DIR] | holdout info POOL.json";
 
 struct Args {
     flags: std::collections::HashMap<String, String>,
+    /// Every `--name value` occurrence in order — `flags` keeps last-wins
+    /// for single-valued options while repeatable flags (`--pool` on
+    /// `badge check`) read the full list here.
+    flag_lists: std::collections::HashMap<String, Vec<String>>,
     switches: std::collections::HashSet<String>,
     positional: Vec<String>,
 }
@@ -62,6 +72,7 @@ struct Args {
 fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut args = Args {
         flags: std::collections::HashMap::new(),
+        flag_lists: std::collections::HashMap::new(),
         switches: std::collections::HashSet::new(),
         positional: Vec::new(),
     };
@@ -77,6 +88,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .get(i)
                     .ok_or_else(|| format!("--{name} requires a value"))?;
                 args.flags.insert(name.to_string(), value.clone());
+                args.flag_lists
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(value.clone());
             }
         } else {
             args.positional.push(arg.clone());
@@ -846,6 +861,92 @@ fn main() {
                 }
                 other => fail(AttestError::InvalidInput(format!(
                     "unknown tlog command: {other}. {USAGE}"
+                ))),
+            }
+        }
+        // `badge` carries one subcommand today, mirroring the TypeScript
+        // `badge check`: replay a subject-signed dossier of admissions.
+        "badge" => {
+            let Some(sub) = args.positional.first().map(String::as_str) else {
+                fail(AttestError::InvalidInput(format!(
+                    "badge requires a command. {USAGE}"
+                )));
+            };
+            match sub {
+                "check" => {
+                    let Some(path) = args.positional.get(1) else {
+                        fail(AttestError::InvalidInput(
+                            "badge check requires a BADGE.json file".to_string(),
+                        ));
+                    };
+                    let badge: serde_json::Value = match read_json(path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    // Repeated `--pool` flags disclose holdout pools; the
+                    // set may mix issuers — `check_badge` indexes by the
+                    // committed `poolKey`. A pool that fails to parse is a
+                    // hard CLI error here, like `tlog admit --pool`.
+                    let mut pools: Vec<HoldoutPool> = Vec::new();
+                    if let Some(paths) = args.flag_lists.get("pool") {
+                        for pool_path in paths {
+                            let value: serde_json::Value = match read_json(pool_path) {
+                                Ok(v) => v,
+                                Err(e) => fail(e),
+                            };
+                            match HoldoutPool::parse(&value) {
+                                Ok(pool) => pools.push(pool),
+                                Err(e) => fail(e),
+                            }
+                        }
+                    }
+                    // Every carried admission replays through the deep
+                    // check — the oracle is required.
+                    let dir = clankdar_dir(&args);
+                    let result = check_badge(
+                        &badge,
+                        if pools.is_empty() {
+                            None
+                        } else {
+                            Some(pools.as_slice())
+                        },
+                        |sv, family, tier, seed| {
+                            oracle(&dir, sv, true, family, tier, seed).map_err(|e| e.to_string())
+                        },
+                    );
+                    // The TypeScript `badge check` reshapes the result and
+                    // prints members in this order: `{ok, subject,
+                    // admissions, verdicts:{pass}, logged, unreplayed?}`.
+                    // A `json!` map would sort keys, so print the shape
+                    // literally — `subject`/`reason` are protocol strings
+                    // (base64url / checker text), never user-escaped JSON.
+                    let out = if result.ok {
+                        let unreplayed = result
+                            .unreplayed
+                            .map(|count| format!(",\"unreplayed\":{count}"))
+                            .unwrap_or_default();
+                        format!(
+                            "{{\"ok\":true,\"subject\":\"{}\",\"admissions\":{},\"verdicts\":{{\"pass\":{}}},\"logged\":{}{}}}",
+                            result.subject.unwrap_or_default(),
+                            result.admissions.unwrap_or_default(),
+                            result.passed.unwrap_or_default(),
+                            result.logged.unwrap_or_default(),
+                            unreplayed,
+                        )
+                    } else {
+                        serde_json::to_string(&serde_json::json!({
+                            "ok": false,
+                            "reason": result.reason,
+                        }))
+                        .unwrap_or_default()
+                    };
+                    println!("{out}");
+                    if !result.ok {
+                        exit(2);
+                    }
+                }
+                other => fail(AttestError::InvalidInput(format!(
+                    "unknown badge command: {other}. {USAGE}"
                 ))),
             }
         }

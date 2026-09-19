@@ -1,0 +1,19 @@
+{
+  "badges": [
+    {
+      "protocol": "clankdar-badge-v1",
+      "payload": "{\"admissions\":[null],\"issuedAt\":\"2026-09-18T00:01:00.000Z\",\"kind\":\"badge\",\"subjectKey\":\"S8N0gGqxJuxJg4F1r0oIbn9kh4kwrW9vCP0eenOuK9Y\"}",
+      "signature": "L_fGOg72s4BifD89ywM6u74OCdy1D7JdwnOllyHsGkG38F_PDnkUgSlP0n1qgI-KG3FdAf2KYkR8knhV38HbBg"
+    },
+    {
+      "protocol": "clankdar-badge-v1",
+      "payload": "{\"admissions\":[\"not-an-admission\"],\"issuedAt\":\"2026-09-18T00:01:00.000Z\",\"kind\":\"badge\",\"subjectKey\":\"S8N0gGqxJuxJg4F1r0oIbn9kh4kwrW9vCP0eenOuK9Y\"}",
+      "signature": "6tB_E53490Vb5ux0cwBI2V7reXczWhRuUjesl6p8b0_KxjLE6aGOGPk5EenUYDdMWNeAUfKnN6B6FisiuoQTAg"
+    },
+    {
+      "protocol": "clankdar-badge-v1",
+      "payload": "{\"admissions\":[{\"payload\":7}],\"issuedAt\":\"2026-09-18T00:01:00.000Z\",\"kind\":\"badge\",\"subjectKey\":\"S8N0gGqxJuxJg4F1r0oIbn9kh4kwrW9vCP0eenOuK9Y\"}",
+      "signature": "PMT2ofExFVkVg-cyKSQ2gYcE6PZWSBMNOrx4qSiykBMf9RAIRwN5clNcEPEMMkpKY81u0e5kTD17Np6bJGINCQ"
+    }
+  ]
+}
