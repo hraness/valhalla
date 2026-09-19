@@ -119,10 +119,12 @@ head}` — `decisionIndex: null` while a session is undecided.
 `check_logged_admission` is the portable-badge test: the admission must
 pass `check_admission` on its own AND its `sessionId` must have both a
 session and a decision entry in a checked log — a valid admission with no
-logged session is issuer-claimed only. The two verifications are
-independent: the head is bound to the issuer's log key while the admission
-is bound to the challenges' verifier key, so a head signed by a different
-key still checks.
+logged session is issuer-claimed only. Held-out receipts remain visible as
+`unreplayed` unless `check_logged_admission_with_pool` (CLI: `tlog admit
+... --pool POOL.json`) receives the matching disclosed pool. The two
+verifications are independent: the head is bound to the issuer's log key
+while the admission is bound to the challenges' verifier key, so a head
+signed by a different key still checks.
 
 The crate only *checks* logs — it consumes `{head, entries}` JSON like the
 TypeScript `check`/`prove`/`admit` commands. Building a log replays the

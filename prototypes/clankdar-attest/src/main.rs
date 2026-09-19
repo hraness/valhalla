@@ -6,7 +6,7 @@
 //!   clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR]
 //!   clankdar-attest tlog check TLOG.json
 //!   clankdar-attest tlog prove TLOG.json --session gs_x
-//!   clankdar-attest tlog admit TLOG.json ADMISSION.json [--clankdar DIR]
+//!   clankdar-attest tlog admit TLOG.json ADMISSION.json [--pool POOL.json] [--clankdar DIR]
 //!   clankdar-attest rooms issue --key KEY.json --policy POLICY.json [--subject TXT] [--context TXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR]
 //!   clankdar-attest rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR]
 //!   clankdar-attest rooms prove --key KEY.json --challenge CHALLENGE.json
@@ -42,7 +42,7 @@ use base64::Engine;
 use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use valhalla_clankdar_attest_prototype::{
-    check_admission_with_pool, check_log, check_logged_admission, check_receipt,
+    check_admission_with_pool, check_log, check_logged_admission_with_pool, check_receipt,
     check_receipt_with_pool, decide_room_admission, draw_seed, generate_verifier, holdout_cell,
     holdout_instance, instance_for, issue_challenge, issue_room_session, key_id_of, pool_key_of,
     prove_session, signing_key, subject_proof_for, submit_room_session, suite_version,
@@ -51,7 +51,7 @@ use valhalla_clankdar_attest_prototype::{
     Ticket, VerifierJwk, GATE_PROTOCOL, HOLDOUT_PROTOCOL,
 };
 
-const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR] | holdout gen --suite v2|frontier|agent --cells f:t1,g:t2 [--out POOL.json] [--clankdar DIR] | holdout info POOL.json";
+const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--pool POOL.json] [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR] | holdout gen --suite v2|frontier|agent --cells f:t1,g:t2 [--out POOL.json] [--clankdar DIR] | holdout info POOL.json";
 
 struct Args {
     flags: std::collections::HashMap<String, String>,
@@ -817,14 +817,28 @@ fn main() {
                         Ok(v) => v,
                         Err(e) => fail(e),
                     };
-                    // Admission checking always regenerates embedded
-                    // receipts — the deep path is inherent, so the oracle
-                    // is required.
+                    let pool = match args.flags.get("pool") {
+                        Some(path) => {
+                            let value: serde_json::Value = match read_json(path) {
+                                Ok(v) => v,
+                                Err(e) => fail(e),
+                            };
+                            match HoldoutPool::parse(&value) {
+                                Ok(pool) => Some(pool),
+                                Err(e) => fail(e),
+                            }
+                        }
+                        None => None,
+                    };
                     let dir = clankdar_dir(&args);
-                    let result =
-                        check_logged_admission(&log, &admission, |sv, family, tier, seed| {
+                    let result = check_logged_admission_with_pool(
+                        &log,
+                        &admission,
+                        pool.as_ref(),
+                        |sv, family, tier, seed| {
                             oracle(&dir, sv, true, family, tier, seed).map_err(|e| e.to_string())
-                        });
+                        },
+                    );
                     println!("{}", serde_json::to_string(&result).unwrap_or_default());
                     if !result.ok {
                         exit(2);

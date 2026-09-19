@@ -571,6 +571,7 @@ fn a_logged_decided_admission_admits() {
             ok: true,
             verdict: Some(true),
             passed: Some(1),
+            unreplayed: None,
             reason: None,
         }
     );
@@ -762,6 +763,7 @@ fn typescript_admissions_admit_and_reject_like_the_reference() {
             ok: true,
             verdict: Some(true),
             passed: Some(3),
+            unreplayed: None,
             reason: None,
         }
     );
@@ -772,6 +774,7 @@ fn typescript_admissions_admit_and_reject_like_the_reference() {
             ok: true,
             verdict: Some(false),
             passed: Some(1),
+            unreplayed: None,
             reason: None,
         }
     );
@@ -792,6 +795,60 @@ fn typescript_admissions_admit_and_reject_like_the_reference() {
         .as_deref()
         .unwrap_or("")
         .ends_with("has no logged decision"));
+}
+
+#[test]
+fn typescript_held_out_logged_admission_preserves_replayability() {
+    let fixture = fixture("ts_admission_holdout.json");
+    let admission: Admission = serde_json::from_value(fixture["admission"].clone()).unwrap();
+    let pool = HoldoutPool::parse(&fixture["pool"]).unwrap();
+    let body: Value = serde_json::from_str(&admission.payload).unwrap();
+    let heldout_session_id = body["sessionId"].as_str().unwrap();
+    let mut instances = Vec::new();
+    for receipt in body["receipts"].as_array().unwrap() {
+        let payload = receipt["payload"].as_str().unwrap();
+        let receipt_body: Value = serde_json::from_str(payload).unwrap();
+        let challenge = &receipt_body["challenge"];
+        let family = challenge["family"].as_str().unwrap();
+        let tier = challenge["tier"].as_u64().unwrap();
+        let public_seed = receipt_body["seed"].as_u64().unwrap();
+        let cell = holdout_cell(&pool, family, tier).unwrap();
+        instances.push(GeneratedInstance {
+            suite_version: challenge["suiteVersion"].as_str().unwrap().to_string(),
+            family: family.to_string(),
+            tier: tier as u32,
+            seed: mix_seed(&cell.label, public_seed),
+            prompt: challenge["prompt"].as_str().unwrap().to_string(),
+            answer: receipt_body["expected"].as_str().unwrap().to_string(),
+        });
+    }
+    let log = log_over(
+        &[
+            session_record(heldout_session_id),
+            decision_record(heldout_session_id),
+        ],
+        &signing(),
+    );
+    let claimed = check_logged_admission(&log, &admission, oracle(instances.clone()));
+    assert!(claimed.ok, "{:?}", claimed.reason);
+    assert_eq!(claimed.verdict, Some(true));
+    assert_eq!(claimed.unreplayed, Some(2));
+    let other = session_id(99);
+    let unlogged = check_logged_admission(
+        &log_over(
+            &[session_record(&other), decision_record(&other)],
+            &signing(),
+        ),
+        &admission,
+        oracle(instances.clone()),
+    );
+    assert!(!unlogged.ok);
+    assert_eq!(unlogged.unreplayed, Some(2));
+    let replayed =
+        check_logged_admission_with_pool(&log, &admission, Some(&pool), oracle(instances));
+    assert!(replayed.ok, "{:?}", replayed.reason);
+    assert_eq!(replayed.verdict, Some(true));
+    assert_eq!(replayed.unreplayed, None);
 }
 
 #[test]

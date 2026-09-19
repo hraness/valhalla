@@ -83,8 +83,9 @@ pub use scorer::{
     SCORER_VERSION,
 };
 pub use tlog::{
-    check_log, check_logged_admission, entries_for, entry_hash, prove_session, AdmittedCheck,
-    LogCheck, SessionProof, TlogEntry, TlogHashedEntry, TlogHead, TransparencyLog, TLOG_PROTOCOL,
+    check_log, check_logged_admission, check_logged_admission_with_pool, entries_for, entry_hash,
+    prove_session, AdmittedCheck, LogCheck, SessionProof, TlogEntry, TlogHashedEntry, TlogHead,
+    TransparencyLog, TLOG_PROTOCOL,
 };
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
