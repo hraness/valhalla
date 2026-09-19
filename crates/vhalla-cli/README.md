@@ -522,55 +522,109 @@ vhalla rooms network-init ./network.json \
 `network.json` contains the `genesis` fingerprint; print it with
 `vhalla rooms node-check` and verify every member sees the same value.
 
-**4. Each member joins the mesh.**
+**4. Choose reachability and initialize each member.**
+
+The transport supplies a private path; the pinned libp2p Noise handshake
+still authenticates the validator. Choose one profile for the set. Never
+exchange `node.json` files: each contains that member's private validator
+seed.
+
+**Accountless Tailcat.** Each member publishes only their own node port,
+shares the resulting `tc://` address, and creates one local forward per
+remote member:
+
+```console
+# Alice publishes her future node port and shares the printed address.
+tailcat --key=new serve 17001
+
+# Bob forwards a local port to Alice, using Alice's shared tc:// address.
+tailcat --key=new forward <ALICE_TC_ADDR> 17101:127.0.0.1:17001
+
+# Bob pins Alice's public validator key behind that local forward.
+vhalla rooms node-init ./node \
+  --network ./network.json \
+  --node-key <BOB_SEED> \
+  --port 17002 \
+  --listen 127.0.0.1 \
+  --peers <PUBLIC_A>@127.0.0.1:17101,... \
+  --peers-only true
+```
+
+Every member repeats the forward for every other member. Tailcat needs no
+account or OS-level VPN and attempts a direct WireGuard path with DERP
+fallback, but it carries TCP only. `vhalla rooms tailcat up` and
+`vhalla rooms tailcat status` remain conveniences for a one-machine
+rehearsal where all `node.json` files belong to the same operator; do not
+gather friends' private files to use them.
+
+**Tailscale (recommended managed profile).** Enroll every machine in one
+tailnet and collect each stable Tailscale IPv4 address (`tailscale ip
+-4`). Anyone can then build the complete plan from public values already
+exchanged for `network-init`:
+
+```console
+vhalla rooms overlay plan --profile tailscale --members \
+  alice=<PUBLIC_A>@100.64.0.1:17001 \
+  bob=<PUBLIC_B>@100.64.0.2:17002 \
+  carol=<PUBLIC_C>@100.64.0.3:17003
+```
+
+For each `members[]` result, its owner passes `listen`, `peers`, and
+`peers_only` to `node-init`:
 
 ```console
 vhalla rooms node-init ./node \
   --network ./network.json \
   --node-key <SEED> \
-  --port 17001 \
-  --listen 127.0.0.1
+  --port <members[].port> \
+  --listen <members[].listen> \
+  --peers <members[].peers> \
+  --peers-only true
+```
 
+Tailscale carries both validator TCP and social-sync UDP/QUIC, prefers a
+direct end-to-end WireGuard path, and falls back to DERP when NAT
+traversal fails. The tailnet administrator must allow the selected node
+ports between the enrolled members.
+
+**Cloudflare Mesh (optional managed profile).** Enroll each machine in the
+same Cloudflare One Mesh, configure MASQUE and policies that allow the
+selected TCP and UDP ports between members, and substitute each assigned
+Mesh IPv4 address:
+
+```console
+vhalla rooms overlay plan --profile cloudflare-mesh --members \
+  alice=<PUBLIC_A>@100.96.0.1:17001 \
+  bob=<PUBLIC_B>@100.96.0.2:17002 \
+  carol=<PUBLIC_C>@100.96.0.3:17003
+```
+
+Use each result with the same `node-init` shape above. Mesh carries TCP
+and UDP, but all traffic follows the Cloudflare edge path and the service
+is still a centrally administered beta. The planner deliberately reports
+`live_qualified: false`: run the real multi-host qualification before
+operational activation. Cloudflare Tunnel, Quick Tunnel, and the
+Wrangler/Vite local-dev tunnel are different public-service products and
+are not validator-mesh profiles.
+
+All overlay planner inputs are public validator keys and private overlay
+addresses; the command neither reads credentials nor changes either
+provider. It rejects public destination addresses, duplicate member
+identities, duplicate endpoints, malformed keys, and port zero. Both
+managed profiles report `live_qualified: false` until their exact
+multi-host path passes live qualification.
+
+Before booting, every member runs:
+
+```console
 vhalla rooms node-check ./alice ./node 00000000000000000000000000000047 \
   --config ./node/node.json
 ```
 
-**5. Cross-network TCP with tailcat.**
+Compare the `genesis` and archive values across the set and require no
+unexpected peer warnings.
 
-For a LAN or Tailscale mesh, everyone runs `tailcat serve 17001` and
-shares the printed `tc://` address. For other networks, use the planner
-once `node.json` files exist:
-
-```console
-# For a one-machine rehearsal, start all serves and forwards:
-vhalla rooms tailcat up --nodes alice/node.json bob/node.json carol/node.json
-
-# For real per-member hosts, generate a shell plan first:
-vhalla rooms tailcat plan \
-  --nodes alice/node.json bob/node.json carol/node.json \
-  --output shell > start-tailcat.sh
-```
-
-Run `start-tailcat.sh` on each host after sharing the printed `tc://`
-addresses out of band, then pass the printed `--peers` CSV to the next
-member's `node-init`. The planner derives each member's consensus public
-key from its `node.json` and emits `KEY64@HOST:PORT` pins, so the
-suggested config authenticates every tunnel endpoint's identity out of
-the box — add `--peers-only true` at `node-init` for a closed member
-mesh. If you already ran `node-init`, the `peers` line is
-in `node/node.json`; edit it or re-run `node-init` to the same directory.
-Check whether all serves and forwards are actually listening with:
-
-```console
-vhalla rooms tailcat status \
-  --nodes alice/node.json bob/node.json carol/node.json
-```
-
-`tailcat up` is a convenience for loopback rehearsal; production meshes
-should still run `tailcat serve` and `tailcat forward` per member so each
-host owns its own key and address.
-
-**6. Start the node and observe it from a replica.**
+**5. Start the node and observe it from a replica.**
 
 ```console
 vhalla rooms node ./alice ./node 00000000000000000000000000000047 \
@@ -586,7 +640,7 @@ threshold, validators), the room listing, and every pending marker's
 `state` plus `reason` if it was rejected or collided. Use `rooms pending`
 for only the marker strip.
 
-**7. Submit work through a terminal or the TUI.**
+**6. Submit work through a terminal or the TUI.**
 
 ```console
 vhalla rooms submit ./alice ./replica 00000000000000000000000000000047 ./node \
@@ -606,7 +660,7 @@ vhalla rooms tui ./alice ./replica 00000000000000000000000000000047 ./node \
   --config ./node/node.json
 ```
 
-**8. Add or remove a validator without rewriting history.**
+**7. Add or remove a validator without rewriting history.**
 
 The operator copies the shared file and appends a replacement set:
 
@@ -625,7 +679,7 @@ vhalla rooms node-update ./node --network ./network-v2.json
 `node-update` refuses to touch activations already at or below the
 committed height and rejects any drift in the shared `genesis` fields.
 
-**9. Recover from key loss.**
+**8. Recover from key loss.**
 
 If the machine holding `./my-key` is lost, use the backup:
 
@@ -637,7 +691,7 @@ vhalla identity show ./my-key-restored
 The restored `application-key` is identical to the lost one. The mnemonic
 is the only recoverable secret; if it is lost, the identity is gone.
 
-**10. Surface `rooms status` in the menubar.**
+**9. Surface `rooms status` in the menubar.**
 
 The menubar is read-only and never opens an identity or store. It renders
 the `vhalla outputs` directory, so the safe integration is to write the
