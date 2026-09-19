@@ -454,7 +454,7 @@ pub fn check_log(log: &Value) -> LogCheck {
 /// Inclusion evidence for one session (mirrors `SessionProof`): the log
 /// must check out first, then the session's issuance index and decision
 /// index are reported under the signed head.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionProof {
     /// The session id proved.
