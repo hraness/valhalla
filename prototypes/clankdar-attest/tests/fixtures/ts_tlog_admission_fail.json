@@ -1,0 +1,33 @@
+{
+  "admission": {
+    "protocol": "clankdar-gate-v1",
+    "payload": "{\"challenges\":[{\"challengeId\":\"att_97YOCkiy0W34\",\"context\":\"jobs-board\",\"expiresAt\":\"2026-09-18T00:05:00.000Z\",\"family\":\"arithmetic\",\"kind\":\"challenge\",\"nonce\":\"8IYxgXmFZooyu3Fg\",\"prompt\":\"What is 6 + 11? Reply with only the number.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"56951dea0fdbcb1c21e1061ca3434aea7a17d9d3709184c779bbe7edf6677adb\",\"sessionId\":\"gs_SRkJhtV6WFqT\",\"suiteVersion\":\"clankdar-suite-v2\",\"tier\":0,\"verifier\":{\"keyId\":\"8e7ddcea61dc1154\",\"publicKey\":\"UXBJpPvAuAuaVdd7mgJ1Wy4H25jbg4rulJXBzthKGK8\"}},{\"challengeId\":\"att_gvncVGqW2EAm\",\"context\":\"jobs-board\",\"expiresAt\":\"2026-09-18T00:05:00.000Z\",\"family\":\"arithmetic\",\"kind\":\"challenge\",\"nonce\":\"eAxVssthu7LKNXt5\",\"prompt\":\"Compute (7 - (9 + 15)). Work left to right inside parentheses first. Reply with only the integer result.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"658ed4e25c2dc364a82c5fdfa22ef5d1c8813e0d1e856b2d36cefbc866703218\",\"sessionId\":\"gs_SRkJhtV6WFqT\",\"suiteVersion\":\"clankdar-suite-v2\",\"tier\":1,\"verifier\":{\"keyId\":\"8e7ddcea61dc1154\",\"publicKey\":\"UXBJpPvAuAuaVdd7mgJ1Wy4H25jbg4rulJXBzthKGK8\"}},{\"challengeId\":\"att_xXqN_S0-noKo\",\"context\":\"jobs-board\",\"expiresAt\":\"2026-09-18T00:05:00.000Z\",\"family\":\"ordering\",\"kind\":\"challenge\",\"nonce\":\"9tHgPRCJiouZ0ikg\",\"prompt\":\"Four runners (A=gus, B=el, C=bo, D=cy) finished a race. Clues: gus finished before el; gus finished before cy; el finished before bo; el finished before cy; gus finished before bo; bo finished before cy. List the finish order from first to last as the letters, separated by spaces. Reply with only the letters.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"26e655bedcb5a6955992187eef314ba3d597fdfe02bad2f5a18cc79c4f036395\",\"sessionId\":\"gs_SRkJhtV6WFqT\",\"suiteVersion\":\"clankdar-suite-v2\",\"tier\":3,\"verifier\":{\"keyId\":\"8e7ddcea61dc1154\",\"publicKey\":\"UXBJpPvAuAuaVdd7mgJ1Wy4H25jbg4rulJXBzthKGK8\"}}],\"context\":\"jobs-board\",\"kind\":\"admission\",\"policy\":{\"cells\":[\"arithmetic:t0\",\"arithmetic:t1\",\"ordering:t3\"],\"challenges\":3,\"minPass\":2,\"suite\":\"v2\",\"ttlSeconds\":300},\"receipts\":[{\"payload\":\"{\\\"challenge\\\":{\\\"challengeId\\\":\\\"att_97YOCkiy0W34\\\",\\\"context\\\":\\\"jobs-board\\\",\\\"expiresAt\\\":\\\"2026-09-18T00:05:00.000Z\\\",\\\"family\\\":\\\"arithmetic\\\",\\\"kind\\\":\\\"challenge\\\",\\\"nonce\\\":\\\"8IYxgXmFZooyu3Fg\\\",\\\"prompt\\\":\\\"What is 6 + 11? Reply with only the number.\\\",\\\"protocol\\\":\\\"clankdar-attest-v1\\\",\\\"seedCommit\\\":\\\"56951dea0fdbcb1c21e1061ca3434aea7a17d9d3709184c779bbe7edf6677adb\\\",\\\"sessionId\\\":\\\"gs_SRkJhtV6WFqT\\\",\\\"suiteVersion\\\":\\\"clankdar-suite-v2\\\",\\\"tier\\\":0,\\\"verifier\\\":{\\\"keyId\\\":\\\"8e7ddcea61dc1154\\\",\\\"publicKey\\\":\\\"UXBJpPvAuAuaVdd7mgJ1Wy4H25jbg4rulJXBzthKGK8\\\"}},\\\"expected\\\":\\\"17\\\",\\\"kind\\\":\\\"receipt\\\",\\\"response\\\":\\\"17\\\",\\\"seed\\\":700100,\\\"verdict\\\":{\\\"answeredAt\\\":\\\"2026-09-18T00:01:00.000Z\\\",\\\"format\\\":\\\"integer\\\",\\\"pass\\\":true}}\",\"protocol\":\"clankdar-attest-v1\",\"signature\":\"gd34b9uRFu7Jb-rPcyuR4EpFrfDjrPYowLAj5wcSpZLM_mxHlGEwRMQ-U61UwJXtDnEaT6Q0uPF-wpOiHXfhDQ\"}],\"sessionId\":\"gs_SRkJhtV6WFqT\",\"verdict\":{\"decidedAt\":\"2026-09-18T00:01:00.000Z\",\"pass\":false,\"passed\":1,\"required\":2}}",
+    "signature": "L4Lupo5K5F6tCmUS0NYlQTkUlXiYo-J8OLIYK6XGkCzxzfZNmzElmCRgmcX66tiEEa2GdwJ4Dgk07aphFSn9CQ"
+  },
+  "instances": [
+    {
+      "suiteVersion": "clankdar-suite-v2",
+      "family": "arithmetic",
+      "tier": 0,
+      "seed": 700100,
+      "prompt": "What is 6 + 11? Reply with only the number.",
+      "answer": "17"
+    },
+    {
+      "suiteVersion": "clankdar-suite-v2",
+      "family": "arithmetic",
+      "tier": 1,
+      "seed": 700101,
+      "prompt": "Compute (7 - (9 + 15)). Work left to right inside parentheses first. Reply with only the integer result.",
+      "answer": "-17"
+    },
+    {
+      "suiteVersion": "clankdar-suite-v2",
+      "family": "ordering",
+      "tier": 3,
+      "seed": 700102,
+      "prompt": "Four runners (A=gus, B=el, C=bo, D=cy) finished a race. Clues: gus finished before el; gus finished before cy; el finished before bo; el finished before cy; gus finished before bo; bo finished before cy. List the finish order from first to last as the letters, separated by spaces. Reply with only the letters.",
+      "answer": "A B C D"
+    }
+  ]
+}

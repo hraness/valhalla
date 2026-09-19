@@ -1,0 +1,32 @@
+{
+  "head": {
+    "protocol": "clankdar-tlog-v1",
+    "kind": "head",
+    "count": 2,
+    "head": "9436d2d4784ddeec0267bd68121007d2b9d37942dbed88ce0605fe922a44c3aa",
+    "issuedAt": "2026-09-18T00:00:00.000Z",
+    "verifier": {
+      "keyId": "8e7ddcea61dc1154",
+      "publicKey": "UXBJpPvAuAuaVdd7mgJ1Wy4H25jbg4rulJXBzthKGK8"
+    },
+    "signature": "EW-sSBdIGnc8I6GdqUhIHPA15aBz44CjIrhIuXf27bKJxhDgrwHF0AsWNRkep_XhOu_fwEV_Ntk8VlcJKvjZAQ"
+  },
+  "entries": [
+    {
+      "index": 0,
+      "type": "decision",
+      "sessionId": "gs_Iko0E59eqyHw",
+      "digest": "1c1d154163c01ebb9e6f1ad2dd6a55a491f11285cd857984ab7fdc2779a85b7f",
+      "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+      "entryHash": "96c25537dc28884e0348c734be2e16f7293cc9d1c71fadd5b00f600c87c7fa61"
+    },
+    {
+      "index": 1,
+      "type": "session",
+      "sessionId": "gs_Iko0E59eqyHw",
+      "digest": "12d5115b21a98901a5f8645bb734b25c239019a649d8a055e5cebee989c50c8b",
+      "prev": "96c25537dc28884e0348c734be2e16f7293cc9d1c71fadd5b00f600c87c7fa61",
+      "entryHash": "9436d2d4784ddeec0267bd68121007d2b9d37942dbed88ce0605fe922a44c3aa"
+    }
+  ]
+}

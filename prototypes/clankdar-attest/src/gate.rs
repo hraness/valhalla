@@ -100,7 +100,7 @@ fn parse_cell(cell: &str) -> Option<(&str, u64)> {
 
 /// `Number.isInteger(value)` for a non-negative JSON number: an integral
 /// `3.0` counts as the integer `3`, matching JavaScript.
-fn js_integer_u64(value: &Value) -> Option<u64> {
+pub(crate) fn js_integer_u64(value: &Value) -> Option<u64> {
     if let Some(u) = value.as_u64() {
         return Some(u);
     }

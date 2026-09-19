@@ -4,13 +4,18 @@
 //!   clankdar-attest issue --key KEY.json (--suite NAME | --suite-version VER) --family F --tier N [--seed N] [--ttl S] [--context TXT] [--out TICKET.json] [--clankdar DIR]
 //!   clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR]
 //!   clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR]
+//!   clankdar-attest tlog check TLOG.json
+//!   clankdar-attest tlog prove TLOG.json --session gs_x
+//!   clankdar-attest tlog admit TLOG.json ADMISSION.json [--clankdar DIR]
 //!
 //! `check` on a receipt is fully offline. `issue`, `verify`, and
 //! `check --deep` call the canonical Clankdar generator oracle
 //! (`bun bench/instance.ts`) inside `--clankdar` (default: `$CLANKDAR_DIR`,
 //! then `../clankdar`). `check` on a `clankdar-gate-v1` admission always
 //! takes the deep path — admission checking regenerates every embedded
-//! receipt, so the oracle is required.
+//! receipt, so the oracle is required. `tlog check`/`tlog prove` are fully
+//! offline; `tlog admit` replays the admission's embedded receipts through
+//! the oracle like `check` does.
 
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -19,12 +24,13 @@ use std::{env, fs};
 use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use valhalla_clankdar_attest_prototype::{
-    check_admission, check_receipt, check_receipt_deep, draw_seed, generate_verifier,
-    issue_challenge, key_id_of, signing_key, subject_proof_for, verify_response, Admission,
-    AttestError, GeneratedInstance, IssueOptions, Receipt, Ticket, VerifierJwk, GATE_PROTOCOL,
+    check_admission, check_log, check_logged_admission, check_receipt, check_receipt_deep,
+    draw_seed, generate_verifier, issue_challenge, key_id_of, prove_session, signing_key,
+    subject_proof_for, verify_response, Admission, AttestError, GeneratedInstance, IssueOptions,
+    Receipt, Ticket, VerifierJwk, GATE_PROTOCOL,
 };
 
-const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR]";
+const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--clankdar DIR]";
 
 struct Args {
     flags: std::collections::HashMap<String, String>,
@@ -367,6 +373,85 @@ fn main() {
             println!("{}", serde_json::to_string(&result).unwrap_or_default());
             if !result.ok {
                 exit(2);
+            }
+        }
+        // `tlog` dispatches on its own subcommand, like `check` dispatches
+        // on the protocol field: `tlog check|prove|admit`.
+        "tlog" => {
+            let Some(sub) = args.positional.first().map(String::as_str) else {
+                fail(AttestError::InvalidInput(format!(
+                    "tlog requires a command. {USAGE}"
+                )));
+            };
+            match sub {
+                "check" => {
+                    let Some(path) = args.positional.get(1) else {
+                        fail(AttestError::InvalidInput(
+                            "tlog check requires a TLOG.json file".to_string(),
+                        ));
+                    };
+                    let log: serde_json::Value = match read_json(path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    let result = check_log(&log);
+                    println!("{}", serde_json::to_string(&result).unwrap_or_default());
+                    if !result.ok {
+                        exit(2);
+                    }
+                }
+                "prove" => {
+                    let (Some(path), Some(session)) =
+                        (args.positional.get(1), args.flags.get("session"))
+                    else {
+                        fail(AttestError::InvalidInput(
+                            "tlog prove requires TLOG.json and --session".to_string(),
+                        ));
+                    };
+                    let log: serde_json::Value = match read_json(path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    match prove_session(&log, session) {
+                        Ok(proof) => println!(
+                            "{}",
+                            serde_json::to_string_pretty(&proof).unwrap_or_default()
+                        ),
+                        Err(e) => fail(e),
+                    }
+                }
+                "admit" => {
+                    let (Some(log_path), Some(admission_path)) =
+                        (args.positional.get(1), args.positional.get(2))
+                    else {
+                        fail(AttestError::InvalidInput(
+                            "tlog admit requires TLOG.json and ADMISSION.json".to_string(),
+                        ));
+                    };
+                    let log: serde_json::Value = match read_json(log_path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    let admission: Admission = match read_json(admission_path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    // Admission checking always regenerates embedded
+                    // receipts — the deep path is inherent, so the oracle
+                    // is required.
+                    let dir = clankdar_dir(&args);
+                    let result =
+                        check_logged_admission(&log, &admission, |sv, family, tier, seed| {
+                            oracle(&dir, sv, true, family, tier, seed).map_err(|e| e.to_string())
+                        });
+                    println!("{}", serde_json::to_string(&result).unwrap_or_default());
+                    if !result.ok {
+                        exit(2);
+                    }
+                }
+                other => fail(AttestError::InvalidInput(format!(
+                    "unknown tlog command: {other}. {USAGE}"
+                ))),
             }
         }
         other => fail(AttestError::InvalidInput(format!(
