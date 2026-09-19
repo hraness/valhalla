@@ -1594,3 +1594,29 @@ certificate verify hook is passed by reference so one closure serves every quoru
 Remaining limitation: this is resupply of decided values over healed loopback links — it
 does not cover relayed transports (the tailcat/WireGuard path the chunking rules were sized
 for), transport authentication, or the cross-room producer policy, which stay open.
+
+### 2026-09-19: resupply while the healthy quorum keeps deciding
+
+`remote_member_resupplies_while_quorum_keeps_deciding` closes the concurrency clause left
+by the quiescent catch-up test. Member 3 is isolated while exact-quorum {0,1,2} decide seven
+consecutive game lanes at heights 2 through 8. The test then reopens exactly one
+bidirectional TCP pipe to member 0 with bounded chunks and delay, and waits for member 3's
+own `arc_malachitebft_sync` trace to record `Sent sync request to peer`. At that point the
+height-8 journal marker must still be absent: catch-up was requested, not inferred from a
+later result.
+
+The live pipe is tightened after that request while the healthy quorum decides height 9.
+Height 9 must commit on members 0, 1, and 2 while member 3 still lacks its older height-8
+marker. This proves new consensus progress overlaps an active decided-value resupply rather
+than occurring before heal or after catch-up. Removing the shaping then lets member 3 sync
+through height 9 without a restart; all eight recovered bundles carry certificates that
+verify under the committed set, and `prove` consumes both an old-deficit height and the new
+height-9 evidence from member 3's own journal.
+
+The test proxy now has dynamic chunk and delay controls shared by live pumps. They default
+to the prior 8 KiB/no-delay behavior, so the existing partition tests still exercise the
+same unshaped path; only the concurrency test shapes its single recovering link.
+
+Remaining limitation: the qualified path remains loopback TCP. Relayed transport through
+the optional tailcat/WireGuard path, transport authentication, and cross-room intake
+producer policy stay open.
