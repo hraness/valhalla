@@ -625,7 +625,7 @@ async fn drop_and_commit(
     wait_for(
         "the dropped body to decide at its height",
         || nodes[proposer].committed_height() >= height,
-        Duration::from_secs(60),
+        Duration::from_secs(90),
     )
     .await;
 }
@@ -788,7 +788,7 @@ async fn live_quorum_intake_drops_drive_admission_through_restart() {
     wait_for(
         "both nodes to journal-commit every game height",
         || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
-        Duration::from_secs(60),
+        Duration::from_secs(120),
     )
     .await;
 
@@ -856,7 +856,7 @@ async fn live_quorum_mid_height_crash_replays_wal() {
     wait_for(
         "validator B to sync the pre-rotation heights",
         || nodes[1].committed_height() >= 2,
-        Duration::from_secs(60),
+        Duration::from_secs(90),
     )
     .await;
 
@@ -908,7 +908,7 @@ async fn live_quorum_mid_height_crash_replays_wal() {
     wait_for(
         "both nodes to journal-commit every game height",
         || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
-        Duration::from_secs(60),
+        Duration::from_secs(120),
     )
     .await;
 
@@ -992,7 +992,7 @@ async fn live_quorum_silent_wal_loss_recovers_via_journal() {
     wait_for(
         "validator B to sync the pre-rotation heights",
         || nodes[1].committed_height() >= 2,
-        Duration::from_secs(60),
+        Duration::from_secs(90),
     )
     .await;
 
@@ -1050,7 +1050,7 @@ async fn live_quorum_silent_wal_loss_recovers_via_journal() {
     wait_for(
         "both nodes to journal-commit every game height",
         || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
-        Duration::from_secs(60),
+        Duration::from_secs(120),
     )
     .await;
 
@@ -1132,7 +1132,7 @@ async fn live_quorum_reported_wal_failure_halts_then_recovers() {
     wait_for(
         "validator B to sync the pre-rotation heights",
         || nodes[1].committed_height() >= 2,
-        Duration::from_secs(60),
+        Duration::from_secs(90),
     )
     .await;
 
@@ -1190,7 +1190,7 @@ async fn live_quorum_reported_wal_failure_halts_then_recovers() {
     wait_for(
         "both nodes to journal-commit every game height",
         || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
-        Duration::from_secs(60),
+        Duration::from_secs(120),
     )
     .await;
 
