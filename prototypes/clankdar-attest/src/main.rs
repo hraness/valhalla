@@ -2,12 +2,15 @@
 //!
 //!   clankdar-attest keygen --out KEY.json
 //!   clankdar-attest issue --key KEY.json (--suite NAME | --suite-version VER) --family F --tier N [--seed N] [--ttl S] [--context TXT] [--out TICKET.json] [--clankdar DIR]
-//!   clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE [--out RECEIPT.json] [--clankdar DIR]
-//!   clankdar-attest check RECEIPT.json [--deep] [--clankdar DIR]
+//!   clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR]
+//!   clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR]
 //!
-//! `check` is fully offline. `issue`, `verify`, and `check --deep` call the
-//! canonical Clankdar generator oracle (`bun bench/instance.ts`) inside
-//! `--clankdar` (default: `$CLANKDAR_DIR`, then `../clankdar`).
+//! `check` on a receipt is fully offline. `issue`, `verify`, and
+//! `check --deep` call the canonical Clankdar generator oracle
+//! (`bun bench/instance.ts`) inside `--clankdar` (default: `$CLANKDAR_DIR`,
+//! then `../clankdar`). `check` on a `clankdar-gate-v1` admission always
+//! takes the deep path — admission checking regenerates every embedded
+//! receipt, so the oracle is required.
 
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -16,12 +19,12 @@ use std::{env, fs};
 use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use valhalla_clankdar_attest_prototype::{
-    check_receipt, check_receipt_deep, draw_seed, generate_verifier, issue_challenge, key_id_of,
-    signing_key, verify_response, AttestError, GeneratedInstance, IssueOptions, Receipt, Ticket,
-    VerifierJwk,
+    check_admission, check_receipt, check_receipt_deep, draw_seed, generate_verifier,
+    issue_challenge, key_id_of, signing_key, subject_proof_for, verify_response, Admission,
+    AttestError, GeneratedInstance, IssueOptions, Receipt, Ticket, VerifierJwk, GATE_PROTOCOL,
 };
 
-const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT.json [--deep] [--clankdar DIR]";
+const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR]";
 
 struct Args {
     flags: std::collections::HashMap<String, String>,
@@ -222,6 +225,8 @@ fn main() {
                 tier,
                 ttl_seconds: args.flags.get("ttl").and_then(|t| t.parse().ok()),
                 context: args.flags.get("context").cloned(),
+                subject: None,
+                session_id: None,
                 now: None,
             };
             let (challenge, ticket) = match issue_challenge(&opts, seed, &instance, &key) {
@@ -282,7 +287,29 @@ fn main() {
                     Ok(i) => i,
                     Err(e) => fail(e),
                 };
-            let receipt = match verify_response(&ticket, &response, &instance, &key, None) {
+            // `--subject-key` mints one respondent proof for this challenge —
+            // session-scoped when the challenge carries a `sessionId`.
+            let subject_proof = match args.flags.get("subject-key") {
+                Some(path) => {
+                    let respondent: VerifierJwk = match read_json(path) {
+                        Ok(j) => j,
+                        Err(e) => fail(e),
+                    };
+                    match subject_proof_for(&ticket.challenge, &respondent) {
+                        Ok(proof) => Some(proof),
+                        Err(e) => fail(e),
+                    }
+                }
+                None => None,
+            };
+            let receipt = match verify_response(
+                &ticket,
+                &response,
+                &instance,
+                &key,
+                subject_proof.as_ref(),
+                None,
+            ) {
                 Ok(r) => r,
                 Err(e) => fail(e),
             };
@@ -301,12 +328,33 @@ fn main() {
         "check" => {
             let Some(path) = args.positional.first() else {
                 fail(AttestError::InvalidInput(
-                    "check requires a receipt file".to_string(),
+                    "check requires a receipt or admission file".to_string(),
                 ));
             };
-            let receipt: Receipt = match read_json(path) {
-                Ok(r) => r,
+            let value: serde_json::Value = match read_json(path) {
+                Ok(v) => v,
                 Err(e) => fail(e),
+            };
+            if value.get("protocol").and_then(|p| p.as_str()) == Some(GATE_PROTOCOL) {
+                let admission: Admission = match serde_json::from_value(value) {
+                    Ok(a) => a,
+                    Err(e) => fail(AttestError::Malformed(format!("cannot parse {path}: {e}"))),
+                };
+                // Admission checking always regenerates embedded receipts —
+                // the deep path is inherent, so the oracle is required.
+                let dir = clankdar_dir(&args);
+                let result = check_admission(&admission, |suite_version, family, tier, seed| {
+                    oracle(&dir, suite_version, true, family, tier, seed).map_err(|e| e.to_string())
+                });
+                println!("{}", serde_json::to_string(&result).unwrap_or_default());
+                if !result.ok {
+                    exit(2);
+                }
+                return;
+            }
+            let receipt: Receipt = match serde_json::from_value(value) {
+                Ok(r) => r,
+                Err(e) => fail(AttestError::Malformed(format!("cannot parse {path}: {e}"))),
             };
             let result = if args.switches.contains("deep") {
                 let dir = clankdar_dir(&args);

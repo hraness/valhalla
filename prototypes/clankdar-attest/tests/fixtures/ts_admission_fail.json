@@ -1,0 +1,33 @@
+{
+  "admission": {
+    "protocol": "clankdar-gate-v1",
+    "payload": "{\"challenges\":[{\"challengeId\":\"att_w8TRdukgLuYV\",\"context\":\"jobs-board\",\"expiresAt\":\"2026-09-18T00:05:00.000Z\",\"family\":\"arithmetic\",\"kind\":\"challenge\",\"nonce\":\"-QDZPliooMyakoMU\",\"prompt\":\"What is 3 + 4? Reply with only the number.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"ec35400e760d8925f170ec06af583d71fbb0498b00123e18c0a4d52b93c8ad76\",\"sessionId\":\"gs_5DxDCVquOIj7\",\"subject\":\"agent-7\",\"suiteVersion\":\"clankdar-suite-v2\",\"tier\":0,\"verifier\":{\"keyId\":\"280722b9f8d1462e\",\"publicKey\":\"B37PHmOD-PF2YuBX0FNneJ__3TtGI5i1gVRgsteCTp0\"}},{\"challengeId\":\"att_m0I9dyLj5js4\",\"context\":\"jobs-board\",\"expiresAt\":\"2026-09-18T00:05:00.000Z\",\"family\":\"arithmetic\",\"kind\":\"challenge\",\"nonce\":\"Tmbg_ut4X0smACT1\",\"prompt\":\"Compute ((12 * 19) - 13). Work left to right inside parentheses first. Reply with only the integer result.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"d25a3875967dc4f0e62c4abcf47796826cfa3b85003f5d439cd4cffc08458ebd\",\"sessionId\":\"gs_5DxDCVquOIj7\",\"subject\":\"agent-7\",\"suiteVersion\":\"clankdar-suite-v2\",\"tier\":1,\"verifier\":{\"keyId\":\"280722b9f8d1462e\",\"publicKey\":\"B37PHmOD-PF2YuBX0FNneJ__3TtGI5i1gVRgsteCTp0\"}},{\"challengeId\":\"att_xjyS6Epp2nOq\",\"context\":\"jobs-board\",\"expiresAt\":\"2026-09-18T00:05:00.000Z\",\"family\":\"ordering\",\"kind\":\"challenge\",\"nonce\":\"EBuBPKacSTUixZuD\",\"prompt\":\"Four runners (A=di, B=fay, C=gus, D=hal) finished a race. Clues: di finished before fay; hal finished before di; hal finished before fay; di finished before gus; gus finished before fay; hal finished before gus. List the finish order from first to last as the letters, separated by spaces. Reply with only the letters.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"02d141303649c2cca9433bc8b7c4d00e947c993bcc7d51d18f0146ec0ade7933\",\"sessionId\":\"gs_5DxDCVquOIj7\",\"subject\":\"agent-7\",\"suiteVersion\":\"clankdar-suite-v2\",\"tier\":3,\"verifier\":{\"keyId\":\"280722b9f8d1462e\",\"publicKey\":\"B37PHmOD-PF2YuBX0FNneJ__3TtGI5i1gVRgsteCTp0\"}}],\"context\":\"jobs-board\",\"kind\":\"admission\",\"policy\":{\"cells\":[\"arithmetic:t0\",\"arithmetic:t1\",\"ordering:t3\"],\"challenges\":3,\"minPass\":2,\"suite\":\"v2\",\"ttlSeconds\":300},\"receipts\":[{\"payload\":\"{\\\"challenge\\\":{\\\"challengeId\\\":\\\"att_w8TRdukgLuYV\\\",\\\"context\\\":\\\"jobs-board\\\",\\\"expiresAt\\\":\\\"2026-09-18T00:05:00.000Z\\\",\\\"family\\\":\\\"arithmetic\\\",\\\"kind\\\":\\\"challenge\\\",\\\"nonce\\\":\\\"-QDZPliooMyakoMU\\\",\\\"prompt\\\":\\\"What is 3 + 4? Reply with only the number.\\\",\\\"protocol\\\":\\\"clankdar-attest-v1\\\",\\\"seedCommit\\\":\\\"ec35400e760d8925f170ec06af583d71fbb0498b00123e18c0a4d52b93c8ad76\\\",\\\"sessionId\\\":\\\"gs_5DxDCVquOIj7\\\",\\\"subject\\\":\\\"agent-7\\\",\\\"suiteVersion\\\":\\\"clankdar-suite-v2\\\",\\\"tier\\\":0,\\\"verifier\\\":{\\\"keyId\\\":\\\"280722b9f8d1462e\\\",\\\"publicKey\\\":\\\"B37PHmOD-PF2YuBX0FNneJ__3TtGI5i1gVRgsteCTp0\\\"}},\\\"expected\\\":\\\"7\\\",\\\"kind\\\":\\\"receipt\\\",\\\"response\\\":\\\"7\\\",\\\"seed\\\":700000,\\\"verdict\\\":{\\\"answeredAt\\\":\\\"2026-09-18T00:01:00.000Z\\\",\\\"format\\\":\\\"integer\\\",\\\"pass\\\":true}}\",\"protocol\":\"clankdar-attest-v1\",\"signature\":\"i7pnS6GaOYM-a_1S4mAxPUplbRia0_EM__ZeEsxcPPcuemv1BzqbgMnw813Q61liQMRL1ek96xyqLtFRR4YXAQ\"}],\"sessionId\":\"gs_5DxDCVquOIj7\",\"subject\":\"agent-7\",\"verdict\":{\"decidedAt\":\"2026-09-18T00:01:00.000Z\",\"pass\":false,\"passed\":1,\"required\":2}}",
+    "signature": "Fa68Cij0iREmkts-wxGnq1VxkLFZdZVUsJQtkAN50j8uuGVftSvN8L_wR3kcU0K_p79mLp-1LEutq05BH22VCw"
+  },
+  "instances": [
+    {
+      "suiteVersion": "clankdar-suite-v2",
+      "family": "arithmetic",
+      "tier": 0,
+      "seed": 700000,
+      "prompt": "What is 3 + 4? Reply with only the number.",
+      "answer": "7"
+    },
+    {
+      "suiteVersion": "clankdar-suite-v2",
+      "family": "arithmetic",
+      "tier": 1,
+      "seed": 700001,
+      "prompt": "Compute ((12 * 19) - 13). Work left to right inside parentheses first. Reply with only the integer result.",
+      "answer": "215"
+    },
+    {
+      "suiteVersion": "clankdar-suite-v2",
+      "family": "ordering",
+      "tier": 3,
+      "seed": 700002,
+      "prompt": "Four runners (A=di, B=fay, C=gus, D=hal) finished a race. Clues: di finished before fay; hal finished before di; hal finished before fay; di finished before gus; gus finished before fay; hal finished before gus. List the finish order from first to last as the letters, separated by spaces. Reply with only the letters.",
+      "answer": "D A C B"
+    }
+  ]
+}

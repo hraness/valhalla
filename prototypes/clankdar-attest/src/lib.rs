@@ -11,18 +11,38 @@
 //! payload bytes verbatim, so checkers never re-serialize JSON.
 //!
 //! Scope: a receipt attests that one signed response satisfied one challenge
-//! inside one time window. It is **not** a liveness credential, does not prove
-//! a model (or AI) produced the response, grants no authority, and provides no
-//! durable replay protection — consumers should issue fresh challenges.
+//! inside one time window; an optional `subjectProof` additionally binds the
+//! response to a respondent-held Ed25519 key. It is **not** a liveness
+//! credential, does not prove a model (or AI) produced the response, grants
+//! no authority, and provides no durable replay protection — consumers
+//! should issue fresh challenges.
 //!
 //! Instance generation stays with the canonical TypeScript suite; this crate
 //! calls `bench/instance.ts` (the generator oracle) for `issue`, `verify`,
 //! and deep checks. The offline [`check_receipt`] path needs no oracle: it
 //! verifies the signature, the seed commitment, timing, and rescores the
 //! recorded answer pair.
+//!
+//! On top of the attestation layer sits `clankdar-gate-v1` admission
+//! sessions: a [`GatePolicy`] bounds the suite cells, challenge count, pass
+//! floor, and deadline; the issuer signs one [`Admission`] binding the
+//! complete challenge list, the minted receipts, and the verdict.
+//! [`check_admission`] independently replays an admission — envelope and
+//! payload shape, per-challenge session binding and cell coverage, the
+//! payload signature, every embedded receipt through the deep check,
+//! canonical challenge equality, one subject key across proofed receipts,
+//! and verdict arithmetic — trusting nothing beyond the recorded episode. An
+//! admission attests K passing responses under one policy in one window;
+//! like a receipt it is never identity, liveness, or authority.
 
+mod gate;
 mod scorer;
 
+pub use gate::{
+    check_admission, suite_version, Admission, AdmissionBody, AdmissionCheck, AdmissionVerdict,
+    GatePolicy, AGENT_SUITE_VERSION, FRONTIER_SUITE_VERSION, GATE_PROTOCOL, MAX_POLICY_CELLS,
+    MAX_POLICY_CHALLENGES, MAX_POLICY_TTL_SECONDS, MIN_POLICY_TTL_SECONDS, V2_SUITE_VERSION,
+};
 pub use scorer::{
     answer_format, canonical_answer, score_answer, AnswerFormat, Score, MAX_ANSWER_LENGTH,
     SCORER_VERSION,
@@ -39,6 +59,7 @@ use time::OffsetDateTime;
 /// Wire protocol identifier.
 pub const ATTEST_PROTOCOL: &str = "clankdar-attest-v1";
 const COMMIT_DOMAIN: &str = "clankdar/attest-seed/v1";
+const SUBJECT_DOMAIN: &str = "clankdar/subject/v1";
 
 /// Minimum challenge lifetime, in seconds.
 pub const MIN_TTL_SECONDS: i64 = 10;
@@ -75,6 +96,15 @@ pub struct Challenge {
     /// Optional application scope binding.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    /// Optional relying-party subject claim (e.g. an agent or session key id).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Gate session this challenge was issued under (clankdar-gate-v1).
+    ///
+    /// Challenge serde intentionally tolerates unknown members: the protocol
+    /// permits optional and future fields, so no `deny_unknown_fields` here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// Verifier key identity.
     pub verifier: VerifierRef,
 }
@@ -100,6 +130,20 @@ pub struct Ticket {
     pub expected: String,
 }
 
+/// A respondent's optional key proof: `publicKey` is a base64url Ed25519 JWK
+/// `x` member (the same encoding as verifier keys) and `signature` is a
+/// base64url Ed25519 signature over the challenge's subject transcript. It
+/// binds the response to a key the respondent controls — never to a model,
+/// a person, or an authority.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubjectProof {
+    /// Respondent Ed25519 public key, base64url (no padding).
+    pub public_key: String,
+    /// Base64url Ed25519 signature over the subject transcript.
+    pub signature: String,
+}
+
 /// The signed body serialized inside [`Receipt::payload`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReceiptBody {
@@ -113,6 +157,12 @@ pub struct ReceiptBody {
     pub expected: String,
     /// The candidate's raw response.
     pub response: String,
+    /// Optional respondent key proof, embedded inside the signed payload.
+    /// Kept as a raw member so a malformed proof still parses as a receipt
+    /// body and then fails the proof check itself — mirroring the TypeScript
+    /// checker, which reads `subjectProof` off the parsed payload.
+    #[serde(rename = "subjectProof", skip_serializing_if = "Option::is_none")]
+    pub subject_proof: Option<serde_json::Value>,
     /// Scoring outcome.
     pub verdict: Verdict,
 }
@@ -314,6 +364,81 @@ fn verifying_key(public_key_b64: &str) -> Result<VerifyingKey, AttestError> {
         .map_err(|_| AttestError::Malformed("invalid Ed25519 public key".to_string()))
 }
 
+/// `subjectTranscript`: the domain-separated transcript a subject proof
+/// signs. Session-scoped when the challenge carries `sessionId` — one proof
+/// then covers every challenge minted under that gate session. Standalone
+/// challenges bind the proof to the single `challengeId` + `nonce` instead.
+pub fn subject_transcript(challenge: &Challenge, public_key: &str) -> String {
+    match &challenge.session_id {
+        Some(session_id) => {
+            canonical_json(&serde_json::json!([SUBJECT_DOMAIN, session_id, public_key]))
+        }
+        None => canonical_json(&serde_json::json!([
+            SUBJECT_DOMAIN,
+            challenge.challenge_id,
+            challenge.nonce,
+            public_key
+        ])),
+    }
+}
+
+/// Transcript over the raw challenge member, used by the check path: a
+/// present `sessionId` — even `null` — selects the session scope, exactly
+/// matching `challenge.sessionId !== undefined` in TypeScript. Missing
+/// `challengeId`/`nonce` members serialize as `null`, as `canonical` does
+/// with `undefined` array members.
+fn subject_transcript_of(challenge: Option<&serde_json::Value>, public_key: &str) -> String {
+    let member = |key: &str| challenge.and_then(|c| c.get(key)).cloned();
+    match member("sessionId") {
+        Some(session_id) => {
+            canonical_json(&serde_json::json!([SUBJECT_DOMAIN, session_id, public_key]))
+        }
+        None => canonical_json(&serde_json::json!([
+            SUBJECT_DOMAIN,
+            member("challengeId").unwrap_or(serde_json::Value::Null),
+            member("nonce").unwrap_or(serde_json::Value::Null),
+            public_key,
+        ])),
+    }
+}
+
+/// Ed25519 verification over a subject transcript — never throws, mirroring
+/// `checkSubjectProof`'s try/catch: bad key material or a bad signature is a
+/// failed check, not a malformed receipt.
+fn subject_signature_verifies(transcript: &str, proof: &SubjectProof) -> bool {
+    let Ok(key) = verifying_key(&proof.public_key) else {
+        return false;
+    };
+    let Ok(bytes) = b64url_decode(&proof.signature) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(&bytes) else {
+        return false;
+    };
+    key.verify(transcript.as_bytes(), &signature).is_ok()
+}
+
+/// `subjectProofFor`: mint a subject proof for a challenge with a respondent
+/// Ed25519 JWK (the same key shape as verifier keys).
+pub fn subject_proof_for(
+    challenge: &Challenge,
+    jwk: &VerifierJwk,
+) -> Result<SubjectProof, AttestError> {
+    let key = signing_key(jwk)?;
+    let public_key = b64url(&key.verifying_key().to_bytes());
+    let signature = key.sign(subject_transcript(challenge, &public_key).as_bytes());
+    Ok(SubjectProof {
+        public_key,
+        signature: b64url(&signature.to_bytes()),
+    })
+}
+
+/// `checkSubjectProof`: independently verify a subject proof against the
+/// challenge's transcript.
+pub fn check_subject_proof(challenge: &Challenge, proof: &SubjectProof) -> bool {
+    subject_signature_verifies(&subject_transcript(challenge, &proof.public_key), proof)
+}
+
 fn random_b64url(len: usize) -> String {
     let mut bytes = vec![0u8; len];
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
@@ -323,6 +448,15 @@ fn random_b64url(len: usize) -> String {
 fn parse_time(value: &str) -> Result<OffsetDateTime, AttestError> {
     OffsetDateTime::parse(value, &Rfc3339)
         .map_err(|_| AttestError::Malformed(format!("not an RFC 3339 timestamp: {value}")))
+}
+
+/// `^gs_[A-Za-z0-9_-]{12}$` — the gate session id shape.
+fn is_session_id(value: &str) -> bool {
+    value.len() == 15
+        && value.starts_with("gs_")
+        && value[3..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Draw a fresh uint32 seed. Callers draw first, then ask the generator
@@ -343,6 +477,10 @@ pub struct IssueOptions<'a> {
     pub ttl_seconds: Option<i64>,
     /// Optional application scope binding.
     pub context: Option<String>,
+    /// Optional relying-party subject claim.
+    pub subject: Option<String>,
+    /// Optional gate session id binding (clankdar-gate-v1).
+    pub session_id: Option<String>,
     /// Issuance instant; `None` uses the wall clock.
     pub now: Option<OffsetDateTime>,
 }
@@ -379,6 +517,20 @@ pub fn issue_challenge(
             ));
         }
     }
+    if let Some(subject) = &opts.subject {
+        if subject.is_empty() || subject.len() > MAX_CONTEXT_LEN {
+            return Err(AttestError::InvalidInput(
+                "subject must be a nonempty string up to 256 chars".to_string(),
+            ));
+        }
+    }
+    if let Some(session_id) = &opts.session_id {
+        if !is_session_id(session_id) {
+            return Err(AttestError::InvalidInput(
+                "sessionId must be a gate session id".to_string(),
+            ));
+        }
+    }
     let now = opts.now.unwrap_or_else(OffsetDateTime::now_utc);
     let expires_at = (now + time::Duration::seconds(ttl))
         .format(&Rfc3339)
@@ -403,6 +555,8 @@ pub fn issue_challenge(
         nonce,
         expires_at,
         context: opts.context.clone(),
+        subject: opts.subject.clone(),
+        session_id: opts.session_id.clone(),
         verifier: VerifierRef {
             key_id: key_id_of(&public_key)?,
             public_key,
@@ -422,12 +576,15 @@ pub fn issue_challenge(
 
 /// Rescore the response and sign a seed-revealing receipt. `instance` must be
 /// regenerated for the ticket's seed; the function checks prompt equality and
-/// answer agreement so a verifier cannot sign a fabricated instance.
+/// answer agreement so a verifier cannot sign a fabricated instance. An
+/// optional `subject_proof` — verified against the challenge transcript
+/// before minting — embeds inside the signed payload.
 pub fn verify_response(
     ticket: &Ticket,
     response: &str,
     instance: &GeneratedInstance,
     key: &SigningKey,
+    subject_proof: Option<&SubjectProof>,
     now: Option<OffsetDateTime>,
 ) -> Result<Receipt, AttestError> {
     let challenge = &ticket.challenge;
@@ -476,6 +633,13 @@ pub fn verify_response(
             "ticket answer does not match the regenerated instance".to_string(),
         ));
     }
+    if let Some(proof) = subject_proof {
+        if !check_subject_proof(challenge, proof) {
+            return Err(AttestError::Mismatch(
+                "subject proof does not verify for this challenge".to_string(),
+            ));
+        }
+    }
     let scored = score_answer(&instance.answer, response, format);
     let body = ReceiptBody {
         kind: "receipt".to_string(),
@@ -483,6 +647,10 @@ pub fn verify_response(
         seed: ticket.seed,
         expected: ticket.expected.clone(),
         response: response.to_string(),
+        subject_proof: subject_proof
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|e| AttestError::Malformed(e.to_string()))?,
         verdict: Verdict {
             pass: scored.pass,
             format: format.as_str().to_string(),
@@ -564,7 +732,14 @@ fn check_receipt_with(
     if receipt.protocol != ATTEST_PROTOCOL {
         return malformed("not an attestation receipt");
     }
-    let body: ReceiptBody = match serde_json::from_str(&receipt.payload) {
+    // The raw payload is kept alongside the typed body: `subjectProof` is
+    // checked by member presence (`!== undefined`), which the typed body
+    // cannot express.
+    let raw: serde_json::Value = match serde_json::from_str(&receipt.payload) {
+        Ok(raw) => raw,
+        Err(_) => return malformed("payload is not a receipt body"),
+    };
+    let body: ReceiptBody = match serde_json::from_value(raw.clone()) {
         Ok(body) => body,
         Err(_) => return malformed("payload is not a receipt body"),
     };
@@ -649,6 +824,20 @@ fn check_receipt_with(
         }
         if canonical_answer(&instance.answer, format) != Some(body.expected.clone()) {
             return malformed("recorded answer disagrees with regeneration");
+        }
+    }
+    // §7 subject binding, checked last as in the TypeScript checker. A
+    // present `subjectProof` — even `null` — must carry a verifiable proof:
+    // `!== undefined` counts `null` as present, so presence is read off the
+    // raw payload, and the transcript scope reads the raw `sessionId` member.
+    if let Some(proof_value) = raw.get("subjectProof") {
+        let proof: SubjectProof = match serde_json::from_value(proof_value.clone()) {
+            Ok(proof) => proof,
+            Err(_) => return malformed("malformed subject proof"),
+        };
+        let transcript = subject_transcript_of(raw.get("challenge"), &proof.public_key);
+        if !subject_signature_verifies(&transcript, &proof) {
+            return malformed("subject proof does not verify");
         }
     }
     CheckResult::ok(body.verdict.pass)
