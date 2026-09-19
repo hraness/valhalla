@@ -1,0 +1,56 @@
+{
+  "head": {
+    "protocol": "clankdar-tlog-v1",
+    "kind": "head",
+    "count": 5,
+    "head": "65c1a37f14923340e76dbdae9e4b7311ec40194f3c1082095ae6b0f0a2e1c75a",
+    "issuedAt": "2026-09-18T00:00:00.000Z",
+    "verifier": {
+      "keyId": "ffffffffffffffff",
+      "publicKey": "UXBJpPvAuAuaVdd7mgJ1Wy4H25jbg4rulJXBzthKGK8"
+    },
+    "signature": "kOrWlfwTyPfwmmcmQg73gzzF5qIqwbg3_yMd8wP6DgmBvllrSciIKK3A9Qz6ScHzu0Am3cIWTE-g61yuHZejDQ"
+  },
+  "entries": [
+    {
+      "index": 0,
+      "type": "session",
+      "sessionId": "gs_Iko0E59eqyHw",
+      "digest": "12d5115b21a98901a5f8645bb734b25c239019a649d8a055e5cebee989c50c8b",
+      "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+      "entryHash": "22fe878ce04c234344b6e282243616e2a8688f5921be18267e86302e860a2f49"
+    },
+    {
+      "index": 1,
+      "type": "decision",
+      "sessionId": "gs_Iko0E59eqyHw",
+      "digest": "1c1d154163c01ebb9e6f1ad2dd6a55a491f11285cd857984ab7fdc2779a85b7f",
+      "prev": "22fe878ce04c234344b6e282243616e2a8688f5921be18267e86302e860a2f49",
+      "entryHash": "a9a767a9332920845d65e90687b8d28869e9822a5e6d2bbfd4624217c51600da"
+    },
+    {
+      "index": 2,
+      "type": "session",
+      "sessionId": "gs_SRkJhtV6WFqT",
+      "digest": "1dfe3cae325f34e39bbd99ae6c264737a8a2c4908996d79057df37d86050413c",
+      "prev": "a9a767a9332920845d65e90687b8d28869e9822a5e6d2bbfd4624217c51600da",
+      "entryHash": "bb87857419447cf441a4e3cdb54eddb221d52da12a618dfbb04422cb49da5ac4"
+    },
+    {
+      "index": 3,
+      "type": "decision",
+      "sessionId": "gs_SRkJhtV6WFqT",
+      "digest": "0518d0462d25e2fd45a03c6e0abeb6854116bb6bd9984b41f1530e9ae23b1587",
+      "prev": "bb87857419447cf441a4e3cdb54eddb221d52da12a618dfbb04422cb49da5ac4",
+      "entryHash": "0418e0d1ecc6d1490ed3d60a56d181cc0cc86c6da7c25b0ff3e8730023c8e35b"
+    },
+    {
+      "index": 4,
+      "type": "session",
+      "sessionId": "gs_mQl3bhecrFO2",
+      "digest": "9411f7cd76df160cb3b508c22f8d29c3679043ccc54c1ceea8ae3fbf3736260d",
+      "prev": "0418e0d1ecc6d1490ed3d60a56d181cc0cc86c6da7c25b0ff3e8730023c8e35b",
+      "entryHash": "65c1a37f14923340e76dbdae9e4b7311ec40194f3c1082095ae6b0f0a2e1c75a"
+    }
+  ]
+}

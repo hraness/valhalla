@@ -34,9 +34,19 @@
 //! and verdict arithmetic — trusting nothing beyond the recorded episode. An
 //! admission attests K passing responses under one policy in one window;
 //! like a receipt it is never identity, liveness, or authority.
+//!
+//! `clankdar-tlog-v1` completes the stack: a derived, hash-chained,
+//! issuer-signed transparency log over the gate ledger. [`check_log`]
+//! replays every `entryHash` and `prev` link and enforces ledger semantics
+//! on entry order; [`prove_session`] reports session/decision inclusion
+//! indexes under the signed head; [`check_logged_admission`] is the
+//! portable-badge test — the admission must verify on its own AND trace to
+//! a logged, decided session. The log binds the issuer's history under its
+//! own key only: it prevents neither self-minting nor forking.
 
 mod gate;
 mod scorer;
+mod tlog;
 
 pub use gate::{
     check_admission, suite_version, Admission, AdmissionBody, AdmissionCheck, AdmissionVerdict,
@@ -46,6 +56,10 @@ pub use gate::{
 pub use scorer::{
     answer_format, canonical_answer, score_answer, AnswerFormat, Score, MAX_ANSWER_LENGTH,
     SCORER_VERSION,
+};
+pub use tlog::{
+    check_log, check_logged_admission, entries_for, entry_hash, prove_session, AdmittedCheck,
+    LogCheck, SessionProof, TlogEntry, TlogHashedEntry, TlogHead, TransparencyLog, TLOG_PROTOCOL,
 };
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

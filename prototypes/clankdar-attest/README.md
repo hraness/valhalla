@@ -3,7 +3,8 @@
 An independent Rust implementation of `clankdar-attest-v1`, the sealed-seed
 capability attestation protocol defined by the Clankdar benchmark
 (`bench/attest.ts` in the clankdar repository is the reference), plus
-`clankdar-gate-v1` admission checking (`bench/gate.ts`).
+`clankdar-gate-v1` admission checking (`bench/gate.ts`) and
+`clankdar-tlog-v1` transparency-log checking (`bench/tlog.ts`).
 
 A verifier issues a challenge whose generator seed is committed but
 unrevealed: the puzzle instance has never existed publicly, so it cannot be
@@ -25,6 +26,9 @@ clankdar-attest issue --key KEY.json --suite frontier --family automata --tier 6
 clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE \
     [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR]
 clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR]
+clankdar-attest tlog check TLOG.json
+clankdar-attest tlog prove TLOG.json --session gs_x
+clankdar-attest tlog admit TLOG.json ADMISSION.json [--clankdar DIR]
 ```
 
 `check` on a receipt is fully offline: signature, key identity, seed
@@ -34,12 +38,16 @@ generator oracle — `bun bench/instance.ts` inside the clankdar repository
 located by `--clankdar`, `$CLANKDAR_DIR`, or `../clankdar` — so the recorded
 prompt and expected answer must regenerate exactly. `check` on a
 `clankdar-gate-v1` admission always takes the deep path: every embedded
-receipt regenerates through the oracle, so the clankdar checkout is required.
+receipt regenerates through the oracle, so the clankdar checkout is
+required. `tlog check` and `tlog prove` are fully offline — they consume
+`{head, entries}` JSON like the TypeScript check commands; `tlog admit`
+replays the admission's embedded receipts through the oracle like `check`.
 
 Keys are Ed25519 OKP JWKs (`{kty, crv, x, d}`), byte-compatible with the
-TypeScript `keygen`. Receipts and admissions verify across implementations:
-the Rust tests replay TypeScript-issued receipts and admissions, and
-`bun bench/attest.ts check` / `bun bench/gate.ts check` replay the Rust
+TypeScript `keygen`. Receipts, admissions, and transparency logs verify
+across implementations: the Rust tests replay TypeScript-issued receipts,
+admissions, and `bench/tlog.ts`-built logs, and `bun bench/attest.ts check`
+/ `bun bench/gate.ts check` / `bun bench/tlog.ts check` replay the Rust
 verdicts.
 
 ## Gate admissions (clankdar-gate-v1)
@@ -86,6 +94,41 @@ instead: a session cell that cannot regenerate can never produce a counted
 pass, only a failed challenge. A policy naming a nonexistent cell therefore
 parses here but is unpassable in practice — matching the spirit, not the
 letter, of the TypeScript floor.
+
+## Transparency log (clankdar-tlog-v1)
+
+The gate ledger records every session issuance and every admission
+decision, but only the issuer sees it. The transparency log is the
+derived, signed view: each ledger record becomes one hash-chained entry
+(`digest` over the verbatim record, `prev` over the previous `entryHash`,
+genesis 64 zeroes), and the issuer signs a head committing to the entry
+count and the last `entryHash` — the analogue of a CT signed tree head.
+
+`check_log` mirrors `checkLog` in `bench/tlog.ts` step for step: every
+`entryHash` recomputes over the five body fields, the `prev` chain walks
+back to genesis, per-entry shape checks fire in order, entry order
+satisfies ledger semantics (a session is issued once; a decision names an
+issued, still-open session — strictly earlier in the chain), then the head
+is recounted, `issuedAt` parsed, `keyId` recomputed, and the signature
+re-verified over `canonical(head minus signature)`. `prove_session` runs
+the same check and reports `{sessionId, sessionIndex, decisionIndex,
+head}` — `decisionIndex: null` while a session is undecided.
+`check_logged_admission` is the portable-badge test: the admission must
+pass `check_admission` on its own AND its `sessionId` must have both a
+session and a decision entry in a checked log — a valid admission with no
+logged session is issuer-claimed only. The two verifications are
+independent: the head is bound to the issuer's log key while the admission
+is bound to the challenges' verifier key, so a head signed by a different
+key still checks.
+
+The crate only *checks* logs — it consumes `{head, entries}` JSON like the
+TypeScript `check`/`prove`/`admit` commands. Building a log replays the
+private `gate-state.jsonl` ledger (`entries_for`/`entry_hash` exist for
+tests and tooling over already-public records, never for ledger replay).
+And the honest limit stands: the log binds *this* issuer's history under
+*its own* key — it does not stop self-minting, and it cannot detect a
+fork alone; equivocation needs head comparison the issuer published
+elsewhere (gossip or external anchoring, both future work).
 
 ## Honest scope
 
