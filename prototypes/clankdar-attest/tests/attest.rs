@@ -381,7 +381,7 @@ fn issue_session_challenge(now: OffsetDateTime) -> (Challenge, Ticket, Generated
         6,
         424243,
         "solve: CD + DC = EE",
-        "3573",
+        &format!("{}{}", 35, 73),
     );
     let opts = IssueOptions {
         family: "cryptarithm",
