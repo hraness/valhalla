@@ -35,8 +35,9 @@ use serde_json::{json, Map, Value};
 
 use crate::gate::js_integer_u64;
 use crate::{
-    b64url_decode, canonical_json, check_admission, key_id_of, parse_time, sha256_hex,
-    verifying_key, Admission, AdmissionCheck, AttestError, GeneratedInstance, VerifierRef,
+    b64url_decode, canonical_json, check_admission_with_pool, key_id_of, parse_time, sha256_hex,
+    verifying_key, Admission, AdmissionCheck, AttestError, GeneratedInstance, HoldoutPool,
+    VerifierRef,
 };
 
 /// Wire protocol identifier.
@@ -515,46 +516,55 @@ pub struct AdmittedCheck {
     /// Count of passing receipts when the admission itself checked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub passed: Option<u64>,
+    /// Held-out receipts whose scores remain issuer-claimed without a
+    /// disclosed pool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreplayed: Option<u64>,
     /// Why the check failed when `ok` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
 /// `checkLoggedAdmission`: the portable-badge test — the admission must
-/// pass [`check_admission`] on its own AND its `sessionId` must have both a
-/// session entry and a decision entry in a log that itself verifies. A
-/// valid admission with no logged session is issuer-claimed only.
-///
-/// `regenerate` is the same generator-oracle callback
-/// [`crate::check_admission`] takes: every embedded receipt replays
-/// through the deep regeneration check.
-///
-/// The two verifications are independent: the admission is signed by the
-/// gate verifier key recorded inside it, while the head is signed by
-/// whatever key the issuer used for the log — one issuer may rotate or
-/// separate them.
+/// pass the admission checker on its own AND its `sessionId` must have both
+/// a session entry and a decision entry in a log that itself verifies. A
+/// valid admission with no logged session is issuer-claimed only. Without
+/// a disclosed holdout pool, held-out scores remain visible in
+/// [`AdmittedCheck::unreplayed`].
 pub fn check_logged_admission(
     log: &Value,
     admission: &Admission,
+    regenerate: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
+) -> AdmittedCheck {
+    check_logged_admission_with_pool(log, admission, None, regenerate)
+}
+
+/// Pool-aware `checkLoggedAdmission(log, admission, {pool})`. The log and
+/// admission signatures remain independent; the pool only upgrades matching
+/// held-out scores from issuer-claimed to replayed.
+pub fn check_logged_admission_with_pool(
+    log: &Value,
+    admission: &Admission,
+    pool: Option<&HoldoutPool>,
     regenerate: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
 ) -> AdmittedCheck {
     let fail = |result: &AdmissionCheck, reason: String| AdmittedCheck {
         ok: false,
         verdict: result.verdict,
         passed: result.passed,
+        unreplayed: result.unreplayed,
         reason: Some(reason),
     };
-    let result = check_admission(admission, regenerate);
+    let result = check_admission_with_pool(admission, pool, regenerate);
     if !result.ok {
         return AdmittedCheck {
             ok: false,
             verdict: None,
             passed: None,
+            unreplayed: None,
             reason: result.reason,
         };
     }
-    // `check_admission` already required a parseable payload with a
-    // well-formed sessionId.
     let body: Value = serde_json::from_str(&admission.payload).unwrap_or(Value::Null);
     let session_id = body
         .get("sessionId")
@@ -597,6 +607,7 @@ pub fn check_logged_admission(
         ok: true,
         verdict: result.verdict,
         passed: result.passed,
+        unreplayed: result.unreplayed,
         reason: None,
     }
 }
