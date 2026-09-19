@@ -53,7 +53,13 @@ mid-height: its `GetValue` holds on an empty queue while open-height rounds
 accumulate in the WAL, the same-home restart replays the partial height,
 and the waiting `.body` drop decides and certifies under the replayed
 engine — the mid-height claim is asserted (`committed_height` still 2 at
-crash time), not narrated.
+crash time), not narrated. Two further tests inject WAL faults under that
+same mid-height contention: silently dropped appends and flushes (the
+fsync-lie case — replay reconstructs no open-height state, the journal
+frontier carries the decided truth) and a reported append failure pushed
+mid-run via the shared plan (the safety path halts by construction —
+deciding needs the vote appends the fault intercepts — and the clean
+restart resumes and certifies).
 
 ## What a verified checkpoint proves
 

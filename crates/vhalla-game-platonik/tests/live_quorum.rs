@@ -9,7 +9,8 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::{live_manifest, passed_by_plain_run, policy, Signer, REALM, ROOM};
@@ -36,6 +37,7 @@ use vhalla_rooms_consensus::{
 use vhalla_rooms_node::cert::verify_canonical_certificate;
 use vhalla_rooms_node::{
     node_config, NodeSpec, PrivateKey, RoomNode, RoomValidator, RoomValidatorSet, RoomValueId,
+    WalFault, WalPlan,
 };
 use vhalla_witness::hash::ProgramHash;
 use vhalla_witness::manifest::{TaskManifest, ValidManifest};
@@ -447,9 +449,35 @@ fn mesh_base(tag: &str, port_band: usize) -> (std::path::PathBuf, usize) {
     )
 }
 
-/// Spawn the two-node mesh on the rotation schedule. `held` pre-loads the
-/// batches a node may propose; an empty map leaves every value to the
-/// `home/intake/` producer contract.
+/// Spawn one node. `held` pre-loads the batches it may propose; an empty
+/// map leaves every value to the `home/intake/` producer contract. An
+/// optional `WalPlan` runs the node's WAL behind the fault proxy — the
+/// shared `Arc` lets a test schedule further faults while it runs.
+#[allow(clippy::too_many_arguments)]
+async fn spawn_node(
+    base: &std::path::Path,
+    index: usize,
+    base_port: usize,
+    key: &PrivateKey,
+    schedule: &BTreeMap<u64, RoomValidatorSet>,
+    held: &BTreeMap<u64, Batch>,
+    genesis: &Genesis,
+    wal_faults: Option<Arc<Mutex<WalPlan>>>,
+) -> RoomNode {
+    RoomNode::start(NodeSpec {
+        home: base.join(format!("n{index}")),
+        config: node_config(index + 1, 2, base_port),
+        node_key: key.clone(),
+        validator_sets: schedule.clone(),
+        held: held.clone(),
+        genesis: genesis.clone(),
+        wal_faults,
+        net_gate: None,
+    })
+    .await
+}
+
+/// Spawn the two-node mesh on the rotation schedule.
 async fn spawn_mesh(
     base: &std::path::Path,
     base_port: usize,
@@ -460,19 +488,7 @@ async fn spawn_mesh(
 ) -> Vec<RoomNode> {
     let mut nodes = Vec::new();
     for (i, key) in keys.into_iter().enumerate() {
-        nodes.push(
-            RoomNode::start(NodeSpec {
-                home: base.join(format!("n{i}")),
-                config: node_config(i + 1, 2, base_port),
-                node_key: key.clone(),
-                validator_sets: schedule.clone(),
-                held: held.clone(),
-                genesis: genesis.clone(),
-                wal_faults: None,
-                net_gate: None,
-            })
-            .await,
-        );
+        nodes.push(spawn_node(base, i, base_port, key, schedule, held, genesis, None).await);
     }
     nodes
 }
@@ -631,16 +647,16 @@ async fn restart_node(
     schedule: &BTreeMap<u64, RoomValidatorSet>,
     genesis: &Genesis,
 ) -> RoomNode {
-    RoomNode::start(NodeSpec {
-        home: base.join(format!("n{index}")),
-        config: node_config(index + 1, 2, base_port),
-        node_key: key.clone(),
-        validator_sets: schedule.clone(),
-        held: BTreeMap::new(),
-        genesis: genesis.clone(),
-        wal_faults: None,
-        net_gate: None,
-    })
+    spawn_node(
+        base,
+        index,
+        base_port,
+        key,
+        schedule,
+        &BTreeMap::new(),
+        genesis,
+        None,
+    )
     .await
 }
 
@@ -867,6 +883,288 @@ async fn live_quorum_mid_height_crash_replays_wal() {
     nodes.push(restarted);
     wait_for(
         "the restarted validator to decide h3 over the replayed WAL",
+        || nodes[1].committed_height() >= 3,
+        Duration::from_secs(90),
+    )
+    .await;
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        4,
+        "h4.batch",
+        held[&4].encode(),
+    )
+    .await;
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        5,
+        "h5.batch",
+        held[&5].encode(),
+    )
+    .await;
+    wait_for(
+        "both nodes to journal-commit every game height",
+        || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
+        Duration::from_secs(60),
+    )
+    .await;
+
+    let verify = verify_for(schedule.clone());
+    let journal_a = open_journal(&nodes[0].home);
+    let journal_b = open_journal(&nodes[1].home);
+    check_journal(&journal_a, &held, &verify);
+    check_journal(&journal_b, &held, &verify);
+    drive_session(&planned, &journal_b, &verify);
+
+    for node in nodes.drain(..) {
+        node.crash().await;
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Silent WAL loss (the fsync-lie case) under mid-height contention: every
+/// `Append` and `Flush` on B's WAL replies `Ok` but is never written, so
+/// B's open-height round state accumulates nowhere durable. B votes and
+/// commits h1-2 normally — the fault is invisible — stalls inside open h3,
+/// and crashes. The replayed WAL holds only the unfaulted control entries;
+/// the journal frontier carries the decided truth, the engine re-runs h3
+/// from the `.body` drained after restart, and B's post-loss certificates
+/// verify and attest the session exactly like unfaulted ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn live_quorum_silent_wal_loss_recovers_via_journal() {
+    let planned = plan();
+    let genesis = fixture::plan(0, 8, 16).genesis;
+    let held = canonical_batches(&planned, &genesis);
+    let (ka, kb, schedule) = rotation();
+    let (base, base_port) = mesh_base("wal-loss", 34_000);
+    let intakes = intake_dirs(&base, 2);
+    let mut nodes = vec![
+        spawn_node(
+            &base,
+            0,
+            base_port,
+            &ka,
+            &schedule,
+            &BTreeMap::new(),
+            &genesis,
+            None,
+        )
+        .await,
+        spawn_node(
+            &base,
+            1,
+            base_port,
+            &kb,
+            &schedule,
+            &BTreeMap::new(),
+            &genesis,
+            // Total WAL amnesia: every append and flush B believes durable
+            // is absent on replay — far more than the run's entry count.
+            Some(Arc::new(Mutex::new(WalPlan {
+                appends: VecDeque::from([WalFault::Drop; 2048]),
+                flushes: VecDeque::from([WalFault::Drop; 2048]),
+            }))),
+        )
+        .await,
+    ];
+
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        1,
+        "h1.batch",
+        held[&1].encode(),
+    )
+    .await;
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        2,
+        "h2.batch",
+        held[&2].encode(),
+    )
+    .await;
+    wait_for(
+        "validator B to sync the pre-rotation heights",
+        || nodes[1].committed_height() >= 2,
+        Duration::from_secs(60),
+    )
+    .await;
+
+    // Stall inside open h3 — held `GetValue`, rounds cycling — while every
+    // h3 vote/round append is silently dropped.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(
+        nodes[1].committed_height(),
+        2,
+        "h3 must still be open when B crashes"
+    );
+    crash_node(&mut nodes, 1).await;
+    // Fault evidence: the WAL on disk holds only unfaulted control entries —
+    // none of the appends B believed durable. A real run's WAL carries
+    // kilobytes of vote and proposal-part entries.
+    let wal_bytes =
+        std::fs::read(base.join("n1").join("wal").join("consensus.wal")).unwrap_or_default();
+    assert!(
+        wal_bytes.len() < 4096,
+        "dropped appends must leave a near-empty WAL, got {} B",
+        wal_bytes.len()
+    );
+    std::fs::write(intakes[1].join("h3.body"), body_file(&held[&3])).unwrap();
+    let restarted = restart_node(&base, 1, base_port, &kb, &schedule, &genesis).await;
+    assert!(
+        restarted.loaded.0 >= 2,
+        "the retained batch store must reload decided batches, got {}",
+        restarted.loaded.0
+    );
+    nodes.push(restarted);
+    wait_for(
+        "the restarted validator to decide h3 over the empty WAL",
+        || nodes[1].committed_height() >= 3,
+        Duration::from_secs(90),
+    )
+    .await;
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        4,
+        "h4.batch",
+        held[&4].encode(),
+    )
+    .await;
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        5,
+        "h5.batch",
+        held[&5].encode(),
+    )
+    .await;
+    wait_for(
+        "both nodes to journal-commit every game height",
+        || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
+        Duration::from_secs(60),
+    )
+    .await;
+
+    let verify = verify_for(schedule.clone());
+    let journal_a = open_journal(&nodes[0].home);
+    let journal_b = open_journal(&nodes[1].home);
+    check_journal(&journal_a, &held, &verify);
+    check_journal(&journal_b, &held, &verify);
+    drive_session(&planned, &journal_b, &verify);
+
+    for node in nodes.drain(..) {
+        node.crash().await;
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A reported WAL failure on the safety path, injected while B holds h3
+/// open: the shared plan pushes `Fail` mid-run, so the very next append —
+/// a live h3 round entry — errors on the engine's safety path, which must
+/// halt rather than work around it. h3 can then never decide: prevote and
+/// precommit are WAL appends, and the queued fault intercepts whichever
+/// comes first. B crashes halted and restarts clean on the same home; the
+/// real (pre-fault) WAL entries replay the partial height, the waiting
+/// `.body` drop decides, and the session attests on the recovered
+/// validator's certificates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn live_quorum_reported_wal_failure_halts_then_recovers() {
+    let planned = plan();
+    let genesis = fixture::plan(0, 8, 16).genesis;
+    let held = canonical_batches(&planned, &genesis);
+    let (ka, kb, schedule) = rotation();
+    let (base, base_port) = mesh_base("wal-fail", 35_000);
+    let intakes = intake_dirs(&base, 2);
+    // The plan starts empty — the fault is pushed while h3 is held open.
+    let plan_b = Arc::new(Mutex::new(WalPlan::default()));
+    let mut nodes = vec![
+        spawn_node(
+            &base,
+            0,
+            base_port,
+            &ka,
+            &schedule,
+            &BTreeMap::new(),
+            &genesis,
+            None,
+        )
+        .await,
+        spawn_node(
+            &base,
+            1,
+            base_port,
+            &kb,
+            &schedule,
+            &BTreeMap::new(),
+            &genesis,
+            Some(plan_b.clone()),
+        )
+        .await,
+    ];
+
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        1,
+        "h1.batch",
+        held[&1].encode(),
+    )
+    .await;
+    drop_and_commit(
+        &nodes,
+        &intakes,
+        &schedule,
+        2,
+        "h2.batch",
+        held[&2].encode(),
+    )
+    .await;
+    wait_for(
+        "validator B to sync the pre-rotation heights",
+        || nodes[1].committed_height() >= 2,
+        Duration::from_secs(60),
+    )
+    .await;
+
+    // Stall inside open h3 — rounds cycling means appends are flowing.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(nodes[1].committed_height(), 2, "h3 must still be open");
+    // The next append on the safety path reports a failure and must halt
+    // signing — a round transition consumes the fault within seconds.
+    plan_b.lock().unwrap().appends.push_back(WalFault::Fail);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    // A dropped file cannot commit through a halted safety path: deciding
+    // needs the prevote and precommit appends the fault now intercepts. A
+    // live engine would decide this height within a couple of seconds.
+    std::fs::write(intakes[1].join("h3.body"), body_file(&held[&3])).unwrap();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert_eq!(
+        nodes[1].committed_height(),
+        2,
+        "a reported WAL failure must halt the safety path, not be worked around"
+    );
+    crash_node(&mut nodes, 1).await;
+    // Clean restart on the same home: the pre-fault WAL replays the partial
+    // height, and the .body that sat in the dead node's intake now drains.
+    let restarted = restart_node(&base, 1, base_port, &kb, &schedule, &genesis).await;
+    assert!(
+        restarted.loaded.0 >= 2,
+        "the retained batch store must reload decided batches, got {}",
+        restarted.loaded.0
+    );
+    nodes.push(restarted);
+    wait_for(
+        "the restarted validator to decide h3 after the halted round",
         || nodes[1].committed_height() >= 3,
         Duration::from_secs(90),
     )

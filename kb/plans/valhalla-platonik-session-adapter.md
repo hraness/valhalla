@@ -1488,3 +1488,31 @@ the CLI scaffolding and rotation tests pin all three modes.
 Remaining limitation: injected WAL faults (`WalPlan` append/flush `Fail`/`Drop` under
 contention) and remote intake beyond the local filesystem contract stay open; the in-process
 mesh cannot speak to real network partitions or multi-round resupply under load.
+
+### 2026-09-19: WAL fault injection under mid-height contention
+
+Two further live tests close the injected-fault side of the gap, each ending in the full quorum
+path — open, admits, settle, attest — on the recovered validator's journaled certificates.
+
+`live_quorum_silent_wal_loss_recovers_via_journal` runs B's WAL behind a plan that drops every
+append and flush while replying `Ok` — the fsync-lie case. B votes and commits heights 1-2
+normally (the fault is invisible), stalls inside open height 3 with a held `GetValue`, and
+crashes. The WAL on disk holds only unfaulted control entries (asserted under 4 KiB, where a
+real run carries kilobytes of vote and proposal-part entries), so replay reconstructs no
+open-height state: the journal frontier resumes height 3, the `.body` drop written while B was
+down drains, and the canonical batch certifies. A single-voter set cannot equivocate, so the
+re-vote at the replayed round is unambiguous — a multi-voter lossy-WAL equivocation probe stays
+outside this suite's scope.
+
+`live_quorum_reported_wal_failure_halts_then_recovers` pushes `WalFault::Fail` into B's shared
+plan while its `GetValue` holds height 3 open: the very next append — a live round entry —
+errors on the safety path and the engine halts (`hang_on_safety_failure`). The halt claim is
+constructive, not a timeout inference: deciding needs the prevote and precommit appends, and the
+queued fault intercepts whichever comes first, so the `.body` dropped into the halted node's
+intake provably cannot commit — asserted still at height 2 after six seconds, versus roughly two
+for a live engine. The clean same-home restart replays the real pre-fault WAL entries, resumes
+the partial height, and certifies 3-5.
+
+Remaining limitation: remote intake beyond the local filesystem contract — a multi-process
+validator mesh deciding game lanes over real node homes — and the cross-room producer policy
+stay open; an in-process mesh cannot speak to network partitions or transport authentication.
