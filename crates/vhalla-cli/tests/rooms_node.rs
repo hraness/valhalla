@@ -2342,9 +2342,12 @@ mod enabled {
         vhalla_rooms_consensus::CommitCertificate,
         vhalla_rooms_consensus::Batch,
     ) {
+        // Pure reads only: `recover` is writer-side boot recovery that drops
+        // residue markers, and a live writer can publish a height marker
+        // before its pin lands — calling it here could erase a live marker.
+        // The marker is written after the bundle syncs, so marker ⇒ bundle.
         let journal =
             vhalla_journal::Journal::new(home.join("app/journal"), vhalla_journal::FsStore);
-        journal.recover().unwrap();
         let id = journal.at_height(height).unwrap().unwrap();
         let bundle = journal.bundle(id).unwrap().unwrap();
         let batch = vhalla_rooms_consensus::Batch::decode(bundle.field(3).unwrap()).unwrap();

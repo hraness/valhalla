@@ -1557,6 +1557,15 @@ decided height to member 3. Its own journal then serves `VC2` certificate bytes 
 under the committed set, `quorum::open` consumes the pre-partition height-1 certificate, and
 `quorum::prove` consumes the post-heal height-2 evidence.
 
+The remote readback also flushed out a journal read-path hazard: both test readers called
+`Journal::recover` — writer-side boot recovery that drops height markers above the committed
+pin as interrupted-commit residue — while the node was still deciding later heights. In the
+marker-written/pin-not-yet window of an in-flight commit, a reader's `recover` erases the live
+marker: `at_height` then returns `None` (the observed `Option::unwrap` panic), and a later
+`recover` fails `Corrupt` on the stranded pin height. The readers now use only the pure
+`at_height`/`bundle` path — the marker is written after the bundle syncs, so a present marker
+guarantees a durable bundle — and `recover`'s doc records the writer-only contract.
+
 Remaining limitation: relayed transports (the tailcat/WireGuard path the chunking rules were
 sized for), resupply under sustained load rather than a single healed partition, transport
 authentication, and the cross-room producer policy stay open.
