@@ -37,7 +37,7 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   keygen  (build: --features experimental-rooms-node)
   eligible NODE_HOME OWNER64,... (build: --features experimental-rooms-node)
   network-init OUT --realm R32 --directory D64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]  (build: --features experimental-rooms-node)
-  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers HOST:PORT,...]  (build: --features experimental-rooms-node)
+  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers [KEY64@]HOST:PORT,...] [--peers-only true]  (build: --features experimental-rooms-node)
   network-extend IN OUT --from HEIGHT --validators KEY:POWER,...  (build: --features experimental-rooms-node)
   node-update NODE_HOME --network FILE  (build: --features experimental-rooms-node)
   tailcat {plan|status|up} --nodes A/node.json B/node.json ... [--base-port N]  (build: --features experimental-rooms-node)
@@ -59,8 +59,12 @@ EPOCH_SEC 86400, MAX_LIFETIME 8, with a committee-curated eligible set.
 `node` hosts a room-consensus validator: NODE_HOME holds its journal, WAL and
 application store; --config names a JSON file with node_key (hex seed), port,
 optional listen (bare host, default 127.0.0.1), peers, validators, directory,
-policy, eligible owners and archive limits. `keygen` prints a fresh node_key
-seed and the public_key to share for the validators list.
+policy, eligible owners and archive limits. A peers entry is host:port, or
+KEY64@host:port pinning the peer's consensus key - the dial then authenticates
+the deterministic libp2p peer id derived from that key during the Noise
+handshake. peers_only closes the mesh to pinned peers alone (it requires every
+entry to carry a pin). `keygen` prints a fresh node_key seed and the
+public_key to share for the validators list and peer pins.
 `network-init` writes the one shared-params file (realm, directory,
 policy, limits, eligible, validator activations) every member must carry
 identically; `node-init` merges that file with a member's own node_key,

@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Malachite engine wiring for the room registry: context, codec, node, and the journal-gated application boundary."
 
 [dependencies]
+advisory-lock = "0.3.0"
 # Portable certificate-consumer surface: context and cert compile for
 # wasm32 with no engine, filesystem, or socket dependencies.
 arc-malachitebft-core-types = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }

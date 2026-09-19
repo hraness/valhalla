@@ -78,6 +78,15 @@ than quiescent recovery: the recovering member's own sync trace records an
 issued value request, the healthy exact quorum decides height 9 while its old
 height-8 deficit remains open over a shaped live link, then the member catches
 up through height 9 and serves proofs for both old and concurrent evidence.
+`remote_pinned_peers_decide_in_a_closed_mesh` closes the transport-identity
+boundary on the same harness: four subprocesses mesh under `peers_only` with
+every peer pinned to the remote member's consensus key, so the Noise handshake
+authenticates the deterministic libp2p identity before any lane traffic flows
+— and the certificates that closed mesh journals still open sessions and mint
+proofs. `remote_mispinned_member_is_excluded_from_a_closed_mesh` is the
+negative side: a member whose pins name a real but wrong key is fully excluded
+— its dials fail `WrongPeerId`, its inbound filter rejects the honest members
+— while the correctly pinned quorum decides without it.
 
 ## What a verified checkpoint proves
 

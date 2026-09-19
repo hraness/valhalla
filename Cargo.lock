@@ -5659,6 +5659,7 @@ dependencies = [
 name = "vhalla-rooms-node"
 version = "0.0.0"
 dependencies = [
+ "advisory-lock",
  "arc-malachitebft-app",
  "arc-malachitebft-app-channel",
  "arc-malachitebft-codec",

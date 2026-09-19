@@ -361,13 +361,21 @@ mod enabled {
             .unwrap();
     }
 
+    /// The consensus public key `member`'s seed derives — the same key
+    /// its `validators[].key` entry carries and the pin a peer names.
+    fn member_key(member: &Member) -> [u8; 32] {
+        *PrivateKey::from(member.seed).public_key().as_bytes()
+    }
+
     /// `member`'s `node.json`: own key and port, the given `peers` as
-    /// persistent peers, and the shared genesis fields verbatim — the same
-    /// shape the README's private-set runbook hands each friend.
+    /// persistent peers, `peers_only` closing the mesh, and the shared
+    /// genesis fields verbatim — the same shape the README's private-set
+    /// runbook hands each friend.
     fn mesh_config(
         member: &Member,
         members: &[Member],
         peers: Vec<String>,
+        peers_only: bool,
         plan: &fixture::Plan,
     ) -> serde_json::Value {
         serde_json::json!({
@@ -375,6 +383,7 @@ mod enabled {
             "port": member.port,
             "listen": "127.0.0.1",
             "peers": peers,
+            "peers_only": peers_only,
             "validators": members
                 .iter()
                 .map(|m| serde_json::json!({
@@ -416,7 +425,7 @@ mod enabled {
             .filter(|m| m.port != member.port)
             .map(|m| format!("127.0.0.1:{}", m.port))
             .collect();
-        let config = mesh_config(member, members, peers, plan);
+        let config = mesh_config(member, members, peers, false, plan);
         fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     }
 
@@ -434,7 +443,30 @@ mod enabled {
             .filter(|j| *j != i)
             .map(|j| format!("127.0.0.1:{}", links[&(i, j)].port))
             .collect();
-        let config = mesh_config(member, members, peers, plan);
+        let config = mesh_config(member, members, peers, false, plan);
+        fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    }
+
+    /// `member`'s `node.json` where every peer entry pins the peer's
+    /// consensus public key as `KEY64@127.0.0.1:port` and `peers_only`
+    /// closes the mesh — `pin_of` maps each peer member to the key it
+    /// gets pinned under (the real key for a correct mesh).
+    fn write_pinned_mesh_config(
+        path: &Path,
+        i: usize,
+        member: &Member,
+        members: &[Member],
+        plan: &fixture::Plan,
+        pin_of: &dyn Fn(&Member) -> [u8; 32],
+    ) {
+        let peers = (0..members.len())
+            .filter(|j| *j != i)
+            .map(|j| {
+                let m = &members[j];
+                format!("{}@127.0.0.1:{}", hex(&pin_of(m)), m.port)
+            })
+            .collect();
+        let config = mesh_config(member, members, peers, true, plan);
         fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     }
 
@@ -452,6 +484,31 @@ mod enabled {
         let home = temp.path(&format!("home-{i}"));
         fs::create_dir_all(home.join("intake")).unwrap();
         write_mesh_config(&temp.path(&format!("node-{i}.json")), member, members, plan);
+        (social, home)
+    }
+
+    /// `member_dirs` over a closed mesh: every peer entry pinned through
+    /// `pin_of`, `peers_only` on.
+    fn member_dirs_pinned(
+        temp: &Temp,
+        i: usize,
+        member: &Member,
+        members: &[Member],
+        plan: &fixture::Plan,
+        pin_of: &dyn Fn(&Member) -> [u8; 32],
+    ) -> (PathBuf, PathBuf) {
+        let social = temp.path(&format!("social-{i}"));
+        seed_social(&social, plan);
+        let home = temp.path(&format!("home-{i}"));
+        fs::create_dir_all(home.join("intake")).unwrap();
+        write_pinned_mesh_config(
+            &temp.path(&format!("node-{i}.json")),
+            i,
+            member,
+            members,
+            plan,
+            pin_of,
+        );
         (social, home)
     }
 
@@ -1759,9 +1816,13 @@ mod enabled {
         let mut nodes = Vec::new();
         for (j, member) in members.iter().enumerate() {
             let home = temp.path(&format!("home-{j}"));
+            // Each peer pins the remote member's consensus key: the dial
+            // through the tunnel authenticates the deterministic libp2p
+            // identity behind the forward port, so the relayed path is
+            // not just reachable but authenticated end to end.
             let peers = (0..members.len())
                 .filter(|i| *i != j)
-                .map(|i| format!("127.0.0.1:{}", fwd_port(j, i)))
+                .map(|i| format!("{}@127.0.0.1:{}", key(&members[i]), fwd_port(j, i)))
                 .collect::<Vec<_>>()
                 .join(",");
             rooms_ok(&[
@@ -1978,7 +2039,16 @@ mod enabled {
         assert_eq!(sets.len(), 1);
         assert_eq!(sets[0]["validators"].as_u64(), Some(4));
         assert_eq!(sets[0]["quorum_power"].as_u64(), Some(3));
-        assert!(check["warnings"].as_array().unwrap().is_empty());
+        // The mesh works unpinned, but node-check names each peer whose
+        // transport identity it cannot authenticate — the preflight is
+        // where an operator learns the difference.
+        let warnings = check["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 3);
+        assert!(warnings
+            .iter()
+            .all(|w| w.as_str().unwrap().contains("has no key pin")));
+        assert_eq!(check["pinned_peers"].as_u64(), Some(0));
+        assert_eq!(check["peers_only"].as_bool(), Some(false));
 
         // A tampered shared field must move the fingerprint — the whole
         // point of comparing it across members before boot.
@@ -3071,6 +3141,266 @@ mod enabled {
         let (c9, b9) = read_decided(&homes[3], 9);
         let _new_proof = prove(&session, &record9, &c9, &b9, 0, &verify).unwrap();
         drop(nodes);
+    }
+
+    /// A closed mesh: every peer entry pins the peer's consensus public
+    /// key as `KEY64@host:port` — the same key `validators[].key`
+    /// carries — and `peers_only` rejects connections that do not
+    /// authenticate to a pinned identity. Four real subprocesses still
+    /// decide the game lanes end to end: the pin derives the remote's
+    /// deterministic libp2p peer id, the dial verifies it during the
+    /// Noise handshake, and the decided `VC2` certificates drive
+    /// open + prove exactly as on the open mesh.
+    #[test]
+    fn remote_pinned_peers_decide_in_a_closed_mesh() {
+        use vhalla_core::RealmId;
+        use vhalla_game_platonik::quorum::{open as quorum_open, open_commitment, prove};
+        use vhalla_rooms_consensus::GameCommitmentKind;
+
+        let _mesh = mesh();
+        let temp = Temp::new();
+        let plan = fixture::plan(2, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [110 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        let (socials, homes): (Vec<_>, Vec<_>) = (0..4)
+            .map(|i| member_dirs_pinned(&temp, i, &members[i], &members, &plan, &member_key))
+            .unzip();
+        let nodes: Vec<Node> = (0..4)
+            .map(|i| spawn_member(&temp, i, &socials[i], &homes[i]))
+            .collect();
+
+        let (manifest, open, scheme) = quorum_game_fixture("pinned-mesh");
+        let verify = game_verify(&members);
+
+        drop_game_body(
+            &homes[0],
+            "h1",
+            plan.batches[&1].time,
+            open_commitment(&open),
+        );
+        for home in &homes {
+            wait_for(Duration::from_secs(150), "h1 game lane to decide", || {
+                committed(home, 1)
+            });
+        }
+        let (c1, b1) = read_decided(&homes[0], 1);
+        assert!(verify(&c1.bytes, 1, &c1.value_commitment));
+        let session = quorum_open(
+            manifest.clone(),
+            open.clone(),
+            RealmId(3),
+            &c1,
+            &b1,
+            0,
+            &verify,
+        )
+        .unwrap();
+
+        let (record, lane) = actor_event_lane(&session, &scheme, 1);
+        assert_eq!(lane.kind, GameCommitmentKind::Event);
+        drop_game_body(&homes[1], "h2", plan.batches[&2].time, lane);
+        for home in &homes {
+            wait_for(Duration::from_secs(150), "h2 game lane to decide", || {
+                committed(home, 2)
+            });
+        }
+        let (c2, b2) = read_decided(&homes[3], 2);
+        assert!(verify(&c2.bytes, 2, &c2.value_commitment));
+        assert_eq!(b2.games, vec![lane]);
+        let _proof = prove(&session, &record, &c2, &b2, 0, &verify).unwrap();
+        drop(nodes);
+    }
+
+    /// A member whose peer pins name the wrong keys is excluded from a
+    /// closed mesh: its outbound dials fail the authenticated-peer check
+    /// (the remote's Noise identity never matches the pin) and its
+    /// inbound connections are rejected as non-persistent, so {0,1,2} —
+    /// exactly quorum of four — keep deciding while member 3 commits
+    /// nothing. The exclusion is evidenced in member 3's own log, not
+    /// inferred from silence: the test waits for the rejection marker
+    /// before asserting the height is absent.
+    #[test]
+    fn remote_mispinned_member_is_excluded_from_a_closed_mesh() {
+        use vhalla_game_platonik::quorum::open_commitment;
+
+        let _mesh = mesh();
+        let temp = Temp::new();
+        let plan = fixture::plan(2, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [120 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        // Member 3 pins every peer under a key that is not theirs — a
+        // real Ed25519 point, just the wrong identity, so the config is
+        // valid and only wire authentication can exclude it.
+        let wrong_key = *PrivateKey::from([77; 32]).public_key().as_bytes();
+        let (socials, homes): (Vec<_>, Vec<_>) = (0..4)
+            .map(|i| {
+                let pin: &dyn Fn(&Member) -> [u8; 32] =
+                    if i == 3 { &|_| wrong_key } else { &member_key };
+                member_dirs_pinned(&temp, i, &members[i], &members, &plan, pin)
+            })
+            .unzip();
+        let mut nodes: Vec<Node> = (0..3)
+            .map(|i| spawn_member(&temp, i, &socials[i], &homes[i]))
+            .collect();
+        nodes.push(spawn_node_with_log(
+            &temp,
+            "member-3",
+            &socials[3],
+            &homes[3],
+            &temp.path("node-3.json"),
+            Some("warn"),
+        ));
+
+        let (_, open, _) = quorum_game_fixture("mispinned-mesh");
+        drop_game_body(
+            &homes[0],
+            "h1",
+            plan.batches[&1].time,
+            open_commitment(&open),
+        );
+
+        // {0,1,2} decide h1; member 3's log must show the exclusion
+        // mechanism firing — rejected inbound identifies or refused
+        // authenticated dials — before the absence assert means
+        // anything.
+        for home in homes.iter().take(3) {
+            wait_for(
+                Duration::from_secs(150),
+                "h1 to decide on the quorum",
+                || committed(home, 1),
+            );
+        }
+        wait_for(
+            Duration::from_secs(150),
+            "member 3's log to show transport exclusion",
+            || {
+                let log = fs::read(&nodes[3].stderr).unwrap_or_default();
+                let text = String::from_utf8_lossy(&log);
+                text.contains("non-persistent peer") || text.contains("Error dialing peer")
+            },
+        );
+        assert!(
+            !committed(&homes[3], 1),
+            "member 3 decided h1 while excluded from the closed mesh"
+        );
+        drop(nodes);
+    }
+
+    /// `peers_only` with an unpinned peer, a malformed pin, or a pin
+    /// that is not an Ed25519 public key all fail the shared
+    /// `decode_node` path before a port ever binds — `node-check` runs
+    /// the same decode `node` runs, so the preflight is honest. A fully
+    /// pinned `peers_only` config passes and reports the pin count plus
+    /// the node's own key and derived peer id for pin exchange.
+    #[test]
+    fn node_check_rejects_bad_peer_pins() {
+        let temp = Temp::new();
+        let plan = fixture::plan(1, 8, 16);
+        let members = [Member {
+            seed: [99; 32],
+            port: port_base(),
+        }];
+        let social = temp.path("social");
+        seed_social(&social, &plan);
+        let home = temp.path("home");
+        fs::create_dir_all(home.join("intake")).unwrap();
+        let config_path = temp.path("node.json");
+
+        // A 32-byte value that is not a valid Ed25519 curve point.
+        let mut not_a_point = [0x01u8; 32];
+        not_a_point[31] = 0;
+        let cases: Vec<(Vec<String>, bool, &str)> = vec![
+            (
+                vec!["127.0.0.1:28001".to_owned()],
+                true,
+                "peers_only requires every peer",
+            ),
+            (
+                vec!["zz@127.0.0.1:28001".to_owned()],
+                false,
+                "key must be 64 hex",
+            ),
+            (
+                vec![format!("{}@127.0.0.1:28001", hex(&not_a_point))],
+                false,
+                "not an Ed25519 public key",
+            ),
+            (
+                vec!["key@host".to_owned()],
+                false,
+                "host:port or KEY@host:port",
+            ),
+        ];
+        for (peers, peers_only, needle) in cases {
+            let config = mesh_config(&members[0], &members, peers, peers_only, &plan);
+            fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+            let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+                .env("HRANESS_SUPPORT", "off")
+                .args([
+                    "rooms",
+                    "node-check",
+                    social.to_str().unwrap(),
+                    home.to_str().unwrap(),
+                    REALM_HEX,
+                    "--config",
+                    config_path.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "expected failure for {needle}");
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(
+                stderr.contains(needle),
+                "stderr {stderr:?} missing {needle:?}"
+            );
+        }
+
+        // A fully pinned closed mesh passes decode and reports its
+        // pins plus the node key / derived peer id for pin exchange.
+        let good = mesh_config(
+            &members[0],
+            &members,
+            vec![format!("{}@127.0.0.1:28001", hex(&member_key(&members[0])))],
+            true,
+            &plan,
+        );
+        fs::write(&config_path, serde_json::to_vec_pretty(&good).unwrap()).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "node-check",
+                social.to_str().unwrap(),
+                home.to_str().unwrap(),
+                REALM_HEX,
+                "--config",
+                config_path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "pinned config must pass check: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["pinned_peers"], 1);
+        assert_eq!(report["peers_only"], true);
+        assert_eq!(
+            report["public_key"].as_str().unwrap(),
+            hex(&member_key(&members[0]))
+        );
+        assert!(!report["node_peer_id"].as_str().unwrap().is_empty());
     }
 
     /// commands are fast one-shot invocations, no streaming needed.

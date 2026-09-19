@@ -1470,10 +1470,7 @@ impl RoomNode {
 
         // Network identity: separate keypair, validator proof binding the
         // consensus public key to the peer id.
-        let net_key = PrivateKey::from(net_seed(&address));
-        let keypair =
-            arc_malachitebft_app::types::Keypair::ed25519_from_bytes(net_key.inner().to_bytes())
-                .unwrap();
+        let keypair = net_keypair(&address);
         let peer_id_bytes = keypair.public().to_peer_id().to_bytes();
         let proof = signer
             .sign_validator_proof(public_key.as_bytes().to_vec(), peer_id_bytes)
@@ -1745,6 +1742,33 @@ impl RoomNode {
                 .stop_and_wait(None, Some(std::time::Duration::from_secs(5)))
                 .await;
         }
+        // The engine's default WAL actor (no fault plan) is inside the
+        // killed actor tree — `kill_and_wait` resolves when the engine
+        // is dead, not when the WAL worker thread has closed its
+        // exclusively locked file. A same-home restart that races that
+        // release panics the engine build with "the file is already
+        // locked". Wait until the lock is actually acquirable — the
+        // same probe the WAL's own open performs.
+        let wal = self.home.join("wal").join("consensus.wal");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let free = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&wal)
+                .map(|f| {
+                    advisory_lock::AdvisoryFileLock::try_lock(
+                        &f,
+                        advisory_lock::FileLockMode::Exclusive,
+                    )
+                    .is_ok()
+                })
+                .unwrap_or(true);
+            if free || std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
     }
 }
 
@@ -1800,6 +1824,28 @@ fn net_seed(address: &Address) -> [u8; 32] {
     let n = inner.len().min(32);
     seed[..n].copy_from_slice(&inner[..n]);
     seed
+}
+
+/// The libp2p keypair a node whose consensus address is `address`
+/// presents on the wire: derived deterministically from the consensus
+/// identity (`net_seed`), so two nodes computing it for the same
+/// consensus key always agree on the peer id.
+fn net_keypair(address: &Address) -> arc_malachitebft_app::types::Keypair {
+    let net_key = PrivateKey::from(net_seed(address));
+    arc_malachitebft_app::types::Keypair::ed25519_from_bytes(net_key.inner().to_bytes())
+        .expect("net key is a valid ed25519 seed")
+}
+
+/// The libp2p peer id a node running consensus `public_key` presents,
+/// rendered base58 — the form a `/p2p/<peer_id>` multiaddr component
+/// carries. The network identity is derived deterministically from the
+/// consensus key, so a peer pin naming the consensus key authenticates
+/// exactly this id — no separate peer-id directory is needed.
+pub fn net_peer_id(public_key: &PublicKey) -> String {
+    net_keypair(&Address::from_public_key(public_key))
+        .public()
+        .to_peer_id()
+        .to_base58()
 }
 
 /// Wire/WAL format epoch: bumped when the consensus codec's persisted
@@ -2268,6 +2314,24 @@ async fn run(
     }
 }
 
+/// A configured persistent peer. `key`, when present, is the peer
+/// node's consensus public key: the node's libp2p identity is derived
+/// deterministically from it (`net_peer_id`), so the persistent-peer
+/// multiaddr carries a `/p2p/<peer_id>` component and the dial
+/// authenticates that identity during the Noise handshake — a host at
+/// the address presenting any other identity is rejected, and an
+/// impostor at the address never inherits persistent-peer priority.
+/// Without `key` the address alone is dialed and any peer there is
+/// accepted, as before.
+pub struct PeerSpec {
+    /// IPv4 host literal (the multiaddr is `/ip4/{host}/tcp/{port}`).
+    pub host: String,
+    /// TCP port.
+    pub port: usize,
+    /// Optional consensus-key pin authenticating the peer's identity.
+    pub key: Option<PublicKey>,
+}
+
 /// Service config for a hosted validator: libp2p TCP listening on
 /// `listen` at `listen_port`, persistent peering to `peers`, value sync
 /// enabled. This is the same shape `node_config` produces for tests,
@@ -2277,11 +2341,18 @@ async fn run(
 /// single-host validator set still meshes; any other bind address keeps
 /// malachite's default per-IP bound. `listen` is a bare host — an IP or
 /// resolvable name — never `host:port`; the port is `listen_port`.
+///
+/// `peers_only` closes the mesh: connections to and from peers outside
+/// the persistent set are rejected. It only makes sense when every peer
+/// carries a key pin — an unpinned address cannot authenticate an
+/// inbound peer (ephemeral source ports never match), so the config
+/// layer rejects that combination before this is ever called.
 pub fn service_config(
     moniker: &str,
     listen: &str,
     listen_port: usize,
-    peers: &[(String, usize)],
+    peers: &[PeerSpec],
+    peers_only: bool,
 ) -> Config {
     let transport = TransportProtocol::Tcp;
     let loopback = listen
@@ -2306,8 +2377,17 @@ pub fn service_config(
                 listen_addr: transport.multiaddr(listen, listen_port),
                 persistent_peers: peers
                     .iter()
-                    .map(|(host, port)| transport.multiaddr(host, *port))
+                    .map(|p| {
+                        let addr = transport.multiaddr(&p.host, p.port);
+                        match &p.key {
+                            Some(key) => format!("{addr}/p2p/{}", net_peer_id(key))
+                                .parse()
+                                .expect("pinned multiaddr"),
+                            None => addr,
+                        }
+                    })
                     .collect(),
+                persistent_peers_only: peers_only,
                 ..Default::default()
             },
             ..Default::default()

@@ -1620,3 +1620,47 @@ same unshaped path; only the concurrency test shapes its single recovering link.
 Remaining limitation: the qualified path remains loopback TCP. Relayed transport through
 the optional tailcat/WireGuard path, transport authentication, and cross-room intake
 producer policy stay open.
+
+### 2026-09-19: authenticated peer pinning closes the transport-identity gap
+
+The transport-identity clause is resolved without new cryptography. Every node already
+derives its libp2p identity deterministically from the consensus key (`Address` →
+`net_seed` → Ed25519 keypair → peer id) and binds it through the signed validator proof.
+What was missing was operator configuration that actually pins that identity: persistent
+peers were `host:port` only, so a stolen or misrouted port could answer for a member.
+
+`peers` now accepts `host:port` or `KEY64@host:port`, where `KEY64` is the peer's
+consensus public key — the same `keygen` output operators already exchange for validator
+membership. `node` derives the deterministic libp2p peer id and dials
+`/ip4/h/tcp/p/p2p/<peer_id>`; Malachite's `DialOpts::peer_id` makes the Noise handshake
+verify the remote identity, and a wrong pin fails closed as `WrongPeerId` (non-retryable).
+A new `peers_only` flag maps to `p2p.persistent_peers_only`, which propagates to both the
+network and discovery layers: inbound connections from unconfigured peer ids are rejected
+even when they complete an authenticated handshake. Strict mode requires every peer entry
+to be pinned — an unpinned entry could never admit inbound, so it fails at config load.
+The default stays off so followers, which are not in the member peer lists, keep working.
+
+The same decode path serves `node`, `node-check`, and `node-update`; `node-check` reports
+the node's own consensus key and derived peer id (the values peers must pin), plus
+`pinned_peers`/`peers_only` counts, so pin exchange has a canonical source. `node-init`
+accepts `--peers-only true`; `node-update` preserves the field. `tailcat plan`/`up` emit
+pinned `KEY@host:port` suggestions derived from each member's `node_key`, so the relayed
+path is suggested-authenticated rather than suggested-open, and the env-gated live
+tailcat test now pins every tunnel peer.
+
+Qualification: `remote_pinned_peers_decide_in_a_closed_mesh` runs four real `rooms node`
+subprocesses in `peers_only` mode with every peer pinned; the closed mesh decides both the
+session-open lane and an actor-authored event lane, journals verifying `VC2`
+certificates, and drives `quorum::open`/`prove`. `remote_mispinned_member_is_excluded_from_a_closed_mesh`
+maps one member's pins to the wrong keys: the three correctly pinned members decide while
+the mispinned member never commits, with exclusion observable in network logs
+(`non-persistent peer`/`Error dialing peer`). `node_check_rejects_bad_peer_pins` covers
+preflight rejection of unpinned-under-strict, malformed hex, non-point keys, and
+missing-port entries. The unit test
+`service_config_pins_peer_identity_and_closes_the_mesh` covers the multiaddr/`/p2p/`
+splice and the strict flag.
+
+Remaining limitation: cross-room intake producer policy stays open — it needs a
+consensus-visible producer-identity model rather than a cosmetic filter. Relayed
+transport beyond loopback remains live-qualification-gated on `VHALLA_TAILCAT=1`, which
+now exercises the pinned grammar end to end.
