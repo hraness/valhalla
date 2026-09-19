@@ -30,6 +30,7 @@ arc-malachitebft-signing = { git = "https://github.com/circlefin/malachite", rev
 arc-malachitebft-sync = { git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 async-trait = "0.1"
 eyre = "0.6"
+libp2p-identity = { version = "0.2.14", default-features = false, features = ["ed25519", "peerid"] }
 ractor = { version = "0.15.10", default-features = false, features = ["async-trait", "tokio_runtime"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"

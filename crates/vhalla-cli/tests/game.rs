@@ -154,3 +154,118 @@ fn a_bundle_that_is_not_a_bundle_is_refused() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("game_manifest"));
 }
+
+#[test]
+fn bundle_resource_limits_and_duplicate_fields_fail_closed() {
+    let temp = Temp::new();
+    let original = fs::read_to_string(vector_path(VECTORS[0])).unwrap();
+    let count = fields(&original)
+        .into_iter()
+        .find(|(k, _)| *k == "record_count")
+        .unwrap()
+        .1;
+    for (name, text, expected) in [
+        (
+            "duplicate",
+            format!("{original}\nrecord_count: {count}\n"),
+            "duplicate bundle field",
+        ),
+        (
+            "too-many-records",
+            original.replace(&format!("record_count: {count}"), "record_count: 1025"),
+            "record_count must be",
+        ),
+        (
+            "extra-record",
+            format!("{original}\nrecord[{count}].record: 00\n"),
+            "outside record_count",
+        ),
+        (
+            "large-field",
+            format!("annotation: {}\n", "x".repeat(60_000)),
+            "field exceeds",
+        ),
+    ] {
+        let path = temp.child(name);
+        fs::write(&path, text).unwrap();
+        let output = replay(&path);
+        assert!(!output.status.success(), "{name}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("verified "));
+    }
+    let path = temp.child("oversized");
+    fs::File::create(&path)
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+    let output = replay(&path);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("regular file of at most 64 MiB"));
+}
+
+#[test]
+fn bundle_symlinks_and_fifos_are_rejected_without_blocking() {
+    let temp = Temp::new();
+    let link = temp.child("symlink");
+    std::os::unix::fs::symlink(vector_path(VECTORS[0]), &link).unwrap();
+    assert!(!replay(&link).status.success());
+    let fifo = temp.child("fifo");
+    assert!(Command::new("/usr/bin/mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
+        .args(["game", "replay"])
+        .arg(&fifo)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("game replay blocked while opening a FIFO");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn operator_replay_budget_is_enforced_and_can_be_selected_explicitly() {
+    let path = vector_path(VECTORS[0]);
+    let limited = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
+        .args(["game", "replay"])
+        .arg(&path)
+        .args(["--max-work", "1"])
+        .output()
+        .unwrap();
+    assert!(!limited.status.success());
+    assert!(String::from_utf8_lossy(&limited.stderr).contains("BudgetExhausted"));
+    assert!(!String::from_utf8_lossy(&limited.stdout).contains("receipt "));
+    let allowed = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
+        .args(["game", "replay"])
+        .arg(&path)
+        .args(["--max-work", "10000000", "--max-replays", "1"])
+        .output()
+        .unwrap();
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&allowed.stdout).contains("verified "));
+}

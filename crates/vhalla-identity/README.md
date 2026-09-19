@@ -31,9 +31,10 @@ and explicitly open a complete record. Never retry by deleting that directory.
 compromised owner/root.** The directory and ancestors must stay owner-controlled.
 Path checks do not defend against a hostile process racing filesystem changes.
 Ordinary files cannot detect adversarial disk rollback. Physical power-loss
-qualification, recovery tooling, independent security review and non-Unix
-backends remain open. `File::try_lock` requires Rust 1.89 or newer; tests currently
-run on 1.97.1 locally and the CI stable toolchain.
+qualification, recovery of application state beyond the identity key, independent
+security review and non-Unix backends remain open. `File::try_lock` requires
+Rust 1.89 or newer; tests currently run on 1.97.1 locally and the CI stable
+toolchain.
 
 The application identity is persisted separately from transport configuration.
 This slice does not store or export a transport secret. Actual transport key
@@ -62,6 +63,7 @@ The CLI can encode the 32-byte Ed25519 seed as a 24-word English BIP39
 mnemonic and restore the same key from that phrase:
 
 ```console
+umask 077
 vhalla identity init ./my-agent
 vhalla identity backup ./my-agent > my-agent.backup
 

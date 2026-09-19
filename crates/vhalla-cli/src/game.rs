@@ -10,72 +10,132 @@
 //! this process computed, compared afterwards with the one the bundle claims.
 //! A single refusal ends the run with a non-zero exit status.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 
 use vhalla_core::{Epoch, RealmId, RoomId};
-use vhalla_game_platonik::engine::GameEngine;
 use vhalla_game_platonik::ids::CheckpointHash;
+use vhalla_game_platonik::manifest::{MAX_REPLAYS, MAX_SESSION_EVENTS};
 use vhalla_game_platonik::platonik::PlatonikV1;
 use vhalla_game_platonik::receiver::{Receiver, ReceiverPolicy};
-use vhalla_game_platonik::record::GameRecord;
-use vhalla_game_platonik::session::{SealPlan, Session};
+use vhalla_game_platonik::record::{GameRecord, MAX_RECORD_BYTES};
+use vhalla_game_platonik::session::Session;
 use vhalla_game_platonik::wire::{
     decode_game_event, decode_game_manifest, decode_session_open, EventBody, SessionOpen,
+    MAX_GAME_MANIFEST_BYTES, MAX_SESSION_OPEN_BYTES,
 };
-use vhalla_witness::hash::{digest, RECEIPT_DOMAIN};
-use vhalla_witness::manifest::ValidManifest;
-use vhalla_witness::platform::{ReceiptBinding, WorkAllowance};
 use vhalla_witness::vectors::{hex, unhex};
 
 pub const HELP: &str = "Experimental Platonik session replay (build: --features experimental-game):
-vhalla game replay BUNDLE
-  BUNDLE is a session vector file in the frozen `key: value` format, carrying
-  the game manifest, the session opening and every signed record as hex.
-  The session is rebuilt from those bytes and replayed through a fresh
-  receiver that trusts nothing the bundle claims: every signature is checked,
-  every segment is re-run, and every checkpoint hash is recomputed. One line
-  is printed per accepted record and per seal, then the final receipt hash and
-  `verified`. The exit status is zero only when every record verified.";
+vhalla game replay BUNDLE [--max-work N] [--max-replays N]
+  Reads a regular, non-symlink bundle of at most 64 MiB in the frozen
+  `key: value` format. At most 1024 signed records are admitted, with no
+  duplicate fields. Every signature and checkpoint is independently checked.
+  The operator's defaults are 10000000 total replay work and 64 replays;
+  explicit positive limits can replace them, up to 64 replays. The stricter
+  of these limits and the session's declared limits always applies.
+  The receipt hash comes from the receiver's already-budgeted final replay.
+  Exit status is zero only when the complete bundle verifies.";
 
-/// The receiver's own budget. A bundle is a file the operator chose to read,
-/// so the caps here are the session's own limits rather than a smaller local
-/// policy; the receiver still takes the minimum of the two.
+const MAX_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FIELDS: usize = 32 + MAX_SESSION_EVENTS as usize * 16;
+const MAX_LINE_BYTES: usize = MAX_RECORD_BYTES * 2 + 256;
+const DEFAULT_MAX_WORK: u64 = 10_000_000;
+
 fn policy() -> ReceiverPolicy {
     ReceiverPolicy {
-        max_replays: 64,
-        max_work: u64::MAX,
-        max_steps: u64::MAX,
+        max_replays: MAX_REPLAYS,
+        max_work: DEFAULT_MAX_WORK,
+        max_steps: u64::from(MAX_SESSION_EVENTS),
     }
 }
 
-/// One `key: value` bundle.
-struct Bundle {
-    fields: Vec<(String, String)>,
+/// Bounded fields borrow their input; annotations never duplicate large strings.
+struct Bundle<'a> {
+    fields: BTreeMap<&'a str, &'a str>,
 }
 
-impl Bundle {
-    fn parse(text: &str) -> Self {
-        let mut fields = Vec::new();
+impl<'a> Bundle<'a> {
+    fn parse(text: &'a str) -> Result<Self, String> {
+        if text.len() > MAX_BUNDLE_BYTES {
+            return Err("bundle exceeds 64 MiB".into());
+        }
+        let mut fields = BTreeMap::new();
         for line in text.lines() {
-            if let Some((key, value)) = line.split_once(": ") {
-                fields.push((key.to_string(), value.to_string()));
+            if line.len() > MAX_LINE_BYTES {
+                return Err("bundle field exceeds the record byte limit".into());
+            }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (key, value) = line
+                .split_once(": ")
+                .ok_or("bundle lines must be key: value fields")?;
+            if key.is_empty() || key.len() > 128 || fields.len() >= MAX_FIELDS {
+                return Err("bundle has an invalid field name or too many fields".into());
+            }
+            if fields.insert(key, value).is_some() {
+                return Err(format!("duplicate bundle field: {key}"));
             }
         }
-        Self { fields }
+        Ok(Self { fields })
     }
     fn get(&self, key: &str) -> Option<&str> {
-        self.fields
-            .iter()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value.as_str())
+        self.fields.get(key).copied()
     }
     fn field(&self, key: &str) -> Result<&str, String> {
         self.get(key)
             .ok_or_else(|| format!("the bundle has no {key} field"))
     }
-    fn raw(&self, key: &str) -> Result<Vec<u8>, String> {
-        unhex(self.field(key)?).ok_or_else(|| format!("the bundle's {key} is not hex"))
+    fn raw(&self, key: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+        let value = self.field(key)?;
+        if value.len() > max_bytes * 2 {
+            return Err(format!("the bundle's {key} exceeds its byte limit"));
+        }
+        unhex(value).ok_or_else(|| format!("the bundle's {key} is not hex"))
     }
+    fn record_count(&self) -> Result<usize, String> {
+        let count: usize = self
+            .field("record_count")?
+            .parse()
+            .map_err(|_| "the bundle's record_count is not a number")?;
+        if count == 0 || count > MAX_SESSION_EVENTS as usize {
+            return Err("record_count must be between 1 and 1024".into());
+        }
+        for key in self.fields.keys() {
+            if let Some(rest) = key.strip_prefix("record[") {
+                let (index, _) = rest.split_once("].").ok_or("invalid record field name")?;
+                let parsed: usize = index.parse().map_err(|_| "invalid record field index")?;
+                if parsed >= count || parsed.to_string() != index {
+                    return Err("record field index is outside record_count".into());
+                }
+            }
+        }
+        Ok(count)
+    }
+}
+
+fn read_bundle(path: &OsString) -> Result<String, String> {
+    // Nonblocking descriptor validation avoids hanging on a FIFO or a path swap.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+        .map_err(|error| format!("the bundle could not be opened: {error}"))?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_BUNDLE_BYTES as u64 {
+        return Err("bundle must be a regular file of at most 64 MiB".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_BUNDLE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("the bundle could not be read: {error}"))?;
+    if bytes.len() > MAX_BUNDLE_BYTES {
+        return Err("bundle exceeds 64 MiB".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "bundle is not UTF-8".into())
 }
 
 /// The name this command prints for an event body.
@@ -103,53 +163,42 @@ fn context(open: &SessionOpen) -> String {
     )
 }
 
-/// The receipt the final seal's replay produces, derived here rather than read
-/// from the bundle.
-fn final_receipt(session: &Session, plan: &SealPlan) -> Result<Vec<u8>, String> {
-    let manifest = ValidManifest::validate(plan.manifest.clone())
-        .map_err(|error| format!("the segment manifest is invalid: {error:?}"))?;
-    let allowance = WorkAllowance {
-        max_total: manifest
-            .fuel_total()
-            .min(session.manifest().limits.replay.max_total),
-    };
-    let binding = ReceiptBinding {
-        challenge_id: session.key().0,
-        subject_key: session.host(),
-    };
-    let evidence = PlatonikV1
-        .replay(
-            session.world(),
-            &manifest,
-            plan.candidate.clone(),
-            allowance,
-            plan.through_tick,
-            binding,
-        )
-        .map_err(|error| format!("the final segment did not replay: {error:?}"))?;
-    Ok(evidence.receipt.encode())
-}
-
 pub fn run(args: Vec<OsString>) -> Result<(), String> {
-    let usage = "usage: vhalla game replay BUNDLE";
+    let usage = "usage: vhalla game replay BUNDLE [--max-work N] [--max-replays N]";
     if args.len() == 2 && (args[1] == "--help" || args[1] == "-h") {
         println!("{HELP}");
         return Ok(());
     }
-    if args.len() != 3 || args[1] != "replay" {
+    if args.len() < 3 || args[1] != "replay" || !(args.len() - 3).is_multiple_of(2) {
         return Err(usage.into());
     }
-    let path = &args[2];
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("the bundle could not be read: {error}"))?;
-    replay(&Bundle::parse(&text))
+    let mut policy = policy();
+    let mut seen = std::collections::BTreeSet::new();
+    for pair in args[3..].chunks_exact(2) {
+        let flag = pair[0].to_str().ok_or(usage)?;
+        let value: u64 = pair[1]
+            .to_str()
+            .and_then(|s| s.parse().ok())
+            .filter(|n| *n > 0)
+            .ok_or("replay limits must be positive integers")?;
+        if !seen.insert(flag) {
+            return Err(format!("duplicate option: {flag}"));
+        }
+        match flag {
+            "--max-work" => policy.max_work = value,
+            "--max-replays" if value <= u64::from(MAX_REPLAYS) => policy.max_replays = value as u32,
+            _ => return Err(usage.into()),
+        }
+    }
+    let text = read_bundle(&args[2])?;
+    replay(&Bundle::parse(&text)?, policy)
 }
 
-fn replay(bundle: &Bundle) -> Result<(), String> {
-    let manifest_raw = bundle.raw("game_manifest")?;
+fn replay(bundle: &Bundle<'_>, policy: ReceiverPolicy) -> Result<(), String> {
+    let manifest_raw = bundle.raw("game_manifest", MAX_GAME_MANIFEST_BYTES)?;
     let manifest = decode_game_manifest(&manifest_raw)
         .map_err(|error| format!("the game manifest does not decode: {error:?}"))?;
-    let open_raw = bundle.raw("session_open")?;
+    let open_raw = bundle.raw("session_open", MAX_SESSION_OPEN_BYTES)?;
     let open = decode_session_open(&open_raw)
         .map_err(|error| format!("the session opening does not decode: {error:?}"))?;
     let realm = open.realm;
@@ -159,16 +208,13 @@ fn replay(bundle: &Bundle) -> Result<(), String> {
         .map_err(|error| format!("the session does not open: {error:?}"))?;
     println!("session {}", hex(&session.key().0));
     println!("host {}", hex(&session.host()));
-    let mut receiver = Receiver::new(PlatonikV1, policy());
+    let mut receiver = Receiver::new(PlatonikV1, policy);
 
-    let records: usize = bundle
-        .field("record_count")?
-        .parse()
-        .map_err(|_| "the bundle's record_count is not a number".to_string())?;
-    let mut receipt = None;
+    let records = bundle.record_count()?;
+    let mut receipt_hash = None;
     let mut seals = 0_usize;
     for index in 0..records {
-        let record_raw = bundle.raw(&format!("record[{index}].record"))?;
+        let record_raw = bundle.raw(&format!("record[{index}].record"), MAX_RECORD_BYTES)?;
         let record = GameRecord::decode(&record_raw)
             .map_err(|error| format!("record {index} does not decode: {error:?}"))?;
         record
@@ -177,14 +223,6 @@ fn replay(bundle: &Bundle) -> Result<(), String> {
         let event = decode_game_event(&record.body)
             .map_err(|error| format!("record {index} does not decode: {error:?}"))?;
         let kind = kind_of(&event.body);
-        if matches!(event.body, EventBody::Seal { .. }) {
-            let plan = session
-                .plan_seal(&event)
-                .map_err(|error| format!("record {index} is not a sealable order: {error:?}"))?;
-            if plan.is_final {
-                receipt = Some(final_receipt(&session, &plan)?);
-            }
-        }
         let step = index as u64 + 1;
         let verified = receiver
             .admit(&mut session, &record, step)
@@ -197,6 +235,9 @@ fn replay(bundle: &Bundle) -> Result<(), String> {
         // reproduced the hash the seal claims, so this hash is derived here.
         // The bundle's own copy, when it carries one, is a second check on the
         // file rather than on the session.
+        if let Some(hash) = verified.final_receipt_hash() {
+            receipt_hash = Some(hash.0);
+        }
         let reproduced = verified.hash();
         let claimed = bundle
             .get(&format!("record[{index}].checkpoint_hash"))
@@ -234,8 +275,7 @@ fn replay(bundle: &Bundle) -> Result<(), String> {
     if seals == 0 {
         return Err("the bundle seals nothing, so it verifies nothing".into());
     }
-    let receipt = receipt.ok_or("the bundle carries no final seal")?;
-    let receipt_hash = digest(RECEIPT_DOMAIN, &receipt);
+    let receipt_hash = receipt_hash.ok_or("the bundle carries no final seal")?;
     println!("receipt {}", hex(&receipt_hash));
     if let Some(claimed) = bundle.get("receipt_hash") {
         if claimed != hex(&receipt_hash) {

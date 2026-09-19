@@ -26,6 +26,8 @@ pub const MAX_CERT_SIGNATURES: usize = 64;
 /// Errors the certificate consumer reports before any commit is attempted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertError {
+    /// The trusted validator set has invalid identities, powers or bounds.
+    InvalidValidatorSet,
     /// The certificate decided a Nil round.
     NilRound,
     /// More signatures than the bound.
@@ -77,6 +79,9 @@ pub fn verify_commit_certificate(
     certificate: &CommitCertificate<RoomContext>,
     validators: &RoomValidatorSet,
 ) -> Result<AcceptedCertificate, CertError> {
+    validators
+        .validate()
+        .map_err(|_| CertError::InvalidValidatorSet)?;
     if certificate.round == Round::Nil {
         return Err(CertError::NilRound);
     }
@@ -86,7 +91,7 @@ pub fn verify_commit_certificate(
         return Err(CertError::TooManySignatures);
     }
     let mut seen = BTreeSet::new();
-    let mut signed_power = 0u64;
+    let mut signed_power = 0u128;
     for sig in &certificate.commit_signatures {
         let Some(validator) = validators.get_by_address(&sig.address) else {
             return Err(CertError::UnknownSigner);
@@ -110,9 +115,9 @@ pub fn verify_commit_certificate(
         {
             return Err(CertError::BadSignature);
         }
-        signed_power += validator.power;
+        signed_power += u128::from(validator.power);
     }
-    let total = validators.total_voting_power();
+    let total = u128::from(validators.total_voting_power());
     if signed_power * 3 <= total * 2 {
         return Err(CertError::BelowQuorum);
     }
@@ -137,6 +142,9 @@ pub fn verify_canonical_certificate(
     value_id: &RoomValueId,
     validators: &RoomValidatorSet,
 ) -> bool {
+    if validators.validate().is_err() {
+        return false;
+    }
     let Some((count, mut rest)) = decode_head(raw, height, value_id) else {
         return false;
     };
@@ -144,7 +152,7 @@ pub fn verify_canonical_certificate(
         return false;
     }
     let mut seen = BTreeSet::new();
-    let mut signed_power = 0u64;
+    let mut signed_power = 0u128;
     for _ in 0..count {
         let address = Address::new(rest[..20].try_into().unwrap());
         let Ok(signature) = Ed25519::decode_signature(&rest[20..84]) else {
@@ -171,9 +179,9 @@ pub fn verify_canonical_certificate(
         {
             return false;
         }
-        signed_power += validator.power;
+        signed_power += u128::from(validator.power);
     }
-    signed_power * 3 > validators.total_voting_power() * 2
+    signed_power * 3 > u128::from(validators.total_voting_power()) * 2
 }
 
 /// Decodes the fixed `VC2` head: magic, height, round, value id, count —

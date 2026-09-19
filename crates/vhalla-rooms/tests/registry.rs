@@ -239,6 +239,107 @@ fn awards_dedup_by_source_beneficiary_and_epoch() {
 }
 
 #[test]
+fn duplicate_support_evidence_extends_only_the_retained_proof() {
+    // Model a well-framed local snapshot whose writer changed more than
+    // proof bytes while retaining the prior numeric revision.
+    fn with_revision(registry: &Registry, revision: u64) -> Registry {
+        use sha2::{Digest, Sha256};
+        const REVISION_OFFSET: usize = 8 + 32 + 16 + 8 + 8 + 2 + 8 + 4 + 8;
+        let mut raw = registry.snapshot();
+        raw[REVISION_OFFSET..REVISION_OFFSET + 8].copy_from_slice(&revision.to_be_bytes());
+        let end = raw.len() - 32;
+        let mut checksum = Sha256::new();
+        checksum.update(b"vhalla/rooms/registry-snapshot/v1\0");
+        checksum.update(&raw[8..end]);
+        raw[end..].copy_from_slice(&checksum.finalize());
+        Registry::restore(&raw).unwrap()
+    }
+    let mut archive = Archive::new(REALM, limits()).unwrap();
+    let creator = beneficiary(&mut archive, 5);
+    let (mut pool, mut registry) = sources(&mut archive, 100, 1);
+    award_one(&mut registry, &mut archive, &mut pool[0], &creator, 200);
+    let prior = registry.clone();
+    let second = react_to_post(&mut archive, &mut pool[0], &creator);
+    let view = ControlView::new(&archive, 300);
+    assert_eq!(
+        registry.award(&second, &view, 300),
+        Ok(Applied::DuplicateAward)
+    );
+    assert_eq!(registry.revision(), prior.revision());
+    assert_eq!(registry.last_time(), prior.last_time());
+    assert_eq!(registry.account(creator.id).earned, 1);
+    assert_eq!(registry.evidence_proof(second.id()), Some(second.encode()));
+    assert!(registry.is_extension_of(&prior));
+    assert!(
+        !registry.is_extension_of(&registry),
+        "extension needs a new proof"
+    );
+    let mut changed_clock = registry.clone();
+    changed_clock.set_eligible(&[pool[0].id], 300).unwrap();
+    let mut changed_eligible = registry.clone();
+    changed_eligible.set_eligible(&[], 200).unwrap();
+    let mut changed_control = registry.clone();
+    grant_create(&mut changed_control, &archive, &creator, 200);
+    for changed in [changed_clock, changed_eligible, changed_control] {
+        assert!(
+            !with_revision(&changed, prior.revision()).is_extension_of(&prior),
+            "new evidence must not authorize another same-revision state change"
+        );
+    }
+    let snapshot = registry.snapshot();
+    assert_eq!(Registry::restore(&snapshot).unwrap().snapshot(), snapshot);
+    assert_eq!(
+        registry.award(&second, &view, 300),
+        Ok(Applied::DuplicateAward)
+    );
+    assert_eq!(
+        registry.snapshot(),
+        snapshot,
+        "same evidence is still a no-op"
+    );
+}
+
+#[test]
+fn continuity_retains_room_and_award_proofs_across_higher_revision_candidates() {
+    let mut archive = Archive::new(REALM, limits()).unwrap();
+    let creator = beneficiary(&mut archive, 5);
+    let (mut pool, mut registry) = sources(&mut archive, 100, 1);
+    let empty = registry.clone();
+    let head = grant_create(&mut registry, &archive, &creator, 100);
+    let before_award = registry.clone();
+    award_one(&mut registry, &mut archive, &mut pool[0], &creator, 200);
+    let before_room = registry.clone();
+    let create = creation(&creator, head, head, "retained-room", 1, 1, 7);
+    apply(&mut registry, &archive, &create, 300).unwrap();
+
+    for mut candidate in [empty, before_award, before_room.clone()] {
+        while candidate.revision() <= registry.revision() {
+            candidate.set_eligible(&[], 400).unwrap();
+        }
+        assert!(
+            !candidate.is_extension_of(&registry),
+            "missing proofs must conflict"
+        );
+    }
+    let mut sibling = before_room;
+    apply(
+        &mut sibling,
+        &archive,
+        &creation(&creator, head, head, "retained-room", 1, 1, 8),
+        300,
+    )
+    .unwrap();
+    sibling.set_eligible(&[], 400).unwrap();
+    assert!(
+        !sibling.is_extension_of(&registry),
+        "same slug with different signed create is a fork"
+    );
+    let mut descendant = registry.clone();
+    descendant.set_eligible(&[], 400).unwrap();
+    assert!(descendant.is_extension_of(&registry));
+}
+
+#[test]
 fn non_owner_updates_and_stale_grant_authority_are_denied() {
     let mut archive = Archive::new(REALM, limits()).unwrap();
     let creator = beneficiary(&mut archive, 6);

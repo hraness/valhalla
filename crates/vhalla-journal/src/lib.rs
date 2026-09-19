@@ -5,8 +5,9 @@
 //! application state.
 //!
 //! Commit protocol, in order: write the immutable bundle under its content
-//! name, fsync it, write `heights/<n>` binding the bundle's height to its id
-//! and fsync it, write `pin.tmp` carrying predecessor/next/bundle/height,
+//! name, fsync it and its containing directory, write `heights/<n>` binding
+//! the bundle's height to its id and fsync it and its containing directory,
+//! write `pin.tmp` carrying predecessor/next/bundle/height,
 //! fsync it, rename `pin.tmp` over `HEAD` (the atomic publication point),
 //! fsync the directory, then acknowledge. Recovery trusts only what is
 //! actually on disk: a renamed pin is committed, a leftover `pin.tmp` is
@@ -30,7 +31,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 #[cfg(unix)]
-use std::io::Write;
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 
@@ -46,9 +47,12 @@ const LOCK_FILE: &str = "commit.lock";
 const BUNDLES: &str = "bundles";
 #[cfg(unix)]
 const HEIGHTS: &str = "heights";
-/// Scratch bound on one serialized bundle.
-pub const MAX_BUNDLE_BYTES: usize = 1 << 20;
 const MAX_FIELD_BYTES: usize = 64 * 1024;
+/// Maximum canonical serialized bundle: nine length headers, six bounded
+/// opaque fields, two 32-byte frontiers, and one eight-byte height.
+pub const MAX_BUNDLE_BYTES: usize = 4 + 9 * 8 + 6 * MAX_FIELD_BYTES + 2 * 32 + 8;
+#[cfg(unix)]
+const PIN_BYTES: usize = 4 + 104;
 #[cfg(unix)]
 const ZERO: [u8; 32] = [0; 32];
 
@@ -184,7 +188,7 @@ impl Bundle {
             if rest.len() < 8 {
                 return None;
             }
-            let len = u64::from_le_bytes(rest[..8].try_into().unwrap()) as usize;
+            let len = usize::try_from(u64::from_le_bytes(rest[..8].try_into().unwrap())).ok()?;
             rest = &rest[8..];
             if rest.len() < len {
                 return None;
@@ -209,9 +213,15 @@ impl Bundle {
             if rest.len() < 8 {
                 return Err(JournalError::Corrupt);
             }
-            let len = u64::from_le_bytes(rest[..8].try_into().unwrap()) as usize;
+            let declared = u64::from_le_bytes(rest[..8].try_into().unwrap());
+            // Validate before narrowing: on wasm32 a length of 2^32 + n
+            // must not alias n and admit a noncanonical encoding.
+            if declared > MAX_FIELD_BYTES as u64 {
+                return Err(JournalError::Corrupt);
+            }
+            let len = usize::try_from(declared).map_err(|_| JournalError::Corrupt)?;
             rest = &rest[8..];
-            if len > MAX_FIELD_BYTES || rest.len() < len {
+            if rest.len() < len {
                 return Err(JournalError::Corrupt);
             }
             fields.push(rest[..len].to_vec());
@@ -388,17 +398,21 @@ pub enum Step {
     CreateBundle,
     /// fsync the bundle file.
     SyncBundle,
+    /// fsync the bundle's containing directory before publishing a pin.
+    SyncBundlesDir,
     /// Write the `heights/<n>` marker binding the height to the bundle id.
     WriteHeightMarker,
     /// fsync the height marker.
     SyncHeightMarker,
+    /// fsync the height marker's containing directory before publishing a pin.
+    SyncHeightsDir,
     /// Write the `pin.tmp` file.
     WritePinTmp,
     /// fsync `pin.tmp`.
     SyncPinTmp,
     /// Atomic rename `pin.tmp` over `HEAD` — the publication point.
     RenamePin,
-    /// fsync the directory so the rename and bundle entry are durable.
+    /// fsync the journal directory so the pin rename is durable.
     SyncDir,
 }
 
@@ -434,6 +448,8 @@ pub trait Store {
     fn create_bundle(&self, dir: &Path, id: [u8; 32], bytes: &[u8]) -> Result<bool, JournalError>;
     /// fsync the bundle file.
     fn sync_bundle(&self, dir: &Path, id: [u8; 32]) -> Result<(), JournalError>;
+    /// fsync the directory containing immutable bundles.
+    fn sync_bundles_dir(&self, dir: &Path) -> Result<(), JournalError>;
     /// Read a stored bundle.
     fn read_bundle(&self, dir: &Path, id: [u8; 32]) -> Result<Vec<u8>, JournalError>;
     /// List bundle ids present on disk.
@@ -445,8 +461,10 @@ pub trait Store {
         height: u64,
         id: [u8; 32],
     ) -> Result<(), JournalError>;
-    /// fsync the `heights` directory entry.
+    /// fsync the height marker file.
     fn sync_height_marker(&self, dir: &Path, height: u64) -> Result<(), JournalError>;
+    /// fsync the directory containing height markers.
+    fn sync_heights_dir(&self, dir: &Path) -> Result<(), JournalError>;
     /// Read the height marker for `height`, when present.
     fn read_height_marker(&self, dir: &Path, height: u64)
         -> Result<Option<[u8; 32]>, JournalError>;
@@ -482,6 +500,10 @@ impl FsStore {
 #[cfg(unix)]
 impl Store for FsStore {
     fn lock(&self, dir: &Path) -> Result<File, JournalError> {
+        // Create missing ancestors one at a time and durably publish each
+        // before creating its children. A retry also re-syncs an existing
+        // directory's parent after an uncertain earlier creation.
+        create_directory_durable(&std::path::absolute(dir)?)?;
         fs::create_dir_all(dir.join(BUNDLES))?;
         fs::create_dir_all(dir.join(HEIGHTS))?;
         let file = OpenOptions::new()
@@ -490,15 +512,16 @@ impl Store for FsStore {
             .truncate(false)
             .open(dir.join(LOCK_FILE))?;
         flock_exclusive(&file).map_err(|_| JournalError::Busy)?;
+        File::open(dir)?.sync_all()?;
         Ok(file)
     }
 
     fn read_pin(&self, dir: &Path) -> Result<Option<Vec<u8>>, JournalError> {
-        Ok(read_opt(&dir.join(HEAD_FILE))?)
+        read_opt(&dir.join(HEAD_FILE), PIN_BYTES)
     }
 
     fn read_pin_tmp(&self, dir: &Path) -> Result<Option<Vec<u8>>, JournalError> {
-        Ok(read_opt(&dir.join(HEAD_TMP))?)
+        read_opt(&dir.join(HEAD_TMP), PIN_BYTES)
     }
 
     fn remove_pin_tmp(&self, dir: &Path) -> Result<(), JournalError> {
@@ -531,8 +554,12 @@ impl Store for FsStore {
             .sync_all()?)
     }
 
+    fn sync_bundles_dir(&self, dir: &Path) -> Result<(), JournalError> {
+        Ok(File::open(dir.join(BUNDLES))?.sync_all()?)
+    }
+
     fn read_bundle(&self, dir: &Path, id: [u8; 32]) -> Result<Vec<u8>, JournalError> {
-        Ok(fs::read(Self::bundle_path(dir, id))?)
+        read_bounded(&Self::bundle_path(dir, id), MAX_BUNDLE_BYTES)
     }
 
     fn list_bundles(&self, dir: &Path) -> Result<Vec<[u8; 32]>, JournalError> {
@@ -579,12 +606,16 @@ impl Store for FsStore {
             .sync_all()?)
     }
 
+    fn sync_heights_dir(&self, dir: &Path) -> Result<(), JournalError> {
+        sync_existing_directory(&dir.join(HEIGHTS))
+    }
+
     fn read_height_marker(
         &self,
         dir: &Path,
         height: u64,
     ) -> Result<Option<[u8; 32]>, JournalError> {
-        match read_opt(&Self::height_path(dir, height))? {
+        match read_opt(&Self::height_path(dir, height), 32)? {
             None => Ok(None),
             Some(bytes) if bytes.len() == 32 => Ok(Some(bytes.try_into().unwrap())),
             Some(_) => Err(JournalError::Corrupt),
@@ -640,16 +671,63 @@ impl Store for FsStore {
     }
 
     fn sync_dir(&self, dir: &Path) -> Result<(), JournalError> {
-        Ok(File::open(dir)?.sync_all()?)
+        sync_existing_directory(dir)
     }
 }
 
 #[cfg(unix)]
-fn read_opt(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    match fs::read(path) {
+fn create_directory_durable(path: &Path) -> io::Result<()> {
+    if !path.is_dir() {
+        if let Some(parent) = path.parent() {
+            create_directory_durable(parent)?;
+        }
+        match fs::create_dir(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+            Err(e) => return Err(e),
+        }
+    }
+    File::open(path)?.sync_all()?;
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_bounded(path: &Path, max: usize) -> Result<Vec<u8>, JournalError> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > max as u64 {
+        return Err(JournalError::Corrupt);
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    // Metadata is only a preflight; cap the read as well in case the file
+    // grows between checking its length and consuming its contents.
+    file.take(max as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > max {
+        return Err(JournalError::Corrupt);
+    }
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn read_opt(path: &Path, max: usize) -> Result<Option<Vec<u8>>, JournalError> {
+    match read_bounded(path, max) {
         Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(JournalError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(unix)]
+fn sync_existing_directory(path: &Path) -> Result<(), JournalError> {
+    match File::open(path) {
+        Ok(directory) => Ok(directory.sync_all()?),
+        // Recovering a pristine journal must not create directories. Commit
+        // creates this layout under its writer lock before reaching a sync.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -727,6 +805,9 @@ impl<S: Store> Store for FaultingStore<S> {
     fn sync_bundle(&self, dir: &Path, id: [u8; 32]) -> Result<(), JournalError> {
         self.apply(Step::SyncBundle, || self.inner.sync_bundle(dir, id))
     }
+    fn sync_bundles_dir(&self, dir: &Path) -> Result<(), JournalError> {
+        self.apply(Step::SyncBundlesDir, || self.inner.sync_bundles_dir(dir))
+    }
     fn read_bundle(&self, dir: &Path, id: [u8; 32]) -> Result<Vec<u8>, JournalError> {
         self.inner.read_bundle(dir, id)
     }
@@ -747,6 +828,9 @@ impl<S: Store> Store for FaultingStore<S> {
         self.apply(Step::SyncHeightMarker, || {
             self.inner.sync_height_marker(dir, height)
         })
+    }
+    fn sync_heights_dir(&self, dir: &Path) -> Result<(), JournalError> {
+        self.apply(Step::SyncHeightsDir, || self.inner.sync_heights_dir(dir))
     }
     fn read_height_marker(
         &self,
@@ -882,6 +966,10 @@ impl<S: Store> Journal<S> {
                 dropped_heights.push(height);
             }
         }
+        // Also re-sync when no residue remains: a prior recovery may have
+        // removed it and then failed before its directory sync completed.
+        self.store.sync_heights_dir(&self.dir)?;
+        self.store.sync_dir(&self.dir)?;
         let orphans = self
             .store
             .list_bundles(&self.dir)?
@@ -913,6 +1001,8 @@ impl<S: Store> Journal<S> {
         if current.bundle == bundle.id() {
             // Our earlier attempt already published; re-establish durability
             // of the directory entries, then acknowledge.
+            self.store.sync_bundles_dir(&self.dir)?;
+            self.store.sync_heights_dir(&self.dir)?;
             self.store.sync_dir(&self.dir)?;
             return Ok(Outcome::AlreadyCommitted);
         }
@@ -932,9 +1022,11 @@ impl<S: Store> Journal<S> {
             }
         }
         self.store.sync_bundle(&self.dir, bundle.id())?;
+        self.store.sync_bundles_dir(&self.dir)?;
         self.store
             .write_height_marker(&self.dir, bundle.height(), bundle.id())?;
         self.store.sync_height_marker(&self.dir, bundle.height())?;
+        self.store.sync_heights_dir(&self.dir)?;
         let pin = Pin {
             predecessor: bundle.predecessor(),
             next: bundle.next(),
@@ -950,8 +1042,40 @@ impl<S: Store> Journal<S> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+
+    #[test]
+    fn field_lengths_cannot_alias_through_a_narrow_pointer_width() {
+        let original = Bundle::new(BundleParts {
+            certificate: vec![1, 2, 3],
+            predecessor: [4; 32],
+            next: [5; 32],
+            batch: vec![],
+            value: vec![],
+            configuration: vec![],
+            control_record: vec![],
+            debit_marker: vec![],
+            height: 1,
+        })
+        .unwrap();
+        let decoded = Bundle::decode(original.bytes()).unwrap();
+        assert_eq!(decoded.id(), original.id());
+        assert_eq!(decoded.bytes(), original.bytes());
+        for length in [MAX_FIELD_BYTES as u64 + 1, (1u64 << 32) + 3, u64::MAX] {
+            let mut malformed = original.bytes().to_vec();
+            malformed[4..12].copy_from_slice(&length.to_le_bytes());
+            assert!(matches!(
+                Bundle::decode(&malformed),
+                Err(JournalError::Corrupt)
+            ));
+        }
+    }
+}
 
 /// Kani bounded model-checking harnesses (`cargo kani -p vhalla-journal`).
 ///

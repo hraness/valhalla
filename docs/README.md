@@ -14,15 +14,38 @@ cargo test --workspace --all-targets --all-features --locked
 cargo test --workspace --doc --all-features --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+bun install --frozen-lockfile --ignore-scripts
+bun run check:site
 ```
+
+The site checks require Bun 1.3.14. On macOS, also run
+`cargo test --locked --manifest-path desktop/Cargo.toml` for the separate
+menubar workspace. CI's aggregate Rust check includes these checks and the
+pinned Kani spent-nonce proofs; the other formal checks are described below.
+
+The aggregate also checks dependency advisories across maintained Rust graphs
+with all features and target platforms. It fails on active vulnerabilities and
+retains raw reports for inactive lockfile packages, the preserved historical
+reference, and warnings; a passing gate is not a claim that those reports are
+empty. The scoped DNS dependency backport is documented in
+[its maintenance guide](../vendor/libp2p-dns/README.md).
+
+Before upgrading an existing validator, read the
+[transport identity migration guide](transport-identity-upgrade.md).
+The [security review](security-review-2026-09-19.md) and
+[product review](p2p-product-review-2026-09-19.md) record current fixes,
+evidence boundaries and remaining qualification work. See
+[game replay policy](game-replay.md) for bounded independent verification.
 
 The demo is entirely in memory. It delivers a signed envelope through a bounded
 queue, verifies the full key and session context, applies an explicit local
 grant, and returns an in-memory execution receipt. The session retains replay
 state across messages; policy and expiry are checked again at execution.
 The `vhalla` CLI supports explicit identity creation and reopening. Its optional
-experimental feature connects two local processes over QUIC, using persistent
-application identities and fresh signed sessions. Start with the
+experimental feature connects two explicitly paired processes over QUIC,
+using persistent application identities and fresh signed sessions. Listeners
+default to loopback, with an explicit reachable address for LAN or overlay
+peers; this is not a qualified public-network service. Start with the
 [identity guide](../crates/vhalla-identity/README.md) or the
 [local chat walkthrough](../crates/vhalla-native/README.md).
 
@@ -43,7 +66,7 @@ machine, each with explicitly stated bounds.
 | Native key custody | [identity](../crates/vhalla-identity/README.md), experimental Unix private-file storage |
 | Local authority and effects | [policy](../crates/vhalla-policy/src/lib.rs), [host](../crates/vhalla-host/src/lib.rs) |
 | In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs), [witness frames](../crates/vhalla-steel-thread/tests/witness.rs), [game frames](../crates/vhalla-steel-thread/tests/game.rs) |
-| Optional native CLI and signed chat | [CLI](../crates/vhalla-cli/README.md), [native adapter](../crates/vhalla-native/README.md), loopback only |
+| Optional native CLI and signed chat | [CLI](../crates/vhalla-cli/README.md), [native adapter](../crates/vhalla-native/README.md), explicitly paired peers; loopback default or explicit LAN/overlay address |
 | Real two-process transport experiment | [native QUIC](../prototypes/native-quic/README.md), loopback-only with public fixture keys |
 | Actual browser/native transport experiment | [bounded browser records](../prototypes/browser-records/interop/README.md), loopback-only public fixtures and an experimental dependency patch |
 | Witness-mode program execution: the finite-rule VM, canonical codecs, task manifests, run capability, and receipts | [witness](../crates/vhalla-witness/README.md), `no_std`, keyless, replay-checked against the pinned Platonik engine |

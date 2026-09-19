@@ -2024,7 +2024,6 @@ dependencies = [
  "socket2 0.5.10",
  "thiserror 2.0.20",
  "tinyvec",
- "tokio",
  "tracing",
  "url",
 ]
@@ -2047,27 +2046,6 @@ dependencies = [
  "tinyvec",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "hickory-resolver"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc62a9a99b0bfb44d2ab95a7208ac952d31060efc16241c87eaf36406fecf87a"
-dependencies = [
- "cfg-if",
- "futures-util",
- "hickory-proto 0.25.2",
- "ipconfig",
- "moka",
- "once_cell",
- "parking_lot",
- "rand 0.9.5",
- "resolv-conf",
- "smallvec",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2785,12 +2763,10 @@ dependencies = [
 [[package]]
 name = "libp2p-dns"
 version = "0.44.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b770c1c8476736ca98c578cba4b505104ff8e842c2876b528925f9766379f9a"
 dependencies = [
  "async-trait",
  "futures",
- "hickory-resolver 0.25.2",
+ "hickory-resolver",
  "libp2p-core 0.43.2",
  "libp2p-identity 0.2.14",
  "parking_lot",
@@ -2805,7 +2781,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18694695e98ff9ce26ee245fdede7cd0b4186cb793b25da3258d9c053400a291"
 dependencies = [
  "futures",
- "hickory-resolver 0.26.3",
+ "hickory-resolver",
  "libp2p-core 0.44.0",
  "libp2p-identity 0.3.0",
  "parking_lot",
@@ -4446,9 +4422,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -5677,6 +5653,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "eyre",
  "hegeltest",
+ "libp2p-identity 0.2.14",
  "ractor",
  "sha3",
  "tokio",

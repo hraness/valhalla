@@ -83,6 +83,146 @@ fn proposer_selection_is_deterministic() {
 }
 
 #[test]
+fn validator_admission_rejects_unsafe_power_and_conflicting_duplicates() {
+    let a = key(1).public_key();
+    let b = key(2).public_key();
+    let entries = vec![
+        RoomValidator::new(a, 3),
+        RoomValidator::new(b, 2),
+        RoomValidator::new(a, 1),
+    ];
+    // Address duplicates are nonadjacent after sorting by power.
+    let deduplicated = RoomValidatorSet::new(entries.clone());
+    assert_eq!(deduplicated.count(), 2);
+    assert_eq!(deduplicated.total_voting_power(), 5);
+    assert_eq!(
+        RoomValidatorSet::try_new(entries),
+        Err(ValidatorSetError::ConflictingPower)
+    );
+    let repeated =
+        RoomValidatorSet::try_new(vec![RoomValidator::new(a, 1), RoomValidator::new(a, 1)])
+            .unwrap();
+    assert_eq!(repeated.count(), 1);
+    assert_eq!(
+        RoomValidatorSet::try_new(vec![]),
+        Err(ValidatorSetError::Empty)
+    );
+    for power in [u64::MAX / 3 + 1, u64::MAX] {
+        assert_eq!(
+            RoomValidatorSet::try_new(vec![RoomValidator::new(a, power)]),
+            Err(ValidatorSetError::PowerOverflow)
+        );
+    }
+    assert_eq!(
+        RoomValidatorSet::try_new(vec![RoomValidator::new(a, 0)]),
+        Err(ValidatorSetError::InvalidValidator)
+    );
+    let too_many = (1..=65)
+        .map(|seed| RoomValidator::new(key(seed).public_key(), 1))
+        .collect();
+    assert_eq!(
+        RoomValidatorSet::try_new(too_many),
+        Err(ValidatorSetError::TooManyValidators)
+    );
+}
+
+#[test]
+fn validator_admission_rejects_reordered_public_sets() {
+    let (_, equal_power) = set4();
+    let different_power = RoomValidatorSet::new(vec![
+        RoomValidator::new(key(1).public_key(), 3),
+        RoomValidator::new(key(2).public_key(), 2),
+        RoomValidator::new(key(3).public_key(), 1),
+    ]);
+    for canonical in [equal_power, different_power] {
+        assert_eq!(canonical.validate(), Ok(()));
+        let mut reordered = canonical.clone();
+        reordered.validators.reverse();
+        let height = Height::new(canonical.validators.len() as u64);
+        assert_ne!(
+            RoomContext.select_proposer(&canonical, height, Round::new(0)),
+            RoomContext.select_proposer(&reordered, height, Round::new(0)),
+            "public reordering changes the proposer despite identical membership"
+        );
+        assert_eq!(
+            reordered.validate(),
+            Err(ValidatorSetError::InvalidValidator)
+        );
+        assert_eq!(RoomValidatorSet::new(reordered.validators), canonical);
+    }
+}
+
+#[test]
+fn proposer_selection_handles_full_height_without_overflow_or_truncation() {
+    let (_, set) = set4();
+    let round = u32::MAX - 1;
+    let expected = ((u128::from(u64::MAX) + u128::from(round)) % 4) as usize;
+    assert_eq!(
+        RoomContext.select_proposer(&set, Height::new(u64::MAX), Round::new(round)),
+        &set.validators[expected]
+    );
+}
+
+#[test]
+fn certificate_quorum_is_exact_at_large_power_and_invalid_sets_fail_closed() {
+    use crate::cert::{
+        canonical_bytes, verify_canonical_certificate, verify_commit_certificate, CertError,
+    };
+    use arc_malachitebft_core_types::CommitCertificate;
+
+    let keys: Vec<_> = (1..=3).map(key).collect();
+    let power = (u64::MAX / 3) / 3;
+    let set = RoomValidatorSet::try_new(
+        keys.iter()
+            .map(|key| RoomValidator::new(key.public_key(), power))
+            .collect(),
+    )
+    .unwrap();
+    let id = value(1).id;
+    let certificate = |signers: usize| CommitCertificate::<RoomContext> {
+        height: Height::new(1),
+        round: Round::new(0),
+        value_id: id,
+        commit_signatures: (0..signers)
+            .map(|i| {
+                let vote = signed_vote(&keys, i, 1, 0, id);
+                CommitSignature::new(vote.message.address, vote.signature)
+            })
+            .collect(),
+    };
+    let insufficient = certificate(2);
+    assert_eq!(
+        verify_commit_certificate(&insufficient, &set),
+        Err(CertError::BelowQuorum)
+    );
+    assert!(!verify_canonical_certificate(
+        &canonical_bytes(&insufficient),
+        1,
+        &id,
+        &set
+    ));
+    let full = certificate(3);
+    assert!(verify_commit_certificate(&full, &set).is_ok());
+    assert!(verify_canonical_certificate(
+        &canonical_bytes(&full),
+        1,
+        &id,
+        &set
+    ));
+    let invalid = RoomValidatorSet::new(vec![RoomValidator::new(keys[0].public_key(), u64::MAX)]);
+    assert_eq!(
+        verify_commit_certificate(&full, &invalid),
+        Err(CertError::InvalidValidatorSet)
+    );
+    assert!(!verify_canonical_certificate(
+        &canonical_bytes(&full),
+        1,
+        &id,
+        &invalid
+    ));
+}
+
+#[test]
 fn vote_sign_verify_round_trip() {
     let (keys, _set) = set4();
     let id = value(1).id;
