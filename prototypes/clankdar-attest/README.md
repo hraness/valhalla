@@ -3,8 +3,9 @@
 An independent Rust implementation of `clankdar-attest-v1`, the sealed-seed
 capability attestation protocol defined by the Clankdar benchmark
 (`bench/attest.ts` in the clankdar repository is the reference), plus
-`clankdar-gate-v1` admission checking (`bench/gate.ts`) and
-`clankdar-tlog-v1` transparency-log checking (`bench/tlog.ts`).
+`clankdar-gate-v1` admission checking (`bench/gate.ts`),
+`clankdar-tlog-v1` transparency-log checking (`bench/tlog.ts`), and
+`clankdar-holdout-v1` issuer-private held-out pools (`bench/holdout.ts`).
 
 A verifier issues a challenge whose generator seed is committed but
 unrevealed: the puzzle instance has never existed publicly, so it cannot be
@@ -22,13 +23,15 @@ cargo build --manifest-path prototypes/clankdar-attest/Cargo.toml
 
 clankdar-attest keygen --out KEY.json
 clankdar-attest issue --key KEY.json --suite frontier --family automata --tier 6 \
-    [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR]
+    [--seed N] [--ttl SEC] [--context TEXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR]
 clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE \
-    [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR]
-clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR]
+    [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR]
+clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR]
 clankdar-attest tlog check TLOG.json
 clankdar-attest tlog prove TLOG.json --session gs_x
 clankdar-attest tlog admit TLOG.json ADMISSION.json [--clankdar DIR]
+clankdar-attest holdout gen --suite frontier --cells sat:t4,knights:t5 [--out POOL.json] [--clankdar DIR]
+clankdar-attest holdout info POOL.json
 ```
 
 `check` on a receipt is fully offline: signature, key identity, seed
@@ -193,7 +196,61 @@ bind it to the join request (`subject`/`context` are the binding hooks),
 and decide what an admission does and does not authorize. As ever, an
 admission is capability evidence under one policy in one window — never
 identity, liveness, or authority — and it must never mint room membership
-or host capability by itself.
+or host capability by itself. The room helpers currently issue published
+cells only and fail closed when an admission contains `unreplayed` held-out
+scores; pool-aware room issuance and decisions remain future integration.
+
+## Held-out pools (clankdar-holdout-v1)
+
+A holdout pool is an issuer-private set of secret labels that re-parameterize
+published generator cells: the held-out instance for a cell is
+`generate(tier, mixSeed(label, seed))`, where `mixSeed` is the FNV-1a label
+mix over the label's UTF-16 code units (JavaScript `charCodeAt` semantics,
+reproduced exactly). The label decorrelates the cell's stream from the
+published one while the public `seed` stays the caller seed recorded in the
+receipt. `poolKey` — `sha256(canonical({protocol, suite, cells}))` — commits
+the pool; challenges minted from it carry `heldout: {poolKey}`.
+
+Receipt checking is three-way, exactly as `checkReceipt(receipt, {pool})`
+in `bench/attest.ts`:
+
+- **Pool supplied and committed:** `check_receipt_with_pool` regenerates
+  through the cell's secret label — prompt, expected answer, and the
+  verdict rescore all replay.
+- **No matching pool:** the signature, seed commitment, answer format,
+  timing, and subject proof still verify, but the score stays
+  issuer-claimed — `{ok: true, verdict, replayable: false}`.
+- **Pool key matches but lacks the named cell:** proof of fabrication — a
+  hard `{ok: false}` failure, not an unreplayed pass.
+
+Issuing a held-out challenge requires the pool at issuance: `issue
+--holdout POOL.json` fails fast when the pool's suite differs from the
+requested suite or the pool lacks the cell, and `verify --pool` /
+`check --pool` carry the same pool through `instance_for` —
+a `heldout` ticket without its matching pool refuses rather than falling
+back to the published stream.
+
+Gate policies name held-out cells as `h:family:tN`. `issue_session` /
+`submit_session` / `check_admission_with_pool` mirror
+`bench/gate.ts`: a policy naming `h:` cells without a supplied pool fails
+fast; the pool's suite must equal the policy's and must carry every named
+held-out cell (membership is checked only when a pool is supplied — the
+checker path cannot verify it); every `heldout` challenge marker must be
+well-formed, name an `h:` policy cell, and share one `poolKey` across the
+session; an unmarked challenge must name a published policy cell. An
+admission check without the pool reports `unreplayed` — the count of
+receipts whose held-out scores stayed issuer-claimed — alongside `ok`,
+`verdict`, and `passed`.
+
+**Documented divergence, same as gate policies.** `HoldoutPool::parse`
+validates protocol, suite, cell count and shape (including the
+`^[A-Za-z0-9_-]{22,128}$` labels and distinct cell ids) and recomputes the
+`poolKey` commitment, but — like `GatePolicy::parse` — does not confirm
+each cell exists in the suite's base pool: the Rust side regenerates
+through the oracle rather than embedding the pools, so a nonexistent base
+cell fails at regeneration instead of at parse. The TypeScript fixtures in
+`tests/fixtures/` exercise real cells both ways, so the observable behavior
+is identical wherever it matters.
 
 ## Honest scope
 

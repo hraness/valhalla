@@ -50,16 +50,29 @@
 //! the signed admission, and [`decide_room_admission`] runs the room's
 //! admission decision — replaying the signed admission and pinning it to
 //! the room's published floor and verifier key.
+//!
+//! `clankdar-holdout-v1` adds issuer-private pools whose secret labels
+//! re-parameterize published cells (`h:family:tN`): held-out challenges
+//! carry `heldout: {poolKey}` and replay only for a checker holding the
+//! committed pool — everyone else verifies the envelope while the score
+//! stays issuer-claimed (`replayable: false`).
 
 mod gate;
+mod holdout;
 mod rooms;
 mod scorer;
 mod tlog;
 
 pub use gate::{
-    check_admission, suite_version, Admission, AdmissionBody, AdmissionCheck, AdmissionVerdict,
-    GatePolicy, AGENT_SUITE_VERSION, FRONTIER_SUITE_VERSION, GATE_PROTOCOL, MAX_POLICY_CELLS,
-    MAX_POLICY_CHALLENGES, MAX_POLICY_TTL_SECONDS, MIN_POLICY_TTL_SECONDS, V2_SUITE_VERSION,
+    check_admission, check_admission_with_pool, issue_session, submit_session, suite_version,
+    Admission, AdmissionBody, AdmissionCheck, AdmissionVerdict, GatePolicy, GateSession,
+    IssueSessionOptions, SubmitSessionOptions, AGENT_SUITE_VERSION, FRONTIER_SUITE_VERSION,
+    GATE_PROTOCOL, MAX_POLICY_CELLS, MAX_POLICY_CHALLENGES, MAX_POLICY_TTL_SECONDS,
+    MIN_POLICY_TTL_SECONDS, V2_SUITE_VERSION,
+};
+pub use holdout::{
+    holdout_cell, holdout_instance, instance_for, mix_seed, pool_key_of, HoldoutCell, HoldoutPool,
+    HOLDOUT_PROTOCOL, MAX_POOL_CELLS,
 };
 pub use rooms::{
     decide_room_admission, issue_room_session, submit_room_session, RoomDecision, RoomFloor,
@@ -131,6 +144,13 @@ pub struct Challenge {
     /// permits optional and future fields, so no `deny_unknown_fields` here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Held-out cell marker (clankdar-holdout-v1): `{poolKey}` commits the
+    /// pool the instance replays under. Kept as a raw member so a malformed
+    /// marker still parses as a challenge and fails its own check —
+    /// `heldout !== undefined` selects the held-out path in the TypeScript
+    /// checker, and member *presence* (not shape) is what selects it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heldout: Option<serde_json::Value>,
     /// Verifier key identity.
     pub verifier: VerifierRef,
 }
@@ -485,6 +505,24 @@ fn is_session_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// `/^[0-9a-f]{64}$/` — the `heldout.poolKey` marker shape. A marker that
+/// is not an object carrying a 64-hex string is malformed — including
+/// `heldout: null`, where the TypeScript checker throws on `null.poolKey`;
+/// reporting it malformed is the graceful equivalent.
+fn heldout_pool_key(marker: &serde_json::Value) -> Option<&str> {
+    match marker.get("poolKey").and_then(serde_json::Value::as_str) {
+        Some(key)
+            if key.len() == 64
+                && key
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
+        {
+            Some(key)
+        }
+        _ => None,
+    }
+}
+
 /// Draw a fresh uint32 seed. Callers draw first, then ask the generator
 /// oracle for that seed's instance, then call [`issue_challenge`].
 pub fn draw_seed() -> u64 {
@@ -507,6 +545,11 @@ pub struct IssueOptions<'a> {
     pub subject: Option<String>,
     /// Optional gate session id binding (clankdar-gate-v1).
     pub session_id: Option<String>,
+    /// Mint the cell from this holdout pool instead of the published
+    /// stream (clankdar-holdout-v1). The pool must cover the requested
+    /// `family:tier` cell and match the instance's suite; the caller
+    /// supplies an instance regenerated through [`crate::holdout_instance`].
+    pub holdout_pool: Option<&'a HoldoutPool>,
     /// Issuance instant; `None` uses the wall clock.
     pub now: Option<OffsetDateTime>,
 }
@@ -529,6 +572,22 @@ pub fn issue_challenge(
         return Err(AttestError::Mismatch(
             "oracle instance does not match the requested cell and seed".to_string(),
         ));
+    }
+    // A holdout pool must name the same suite the instance regenerated
+    // under and carry the requested cell — mirroring `issueChallenge`,
+    // which rejects a foreign suite or a missing cell before minting.
+    if let Some(pool) = opts.holdout_pool {
+        if suite_version(&pool.suite) != instance.suite_version {
+            return Err(AttestError::InvalidInput(
+                "holdout pool is for a different suite".to_string(),
+            ));
+        }
+        if holdout_cell(pool, opts.family, opts.tier as u64).is_none() {
+            return Err(AttestError::InvalidInput(format!(
+                "cell is not in the holdout pool: {}:t{}",
+                opts.family, opts.tier
+            )));
+        }
     }
     let ttl = opts.ttl_seconds.unwrap_or(300);
     if !(MIN_TTL_SECONDS..=MAX_TTL_SECONDS).contains(&ttl) {
@@ -583,6 +642,9 @@ pub fn issue_challenge(
         context: opts.context.clone(),
         subject: opts.subject.clone(),
         session_id: opts.session_id.clone(),
+        heldout: opts
+            .holdout_pool
+            .map(|pool| serde_json::json!({"poolKey": pool.pool_key})),
         verifier: VerifierRef {
             key_id: key_id_of(&public_key)?,
             public_key,
@@ -703,15 +765,23 @@ pub struct CheckResult {
     pub ok: bool,
     /// The recorded verdict when `ok` holds.
     pub verdict: Option<bool>,
+    /// `false` when a held-out cell could not be replayed without its
+    /// pool — signature, commitment, timing, and answer canonicality still
+    /// verified, but the score stays issuer-claimed. Absent for every
+    /// fully replayed (or never replayable) receipt, mirroring the
+    /// TypeScript `replayable` member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replayable: Option<bool>,
     /// Why the check failed when `ok` is false.
     pub reason: Option<String>,
 }
 
 impl CheckResult {
-    fn ok(verdict: bool) -> Self {
+    fn ok(verdict: bool, replayable: Option<bool>) -> Self {
         Self {
             ok: true,
             verdict: Some(verdict),
+            replayable,
             reason: None,
         }
     }
@@ -720,6 +790,7 @@ impl CheckResult {
         Self {
             ok: false,
             verdict: None,
+            replayable: None,
             reason: Some(reason.into()),
         }
     }
@@ -732,26 +803,46 @@ fn malformed(reason: &str) -> CheckResult {
 /// Independently replay a receipt without any generator access: signature over
 /// the verbatim payload, key identity, seed commitment, response format,
 /// verdict rescore, and answer-before-expiry. Deep verification additionally
-/// regenerates the instance — see [`check_receipt_deep`].
+/// regenerates the instance — see [`check_receipt_deep`]. A `heldout`-marked
+/// challenge cannot regenerate without its pool, so it reports
+/// `replayable: false` here exactly as `checkReceipt(receipt)` does.
 pub fn check_receipt(receipt: &Receipt) -> CheckResult {
-    check_receipt_with(
+    check_receipt_impl(
         receipt,
+        None,
         |_, _, _, _| Err("deep check skipped".to_string()),
         false,
     )
 }
 
 /// Full replay including regeneration through the generator oracle: the
-/// recorded prompt and expected answer must reproduce exactly.
+/// recorded prompt and expected answer must reproduce exactly. A `heldout`
+/// challenge without a supplied pool skips regeneration and reports
+/// `replayable: false` — the oracle is never consulted for it.
 pub fn check_receipt_deep(
     receipt: &Receipt,
     oracle: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
 ) -> CheckResult {
-    check_receipt_with(receipt, oracle, true)
+    check_receipt_impl(receipt, None, oracle, true)
 }
 
-fn check_receipt_with(
+/// `checkReceipt(receipt, {pool})` — the deep check with an optional
+/// holdout pool. A `heldout` marker whose `poolKey` names the supplied
+/// pool regenerates through the pool's secret label; a mismatched or
+/// absent pool leaves the score issuer-claimed (`replayable: false`), and
+/// a matching pool that lacks the named cell proves fabrication — a hard
+/// failure, not merely an unreplayable one.
+pub fn check_receipt_with_pool(
     receipt: &Receipt,
+    pool: Option<&HoldoutPool>,
+    oracle: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
+) -> CheckResult {
+    check_receipt_impl(receipt, pool, oracle, true)
+}
+
+fn check_receipt_impl(
+    receipt: &Receipt,
+    pool: Option<&HoldoutPool>,
     oracle: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
     deep: bool,
 ) -> CheckResult {
@@ -808,6 +899,46 @@ fn check_receipt_with(
     {
         return malformed("revealed seed does not match the committed challenge");
     }
+    // Instance resolution, mirroring the TypeScript checker's held-out
+    // branch in place (marker, pool, and cell checks precede the answer
+    // format checks). Member presence selects the held-out path — a
+    // present `heldout` of any shape must carry `{poolKey: <64 hex>}`.
+    // Without a matching pool the instance stays unresolved: the envelope
+    // still verifies and the score is issuer-claimed (`replayable:false`).
+    let mut instance: Option<GeneratedInstance> = None;
+    let heldout = raw.get("challenge").and_then(|c| c.get("heldout"));
+    if let Some(marker) = heldout {
+        let Some(pool_key) = heldout_pool_key(marker) else {
+            return malformed("malformed heldout marker");
+        };
+        if let Some(pool) = pool.filter(|p| p.pool_key == pool_key) {
+            let Some(cell) = holdout_cell(pool, &challenge.family, challenge.tier as u64) else {
+                return malformed("held-out cell is not in the committed pool");
+            };
+            if deep {
+                instance = Some(match holdout_instance(pool, cell, body.seed, &oracle) {
+                    Ok(instance) => instance,
+                    Err(e) => {
+                        return CheckResult::fail(format!(
+                            "held-out instance does not regenerate: {e}"
+                        ))
+                    }
+                });
+            }
+        }
+    } else if deep {
+        instance = Some(
+            match oracle(
+                &challenge.suite_version,
+                &challenge.family,
+                challenge.tier,
+                body.seed,
+            ) {
+                Ok(instance) => instance,
+                Err(e) => return CheckResult::fail(format!("instance does not regenerate: {e}")),
+            },
+        );
+    }
     let format = match AnswerFormat::parse(&body.verdict.format) {
         Some(format) => format,
         None => return malformed("unknown verdict answer format"),
@@ -821,7 +952,24 @@ fn check_receipt_with(
     if canonical_answer(&body.expected, format) != Some(body.expected.clone()) {
         return malformed("recorded answer is not canonical for its format");
     }
-    if score_answer(&body.expected, &body.response, format).pass != body.verdict.pass {
+    // Prompt equality, answer agreement, and the verdict rescore all run
+    // against the regenerated instance — an unresolved held-out cell skips
+    // them entirely since its score stays issuer-claimed. For a published
+    // receipt checked offline (no oracle), the shallow path still rescores
+    // the recorded answer pair.
+    if let Some(instance) = &instance {
+        if instance.prompt != challenge.prompt {
+            return malformed("recorded prompt disagrees with regeneration");
+        }
+        if canonical_answer(&instance.answer, format) != Some(body.expected.clone()) {
+            return malformed("recorded answer disagrees with regeneration");
+        }
+        if score_answer(&instance.answer, &body.response, format).pass != body.verdict.pass {
+            return malformed("verdict does not rescore");
+        }
+    } else if heldout.is_none()
+        && score_answer(&body.expected, &body.response, format).pass != body.verdict.pass
+    {
         return malformed("verdict does not rescore");
     }
     let answered = match parse_time(&body.verdict.answered_at) {
@@ -834,23 +982,6 @@ fn check_receipt_with(
     };
     if answered > expires {
         return malformed("answer is later than the challenge expiry");
-    }
-    if deep {
-        let instance = match oracle(
-            &challenge.suite_version,
-            &challenge.family,
-            challenge.tier,
-            body.seed,
-        ) {
-            Ok(instance) => instance,
-            Err(e) => return CheckResult::fail(format!("instance does not regenerate: {e}")),
-        };
-        if instance.prompt != challenge.prompt {
-            return malformed("recorded prompt disagrees with regeneration");
-        }
-        if canonical_answer(&instance.answer, format) != Some(body.expected.clone()) {
-            return malformed("recorded answer disagrees with regeneration");
-        }
     }
     // §7 subject binding, checked last as in the TypeScript checker. A
     // present `subjectProof` — even `null` — must carry a verifiable proof:
@@ -866,5 +997,10 @@ fn check_receipt_with(
             return malformed("subject proof does not verify");
         }
     }
-    CheckResult::ok(body.verdict.pass)
+    // `...(instance === undefined ? {replayable: false} : {})` — the only
+    // unresolved-but-valid case is a held-out cell without its pool.
+    CheckResult::ok(
+        body.verdict.pass,
+        (instance.is_none() && heldout.is_some()).then_some(false),
+    )
 }

@@ -20,16 +20,27 @@
 //! `family:tier` shape only — "cell exists" is enforced by receipt
 //! regeneration instead, since a receipt for a nonexistent cell fails its
 //! own deep check and can never count toward the verdict.
+//!
+//! Held-out cells (`h:family:tN`, clankdar-holdout-v1) resolve against a
+//! supplied [`HoldoutPool`]: policies validate pool membership only when a
+//! pool is supplied, and held-out challenges replay only for checkers
+//! holding the committed pool — everyone else sees `unreplayed` counts of
+//! issuer-claimed scores.
 
 use std::collections::{HashMap, HashSet};
 
-use ed25519_dalek::{Signature, Verifier};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use crate::{
-    b64url_decode, canonical_json, check_receipt_deep, is_session_id, key_id_of, parse_time,
-    verifying_key, AttestError, Challenge, GeneratedInstance, Receipt, ATTEST_PROTOCOL,
+    answer_format, b64url, b64url_decode, canonical_answer, canonical_json,
+    check_receipt_with_pool, draw_seed, heldout_pool_key, holdout_cell, holdout_instance,
+    instance_for, is_session_id, issue_challenge, key_id_of, parse_time, random_b64url,
+    verify_response, verifying_key, AttestError, Challenge, GeneratedInstance, HoldoutPool,
+    IssueOptions, Receipt, SubjectProof, Ticket, ATTEST_PROTOCOL,
 };
 
 /// Wire protocol identifier.
@@ -96,6 +107,34 @@ pub(crate) fn parse_cell(cell: &str) -> Option<(&str, u64)> {
         return None;
     }
     Some((family, tier.parse().ok()?))
+}
+
+/// A policy cell resolved by `cellOf`: `h:family:tN` names a held-out cell,
+/// `family:tN` a published one.
+#[derive(Clone, Copy)]
+struct PolicyCell<'a> {
+    family: &'a str,
+    tier: u64,
+    holdout: bool,
+}
+
+/// `cellOf`: `^h:([a-z0-9]+):t(\d+)$` first, then the published shape.
+fn cell_of(cell: &str) -> Option<PolicyCell<'_>> {
+    if let Some(rest) = cell.strip_prefix("h:") {
+        if let Some((family, tier)) = parse_cell(rest) {
+            return Some(PolicyCell {
+                family,
+                tier,
+                holdout: true,
+            });
+        }
+    }
+    let (family, tier) = parse_cell(cell)?;
+    Some(PolicyCell {
+        family,
+        tier,
+        holdout: false,
+    })
 }
 
 /// `Number.isInteger(value)` for a non-negative JSON number: an integral
@@ -195,7 +234,18 @@ impl GatePolicy {
     /// looks every cell up in the suite pool; this side validates the
     /// `family:tier` shape and defers "cell exists" to receipt
     /// regeneration, which fails for a nonexistent cell anyway.
+    ///
+    /// `h:family:tN` cells are bound-checked syntactically here; with no
+    /// pool (the checker path) their membership stays unverifiable until
+    /// the challenge list is examined.
     pub fn parse(value: &Value) -> Result<Self, AttestError> {
+        Self::parse_with_pool(value, None)
+    }
+
+    /// `parsePolicy(value, {pool})`: additionally resolve every `h:` cell
+    /// against the supplied pool — the pool's suite must equal the
+    /// policy's and it must carry each named held-out cell.
+    pub fn parse_with_pool(value: &Value, pool: Option<&HoldoutPool>) -> Result<Self, AttestError> {
         let fail =
             |message: &str| AttestError::InvalidInput(format!("invalid gate policy: {message}"));
         let object = value
@@ -221,7 +271,26 @@ impl GatePolicy {
         if cells.iter().collect::<HashSet<_>>().len() != cells.len() {
             return Err(fail("cells must be distinct"));
         }
+        // `cells.some(c => c.startsWith("h:"))` — the raw prefix selects the
+        // suite check even for a malformed `h:` id, which then fails the
+        // cell-shape checks below.
+        if cells.iter().any(|cell| cell.starts_with("h:"))
+            && pool.is_some_and(|pool| pool.suite != suite)
+        {
+            return Err(fail("holdout pool is for a different suite"));
+        }
         for cell in &cells {
+            if let Some(rest) = cell.strip_prefix("h:") {
+                if let Some((family, tier)) = parse_cell(rest) {
+                    // Held-out cells are shape-checked always and resolved
+                    // against the pool only when one is supplied — the
+                    // checker path cannot verify membership.
+                    if pool.is_some_and(|pool| holdout_cell(pool, family, tier).is_none()) {
+                        return Err(fail(&format!("cell is not in the holdout pool: {cell}")));
+                    }
+                    continue;
+                }
+            }
             if parse_cell(cell).is_none() {
                 return Err(fail(&format!("unknown cell for suite {suite}: {cell}")));
             }
@@ -257,9 +326,15 @@ impl GatePolicy {
 
     /// Validate an already-typed policy with the same bounds as [`Self::parse`].
     pub fn validate(&self) -> Result<(), AttestError> {
+        self.validate_with_pool(None)
+    }
+
+    /// Validate an already-typed policy against a holdout pool, the same
+    /// bounds as [`Self::parse_with_pool`].
+    pub fn validate_with_pool(&self, pool: Option<&HoldoutPool>) -> Result<(), AttestError> {
         let value =
             serde_json::to_value(self).map_err(|e| AttestError::Malformed(e.to_string()))?;
-        Self::parse(&value).map(|_| ())
+        Self::parse_with_pool(&value, pool).map(|_| ())
     }
 }
 
@@ -313,6 +388,266 @@ pub struct Admission {
     pub signature: String,
 }
 
+/// Verifier-side session state: the secret twin of the published
+/// challenges (mirrors `GateSession`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateSession {
+    /// Protocol identifier.
+    pub protocol: String,
+    /// Object kind (`"session"`).
+    pub kind: String,
+    /// Session identifier (`gs_` + base64url).
+    pub session_id: String,
+    /// The gate floor the session runs under.
+    pub policy: GatePolicy,
+    /// Optional relying-party subject claim shared by every challenge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Optional application scope binding shared by every challenge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// RFC 3339 issuance instant.
+    pub issued_at: String,
+    /// Uniform deadline; identical to every challenge's `expiresAt`.
+    pub expires_at: String,
+    /// The sealed tickets, kept server-side until decision.
+    pub tickets: Vec<Ticket>,
+}
+
+/// Options for [`issue_session`] (mirrors the `issueSession` options).
+pub struct IssueSessionOptions<'a> {
+    /// Optional relying-party subject claim.
+    pub subject: Option<String>,
+    /// Optional application scope binding.
+    pub context: Option<String>,
+    /// Pool supplying the policy's `h:` cells; required when the policy
+    /// names any.
+    pub pool: Option<&'a HoldoutPool>,
+    /// Issuance instant; `None` uses the wall clock.
+    pub now: Option<OffsetDateTime>,
+    /// Cell picker for deterministic tests; `None` draws uniformly.
+    pub pick: Option<&'a dyn Fn(usize) -> usize>,
+    /// Seed base for deterministic tests; challenge `i` seeds at `base + i`.
+    pub seed_base: Option<u64>,
+}
+
+/// Mint a session: `policy.challenges` sealed challenges drawn uniformly
+/// from the policy cells (with replacement), all under one session id and
+/// one deadline — `issueSession` in `bench/gate.ts`. A policy naming `h:`
+/// cells without a supplied pool fails fast; each held-out pick mints
+/// through the pool's secret label so the challenge carries
+/// `heldout: {poolKey}`.
+pub fn issue_session(
+    policy: &GatePolicy,
+    opts: &IssueSessionOptions<'_>,
+    key: &SigningKey,
+    oracle: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
+) -> Result<(GateSession, Vec<Challenge>), AttestError> {
+    policy.validate_with_pool(opts.pool)?;
+    let now = opts.now.unwrap_or_else(OffsetDateTime::now_utc);
+    let session_id = format!("gs_{}", random_b64url(9));
+    let pick = |bound: usize| -> usize {
+        opts.pick.map(|f| f(bound)).unwrap_or_else(|| {
+            (rand_core::RngCore::next_u64(&mut rand_core::OsRng) % bound.max(1) as u64) as usize
+        })
+    };
+    let cells: Vec<PolicyCell> = policy
+        .cells
+        .iter()
+        .map(|cell| {
+            cell_of(cell).ok_or_else(|| {
+                AttestError::InvalidInput(format!("invalid gate policy: unknown cell: {cell}"))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    if cells.iter().any(|cell| cell.holdout) && opts.pool.is_none() {
+        return Err(AttestError::InvalidInput(
+            "policy names held-out cells but no holdout pool was supplied".to_string(),
+        ));
+    }
+    let mut tickets = Vec::new();
+    let mut challenges = Vec::new();
+    for i in 0..policy.challenges {
+        let cell = cells
+            .get(pick(cells.len()))
+            .copied()
+            .ok_or_else(|| AttestError::InvalidInput("cell pick is out of bounds".to_string()))?;
+        let seed = opts
+            .seed_base
+            .map(|base| base + i)
+            .unwrap_or_else(draw_seed);
+        let tier = u32::try_from(cell.tier).map_err(|_| {
+            AttestError::InvalidInput(format!("invalid cell tier: {}:t{}", cell.family, cell.tier))
+        })?;
+        let (instance, holdout_pool) = if cell.holdout {
+            let pool = opts.pool.ok_or_else(|| {
+                AttestError::InvalidInput(
+                    "policy names held-out cells but no holdout pool was supplied".to_string(),
+                )
+            })?;
+            let hold_cell = holdout_cell(pool, cell.family, cell.tier).ok_or_else(|| {
+                AttestError::InvalidInput(format!(
+                    "cell is not in the holdout pool: {}:t{}",
+                    cell.family, cell.tier
+                ))
+            })?;
+            (
+                holdout_instance(pool, hold_cell, seed, &oracle).map_err(AttestError::Malformed)?,
+                Some(pool),
+            )
+        } else {
+            (
+                oracle(suite_version(&policy.suite), cell.family, tier, seed)
+                    .map_err(AttestError::Malformed)?,
+                None,
+            )
+        };
+        let issued = issue_challenge(
+            &IssueOptions {
+                family: cell.family,
+                tier,
+                ttl_seconds: Some(policy.ttl_seconds as i64),
+                context: opts.context.clone(),
+                subject: opts.subject.clone(),
+                session_id: Some(session_id.clone()),
+                holdout_pool,
+                now: Some(now),
+            },
+            seed,
+            &instance,
+            key,
+        )?;
+        tickets.push(issued.1);
+        challenges.push(issued.0);
+    }
+    let session = GateSession {
+        protocol: GATE_PROTOCOL.to_string(),
+        kind: "session".to_string(),
+        session_id,
+        policy: policy.clone(),
+        subject: opts.subject.clone(),
+        context: opts.context.clone(),
+        issued_at: now
+            .format(&Rfc3339)
+            .map_err(|e| AttestError::Malformed(e.to_string()))?,
+        expires_at: challenges
+            .first()
+            .map(|c| c.expires_at.clone())
+            .unwrap_or_default(),
+        tickets,
+    };
+    Ok((session, challenges))
+}
+
+/// Options for [`submit_session`] (mirrors the `submitSession` options).
+pub struct SubmitSessionOptions<'a> {
+    /// Optional respondent key proof; session-scoped, so the same object
+    /// embeds in every minted receipt.
+    pub subject_proof: Option<&'a SubjectProof>,
+    /// Pool that minted the session's held-out challenges; required when
+    /// any carry `heldout`.
+    pub pool: Option<&'a HoldoutPool>,
+    /// Decision instant; `None` uses the wall clock.
+    pub now: Option<OffsetDateTime>,
+}
+
+/// Consume a session into its decision — `submitSession` in
+/// `bench/gate.ts`. Each listed challenge may supply one response; a
+/// missing or non-format-canonical response is a failed challenge with no
+/// receipt. The issuer runs the independent checker on every minted
+/// receipt before signing the admission.
+pub fn submit_session(
+    session: &GateSession,
+    responses: &HashMap<String, String>,
+    opts: &SubmitSessionOptions<'_>,
+    key: &SigningKey,
+    oracle: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
+) -> Result<(Vec<Receipt>, Admission), AttestError> {
+    if session.protocol != GATE_PROTOCOL || session.kind != "session" {
+        return Err(AttestError::Malformed("not a gate session".to_string()));
+    }
+    let now = opts.now.unwrap_or_else(OffsetDateTime::now_utc);
+    if now > parse_time(&session.expires_at)? {
+        return Err(AttestError::Expired);
+    }
+    let tickets: HashMap<&str, &Ticket> = session
+        .tickets
+        .iter()
+        .map(|t| (t.challenge.challenge_id.as_str(), t))
+        .collect();
+    for id in responses.keys() {
+        if !tickets.contains_key(id.as_str()) {
+            return Err(AttestError::InvalidInput(format!(
+                "response for unknown challenge {id}"
+            )));
+        }
+    }
+    let mut receipts = Vec::new();
+    let mut passed = 0u64;
+    for ticket in &session.tickets {
+        let Some(response) = responses.get(&ticket.challenge.challenge_id) else {
+            continue;
+        };
+        if canonical_answer(response, answer_format(&ticket.challenge.family)).is_none() {
+            continue;
+        }
+        let instance = instance_for(&ticket.challenge, ticket.seed, opts.pool, &oracle)?;
+        let receipt = verify_response(
+            ticket,
+            response,
+            &instance,
+            key,
+            opts.subject_proof,
+            Some(now),
+        )?;
+        let replay = check_receipt_with_pool(&receipt, opts.pool, &oracle);
+        if !replay.ok {
+            return Err(AttestError::Mismatch(format!(
+                "minted receipt does not verify: {}",
+                replay.reason.unwrap_or_default()
+            )));
+        }
+        if replay.verdict == Some(true) {
+            passed += 1;
+        }
+        receipts.push(receipt);
+    }
+    let body = AdmissionBody {
+        kind: "admission".to_string(),
+        session_id: session.session_id.clone(),
+        policy: session.policy.clone(),
+        subject: session.subject.clone(),
+        context: session.context.clone(),
+        challenges: session
+            .tickets
+            .iter()
+            .map(|t| t.challenge.clone())
+            .collect(),
+        receipts: receipts.clone(),
+        verdict: AdmissionVerdict {
+            pass: passed >= session.policy.min_pass,
+            passed,
+            required: session.policy.min_pass,
+            decided_at: now
+                .format(&Rfc3339)
+                .map_err(|e| AttestError::Malformed(e.to_string()))?,
+        },
+    };
+    let payload = canonical_json(
+        &serde_json::to_value(&body).map_err(|e| AttestError::Malformed(e.to_string()))?,
+    );
+    let signature = b64url(&key.sign(payload.as_bytes()).to_bytes());
+    Ok((
+        receipts,
+        Admission {
+            protocol: GATE_PROTOCOL.to_string(),
+            payload,
+            signature,
+        },
+    ))
+}
+
 /// Outcome of an independent admission check (mirrors `AdmissionCheck`).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AdmissionCheck {
@@ -324,6 +659,11 @@ pub struct AdmissionCheck {
     /// Count of passing receipts when `ok` holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub passed: Option<u64>,
+    /// Count of receipts whose held-out cells could not be replayed
+    /// without the pool — signed and committed, but issuer-claimed
+    /// scores. Absent when zero, mirroring the TypeScript `unreplayed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreplayed: Option<u64>,
     /// Why the check failed when `ok` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -335,6 +675,7 @@ impl AdmissionCheck {
             ok: false,
             verdict: None,
             passed: None,
+            unreplayed: None,
             reason: Some(reason.into()),
         }
     }
@@ -356,6 +697,20 @@ pub fn check_admission(
     admission: &Admission,
     regenerate: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
 ) -> AdmissionCheck {
+    check_admission_with_pool(admission, None, regenerate)
+}
+
+/// `checkAdmission(admission, {pool})` — the admission check with an
+/// optional holdout pool. The embedded policy's `h:` cells validate
+/// against the pool when supplied; every `heldout` challenge marker must
+/// be well-formed, name an `h:` policy cell, and share one `poolKey`
+/// across the session. Embedded receipts for held-out cells replay
+/// through the pool and otherwise count in `unreplayed`.
+pub fn check_admission_with_pool(
+    admission: &Admission,
+    pool: Option<&HoldoutPool>,
+    regenerate: impl Fn(&str, &str, u32, u64) -> Result<GeneratedInstance, String>,
+) -> AdmissionCheck {
     if admission.protocol != GATE_PROTOCOL {
         return AdmissionCheck::fail("not a gate admission");
     }
@@ -370,7 +725,8 @@ pub fn check_admission(
         return AdmissionCheck::fail("malformed admission payload");
     }
     let session_id = session_id.unwrap_or_default();
-    let policy = match GatePolicy::parse(body.get("policy").unwrap_or(&Value::Null)) {
+    let policy = match GatePolicy::parse_with_pool(body.get("policy").unwrap_or(&Value::Null), pool)
+    {
         Ok(policy) => policy,
         Err(error) => {
             return AdmissionCheck::fail(format!("invalid embedded policy: {error}"));
@@ -388,6 +744,9 @@ pub fn check_admission(
     // `""` initial values, matching the TypeScript falsy accumulators.
     let mut public_key: Option<Value> = Some(Value::String(String::new()));
     let mut expires_at: Option<Value> = Some(Value::String(String::new()));
+    // `let holdPoolKey = ""` — the first held-out challenge sets it and
+    // every later one must equal it: one pool per admission.
+    let mut hold_pool_key = String::new();
     for challenge in challenges {
         if challenge.get("protocol").and_then(Value::as_str) != Some(ATTEST_PROTOCOL)
             || challenge.get("kind").and_then(Value::as_str) != Some("challenge")
@@ -405,7 +764,21 @@ pub fn check_admission(
             js_string(challenge.get("family")),
             js_string(challenge.get("tier"))
         );
-        if !cells.contains(cell.as_str()) {
+        // A present `heldout` member — even a malformed one — binds the
+        // challenge to an `h:` policy cell and the session's one pool key.
+        if let Some(marker) = challenge.get("heldout") {
+            let Some(pool_key) = heldout_pool_key(marker) else {
+                return AdmissionCheck::fail("malformed heldout marker");
+            };
+            if !cells.contains(format!("h:{cell}").as_str()) {
+                return AdmissionCheck::fail("challenge cell is outside the policy");
+            }
+            if hold_pool_key.is_empty() {
+                hold_pool_key = pool_key.to_string();
+            } else if pool_key != hold_pool_key {
+                return AdmissionCheck::fail("held-out challenges mix pools");
+            }
+        } else if !cells.contains(cell.as_str()) {
             return AdmissionCheck::fail("challenge cell is outside the policy");
         }
         let challenge_expires = challenge.get("expiresAt").cloned();
@@ -481,6 +854,7 @@ pub fn check_admission(
     // only receipts that carry a proof.
     let mut subject_key: Option<String> = None;
     let mut passed = 0u64;
+    let mut unreplayed = 0u64;
     for member in receipts {
         let receipt: Receipt = match serde_json::from_value(member.clone()) {
             Ok(receipt) => receipt,
@@ -490,7 +864,7 @@ pub fn check_admission(
                 )
             }
         };
-        let replay = check_receipt_deep(&receipt, &regenerate);
+        let replay = check_receipt_with_pool(&receipt, pool, &regenerate);
         if !replay.ok {
             return AdmissionCheck::fail(format!(
                 "embedded receipt does not verify: {}",
@@ -537,6 +911,9 @@ pub fn check_admission(
         if replay.verdict == Some(true) {
             passed += 1;
         }
+        if replay.replayable == Some(false) {
+            unreplayed += 1;
+        }
     }
     // `!verdict` in TypeScript — a falsy verdict member fails the rescore.
     let verdict = body.get("verdict").filter(|v| !js_falsy(Some(*v)));
@@ -568,10 +945,13 @@ pub fn check_admission(
     if decided.is_none_or(|d| expires.is_some_and(|e| d > e)) {
         return AdmissionCheck::fail("decision is later than the session deadline");
     }
+    // `...(unreplayed ? {unreplayed} : {})` — the count only surfaces
+    // when some receipt's score stayed issuer-claimed.
     AdmissionCheck {
         ok: true,
         verdict: Some(passed >= policy.min_pass),
         passed: Some(passed),
+        unreplayed: (unreplayed > 0).then_some(unreplayed),
         reason: None,
     }
 }
