@@ -1,0 +1,165 @@
+--- libp2p-dns-0.44.0/Cargo.toml
++++ libp2p-dns-backport/Cargo.toml
+@@ -10 +10 @@
+-# See Cargo.toml.orig for the original contents.
++# Valhalla maintains a scoped Hickory compatibility backport; see README.md.
+@@ -14 +14 @@
+-rust-version = "1.83.0"
++rust-version = "1.88"
+@@ -17,0 +18 @@
++publish = false
+@@ -55 +56 @@
+-version = "0.25.2"
++version = "0.26.3"
+--- libp2p-dns-0.44.0/src/lib.rs
++++ libp2p-dns-backport/src/lib.rs
+@@ -36 +36 @@
+-//! of [trust-dns-resolver].
++//! of [hickory-resolver].
+@@ -39 +39 @@
+-//! On Unix systems, if no custom configuration is given, [trust-dns-resolver]
++//! On Unix systems, if no custom configuration is given, [hickory-resolver]
+@@ -54 +54 @@
+-//! [trust-dns-resolver]: https://docs.rs/trust-dns-resolver/latest/trust_dns_resolver/#dns-over-tls-and-dns-over-https
++//! [hickory-resolver]: https://docs.rs/hickory-resolver
+@@ -62 +62 @@
+-    use hickory_resolver::{name_server::TokioConnectionProvider, system_conf, TokioResolver};
++    use hickory_resolver::{net::runtime::TokioRuntimeProvider, system_conf, TokioResolver};
+@@ -72 +72,2 @@
+-            let (cfg, opts) = system_conf::read_system_conf()?;
++            let (cfg, opts) = system_conf::read_system_conf()
++                .map_err(|e| std::io::Error::other(e.to_string()))?;
+@@ -85,6 +86,4 @@
+-                resolver: TokioResolver::builder_with_config(
+-                    cfg,
+-                    TokioConnectionProvider::default(),
+-                )
+-                .with_options(opts)
+-                .build(),
++                resolver: TokioResolver::builder_with_config(cfg, TokioRuntimeProvider::default())
++                    .with_options(opts)
++                    .build()
++                    .expect("valid resolver config should build"),
+@@ -110 +109 @@
+-    ResolveError, ResolveErrorKind,
++    net::NetError as ResolveError,
+@@ -112,5 +111 @@
+-use hickory_resolver::{
+-    lookup::{Ipv4Lookup, Ipv6Lookup, TxtLookup},
+-    lookup_ip::LookupIp,
+-    name_server::ConnectionProvider,
+-};
++use hickory_resolver::{lookup::Lookup, lookup_ip::LookupIp, proto::rr::RData, ConnectionProvider};
+@@ -339 +334 @@
+-                    ResolveErrorKind::Message("No Matching Records Found").into(),
++                    ResolveError::from("No Matching Records Found"),
+@@ -429 +424 @@
+-        Protocol::Dns(ref name) => resolver
++        Protocol::Dns(name) => resolver
+@@ -433,4 +428,4 @@
+-                    let mut ips = ips.into_iter();
+-                    let one = ips
+-                        .next()
+-                        .expect("If there are no results, `Err(NoRecordsFound)` is expected.");
++                    let mut ips = ips.iter();
++                    let one = ips.next().ok_or_else(|| {
++                        Error::ResolveError(ResolveError::from("No Matching Records Found"))
++                    })?;
+@@ -452 +447 @@
+-        Protocol::Dns4(ref name) => resolver
++        Protocol::Dns4(name) => resolver
+@@ -456,4 +451,10 @@
+-                    let mut ips = ips.into_iter();
+-                    let one = ips
+-                        .next()
+-                        .expect("If there are no results, `Err(NoRecordsFound)` is expected.");
++                    let mut ips = ips
++                        .answers()
++                        .iter()
++                        .filter_map(|record| match &record.data {
++                            RData::A(ip) => Some(Ipv4Addr::from(*ip)),
++                            _ => None,
++                        });
++                    let one = ips.next().ok_or_else(|| {
++                        Error::ResolveError(ResolveError::from("No Matching Records Found"))
++                    })?;
+@@ -465 +465,0 @@
+-                                .map(Ipv4Addr::from)
+@@ -470 +470 @@
+-                        Ok(Resolved::One(Protocol::from(Ipv4Addr::from(one))))
++                        Ok(Resolved::One(Protocol::from(one)))
+@@ -476 +476 @@
+-        Protocol::Dns6(ref name) => resolver
++        Protocol::Dns6(name) => resolver
+@@ -480,4 +480,10 @@
+-                    let mut ips = ips.into_iter();
+-                    let one = ips
+-                        .next()
+-                        .expect("If there are no results, `Err(NoRecordsFound)` is expected.");
++                    let mut ips = ips
++                        .answers()
++                        .iter()
++                        .filter_map(|record| match &record.data {
++                            RData::AAAA(ip) => Some(Ipv6Addr::from(*ip)),
++                            _ => None,
++                        });
++                    let one = ips.next().ok_or_else(|| {
++                        Error::ResolveError(ResolveError::from("No Matching Records Found"))
++                    })?;
+@@ -489 +494,0 @@
+-                                .map(Ipv6Addr::from)
+@@ -494 +499 @@
+-                        Ok(Resolved::One(Protocol::from(Ipv6Addr::from(one))))
++                        Ok(Resolved::One(Protocol::from(one)))
+@@ -500 +505 @@
+-        Protocol::Dnsaddr(ref name) => {
++        Protocol::Dnsaddr(name) => {
+@@ -507,2 +512,9 @@
+-                        for txt in txts {
+-                            if let Some(chars) = txt.txt_data().first() {
++                        for txt in txts
++                            .answers()
++                            .iter()
++                            .filter_map(|record| match &record.data {
++                                RData::TXT(txt) => Some(txt),
++                                _ => None,
++                            })
++                        {
++                            if let Some(chars) = txt.txt_data.first() {
+@@ -547,3 +559,3 @@
+-    async fn ipv4_lookup(&self, name: String) -> Result<Ipv4Lookup, ResolveError>;
+-    async fn ipv6_lookup(&self, name: String) -> Result<Ipv6Lookup, ResolveError>;
+-    async fn txt_lookup(&self, name: String) -> Result<TxtLookup, ResolveError>;
++    async fn ipv4_lookup(&self, name: String) -> Result<Lookup, ResolveError>;
++    async fn ipv6_lookup(&self, name: String) -> Result<Lookup, ResolveError>;
++    async fn txt_lookup(&self, name: String) -> Result<Lookup, ResolveError>;
+@@ -561 +573 @@
+-    async fn ipv4_lookup(&self, name: String) -> Result<Ipv4Lookup, ResolveError> {
++    async fn ipv4_lookup(&self, name: String) -> Result<Lookup, ResolveError> {
+@@ -565 +577 @@
+-    async fn ipv6_lookup(&self, name: String) -> Result<Ipv6Lookup, ResolveError> {
++    async fn ipv6_lookup(&self, name: String) -> Result<Lookup, ResolveError> {
+@@ -569 +581 @@
+-    async fn txt_lookup(&self, name: String) -> Result<TxtLookup, ResolveError> {
++    async fn txt_lookup(&self, name: String) -> Result<Lookup, ResolveError> {
+@@ -577 +589 @@
+-    use hickory_resolver::proto::{ProtoError, ProtoErrorKind};
++    use hickory_resolver::config::QUAD9;
+@@ -591 +603 @@
+-        let config = ResolverConfig::quad9();
++        let config = ResolverConfig::udp_and_tcp(&QUAD9);
+@@ -733,8 +745,2 @@
+-                        Error::ResolveError(e) => match e.kind() {
+-                            ResolveErrorKind::Proto(ProtoError { kind, .. })
+-                                if matches!(
+-                                    kind.as_ref(),
+-                                    ProtoErrorKind::NoRecordsFound { .. }
+-                                ) => {}
+-                            _ => panic!("Unexpected DNS error: {e:?}"),
+-                        },
++                        Error::ResolveError(e) if e.is_no_records_found() => {}
++                        Error::ResolveError(e) => panic!("Unexpected DNS error: {e:?}"),
+@@ -848,0 +855,3 @@
++
++#[cfg(all(test, feature = "tokio"))]
++mod backport_tests;

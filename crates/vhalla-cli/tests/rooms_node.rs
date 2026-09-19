@@ -31,7 +31,7 @@ mod enabled {
     use std::{
         collections::BTreeMap,
         fs,
-        io::{Read, Write},
+        io::{Read, Seek, SeekFrom, Write},
         net::{TcpListener, TcpStream},
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         path::{Path, PathBuf},
@@ -50,17 +50,21 @@ mod enabled {
 
     const REALM_HEX: &str = "0000000000000000000000000000004d"; // fixture REALM = 77
 
-    struct Temp(PathBuf);
+    struct Temp(PathBuf, bool);
     impl Temp {
         fn new() -> Self {
+            Self::create("vhalla-cli-node", false)
+        }
+        fn soak() -> Self {
+            Self::create("vhalla-cli-node-soak", true)
+        }
+        fn create(prefix: &str, keep_on_panic: bool) -> Self {
             let mut nonce = [0; 16];
             getrandom::fill(&mut nonce).unwrap();
-            let path = std::env::temp_dir().join(format!(
-                "vhalla-cli-node-{:032x}",
-                u128::from_be_bytes(nonce)
-            ));
+            let path =
+                std::env::temp_dir().join(format!("{prefix}-{:032x}", u128::from_be_bytes(nonce)));
             fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
-            Self(path)
+            Self(path, keep_on_panic)
         }
         fn path(&self, name: &str) -> PathBuf {
             self.0.join(name)
@@ -68,7 +72,7 @@ mod enabled {
     }
     impl Drop for Temp {
         fn drop(&mut self) {
-            if std::env::var_os("KEEP_TEMP").is_none() {
+            if std::env::var_os("KEEP_TEMP").is_none() && !(self.1 && thread::panicking()) {
                 fs::remove_dir_all(&self.0).unwrap();
             } else {
                 eprintln!("kept {}", self.0.display());
@@ -134,6 +138,96 @@ mod enabled {
         let started = Instant::now();
         while !ready() {
             assert!(started.elapsed() < deadline, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Match Service::submit's intake producer contract: complete bytes in
+    /// an ignored sibling first, then atomically publish the watched suffix.
+    /// Direct fs::write to *.batch/*.body lets the poller reject a partial file.
+    fn publish_intake(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+        let path = path.as_ref();
+        let temporary = path.with_extension("fixture.tmp");
+        fs::write(&temporary, bytes)?;
+        fs::rename(temporary, path)
+    }
+
+    fn wait_for_soak(
+        deadline: Duration,
+        what: &str,
+        nodes: &mut [Node],
+        homes: &[PathBuf],
+        ready: impl Fn() -> bool,
+    ) {
+        fn names(path: &Path) -> String {
+            match fs::read_dir(path) {
+                Ok(entries) => {
+                    let mut entries: Vec<_> = entries
+                        .flatten()
+                        .take(17)
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .collect();
+                    entries.sort();
+                    let truncated = entries.len() > 16;
+                    entries.truncate(16);
+                    format!("{entries:?}{}", if truncated { " (truncated)" } else { "" })
+                }
+                Err(error) => format!("unavailable: {error}"),
+            }
+        }
+        fn tail(path: &Path, limit: u64) -> String {
+            let read = || -> std::io::Result<String> {
+                let mut file = fs::File::open(path)?;
+                let length = file.metadata()?.len();
+                file.seek(SeekFrom::Start(length.saturating_sub(limit)))?;
+                let mut bytes = Vec::new();
+                file.take(limit).read_to_end(&mut bytes)?;
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            };
+            read().unwrap_or_else(|error| format!("unavailable: {error}"))
+        }
+        let started = Instant::now();
+        while !ready() {
+            if started.elapsed() >= deadline {
+                eprintln!("mesh-timeout: {what}, elapsed={:?}", started.elapsed());
+                for (index, (node, home)) in nodes.iter_mut().zip(homes).enumerate() {
+                    let status = match node.child.try_wait() {
+                        Ok(Some(status)) => format!("exited {status}"),
+                        Ok(None) => "running".to_owned(),
+                        Err(error) => format!("status unavailable: {error}"),
+                    };
+                    let frontier = fs::read_dir(home.join("app/journal/heights"))
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .filter_map(|entry| {
+                            u64::from_str_radix(&entry.file_name().to_string_lossy(), 16).ok()
+                        })
+                        .max();
+                    eprintln!(
+                        "mesh-timeout: member={index} pid={} status={status} highest_committed_marker={frontier:?} home={}",
+                        node.child.id(), home.display()
+                    );
+                    eprintln!(
+                        "  intake={} pending={} seen={}",
+                        names(&home.join("intake")),
+                        names(&home.join("store/pending")),
+                        names(&home.join("store/seen"))
+                    );
+                    eprintln!(
+                        "  stdout={}\n{}",
+                        node.stdout.display(),
+                        tail(&node.stdout, 1024)
+                    );
+                    eprintln!(
+                        "  stderr={}\n{}",
+                        node.stderr.display(),
+                        tail(&node.stderr, 6144)
+                    );
+                }
+                panic!("timed out waiting for {what}");
+            }
             thread::sleep(Duration::from_millis(25));
         }
     }
@@ -223,7 +317,7 @@ mod enabled {
         // A malformed drop is rejected and retained — never silently lost.
         fs::write(home.join("intake/garbage.batch"), b"not a batch").unwrap();
         // Valid canonical batch: commits at the next height this node wins.
-        fs::write(home.join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        publish_intake(home.join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
 
         wait_for(Duration::from_secs(90), "height 1 commit", || {
             committed(&home, 1)
@@ -237,7 +331,7 @@ mod enabled {
         );
 
         // A second submission after the first commit retires cleanly.
-        fs::write(home.join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
+        publish_intake(home.join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
         wait_for(Duration::from_secs(60), "height 2 commit", || {
             committed(&home, 2)
         });
@@ -591,7 +685,7 @@ mod enabled {
 
         // Drop the height-1 batch into member 0's intake: whichever
         // validator proposes it, every member must commit the same value.
-        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        publish_intake(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
         for (i, home) in homes.iter().enumerate() {
             wait_for(Duration::from_secs(150), "height 1 on all members", || {
                 committed(home, 1)
@@ -606,7 +700,7 @@ mod enabled {
             .status()
             .unwrap();
         assert!(signaled.success());
-        fs::write(homes[1].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
+        publish_intake(homes[1].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
         for home in homes.iter().take(3) {
             wait_for(
                 Duration::from_secs(150),
@@ -646,13 +740,13 @@ mod enabled {
             socials.push(social.clone());
             nodes.push(spawn_member(&temp, i, &social, &home));
         }
-        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        publish_intake(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
         wait_for(
             Duration::from_secs(150),
             "height 1 on the early trio",
             || committed(&homes[0], 1) && committed(&homes[1], 1) && committed(&homes[2], 1),
         );
-        fs::write(homes[1].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
+        publish_intake(homes[1].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
         wait_for(
             Duration::from_secs(150),
             "height 2 on the early trio",
@@ -677,7 +771,7 @@ mod enabled {
             .unwrap();
         assert!(killed.success());
         let _ = nodes[0].child.wait();
-        fs::write(
+        publish_intake(
             homes[3].join("intake/three.batch"),
             plan.batches[&3].encode(),
         )
@@ -716,7 +810,7 @@ mod enabled {
             socials.push(social.clone());
             nodes.push(spawn_member(&temp, i, &social, &home));
         }
-        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        publish_intake(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
         wait_for(Duration::from_secs(150), "height 1 set-wide", || {
             homes.iter().all(|h| committed(h, 1))
         });
@@ -729,7 +823,7 @@ mod enabled {
             .unwrap();
         assert!(killed.success());
         let _ = nodes[1].child.wait();
-        fs::write(homes[2].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
+        publish_intake(homes[2].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
         wait_for(
             Duration::from_secs(150),
             "height 2 on the survivors",
@@ -747,7 +841,7 @@ mod enabled {
 
         // And it decides again: height 3 is dropped into the restarted
         // member's own intake and commits set-wide.
-        fs::write(
+        publish_intake(
             homes[1].join("intake/three.batch"),
             plan.batches[&3].encode(),
         )
@@ -798,7 +892,7 @@ mod enabled {
         }
 
         // Height 1 commits under the genesis eligible set.
-        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        publish_intake(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
         wait_for(Duration::from_secs(150), "height 1 set-wide", || {
             homes.iter().all(|h| committed(h, 1))
         });
@@ -826,7 +920,7 @@ mod enabled {
         // the dropped sources, so its room's charge can never be
         // covered — re-prepare fails on every member and the dropping
         // member marks the intake file rejected.
-        fs::write(
+        publish_intake(
             homes[1].join("intake/three.batch"),
             plan.batches[&3].encode(),
         )
@@ -978,7 +1072,7 @@ mod enabled {
                 )
             })
             .collect();
-        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        publish_intake(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
         wait_for(Duration::from_secs(150), "height 1 set-wide", || {
             homes.iter().all(|h| committed(h, 1))
         });
@@ -1070,7 +1164,7 @@ mod enabled {
         // Heights 2 and 3 still decide under the original four; member 4
         // follows along on sync without voting.
         for (n, h) in [(2u64, "two"), (3, "three")] {
-            fs::write(
+            publish_intake(
                 homes[0].join(format!("intake/{h}.batch")),
                 plan.batches[&n].encode(),
             )
@@ -1084,7 +1178,7 @@ mod enabled {
 
         // Height 4 is the activation: the five-member set needs 4 votes
         // (strictly over 10/3), so member 4 must vote for it to land.
-        fs::write(
+        publish_intake(
             homes[0].join("intake/four.batch"),
             plan.batches[&4].encode(),
         )
@@ -1104,7 +1198,7 @@ mod enabled {
             .unwrap();
         assert!(killed.success());
         let _ = nodes[0].child.wait();
-        fs::write(
+        publish_intake(
             homes[1].join("intake/five.batch"),
             plan.batches[&5].encode(),
         )
@@ -1138,7 +1232,7 @@ mod enabled {
     #[test]
     fn live_mesh_soak_duplicate_churn_rotation_converges() {
         let _mesh = mesh();
-        let temp = Temp::new();
+        let temp = Temp::soak();
         // 8 funded batches: one room per drop. 24 sources leave award
         // headroom for the full sequence plus the post-transition drops.
         let plan = fixture::plan(8, 8, 24);
@@ -1217,15 +1311,21 @@ mod enabled {
         let mut seq = 0usize;
         let mut spawn = |temp: &Temp, i: usize, socials: &[PathBuf], homes: &[PathBuf]| {
             seq += 1;
-            spawn_node(
+            spawn_node_with_log(
                 temp,
                 &format!("soak-{i}-{seq}"),
                 &socials[i],
                 &homes[i],
                 &homes[i].join("node.json"),
+                Some("warn,vhalla_rooms_node=debug,arc_malachitebft_engine::consensus=info,arc_malachitebft_engine::sync=info"),
             )
         };
         let mut nodes: Vec<Node> = (0..4).map(|i| spawn(&temp, i, &socials, &homes)).collect();
+        macro_rules! soak_wait {
+            ($deadline:expr, $what:expr, $ready:expr $(,)?) => {
+                wait_for_soak($deadline, $what, &mut nodes, &homes, $ready)
+            };
+        }
         let sigint = |node: &mut Node| {
             let signaled = Command::new("kill")
                 .args(["-INT", &node.child.id().to_string()])
@@ -1245,8 +1345,8 @@ mod enabled {
         let all_committed = |homes: &[PathBuf], h: u64| homes.iter().all(|home| committed(home, h));
 
         // h1: an ordinary drop.
-        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
-        wait_for(Duration::from_secs(150), "h1 set-wide", || {
+        publish_intake(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        soak_wait!(Duration::from_secs(150), "h1 set-wide", || {
             all_committed(&homes, 1)
         });
 
@@ -1254,9 +1354,9 @@ mod enabled {
         // assemble the same body; value-id dedup must commit room-2 on
         // exactly one height - never twice.
         for i in [0usize, 2] {
-            fs::write(homes[i].join("intake/dup.batch"), plan.batches[&2].encode()).unwrap();
+            publish_intake(homes[i].join("intake/dup.batch"), plan.batches[&2].encode()).unwrap();
         }
-        wait_for(Duration::from_secs(150), "h2 set-wide", || {
+        soak_wait!(Duration::from_secs(150), "h2 set-wide", || {
             all_committed(&homes, 2)
         });
 
@@ -1273,12 +1373,12 @@ mod enabled {
             &owners,
         ]);
         assert_eq!(updated["owners"].as_u64(), Some(25));
-        wait_for(Duration::from_secs(180), "h3 eligible transition", || {
+        soak_wait!(Duration::from_secs(180), "h3 eligible transition", || {
             all_committed(&homes, 3)
         });
 
         // h4: a post-transition drop still funds (sources retained).
-        fs::write(
+        publish_intake(
             homes[1].join("intake/three.batch"),
             plan.batches[&3].encode(),
         )
@@ -1287,15 +1387,15 @@ mod enabled {
         // consume a height. A LATE duplicate - batch 2 re-dropped after
         // room-2 already committed - must fail re-prepare the same way.
         fs::write(homes[2].join("intake/junk.batch"), b"not a batch").unwrap();
-        fs::write(
+        publish_intake(
             homes[3].join("intake/late.batch"),
             plan.batches[&2].encode(),
         )
         .unwrap();
-        wait_for(Duration::from_secs(150), "h4 set-wide", || {
+        soak_wait!(Duration::from_secs(150), "h4 set-wide", || {
             all_committed(&homes, 4)
         });
-        wait_for(Duration::from_secs(90), "junk and late rejected", || {
+        soak_wait!(Duration::from_secs(90), "junk and late rejected", || {
             homes[2].join("intake/junk.rejected").exists()
                 && homes[3].join("intake/late.rejected").exists()
         });
@@ -1330,13 +1430,13 @@ mod enabled {
         }
 
         sigint(&mut nodes[0]);
-        fs::write(
+        publish_intake(
             homes[1].join("intake/four.batch"),
             plan.batches[&4].encode(),
         )
         .unwrap();
         nodes[0] = spawn(&temp, 0, &socials, &homes);
-        wait_for(
+        soak_wait!(
             Duration::from_secs(180),
             "h5 during member-0 restart",
             || all_committed(&homes, 5),
@@ -1373,12 +1473,12 @@ mod enabled {
         nodes.push(spawn(&temp, 4, &socials, &homes));
 
         // h6: still the four-member set; the joiner follows on sync.
-        fs::write(
+        publish_intake(
             homes[2].join("intake/five.batch"),
             plan.batches[&5].encode(),
         )
         .unwrap();
-        wait_for(Duration::from_secs(180), "h6 with joiner synced", || {
+        soak_wait!(Duration::from_secs(180), "h6 with joiner synced", || {
             all_committed(&homes, 6)
         });
 
@@ -1386,9 +1486,9 @@ mod enabled {
         // drop lands at member 1 the instant member 2 is SIGKILLed - the
         // survivors are exactly {0,1,3,4}, so the joiner's vote is what
         // carries the height.
-        fs::write(homes[1].join("intake/six.batch"), plan.batches[&6].encode()).unwrap();
+        publish_intake(homes[1].join("intake/six.batch"), plan.batches[&6].encode()).unwrap();
         sigkill(&mut nodes[2]);
-        wait_for(
+        soak_wait!(
             Duration::from_secs(240),
             "h7 activates the fifth without member 2",
             || [0usize, 1, 3, 4].iter().all(|&i| committed(&homes[i], 7)),
@@ -1396,12 +1496,12 @@ mod enabled {
 
         // Member 2 replays its WAL, syncs the gap and rejoins for h8.
         nodes[2] = spawn(&temp, 2, &socials, &homes);
-        fs::write(
+        publish_intake(
             homes[3].join("intake/seven.batch"),
             plan.batches[&7].encode(),
         )
         .unwrap();
-        wait_for(Duration::from_secs(180), "h8 after crash recovery", || {
+        soak_wait!(Duration::from_secs(180), "h8 after crash recovery", || {
             all_committed(&homes, 8)
         });
 
@@ -1410,7 +1510,7 @@ mod enabled {
         // though member 2's intake holds the drop.
         sigkill(&mut nodes[0]);
         sigkill(&mut nodes[1]);
-        fs::write(
+        publish_intake(
             homes[2].join("intake/eight.batch"),
             plan.batches[&8].encode(),
         )
@@ -1425,7 +1525,7 @@ mod enabled {
         // full set converges on h9.
         nodes[0] = spawn(&temp, 0, &socials, &homes);
         nodes[1] = spawn(&temp, 1, &socials, &homes);
-        wait_for(Duration::from_secs(300), "h9 after heal", || {
+        soak_wait!(Duration::from_secs(300), "h9 after heal", || {
             all_committed(&homes, 9)
         });
         assert!(
@@ -1583,7 +1683,7 @@ mod enabled {
             socials.push(social.clone());
             nodes.push(spawn_member(&temp, i, &social, &home));
         }
-        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        publish_intake(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
         wait_for(Duration::from_secs(150), "h1 set-wide", || {
             homes.iter().all(|h| committed(h, 1))
         });
@@ -1592,7 +1692,7 @@ mod enabled {
         // member 1's store/pending marker so the body is queued - or
         // already assembled into a value mid-vote - rather than still a
         // loose intake file. Then the whole mesh dies at once.
-        fs::write(homes[1].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
+        publish_intake(homes[1].join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
         wait_for(
             Duration::from_secs(90),
             "member 1 persists the body",
@@ -1622,7 +1722,7 @@ mod enabled {
         );
 
         // And the mesh keeps deciding normally afterwards.
-        fs::write(
+        publish_intake(
             homes[2].join("intake/three.batch"),
             plan.batches[&3].encode(),
         )
@@ -1855,7 +1955,7 @@ mod enabled {
         // connectivity, the second proves it survives the parts
         // re-streaming a churned relay connection forces.
         for n in 1u64..=2 {
-            fs::write(
+            publish_intake(
                 homes[0].join(format!("intake/h{n}.batch")),
                 plan.batches[&n].encode(),
             )
@@ -2101,7 +2201,7 @@ mod enabled {
                 &home.join("node.json"),
             ));
         }
-        fs::write(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
+        publish_intake(homes[0].join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
         for home in &homes {
             wait_for(Duration::from_secs(150), "scaffolded mesh decides", || {
                 committed(home, 1)
@@ -2587,7 +2687,7 @@ mod enabled {
             games: vec![lane],
             eligible: None,
         };
-        fs::write(home.join(format!("intake/{name}.body")), body.encode()).unwrap();
+        publish_intake(home.join(format!("intake/{name}.body")), body.encode()).unwrap();
     }
 
     /// An actor-authored event record and its game lane at `sequence` — the

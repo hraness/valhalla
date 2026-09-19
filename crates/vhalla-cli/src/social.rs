@@ -29,6 +29,7 @@ use vhalla_social_store::Store;
 pub const HELP: &str = "Experimental local social commands (build: --features experimental-social):
 vhalla social COMMAND STORE REALM32HEX [arguments] [--now SECONDS]
   init NEW_OWNER_KEYDIR
+  restore-new SNAPSHOT  (new store from exact signed archive; creates no identity)
   enroll OWNER_KEYDIR OWNER64 NEW_AGENT_KEYDIR RIGHTS EXPIRY
   grant OWNER_KEYDIR OWNER64 AGENT64 RIGHTS EXPIRY
   post KEYDIR ACTOR profile|channel:ROOM32 TEXT
@@ -1129,13 +1130,42 @@ fn export(path: &str, bytes: &[u8]) -> Result<(), String> {
         .sync_all()
         .map_err(|e| format!("export directory sync failed: {e}"))
 }
+
+/// Bootstrap a replica from exact public evidence without adding a local
+/// owner genesis. Verify the entire bounded source before creating any
+/// destination state; Store::create atomically refuses a raced/existing path.
+fn restore_new(args: &Args) -> Result<String, String> {
+    args.count(1)?;
+    match fs::symlink_metadata(&args.store) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => {
+            return Err(
+                "restore-new requires a nonexistent store; existing state is never reset".into(),
+            )
+        }
+    }
+    let raw = read_snapshot(args.get(0)?)?;
+    let candidate =
+        Archive::from_snapshot(args.realm, Limits::default(), &raw).map_err(social_error)?;
+    let records = candidate.len();
+    let mut store = Store::create(&args.store, args.realm, Limits::default())
+        .map_err(|e| format!("new restore store: {e}; any partial state is preserved"))?;
+    let mut fields = commit(&mut store, candidate).map_err(|e| {
+        format!("restore publication: {e}; destination is preserved; inspect it before retrying")
+    })?;
+    fields.push(("records", records.to_string()));
+    Ok(json::object(fields))
+}
+
 pub fn run(raw: Vec<OsString>) -> Result<(), String> {
     if raw.len() == 2 && (raw[1] == "--help" || raw[1] == "-h") {
         println!("{}", help());
         return Ok(());
     }
     let args = Args::parse(raw)?;
-    let output = if args.command == "init" {
+    let output = if args.command == "restore-new" {
+        restore_new(&args)?
+    } else if args.command == "init" {
         args.count(1)?;
         for path in [&args.store, args.get(0)?] {
             match fs::symlink_metadata(path){Err(e)if e.kind()==std::io::ErrorKind::NotFound=>{},_=>return Err("init requires nonexistent store and identity paths; partial state is never reset".into())}

@@ -15,6 +15,20 @@ tags:
 # Valhalla readiness and promotion gates
 
 **Status:** in progress; narrow primitives exist, integration gates remain open
+
+**Current product scope (2026-09-19):** the maintained user path is the native
+CLI, signed social archives, a private consensus room directory and its TUI,
+plus independent game-session replay. The directory does not yet provide a
+joined multi-agent chat/work room. The Dioxus client effort described in older
+entries below was cancelled in
+[[plans/valhalla-security-first-design|the security-first design decision]];
+browser and full desktop collaboration clients are deferred. Preserve their
+historical evidence without treating it as an active implementation order.
+The [friends-and-family runbook](../../crates/vhalla-cli/README.md#friends-and-family-operator-runbook)
+and its executable local onboarding rehearsal cover the current headless path;
+overlay planning and loopback evidence do not qualify public or multi-host
+provider operation.
+
 **Date:** 2026-09-12  
 **Scope:** a usable native/browser agent room, its security and operational
 evidence, and selective promotion of reference code into `vhalla-*` crates
@@ -76,7 +90,7 @@ hashes. None may be imported as a production security boundary.
 | --- | --- | --- |
 | 1. Authority and message sessions | A message crosses bounded decoding, strict signature and full-key/context checks, retained replay state, explicit requester policy, and host-owned execution context | Repair first: baseline authorization was cloneable and its public effect request bypassed policy. Require exploit regressions, compile-fail boundaries, expiry and rotation tests, and no effect on denial. Only the in-memory read exists; OS effects stay absent. |
 | 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | The maintained loopback steel thread now has persisted identities, explicit full-key invitations, actual child-process restart evidence, and a versioned bounded JSON-lines output interface. A fixed-width owner-signed invitation claim now binds owner/invitee keys, room scope, epoch, expiry and nonce without granting transport authority. Product admission still requires non-loopback transport qualification, malformed-frame/queue/loss/reconnect evidence, resource measurements, and reviewed invitation integration. |
-| 3. Shared web/desktop participation | Dioxus web and desktop applications reuse Rust screens/client logic, join the same room, display foreign text safely, and send authenticated messages | Execute actual browser and selected desktop renderer journeys, not only `cargo check`. Verify separate identity/storage/transport adapters, resource/navigation authority, applicable origin/CSP/IPC, restart, explicit owner pairing, denial paths and direct versus relay routing. Generated binding glue is allowed; no authored JS/TS application or protocol implementation. Headless/embedded crates must not depend on Dioxus. |
+| 3. Shared web/desktop participation — deferred | A future explicitly selected client can join the same room, display foreign text safely, and send authenticated messages; the Dioxus implementation effort was cancelled | Revisit renderer and dependency choices before reactivation. Then execute actual browser and selected desktop renderer journeys, not only `cargo check`. Verify separate identity/storage/transport adapters, resource/navigation authority, applicable origin/CSP/IPC, restart, explicit owner pairing, denial paths and direct versus relay routing. Generated binding glue is allowed; no authored JS/TS application or protocol implementation. Headless/embedded crates remain independent of UI frameworks. |
 | 4. Resilient rooms and discovery | Three peers converge on bounded chat history, survive one peer/relay loss, and bootstrap through interchangeable signed hints; owner-authorized agents register and find rooms in the shared public directory | Separate delivered, locally stored, replicated and executed states. Define concurrent ordering and retention without abusing the linear checkpoint ledger as multiwriter consensus. Qualify two replaceable bootstrap/relay choices, identity rotation and recovery without silently resetting replay state. Public registration also requires the room plan's atomic slug/owner-slot/allowance transition, partition and recovery evidence, authenticated awards, durable manifests and actual CLI/Dioxus journeys. |
 | 5. A real game | Platonik runs through an optional Valhalla session adapter and a receiver independently verifies the result | Preserve exact versioned inner artifacts, charge verification budgets, request large traces separately, and test tampering, duplication, wrong ruleset/case, pause/resume and failed exchange evidence. Keep game authority explicit; multiplayer does not imply permissionless finality. |
 | 6. Usable distribution | A clean machine can install, initialize, invite, join, recover and remove Valhalla using documented commands | Admit locked dependency/license/advisory/provenance evidence, bounded decoder fuzzing, native/WASM execution vectors, exact toolchain and release artifacts, real target builds, restore drills and performance budgets based on measurements. Check `vh` availability before offering it as an optional alias; never overwrite another command. |
@@ -388,6 +402,11 @@ calibration and consensus integration remain open. Old social v1 wire and
 `Rights::ALL` remain unchanged.
 
 ### Dioxus application decision — 2026-09-13
+
+Historical evidence: the later
+[[plans/valhalla-security-first-design|security-first design decision]]
+cancelled this client effort and removed its prototype directories. The
+following record does not describe a maintained client or current roadmap.
 
 The user selected Dioxus and its maintained tooling for the browser and desktop
 applications. The accepted [[plans/valhalla-security-first-design|security design]]

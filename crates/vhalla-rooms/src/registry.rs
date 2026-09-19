@@ -342,6 +342,99 @@ impl Registry {
         self.revision
     }
 
+    /// Check the necessary retained-history conditions for a later local
+    /// snapshot: fixed context, monotone clock/counters, and every old proof
+    /// retained in its original chain or award tuple. Eligibility may change
+    /// only at a higher revision. At the same revision, only new proofs for
+    /// already-counted support tuples may extend otherwise identical state.
+    /// This is a conservative persistence guard, not proof of consensus order
+    /// or a substitute for replaying the agreed application log.
+    #[must_use]
+    pub fn is_extension_of(&self, previous: &Self) -> bool {
+        if self.directory != previous.directory
+            || self.realm != previous.realm
+            || self.policy != previous.policy
+            || self.revision < previous.revision
+            || self.last_time < previous.last_time
+            || !previous.support.is_subset(&self.support)
+        {
+            return false;
+        }
+        let same_revision = self.revision == previous.revision;
+        if same_revision
+            && (self.last_time != previous.last_time
+                || self.eligible != previous.eligible
+                || self.support != previous.support
+                || self.accounts != previous.accounts
+                || self.windows != previous.windows
+                || self.authority.records() != previous.authority.records()
+                || self.rooms.len() != previous.rooms.len()
+                || self.evidence.len() <= previous.evidence.len()
+                || !self.evidence.values().all(|evidence| {
+                    previous.support.contains(&(
+                        evidence.award.beneficiary,
+                        evidence.award.source_owner,
+                        evidence.award.activity_epoch,
+                    ))
+                }))
+        {
+            return false;
+        }
+        let histories: BTreeMap<_, _> = self.authority.histories().collect();
+        for (owner, history) in previous.authority.histories() {
+            let Some(next) = histories.get(&owner) else {
+                return false;
+            };
+            if !next.starts_with(history) {
+                return false;
+            }
+        }
+        for (slug, room) in &previous.rooms {
+            let Some(next) = self.rooms.get(slug) else {
+                return false;
+            };
+            if next.record != room.record
+                || next.created_at != room.created_at
+                || !next.revisions.starts_with(&room.revisions)
+                || (same_revision && next.revisions.len() != room.revisions.len())
+            {
+                return false;
+            }
+        }
+        for (id, evidence) in &previous.evidence {
+            if !self
+                .evidence
+                .get(id)
+                .is_some_and(|next| next.award == evidence.award && next.record == evidence.record)
+            {
+                return false;
+            }
+        }
+        for (owner, account) in &previous.accounts {
+            if !self.accounts.get(owner).is_some_and(|next| {
+                next.earned >= account.earned
+                    && next.spent >= account.spent
+                    && next.lifetime_slots >= account.lifetime_slots
+            }) {
+                return false;
+            }
+        }
+        // Creation windows may discard expired entries, but never a still
+        // live prefix: doing so would reset the owner's rate allowance.
+        for (owner, window) in &previous.windows {
+            let live = |t: &&u64| self.last_time.saturating_sub(**t) < self.policy.window_seconds;
+            let mut next = self.windows.get(owner).into_iter().flatten().filter(live);
+            if !window
+                .iter()
+                .filter(live)
+                .all(|time| next.next() == Some(time))
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// The `(slot, cost)` quote for an owner's next room under this policy.
     pub fn quote(&self, owner: OwnerId) -> Result<(u32, u64), RegistryError> {
         let slot = self

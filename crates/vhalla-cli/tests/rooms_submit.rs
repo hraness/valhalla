@@ -34,8 +34,9 @@ fn submit_command_reports_missing_feature() {
 mod enabled {
     use std::{
         fs,
-        io::Read,
-        os::unix::fs::DirBuilderExt,
+        io::{Read, Write},
+        net::TcpListener,
+        os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
         path::{Path, PathBuf},
         process::{Child, Command, Output, Stdio},
         thread,
@@ -119,14 +120,26 @@ mod enabled {
     }
 
     fn run(command: &str, args: &[&str]) -> Output {
+        run_input(command, args, None)
+    }
+
+    fn run_input(command: &str, args: &[&str], input: Option<&[u8]>) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
             .env("HRANESS_SUPPORT", "off")
             .arg(command)
             .args(args)
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        if let Some(input) = input {
+            child.stdin.take().unwrap().write_all(input).unwrap();
+        }
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
         let read = |pipe: Box<dyn Read + Send>| {
@@ -328,8 +341,9 @@ mod enabled {
 
     fn spawn_node(temp: &Temp, social: &Path, home: &Path, config: &Path) -> Node {
         fs::create_dir_all(home.join("intake")).unwrap();
-        let stdout = temp.path("node.stdout");
-        let stderr = temp.path("node.stderr");
+        let label = home.file_name().unwrap().to_str().unwrap();
+        let stdout = temp.path(&format!("{label}.stdout"));
+        let stderr = temp.path(&format!("{label}.stderr"));
         let child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
             .env("HRANESS_SUPPORT", "off")
             .args([
@@ -389,6 +403,450 @@ mod enabled {
             .find(|p| p["marker"].as_str() == Some(marker))
             .map(|p| field(p, "state"))
             .unwrap_or_else(|| "missing".into())
+    }
+
+    /// Rehearse the friends-and-family runbook from empty directories. All
+    /// identity, social, network and room state is made by the released CLI
+    /// entry points, not by seeding a funded registry or a fixture batch.
+    /// Four equal-power members are configured; three live loopback nodes
+    /// decide with the fourth absent. This is not overlay qualification.
+    #[test]
+    fn clean_state_four_member_onboarding_rehearsal() {
+        let temp = Temp::new();
+
+        // A standalone paired-chat identity is separate from social init,
+        // which creates its own owner identity and requires a fresh path.
+        let chat_key = temp.path("paired-chat-key");
+        let chat = run("identity", &["init", path(&chat_key)]);
+        assert!(chat.status.success());
+        assert_eq!(
+            chat.stdout,
+            run("identity", &["show", path(&chat_key)]).stdout
+        );
+        let members: Vec<Social> = ["alice", "bob", "carol", "dave"]
+            .into_iter()
+            .map(|name| Social::init(&temp, name))
+            .collect();
+        let alice = &members[0];
+        let bob = &members[1];
+        let backup = run("identity", &["backup", path(&alice.key)]);
+        assert!(backup.status.success());
+        let backup_path = temp.path("alice-key.backup");
+        let mut backup_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&backup_path)
+            .unwrap();
+        backup_file.write_all(&backup.stdout).unwrap();
+        backup_file.sync_all().unwrap();
+        assert_eq!(
+            fs::metadata(&backup_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let restored = temp.path("alice-key-restored");
+        let backup_text = std::str::from_utf8(&backup.stdout).unwrap();
+        let mnemonic = backup_text
+            .lines()
+            .find_map(|line| line.strip_prefix("mnemonic "))
+            .expect("backup contains the mnemonic line");
+        let restore = run_input(
+            "identity",
+            &["restore", path(&restored)],
+            Some(mnemonic.as_bytes()),
+        );
+        assert!(
+            restore.status.success(),
+            "{}",
+            String::from_utf8_lossy(&restore.stderr)
+        );
+        assert_eq!(
+            run("identity", &["show", path(&restored)]).stdout,
+            run("identity", &["show", path(&alice.key)]).stdout
+        );
+
+        let agent_key = temp.path("alice-agent-key");
+        let enrollment = ok(
+            "social",
+            &[
+                "enroll",
+                path(&alice.store),
+                REALM,
+                path(&alice.key),
+                &alice.owner,
+                path(&agent_key),
+                "all",
+                "1000",
+                "--now",
+                NOW,
+            ],
+        );
+        let agent = field(&enrollment, "agent");
+        let actor = format!("agent:{agent}:{}", field(&enrollment, "grant"));
+        let post = ok(
+            "social",
+            &[
+                "post",
+                path(&alice.store),
+                REALM,
+                path(&agent_key),
+                &actor,
+                "profile",
+                "A reproducible simulation for our private group.",
+                "--now",
+                NOW,
+            ],
+        );
+        assert_eq!(post["state"], "provisional");
+        let post_id = field(&post, "event");
+        ok(
+            "social",
+            &[
+                "seal",
+                path(&alice.store),
+                REALM,
+                path(&alice.key),
+                &alice.owner,
+                &post_id,
+                "--now",
+                NOW,
+            ],
+        );
+
+        // Bob signs in his own store, after importing Alice's sealed work.
+        let alice_snapshot = temp.path("alice-work.snapshot");
+        alice.export(&alice_snapshot);
+        bob.import(&alice_snapshot);
+        bob.react_into(&bob.store, &post_id);
+        for (index, member) in members.iter().enumerate().skip(1) {
+            let snapshot = temp.path(&format!("member-{index}.snapshot"));
+            member.export(&snapshot);
+            alice.import(&snapshot);
+        }
+        let genesis_snapshot = temp.path("genesis.snapshot");
+        alice.export(&genesis_snapshot);
+        for member in &members {
+            member.import(&genesis_snapshot);
+        }
+        // Nodes and fresh replicas always bootstrap from a dedicated frozen
+        // archive. Each owner's working social store can evolve independently.
+        let genesis_stores: Vec<PathBuf> = (0..4)
+            .map(|index| {
+                let store = temp.path(&format!("member-{index}-genesis"));
+                ok(
+                    "social",
+                    &["restore-new", path(&store), REALM, path(&genesis_snapshot)],
+                );
+                store
+            })
+            .collect();
+
+        // Only these public keys and endpoints are shared between members.
+        let keys: Vec<Value> = (0..4).map(|_| ok("rooms", &["keygen"])).collect();
+        let validators = keys
+            .iter()
+            .map(|key| format!("1:{}:1", field(key, "public_key")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let network_path = temp.path("network.json");
+        let network = ok(
+            "rooms",
+            &[
+                "network-init",
+                path(&network_path),
+                "--realm",
+                REALM,
+                "--directory",
+                DIRECTORY,
+                "--policy",
+                "1,60,4,60,8",
+                "--validators",
+                &validators,
+                "--eligible",
+                &bob.owner,
+            ],
+        );
+        assert_eq!(network["quorum_power"], 3);
+        assert_eq!(network["absent_power_tolerated"], 1);
+
+        // Reserve distinct ephemeral ports until the complete configuration
+        // has been checked, then release them immediately before startup.
+        let reservations: Vec<TcpListener> = (0..4)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let ports: Vec<u16> = reservations
+            .iter()
+            .map(|listener| listener.local_addr().unwrap().port())
+            .collect();
+        let homes: Vec<PathBuf> = (0..4)
+            .map(|index| temp.path(&format!("member-{index}-node")))
+            .collect();
+        let configs: Vec<PathBuf> = homes.iter().map(|home| home.join("node.json")).collect();
+        let mut archive = None;
+        for (index, genesis_store) in genesis_stores.iter().enumerate() {
+            let peers = keys
+                .iter()
+                .enumerate()
+                .filter(|(peer, _)| *peer != index)
+                .map(|(peer, key)| {
+                    format!("{}@127.0.0.1:{}", field(key, "public_key"), ports[peer])
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let initialized = ok(
+                "rooms",
+                &[
+                    "node-init",
+                    path(&homes[index]),
+                    "--network",
+                    path(&network_path),
+                    "--node-key",
+                    &field(&keys[index], "node_key"),
+                    "--port",
+                    &ports[index].to_string(),
+                    "--listen",
+                    "127.0.0.1",
+                    "--peers",
+                    &peers,
+                    "--peers-only",
+                    "true",
+                ],
+            );
+            assert_eq!(initialized["node_key_votes_from"], 1);
+            let checked = ok(
+                "rooms",
+                &[
+                    "node-check",
+                    path(genesis_store),
+                    path(&homes[index]),
+                    REALM,
+                    "--config",
+                    path(&configs[index]),
+                ],
+            );
+            assert_eq!(checked["genesis"], network["genesis"]);
+            assert_eq!(checked["pinned_peers"], 3);
+            assert_eq!(checked["peers_only"], true);
+            assert!(checked["warnings"].as_array().unwrap().is_empty());
+            assert_eq!(checked["validator_sets"][0]["quorum_power"], 3);
+            assert_eq!(checked["validator_sets"][0]["absent_power_tolerated"], 1);
+            let root = field(&checked, "archive");
+            assert_eq!(archive.get_or_insert_with(|| root.clone()), &root);
+        }
+        drop(reservations);
+        let nodes: Vec<Node> = (0..3)
+            .map(|index| {
+                spawn_node(
+                    &temp,
+                    &genesis_stores[index],
+                    &homes[index],
+                    &configs[index],
+                )
+            })
+            .collect();
+        for node in &nodes {
+            node.wait_listening();
+        }
+        let replica = temp.path("alice-replica");
+        let created = submit(
+            &genesis_stores[0],
+            &replica,
+            &homes[0],
+            &configs[0],
+            &[
+                "create",
+                path(&alice.key),
+                path(&agent_key),
+                &alice.owner,
+                &agent,
+                "work-hall",
+                "100",
+                "A private group's room directory entry.",
+                path(&genesis_snapshot),
+            ],
+        );
+        wait_for(
+            Duration::from_secs(90),
+            "three-member quorum create",
+            || homes[..3].iter().all(|home| committed(home, 1)),
+        );
+        assert!(!committed(&homes[3], 1), "the absent member never started");
+        let report = pending(&genesis_stores[0], &replica, &homes[0], &configs[0]);
+        assert_eq!(
+            marker_state(&report, &field(&created, "marker")),
+            "committed"
+        );
+
+        // Normal later owner activity changes the working archive. A brand
+        // new read replica must still replay the original network genesis.
+        ok(
+            "social",
+            &[
+                "post",
+                path(&alice.store),
+                REALM,
+                path(&alice.key),
+                &format!("owner:{}", alice.owner),
+                "profile",
+                "Later owner work.",
+                "--now",
+                NOW,
+            ],
+        );
+        let later_owner = temp.path("later-owner.snapshot");
+        alice.export(&later_owner);
+        assert_ne!(
+            fs::read(&later_owner).unwrap(),
+            fs::read(&genesis_snapshot).unwrap()
+        );
+        for (index, store) in genesis_stores.iter().enumerate() {
+            let retained = temp.path(&format!("retained-genesis-{index}.snapshot"));
+            ok("social", &["export", path(store), REALM, path(&retained)]);
+            assert_eq!(
+                fs::read(&retained).unwrap(),
+                fs::read(&genesis_snapshot).unwrap()
+            );
+        }
+        for index in 0..3 {
+            let replica = temp.path(&format!("status-{index}"));
+            let report = ok(
+                "rooms",
+                &[
+                    "status",
+                    path(&genesis_stores[index]),
+                    path(&replica),
+                    REALM,
+                    path(&homes[index]),
+                    "--config",
+                    path(&configs[index]),
+                ],
+            );
+            assert_eq!(report["height"], 1);
+            assert_eq!(report["quorum"]["threshold"], 3);
+            assert_eq!(report["rooms"][0]["slug"], "work-hall");
+            assert_eq!(report["rooms"][0]["owner"], alice.owner);
+        }
+        drop(nodes);
+
+        // Rehearse a future whole-set schedule replacing Dave with Eve.
+        // Existing peer lists deliberately stay unchanged: this tests the
+        // schedule and fresh genesis bootstrap, not live transport rollout.
+        let updated_path = temp.path("network-v2.json");
+        let eve = ok("rooms", &["keygen"]);
+        let replacement = keys[..3]
+            .iter()
+            .chain(std::iter::once(&eve))
+            .map(|key| format!("{}:1", field(key, "public_key")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let extension = ok(
+            "rooms",
+            &[
+                "network-extend",
+                path(&network_path),
+                path(&updated_path),
+                "--from",
+                "10",
+                "--validators",
+                &replacement,
+            ],
+        );
+        assert_eq!(extension["activation_from"], 10);
+        for (index, home) in homes.iter().enumerate() {
+            let before: Value =
+                serde_json::from_slice(&fs::read(&configs[index]).unwrap()).unwrap();
+            let updated = ok(
+                "rooms",
+                &["node-update", path(home), "--network", path(&updated_path)],
+            );
+            assert_eq!(updated["committed"], if index < 3 { 1 } else { 0 });
+            let after: Value = serde_json::from_slice(&fs::read(&configs[index]).unwrap()).unwrap();
+            for field in ["node_key", "port", "listen", "peers", "peers_only"] {
+                assert!(before[field] == after[field], "local field {field} changed");
+            }
+            let checked = ok(
+                "rooms",
+                &[
+                    "node-check",
+                    path(&genesis_stores[index]),
+                    path(home),
+                    REALM,
+                    "--config",
+                    path(&configs[index]),
+                ],
+            );
+            assert_eq!(checked["genesis"], extension["genesis"]);
+            assert_eq!(checked["validator_sets"].as_array().unwrap().len(), 2);
+            assert_eq!(checked["validator_sets"][1]["from"], 10);
+            assert_eq!(checked["validator_sets"][1]["quorum_power"], 3);
+        }
+
+        // An actual newcomer can start from only the shared signed snapshot;
+        // social init would add an unwanted owner record and change genesis.
+        let eve_store = temp.path("eve-social");
+        let restored = ok(
+            "social",
+            &[
+                "restore-new",
+                path(&eve_store),
+                REALM,
+                path(&genesis_snapshot),
+            ],
+        );
+        assert_eq!(field(&restored, "root"), archive.unwrap());
+        let eve_snapshot = temp.path("eve.snapshot");
+        ok(
+            "social",
+            &["export", path(&eve_store), REALM, path(&eve_snapshot)],
+        );
+        assert_eq!(
+            fs::read(&eve_snapshot).unwrap(),
+            fs::read(&genesis_snapshot).unwrap()
+        );
+        let eve_home = temp.path("eve-node");
+        let eve_config = eve_home.join("node.json");
+        let eve_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let eve_port = eve_listener.local_addr().unwrap().port().to_string();
+        let eve_peers = keys[..3]
+            .iter()
+            .enumerate()
+            .map(|(peer, key)| format!("{}@127.0.0.1:{}", field(key, "public_key"), ports[peer]))
+            .collect::<Vec<_>>()
+            .join(",");
+        ok(
+            "rooms",
+            &[
+                "node-init",
+                path(&eve_home),
+                "--network",
+                path(&updated_path),
+                "--node-key",
+                &field(&eve, "node_key"),
+                "--port",
+                &eve_port,
+                "--listen",
+                "127.0.0.1",
+                "--peers",
+                &eve_peers,
+                "--peers-only",
+                "true",
+            ],
+        );
+        let checked = ok(
+            "rooms",
+            &[
+                "node-check",
+                path(&eve_store),
+                path(&eve_home),
+                REALM,
+                "--config",
+                path(&eve_config),
+            ],
+        );
+        assert_eq!(checked["genesis"], extension["genesis"]);
+        assert_eq!(checked["archive"], restored["root"]);
+        assert_eq!(checked["node_key_votes_from"], 10);
+        assert!(checked["warnings"].as_array().unwrap().is_empty());
     }
 
     /// Signed create, describe and archive drops against a live validator —

@@ -237,6 +237,214 @@ fn stale_or_divergent_candidates_cannot_publish() {
 }
 
 #[test]
+fn higher_revision_foreign_context_and_forks_cannot_publish() {
+    let (_temp, mut store, archive, owner) = setup();
+    let initial = store.registry().clone();
+    let first = advance(&initial, &archive, &owner, None, 0, 9, 100);
+    store.commit(first, store.pin()).unwrap();
+    let pin = store.pin();
+    let snapshot = store.registry().snapshot();
+    let mut foreign_policy = policy();
+    foreign_policy.base_cost += 1;
+    let mut candidates = vec![
+        Registry::new(DirectoryId::from_bytes([6; 32]), REALM, policy(), &[]).unwrap(),
+        Registry::new(DIRECTORY, RealmId(REALM.0 + 1), policy(), &[]).unwrap(),
+        Registry::new(DIRECTORY, REALM, foreign_policy, &[]).unwrap(),
+        initial.clone(), // Same context, but drops all admitted control proof.
+        advance(&initial, &archive, &owner, None, 0, 10, 100), // Replaces it.
+    ];
+    for candidate in &mut candidates {
+        while candidate.revision() <= store.registry().revision() {
+            candidate.set_eligible(&[owner.id], 100).unwrap();
+        }
+        assert!(matches!(
+            store.commit(candidate.clone(), pin),
+            Err(Error::Conflict)
+        ));
+        assert_eq!(store.pin(), pin);
+        assert_eq!(store.registry().snapshot(), snapshot);
+        assert!(!store.recovery_required().unwrap());
+    }
+    // Eligibility is a permitted configuration transition; retaining the
+    // control prefix with a new eligible set must still publish and reopen.
+    let mut descendant = store.registry().clone();
+    descendant.set_eligible(&[], 101).unwrap();
+    store.commit(descendant, pin).unwrap();
+    assert!(store.registry().eligible().is_empty());
+}
+
+#[test]
+fn duplicate_support_proof_can_publish_and_survives_restart() {
+    use vhalla_rooms::registry::Applied;
+    use vhalla_social::{Actor, Operation, Placement, Reaction, References, Text};
+    fn seal(archive: &mut Archive, owner: &mut Owner, head: RecordId) {
+        let record = sign(
+            Body::Control {
+                owner: owner.id,
+                previous: owner.head,
+                action: SocialAction::Seal {
+                    realm: REALM,
+                    heads: References::sorted(vec![head]).unwrap(),
+                },
+            },
+            &owner.key,
+            None,
+        );
+        owner.head = record.id();
+        ingest(archive, &record);
+    }
+    let (temp, mut store, mut archive, mut source) = setup();
+    let mut beneficiary = owner(&mut archive, 2);
+    let post = sign(
+        Body::Social {
+            actor: Actor::Owner {
+                owner: beneficiary.id,
+                control: beneficiary.head,
+            },
+            realm: REALM,
+            sequence: 0,
+            previous: None,
+            operation: Operation::Post {
+                placement: Placement::Profile,
+                text: Text::new("durable support").unwrap(),
+                reply: None,
+                quote: None,
+            },
+        },
+        &beneficiary.key,
+        None,
+    );
+    ingest(&mut archive, &post);
+    seal(&mut archive, &mut beneficiary, post.id());
+    let grant = source.head;
+    let mut previous = None;
+    let mut proofs = Vec::new();
+    for sequence in 0..3 {
+        let record = sign(
+            Body::Social {
+                actor: Actor::Agent {
+                    owner: source.id,
+                    agent: source.agent,
+                    grant,
+                },
+                realm: REALM,
+                sequence,
+                previous,
+                operation: Operation::React {
+                    post: post.id(),
+                    reaction: Reaction::Up(post.id()),
+                    supersedes: References::default(),
+                },
+            },
+            &source.agent_key,
+            None,
+        );
+        ingest(&mut archive, &record);
+        seal(&mut archive, &mut source, record.id());
+        previous = Some(record.id());
+        let verified = record.clone().verify().unwrap();
+        let mut next = store.registry().clone();
+        let now = 100 + sequence;
+        assert_eq!(
+            next.award(&verified, &ControlView::new(&archive, now), now),
+            Ok(if sequence == 0 {
+                Applied::Awarded
+            } else {
+                Applied::DuplicateAward
+            })
+        );
+        if sequence == 2 {
+            // Recover the same-revision proof extension after its pin rename:
+            // the old bundle is still required to validate retained intent.
+            store.fault = Some(Step::PinRenamed);
+            assert!(matches!(
+                store.commit(next, store.pin()),
+                Err(Error::Indeterminate(_))
+            ));
+            drop(store);
+            store = Store::open(temp.store(), None).unwrap();
+            store.recover().unwrap();
+        } else {
+            store.commit(next, store.pin()).unwrap();
+        }
+        assert_eq!(store.registry().revision(), 1);
+        assert_eq!(store.registry().last_time(), 100);
+        proofs.push((record.id(), record.encode()));
+    }
+    let pin = store.pin();
+    drop(store);
+    let reopened = Store::open(temp.store(), Some(pin)).unwrap();
+    assert_eq!(reopened.registry().account(beneficiary.id).earned, 1);
+    for (id, proof) in proofs {
+        assert_eq!(reopened.registry().evidence_proof(id), Some(proof));
+    }
+}
+
+fn retain_bundle(path: &Path, registry: &Registry) -> PathBuf {
+    let raw = registry.snapshot();
+    let path = path.join(bundle_name(bundle_digest(&raw)));
+    let mut file = create_private(&path).unwrap();
+    file.write_all(&raw).unwrap();
+    file.sync_all().unwrap();
+    path
+}
+
+#[test]
+fn unrelated_older_bundle_stops_audit_and_preserves_all_retained_evidence() {
+    let (temp, mut store, archive, owner) = setup();
+    let ancestor = store.registry().clone();
+    let next = advance(&ancestor, &archive, &owner, None, 0, 9, 100);
+    store.commit(next, store.pin()).unwrap();
+    let pin = store.pin();
+    let old_path = retain_bundle(&temp.store(), &ancestor);
+    let unrelated = Registry::new(DIRECTORY, RealmId(74), policy(), &[]).unwrap();
+    let unrelated_path = retain_bundle(&temp.store(), &unrelated);
+    assert!(matches!(store.recover(), Err(Error::Conflict)));
+    assert_eq!(store.pin(), pin);
+    assert!(old_path.exists() && unrelated_path.exists());
+    drop(store);
+    assert!(matches!(
+        Store::open(temp.store(), Some(pin)),
+        Err(Error::Conflict)
+    ));
+    assert!(old_path.exists() && unrelated_path.exists());
+}
+
+#[test]
+fn divergent_retained_intent_is_rejected_before_and_after_pin_rename() {
+    for pin_renamed in [false, true] {
+        let (temp, mut store, archive, owner) = setup();
+        let initial = store.registry().clone();
+        let first = advance(&initial, &archive, &owner, None, 0, 9, 100);
+        store.commit(first, store.pin()).unwrap();
+        let expected = store.pin();
+        let mut fork = advance(&initial, &archive, &owner, None, 0, 10, 100);
+        fork.set_eligible(&[], 101).unwrap();
+        let intent = Intent {
+            expected,
+            next: Pin::for_registry(expected.generation + 1, &fork),
+            registry: fork,
+        };
+        let mut file = create_private(&temp.store().join(INTENT)).unwrap();
+        file.write_all(&intent.encode()).unwrap();
+        file.sync_all().unwrap();
+        if pin_renamed {
+            retain_bundle(&temp.store(), &intent.registry);
+            fs::write(temp.store().join(PIN), intent.next.encode()).unwrap();
+        } else {
+            assert!(matches!(store.recover(), Err(Error::Conflict)));
+        }
+        drop(store);
+        assert!(matches!(
+            Store::open(temp.store(), None),
+            Err(Error::Conflict)
+        ));
+        assert!(temp.store().join(INTENT).exists());
+        assert!(temp.store().join(bundle_name(expected.physical)).exists());
+    }
+}
+
+#[test]
 fn each_publication_boundary_recovers_the_exact_intent() {
     let steps = [
         Step::IntentCreated,
@@ -630,6 +838,7 @@ impl Trace {
         };
         let prior = store.pin();
         let prior_digest = store.registry().digest();
+        let based_on_current = base.digest() == prior_digest;
         let prior_revision = store.registry().revision();
         let candidate_revision = candidate.revision();
         let candidate_digest = candidate.digest();
@@ -654,9 +863,10 @@ impl Trace {
                 assert_eq!(publication.pin(), prior);
             }
             Err(Error::Conflict) => {
-                let lawful = (candidate_revision > prior_revision && expected == prior)
-                    || (candidate_revision == prior_revision
-                        && candidate_digest == prior.logical());
+                let lawful =
+                    (based_on_current && candidate_revision > prior_revision && expected == prior)
+                        || (candidate_revision == prior_revision
+                            && candidate_digest == prior.logical());
                 assert!(!lawful, "a lawful candidate was rejected");
                 assert_eq!(store.pin(), prior);
                 assert_eq!(store.registry().digest(), prior_digest);

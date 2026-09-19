@@ -14,7 +14,7 @@ experimental-rooms = ["experimental-social", "vhalla-identity/rooms", "dep:vhall
 experimental-rooms-node = ["experimental-rooms", "dep:vhalla-rooms-node", "dep:vhalla-rooms-consensus", "dep:vhalla-journal", "dep:serde", "dep:serde_json", "dep:tokio", "dep:getrandom", "dep:tracing-subscriber"]
 experimental-rooms-tui = ["experimental-rooms-node", "dep:vhalla-rooms-app", "dep:vhalla-rooms-tui"]
 experimental-sync = ["experimental-social", "experimental-network", "dep:vhalla-retrieval"]
-experimental-game = ["dep:vhalla-game-platonik", "dep:vhalla-witness", "dep:vhalla-core"]
+experimental-game = ["dep:vhalla-game-platonik", "dep:vhalla-witness", "dep:vhalla-core", "dep:libc"]
 
 [dependencies]
 hraness-support-foundation = { git = "https://github.com/hraness/support-foundation", rev = "b32c1c81bb2444f50509ed54388758ecfab1f1c0" }
