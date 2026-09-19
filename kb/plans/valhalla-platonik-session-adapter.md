@@ -1537,3 +1537,35 @@ the partial height, and certifies 3-5.
 Remaining limitation: transport beyond the multi-process loopback mesh — real partitions,
 relayed links, multi-round resupply under load, transport authentication — and the cross-room
 producer policy stay open.
+
+### 2026-09-19: a real link partition between `rooms node` subprocesses
+
+`remote_game_lanes_cross_a_healed_link_partition` (in
+`crates/vhalla-cli/tests/rooms_node.rs`) closes the partition clause the in-process suite
+explicitly could not express — "a late start ... partition is not expressible with static
+persistent peers". Four real `vhalla rooms node` subprocesses mesh over loopback, but every
+directed edge runs through a test-controlled TCP pipe: a listener that forwards bytes while
+`up` and closes live plus new connections while down. Severing the six edges incident to
+member 3 isolates it in both directions without stopping the process — the node stays alive
+and votes into the void, which a `kill -9` cannot express.
+
+With member 3 partitioned, {0,1,2} — exactly quorum of the four-member set — decide the
+actor-authored event lane at height 2; the partition is asserted, not inferred: member 3's
+journal must not carry height 2 while the trio's does. Re-enabling the pipes lets libp2p's
+persistent-peer re-dial re-establish the edges, and value sync — not a restart — carries the
+decided height to member 3. Its own journal then serves `VC2` certificate bytes that verify
+under the committed set, `quorum::open` consumes the pre-partition height-1 certificate, and
+`quorum::prove` consumes the post-heal height-2 evidence.
+
+The remote readback also flushed out a journal read-path hazard: both test readers called
+`Journal::recover` — writer-side boot recovery that drops height markers above the committed
+pin as interrupted-commit residue — while the node was still deciding later heights. In the
+marker-written/pin-not-yet window of an in-flight commit, a reader's `recover` erases the live
+marker: `at_height` then returns `None` (the observed `Option::unwrap` panic), and a later
+`recover` fails `Corrupt` on the stranded pin height. The readers now use only the pure
+`at_height`/`bundle` path — the marker is written after the bundle syncs, so a present marker
+guarantees a durable bundle — and `recover`'s doc records the writer-only contract.
+
+Remaining limitation: relayed transports (the tailcat/WireGuard path the chunking rules were
+sized for), resupply under sustained load rather than a single healed partition, transport
+authentication, and the cross-room producer policy stay open.

@@ -372,11 +372,11 @@ fn set_at(schedule: &BTreeMap<u64, RoomValidatorSet>, height: u64) -> RoomValida
     schedule.range(..=height).next_back().unwrap().1.clone()
 }
 
-/// A node's `app/journal` store, recovered and ready to read.
+/// A node's `app/journal` store, opened read-only. `recover` stays out:
+/// it is writer-side boot recovery that drops residue markers, and a live
+/// node can publish a height marker before its pin lands.
 fn open_journal(home: &std::path::Path) -> Journal<FsStore> {
-    let journal = Journal::new(home.join("app").join("journal"), FsStore);
-    journal.recover().unwrap();
-    journal
+    Journal::new(home.join("app").join("journal"), FsStore)
 }
 
 /// A journaled (certificate, batch) pair at `height`: the real `VC2`

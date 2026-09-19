@@ -64,7 +64,10 @@ restart resumes and certifies). `vhalla-cli`'s
 process boundary: two real `rooms node` subprocesses mesh over loopback,
 game commitments arrive through real `NODE_HOME/intake/` drops, and
 `quorum::open`/`prove` consume `VC2` certificates read out of the *other*
-process's journal.
+process's journal. `remote_game_lanes_cross_a_healed_link_partition` adds a
+real mid-flight TCP partition to that mesh: every directed edge runs through
+a test pipe, a live member is isolated while exactly-quorum peers decide,
+and post-heal value sync — no restart — serves it the journaled evidence.
 
 ## What a verified checkpoint proves
 

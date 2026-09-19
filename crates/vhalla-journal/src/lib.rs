@@ -835,6 +835,12 @@ impl<S: Store> Journal<S> {
 
     /// Re-reads durable state: verifies the pin's bundle, discards a leftover
     /// `pin.tmp`, and reports orphan bundles. Fails closed on any corruption.
+    ///
+    /// Writer-side boot recovery only: it also drops height markers above the
+    /// committed pin as residue from an interrupted commit, so callers must
+    /// never run it while a live writer may be mid-commit — the marker of an
+    /// in-flight commit lands before its pin, and dropping it strands the
+    /// height. Pure readers use `at_height`/`bundle` without `recover`.
     pub fn recover(&self) -> Result<Recovered, JournalError> {
         let pin = match self.store.read_pin(&self.dir)? {
             None => self.genesis(),

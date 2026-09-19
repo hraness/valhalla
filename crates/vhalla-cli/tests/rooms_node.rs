@@ -29,11 +29,17 @@ fn node_command_reports_missing_feature() {
 #[cfg(feature = "experimental-rooms-node")]
 mod enabled {
     use std::{
+        collections::BTreeMap,
         fs,
-        io::Read,
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
         thread,
         time::{Duration, Instant},
     };
@@ -355,19 +361,20 @@ mod enabled {
             .unwrap();
     }
 
-    /// `member`'s `node.json`: own key and port, every other member as a
-    /// persistent peer, and the shared genesis fields verbatim — the same
+    /// `member`'s `node.json`: own key and port, the given `peers` as
+    /// persistent peers, and the shared genesis fields verbatim — the same
     /// shape the README's private-set runbook hands each friend.
-    fn write_mesh_config(path: &Path, member: &Member, members: &[Member], plan: &fixture::Plan) {
-        let config = serde_json::json!({
+    fn mesh_config(
+        member: &Member,
+        members: &[Member],
+        peers: Vec<String>,
+        plan: &fixture::Plan,
+    ) -> serde_json::Value {
+        serde_json::json!({
             "node_key": hex(&member.seed),
             "port": member.port,
             "listen": "127.0.0.1",
-            "peers": members
-                .iter()
-                .filter(|m| m.port != member.port)
-                .map(|m| format!("127.0.0.1:{}", m.port))
-                .collect::<Vec<_>>(),
+            "peers": peers,
             "validators": members
                 .iter()
                 .map(|m| serde_json::json!({
@@ -398,7 +405,36 @@ mod enabled {
                 "pending": plan.genesis.limits.pending,
                 "pending_per_signer": plan.genesis.limits.pending_per_signer,
             },
-        });
+        })
+    }
+
+    /// `member`'s `node.json` with every other member's real port as a
+    /// persistent peer — the direct-loopback mesh.
+    fn write_mesh_config(path: &Path, member: &Member, members: &[Member], plan: &fixture::Plan) {
+        let peers = members
+            .iter()
+            .filter(|m| m.port != member.port)
+            .map(|m| format!("127.0.0.1:{}", m.port))
+            .collect();
+        let config = mesh_config(member, members, peers, plan);
+        fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    }
+
+    /// `member`'s `node.json` where every peer address is the test pipe's
+    /// listen port for that directed edge, not the peer's real port.
+    fn write_proxied_mesh_config(
+        path: &Path,
+        i: usize,
+        member: &Member,
+        members: &[Member],
+        links: &BTreeMap<(usize, usize), Link>,
+        plan: &fixture::Plan,
+    ) {
+        let peers = (0..members.len())
+            .filter(|j| *j != i)
+            .map(|j| format!("127.0.0.1:{}", links[&(i, j)].port))
+            .collect();
+        let config = mesh_config(member, members, peers, plan);
         fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     }
 
@@ -2232,6 +2268,70 @@ mod enabled {
         assert_eq!(upd["committed"].as_u64(), Some(1));
     }
 
+    /// A test-controlled byte pipe on one directed edge: listens on an
+    /// ephemeral port and forwards to `target_port`. `up == false` drops
+    /// live connections and closes new ones on accept — a real mid-flight
+    /// link failure; `up == true` resumes forwarding, so libp2p's
+    /// persistent-peer re-dial re-establishes the edge without a restart.
+    struct Link {
+        up: Arc<AtomicBool>,
+        port: usize,
+    }
+
+    fn spawn_link(target_port: usize) -> Link {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port() as usize;
+        let up = Arc::new(AtomicBool::new(true));
+        let flag = up.clone();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut inbound) = stream else { continue };
+                if !flag.load(Ordering::Relaxed) {
+                    continue; // partitioned: refuse the dial outright
+                }
+                let Ok(mut outbound) = TcpStream::connect(("127.0.0.1", target_port as u16)) else {
+                    continue;
+                };
+                for s in [&inbound, &outbound] {
+                    s.set_read_timeout(Some(Duration::from_millis(200)))
+                        .unwrap();
+                }
+                let mut ret_in = inbound.try_clone().unwrap();
+                let mut ret_out = outbound.try_clone().unwrap();
+                let (f1, f2) = (flag.clone(), flag.clone());
+                thread::spawn(move || pump(&mut inbound, &mut outbound, &f1));
+                thread::spawn(move || pump(&mut ret_out, &mut ret_in, &f2));
+            }
+        });
+        Link { up, port }
+    }
+
+    /// Forward bytes until the peer closes or the link drops; the read
+    /// timeout lets a severed link notice `up` even when no data flows.
+    fn pump(from: &mut TcpStream, to: &mut TcpStream, up: &AtomicBool) {
+        let mut buf = [0u8; 8192];
+        loop {
+            if !up.load(Ordering::Relaxed) {
+                return;
+            }
+            match from.read(&mut buf) {
+                Ok(0) => return,
+                Ok(n) => {
+                    if to.write_all(&buf[..n]).is_err() {
+                        return;
+                    }
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    continue;
+                }
+                Err(_) => return,
+            }
+        }
+    }
+
     /// Read one journaled (certificate, batch) pair out of a node home's
     /// own `app/journal` store — the real `VC2` bytes a separate process
     /// wrote, not a fixture.
@@ -2242,9 +2342,12 @@ mod enabled {
         vhalla_rooms_consensus::CommitCertificate,
         vhalla_rooms_consensus::Batch,
     ) {
+        // Pure reads only: `recover` is writer-side boot recovery that drops
+        // residue markers, and a live writer can publish a height marker
+        // before its pin lands — calling it here could erase a live marker.
+        // The marker is written after the bundle syncs, so marker ⇒ bundle.
         let journal =
             vhalla_journal::Journal::new(home.join("app/journal"), vhalla_journal::FsStore);
-        journal.recover().unwrap();
         let id = journal.at_height(height).unwrap().unwrap();
         let bundle = journal.bundle(id).unwrap().unwrap();
         let batch = vhalla_rooms_consensus::Batch::decode(bundle.field(3).unwrap()).unwrap();
@@ -2448,7 +2551,246 @@ mod enabled {
         drop(nodes);
     }
 
-    /// Run one `vhalla social` command and unwrap its JSON object; the
+    /// A real link partition over TCP: every directed edge between members
+    /// runs through a test pipe that severs mid-stream. Member 3 is
+    /// partitioned while {0,1,2} — exactly quorum of the four-member set —
+    /// decide a game-commitment lane; on heal the still-running member
+    /// re-dials, syncs the decided value, and its journal serves a
+    /// certificate the quorum session consumes. This is the boundary the
+    /// in-process suite cannot express: static persistent peers never
+    /// model a link dying under live traffic.
+    #[test]
+    fn remote_game_lanes_cross_a_healed_link_partition() {
+        use vhalla_core::{Epoch, RealmId, RoomId, Sequence};
+        use vhalla_game_platonik::ids::RulesetId;
+        use vhalla_game_platonik::manifest::{
+            GameManifest, GameSlot, MissingMember, SessionKind, SessionLimits, SlotRole,
+            VerificationAllowance,
+        };
+        use vhalla_game_platonik::quorum::{
+            commitment, open as quorum_open, open_commitment, prove,
+        };
+        use vhalla_game_platonik::record::{GameRecord, RecordKind};
+        use vhalla_game_platonik::session::{quorum_actor, seed_commitment};
+        use vhalla_game_platonik::wire::{
+            encode_game_event, Authority, EventBody, GameEvent, Player, SessionOpen,
+        };
+        use vhalla_rooms_consensus::{BatchBody, GameCommitmentKind};
+        use vhalla_rooms_node::cert::verify_canonical_certificate;
+        use vhalla_rooms_node::{RoomValidator, RoomValidatorSet, RoomValueId};
+        use vhalla_witness::hash::{ManifestHash, ProgramHash};
+        use vhalla_witness::manifest::WorkContract;
+        use vhalla_witness::platform::WorkAllowance;
+
+        let _mesh = mesh();
+        let temp = Temp::new();
+        let plan = fixture::plan(2, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [80 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+
+        // One pipe per directed edge: member i's `peers` entry for j is
+        // links[(i,j)], forwarding to j's real listener. Severing every
+        // edge incident to member 3 isolates it in both directions while
+        // it keeps running.
+        let mut links = BTreeMap::new();
+        for i in 0..members.len() {
+            for (j, target) in members.iter().enumerate() {
+                if i != j {
+                    links.insert((i, j), spawn_link(target.port));
+                }
+            }
+        }
+
+        let (socials, homes): (Vec<_>, Vec<_>) = (0..members.len())
+            .map(|i| member_dirs(&temp, i, &members[i], &members, &plan))
+            .unzip();
+        for (i, member) in members.iter().enumerate() {
+            write_proxied_mesh_config(
+                &temp.path(&format!("node-{i}.json")),
+                i,
+                member,
+                &members,
+                &links,
+                &plan,
+            );
+        }
+        let nodes: Vec<Node> = (0..members.len())
+            .map(|i| spawn_member(&temp, i, &socials[i], &homes[i]))
+            .collect();
+
+        // The session the lane decides: a structurally valid manifest and
+        // a quorum `SessionOpen`, identical in shape to the remote intake
+        // test's — the transport boundary is what differs.
+        let scheme = ProgramHash::of(b"partition-game-scheme/v1").0;
+        let world = ManifestHash::of(b"partition-game-world/v1");
+        let host_salt = ProgramHash::of(b"partition-game-host-salt/v1").0;
+        let manifest = GameManifest {
+            ruleset: RulesetId::V1,
+            world,
+            slots: vec![GameSlot {
+                cell: 3,
+                role: SlotRole::Open { fallback: None },
+            }],
+            contract: WorkContract {
+                useful_floor: 0,
+                total_ceiling: 1_000,
+                require_passed: true,
+            },
+            loading_work: vec![1],
+            artifacts: Vec::new(),
+            limits: SessionLimits {
+                max_events: 64,
+                max_segments: 4,
+                replay: WorkAllowance { max_total: 1_000 },
+                verification: VerificationAllowance {
+                    max_replays: 4,
+                    max_work: 4_000,
+                    max_event_bytes: 1_024,
+                    max_artifact_bytes: 1_024,
+                },
+                missing_member: MissingMember::Pause,
+                kind: SessionKind::Live,
+            },
+            publisher: ProgramHash::of(b"partition-game-publisher/v1").0,
+        };
+        let open = SessionOpen {
+            realm: RealmId(3),
+            room: RoomId(4),
+            manifest: manifest.hash(),
+            ruleset: RulesetId::V1,
+            seed_commitment: seed_commitment(&host_salt, world),
+            authority: Authority::Quorum { scheme },
+            players: vec![Player {
+                key: *PrivateKey::from([71; 32]).public_key().as_bytes(),
+                slots: vec![3],
+            }],
+            epoch: Epoch(0),
+            nonce: ProgramHash::of(b"partition-game-nonce/v1").0,
+        };
+
+        let set = RoomValidatorSet::new(
+            members
+                .iter()
+                .map(|m| RoomValidator::new(PrivateKey::from(m.seed).public_key(), 1))
+                .collect(),
+        );
+        let verify = |bytes: &[u8], height: u64, value: &[u8; 32]| {
+            verify_canonical_certificate(bytes, height, &RoomValueId(*value), &set)
+        };
+
+        // Height 1 with the whole mesh linked: the SessionOpen commitment
+        // decides under all four votes.
+        let h1 = BatchBody {
+            time: plan.batches[&1].time,
+            evidence: Vec::new(),
+            records: Vec::new(),
+            games: vec![open_commitment(&open)],
+            eligible: None,
+        };
+        fs::write(homes[0].join("intake/h1.body"), h1.encode()).unwrap();
+        for home in &homes {
+            wait_for(Duration::from_secs(150), "h1 game lane to decide", || {
+                committed(home, 1)
+            });
+        }
+
+        // Partition member 3: sever every edge incident to it in both
+        // directions. The node keeps running — it just cannot reach the
+        // mesh, which is the case a kill -9 cannot express.
+        for j in 0..3usize {
+            links[&(3, j)].up.store(false, Ordering::Relaxed);
+            links[&(j, 3)].up.store(false, Ordering::Relaxed);
+        }
+        thread::sleep(Duration::from_secs(1)); // let live pumps notice
+
+        // Height 2 decided by exactly-quorum {0,1,2}: an actor-authored
+        // event commitment drops into member 1's intake.
+        let actor = quorum_actor(&scheme);
+        let event = GameEvent {
+            session: open.key(),
+            epoch: Epoch(0),
+            author: actor,
+            sequence: Sequence(1),
+            parents: Vec::new(),
+            body: EventBody::BindClose {
+                commits: Vec::new(),
+            },
+        };
+        let record = GameRecord::unsigned(
+            RecordKind::Event,
+            open.key(),
+            actor,
+            encode_game_event(&event),
+        )
+        .unwrap();
+        // `commitment` needs the opened session, which exists once h1's
+        // certificate is consumed — the session opens from member 0's
+        // journaled evidence before the h2 lane is even computed.
+        let (c1, b1) = read_decided(&homes[0], 1);
+        assert!(verify(&c1.bytes, 1, &c1.value_commitment));
+        assert_eq!(b1.games, vec![open_commitment(&open)]);
+        let session = quorum_open(
+            manifest.clone(),
+            open.clone(),
+            RealmId(3),
+            &c1,
+            &b1,
+            0,
+            verify,
+        )
+        .unwrap();
+        assert!(quorum_open(manifest, open, RealmId(3), &c1, &b1, 1, verify).is_err());
+
+        let lane = commitment(&session, &record).unwrap();
+        assert_eq!(lane.kind, GameCommitmentKind::Event);
+        let h2 = BatchBody {
+            time: plan.batches[&2].time,
+            evidence: Vec::new(),
+            records: Vec::new(),
+            games: vec![lane],
+            eligible: None,
+        };
+        fs::write(homes[1].join("intake/h2.body"), h2.encode()).unwrap();
+        for home in homes.iter().take(3) {
+            wait_for(
+                Duration::from_secs(150),
+                "h2 game lane to decide under partition",
+                || committed(home, 2),
+            );
+        }
+        // The partitioned member must not have h2 — it is alive and voting
+        // into the void, not slow or crashed.
+        assert!(
+            !committed(&homes[3], 2),
+            "partitioned member received h2: the links did not isolate it"
+        );
+
+        // Heal: every incident edge resumes; persistent-peer re-dial plus
+        // value sync carry the decided h2 to member 3 without a restart.
+        for j in 0..3usize {
+            links[&(3, j)].up.store(true, Ordering::Relaxed);
+            links[&(j, 3)].up.store(true, Ordering::Relaxed);
+        }
+        wait_for(
+            Duration::from_secs(150),
+            "partitioned member to sync h2 after heal",
+            || committed(&homes[3], 2),
+        );
+
+        // Member 3's own journal — evidence received purely over the
+        // healed partition — verifies under the committed set, and the
+        // record's commitment at lane position 0 mints a proof.
+        let (c2, b2) = read_decided(&homes[3], 2);
+        assert!(verify(&c2.bytes, 2, &c2.value_commitment));
+        assert_eq!(b2.games, vec![lane]);
+        let _proof = prove(&session, &record, &c2, &b2, 0, verify).unwrap();
+        drop(nodes);
+    }
     /// commands are fast one-shot invocations, no streaming needed.
     fn social_ok(store: &Path, command: &str, args: &[&str]) -> serde_json::Value {
         let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
