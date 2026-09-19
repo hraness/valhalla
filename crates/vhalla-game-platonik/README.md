@@ -73,6 +73,11 @@ boundary across repeated cycles: an isolated member misses three
 consecutively decided lanes and resyncs all of them on heal, then a second
 member survives the same partition/resync cycle on the next height — each
 resynced journal serving verified certificates and `prove` evidence.
+`remote_member_resupplies_while_quorum_keeps_deciding` proves overlap rather
+than quiescent recovery: the recovering member's own sync trace records an
+issued value request, the healthy exact quorum decides height 9 while its old
+height-8 deficit remains open over a shaped live link, then the member catches
+up through height 9 and serves proofs for both old and concurrent evidence.
 
 ## What a verified checkpoint proves
 

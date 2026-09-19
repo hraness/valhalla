@@ -37,7 +37,7 @@ mod enabled {
         path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
             Arc,
         },
         thread,
@@ -458,19 +458,33 @@ mod enabled {
     /// Launch a node subprocess against an explicit config path with
     /// captured output.
     fn spawn_node(temp: &Temp, tag: &str, social: &Path, home: &Path, config: &Path) -> Node {
+        spawn_node_with_log(temp, tag, social, home, config, None)
+    }
+
+    fn spawn_node_with_log(
+        temp: &Temp,
+        tag: &str,
+        social: &Path,
+        home: &Path,
+        config: &Path,
+        rust_log: Option<&str>,
+    ) -> Node {
         let stdout_path = temp.path(&format!("{tag}.stdout"));
         let stderr_path = temp.path(&format!("{tag}.stderr"));
-        let child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
-            .env("HRANESS_SUPPORT", "off")
-            .args([
-                "rooms",
-                "node",
-                social.to_str().unwrap(),
-                home.to_str().unwrap(),
-                REALM_HEX,
-                "--config",
-                config.to_str().unwrap(),
-            ])
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vhalla"));
+        command.env("HRANESS_SUPPORT", "off").args([
+            "rooms",
+            "node",
+            social.to_str().unwrap(),
+            home.to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            config.to_str().unwrap(),
+        ]);
+        if let Some(filter) = rust_log {
+            command.env("RUST_LOG", filter);
+        }
+        let child = command
             .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
             .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
             .spawn()
@@ -2275,6 +2289,8 @@ mod enabled {
     /// persistent-peer re-dial re-establishes the edge without a restart.
     struct Link {
         up: Arc<AtomicBool>,
+        max_chunk: Arc<AtomicUsize>,
+        delay_ms: Arc<AtomicU64>,
         port: usize,
     }
 
@@ -2282,7 +2298,11 @@ mod enabled {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port() as usize;
         let up = Arc::new(AtomicBool::new(true));
+        let max_chunk = Arc::new(AtomicUsize::new(8192));
+        let delay_ms = Arc::new(AtomicU64::new(0));
         let flag = up.clone();
+        let chunk = max_chunk.clone();
+        let delay = delay_ms.clone();
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut inbound) = stream else { continue };
@@ -2299,26 +2319,44 @@ mod enabled {
                 let mut ret_in = inbound.try_clone().unwrap();
                 let mut ret_out = outbound.try_clone().unwrap();
                 let (f1, f2) = (flag.clone(), flag.clone());
-                thread::spawn(move || pump(&mut inbound, &mut outbound, &f1));
-                thread::spawn(move || pump(&mut ret_out, &mut ret_in, &f2));
+                let (c1, c2) = (chunk.clone(), chunk.clone());
+                let (d1, d2) = (delay.clone(), delay.clone());
+                thread::spawn(move || pump(&mut inbound, &mut outbound, &f1, &c1, &d1));
+                thread::spawn(move || pump(&mut ret_out, &mut ret_in, &f2, &c2, &d2));
             }
         });
-        Link { up, port }
+        Link {
+            up,
+            max_chunk,
+            delay_ms,
+            port,
+        }
     }
 
     /// Forward bytes until the peer closes or the link drops; the read
     /// timeout lets a severed link notice `up` even when no data flows.
-    fn pump(from: &mut TcpStream, to: &mut TcpStream, up: &AtomicBool) {
+    fn pump(
+        from: &mut TcpStream,
+        to: &mut TcpStream,
+        up: &AtomicBool,
+        max_chunk: &AtomicUsize,
+        delay_ms: &AtomicU64,
+    ) {
         let mut buf = [0u8; 8192];
         loop {
             if !up.load(Ordering::Relaxed) {
                 return;
             }
-            match from.read(&mut buf) {
+            let limit = max_chunk.load(Ordering::Relaxed).clamp(1, buf.len());
+            match from.read(&mut buf[..limit]) {
                 Ok(0) => return,
                 Ok(n) => {
                     if to.write_all(&buf[..n]).is_err() {
                         return;
+                    }
+                    let delay = delay_ms.load(Ordering::Relaxed);
+                    if delay > 0 {
+                        thread::sleep(Duration::from_millis(delay));
                     }
                 }
                 Err(e)
@@ -2341,6 +2379,11 @@ mod enabled {
                 link.up.store(up, Ordering::Relaxed);
             }
         }
+    }
+
+    fn shape_link(link: &Link, max_chunk: usize, delay_ms: u64) {
+        link.max_chunk.store(max_chunk, Ordering::Relaxed);
+        link.delay_ms.store(delay_ms, Ordering::Relaxed);
     }
 
     /// Read one journaled (certificate, batch) pair out of a node home's
@@ -2891,6 +2934,142 @@ mod enabled {
         assert!(verify(&c5.bytes, 5, &c5.value_commitment));
         assert_eq!(b5.games, vec![lane5]);
         let _proof = prove(&session, &record5, &c5, &b5, 0, &verify).unwrap();
+        drop(nodes);
+    }
+
+    #[test]
+    fn remote_member_resupplies_while_quorum_keeps_deciding() {
+        use vhalla_core::RealmId;
+        use vhalla_game_platonik::quorum::{open as quorum_open, open_commitment, prove};
+
+        let _mesh = mesh();
+        let temp = Temp::new();
+        let plan = fixture::plan(9, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..4u8)
+            .map(|i| Member {
+                seed: [100 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        let mut links = BTreeMap::new();
+        for i in 0..members.len() {
+            for (j, target) in members.iter().enumerate() {
+                if i != j {
+                    links.insert((i, j), spawn_link(target.port));
+                }
+            }
+        }
+        let (socials, homes): (Vec<_>, Vec<_>) = (0..members.len())
+            .map(|i| member_dirs(&temp, i, &members[i], &members, &plan))
+            .unzip();
+        for (i, member) in members.iter().enumerate() {
+            write_proxied_mesh_config(
+                &temp.path(&format!("node-{i}.json")),
+                i,
+                member,
+                &members,
+                &links,
+                &plan,
+            );
+        }
+        let mut nodes: Vec<Node> = (0..3)
+            .map(|i| spawn_member(&temp, i, &socials[i], &homes[i]))
+            .collect();
+        nodes.push(spawn_node_with_log(
+            &temp,
+            "member-3",
+            &socials[3],
+            &homes[3],
+            &temp.path("node-3.json"),
+            Some("arc_malachitebft_sync=debug"),
+        ));
+
+        let (manifest, open, scheme) = quorum_game_fixture("concurrent-resupply-game");
+        let verify = game_verify(&members);
+        drop_game_body(
+            &homes[0],
+            "h1",
+            plan.batches[&1].time,
+            open_commitment(&open),
+        );
+        for home in &homes {
+            wait_for(Duration::from_secs(150), "h1 game lane to decide", || {
+                committed(home, 1)
+            });
+        }
+        let (c1, b1) = read_decided(&homes[0], 1);
+        let session = quorum_open(manifest, open, RealmId(3), &c1, &b1, 0, &verify).unwrap();
+
+        set_member_isolated(&links, 3, false);
+        thread::sleep(Duration::from_secs(1));
+        let mut records = Vec::new();
+        for h in 2..=8u64 {
+            let (record, lane) = actor_event_lane(&session, &scheme, h - 1);
+            drop_game_body(
+                &homes[h as usize % 3],
+                &format!("h{h}"),
+                plan.batches[&h].time,
+                lane,
+            );
+            for home in homes.iter().take(3) {
+                wait_for(
+                    Duration::from_secs(150),
+                    "game lane to decide under partition",
+                    || committed(home, h),
+                );
+            }
+            assert!(!committed(&homes[3], h));
+            records.push(record);
+        }
+
+        let sync_log_start = fs::metadata(&nodes[3].stderr)
+            .map(|metadata| metadata.len() as usize)
+            .unwrap_or(0);
+        let shaped = &links[&(3, 0)];
+        shape_link(shaped, 64, 25);
+        shaped.up.store(true, Ordering::Relaxed);
+        wait_for(
+            Duration::from_secs(150),
+            "member 3 to issue a decided-value sync request",
+            || {
+                let log = fs::read(&nodes[3].stderr).unwrap_or_default();
+                String::from_utf8_lossy(&log[sync_log_start.min(log.len())..])
+                    .contains("Sent sync request to peer")
+            },
+        );
+        assert!(!committed(&homes[3], 8));
+        shape_link(shaped, 1, 250);
+
+        let (record9, lane9) = actor_event_lane(&session, &scheme, 8);
+        drop_game_body(&homes[1], "h9", plan.batches[&9].time, lane9);
+        for home in homes.iter().take(3) {
+            wait_for(
+                Duration::from_secs(150),
+                "h9 to decide while member 3 resupplies",
+                || committed(home, 9),
+            );
+        }
+        assert!(
+            !committed(&homes[3], 8),
+            "member 3 finished its old deficit before the quorum decided h9"
+        );
+
+        shape_link(shaped, 8192, 0);
+        wait_for(
+            Duration::from_secs(150),
+            "member 3 to resync through h9",
+            || committed(&homes[3], 9),
+        );
+        for h in 2..=9u64 {
+            let (cert, batch) = read_decided(&homes[3], h);
+            assert!(verify(&cert.bytes, h, &cert.value_commitment));
+            assert_eq!(batch.games.len(), 1);
+        }
+        let (c5, b5) = read_decided(&homes[3], 5);
+        let _old_proof = prove(&session, &records[3], &c5, &b5, 0, &verify).unwrap();
+        let (c9, b9) = read_decided(&homes[3], 9);
+        let _new_proof = prove(&session, &record9, &c9, &b9, 0, &verify).unwrap();
         drop(nodes);
     }
 
