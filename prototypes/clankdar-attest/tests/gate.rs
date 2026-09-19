@@ -73,6 +73,7 @@ fn issue_session_bound(
             context: context.map(str::to_string),
             subject: subject.map(str::to_string),
             session_id: Some(session_id.to_string()),
+            holdout_pool: None,
             now: Some(at(NOW)),
         };
         let (challenge, ticket) = issue_challenge(&opts, seed, &inst, &key).unwrap();
@@ -269,6 +270,7 @@ fn a_full_passing_admission_replays() {
             ok: true,
             verdict: Some(true),
             passed: Some(2),
+            unreplayed: None,
             reason: None,
         }
     );

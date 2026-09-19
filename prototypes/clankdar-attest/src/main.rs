@@ -1,9 +1,9 @@
 //! `clankdar-attest` — sealed-seed capability attestation CLI.
 //!
 //!   clankdar-attest keygen --out KEY.json
-//!   clankdar-attest issue --key KEY.json (--suite NAME | --suite-version VER) --family F --tier N [--seed N] [--ttl S] [--context TXT] [--out TICKET.json] [--clankdar DIR]
-//!   clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR]
-//!   clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR]
+//!   clankdar-attest issue --key KEY.json (--suite NAME | --suite-version VER) --family F --tier N [--seed N] [--ttl S] [--context TXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR]
+//!   clankdar-attest verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR]
+//!   clankdar-attest check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR]
 //!   clankdar-attest tlog check TLOG.json
 //!   clankdar-attest tlog prove TLOG.json --session gs_x
 //!   clankdar-attest tlog admit TLOG.json ADMISSION.json [--clankdar DIR]
@@ -11,6 +11,8 @@
 //!   clankdar-attest rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR]
 //!   clankdar-attest rooms prove --key KEY.json --challenge CHALLENGE.json
 //!   clankdar-attest rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR]
+//!   clankdar-attest holdout gen --suite NAME --cells f:t1,g:t2 [--out POOL.json] [--clankdar DIR]
+//!   clankdar-attest holdout info POOL.json
 //!
 //! `check` on a receipt is fully offline. `issue`, `verify`, `check --deep`,
 //! and the rooms issue/submit/decide modes call the canonical Clankdar
@@ -18,7 +20,10 @@
 //! `$CLANKDAR_DIR`, then `../clankdar`). Admission checking regenerates every
 //! embedded receipt, so the oracle is required. `tlog check`, `tlog prove`,
 //! and `rooms prove` are fully offline; `tlog admit` replays the admission's
-//! embedded receipts through the oracle like `check` does.
+//! embedded receipts through the oracle like `check` does. `--pool` and
+//! `--holdout` carry a `clankdar-holdout-v1` pool: held-out cells regenerate
+//! through secret labels, and checks without the matching pool report
+//! `replayable: false` or `unreplayed` instead of a replayed score.
 //!
 //! The `rooms` modes dogfood the room-side gate-v1 flow: a room publishes
 //! a `GatePolicy` floor and verifier key, `rooms issue` mints a session,
@@ -32,17 +37,21 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::{env, fs};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use valhalla_clankdar_attest_prototype::{
-    check_admission, check_log, check_logged_admission, check_receipt, check_receipt_deep,
-    decide_room_admission, draw_seed, generate_verifier, issue_challenge, issue_room_session,
-    key_id_of, prove_session, signing_key, subject_proof_for, submit_room_session, verify_response,
-    Admission, AttestError, Challenge, GatePolicy, GeneratedInstance, IssueOptions, Receipt,
-    RoomFloor, RoomSession, RoomSessionOptions, SubjectProof, Ticket, VerifierJwk, GATE_PROTOCOL,
+    check_admission_with_pool, check_log, check_logged_admission, check_receipt,
+    check_receipt_with_pool, decide_room_admission, draw_seed, generate_verifier, holdout_cell,
+    holdout_instance, instance_for, issue_challenge, issue_room_session, key_id_of, pool_key_of,
+    prove_session, signing_key, subject_proof_for, submit_room_session, suite_version,
+    verify_response, Admission, AttestError, Challenge, GatePolicy, GeneratedInstance, HoldoutCell,
+    HoldoutPool, IssueOptions, Receipt, RoomFloor, RoomSession, RoomSessionOptions, SubjectProof,
+    Ticket, VerifierJwk, GATE_PROTOCOL, HOLDOUT_PROTOCOL,
 };
 
-const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR]";
+const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR] | holdout gen --suite v2|frontier|agent --cells f:t1,g:t2 [--out POOL.json] [--clankdar DIR] | holdout info POOL.json";
 
 struct Args {
     flags: std::collections::HashMap<String, String>,
@@ -234,7 +243,7 @@ fn rooms_issue(args: &Args) {
         &policy,
         &key,
         &opts,
-        |bound| (rand_core::RngCore::next_u64(&mut rng) % bound as u64) as usize,
+        |bound| random_index(&mut rng, bound),
         |suite_version, family, tier, seed| {
             oracle(&dir, suite_version, true, family, tier, seed).map_err(|e| e.to_string())
         },
@@ -394,6 +403,42 @@ fn rooms_decide(args: &Args) {
     }
 }
 
+/// CLI-side `family:tN` cell id parser for `holdout gen --cells`.
+fn parse_cell_id(cell: &str) -> Option<(&str, u64)> {
+    let (family, tier) = cell.split_once(':')?;
+    if family.is_empty()
+        || !family
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return None;
+    }
+    let tier = tier.strip_prefix('t')?;
+    if tier.is_empty() || !tier.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((family, tier.parse().ok()?))
+}
+
+/// Fresh base64url label material for `holdout gen` — 24 bytes gives the
+/// same 32-char labels the TypeScript `randomBytes(24)` mints.
+fn random_b64url(len: usize) -> String {
+    let mut bytes = vec![0u8; len];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
+    URL_SAFE_NO_PAD.encode(&bytes)
+}
+
+fn random_index(rng: &mut rand_core::OsRng, bound: usize) -> usize {
+    let bound = bound as u64;
+    let threshold = bound.wrapping_neg() % bound;
+    loop {
+        let value = rand_core::RngCore::next_u64(rng);
+        if value >= threshold {
+            return (value % bound) as usize;
+        }
+    }
+}
+
 fn main() {
     let argv: Vec<String> = env::args().skip(1).collect();
     let Some(command) = argv.first() else {
@@ -468,9 +513,54 @@ fn main() {
                 Err(e) => fail(e),
             };
             let dir = clankdar_dir(&args);
-            let instance = match oracle(&dir, &suite, suite_is_version, family, tier, seed) {
-                Ok(i) => i,
-                Err(e) => fail(e),
+            // `--holdout` mints the cell from the pool's secret label
+            // instead of the published stream; the challenge then carries
+            // `heldout: {poolKey}`.
+            let holdout_pool = match args.flags.get("holdout") {
+                Some(path) => {
+                    let value: serde_json::Value = match read_json(path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    match HoldoutPool::parse(&value) {
+                        Ok(pool) => Some(pool),
+                        Err(e) => fail(e),
+                    }
+                }
+                None => None,
+            };
+            let requested_version = if suite_is_version {
+                suite.clone()
+            } else {
+                suite_version(&suite).to_string()
+            };
+            if holdout_pool
+                .as_ref()
+                .is_some_and(|pool| suite_version(&pool.suite) != requested_version)
+            {
+                fail(AttestError::InvalidInput(
+                    "holdout pool is for a different suite".to_string(),
+                ));
+            }
+            let instance = match &holdout_pool {
+                Some(pool) => {
+                    let cell = match holdout_cell(pool, family, tier as u64) {
+                        Some(cell) => cell,
+                        None => fail(AttestError::InvalidInput(format!(
+                            "cell is not in the holdout pool: {family}:t{tier}"
+                        ))),
+                    };
+                    match holdout_instance(pool, cell, seed, |sv, f, t, s| {
+                        oracle(&dir, sv, true, f, t, s).map_err(|e| e.to_string())
+                    }) {
+                        Ok(i) => i,
+                        Err(e) => fail(AttestError::Malformed(e)),
+                    }
+                }
+                None => match oracle(&dir, &suite, suite_is_version, family, tier, seed) {
+                    Ok(i) => i,
+                    Err(e) => fail(e),
+                },
             };
             let opts = IssueOptions {
                 family,
@@ -479,6 +569,7 @@ fn main() {
                 context: args.flags.get("context").cloned(),
                 subject: None,
                 session_id: None,
+                holdout_pool: holdout_pool.as_ref(),
                 now: None,
             };
             let (challenge, ticket) = match issue_challenge(&opts, seed, &instance, &key) {
@@ -533,12 +624,30 @@ fn main() {
                 ))),
             };
             let dir = clankdar_dir(&args);
-            let c = &ticket.challenge;
-            let instance =
-                match oracle(&dir, &c.suite_version, true, &c.family, c.tier, ticket.seed) {
-                    Ok(i) => i,
-                    Err(e) => fail(e),
-                };
+            // `--pool` supplies the committed holdout pool so a `heldout`
+            // ticket regenerates through the cell's secret label.
+            let pool = match args.flags.get("pool") {
+                Some(path) => {
+                    let value: serde_json::Value = match read_json(path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    match HoldoutPool::parse(&value) {
+                        Ok(pool) => Some(pool),
+                        Err(e) => fail(e),
+                    }
+                }
+                None => None,
+            };
+            let instance = match instance_for(
+                &ticket.challenge,
+                ticket.seed,
+                pool.as_ref(),
+                |sv, f, t, s| oracle(&dir, sv, true, f, t, s).map_err(|e| e.to_string()),
+            ) {
+                Ok(i) => i,
+                Err(e) => fail(e),
+            };
             // `--subject-key` mints one respondent proof for this challenge —
             // session-scoped when the challenge carries a `sessionId`.
             let subject_proof = match args.flags.get("subject-key") {
@@ -587,6 +696,22 @@ fn main() {
                 Ok(v) => v,
                 Err(e) => fail(e),
             };
+            // `--pool` supplies the committed holdout pool: matching
+            // `heldout` markers replay through it; without it their scores
+            // stay issuer-claimed (`replayable:false`/`unreplayed`).
+            let pool = match args.flags.get("pool") {
+                Some(path) => {
+                    let value: serde_json::Value = match read_json(path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    match HoldoutPool::parse(&value) {
+                        Ok(pool) => Some(pool),
+                        Err(e) => fail(e),
+                    }
+                }
+                None => None,
+            };
             if value.get("protocol").and_then(|p| p.as_str()) == Some(GATE_PROTOCOL) {
                 let admission: Admission = match serde_json::from_value(value) {
                     Ok(a) => a,
@@ -595,9 +720,14 @@ fn main() {
                 // Admission checking always regenerates embedded receipts —
                 // the deep path is inherent, so the oracle is required.
                 let dir = clankdar_dir(&args);
-                let result = check_admission(&admission, |suite_version, family, tier, seed| {
-                    oracle(&dir, suite_version, true, family, tier, seed).map_err(|e| e.to_string())
-                });
+                let result = check_admission_with_pool(
+                    &admission,
+                    pool.as_ref(),
+                    |suite_version, family, tier, seed| {
+                        oracle(&dir, suite_version, true, family, tier, seed)
+                            .map_err(|e| e.to_string())
+                    },
+                );
                 println!("{}", serde_json::to_string(&result).unwrap_or_default());
                 if !result.ok {
                     exit(2);
@@ -608,11 +738,16 @@ fn main() {
                 Ok(r) => r,
                 Err(e) => fail(AttestError::Malformed(format!("cannot parse {path}: {e}"))),
             };
-            let result = if args.switches.contains("deep") {
+            let result = if args.switches.contains("deep") || pool.is_some() {
                 let dir = clankdar_dir(&args);
-                check_receipt_deep(&receipt, |suite_version, family, tier, seed| {
-                    oracle(&dir, suite_version, true, family, tier, seed).map_err(|e| e.to_string())
-                })
+                check_receipt_with_pool(
+                    &receipt,
+                    pool.as_ref(),
+                    |suite_version, family, tier, seed| {
+                        oracle(&dir, suite_version, true, family, tier, seed)
+                            .map_err(|e| e.to_string())
+                    },
+                )
             } else {
                 check_receipt(&receipt)
             };
@@ -710,6 +845,124 @@ fn main() {
                 other.unwrap_or("nothing")
             ))),
         },
+        "holdout" => {
+            let Some(sub) = args.positional.first().map(String::as_str) else {
+                fail(AttestError::InvalidInput(format!(
+                    "holdout requires a subcommand. {USAGE}"
+                )));
+            };
+            match sub {
+                // Mint a private pool: one secret label per named cell,
+                // committed by `poolKey` — `holdout gen` in the TypeScript
+                // CLI. Membership is probed through the generator oracle.
+                "gen" => {
+                    let (Some(suite), Some(cells)) =
+                        (args.flags.get("suite"), args.flags.get("cells"))
+                    else {
+                        fail(AttestError::InvalidInput(
+                            "holdout gen requires --suite and --cells".to_string(),
+                        ));
+                    };
+                    if !matches!(suite.as_str(), "v2" | "frontier" | "agent") {
+                        fail(AttestError::InvalidInput(
+                            "suite must be v2, frontier, or agent".to_string(),
+                        ));
+                    }
+                    let dir = clankdar_dir(&args);
+                    let mut pool_cells: Vec<HoldoutCell> = Vec::new();
+                    for id in cells.split(',').map(str::trim) {
+                        let Some((family, tier)) = parse_cell_id(id) else {
+                            fail(AttestError::InvalidInput(format!(
+                                "unknown cell for suite {suite}: {id}"
+                            )));
+                        };
+                        let tier32 = match u32::try_from(tier) {
+                            Ok(tier) => tier,
+                            Err(_) => fail(AttestError::InvalidInput(format!(
+                                "unknown cell for suite {suite}: {id}"
+                            ))),
+                        };
+                        if oracle(&dir, suite, false, family, tier32, 0).is_err() {
+                            fail(AttestError::InvalidInput(format!(
+                                "unknown cell for suite {suite}: {id}"
+                            )));
+                        }
+                        pool_cells.push(HoldoutCell {
+                            family: family.to_string(),
+                            tier,
+                            label: random_b64url(24),
+                        });
+                    }
+                    if pool_cells
+                        .iter()
+                        .map(|cell| format!("{}:t{}", cell.family, cell.tier))
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        != pool_cells.len()
+                    {
+                        fail(AttestError::InvalidInput(
+                            "cells must be distinct".to_string(),
+                        ));
+                    }
+                    let pool = HoldoutPool {
+                        protocol: HOLDOUT_PROTOCOL.to_string(),
+                        suite: suite.clone(),
+                        pool_key: pool_key_of(suite, &pool_cells),
+                        cells: pool_cells,
+                    };
+                    match args.flags.get("out") {
+                        Some(out) => {
+                            if let Err(e) = write_json(out, &pool, true) {
+                                fail(e);
+                            }
+                            eprintln!(
+                                "pool {}…: {} held-out cells over {} — keep the file private",
+                                &pool.pool_key[..16],
+                                pool.cells.len(),
+                                pool.suite
+                            );
+                        }
+                        None => println!(
+                            "{}",
+                            serde_json::to_string_pretty(&pool).unwrap_or_default()
+                        ),
+                    }
+                }
+                // Show the committed cell list — never the labels.
+                "info" => {
+                    let Some(path) = args.positional.get(1) else {
+                        fail(AttestError::InvalidInput(
+                            "holdout info requires a pool file".to_string(),
+                        ));
+                    };
+                    let value: serde_json::Value = match read_json(path) {
+                        Ok(v) => v,
+                        Err(e) => fail(e),
+                    };
+                    let pool = match HoldoutPool::parse(&value) {
+                        Ok(pool) => pool,
+                        Err(e) => fail(e),
+                    };
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "protocol": pool.protocol,
+                            "suite": pool.suite,
+                            "poolKey": pool.pool_key,
+                            "cells": pool
+                                .cells
+                                .iter()
+                                .map(|cell| format!("{}:t{}", cell.family, cell.tier))
+                                .collect::<Vec<_>>(),
+                        }))
+                        .unwrap_or_default()
+                    );
+                }
+                _ => fail(AttestError::InvalidInput(format!(
+                    "unknown holdout subcommand: {sub}. {USAGE}"
+                ))),
+            }
+        }
         other => fail(AttestError::InvalidInput(format!(
             "unknown command: {other}. {USAGE}"
         ))),

@@ -1,0 +1,42 @@
+{
+  "admission": {
+    "protocol": "clankdar-gate-v1",
+    "payload": "{\"challenges\":[{\"challengeId\":\"att_AaRZqoNMLuWR\",\"expiresAt\":\"2026-09-18T00:05:00.000Z\",\"family\":\"sat\",\"heldout\":{\"poolKey\":\"b2e85a22d05bc8d7854985b9ab3f0e059d28b18cf967c9739aa2287cc5fe4a48\"},\"kind\":\"challenge\",\"nonce\":\"_-AtMAtyTCv4Y6VS\",\"prompt\":\"The following Boolean formula has exactly one satisfying assignment over variables x0 through x7. Each parenthesized clause is an OR of three literals; ∧ is AND, ∨ is OR, ¬ is NOT.\\n\\n(x3 ∨ ¬x4 ∨ x7) ∧\\n(¬x1 ∨ ¬x5 ∨ x7) ∧\\n(x1 ∨ ¬x5 ∨ x6) ∧\\n(¬x2 ∨ x3 ∨ x6) ∧\\n(x0 ∨ x1 ∨ ¬x3) ∧\\n(x2 ∨ ¬x6 ∨ x7) ∧\\n(¬x2 ∨ x4 ∨ ¬x5) ∧\\n(¬x1 ∨ ¬x4 ∨ x6) ∧\\n(¬x3 ∨ ¬x4 ∨ x5) ∧\\n(¬x2 ∨ x3 ∨ ¬x6) ∧\\n(¬x3 ∨ x4 ∨ x5) ∧\\n(x1 ∨ ¬x2 ∨ x7) ∧\\n(¬x1 ∨ x4 ∨ x5) ∧\\n(x4 ∨ x5 ∨ x6) ∧\\n(x3 ∨ x5 ∨ ¬x7) ∧\\n(¬x0 ∨ x5 ∨ ¬x7) ∧\\n(¬x1 ∨ ¬x5 ∨ ¬x7) ∧\\n(x1 ∨ x2 ∨ ¬x7)\\n\\nReply with only the 8-digit assignment as bits, in order x0 first through x7 last.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"25eb5170ab1d89582fff66f0791b5ff20013f422c40d0c60981b758345fcbda0\",\"sessionId\":\"gs_FHcxWHW3JgtL\",\"suiteVersion\":\"clankdar-frontier-v1\",\"tier\":4,\"verifier\":{\"keyId\":\"515df5feb6537549\",\"publicKey\":\"1F6NYxrsjhZ0L7ltMCO7elSvIq8nniyKNHvpfOF_XaA\"}},{\"challengeId\":\"att_DoGS1-mcPYU8\",\"expiresAt\":\"2026-09-18T00:05:00.000Z\",\"family\":\"knights\",\"heldout\":{\"poolKey\":\"b2e85a22d05bc8d7854985b9ab3f0e059d28b18cf967c9739aa2287cc5fe4a48\"},\"kind\":\"challenge\",\"nonce\":\"taR3vVnG0UnLmSSH\",\"prompt\":\"On an island, knights always tell the truth and knaves always lie. A says: \\\"E and C are both knaves.\\\" B says: \\\"exactly one of D and C is a knight.\\\" C says: \\\"at least one of D and B is a knight.\\\" D says: \\\"exactly 2 of us tell the truth.\\\" E says: \\\"at least one of B and C is a knave.\\\" For each person, are they a knight or a knave? Reply in the form \\\"A=knight B=knave ...\\\" using the letters in order.\",\"protocol\":\"clankdar-attest-v1\",\"seedCommit\":\"236e58ed1d1b9e4414ab776fe4bad82327691ca50b348e465c50e825f148eb05\",\"sessionId\":\"gs_FHcxWHW3JgtL\",\"suiteVersion\":\"clankdar-frontier-v1\",\"tier\":5,\"verifier\":{\"keyId\":\"515df5feb6537549\",\"publicKey\":\"1F6NYxrsjhZ0L7ltMCO7elSvIq8nniyKNHvpfOF_XaA\"}}],\"kind\":\"admission\",\"policy\":{\"cells\":[\"h:sat:t4\",\"h:knights:t5\"],\"challenges\":2,\"minPass\":1,\"suite\":\"frontier\",\"ttlSeconds\":300},\"receipts\":[{\"payload\":\"{\\\"challenge\\\":{\\\"challengeId\\\":\\\"att_AaRZqoNMLuWR\\\",\\\"expiresAt\\\":\\\"2026-09-18T00:05:00.000Z\\\",\\\"family\\\":\\\"sat\\\",\\\"heldout\\\":{\\\"poolKey\\\":\\\"b2e85a22d05bc8d7854985b9ab3f0e059d28b18cf967c9739aa2287cc5fe4a48\\\"},\\\"kind\\\":\\\"challenge\\\",\\\"nonce\\\":\\\"_-AtMAtyTCv4Y6VS\\\",\\\"prompt\\\":\\\"The following Boolean formula has exactly one satisfying assignment over variables x0 through x7. Each parenthesized clause is an OR of three literals; ∧ is AND, ∨ is OR, ¬ is NOT.\\\\n\\\\n(x3 ∨ ¬x4 ∨ x7) ∧\\\\n(¬x1 ∨ ¬x5 ∨ x7) ∧\\\\n(x1 ∨ ¬x5 ∨ x6) ∧\\\\n(¬x2 ∨ x3 ∨ x6) ∧\\\\n(x0 ∨ x1 ∨ ¬x3) ∧\\\\n(x2 ∨ ¬x6 ∨ x7) ∧\\\\n(¬x2 ∨ x4 ∨ ¬x5) ∧\\\\n(¬x1 ∨ ¬x4 ∨ x6) ∧\\\\n(¬x3 ∨ ¬x4 ∨ x5) ∧\\\\n(¬x2 ∨ x3 ∨ ¬x6) ∧\\\\n(¬x3 ∨ x4 ∨ x5) ∧\\\\n(x1 ∨ ¬x2 ∨ x7) ∧\\\\n(¬x1 ∨ x4 ∨ x5) ∧\\\\n(x4 ∨ x5 ∨ x6) ∧\\\\n(x3 ∨ x5 ∨ ¬x7) ∧\\\\n(¬x0 ∨ x5 ∨ ¬x7) ∧\\\\n(¬x1 ∨ ¬x5 ∨ ¬x7) ∧\\\\n(x1 ∨ x2 ∨ ¬x7)\\\\n\\\\nReply with only the 8-digit assignment as bits, in order x0 first through x7 last.\\\",\\\"protocol\\\":\\\"clankdar-attest-v1\\\",\\\"seedCommit\\\":\\\"25eb5170ab1d89582fff66f0791b5ff20013f422c40d0c60981b758345fcbda0\\\",\\\"sessionId\\\":\\\"gs_FHcxWHW3JgtL\\\",\\\"suiteVersion\\\":\\\"clankdar-frontier-v1\\\",\\\"tier\\\":4,\\\"verifier\\\":{\\\"keyId\\\":\\\"515df5feb6537549\\\",\\\"publicKey\\\":\\\"1F6NYxrsjhZ0L7ltMCO7elSvIq8nniyKNHvpfOF_XaA\\\"}},\\\"expected\\\":\\\"10111111\\\",\\\"kind\\\":\\\"receipt\\\",\\\"response\\\":\\\"10111111\\\",\\\"seed\\\":424000,\\\"verdict\\\":{\\\"answeredAt\\\":\\\"2026-09-18T00:01:00.000Z\\\",\\\"format\\\":\\\"bits\\\",\\\"pass\\\":true}}\",\"protocol\":\"clankdar-attest-v1\",\"signature\":\"RKs8IcZDoF3nHA7WqiyK3NordBT4Ff3D1FSHlDVx3eNmBurnPU4CEJQSD_h2f3YUhxTVMdWtKj_DHqrXF4asBQ\"},{\"payload\":\"{\\\"challenge\\\":{\\\"challengeId\\\":\\\"att_DoGS1-mcPYU8\\\",\\\"expiresAt\\\":\\\"2026-09-18T00:05:00.000Z\\\",\\\"family\\\":\\\"knights\\\",\\\"heldout\\\":{\\\"poolKey\\\":\\\"b2e85a22d05bc8d7854985b9ab3f0e059d28b18cf967c9739aa2287cc5fe4a48\\\"},\\\"kind\\\":\\\"challenge\\\",\\\"nonce\\\":\\\"taR3vVnG0UnLmSSH\\\",\\\"prompt\\\":\\\"On an island, knights always tell the truth and knaves always lie. A says: \\\\\\\"E and C are both knaves.\\\\\\\" B says: \\\\\\\"exactly one of D and C is a knight.\\\\\\\" C says: \\\\\\\"at least one of D and B is a knight.\\\\\\\" D says: \\\\\\\"exactly 2 of us tell the truth.\\\\\\\" E says: \\\\\\\"at least one of B and C is a knave.\\\\\\\" For each person, are they a knight or a knave? Reply in the form \\\\\\\"A=knight B=knave ...\\\\\\\" using the letters in order.\\\",\\\"protocol\\\":\\\"clankdar-attest-v1\\\",\\\"seedCommit\\\":\\\"236e58ed1d1b9e4414ab776fe4bad82327691ca50b348e465c50e825f148eb05\\\",\\\"sessionId\\\":\\\"gs_FHcxWHW3JgtL\\\",\\\"suiteVersion\\\":\\\"clankdar-frontier-v1\\\",\\\"tier\\\":5,\\\"verifier\\\":{\\\"keyId\\\":\\\"515df5feb6537549\\\",\\\"publicKey\\\":\\\"1F6NYxrsjhZ0L7ltMCO7elSvIq8nniyKNHvpfOF_XaA\\\"}},\\\"expected\\\":\\\"a=knave b=knave c=knave d=knave e=knight\\\",\\\"kind\\\":\\\"receipt\\\",\\\"response\\\":\\\"a=knave b=knave c=knave d=knave e=knight\\\",\\\"seed\\\":424001,\\\"verdict\\\":{\\\"answeredAt\\\":\\\"2026-09-18T00:01:00.000Z\\\",\\\"format\\\":\\\"assignments\\\",\\\"pass\\\":true}}\",\"protocol\":\"clankdar-attest-v1\",\"signature\":\"sCusf6IKyBRNkrUYs4wVQR88IxLnVnv81p__VnkWr6lC2P5YEKgNPMGW_qNTbKbTU6vyIJEuU74gzi2mIIqGDg\"}],\"sessionId\":\"gs_FHcxWHW3JgtL\",\"verdict\":{\"decidedAt\":\"2026-09-18T00:01:00.000Z\",\"pass\":true,\"passed\":2,\"required\":1}}",
+    "signature": "Jq4dGhmdRkTU_lK6FPOOMeIKynSAVsObd_8jNYQReYMyq13WfnmN0CoiNM8VOih1JfWbeJkg2TOugvr4YHo3AQ"
+  },
+  "pool": {
+    "protocol": "clankdar-holdout-v1",
+    "suite": "frontier",
+    "poolKey": "b2e85a22d05bc8d7854985b9ab3f0e059d28b18cf967c9739aa2287cc5fe4a48",
+    "cells": [
+      {
+        "family": "knights",
+        "tier": 5,
+        "label": "1OKEUWnTvC3F6mVreIROusIDH5fGn1mH"
+      },
+      {
+        "family": "sat",
+        "tier": 4,
+        "label": "JzIsNsnCZLdEjiC7iPeoYzV2m3GvukCc"
+      }
+    ]
+  },
+  "instances": [
+    {
+      "suiteVersion": "clankdar-frontier-v1",
+      "family": "sat",
+      "tier": 4,
+      "seed": 541662818,
+      "prompt": "The following Boolean formula has exactly one satisfying assignment over variables x0 through x7. Each parenthesized clause is an OR of three literals; ∧ is AND, ∨ is OR, ¬ is NOT.\n\n(x3 ∨ ¬x4 ∨ x7) ∧\n(¬x1 ∨ ¬x5 ∨ x7) ∧\n(x1 ∨ ¬x5 ∨ x6) ∧\n(¬x2 ∨ x3 ∨ x6) ∧\n(x0 ∨ x1 ∨ ¬x3) ∧\n(x2 ∨ ¬x6 ∨ x7) ∧\n(¬x2 ∨ x4 ∨ ¬x5) ∧\n(¬x1 ∨ ¬x4 ∨ x6) ∧\n(¬x3 ∨ ¬x4 ∨ x5) ∧\n(¬x2 ∨ x3 ∨ ¬x6) ∧\n(¬x3 ∨ x4 ∨ x5) ∧\n(x1 ∨ ¬x2 ∨ x7) ∧\n(¬x1 ∨ x4 ∨ x5) ∧\n(x4 ∨ x5 ∨ x6) ∧\n(x3 ∨ x5 ∨ ¬x7) ∧\n(¬x0 ∨ x5 ∨ ¬x7) ∧\n(¬x1 ∨ ¬x5 ∨ ¬x7) ∧\n(x1 ∨ x2 ∨ ¬x7)\n\nReply with only the 8-digit assignment as bits, in order x0 first through x7 last.",
+      "answer": "10111111"
+    },
+    {
+      "suiteVersion": "clankdar-frontier-v1",
+      "family": "knights",
+      "tier": 5,
+      "seed": 1293365245,
+      "prompt": "On an island, knights always tell the truth and knaves always lie. A says: \"E and C are both knaves.\" B says: \"exactly one of D and C is a knight.\" C says: \"at least one of D and B is a knight.\" D says: \"exactly 2 of us tell the truth.\" E says: \"at least one of B and C is a knave.\" For each person, are they a knight or a knave? Reply in the form \"A=knight B=knave ...\" using the letters in order.",
+      "answer": "A=knave B=knave C=knave D=knave E=knight"
+    }
+  ]
+}

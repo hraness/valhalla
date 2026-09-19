@@ -153,6 +153,7 @@ pub fn issue_room_session(
             context: opts.context.map(str::to_string),
             subject: opts.subject.map(str::to_string),
             session_id: Some(session_id.clone()),
+            holdout_pool: None,
             now: Some(now),
         };
         let (_, ticket) = issue_challenge(&issued, seed, &instance, issuer)?;
@@ -337,6 +338,12 @@ pub fn decide_room_admission(
                 "admission does not verify: {}",
                 check.reason.unwrap_or_default()
             ),
+        };
+    }
+    if check.unreplayed.unwrap_or_default() > 0 {
+        return RoomDecision {
+            admit: false,
+            reason: "admission contains held-out scores this room did not replay".to_string(),
         };
     }
     // The admission verifies on its own terms; now decide for *this*

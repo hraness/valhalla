@@ -170,6 +170,7 @@ fn issue_session(session_id: &str) -> Session {
         context: None,
         subject: None,
         session_id: Some(session_id.to_string()),
+        holdout_pool: None,
         now: Some(at(NOW)),
     };
     let (challenge, ticket) = issue_challenge(&opts, seed, &inst, &key).unwrap();

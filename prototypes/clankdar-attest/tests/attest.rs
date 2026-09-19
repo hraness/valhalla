@@ -50,6 +50,7 @@ fn issue(now: OffsetDateTime) -> (Challenge, Ticket, GeneratedInstance) {
         context: None,
         subject: None,
         session_id: None,
+        holdout_pool: None,
         now: Some(now),
     };
     let (challenge, ticket) = issue_challenge(&opts, 424242, &inst, &key).unwrap();
@@ -237,6 +238,7 @@ fn bad_options_fail_at_issue() {
         context: None,
         subject: None,
         session_id: None,
+        holdout_pool: None,
         now: Some(at("2026-09-18T00:00:00Z")),
     };
     assert!(issue_challenge(&base(), 1, &inst, &key).is_ok());
@@ -391,6 +393,7 @@ fn issue_session_challenge(now: OffsetDateTime) -> (Challenge, Ticket, Generated
         context: None,
         subject: None,
         session_id: Some("gs_aaaaaaaaaaaa".to_string()),
+        holdout_pool: None,
         now: Some(now),
     };
     let (challenge, ticket) = issue_challenge(&opts, 424243, &inst, &key).unwrap();

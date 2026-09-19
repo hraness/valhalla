@@ -299,6 +299,33 @@ fn an_admission_from_another_room_is_denied() {
 // --- submit guards ------------------------------------------------------------
 
 #[test]
+fn a_room_denies_held_out_scores_it_cannot_replay() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/ts_admission_holdout.json")).unwrap();
+    let admission: Admission = serde_json::from_value(fixture["admission"].clone()).unwrap();
+    let body: Value = serde_json::from_str(&admission.payload).unwrap();
+    let policy = GatePolicy::parse(&body["policy"]).unwrap();
+    let verifier_key = body["challenges"][0]["verifier"]["publicKey"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let decision = decide_room_admission(
+        &admission,
+        &RoomFloor {
+            policy: &policy,
+            verifier_key,
+        },
+        generate,
+    );
+    assert!(!decision.admit);
+    assert!(
+        decision.reason.contains("did not replay"),
+        "{}",
+        decision.reason
+    );
+}
+
+#[test]
 fn missing_and_noncanonical_answers_are_failed_challenges() {
     let policy = policy();
     let session = issue(&policy);
