@@ -82,7 +82,7 @@ pub struct GatePolicy {
 }
 
 /// `^([a-z0-9]+):t(\d+)$` — the cell id shape.
-fn parse_cell(cell: &str) -> Option<(&str, u64)> {
+pub(crate) fn parse_cell(cell: &str) -> Option<(&str, u64)> {
     let (family, tier) = cell.split_once(':')?;
     if family.is_empty()
         || !family

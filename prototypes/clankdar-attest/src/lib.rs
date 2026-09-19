@@ -43,8 +43,16 @@
 //! portable-badge test — the admission must verify on its own AND trace to
 //! a logged, decided session. The log binds the issuer's history under its
 //! own key only: it prevents neither self-minting nor forking.
+//!
+//! The `rooms` module dogfoods the gate layer the way a valhalla rooms
+//! node would: [`issue_room_session`] mints a room-admission session as
+//! the room-side issuer, [`submit_room_session`] consumes responses into
+//! the signed admission, and [`decide_room_admission`] runs the room's
+//! admission decision — replaying the signed admission and pinning it to
+//! the room's published floor and verifier key.
 
 mod gate;
+mod rooms;
 mod scorer;
 mod tlog;
 
@@ -52,6 +60,10 @@ pub use gate::{
     check_admission, suite_version, Admission, AdmissionBody, AdmissionCheck, AdmissionVerdict,
     GatePolicy, AGENT_SUITE_VERSION, FRONTIER_SUITE_VERSION, GATE_PROTOCOL, MAX_POLICY_CELLS,
     MAX_POLICY_CHALLENGES, MAX_POLICY_TTL_SECONDS, MIN_POLICY_TTL_SECONDS, V2_SUITE_VERSION,
+};
+pub use rooms::{
+    decide_room_admission, issue_room_session, submit_room_session, RoomDecision, RoomFloor,
+    RoomSession, RoomSessionOptions, RoomSubmission,
 };
 pub use scorer::{
     answer_format, canonical_answer, score_answer, AnswerFormat, Score, MAX_ANSWER_LENGTH,
