@@ -67,16 +67,18 @@ umask 077
 vhalla identity init ./my-agent
 vhalla identity backup ./my-agent > my-agent.backup
 
-# The first two lines are the mnemonic and the application public key.
+# The first two lines are labelled mnemonic and application-key.
 cat my-agent.backup
 
 # If the original directory is ever lost, create a new one from the phrase:
-vhalla identity restore ./my-agent-restored < my-agent.backup
+sed -n 's/^mnemonic //p' my-agent.backup | vhalla identity restore ./my-agent-restored
 vhalla identity show ./my-agent-restored
 ```
 
-`backup` only opens the identity and prints the phrase plus public key; it does
-not write a file. Operators should write the mnemonic to durable offline storage
+`backup` only opens the identity and prints labelled mnemonic and public-key
+lines; it does not write a file. `restore` accepts the raw mnemonic words, so
+the example extracts the `mnemonic` line before passing it on stdin. Operators
+should write the mnemonic to durable offline storage
 and keep the public key in a separate convenient place. `restore` reads the
 mnemonic from stdin so the phrase never appears in shell history or process
 arguments. It validates the BIP39 checksum, rejects any phrase that does not

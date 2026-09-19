@@ -840,12 +840,14 @@ and a schedule update, not multi-host or live newcomer activation.
 If the machine holding `./my-key` is lost, use the backup:
 
 ```console
-vhalla identity restore ./my-key-restored < my-key.backup
+sed -n 's/^mnemonic //p' my-key.backup | vhalla identity restore ./my-key-restored
 vhalla identity show ./my-key-restored
 ```
 
-The restored `application-key` is identical to the lost one. The mnemonic
-recovers only this application identity. Signed archives, spent invitation
+`restore` accepts only the mnemonic words on stdin; the `sed` command
+extracts them from the labeled backup output. The restored `application-key`
+is identical to the lost one. The mnemonic recovers only this application
+identity. Signed archives, spent invitation
 state and validator recovery have separate persistence requirements; do
 not interpret a restored signing key as complete network-state recovery.
 
