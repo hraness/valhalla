@@ -7,16 +7,27 @@
 //!   clankdar-attest tlog check TLOG.json
 //!   clankdar-attest tlog prove TLOG.json --session gs_x
 //!   clankdar-attest tlog admit TLOG.json ADMISSION.json [--clankdar DIR]
+//!   clankdar-attest rooms issue --key KEY.json --policy POLICY.json [--subject TXT] [--context TXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR]
+//!   clankdar-attest rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR]
+//!   clankdar-attest rooms prove --key KEY.json --challenge CHALLENGE.json
+//!   clankdar-attest rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR]
 //!
-//! `check` on a receipt is fully offline. `issue`, `verify`, and
-//! `check --deep` call the canonical Clankdar generator oracle
-//! (`bun bench/instance.ts`) inside `--clankdar` (default: `$CLANKDAR_DIR`,
-//! then `../clankdar`). `check` on a `clankdar-gate-v1` admission always
-//! takes the deep path — admission checking regenerates every embedded
-//! receipt, so the oracle is required. `tlog check`/`tlog prove` are fully
-//! offline; `tlog admit` replays the admission's embedded receipts through
-//! the oracle like `check` does.
+//! `check` on a receipt is fully offline. `issue`, `verify`, `check --deep`,
+//! and the rooms issue/submit/decide modes call the canonical Clankdar
+//! generator oracle (`bun bench/instance.ts`) inside `--clankdar` (default:
+//! `$CLANKDAR_DIR`, then `../clankdar`). Admission checking regenerates every
+//! embedded receipt, so the oracle is required. `tlog check`, `tlog prove`,
+//! and `rooms prove` are fully offline; `tlog admit` replays the admission's
+//! embedded receipts through the oracle like `check` does.
+//!
+//! The `rooms` modes dogfood the room-side gate-v1 flow: a room publishes
+//! a `GatePolicy` floor and verifier key, `rooms issue` mints a session,
+//! `rooms submit` consumes responses into a signed admission, and `rooms
+//! decide` replays a presented admission through `check_admission` pinned
+//! to the room's own floor and key — printing `{"admit": bool, "reason"}`
+//! and exiting nonzero on deny.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::{env, fs};
@@ -25,12 +36,13 @@ use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use valhalla_clankdar_attest_prototype::{
     check_admission, check_log, check_logged_admission, check_receipt, check_receipt_deep,
-    draw_seed, generate_verifier, issue_challenge, key_id_of, prove_session, signing_key,
-    subject_proof_for, verify_response, Admission, AttestError, GeneratedInstance, IssueOptions,
-    Receipt, Ticket, VerifierJwk, GATE_PROTOCOL,
+    decide_room_admission, draw_seed, generate_verifier, issue_challenge, issue_room_session,
+    key_id_of, prove_session, signing_key, subject_proof_for, submit_room_session, verify_response,
+    Admission, AttestError, Challenge, GatePolicy, GeneratedInstance, IssueOptions, Receipt,
+    RoomFloor, RoomSession, RoomSessionOptions, SubjectProof, Ticket, VerifierJwk, GATE_PROTOCOL,
 };
 
-const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--clankdar DIR]";
+const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR]";
 
 struct Args {
     flags: std::collections::HashMap<String, String>,
@@ -146,6 +158,240 @@ fn write_json(path: &str, value: &impl Serialize, private: bool) -> Result<(), A
 fn fail(error: AttestError) -> ! {
     eprintln!("{error}");
     exit(2)
+}
+
+fn flag<'a>(args: &'a Args, names: &[&str], mode: &str) -> &'a str {
+    for name in names {
+        if let Some(value) = args.flags.get(*name) {
+            return value;
+        }
+    }
+    fail(AttestError::InvalidInput(format!(
+        "rooms {mode} requires --{}",
+        names.join(" ")
+    )))
+}
+
+/// The room's verifier public key: a JWK `x` member or a bare base64url
+/// string — the public half is all the decision pins.
+fn read_public_key(path: &str) -> Result<String, AttestError> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| AttestError::Malformed(format!("cannot read {path}: {e}")))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| AttestError::Malformed(format!("cannot parse {path}: {e}")))?;
+    if let Some(x) = value.get("x").and_then(|v| v.as_str()) {
+        return Ok(x.to_string());
+    }
+    if let Some(raw) = value.as_str() {
+        return Ok(raw.to_string());
+    }
+    Err(AttestError::Malformed(format!(
+        "{path} does not carry a verifier public key"
+    )))
+}
+
+/// `rooms issue`: mint a room-admission session as the room-side issuer —
+/// `policy.challenges` sealed challenges under one session id and one
+/// deadline. The session file is private (it carries the seeds); stdout
+/// carries the public challenge list the respondent sees.
+fn rooms_issue(args: &Args) {
+    let key_path = flag(args, &["key"], "issue");
+    let policy_path = flag(args, &["policy"], "issue");
+    let value: serde_json::Value = match read_json(policy_path) {
+        Ok(v) => v,
+        Err(e) => fail(e),
+    };
+    let policy = match GatePolicy::parse(&value) {
+        Ok(p) => p,
+        Err(e) => fail(e),
+    };
+    let jwk: VerifierJwk = match read_json(key_path) {
+        Ok(j) => j,
+        Err(e) => fail(e),
+    };
+    let key = match signing_key(&jwk) {
+        Ok(k) => k,
+        Err(e) => fail(e),
+    };
+    let seed_base = match args.flags.get("seed-base") {
+        Some(s) => match s.parse() {
+            Ok(v) => Some(v),
+            Err(_) => fail(AttestError::InvalidInput(
+                "--seed-base must be a uint32 seed".to_string(),
+            )),
+        },
+        None => None,
+    };
+    let opts = RoomSessionOptions {
+        subject: args.flags.get("subject").map(String::as_str),
+        context: args.flags.get("context").map(String::as_str),
+        now: None,
+        seed_base,
+    };
+    let dir = clankdar_dir(args);
+    let mut rng = rand_core::OsRng;
+    let session = match issue_room_session(
+        &policy,
+        &key,
+        &opts,
+        |bound| (rand_core::RngCore::next_u64(&mut rng) % bound as u64) as usize,
+        |suite_version, family, tier, seed| {
+            oracle(&dir, suite_version, true, family, tier, seed).map_err(|e| e.to_string())
+        },
+    ) {
+        Ok(s) => s,
+        Err(e) => fail(e),
+    };
+    let published = serde_json::json!({
+        "sessionId": session.session_id,
+        "expiresAt": session.expires_at,
+        "challenges": session.challenges(),
+    });
+    match args.flags.get("out") {
+        Some(out) => {
+            if let Err(e) = write_json(out, &session, true) {
+                fail(e);
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&published).unwrap_or_default()
+            );
+        }
+        None => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"session": session, "published": published})
+            )
+            .unwrap_or_default()
+        ),
+    }
+}
+
+/// `rooms submit`: consume the respondent's answers (a JSON object keyed
+/// by challenge id) into the signed admission — one receipt per answered,
+/// format-canonical challenge, each replayed before the verdict is signed.
+fn rooms_submit(args: &Args) {
+    let key_path = flag(args, &["key"], "submit");
+    let session_path = flag(args, &["session"], "submit");
+    let responses_path = flag(args, &["responses"], "submit");
+    let jwk: VerifierJwk = match read_json(key_path) {
+        Ok(j) => j,
+        Err(e) => fail(e),
+    };
+    let key = match signing_key(&jwk) {
+        Ok(k) => k,
+        Err(e) => fail(e),
+    };
+    let session: RoomSession = match read_json(session_path) {
+        Ok(s) => s,
+        Err(e) => fail(e),
+    };
+    let responses: BTreeMap<String, String> = match read_json(responses_path) {
+        Ok(r) => r,
+        Err(e) => fail(e),
+    };
+    // The respondent hands over a session-scoped proof minted on its own
+    // side (`rooms prove`); the issuer never touches the respondent key.
+    let subject_proof: Option<SubjectProof> = match args.flags.get("subject-proof") {
+        Some(path) => match read_json(path) {
+            Ok(p) => Some(p),
+            Err(e) => fail(e),
+        },
+        None => None,
+    };
+    let dir = clankdar_dir(args);
+    let submission = match submit_room_session(
+        &session,
+        &responses,
+        &key,
+        subject_proof.as_ref(),
+        None,
+        |suite_version, family, tier, seed| {
+            oracle(&dir, suite_version, true, family, tier, seed).map_err(|e| e.to_string())
+        },
+    ) {
+        Ok(s) => s,
+        Err(e) => fail(e),
+    };
+    match args.flags.get("out") {
+        Some(out) => {
+            if let Err(e) = write_json(out, &submission.admission, false) {
+                fail(e);
+            }
+        }
+        None => println!(
+            "{}",
+            serde_json::to_string_pretty(&submission.admission).unwrap_or_default()
+        ),
+    }
+}
+
+/// `rooms prove`: the respondent's half — mint a subject proof for a
+/// session challenge the room published. Session-bound challenges scope
+/// the proof to the whole session, so any listed challenge works.
+fn rooms_prove(args: &Args) {
+    let key_path = flag(args, &["key"], "prove");
+    let challenge_path = flag(args, &["challenge"], "prove");
+    let jwk: VerifierJwk = match read_json(key_path) {
+        Ok(j) => j,
+        Err(e) => fail(e),
+    };
+    let challenge: Challenge = match read_json(challenge_path) {
+        Ok(c) => c,
+        Err(e) => fail(e),
+    };
+    match subject_proof_for(&challenge, &jwk) {
+        Ok(proof) => println!(
+            "{}",
+            serde_json::to_string_pretty(&proof).unwrap_or_default()
+        ),
+        Err(e) => fail(e),
+    }
+}
+
+/// `rooms decide`: the room's admission decision — replay the presented
+/// admission through `check_admission` pinned to the room's published
+/// floor and verifier key, then print `{"admit": bool, "reason"}` for a
+/// room gate to consume. Deny is a decision, not a crash: the verdict
+/// prints and the exit code is nonzero. For a policy-agnostic replay, use
+/// plain `check`.
+fn rooms_decide(args: &Args) {
+    let Some(path) = args.positional.get(1) else {
+        fail(AttestError::InvalidInput(
+            "rooms decide requires an admission file".to_string(),
+        ));
+    };
+    let policy_path = flag(args, &["policy"], "decide");
+    let key_path = flag(args, &["key"], "decide");
+    let admission: Admission = match read_json(path) {
+        Ok(a) => a,
+        Err(e) => fail(e),
+    };
+    let value: serde_json::Value = match read_json(policy_path) {
+        Ok(v) => v,
+        Err(e) => fail(e),
+    };
+    let policy = match GatePolicy::parse(&value) {
+        Ok(p) => p,
+        Err(e) => fail(e),
+    };
+    let verifier_key = match read_public_key(key_path) {
+        Ok(k) => k,
+        Err(e) => fail(e),
+    };
+    let floor = RoomFloor {
+        policy: &policy,
+        verifier_key,
+    };
+    let dir = clankdar_dir(args);
+    let decision =
+        decide_room_admission(&admission, &floor, |suite_version, family, tier, seed| {
+            oracle(&dir, suite_version, true, family, tier, seed).map_err(|e| e.to_string())
+        });
+    println!("{}", serde_json::to_string(&decision).unwrap_or_default());
+    if !decision.admit {
+        exit(2);
+    }
 }
 
 fn main() {
@@ -454,6 +700,16 @@ fn main() {
                 ))),
             }
         }
+        "rooms" => match args.positional.first().map(String::as_str) {
+            Some("issue") => rooms_issue(&args),
+            Some("submit") => rooms_submit(&args),
+            Some("prove") => rooms_prove(&args),
+            Some("decide") => rooms_decide(&args),
+            other => fail(AttestError::InvalidInput(format!(
+                "rooms requires issue|submit|prove|decide, got {}. {USAGE}",
+                other.unwrap_or("nothing")
+            ))),
+        },
         other => fail(AttestError::InvalidInput(format!(
             "unknown command: {other}. {USAGE}"
         ))),

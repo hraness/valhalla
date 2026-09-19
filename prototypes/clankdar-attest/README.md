@@ -130,6 +130,71 @@ And the honest limit stands: the log binds *this* issuer's history under
 fork alone; equivocation needs head comparison the issuer published
 elsewhere (gossip or external anchoring, both future work).
 
+## Rooms dogfood: the room-side admission decision
+
+Valhalla "rooms" are consensus groups (`crates/vhalla-*`). The product
+vision: an agent joining a room presents a `clankdar-gate-v1` admission
+proving it passed the room's published capability floor — admission
+receipts as proof of cognitive work. The `rooms` mode runs that flow end
+to end in Rust, the way a rooms node would:
+
+```sh
+# The room publishes POLICY.json (its floor) and its verifier key.
+clankdar-attest rooms issue --key ROOM_KEY.json --policy POLICY.json \
+    [--subject AGENT_ID] [--context room:ROOM_ID] [--seed-base N] \
+    --out SESSION.json [--clankdar DIR]
+# SESSION.json is issuer-private (it carries the seeds); stdout carries
+# the session id, deadline, and public challenge list the respondent sees.
+
+# Optional: the respondent binds a subject key to the session on its own
+# side — the room never touches the respondent's private key.
+clankdar-attest rooms prove --key RESPONDENT_KEY.json \
+    --challenge CHALLENGE.json > PROOF.json
+
+# The room consumes the respondent's answers into a signed admission.
+clankdar-attest rooms submit --key ROOM_KEY.json --session SESSION.json \
+    --responses RESPONSES.json [--subject-proof PROOF.json] \
+    [--out ADMISSION.json] [--clankdar DIR]
+
+# The room's admission decision over a presented admission.
+clankdar-attest rooms decide ADMISSION.json --policy POLICY.json \
+    --key ROOM_KEY.json [--clankdar DIR]
+# -> {"admit": true|false, "reason": "..."} — exits nonzero on deny.
+```
+
+`rooms issue` mirrors `issueSession` in `bench/gate.ts`: `challenges`
+sealed challenges drawn uniformly from the policy cells with replacement,
+under one session id and one deadline (`--seed-base` is the `seedBase`
+determinism hook). `rooms submit` mirrors `submitSession`: responses are a
+JSON object keyed by challenge id, a missing or non-format-canonical
+answer is a failed challenge with no receipt, and every minted receipt is
+replayed through the independent deep check before the verdict is signed.
+`rooms decide` replays the presented admission through `check_admission`
+and then pins it to *this* room: the embedded policy must equal the
+published floor and the session must have been issued under the room's
+verifier key. `admit` is `true` exactly when the signed verdict replays as
+a pass — the decision consumes the signed admission's own recomputed
+verdict, never a caller-supplied flag. For a policy-agnostic replay, plain
+`check` remains.
+
+**What this proves.** The admission decision a rooms node would run is
+replayable Rust verification: mint, submit, sign, and independently decide
+are the same code paths as the gate-v1 checker, and the decision is a pure
+function of the signed artifact pinned to the room's floor and key.
+
+**What real rooms integration still needs.** Transport: sessions are
+minted and responses collected through files here — a real room issues
+challenges and receives responses over its room transport, and a session
+is in-memory or ledger state, not a JSON file. Publication: the policy and
+verifier key are CLI inputs — a real room publishes them to members (and
+would version and rotate them). Consumption: `decide` prints
+`{admit, reason}` — join logic in `vhalla-*` must consume the verdict,
+bind it to the join request (`subject`/`context` are the binding hooks),
+and decide what an admission does and does not authorize. As ever, an
+admission is capability evidence under one policy in one window — never
+identity, liveness, or authority — and it must never mint room membership
+or host capability by itself.
+
 ## Honest scope
 
 A receipt attests that **one signed response satisfied one challenge inside
