@@ -1742,6 +1742,33 @@ impl RoomNode {
                 .stop_and_wait(None, Some(std::time::Duration::from_secs(5)))
                 .await;
         }
+        // The engine's default WAL actor (no fault plan) is inside the
+        // killed actor tree — `kill_and_wait` resolves when the engine
+        // is dead, not when the WAL worker thread has closed its
+        // exclusively locked file. A same-home restart that races that
+        // release panics the engine build with "the file is already
+        // locked". Wait until the lock is actually acquirable — the
+        // same probe the WAL's own open performs.
+        let wal = self.home.join("wal").join("consensus.wal");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let free = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&wal)
+                .map(|f| {
+                    advisory_lock::AdvisoryFileLock::try_lock(
+                        &f,
+                        advisory_lock::FileLockMode::Exclusive,
+                    )
+                    .is_ok()
+                })
+                .unwrap_or(true);
+            if free || std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
     }
 }
 
