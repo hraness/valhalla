@@ -21,7 +21,7 @@ function start(label,cmd,args){
   for(const io of [p.stdout,p.stderr]) io.on('data',c=>logs[label]+=c);
   p.on('error',e=>logs[label]+=String(e));return p;
 }
-const pending=new Map(), events=new Map();let sequence=0;
+const pending=new Map();let sequence=0;
 const deadline=Date.now()+300000;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function wait(f,label){for(;;){signal.throwIfAborted();if(await f()){signal.throwIfAborted();return;}if(Date.now()>deadline)throw Error('timeout: '+label);await pause(50);}}
@@ -50,7 +50,7 @@ async function task(abortSignal){
       const target=resolve(artifact,'.'+(name==='/'?'/index.html':name));
       if(!target.startsWith(artifact+sep)||!manifest.assets[target.slice(artifact.length+1)]){res.writeHead(404);res.end();return;}
       const body=await readFile(target);res.setHeader('content-type',target.endsWith('.wasm')?'application/wasm':target.endsWith('.js')?'text/javascript':target.endsWith('.css')?'text/css':'text/html');res.end(body);
-    }catch(e){res.writeHead(500);res.end(String(e));}
+    }catch{res.writeHead(500,{'content-type':'text/plain'});res.end('qualification request failed');}
   });
   signal.throwIfAborted();
   await new Promise((r,j)=>{server.once('error',j);server.listen(8790,'127.0.0.1',r);});
@@ -60,7 +60,7 @@ async function task(abortSignal){
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(logs.chrome.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);
   await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
-  socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const w=pending.get(v.id);pending.delete(v.id);v.error?w?.reject(Error(JSON.stringify(v.error))):w?.resolve(v.result);}else{const key=(v.sessionId||'')+':'+v.method;const w=events.get(key);if(w){events.delete(key);w(v.params);}}};
+  socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const w=pending.get(v.id);pending.delete(v.id);v.error?w?.reject(Error(JSON.stringify(v.error))):w?.resolve(v.result);}};
   const {targetId}=await call('Target.createTarget',{url:'about:blank'});
   const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
   await call('Page.enable',{},sessionId);

@@ -93,7 +93,8 @@ const chrome = trackChild(spawn(executable, [
   '--user-data-dir=' + profile, 'about:blank',
 ], {stdio: ['ignore', 'ignore', 'pipe']}));
 let stderr = '', socket;
-const pending = new Map(), events = new Map();
+const pending = new Map();
+let loadSession, resolveLoaded;
 let sequence = 0;
 const task = async () => {
   const websocket = await new Promise((resolve, reject) => {
@@ -112,9 +113,10 @@ const task = async () => {
     if (value.id) {
       const waiter = pending.get(value.id); pending.delete(value.id);
       if (value.error) waiter?.reject(new Error(JSON.stringify(value.error))); else waiter?.resolve(value.result);
-    } else {
-      const key = (value.sessionId || '') + ':' + value.method;
-      const waiter = events.get(key); if (waiter) { events.delete(key); waiter(value.params); }
+    } else if (value.method === 'Page.loadEventFired' && value.sessionId === loadSession) {
+      // This harness waits for one event in one selected session, not a
+      // remotely selected method or a general event dispatch table.
+      const done = resolveLoaded; resolveLoaded = undefined; done?.();
     }
   };
   const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
@@ -124,7 +126,8 @@ const task = async () => {
   const {targetId} = await call('Target.createTarget', {url: 'about:blank'});
   const {sessionId} = await call('Target.attachToTarget', {targetId, flatten: true});
   await call('Page.enable', {}, sessionId);
-  const loaded = new Promise(resolve => events.set(sessionId + ':Page.loadEventFired', resolve));
+  loadSession = sessionId;
+  const loaded = new Promise(resolve => { resolveLoaded = resolve; });
   await call('Page.navigate', {url: 'http://127.0.0.1:' + server.address().port + '/'}, sessionId);
   await loaded;
   const result = await call('Runtime.evaluate', {expression: 'window.done', awaitPromise: true, returnByValue: true}, sessionId);
