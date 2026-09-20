@@ -65,3 +65,10 @@ It serves the exact static build and deployment CSP on loopback in a fresh
 profile, checks all documentation paths, desktop/mobile overflow, keyboard
 navigation, appearance modes and reading with JavaScript disabled, then writes
 screenshots and a receipt. CI retains those outputs without the browser profile.
+
+
+Documentation source links and the setup command pin `documentedRevision` to a
+retained full Git commit, rather than assuming unreleased commands exist on the
+default branch. Publish that commit before the site. Advance the pin deliberately
+when the documented implementation changes; the source-link regression requires
+every source guide to use the same immutable revision.

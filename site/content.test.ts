@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { readFile, access } from 'node:fs/promises';
-import { docs } from './pages.ts';
+import { docs, documentedRevision } from './pages.ts';
 import { renderDoc, docHref } from './docs.ts';
 const home = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 const pages = new Map([['/', home], ...docs.map(page=>[docHref(page), renderDoc(page, home)])]);
@@ -54,11 +54,15 @@ test('readiness and privacy limitations stay discoverable from the home page', (
   expect(security).toContain('Previously authorized readers can retain old messages');
 });
 
-test('repository source links name files retained in the checkout', async () => {
+test('repository source links name retained files at the documented immutable revision', async () => {
+  expect(documentedRevision).toMatch(/^[0-9a-f]{40}$/);
   const checked=new Set<string>();
-  for(const html of pages.values()) for(const match of html.matchAll(/href="https:\/\/github.com\/hraness\/valhalla\/blob\/main\/([^"#]+)[^"]*"/g)) {
-    if(checked.has(match[1])) continue;
-    checked.add(match[1]);
-    await access(new URL(`../${match[1]}`,import.meta.url));
+  for(const html of pages.values()) for(const match of html.matchAll(/href="https:\/\/github.com\/hraness\/valhalla\/blob\/([^/]+)\/([^"#]+)[^"]*"/g)) {
+    expect(match[1]).toBe(documentedRevision);
+    if(checked.has(match[2])) continue;
+    checked.add(match[2]);
+    await access(new URL(`../${match[2]}`,import.meta.url));
   }
+  expect(checked.size).toBeGreaterThan(0);
+  expect(pages.get('/docs/getting-started/')).toContain(`git checkout --detach ${documentedRevision}`);
 });
