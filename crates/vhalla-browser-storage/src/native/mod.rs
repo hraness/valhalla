@@ -11,6 +11,7 @@
 mod codec;
 mod disk;
 pub mod peers;
+pub mod replay;
 #[cfg(test)]
 mod tests;
 

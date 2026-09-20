@@ -45,8 +45,6 @@ pub(super) struct ActivityService {
     after_refresh: Option<Box<dyn FnOnce() + Send>>,
 }
 impl ActivityService {
-    // Explicit operator activation is not connected yet; keep the tested boundary available.
-    #[allow(dead_code)]
     pub(super) fn open(raw: &[u8], pin: [u8; 32], config: ActivityConfig) -> Result<Self, Error> {
         if config.rooms.is_empty() || config.rooms.len() > MAX_ACTIVITY_ROOMS {
             return Err(Error::Config);
@@ -483,8 +481,6 @@ struct PostRate {
     ips: BTreeMap<IpAddr, Window>,
 }
 impl PostRate {
-    // Used by the explicitly activated service constructor above.
-    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             global: Window {

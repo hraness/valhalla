@@ -15,3 +15,5 @@
 #discovered-peer{width:100%;max-width:100%;font:11px ui-monospace,monospace;padding:10px;background:var(--white);color:var(--ink);border:1px solid var(--line)}
 
 .puzzles{padding-bottom:12px}.puzzles p{max-width:760px}.puzzles input[type=text]{display:block;width:100%;font:12px ui-monospace,monospace;color:var(--ink);background:var(--white);border:1px solid #bdc6bb;border-radius:3px;padding:11px 12px}.puzzles textarea{font:11px/1.5 ui-monospace,monospace}.puzzles h3{margin-top:28px}
+
+.artifact-preview { white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -4,6 +4,7 @@
 //! bounded late-open cleanup and exact transaction-local compare-and-swap.
 
 use super::*;
+mod durability;
 pub mod history;
 pub mod identity;
 pub mod outbox;
@@ -14,9 +15,7 @@ use std::{
     rc::Rc,
 };
 use wasm_bindgen::{closure::Closure, JsCast, JsValue};
-use web_sys::{
-    Event, IdbDatabase, IdbOpenDbRequest, IdbRequest, IdbTransaction, IdbTransactionMode,
-};
+use web_sys::{Event, IdbDatabase, IdbOpenDbRequest, IdbRequest, IdbTransaction};
 
 const OBJECT_STORE: &str = "images";
 const SCHEMA_VERSION: u32 = 1;
@@ -132,11 +131,13 @@ impl Drop for OpenGuard {
 
 async fn open_database(name: &str) -> Result<IdbDatabase, Error> {
     let slot = OpenSlot::acquire()?;
-    let factory = web_sys::window()
-        .ok_or(Error::Storage)?
-        .indexed_db()
+    // Resolve the current realm's factory, so the custody worker can own the
+    // same transactions as the window. No database handle crosses a worker
+    // boundary; missing, throwing or foreign values refuse before open.
+    let factory = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("indexedDB"))
         .map_err(storage)?
-        .ok_or(Error::Storage)?;
+        .dyn_into::<web_sys::IdbFactory>()
+        .map_err(storage)?;
     let request = factory
         .open_with_u32(name, SCHEMA_VERSION)
         .map_err(storage)?;
@@ -346,15 +347,7 @@ impl IndexedStorage {
         expected: Option<Vec<u8>>,
         candidate: Option<Vec<u8>>,
     ) -> Result<Option<Vec<u8>>, Error> {
-        let mode = if candidate.is_some() {
-            IdbTransactionMode::Readwrite
-        } else {
-            IdbTransactionMode::Readonly
-        };
-        let transaction = self
-            .database
-            .transaction_with_str_and_mode(OBJECT_STORE, mode)
-            .map_err(storage)?;
+        let transaction = durability::begin(&self.database, candidate.is_some())?;
         let finished = Rc::new(Cell::new(false));
         // Install ownership before any fallible request setup so every early
         // return/cancellation aborts an unfinished transaction and detaches hooks.

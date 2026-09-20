@@ -16,12 +16,13 @@ experimental-rooms-tui = ["experimental-rooms-node", "dep:vhalla-rooms-app", "de
 experimental-sync = ["experimental-social", "experimental-network", "dep:vhalla-retrieval"]
 experimental-game = ["dep:vhalla-game-platonik", "dep:vhalla-witness", "dep:vhalla-core", "dep:libc"]
 
-experimental-public = ["experimental-rooms-node", "vhalla-identity/room-activity", "dep:vhalla-room-activity", "dep:vhalla-browser-storage", "dep:vhalla-public-client", "dep:vhalla-public-peer", "dep:vhalla-public-protocol", "dep:vhalla-rooms-app"]
+experimental-public = ["experimental-rooms-node", "vhalla-identity/room-activity", "dep:vhalla-room-activity", "dep:vhalla-room-activity-store", "dep:vhalla-browser-storage", "dep:vhalla-public-client", "dep:vhalla-public-peer", "dep:vhalla-public-protocol", "dep:vhalla-rooms-app"]
 
 [dependencies]
 hraness-support-foundation = { git = "https://github.com/hraness/support-foundation", rev = "b32c1c81bb2444f50509ed54388758ecfab1f1c0" }
 vhalla-identity = { path = "../vhalla-identity" }
 vhalla-room-activity = { path = "../vhalla-room-activity", optional = true }
+vhalla-room-activity-store = { path = "../vhalla-room-activity-store", optional = true }
 vhalla-browser-storage = { path = "../vhalla-browser-storage", optional = true }
 vhalla-public-client = { path = "../vhalla-public-client", optional = true }
 vhalla-public-protocol = { path = "../vhalla-public-protocol", optional = true }

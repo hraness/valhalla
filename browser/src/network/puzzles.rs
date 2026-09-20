@@ -1,9 +1,10 @@
 //! Public artifact parts over existing signed room activity; never execution.
 use super::*;
+use crate::ui;
 #[path = "../puzzle_model.rs"]
 mod model;
 pub(super) use model::PreparedPart;
-use model::{Assembly, Context, Derived, Selection};
+use model::{Assembly, Context, Derived, PreparedArtifact, ReleaseScope, Selection};
 use vhalla_room_activity::{puzzle_share::Kind, RoomScope, VerifiedEvent};
 use web_sys::{HtmlAnchorElement, HtmlSelectElement, HtmlTextAreaElement};
 
@@ -28,6 +29,45 @@ fn input(app: &App) -> HtmlTextAreaElement {
 }
 pub(super) fn part_input(app: &App) -> String {
     input(app).value()
+}
+fn artifact_input(app: &App) -> String {
+    app.borrow()
+        .document
+        .get_element_by_id("puzzle-artifact")
+        .unwrap()
+        .unchecked_into::<HtmlTextAreaElement>()
+        .value()
+}
+fn release_scope() -> Result<ReleaseScope, String> {
+    Ok(ReleaseScope {
+        context: DERIVED
+            .with(|s| s.borrow().context)
+            .ok_or("Choose a verified room first.")?,
+        author: ui::activity_author()?,
+    })
+}
+pub(super) fn validate_prepared(
+    app: &App,
+    preview: &PreparedPart,
+    room: RoomScope,
+    bootstrap_pin: [u8; 32],
+    author: [u8; 32],
+    pending: bool,
+) -> Result<vhalla_room_activity::Text, String> {
+    preview
+        .queue_text(
+            &part_input(app),
+            &artifact_input(app),
+            ReleaseScope {
+                context: Context {
+                    room,
+                    bootstrap_pin,
+                },
+                author,
+            },
+            pending,
+        )
+        .map_err(String::from)
 }
 fn kind(app: &App) -> Result<Kind, &'static str> {
     match app
@@ -60,7 +100,8 @@ pub(super) fn prepared(app: &App) -> Result<PreparedPart, String> {
     let preview = DERIVED
         .with(|s| s.borrow().preview.clone())
         .ok_or("Validate this part before signing it.")?;
-    preview.queue_text(&part_input(app), false)?;
+    let scope = release_scope()?;
+    preview.queue_text(&part_input(app), &artifact_input(app), scope, false)?;
     Ok(preview)
 }
 pub(super) fn queued(app: &App, result: &Result<(), String>) {
@@ -68,7 +109,7 @@ pub(super) fn queued(app: &App, result: &Result<(), String>) {
         Ok(()) => {
             DERIVED.with(|s| s.borrow_mut().preview = None);
             input(app).set_value("");
-            message(app, "puzzle-preview", "Part signed and saved in your local outbox. Peer delivery is unconfirmed. Paste and validate the next part explicitly.");
+            message(app, "puzzle-preview", "Part signed and saved in your local outbox. Peer delivery is unconfirmed. The complete artifact remains approved for this room and author. Paste the next matching part.");
         }
         Err(error) => message(app, "puzzle-preview", error),
     }
@@ -83,12 +124,29 @@ pub(super) fn render(
         room,
         bootstrap_pin: s.head.scope().bootstrap_pin(),
     });
-    let (changed, preview, complete) = DERIVED.with(|s| {
+    let (changed, preview, artifact, approved, complete) = DERIVED.with(|s| {
         let mut s = s.borrow_mut();
         let changed = s.set_context(context);
+        if s.artifact.as_ref().is_some_and(|a| {
+            ui::activity_author().map_or(true, |author| {
+                !a.matches(
+                    &artifact_input(app),
+                    ReleaseScope {
+                        context: context.unwrap(),
+                        author,
+                    },
+                )
+            })
+        }) {
+            s.artifact = None;
+            s.approved = false;
+            s.preview = None;
+        }
         (
             changed,
             s.preview.is_some(),
+            s.artifact.is_some(),
+            s.approved,
             s.assembly.as_ref().is_some_and(|a| a.bytes().is_some()),
         )
     });
@@ -96,8 +154,23 @@ pub(super) fn render(
         message(app, "puzzle-preview", "Room or network changed. Validate the outgoing part again. Your saved drafts and outbox are untouched.");
         message(app, "puzzle-collection", "Choose a full sharer key, artifact kind and SHA-256 digest, then start collecting from verified activity pages.");
     }
+    if !artifact {
+        message(app, "puzzle-readable", "");
+    }
     let enabled = available && context.is_some();
     input(app).set_disabled(!enabled);
+    app.borrow()
+        .document
+        .get_element_by_id("puzzle-artifact")
+        .unwrap()
+        .unchecked_into::<HtmlTextAreaElement>()
+        .set_disabled(!enabled);
+    app.borrow()
+        .document
+        .get_element_by_id("puzzle-release-kind")
+        .unwrap()
+        .unchecked_into::<HtmlSelectElement>()
+        .set_disabled(!enabled);
     for id in ["puzzle-author", "puzzle-digest"] {
         field(app, id).set_disabled(!enabled);
     }
@@ -108,7 +181,9 @@ pub(super) fn render(
         .unchecked_into::<HtmlSelectElement>()
         .set_disabled(!enabled);
     for (id, active) in [
-        ("preview-puzzle", enabled),
+        ("preview-puzzle-artifact", enabled),
+        ("approve-puzzle-artifact", enabled && artifact && !approved),
+        ("preview-puzzle", enabled && approved),
         ("queue-puzzle", enabled && preview),
         ("collect-puzzle", enabled),
         ("download-puzzle", enabled && complete),
@@ -250,6 +325,8 @@ pub(super) fn bind_actions(app: &App) {
         ("preview-puzzle", 0),
         ("collect-puzzle", 1),
         ("download-puzzle", 2),
+        ("preview-puzzle-artifact", 3),
+        ("approve-puzzle-artifact", 4),
     ] {
         let a = app.clone();
         let callback = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
@@ -258,21 +335,87 @@ pub(super) fn bind_actions(app: &App) {
                 return;
             }
             let result = match action {
-                0 => PreparedPart::new(&part_input(&a)).map(|preview| {
+                0 => (|| -> Result<(), String> {
+                    let scope = release_scope()?;
+                    let preview = DERIVED.with(|s| {
+                        let s = s.borrow();
+                        let artifact = s
+                            .artifact
+                            .as_ref()
+                            .filter(|_| s.approved)
+                            .ok_or("Review and approve the complete artifact first.")?;
+                        if !artifact.matches(&artifact_input(&a), scope) {
+                            return Err("Artifact or destination changed. Review it again.");
+                        }
+                        PreparedPart::new(&part_input(&a), artifact, scope)
+                    })?;
                     let part = preview.part();
-                    message(&a, "puzzle-preview", &format!("{} · part {} of {} · artifact {} bytes · digest {}. This part is public. Signing attributes it to your key; it does not verify issuer authority or solve results.", kind_name(part.kind()), part.index()+1, part.count(), part.artifact_len(), hex(part.digest())));
+                    message(&a, "puzzle-preview", &format!("Part {} of {} matches the approved complete artifact. Signing saves this public part under your selected identity.", part.index()+1, part.count()));
                     DERIVED.with(|s| s.borrow_mut().preview = Some(preview));
-                }).map_err(String::from),
+                    Ok(())
+                })(),
+                3 => (|| -> Result<(), String> {
+                    let scope = release_scope()?;
+                    let selected = a
+                        .borrow()
+                        .document
+                        .get_element_by_id("puzzle-release-kind")
+                        .unwrap()
+                        .unchecked_into::<HtmlSelectElement>()
+                        .value();
+                    let kind = match selected.as_str() {
+                        "public-challenges" => Kind::PublicChallenges,
+                        "responses" => Kind::Responses,
+                        "admission" => Kind::Admission,
+                        _ => return Err("Choose an artifact kind.".into()),
+                    };
+                    let artifact = PreparedArtifact::new(&artifact_input(&a), kind, scope)?;
+                    message(&a, "puzzle-readable", artifact.readable());
+                    let part = artifact.part();
+                    let room_name = super::activity::selected_room_name(&a);
+                    message(&a, "puzzle-preview", &format!("Review the complete decoded JSON below and the exact input above. Public destination: {room_name} · author {}… · {} · {} bytes · {} parts · SHA-256 {}. Every prompt, subject, context and answer will be public. No issuer or solve verification is implied.", &hex(&scope.author)[..12], kind_name(kind), part.artifact_len(), part.count(), hex(part.digest())));
+                    DERIVED.with(|s| {
+                        let mut s = s.borrow_mut();
+                        s.artifact = Some(artifact);
+                        s.approved = false;
+                        s.preview = None;
+                    });
+                    Ok(())
+                })(),
+                4 => (|| -> Result<(), String> {
+                    let scope = release_scope()?;
+                    DERIVED.with(|s| {
+                        let mut s = s.borrow_mut();
+                        if !s
+                            .artifact
+                            .as_ref()
+                            .is_some_and(|v| v.matches(&artifact_input(&a), scope))
+                        {
+                            return Err("Artifact or destination changed. Review it again.");
+                        }
+                        s.approved = true;
+                        Ok(())
+                    })?;
+                    message(&a, "puzzle-preview", "Complete artifact approved for this room and author. Paste a matching CLI part to sign and save. Changed content or destination requires a new review.");
+                    Ok(())
+                })(),
                 1 => start_collection(&a),
                 _ => download(&a),
             };
             if let Err(error) = result {
-                if action == 0 {
-                    DERIVED.with(|s| s.borrow_mut().preview = None);
+                if matches!(action, 0 | 3 | 4) {
+                    DERIVED.with(|s| {
+                        let mut s = s.borrow_mut();
+                        s.preview = None;
+                        if matches!(action, 3 | 4) {
+                            s.artifact = None;
+                            s.approved = false;
+                        }
+                    });
                 }
                 message(
                     &a,
-                    if action == 0 {
+                    if matches!(action, 0 | 3 | 4) {
                         "puzzle-preview"
                     } else {
                         "puzzle-collection"
@@ -292,6 +435,8 @@ pub(super) fn bind_actions(app: &App) {
     }
     for id in [
         "puzzle-part",
+        "puzzle-artifact",
+        "puzzle-release-kind",
         "puzzle-author",
         "puzzle-kind",
         "puzzle-digest",
@@ -303,13 +448,17 @@ pub(super) fn bind_actions(app: &App) {
             }
             DERIVED.with(|s| {
                 let mut s = s.borrow_mut();
-                if id == "puzzle-part" {
+                if matches!(id, "puzzle-artifact" | "puzzle-release-kind") {
+                    s.artifact = None;
+                    s.approved = false;
+                    s.preview = None;
+                } else if id == "puzzle-part" {
                     s.preview = None;
                 } else {
                     s.assembly = None;
                 }
             });
-            message(&a, if id == "puzzle-part" { "puzzle-preview" } else { "puzzle-collection" }, "Selection changed. Validate or start collecting again. Saved author state and outbox bytes are unchanged.");
+            message(&a, if matches!(id, "puzzle-part" | "puzzle-artifact" | "puzzle-release-kind") { "puzzle-preview" } else { "puzzle-collection" }, "Selection changed. Validate or start collecting again. Saved author state and outbox bytes are unchanged.");
             super::render(&a);
         });
         app.borrow()

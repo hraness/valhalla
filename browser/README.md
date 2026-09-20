@@ -75,9 +75,13 @@ peers are replaceable transport providers, not validators by discovery. The
 current browser transport is HTTPS to native peers; direct browser-to-browser
 mesh and automatic peer replication remain separate capabilities.
 
-The room's puzzle panel accepts one CLI-prepared public challenge, response or
-admission part at a time. Validate and preview it, then explicitly sign and save
-that unchanged part. An existing pending draft is never replaced or resumed by
+The room's puzzle panel first requires the complete public JSON artifact. Review
+its decoded fields and exact input, then explicitly approve it for the selected
+room and author. Nested duplicate fields are rejected. Approval binds the exact
+bytes, kind, network, bootstrap fingerprint, full room identity and author.
+Each CLI-prepared part must exactly match that approved artifact before signing;
+changing the content or destination requires a new review. Approval remains
+local to this tab and is lost on reload. It does not verify a solve or issuer. An existing pending draft is never replaced or resumed by
 this action, ordinary composer text is preserved, and sending remains separate.
 For reception, select the full sharer key, artifact kind and SHA-256 digest,
 start collection, then read public activity pages (or the latest 16 local outbox
@@ -91,3 +95,70 @@ code, arbitrary URL or host command executes in the browser. Native Clankdar
 history checking remains the separate explicit verification step. This local
 artifact exchange surface does not establish peer PUBLISH availability or
 completed public-network/browser qualification.
+
+
+## Reproducible browser regression
+
+The development harnesses use an isolated Chromium profile and synthetic data.
+They do not attach to a personal browser, import a private identity, or contact a
+production peer. Node 24 runs them without an additional browser-test dependency.
+Use the host browser lane where the repository scheduler is installed.
+
+For the storage adapter, build the `indexeddb_qualification` example for WASM,
+generate web bindings with wasm-bindgen 0.2.108 into a new test directory, then
+run `node browser/tools/qualify_storage.mjs GENERATED_DIR CHROMIUM_EXECUTABLE`.
+It checks strict writes, read-only unlock under write denial, ignored durability,
+throwing durability getters, transaction abort and competing identity snapshots
+against real IndexedDB in both the page and a dedicated worker. The latter has
+no Window object and owns its storage transaction in that realm.
+
+For the complete client, build and package a separate local-qualification
+artifact and the synthetic two-room fixture:
+
+```sh
+cargo build --locked -p vhalla-public-peer --example browser_fixture
+# In browser/, use a separate absolute output path:
+trunk --skip-version-check build --release --locked --features local-qualification --dist TEST_DIST
+python3 tools/package.py TEST_DIST --allow-local-qualification
+# Back in the repository root; every path below selects task-owned test data:
+node browser/tools/qualify_product.mjs TEST_DIST FIXTURE_EXECUTABLE CHROMIUM_EXECUTABLE NEW_OUTPUT_DIR --recovery
+```
+
+Use absolute paths for the artifact, executables and new output directory. The
+harness binds only 127.0.0.1 ports 8790, 9781 and 9782, and refuses collisions.
+It creates a fresh profile and network, imports that network's public bootstrap
+and advertisements, creates a new synthetic identity through the real UI and
+stops its own children within 300 seconds. Existing test evidence is never
+replaced. Keep the local-qualification artifact out of production deployment.
+
+The tested flow refuses cross-room drafts before storage mutation, explicitly
+moves a draft, injects a post-reservation finalization failure, reloads and
+resumes the exact draft without erasing unrelated text, previews all JSON fields,
+refuses changed artifact bytes/destinations, and verifies three posts through
+two peers' retained receipts and signed history. The output contains a receipt,
+artifact hash, screenshot and synthetic fixture logs. Two local peer processes
+are not evidence of independent operators or a qualified public deployment.
+
+
+The optional `--recovery` extension creates encrypted key and multipart author
+backups from that synthetic identity and holds them only in test-driver memory.
+It stops the former author, restores into the separate `localhost:8790` origin,
+and checks key-only, wrong-room, final-part-first and incomplete-backup refusals.
+A reload interrupts staged import; completing it must preserve the exact pending
+draft and both peer receipts. The next signature must use sequence four, and a
+further reload must retain it without resending already acknowledged history.
+This remains a same-machine test with controlled local peers, not independent
+device or storage rollback protection. Required CI uses the extension; its
+encrypted fixtures are never taken from an existing user profile.
+
+
+The complete synthetic recovery journey passed in Chromium153 on20September2026:
+one encrypted key backup and three author-state parts restored into a fresh
+loopback origin. Key-only, wrong-room, final-part-first and incomplete imports
+did not authorize signing. Staged import survived reload; the recovered author
+retained both peers' receipts through sequence3, finalized the exact reserved
+fourth post and retained its new receipts across another restart. The former
+writer was locked and its browser target closed before restored signing. The
+two peers observed exactly eight POSTs in total, with no resend of acknowledged
+history. This is a single-machine Chromium result, not independent-device or
+private MLS recovery evidence.

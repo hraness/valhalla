@@ -308,3 +308,266 @@ fn challenge_and_admission_pack_dispatch_use_only_public_projections() {
         }
     }
 }
+
+fn selected_public() -> Vec<u8> {
+    public_session(&serde_json::to_vec(&public_input()).unwrap()).unwrap()
+}
+fn other_public(raw: &[u8]) -> Vec<u8> {
+    let mut value: Value = serde_json::from_slice(raw).unwrap();
+    value["sessionId"] = json!("gs_OtherSession");
+    for challenge in value["challenges"].as_array_mut().unwrap() {
+        challenge["sessionId"] = json!("gs_OtherSession");
+    }
+    canonical_json(&value).into_bytes()
+}
+fn bundle_artifact(value: &Value) -> Vec<u8> {
+    value["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|part| {
+            Part::decode(part.as_str().unwrap())
+                .unwrap()
+                .data()
+                .to_vec()
+        })
+        .collect()
+}
+
+#[test]
+fn empty_response_envelopes_bind_session_and_exact_selected_artifact_bytes() {
+    let raw = selected_public();
+    let a = ChallengeSelection::parse(&raw).unwrap();
+    let b = ChallengeSelection::parse(&other_public(&raw)).unwrap();
+    let first = bound_response_artifact(b"{}", &a).unwrap();
+    let second = bound_response_artifact(b"{}", &b).unwrap();
+    assert_ne!(first, second);
+    assert_ne!(
+        pack_bundle(Kind::Responses, &first).unwrap()["digest"],
+        pack_bundle(Kind::Responses, &second).unwrap()["digest"]
+    );
+    assert_eq!(checked_response_map(&first, &a).unwrap(), b"{}");
+    assert!(checked_response_map(&first, &b).is_err());
+    let alternate = [b" \n".as_slice(), &raw].concat();
+    let same_session_different_bytes = ChallengeSelection::parse(&alternate).unwrap();
+    assert_eq!(a.session_id, same_session_different_bytes.session_id);
+    assert_ne!(a.digest, same_session_different_bytes.digest);
+    assert!(checked_response_map(&first, &same_session_different_bytes).is_err());
+}
+
+#[test]
+fn selected_challenges_refuse_duplicate_fields_ids_foreign_scope_and_invalid_windows() {
+    let raw = selected_public();
+    let original: Value = serde_json::from_slice(&raw).unwrap();
+    for change in 0..10 {
+        let mut invalid = original.clone();
+        match change {
+            0 => invalid["protocol"] = json!("foreign"),
+            1 => invalid["kind"] = json!("session"),
+            2 => invalid["sessionId"] = json!("invalid"),
+            3 => {
+                invalid["challenges"][1]["challengeId"] =
+                    invalid["challenges"][0]["challengeId"].clone()
+            }
+            4 => invalid["challenges"][0]["sessionId"] = json!("gs_OtherSession"),
+            5 => invalid["challenges"][0]["expiresAt"] = json!("2026-09-19T00:04:00.000Z"),
+            6 => invalid["policy"]["challenges"] = json!(2),
+            7 => invalid["issuedAt"] = json!("2026-09-19T00:01:00.000Z"),
+            8 => invalid["challenges"][0]["verifier"]["private"] = json!("unknown"),
+            _ => invalid["challenges"][0]["heldout"]["label"] = json!("private"),
+        }
+        assert!(
+            ChallengeSelection::parse(&serde_json::to_vec(&invalid).unwrap()).is_err(),
+            "change {change}"
+        );
+    }
+    let text = std::str::from_utf8(&raw).unwrap();
+    for duplicate in [
+        text.replacen(
+            "\"kind\":\"public-challenges\"",
+            "\"kind\":\"public-challenges\",\"kind\":\"public-challenges\"",
+            1,
+        ),
+        text.replacen(
+            "\"ttlSeconds\":180",
+            "\"ttlSeconds\":180,\"ttlSeconds\":180",
+            1,
+        ),
+        text.replacen("\"poolKey\":", "\"poolKey\":\"bad\",\"poolKey\":", 1),
+    ] {
+        assert_ne!(duplicate, text);
+        assert!(ChallengeSelection::parse(duplicate.as_bytes()).is_err());
+    }
+    assert!(ChallengeSelection::parse(&vec![b' '; MAX_ARTIFACT_BYTES + 1]).is_err());
+    assert!(ChallengeSelection::parse(b"").is_err());
+}
+
+#[test]
+fn bound_response_preserves_exact_answers_and_rejects_ambiguous_or_foreign_fields() {
+    let selection = ChallengeSelection::parse(&selected_public()).unwrap();
+    let id = selection.ids.iter().next().unwrap();
+    let response = serde_json::to_vec(&json!({id: " +0012\n\tα "})).unwrap();
+    let bound = bound_response_artifact(&response, &selection).unwrap();
+    assert_eq!(
+        checked_response_map(&bound, &selection).unwrap(),
+        response_artifact(&response).unwrap()
+    );
+    let duplicate = format!("{{{id:?}:\"1\",{id:?}:\"2\"}}");
+    assert!(bound_response_artifact(duplicate.as_bytes(), &selection).is_err());
+    assert!(bound_response_artifact(br#"{"att_foreign":"1"}"#, &selection).is_err());
+    let original: Value = serde_json::from_slice(&bound).unwrap();
+    for change in 0..6 {
+        let mut invalid = original.clone();
+        match change {
+            0 => invalid["extra"] = json!(true),
+            1 => invalid["sessionId"] = json!("gs_OtherSession"),
+            2 => invalid["challengeDigest"] = json!("00".repeat(32)),
+            3 => invalid["responses"] = json!({"att_foreign":"1"}),
+            4 => invalid["protocol"] = json!("clankdar-room-responses/2"),
+            _ => invalid["kind"] = json!("admission"),
+        }
+        assert!(checked_response_map(&serde_json::to_vec(&invalid).unwrap(), &selection).is_err());
+    }
+    let text = std::str::from_utf8(&bound).unwrap();
+    let duplicate = format!("{{\"kind\":\"responses\",{}", &text[1..]);
+    assert!(checked_response_map(duplicate.as_bytes(), &selection).is_err());
+    let mut without_answers = original.clone();
+    without_answers["responses"] = Value::Null;
+    let duplicate_answers = canonical_json(&without_answers).replace(
+        "\"responses\":null",
+        &format!("\"responses\":{{{id:?}:\"1\",{id:?}:\"2\"}}"),
+    );
+    // Duplicate answer IDs are rejected by the embedded Responses decoder too.
+    assert!(checked_response_map(duplicate_answers.as_bytes(), &selection).is_err());
+    assert!(bound_response_artifact(&vec![b' '; MAX_ARTIFACT_BYTES + 1], &selection).is_err());
+    assert!(checked_response_map(&vec![b' '; MAX_ARTIFACT_BYTES + 1], &selection).is_err());
+    assert!(bound_response_artifact(
+        &serde_json::to_vec(&json!({id: "x".repeat(MAX_ANSWER_LENGTH + 1)})).unwrap(),
+        &selection
+    )
+    .is_err());
+}
+
+#[test]
+fn bound_exchange_collect_and_checked_extraction_preserve_no_overwrite_and_selection() {
+    let dir = Scratch::new();
+    let selected = selected_public();
+    let challenge = dir.file("challenge.json", &selected);
+    let other = dir.file("other.json", &other_public(&selected));
+    let answers = dir.file("answers.json", b"{}");
+    let parts = dir.absent("parts.json");
+    let report = execute(&args(&[
+        "responses",
+        &answers,
+        "--challenges",
+        &challenge,
+        "--out",
+        &parts,
+    ]))
+    .unwrap();
+    assert_eq!(report["correlation"], "selected_challenges");
+    let bundle: Value = serde_json::from_slice(&fs::read(parts).unwrap()).unwrap();
+    let bound = bundle_artifact(&bundle);
+    let inputs = frames(&dir, Kind::Responses, &bound);
+    let collected = dir.absent("collected.json");
+    execute(&collect_args(
+        &pins(Kind::Responses, &bound),
+        &inputs,
+        &collected,
+    ))
+    .unwrap();
+    let output = dir.absent("checked-map.json");
+    assert!(execute(&args(&[
+        "response-map",
+        &collected,
+        "--challenges",
+        &other,
+        "--out",
+        &output
+    ]))
+    .is_err());
+    assert!(!Path::new(&output).exists());
+    let report = execute(&args(&[
+        "response-map",
+        &collected,
+        "--challenges",
+        &challenge,
+        "--out",
+        &output,
+    ]))
+    .unwrap();
+    assert_eq!(report["correlation"], "selected_challenges");
+    assert_eq!(fs::read(&output).unwrap(), b"{}");
+    assert!(execute(&args(&[
+        "response-map",
+        &collected,
+        "--challenges",
+        &challenge,
+        "--out",
+        &output
+    ]))
+    .is_err());
+    assert_eq!(fs::read(&output).unwrap(), b"{}");
+    assert_eq!(fs::read(&collected).unwrap(), bound);
+    let foreign = dir.file("foreign.json", br#"{"att_foreign":"1"}"#);
+    let refused = dir.absent("refused-parts.json");
+    assert!(execute(&args(&[
+        "responses",
+        &foreign,
+        "--challenges",
+        &challenge,
+        "--out",
+        &refused
+    ]))
+    .is_err());
+    assert!(!Path::new(&refused).exists());
+}
+
+#[test]
+fn legacy_maps_remain_byte_compatible_and_never_acquire_bound_labels() {
+    let dir = Scratch::new();
+    let raw = br#"{"att_old":" 12\n"}"#;
+    let source = dir.file("legacy.json", raw);
+    let output = dir.absent("legacy-parts.json");
+    let report = execute(&args(&["responses", &source, "--out", &output])).unwrap();
+    assert_eq!(report["correlation"], "unbound_legacy");
+    let bundle: Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+    assert_eq!(bundle_artifact(&bundle), response_artifact(raw).unwrap());
+    assert!(bundle["sessionId"].is_null());
+    assert!(bundle["challengeDigest"].is_null());
+    let map = dir.absent("legacy-map.json");
+    assert!(execute(&args(&["response-map", &source, "--out", &map])).is_err());
+    assert!(!Path::new(&map).exists());
+    let report = execute(&args(&[
+        "response-map",
+        &source,
+        "--unbound-legacy",
+        "--out",
+        &map,
+    ]))
+    .unwrap();
+    assert_eq!(report["correlation"], "unbound_legacy");
+    assert!(report["sessionId"].is_null());
+    let challenge = dir.file("challenge.json", &selected_public());
+    let refused = dir.absent("never-bound.json");
+    assert!(execute(&args(&[
+        "response-map",
+        &source,
+        "--challenges",
+        &challenge,
+        "--out",
+        &refused
+    ]))
+    .is_err());
+    assert!(execute(&args(&[
+        "response-map",
+        &source,
+        "--challenges",
+        &challenge,
+        "--unbound-legacy",
+        "--out",
+        &refused
+    ]))
+    .is_err());
+    assert!(!Path::new(&refused).exists());
+}

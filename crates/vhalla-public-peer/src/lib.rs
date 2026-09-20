@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-//! Native read-only public peer adapter behind an explicitly operated TLS proxy.
+//! Native public peer adapter with explicit opt-in activity behind a TLS proxy.
 //!
 //! The HTTP listener only binds loopback. A successful response proves custody
 //! of a full peer application key, not validator authority or global freshness.

@@ -5,7 +5,9 @@ use super::{
     IndexedStorage,
 };
 use crate::{
-    identity::{compare_identity, created, replaced, IdentitySnapshot, BIRTH_BYTES, BIRTH_KEY},
+    identity::{
+        compare_identity, created, replaced, revalidated, IdentitySnapshot, BIRTH_BYTES, BIRTH_KEY,
+    },
     Access, Error, Image, PublishError, Slot, MAX_IMAGE_BYTES,
 };
 use std::rc::Rc;
@@ -49,6 +51,40 @@ impl IndexedStorage {
             *self.access.borrow_mut() = Access::NeedsReopen;
         }
         result
+    }
+
+    /// Revalidate an already authenticated, unchanged vault without writing.
+    ///
+    /// Reads and compares the exact existing vault/provenance pair in one readonly
+    /// transaction. This permits unlock and export when reads remain available but
+    /// writes fail, including storage pressure. The caller must have authenticated
+    /// this exact encrypted vault in its key worker. No absent identity is accepted.
+    /// Cancellation, mismatch, or failed completion requires drop/open/revalidation.
+    pub async fn revalidate_identity(
+        &mut self,
+        expected: &IdentitySnapshot,
+    ) -> Result<IdentitySnapshot, Error> {
+        // Use the same conservative operation latch as publication: cancellation
+        // cannot leave a handle that appears to have authenticated successfully.
+        self.access.borrow_mut().begin()?;
+        let expected = expected.clone();
+        let result = transaction(&self.database, false, move |state| {
+            read_identity(state, move |state, observed| {
+                *state.result.borrow_mut() = Some(Ok(revalidated(&expected, &observed)?));
+                Ok(())
+            })
+        })
+        .await;
+        match result {
+            Ok(snapshot) => {
+                self.access.borrow_mut().completed()?;
+                Ok(snapshot)
+            }
+            Err(error) => {
+                *self.access.borrow_mut() = Access::NeedsReopen;
+                Err(error)
+            }
+        }
     }
 
     /// Publish a genuinely newly generated key and its creation metadata together.

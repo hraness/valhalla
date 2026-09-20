@@ -65,7 +65,7 @@ jobs:
           - name: stateful-storage
             packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
           - name: public-network
-            packages: -p vhalla-public-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
+            packages: -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
           - name: remaining
             packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-game-platonik -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
     steps:
@@ -110,7 +110,7 @@ jobs:
           cargo test -p vhalla-cli --features experimental-game --test game --locked
       - name: WASM pure crate checks
         run: |
-          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik -p vhalla-public-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/agent-portraits/Cargo.toml --lib --target wasm32-unknown-unknown --locked
@@ -178,6 +178,49 @@ jobs:
           python3 -m unittest discover -s tools -p 'test_*.py'
         env:
           NO_COLOR: "true"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Qualification process cleanup regressions
+        run: node --test browser/tools/qualification_lifecycle.test.mjs
+      - name: Install exact browser bindings for runtime qualification
+        run: cargo install wasm-bindgen-cli --version 0.2.108 --locked
+      - name: Build isolated storage and MLS worker fixtures
+        run: |
+          cargo build --locked -p vhalla-browser-storage --example indexeddb_qualification --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/indexeddb_qualification.wasm --target web --out-dir "$RUNNER_TEMP/vhalla-storage-runtime"
+          cargo build --locked --manifest-path prototypes/private-rooms-mls/Cargo.toml --target wasm32-unknown-unknown
+          wasm-bindgen prototypes/private-rooms-mls/target/wasm32-unknown-unknown/debug/valhalla_private_rooms_mls_qualification.wasm --target web --out-name private_rooms_mls --out-dir "$RUNNER_TEMP/vhalla-mls-runtime"
+      - name: Exercise real IndexedDB and MLS in dedicated workers
+        run: |
+          chrome=$(command -v google-chrome)
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-storage-runtime" "$chrome"
+          node prototypes/private-rooms-mls/tools/qualify_browser.mjs "$RUNNER_TEMP/vhalla-mls-runtime" "$chrome" "$RUNNER_TEMP/vhalla-mls-results"
+      - name: Build isolated public browser journey
+        run: |
+          cargo build --locked -p vhalla-public-peer --example browser_fixture
+          cd browser
+          trunk --skip-version-check build --release --locked --features local-qualification --dist "$RUNNER_TEMP/vhalla-product-runtime"
+          python3 tools/package.py "$RUNNER_TEMP/vhalla-product-runtime" --allow-local-qualification
+        env:
+          NO_COLOR: "true"
+      - name: Exercise scope, interrupted signing, puzzle review and peer delivery
+        run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/debug/examples/browser_fixture" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-product-results" --recovery
+      - name: Retain bounded browser runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vhalla-browser-runtime-evidence
+          path: |
+            ${{ runner.temp }}/vhalla-storage-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-storage-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-mls-results/receipt.json
+            ${{ runner.temp }}/vhalla-mls-results/chrome.log
+            ${{ runner.temp }}/vhalla-product-results/receipt.json
+            ${{ runner.temp }}/vhalla-product-results/*.log
+            ${{ runner.temp }}/vhalla-product-results/*.png
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: vhalla-browser
@@ -288,6 +331,22 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Site tests and production build
         run: bun run check:site
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Static site responsive, keyboard and CSP qualification
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
+      - name: Retain site visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vhalla-site-visual-evidence
+          path: |
+            ${{ runner.temp }}/vhalla-site-results/receipt.json
+            ${{ runner.temp }}/vhalla-site-results/chrome.log
+            ${{ runner.temp }}/vhalla-site-results/*.png
+          if-no-files-found: warn
+          retention-days: 14
 
   security:
     runs-on: ubuntu-latest

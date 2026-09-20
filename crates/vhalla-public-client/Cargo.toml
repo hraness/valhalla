@@ -15,6 +15,7 @@ vhalla-rooms-node = { path = "../vhalla-rooms-node" }
 vhalla-social = { path = "../vhalla-social" }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
+hmac = { version = "=0.12.1", default-features = false }
 
 [dev-dependencies]
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", features = ["fixture"] }

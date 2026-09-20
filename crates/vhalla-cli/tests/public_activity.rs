@@ -6,6 +6,7 @@ use std::{
     fs,
     path::PathBuf,
     process::{Command, Output},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use vhalla_journal::{Bundle, BundleParts, FsStore, Journal};
@@ -39,13 +40,15 @@ fn success(output: Output) -> String {
 }
 impl Home {
     fn new() -> Self {
+        static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "vhalla-native-author-{}-{}",
+            "vhalla-native-author-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_HOME.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
         let scenario = fixture::scenario(1, 1);
@@ -321,4 +324,262 @@ fn wrong_bootstrap_and_invalid_certificate_never_create_author_paths() {
     assert!(!home.run("init", &[]).status.success());
     assert!(!home.path.join("key").exists());
     assert!(!home.path.join("outbox").exists());
+}
+
+fn replay_profile(home: &Home, command: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .args([
+            OsString::from("public"),
+            "activity".into(),
+            command.into(),
+            home.path.join("bootstrap").into(),
+            hex(&home.pin).into(),
+            home.path.join("journal").into(),
+            home.path.join("replay").into(),
+        ])
+        .output()
+        .unwrap()
+}
+fn with_profile(home: &Home, mut extras: Vec<OsString>) -> Vec<OsString> {
+    extras.push("--replay-profile".into());
+    extras.push(home.path.join("replay").into());
+    extras
+}
+fn report_number(report: &str, name: &str) -> u64 {
+    report
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name} ")))
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+fn retained_draft(home: &Home) -> Option<vhalla_browser_storage::outbox::ReservedDraft> {
+    let identity = vhalla_identity::Identity::open(home.path.join("key")).unwrap();
+    let store = vhalla_browser_storage::native::NativeOutbox::open(
+        home.path.join("outbox"),
+        vhalla_browser_storage::outbox::AuthorScope::new(home.scope(), identity.public_key()),
+        vhalla_browser_storage::history::HistoryScope::new(home.network, home.pin),
+    )
+    .unwrap();
+    store.load_pending().unwrap()
+}
+
+#[test]
+fn replay_profile_crosses_4096_with_real_certificates_and_no_early_author() {
+    let mut home = Home::new();
+    for _ in 0..4099 {
+        home.commit(home.scenario.app.frontier().time + 1, vec![], vec![], false);
+    }
+    let target = home.scenario.app.frontier().height;
+    assert!(target > 4096);
+    let created = success(replay_profile(&home, "replay-init"));
+    assert!(created.contains("status replay-profile-created"));
+    assert_eq!(report_number(&created, "durable-height"), 0);
+    let first = success(replay_profile(&home, "replay-step"));
+    assert!(first.contains("status more"), "{first}");
+    assert_eq!(report_number(&first, "replayed-from"), 0);
+    let mut at = report_number(&first, "durable-height");
+    assert!(at > 0 && at <= 4096);
+    assert!(!home.path.join("key").exists());
+    assert!(!home.path.join("outbox").exists());
+    for _ in 0..8 {
+        let next = success(replay_profile(&home, "replay-step"));
+        assert_eq!(report_number(&next, "replayed-from"), at);
+        let end = report_number(&next, "durable-height");
+        assert!(end > at && end - at <= 4096);
+        at = end;
+        if next.contains("status caught-up-local-journal") {
+            break;
+        }
+    }
+    assert_eq!(at, target);
+    let initialized = success(home.run("init", &with_profile(&home, vec![])));
+    assert!(initialized.contains("status new-local-author-ready"));
+    let queued = success(home.run(
+        "queue",
+        &with_profile(&home, vec![home.text("after bounded verified catch-up")]),
+    ));
+    assert!(queued.contains("author-sequence 1"));
+    let frames = home.export("checkpoint-export");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].claims().scope, home.scope());
+}
+
+#[test]
+fn replay_profile_handoff_old_or_new_outbox_head_preserves_exact_pending_bytes() {
+    let mut home = Home::new();
+    success(replay_profile(&home, "replay-init"));
+    success(home.run("init", &with_profile(&home, vec![])));
+    success(home.run(
+        "reserve",
+        &with_profile(&home, vec![home.text("retained exact pending request")]),
+    ));
+    let draft = retained_draft(&home).unwrap();
+    let old_outbox = fs::read(home.path.join("outbox/STATE")).unwrap();
+    let old_profile = fs::read(home.path.join("replay/STATE")).unwrap();
+    let bare = replay_profile(&home, "replay-step");
+    assert!(!bare.status.success());
+    assert!(String::from_utf8_lossy(&bare.stderr).contains("author anchor"));
+    assert_eq!(
+        fs::read(home.path.join("replay/STATE")).unwrap(),
+        old_profile
+    );
+
+    home.commit(300, vec![], vec![], false);
+    success(home.run("catch-up", &with_profile(&home, vec![])));
+    assert_eq!(retained_draft(&home), Some(draft.clone()));
+    // Model the crash just before the outbox advance: the new cache is durable
+    // while the exact prior author STATE/pending remains. No signed bytes change.
+    fs::write(home.path.join("outbox/STATE"), &old_outbox).unwrap();
+    success(home.run("catch-up", &with_profile(&home, vec![])));
+    assert_eq!(retained_draft(&home), Some(draft.clone()));
+    // The other crash outcome has the advanced author head equal to the cache
+    // frontier. A subsequent extension must rebind it before advancing again.
+    home.commit(400, vec![], vec![], false);
+    success(home.run("catch-up", &with_profile(&home, vec![])));
+    assert_eq!(retained_draft(&home), Some(draft.clone()));
+    let resumed = success(home.run("resume", &with_profile(&home, vec![])));
+    assert!(resumed.contains("author-sequence 1"));
+    let frames = home.export("resumed-checkpoint-export");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].id(), draft.request().id());
+}
+
+#[test]
+fn replay_profile_tamper_refuses_before_signing_or_reservation_replacement() {
+    let home = Home::new();
+    success(replay_profile(&home, "replay-init"));
+    success(home.run("init", &with_profile(&home, vec![])));
+    success(home.run(
+        "reserve",
+        &with_profile(&home, vec![home.text("never replace this reservation")]),
+    ));
+    let old_outbox = fs::read(home.path.join("outbox/STATE")).unwrap();
+    let draft = retained_draft(&home).unwrap();
+    let mut damaged = fs::read(home.path.join("replay/STATE")).unwrap();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(home.path.join("replay/STATE"), &damaged).unwrap();
+    assert!(!home
+        .run("resume", &with_profile(&home, vec![]))
+        .status
+        .success());
+    assert_eq!(fs::read(home.path.join("replay/STATE")).unwrap(), damaged);
+    assert_eq!(
+        fs::read(home.path.join("outbox/STATE")).unwrap(),
+        old_outbox
+    );
+    assert_eq!(retained_draft(&home), Some(draft));
+    assert!(home.export("no-signed-checkpoint-export").is_empty());
+}
+
+#[test]
+fn replay_profile_detects_lost_checkpoint_height_before_authoring() {
+    let home = Home::new();
+    success(replay_profile(&home, "replay-init"));
+    success(home.run("init", &with_profile(&home, vec![])));
+    let old_profile = fs::read(home.path.join("replay/STATE")).unwrap();
+    let old_outbox = fs::read(home.path.join("outbox/STATE")).unwrap();
+    let marker = home.path.join("journal/heights/0000000000000002");
+    let original = fs::read(&marker).unwrap();
+    fs::write(&marker, [0; 32]).unwrap();
+    assert!(!home
+        .run(
+            "queue",
+            &with_profile(
+                &home,
+                vec![home.text("must not sign against missing evidence")]
+            )
+        )
+        .status
+        .success());
+    assert_eq!(
+        fs::read(home.path.join("replay/STATE")).unwrap(),
+        old_profile
+    );
+    assert_eq!(
+        fs::read(home.path.join("outbox/STATE")).unwrap(),
+        old_outbox
+    );
+    assert_eq!(fs::read(&marker).unwrap(), [0; 32]);
+    fs::write(&marker, original).unwrap();
+    success(home.run(
+        "queue",
+        &with_profile(&home, vec![home.text("healthy exact evidence restored")]),
+    ));
+}
+
+#[test]
+fn replay_profile_new_author_init_cannot_advance_or_replace_retained_anchor() {
+    let mut home = Home::new();
+    success(replay_profile(&home, "replay-init"));
+    success(home.run("init", &with_profile(&home, vec![])));
+    home.commit(300, vec![], vec![], false);
+    for after_handoff in [false, true] {
+        if after_handoff {
+            success(home.run("catch-up", &with_profile(&home, vec![])));
+        }
+        let old = fs::read(home.path.join("replay/STATE")).unwrap();
+        let mut args = home.args("init");
+        args[6] = home.path.join("other-key").into();
+        args[7] = home.path.join("other-outbox").into();
+        args.extend(with_profile(&home, vec![]));
+        let result = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("anchored replay profile"));
+        assert_eq!(fs::read(home.path.join("replay/STATE")).unwrap(), old);
+        assert!(!home.path.join("other-key").exists());
+        assert!(!home.path.join("other-outbox").exists());
+    }
+}
+
+#[test]
+fn replay_profile_fresh_cache_rebuild_binds_existing_outbox_before_any_replay() {
+    let mut home = Home::new();
+    success(home.run("init", &[]));
+    success(home.run(
+        "reserve",
+        &[home.text("preserve this author across cache loss")],
+    ));
+    let draft = retained_draft(&home).unwrap();
+    success(replay_profile(&home, "replay-init"));
+    success(home.run("catch-up", &with_profile(&home, vec![])));
+    let mut old_cache = fs::read(home.path.join("replay/STATE")).unwrap();
+    *old_cache.last_mut().unwrap() ^= 1;
+    fs::write(home.path.join("replay/STATE"), &old_cache).unwrap();
+    assert!(!home
+        .run("catch-up", &with_profile(&home, vec![]))
+        .status
+        .success());
+    // Preserve the entire unusable test profile. The application exposes no
+    // reset/import command; recovery uses an explicitly different new path.
+    fs::rename(home.path.join("replay"), home.path.join("old-replay")).unwrap();
+    home.commit(300, vec![], vec![], false);
+    let old_outbox = fs::read(home.path.join("outbox/STATE")).unwrap();
+    let created = success(replay_profile(&home, "replay-init"));
+    assert!(created.contains("status replay-profile-created"));
+    assert_eq!(report_number(&created, "durable-height"), 0);
+    assert_eq!(
+        fs::read(home.path.join("outbox/STATE")).unwrap(),
+        old_outbox
+    );
+    success(home.run("catch-up", &with_profile(&home, vec![])));
+    assert_eq!(retained_draft(&home), Some(draft.clone()));
+    assert_eq!(
+        fs::read(home.path.join("old-replay/STATE")).unwrap(),
+        old_cache
+    );
+    let anchored = fs::read(home.path.join("replay/STATE")).unwrap();
+    assert!(!replay_profile(&home, "replay-step").status.success());
+    assert_eq!(fs::read(home.path.join("replay/STATE")).unwrap(), anchored);
+    success(home.run("resume", &with_profile(&home, vec![])));
+    let frames = home.export("rebuilt-cache-export");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].id(), draft.request().id());
+    assert_eq!(
+        fs::read(home.path.join("old-replay/STATE")).unwrap(),
+        old_cache
+    );
 }

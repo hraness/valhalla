@@ -10,25 +10,31 @@ use std::{
 };
 use vhalla_browser_storage::{
     history::{HistoryFrontier, HistoryHead, HistoryScope},
-    native::{Limits, NativeOutbox},
+    native::{replay::NativeReplay, Limits, NativeOutbox},
     outbox::{AuthorHead, AuthorScope, ReservedDraft},
 };
 use vhalla_identity::Identity;
 use vhalla_journal::{FsStore, Journal, PublishedRange, MAX_PUBLISHED_PAGE_BYTES};
-use vhalla_public_client::{Bootstrap, CertifiedClient, MAX_BOOTSTRAP_BYTES};
+use vhalla_public_client::{
+    checkpoint::CheckpointHead, Bootstrap, CertifiedClient, MAX_BOOTSTRAP_BYTES,
+};
 use vhalla_room_activity::{Content, EventClaims, RoomScope, Text, UnsignedEvent};
 use vhalla_rooms::RoomGenesisId;
 
-pub const HELP: &str = "vhalla public activity init BOOTSTRAP PIN64 JOURNAL NEW_KEY_DIR NEW_OUTBOX ROOM64\nvhalla public activity reserve|queue BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE\nvhalla public activity resume BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64\nvhalla public activity outbox BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 AFTER_SEQUENCE NEW_EXPORT_DIR\ninit couples a genuinely new identity with one new room-scoped outbox. reserve saves exact unsigned bytes; queue also signs; resume signs only the retained draft. All are local operations. Keep the key and complete outbox together; restored keys and absent author state cannot reset sequences. outbox exports at most 16 signed frames without publishing them. JOURNAL supplies certified policy, replayed with a 4096-bundle/30-second budget; incomplete replay refuses authoring. No network delivery or global freshness is implied.";
+#[path = "public_activity/network.rs"]
+mod network;
+
+pub const HELP: &str = "vhalla public activity init BOOTSTRAP PIN64 JOURNAL NEW_KEY_DIR NEW_OUTBOX ROOM64\nvhalla public activity reserve|queue BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE\nvhalla public activity resume|catch-up BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64\nvhalla public activity outbox BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 AFTER_SEQUENCE NEW_EXPORT_DIR\ninit couples a genuinely new identity with one new room-scoped outbox. reserve saves exact unsigned bytes; queue also signs; resume signs only the retained draft. All are local operations. Keep the key and complete outbox together; restored keys and absent author state cannot reset sequences. outbox exports at most 16 signed frames without publishing them. JOURNAL supplies certified policy, replayed with a 4096-bundle/30-second per-call budget; incomplete replay refuses authoring. Append --replay-profile PROFILE to local author commands for authenticated restart continuation. Create that profile at verified genesis with public activity replay-init BOOTSTRAP PIN64 JOURNAL NEW_PROFILE. Then use replay-step BOOTSTRAP PIN64 JOURNAL PROFILE for pre-author progress, or catch-up with the exact existing outbox before any replay. replay-init reports replay-profile-created; replay-step reports more or caught-up-local-journal. Profile commands never create an author or authorize a post. Use one profile per author workflow. Bare replay-step refuses once an author anchor is retained; activity catch-up with the exact outbox continues without signing. Keep journal and outbox evidence. No network delivery or global freshness is implied.";
 
 const MAX_REPLAY_BUNDLES: usize = 4096;
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct Context {
-    client: CertifiedClient,
+    client: Replica,
     head: HistoryHead,
     journal: Journal<FsStore>,
     room: RoomScope,
+    started: Instant,
 }
 
 fn history_head(client: &CertifiedClient, bundle: [u8; 32]) -> Result<HistoryHead, String> {
@@ -48,43 +54,187 @@ fn history_head(client: &CertifiedClient, bundle: [u8; 32]) -> Result<HistoryHea
     .map_err(|e| format!("certified history metadata: {e:?}"))
 }
 
+enum Replica {
+    Memory(CertifiedClient),
+    Durable(NativeReplay),
+}
+impl std::ops::Deref for Replica {
+    type Target = CertifiedClient;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Memory(client) => client,
+            Self::Durable(profile) => profile.client(),
+        }
+    }
+}
+impl Replica {
+    fn require_anchor(&mut self, head: CheckpointHead) -> Result<(), String> {
+        match self {
+            Self::Memory(client) => client
+                .require_anchor(head)
+                .map_err(|e| format!("retained policy ancestry: {e:?}")),
+            Self::Durable(profile) => profile.require_anchor(head).map_err(preserved),
+        }
+    }
+    fn apply(&mut self, raw: &[u8]) -> Result<(), String> {
+        match self {
+            Self::Memory(client) => {
+                let candidate = client
+                    .prepare(client.network_id(), raw)
+                    .map_err(|e| format!("certificate/application replay: {e:?}"))?;
+                client
+                    .commit_after_persist(candidate)
+                    .map_err(|e| format!("certified replay commit: {e:?}"))?;
+                Ok(())
+            }
+            Self::Durable(profile) => profile.apply_published_bundle(raw).map_err(preserved),
+        }
+    }
+    fn persist(&mut self) -> Result<bool, String> {
+        match self {
+            Self::Memory(_) => Ok(false),
+            Self::Durable(profile) => {
+                profile.checkpoint().map_err(preserved)?;
+                Ok(true)
+            }
+        }
+    }
+    fn ready(&self) -> Result<(), String> {
+        if matches!(self, Self::Durable(profile) if profile.needs_reopen()) {
+            Err("replay publication uncertain; reopen the retained profile".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl Context {
-    fn load(args: &[OsString]) -> Result<Self, String> {
+    fn load(args: &[OsString], profile: Option<&Path>) -> Result<Self, String> {
         let pin = super::hex32(args[4].to_str().ok_or("invalid bootstrap pin")?)?;
-        let raw = super::bytes(Path::new(&args[3]), MAX_BOOTSTRAP_BYTES)?;
+        let room =
+            RoomGenesisId::from_bytes(super::hex32(args[8].to_str().ok_or("invalid room ID")?)?);
+        Self::load_paths(
+            Path::new(&args[3]),
+            pin,
+            Path::new(&args[5]),
+            room,
+            profile.map(|path| (path, false)),
+        )
+    }
+    fn load_paths(
+        bootstrap_path: &Path,
+        pin: [u8; 32],
+        journal_path: &Path,
+        room_id: RoomGenesisId,
+        profile: Option<(&Path, bool)>,
+    ) -> Result<Self, String> {
+        let started = Instant::now();
+        let raw = super::bytes(bootstrap_path, MAX_BOOTSTRAP_BYTES)?;
         let bootstrap = Bootstrap::decode(&raw, pin)
             .map_err(|e| format!("independently pinned bootstrap: {e:?}"))?;
-        let client =
-            CertifiedClient::new(bootstrap, pin).map_err(|e| format!("certified client: {e:?}"))?;
+        let genesis = CertifiedClient::new(bootstrap.clone(), pin)
+            .map_err(|e| format!("certified genesis: {e:?}"))?;
+        let commitment = genesis.frontier().commitment();
         let room = RoomScope {
-            network: client.network_id(),
-            realm: client.registry().realm(),
-            directory: client.registry().directory(),
-            room: RoomGenesisId::from_bytes(super::hex32(
-                args[8].to_str().ok_or("invalid room ID")?,
-            )?),
+            network: genesis.network_id(),
+            realm: genesis.registry().realm(),
+            directory: genesis.registry().directory(),
+            room: room_id,
         };
-        let journal =
-            Journal::with_genesis(Path::new(&args[5]), FsStore, client.frontier().commitment());
-        let head = history_head(&client, [0; 32])?;
-        Ok(Self {
+        let client = if let Some((path, create)) = profile {
+            let profile = if create {
+                NativeReplay::create_new(path, bootstrap, pin)
+            } else {
+                NativeReplay::open(path, bootstrap, pin)
+            }
+            .map_err(preserved)?;
+            Replica::Durable(profile)
+        } else {
+            Replica::Memory(genesis)
+        };
+        let head = history_head(&client, client.checkpoint_head().bundle_id())?;
+        let journal = Journal::with_genesis(journal_path, FsStore, commitment);
+        let out = Self {
             client,
             head,
             journal,
             room,
-        })
+            started,
+        };
+        out.check_checkpoint()?;
+        Ok(out)
     }
-
-    // Replay exact immutable journal bytes and compare the retained checkpoint
-    // at its height. A larger observed height alone is never proof of extension.
+    fn check_checkpoint(&self) -> Result<(), String> {
+        let frontier = self.client.frontier();
+        if frontier.height == 0 {
+            return Ok(());
+        }
+        let page = self
+            .journal
+            .read_published_range(PublishedRange {
+                after_height: frontier.height - 1,
+                expected_predecessor: None,
+                max_bundles: 1,
+                max_bytes: MAX_PUBLISHED_PAGE_BYTES,
+            })
+            .map_err(|e| format!("checkpoint journal evidence: {e}"))?;
+        let bundle = page
+            .bundles()
+            .first()
+            .ok_or("checkpoint journal bundle is missing")?;
+        if bundle.height() != frontier.height
+            || bundle.id() != self.head.bundle_id()
+            || bundle.next() != frontier.commitment()
+        {
+            return Err(
+                "checkpoint differs from exact retained published journal evidence; preserve both"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
     fn replay(&mut self, retained: Option<HistoryHead>) -> Result<(), String> {
-        let deadline = Instant::now() + REPLAY_TIMEOUT;
-        let mut matched = retained.is_none() || retained == Some(self.head);
+        if self.replay_step(retained)? {
+            Ok(())
+        } else {
+            Err("bounded replay progress saved; repeat with the same replay profile; no authoring authorized yet".into())
+        }
+    }
+    // Each call verifies only a bounded prefix. A successful More outcome means
+    // the prefix is durable, never that the final policy frontier is current.
+    fn replay_step(&mut self, retained: Option<HistoryHead>) -> Result<bool, String> {
+        let deadline = self.started + REPLAY_TIMEOUT;
+        if let Some(head) = retained {
+            if head.scope() != self.head.scope() {
+                return Err("retained author bootstrap differs from replay profile".into());
+            }
+            let frontier = head.frontier();
+            self.client.require_anchor(
+                CheckpointHead::new(
+                    vhalla_rooms_consensus::Frontier {
+                        height: frontier.height,
+                        value: frontier.value,
+                        registry: frontier.registry,
+                        social: frontier.social,
+                        control: frontier.control,
+                        time: frontier.time,
+                    },
+                    head.bundle_id(),
+                )
+                .map_err(|e| format!("retained anchor: {e:?}"))?,
+            )?;
+        }
         let mut target = None;
         let mut replayed = 0usize;
         loop {
             if Instant::now() >= deadline || replayed >= MAX_REPLAY_BUNDLES {
-                return Err("certified replay budget exhausted; no authoring authorized; retained state is preserved".into());
+                if !self.client.persist()? {
+                    return Err("certified replay budget exhausted; use an explicitly created replay profile for durable continuation; no authoring authorized".into());
+                }
+                // Snapshot work is included in the cooperative budget. Crossing
+                // it still yields only More, after successful durable publication.
+                let _snapshot_exhausted_budget = Instant::now() >= deadline;
+                return Ok(false);
             }
             let frontier = self.client.frontier();
             let remaining = target.map_or(32, |pin: vhalla_journal::Pin| {
@@ -104,41 +254,34 @@ impl Context {
                 return Err("published journal moved backward; preserve state".into());
             }
             for bundle in page.bundles() {
-                if bundle.height() > observed.height {
+                if bundle.height() > observed.height || Instant::now() >= deadline {
                     break;
                 }
-                if Instant::now() >= deadline {
-                    return Err(
-                        "certified replay deadline exhausted; no authoring authorized".into(),
-                    );
-                }
-                let candidate = self
-                    .client
-                    .prepare(self.client.network_id(), bundle.bytes())
-                    .map_err(|e| format!("certificate/application replay: {e:?}"))?;
-                // These exact canonical bytes were read from the published journal.
-                self.client
-                    .commit_after_persist(candidate)
-                    .map_err(|e| format!("certified replay commit: {e:?}"))?;
+                self.client.apply(bundle.bytes())?;
                 self.head = history_head(&self.client, bundle.id())?;
                 replayed += 1;
-                if retained
-                    .is_some_and(|head| head.frontier().height == self.head.frontier().height)
-                {
-                    if retained != Some(self.head) {
-                        return Err("retained author policy checkpoint conflicts with this journal; preserve both".into());
-                    }
-                    matched = true;
-                }
             }
             if self.client.frontier().height == observed.height {
                 if self.client.frontier().commitment() != observed.next
                     || self.head.bundle_id() != observed.bundle
-                    || !matched
+                    || !self.client.anchor_matched()
                 {
                     return Err("journal does not establish the retained policy history and observed frontier".into());
                 }
-                return self.check_current();
+                // Check before and after potentially expensive snapshot work;
+                // final authoring still requires a fresh exact local HEAD check.
+                let expired_before_save = Instant::now() >= deadline;
+                let durable = self.client.persist()?;
+                if expired_before_save || Instant::now() >= deadline {
+                    if durable {
+                        return Ok(false);
+                    }
+                    return Err(
+                        "certified replay deadline exhausted; no authoring authorized".into(),
+                    );
+                }
+                self.check_current()?;
+                return Ok(true);
             }
             if page.bundles().is_empty() {
                 return Err("certified replay made no progress; no authoring authorized".into());
@@ -147,6 +290,7 @@ impl Context {
     }
 
     fn check_current(&self) -> Result<(), String> {
+        self.client.ready()?;
         let frontier = self.client.frontier();
         let page = self
             .journal
@@ -287,21 +431,96 @@ fn export(store: &NativeOutbox, scope: RoomScope, after: u64, path: &Path) -> Re
     Ok(())
 }
 
+fn run_replay_profile(args: &[OsString]) -> Result<(), String> {
+    if args.len() != 7 {
+        return Err(HELP.into());
+    }
+    let create = args[2] == "replay-init";
+    let pin = super::hex32(args[4].to_str().ok_or("invalid bootstrap pin")?)?;
+    let mut context = Context::load_paths(
+        Path::new(&args[3]),
+        pin,
+        Path::new(&args[5]),
+        RoomGenesisId::from_bytes([0; 32]),
+        Some((Path::new(&args[6]), create)),
+    )?;
+    if context.client.retained_anchor().is_some() {
+        return Err("this profile has a retained author anchor; use activity catch-up with its exact outbox and --replay-profile; bare replay-step cannot advance it".into());
+    }
+    let from = context.client.frontier().height;
+    let status = if create {
+        // Leave genesis unadvanced so an existing outbox can supply its exact
+        // required ancestry before the first journal bundle is consumed.
+        "replay-profile-created"
+    } else if context.replay_step(None)? {
+        "caught-up-local-journal"
+    } else {
+        "more"
+    };
+    println!("status {status}");
+    println!("replayed-from {from}");
+    println!("durable-height {}", context.head.frontier().height);
+    println!("bundle-id {}", super::hex(&context.head.bundle_id()));
+    println!("elapsed-ms {}", context.started.elapsed().as_millis());
+    println!("authoring not-authorized-by-profile-command");
+    Ok(())
+}
+
 pub fn run(args: &[OsString]) -> Result<(), String> {
-    let command = args.get(2).and_then(|arg| arg.to_str()).ok_or(HELP)?;
+    let (args, profile) = if args.len() >= 2 && args[args.len() - 2] == "--replay-profile" {
+        (
+            &args[..args.len() - 2],
+            Some(Path::new(&args[args.len() - 1])),
+        )
+    } else {
+        (args, None)
+    };
+    let command = args
+        .get(2)
+        .and_then(|arg| arg.to_str())
+        .ok_or_else(|| format!("{HELP}\n{}", network::HELP))?;
+    if matches!(command, "replay-init" | "replay-step") {
+        if profile.is_some() {
+            return Err(HELP.into());
+        }
+        return run_replay_profile(args);
+    }
+    if matches!(command, "peer-add" | "send" | "read") {
+        if profile.is_some() {
+            return Err("replay profiles apply to local authoring; send/read operate only on existing signed evidence".into());
+        }
+        return network::run(args);
+    }
     let count = match command {
-        "init" | "resume" => 9,
+        "init" | "resume" | "catch-up" => 9,
         "reserve" | "queue" => 10,
         "outbox" => 11,
-        _ => return Err(HELP.into()),
+        _ => return Err(format!("{HELP}\n{}", network::HELP)),
     };
     if args.len() != count {
         return Err(HELP.into());
     }
-    let mut context = Context::load(args)?;
+    if command == "catch-up" && profile.is_none() {
+        return Err("catch-up requires --replay-profile PROFILE".into());
+    }
+    let mut context = Context::load(args, profile)?;
     if command == "init" {
-        context.replay(None)?;
+        if let Some((anchor, matched)) = context.client.retained_anchor() {
+            if !matched || anchor != context.client.checkpoint_head() {
+                return Err("anchored replay profile belongs to an existing author workflow; init cannot replace its anchor; use catch-up with the exact outbox".into());
+            }
+            context.check_current().map_err(|_| "anchored replay profile cannot advance during init; use catch-up with the exact existing outbox, or a separately created profile for a new author")?;
+        } else {
+            context.replay(None)?;
+        }
         context.policy()?;
+        let anchor = context.client.checkpoint_head();
+        context.client.require_anchor(anchor)?;
+        context.client.persist()?;
+        if context.started.elapsed() >= REPLAY_TIMEOUT {
+            return Err("policy checkpoint saved after the replay budget; retry init before creating an author".into());
+        }
+        context.check_current()?;
         // Identity::create_new refuses every existing key directory. If creation
         // or outbox publication is interrupted, retain both paths; never reuse
         // the surviving key to assert an absent author state means sequence zero.
@@ -342,6 +561,12 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         store
             .advance_history(retained, context.head)
             .map_err(preserved)?;
+    }
+    if command == "catch-up" {
+        println!("status caught-up-local-journal");
+        println!("policy-height {}", context.head.frontier().height);
+        println!("authoring not-signed-by-catch-up");
+        return Ok(());
     }
     let pending = store.load_pending().map_err(preserved)?;
     if command == "resume" {

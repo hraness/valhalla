@@ -1,5 +1,5 @@
 //! IndexedDB append-only history. Stored metadata remains untrusted until replay.
-use super::{storage, EventCallback, IndexedStorage, OBJECT_STORE};
+use super::{durability, storage, EventCallback, IndexedStorage, OBJECT_STORE};
 use crate::{
     history::{
         append_check, page_bounds, page_record, prefix, record_key, HistoryHead, HistoryPage,
@@ -14,9 +14,7 @@ use std::{
     rc::Rc,
 };
 use wasm_bindgen::{closure::Closure, JsCast, JsValue};
-use web_sys::{
-    Event, IdbDatabase, IdbKeyRange, IdbObjectStore, IdbRequest, IdbTransaction, IdbTransactionMode,
-};
+use web_sys::{Event, IdbDatabase, IdbKeyRange, IdbObjectStore, IdbRequest, IdbTransaction};
 
 pub(super) fn bounded(value: JsValue, maximum: usize) -> Result<Option<Vec<u8>>, Error> {
     if value.is_undefined() {
@@ -146,14 +144,7 @@ pub(super) async fn transaction<T: 'static>(
     write: bool,
     setup: impl FnOnce(&Rc<Transaction<T>>) -> Result<(), Error>,
 ) -> Result<T, Error> {
-    let mode = if write {
-        IdbTransactionMode::Readwrite
-    } else {
-        IdbTransactionMode::Readonly
-    };
-    let transaction = database
-        .transaction_with_str_and_mode(OBJECT_STORE, mode)
-        .map_err(storage)?;
+    let transaction = durability::begin(database, write)?;
     let store = match transaction.object_store(OBJECT_STORE) {
         Ok(store) => store,
         Err(error) => {

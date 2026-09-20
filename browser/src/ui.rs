@@ -514,12 +514,18 @@ async fn finish_unlock(app: &App, token: Token, raw: Vec<u8>, public: Vec<u8>) {
         fail(app, "Local storage is unavailable. Reload before retrying.");
         return;
     };
-    // Even an unchanged envelope compares the exact vault/provenance pair. Only
-    // the CSPRNG worker creation request may create birth metadata; unlock and
-    // restore preserve its presence or absence, including on an empty profile.
+    // An unchanged authenticated vault needs an exact readonly pair check, so
+    // storage pressure cannot make its existing key unavailable for export.
+    // Creation and changed same-key backup imports still require write CAS.
+    let unchanged = !created && previous.vault() == Some(&next);
     let result = cancellable(cancel, async {
         if created {
             storage.create_local_identity(&next).await
+        } else if unchanged {
+            storage
+                .revalidate_identity(&previous)
+                .await
+                .map_err(vhalla_browser_storage::PublishError::ReopenRequired)
         } else {
             storage.replace_identity(&previous, &next).await
         }
@@ -538,14 +544,18 @@ async fn finish_unlock(app: &App, token: Token, raw: Vec<u8>, public: Vec<u8>) {
         }
         status(
             app,
-            "Identity unlocked and encrypted backup saved locally. Download and verify an independent backup.",
+            if unchanged {
+                "Identity unlocked from its saved encrypted backup. Download and verify an independent backup."
+            } else {
+                "Identity unlocked and encrypted backup saved locally. Download and verify an independent backup."
+            },
             false,
         );
         render(app);
     } else {
         fail(
             app,
-            "Storage changed or the write was interrupted. Reload to reconcile it. No successful save has been claimed.",
+            "Storage changed or the identity check was interrupted. Reload to reconcile it. Identity remains locked; no successful save has been claimed.",
         );
     }
 }

@@ -635,3 +635,189 @@ fn rotation_uses_the_pinned_active_set_at_each_exact_height() {
     replica.commit_after_persist(candidate).unwrap();
     assert_eq!(replica.frontier().height, 2);
 }
+
+fn checkpoint_resign(raw: &mut [u8], key: &[u8; 32]) {
+    use hmac::{Hmac, Mac};
+    let split = raw.len() - 32;
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+    mac.update(b"vhalla/local-certified-checkpoint/v1\0");
+    mac.update(&raw[..split]);
+    raw[split..].copy_from_slice(&mac.finalize().into_bytes());
+}
+
+#[test]
+fn checkpoint_restores_exact_state_and_matched_ancestry_then_continues() {
+    use crate::checkpoint::AuthenticatedCheckpoint;
+    let plan = fixture::plan(3, 3, 4);
+    let boot = bootstrap(plan.genesis.clone());
+    let mut replica = client(boot.clone());
+    let first = bundle(&plan.batches[&1], &plan.genesis.policy);
+    let candidate = replica
+        .prepare(replica.network_id(), first.bytes())
+        .unwrap();
+    replica.commit_after_persist(candidate).unwrap();
+    let anchor = replica.checkpoint_head();
+    replica.require_anchor(anchor).unwrap();
+    let second = bundle(&plan.batches[&2], &plan.genesis.policy);
+    let candidate = replica
+        .prepare(replica.network_id(), second.bytes())
+        .unwrap();
+    replica.commit_after_persist(candidate).unwrap();
+    let raw = replica
+        .checkpoint_image()
+        .unwrap()
+        .seal(&[71; 32], 12, [14; 32]);
+    let authenticated =
+        AuthenticatedCheckpoint::open(&raw, &[71; 32], boot.network_id(), boot.pin()).unwrap();
+    assert_eq!(authenticated.generation(), 12);
+    assert_eq!(authenticated.previous(), [14; 32]);
+    let mut restored = authenticated.restore(boot.clone(), boot.pin()).unwrap();
+    assert_eq!(restored.checkpoint_head(), replica.checkpoint_head());
+    assert_eq!(restored.archive().snapshot(), replica.archive().snapshot());
+    assert_eq!(
+        restored.registry().snapshot(),
+        replica.registry().snapshot()
+    );
+    assert_eq!(restored.retained_anchor(), Some((anchor, true)));
+    restored.require_anchor(anchor).unwrap();
+    let third = bundle(&plan.batches[&3], &plan.genesis.policy);
+    let candidate = restored
+        .prepare(restored.network_id(), third.bytes())
+        .unwrap();
+    restored.commit_after_persist(candidate).unwrap();
+    assert_eq!(restored.frontier(), next(&plan.batches[&3]));
+    let wrong = checkpoint::CheckpointHead::new(anchor.frontier(), [72; 32]).unwrap();
+    assert_eq!(restored.require_anchor(wrong), Err(Error::Anchor));
+}
+
+#[test]
+fn checkpoint_anchor_rejects_before_persist_and_binds_candidate_revision() {
+    let plan = fixture::plan(1, 1, 4);
+    let boot = bootstrap(plan.genesis.clone());
+    let first = bundle(&plan.batches[&1], &plan.genesis.policy);
+    let mut replica = client(boot.clone());
+    let wrong = checkpoint::CheckpointHead::new(next(&plan.batches[&1]), [42; 32]).unwrap();
+    replica.require_anchor(wrong).unwrap();
+    assert_prepare_error(&replica, first.bytes(), Error::Anchor);
+    assert!(!replica.anchor_matched());
+    let mut replica = client(boot);
+    let before = replica.checkpoint_head();
+    let candidate = replica
+        .prepare(replica.network_id(), first.bytes())
+        .unwrap();
+    replica.require_anchor(before).unwrap();
+    assert_eq!(
+        replica.commit_after_persist(candidate),
+        Err(Error::StaleCandidate)
+    );
+    assert_eq!(replica.checkpoint_head(), before);
+}
+
+#[test]
+fn checkpoint_authentication_scope_and_bounds_precede_restore() {
+    use crate::checkpoint::{AuthenticatedCheckpoint, CHECKPOINT_HEADER_BYTES};
+    let boot = bootstrap(fixture::scenario(1, 1).genesis);
+    let replica = client(boot.clone());
+    let key = [52; 32];
+    let raw = replica.checkpoint_image().unwrap().seal(&key, 0, [0; 32]);
+    for at in [8, 16, 48, 80, CHECKPOINT_HEADER_BYTES + 8, raw.len() - 1] {
+        let mut bad = raw.clone();
+        bad[at] ^= 1;
+        assert!(AuthenticatedCheckpoint::open(&bad, &key, boot.network_id(), boot.pin()).is_err());
+    }
+    assert!(AuthenticatedCheckpoint::open(&raw, &[53; 32], boot.network_id(), boot.pin()).is_err());
+    assert!(AuthenticatedCheckpoint::open(&raw, &key, [1; 32], boot.pin()).is_err());
+    assert!(AuthenticatedCheckpoint::open(&raw, &key, boot.network_id(), [1; 32]).is_err());
+    let mut bad = raw.clone();
+    bad[112..120].copy_from_slice(&u64::MAX.to_be_bytes());
+    assert!(matches!(
+        AuthenticatedCheckpoint::open(&bad, &key, boot.network_id(), boot.pin()),
+        Err(Error::Bounds)
+    ));
+    assert!(AuthenticatedCheckpoint::open(
+        &raw[..raw.len() - 1],
+        &key,
+        boot.network_id(),
+        boot.pin()
+    )
+    .is_err());
+    let mut bad = raw;
+    bad.push(0);
+    assert!(AuthenticatedCheckpoint::open(&bad, &key, boot.network_id(), boot.pin()).is_err());
+}
+
+#[test]
+fn checkpoint_checked_restore_rejects_forged_genesis_and_noncanonical_registry() {
+    use crate::checkpoint::{AuthenticatedCheckpoint, CHECKPOINT_HEADER_BYTES};
+    let boot = bootstrap(fixture::plan(3, 3, 4).genesis);
+    let replica = client(boot.clone());
+    let key = [61; 32];
+    let raw = replica.checkpoint_image().unwrap().seal(&key, 0, [0; 32]);
+    let mut bad = raw.clone();
+    bad[CHECKPOINT_HEADER_BYTES + 8] ^= 1;
+    checkpoint_resign(&mut bad, &key);
+    let token = AuthenticatedCheckpoint::open(&bad, &key, boot.network_id(), boot.pin()).unwrap();
+    assert!(matches!(
+        token.restore(boot.clone(), boot.pin()),
+        Err(Error::Checkpoint)
+    ));
+
+    // Registry restore normalizes eligibility ordering. Its resulting semantic
+    // digest is still correct, so canonical equality is a necessary extra guard.
+    let length_at = CHECKPOINT_HEADER_BYTES + 176 + 1;
+    let len = u32::from_be_bytes(raw[length_at..length_at + 4].try_into().unwrap()) as usize;
+    let start = length_at + 4;
+    let mut bad = raw;
+    let registry = &mut bad[start..start + len];
+    let count = u32::from_be_bytes(registry[102..106].try_into().unwrap());
+    assert!(count >= 2);
+    for index in 0..32 {
+        registry.swap(106 + index, 138 + index);
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"vhalla/rooms/registry-snapshot/v1\0");
+    hash.update(&registry[8..len - 32]);
+    registry[len - 32..].copy_from_slice(&hash.finalize());
+    assert_eq!(
+        Registry::restore(registry).unwrap().digest(),
+        replica.registry().digest()
+    );
+    checkpoint_resign(&mut bad, &key);
+    let token = AuthenticatedCheckpoint::open(&bad, &key, boot.network_id(), boot.pin()).unwrap();
+    assert!(matches!(
+        token.restore(boot.clone(), boot.pin()),
+        Err(Error::Checkpoint)
+    ));
+}
+
+#[test]
+fn checkpoint_scratch_classifier_preserves_impossible_prefixes() {
+    use crate::checkpoint::{incomplete_successor, CHECKPOINT_HEADER_BYTES};
+    let boot = bootstrap(fixture::scenario(1, 1).genesis);
+    let replica = client(boot.clone());
+    let raw = replica
+        .checkpoint_image()
+        .unwrap()
+        .seal(&[88; 32], 1, [9; 32]);
+    for prefix in 0..raw.len() {
+        assert_eq!(
+            incomplete_successor(&raw[..prefix], boot.network_id(), boot.pin(), 1, [9; 32]),
+            Ok(true),
+            "prefix {prefix}"
+        );
+    }
+    assert_eq!(
+        incomplete_successor(&raw, boot.network_id(), boot.pin(), 1, [9; 32]),
+        Ok(false)
+    );
+    for at in [
+        112,
+        CHECKPOINT_HEADER_BYTES + 176,
+        CHECKPOINT_HEADER_BYTES + 177,
+    ] {
+        let mut bad = raw[..at + 1].to_vec();
+        bad[at] = 255;
+        assert!(incomplete_successor(&bad, boot.network_id(), boot.pin(), 1, [9; 32]).is_err());
+    }
+    assert!(incomplete_successor(&raw[..17], boot.network_id(), boot.pin(), 2, [9; 32]).is_err());
+}

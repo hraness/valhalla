@@ -392,7 +392,7 @@ fn every_advertisement_prefix_keeps_the_reserved_sequence_and_prior_evidence() {
     let proposed = peer
         .peer
         .identity
-        .sign_public_advertisement(scope.unsigned_ad(reserved).unwrap())
+        .sign_public_advertisement(scope.unsigned_ad(reserved, Capabilities::READ).unwrap())
         .unwrap()
         .encode();
     drop(peer);

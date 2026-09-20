@@ -398,7 +398,9 @@ room posting path separately. Keep the issuer's private `RoomSession` local:
 
 ```sh
 clankdar-attest exchange challenges SESSION.json --out challenges.parts.json
-clankdar-attest exchange responses RESPONSES.json --out responses.parts.json
+# PUBLIC_CHALLENGES.json is the selected collected artifact, not its parts bundle.
+clankdar-attest exchange responses RESPONSES.json \
+  --challenges PUBLIC_CHALLENGES.json --out responses.parts.json
 clankdar-attest exchange admission ADMISSION.json --out admission.parts.json
 ```
 
@@ -411,9 +413,40 @@ policy/session times. Ticket seeds, expected answers, private pools and unknown
 extra fields are never copied; a held-out marker retains only its public
 `poolKey`. Public prompt/subject/context text remains public text supplied by the
 issuer, so inspect it before sharing. Response input is the existing
-`{"att_challengeId":"exact answer"}` map accepted by `rooms submit`: at most
-16 unique challenge IDs, with answer bytes preserved, including an empty map for
-an unanswered session. Admission packing checks the signature under the
+`{"att_challengeId":"exact answer"}` map: at most 16 unique selected challenge
+IDs, preserving answer bytes, including an empty map. The recommended
+`--challenges` workflow wraps that map in `clankdar-room-responses/1`, binding the
+session ID and SHA-256 of the **exact selected public-challenge artifact bytes**.
+Empty responses to different sessions therefore remain distinct. Re-encoding
+otherwise equivalent challenge JSON changes the hash and requires a new response
+artifact. Selection checks protocol, kind, policy count, session/deadline
+consistency and duplicate/unknown fields; it neither trusts the self-declared
+issuer nor establishes freshness or a correct answer. Save the exact selected
+artifact alongside the response.
+
+After collecting a response artifact, extract a map for the existing local
+`rooms submit` command only against that same selected challenge artifact:
+
+```sh
+clankdar-attest exchange response-map responses.collected.json \
+  --challenges PUBLIC_CHALLENGES.json --out responses.checked.json
+# Submit the checked map with the same issuer-local session:
+clankdar-attest rooms submit --key KEY.json --session SESSION.json \
+  --responses responses.checked.json --out ADMISSION.json --clankdar DIR
+```
+
+The extraction report records the selected session and challenge digest. The
+plain extracted map does not carry that binding: the issuer must select its
+matching private session, and unknown response IDs remain refused by submission.
+No check executes, signs, scores or submits anything automatically.
+
+Legacy `exchange responses MAP.json --out PARTS.json` remains byte-compatible
+at the artifact level and labels its report `unbound_legacy`. A bare map has no
+session binding, especially when empty. Reading it through `response-map`
+requires explicit `--unbound-legacy` instead of `--challenges`; that mode never
+reports correlated evidence. Bound envelopes cannot fall back to legacy mode.
+
+Admission packing checks the signature under the
 artifact's self-declared issuer key; that key is independently unpinned, and this
 step does not check its policy or solve. Signed admissions intentionally reveal
 receipt seeds and expected answers needed for replay; private issuance sessions
@@ -445,7 +478,8 @@ Incomplete, mismatched or invalid inputs leave the final output absent and retai
 the input evidence. The JSON attribution report on stdout records the checked
 scope, sharer and digest; it is a local report, not another signed receipt.
 
-The limits are 1 MiB for private source sessions, 256 KiB per public artifact,
+The limits are 1 MiB for private source sessions, 256 KiB per public artifact
+(including selected challenge bytes and the whole response envelope),
 2,800 raw bytes per Text part and 94 parts or selected input frames. Reads refuse
 symlinks and special files and are bounded before parsing. No directory scan,
 URL fetching, implicit key loading, second subject key or answer execution occurs.

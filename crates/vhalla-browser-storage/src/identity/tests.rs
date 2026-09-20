@@ -92,6 +92,31 @@ impl Handle {
     fn new() -> Self {
         Self(Access::Ready)
     }
+    fn revalidate(
+        &mut self,
+        disk: &IdentitySnapshot,
+        expected: &IdentitySnapshot,
+        outcome: Outcome,
+    ) -> Option<Result<IdentitySnapshot, Error>> {
+        if let Err(error) = self.0.begin() {
+            return Some(Err(error));
+        }
+        let observed = match revalidated(expected, disk) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.0 = Access::NeedsReopen;
+                return Some(Err(error));
+            }
+        };
+        match outcome {
+            Outcome::Abort => {
+                self.0 = Access::NeedsReopen;
+                Some(Err(Error::Storage))
+            }
+            Outcome::CancelBeforeCommit | Outcome::CancelAfterCommit => None,
+            Outcome::Complete => Some(self.0.completed().map(|()| observed)),
+        }
+    }
     fn publish(
         &mut self,
         disk: &mut IdentitySnapshot,
@@ -231,4 +256,79 @@ fn author_initialization_checks_exact_birth_vault_key_and_absent_namespace() {
         Err(Error::Stale)
     );
     assert_eq!(fresh_author_check(&newer, &newer, public, false), Ok(()));
+}
+
+#[test]
+fn unchanged_unlock_survives_rejected_writes_without_creating_or_changing_provenance() {
+    for identity in [
+        created(&vault(0)).unwrap(),
+        replaced(&IdentitySnapshot::empty(), &vault(0)).unwrap(),
+    ] {
+        let mut disk = identity.clone();
+        // Model storage pressure: publication aborts, but the retained pair is
+        // still readable. This tests our decision/receipt model, not IDB quota.
+        assert_eq!(
+            Handle::new().publish(&mut disk, &identity, &vault(0), false, Outcome::Abort),
+            Some(Err(PublishError::ReopenRequired(Error::Storage)))
+        );
+        assert!(disk == identity);
+        let mut reopened = Handle::new();
+        let result = reopened
+            .revalidate(&disk, &identity, Outcome::Complete)
+            .unwrap()
+            .unwrap();
+        assert!(result == identity);
+        assert!(disk == identity);
+        assert_eq!(result.birth_bytes(), identity.birth_bytes());
+        assert_eq!(reopened.0.ready(), Ok(()));
+    }
+}
+
+#[test]
+fn readonly_unlock_refuses_changed_ciphertext_provenance_and_absent_identity() {
+    let expected = created(&vault(0)).unwrap();
+    for observed in [
+        replaced(&expected, &vault(1)).unwrap(),
+        replaced(&IdentitySnapshot::empty(), &vault(0)).unwrap(),
+        IdentitySnapshot::empty(),
+    ] {
+        let preserved = observed.clone();
+        let mut handle = Handle::new();
+        assert!(matches!(
+            handle.revalidate(&observed, &expected, Outcome::Complete),
+            Some(Err(Error::Stale))
+        ));
+        assert!(observed == preserved);
+        assert_eq!(handle.0.ready(), Err(Error::NeedsReopen));
+    }
+    let absent = IdentitySnapshot::empty();
+    assert!(matches!(
+        Handle::new().revalidate(&absent, &absent, Outcome::Complete),
+        Some(Err(Error::RecoveryRequired))
+    ));
+}
+
+#[test]
+fn readonly_unlock_never_acknowledges_abort_or_cancellation() {
+    let disk = created(&vault(0)).unwrap();
+    for outcome in [
+        Outcome::Abort,
+        Outcome::CancelBeforeCommit,
+        Outcome::CancelAfterCommit,
+    ] {
+        let mut handle = Handle::new();
+        assert!(!matches!(
+            handle.revalidate(&disk, &disk, outcome),
+            Some(Ok(_))
+        ));
+        assert_eq!(handle.0.ready(), Err(Error::NeedsReopen));
+        assert!(!matches!(
+            handle.revalidate(&disk, &disk, Outcome::Complete),
+            Some(Ok(_))
+        ));
+        assert!(matches!(
+            Handle::new().revalidate(&disk, &disk, Outcome::Complete),
+            Some(Ok(_))
+        ));
+    }
 }

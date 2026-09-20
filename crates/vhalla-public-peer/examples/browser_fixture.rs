@@ -2,10 +2,16 @@
 //! public test data; never use this bootstrap or its journal as a live network.
 //! Native custody peer keys are freshly generated and are never printed.
 //!
-//! Usage: browser_fixture NEW_HOME [--create-only]
+//! Usage: browser_fixture NEW_HOME [--create-only] [--public-posting]
 //! The home must never already exist. HTTP listeners are fixed to loopback
 //! 9781/9782 and require the separately operated test proxy. No TLS, DNS, public
-//! networking, validators or application write endpoints are activated here.
+//! networking or validators are activated here. By default both peers are READ.
+//! --public-posting adds a second certified open room and fresh bounded activity
+//! stores for BOTH rooms on BOTH peers, enabling local test-only POST endpoints.
+//! --create-only never starts listeners, with or without --public-posting.
+//! Posting uses five deterministic eligible support sources to fund both rooms,
+//! so its bootstrap/pin differs from the one-room READ fixture.
+//! No existing fixture home can be upgraded or reused.
 //! Serving seeds both optional discovery registries through real loopback HTTP
 //! challenge/work/registration; signed route metadata confers no extra authority.
 #![forbid(unsafe_code)]
@@ -21,8 +27,12 @@ mod native {
     use vhalla_identity::Identity;
     use vhalla_journal::{Bundle, BundleParts, FsStore, Journal};
     use vhalla_public_client::{Bootstrap, CertifiedClient, Validator, ValidatorActivation};
-    use vhalla_public_peer::{Config, CorsOrigin, DiscoveryConfig, ManagedPeer};
+    use vhalla_public_peer::{
+        ActivityConfig, ActivityRoomConfig, Config, CorsOrigin, DiscoveryConfig, ManagedPeer,
+    };
     use vhalla_public_protocol::{response::hex, Endpoint};
+    use vhalla_room_activity::RoomScope;
+    use vhalla_room_activity_store::{Limits as ActivityLimits, Store as ActivityStore};
     use vhalla_rooms::{RoomUpdate, Slug, UpdateAction};
     use vhalla_rooms_consensus::{fixture, Batch, Frontier};
     use vhalla_rooms_node::{Address, PublicKey};
@@ -102,13 +112,27 @@ mod native {
             .map_err(debug_error)
     }
 
-    pub fn run(args: Vec<OsString>) -> Result<(), String> {
-        if args.is_empty() || args.len() > 2 || (args.len() == 2 && args[1] != "--create-only") {
-            return Err(
-                "usage: browser_fixture NEW_HOME [--create-only]; NEW_HOME must not exist".into(),
-            );
+    fn options(args: &[OsString]) -> Result<(bool, bool), String> {
+        let mut create_only = false;
+        let mut public_posting = false;
+        let usage = "usage: browser_fixture NEW_HOME [--create-only] [--public-posting]; NEW_HOME must not exist";
+        if args.is_empty() || args.len() > 3 {
+            return Err(usage.into());
         }
-        let create_only = args.len() == 2;
+        for flag in &args[1..] {
+            if flag == "--create-only" && !create_only {
+                create_only = true;
+            } else if flag == "--public-posting" && !public_posting {
+                public_posting = true;
+            } else {
+                return Err(usage.into());
+            }
+        }
+        Ok((create_only, public_posting))
+    }
+
+    pub fn run(args: Vec<OsString>) -> Result<(), String> {
+        let (create_only, public_posting) = options(&args)?;
         let home = vhalla_custody::absolute(Path::new(&args[0])).map_err(debug_error)?;
         let (directory, _uid) = vhalla_custody::create_private_directory(&home).map_err(|e| {
             format!("fresh fixture home required; never reuse existing paths: {e:?}")
@@ -121,7 +145,10 @@ mod native {
         let keys: Vec<_> = (101..=104)
             .map(|seed| SigningKey::from_bytes(&[seed; 32]))
             .collect();
-        let mut scenario = fixture::scenario(1, 1);
+        // The second room costs four additional credits. Distinct eligible
+        // support sources satisfy the existing per-source/epoch award rules;
+        // no test bypass or policy weakening. READ genesis stays byte identical.
+        let mut scenario = fixture::scenario(1, if public_posting { 5 } else { 1 });
         let bootstrap = Bootstrap::from_genesis(
             scenario.genesis.clone(),
             vec![ValidatorActivation {
@@ -146,7 +173,7 @@ mod native {
             client.frontier().commitment(),
         );
         let mut cursor = 0;
-        let (evidence, records, _grant) = fixture::first_create(
+        let (evidence, records, grant) = fixture::first_create(
             &scenario.app,
             &scenario.owners[0],
             &mut scenario.sources,
@@ -210,6 +237,87 @@ mod native {
         {
             return Err("fixture did not replay to certified public-open room".into());
         }
+        // Extend only the explicitly selected new posting fixture. The default
+        // READ bootstrap, two bundle bytes and metadata remain unchanged.
+        let second_room = if public_posting {
+            let (evidence, records) = fixture::next_create(
+                &scenario.app,
+                &scenario.owners[0],
+                grant,
+                &mut scenario.sources,
+                &mut cursor,
+                "public-workshop",
+                3,
+            );
+            let checked = scenario
+                .app
+                .prepare(300, evidence, records, None)
+                .map_err(debug_error)?;
+            let third = bundle(
+                checked.batch(),
+                checked.next(),
+                *scenario.genesis.policy.id().as_bytes(),
+                &keys[..3],
+            )?;
+            publish(&journal, &mut client, &third)?;
+            scenario.app.apply_locally(checked);
+            let room = scenario
+                .app
+                .registry()
+                .room(&Slug::new("public-workshop").map_err(debug_error)?)
+                .ok_or("second fixture room missing")?;
+            let second_genesis = room.genesis();
+            let update = RoomUpdate {
+                directory: scenario.genesis.directory,
+                realm: scenario.genesis.realm,
+                genesis: second_genesis,
+                previous: room.head(),
+                owner: scenario.owners[0].id,
+                social_control: scenario.owners[0].head,
+                controller_key: scenario.owners[0].key.verifying_key().to_bytes(),
+                expires_at: 1_000_000,
+                nonce: [4; 32],
+                action: UpdateAction::SetPublicActivityPolicy {
+                    network,
+                    enabled: true,
+                },
+            }
+            .sign_with_key(&scenario.owners[0].key)
+            .map_err(debug_error)?;
+            let second_policy = update.id();
+            let checked = scenario
+                .app
+                .prepare(400, vec![], vec![update.encode()], None)
+                .map_err(debug_error)?;
+            let fourth = bundle(
+                checked.batch(),
+                checked.next(),
+                *scenario.genesis.policy.id().as_bytes(),
+                &keys[..3],
+            )?;
+            publish(&journal, &mut client, &fourth)?;
+            scenario.app.apply_locally(checked);
+            if client.frontier() != scenario.app.frontier()
+                || genesis == second_genesis
+                || ![(genesis, policy_record), (second_genesis, second_policy)]
+                    .iter()
+                    .all(|(room, policy)| {
+                        client
+                            .registry()
+                            .room_by_genesis(*room)
+                            .is_some_and(|room| room.allows_public_activity(&network, *policy))
+                    })
+            {
+                return Err(
+                    "fixture did not replay to two distinct certified public-open rooms".into(),
+                );
+            }
+            export(&home.join("height-3.vhbundle"), third.bytes())?;
+            export(&home.join("height-4.vhbundle"), fourth.bytes())?;
+            Some((second_genesis, second_policy))
+        } else {
+            None
+        };
         export(&home.join("bootstrap.vhbootstrap"), &bootstrap_raw)?;
         export(
             &home.join("bootstrap.pin"),
@@ -218,6 +326,9 @@ mod native {
         export(&home.join("height-1.vhbundle"), first.bytes())?;
         export(&home.join("height-2.vhbundle"), second.bytes())?;
         let mut metadata=format!("fixture local-test-only-public-consensus-and-social-seeds\nbootstrap-file {}\nbootstrap-pin {}\nnetwork-id {}\nheight {}\nfrontier {}\nroom-slug public-lobby\nroom-genesis {}\npublic-policy-record {}\nallowed-origin http://127.0.0.1:8789\n",home.join("bootstrap.vhbootstrap").display(),hex(&pin),hex(&network),client.frontier().height,hex(&client.frontier().commitment()),hex(genesis.as_bytes()),hex(policy_record.as_bytes()));
+        if let Some((second_genesis, second_policy)) = second_room {
+            metadata.push_str(&format!("public-posting local-test-only\nsecond-room-slug public-workshop\nsecond-room-genesis {}\nsecond-public-policy-record {}\n", hex(second_genesis.as_bytes()), hex(second_policy.as_bytes())));
+        }
         let mut peers = Vec::new();
         for (name, port) in [("peer-a", 9781), ("peer-b", 9782)] {
             let peer_home = home.join(name);
@@ -227,25 +338,46 @@ mod native {
             let endpoint = Endpoint::parse(&format!("https://{name}.vhalla.dev:443/vhalla/v1"))
                 .map_err(debug_error)?;
             let state = peer_home.join("state");
-            let peer = Arc::new(
-                ManagedPeer::create(
-                    Config {
-                        bootstrap_file: home.join("bootstrap.vhbootstrap"),
-                        bootstrap_pin: pin,
-                        identity_dir: peer_home.join("key"),
-                        journal_dir: home.join("journal"),
-                        advertisement_file: state.join("advertisement"),
-                        public_endpoint: endpoint.clone(),
-                        allowed_origin: CorsOrigin::loopback_development(
-                            "127.0.0.1:8789".parse().map_err(error)?,
-                        )
-                        .map_err(error)?,
-                        listen: format!("127.0.0.1:{port}").parse().map_err(error)?,
-                    },
-                    &state,
+            let config = Config {
+                bootstrap_file: home.join("bootstrap.vhbootstrap"),
+                bootstrap_pin: pin,
+                identity_dir: peer_home.join("key"),
+                journal_dir: home.join("journal"),
+                advertisement_file: state.join("advertisement"),
+                public_endpoint: endpoint.clone(),
+                allowed_origin: CorsOrigin::loopback_development(
+                    "127.0.0.1:8789".parse().map_err(error)?,
                 )
                 .map_err(error)?,
-            );
+                listen: format!("127.0.0.1:{port}").parse().map_err(error)?,
+            };
+            let peer = if let Some((second_genesis, _)) = second_room {
+                let limits = ActivityLimits {
+                    max_events: 10_000,
+                    max_history_bytes: 64 * 1024 * 1024,
+                };
+                let mut rooms = Vec::new();
+                for room in [genesis, second_genesis] {
+                    let store_dir = peer_home.join(format!("activity-{}", hex(room.as_bytes())));
+                    let scope = RoomScope {
+                        network,
+                        realm: scenario.genesis.realm,
+                        directory: scenario.genesis.directory,
+                        room,
+                    };
+                    drop(ActivityStore::create(&store_dir, scope, limits).map_err(debug_error)?);
+                    rooms.push(ActivityRoomConfig {
+                        room,
+                        directory: store_dir,
+                        limits,
+                    });
+                }
+                ManagedPeer::create_with_activity(config, &state, ActivityConfig { rooms })
+            } else {
+                ManagedPeer::create(config, &state)
+            }
+            .map_err(error)?;
+            let peer = Arc::new(peer);
             peer.enable_discovery(DiscoveryConfig {
                 directory: peer_home.join("discovery"),
                 create_new: true,
@@ -306,7 +438,11 @@ mod native {
                 result=&mut setup=> {
                     match result.map_err(error).and_then(|r| r) {
                         Ok(()) => {
-                            println!("fixture-status discovery-ready-both-read-peers");
+                            if public_posting {
+                                println!("fixture-status discovery-ready-both-publishing-peers");
+                            } else {
+                                println!("fixture-status discovery-ready-both-read-peers");
+                            }
                             std::io::stdout().flush().map_err(error)?;
                             tokio::select! {
                                 result=&mut a=>Some((0,result)), result=&mut b=>Some((1,result)),
@@ -341,6 +477,44 @@ mod native {
         });
         runtime.shutdown_timeout(std::time::Duration::from_secs(15));
         outcome
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::options;
+        use std::ffi::OsString;
+
+        #[test]
+        fn posting_opt_in_preserves_create_only_and_refuses_ambiguous_flags() {
+            for (args, expected) in [
+                (vec!["new-home"], (false, false)),
+                (vec!["new-home", "--create-only"], (true, false)),
+                (vec!["new-home", "--public-posting"], (false, true)),
+                (
+                    vec!["new-home", "--create-only", "--public-posting"],
+                    (true, true),
+                ),
+                (
+                    vec!["new-home", "--public-posting", "--create-only"],
+                    (true, true),
+                ),
+            ] {
+                assert_eq!(
+                    options(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).unwrap(),
+                    expected
+                );
+            }
+            for args in [
+                vec![],
+                vec!["new-home", "--unknown"],
+                vec!["new-home", "--create-only", "--create-only"],
+                vec!["new-home", "--public-posting", "--public-posting"],
+            ] {
+                assert!(
+                    options(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).is_err()
+                );
+            }
+        }
     }
 }
 

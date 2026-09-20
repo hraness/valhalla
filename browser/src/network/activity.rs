@@ -5,10 +5,80 @@ use vhalla_browser_storage::{
     browser::outbox::IndexedOutbox,
     outbox::{AuthorHead, AuthorScope, ReservedDraft},
 };
-use vhalla_room_activity::{Content, EventClaims, RoomScope, Text, UnsignedEvent};
+use vhalla_room_activity::{Content, EventClaims, RoomScope, UnsignedEvent};
 use web_sys::{HtmlSelectElement, HtmlTextAreaElement};
+#[path = "../composer_model.rs"]
+mod composer_model;
 #[path = "../recovery_room.rs"]
 mod recovery_room;
+use composer_model::{Context as ComposerContext, Draft as ComposerDraft};
+thread_local! {
+    static COMPOSER: RefCell<ComposerDraft> = RefCell::new(ComposerDraft::default());
+    static COMPOSER_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+fn current_composer_context(app: &App) -> Option<ComposerContext> {
+    let state = app.borrow();
+    let session = state.session.as_ref()?;
+    if state.busy || state.failed || session.head != session.recovery_target {
+        return None;
+    }
+    Some(ComposerContext {
+        room: scope(app, session).ok()?,
+        bootstrap_pin: session.head.scope().bootstrap_pin(),
+        author: ui::activity_author().ok()?,
+    })
+}
+fn remember_composer_name(app: &App, context: Option<ComposerContext>) {
+    let name = context.and_then(|context| {
+        let state = app.borrow();
+        let session = state.session.as_ref()?;
+        if session.client.network_id() != context.room.network
+            || session.head.scope().bootstrap_pin() != context.bootstrap_pin
+        {
+            return None;
+        }
+        session
+            .client
+            .registry()
+            .room_by_genesis(context.room.room)
+            .map(|room| room.slug().as_str().to_owned())
+    });
+    COMPOSER_NAME.with(|saved| *saved.borrow_mut() = name);
+}
+fn render_composer_scope(app: &App) {
+    let current = current_composer_context(app);
+    let (label, details) = COMPOSER.with(|draft| {
+        let draft = draft.borrow();
+        match draft.context() {
+            Some(context) => {
+                let room = COMPOSER_NAME.with(|name| name.borrow().clone())
+                    .unwrap_or_else(|| "original room".into());
+                let author = hex(&context.author);
+                let summary = format!("Public draft for {room} · author {}…{}. {}",
+                    &author[..8], &author[56..],
+                    if current == Some(context) { "Review before signing." }
+                    else { "Return to this room and author to sign, or explicitly move the text." });
+                let details = format!("Network: {}\nBootstrap: {}\nRealm: {}\nDirectory: {}\nRoom: {}\nAuthor: {}",
+                    hex(&context.room.network), hex(&context.bootstrap_pin), context.room.realm.0,
+                    hex(context.room.directory.as_bytes()), hex(context.room.room.as_bytes()), author);
+                (summary, details)
+            }
+            None if draft.started() => ("This text has no destination yet. Unlock the intended author, select a room, then choose Use text in selected room.".into(), String::new()),
+            None => ("New text stays with the selected room and unlocked author. Changing rooms will not move it.".into(), String::new()),
+        }
+    });
+    let state = app.borrow();
+    state
+        .document
+        .get_element_by_id("composer-scope")
+        .unwrap()
+        .set_text_content(Some(&label));
+    state
+        .document
+        .get_element_by_id("composer-scope-details")
+        .unwrap()
+        .set_text_content(Some(&details));
+}
 
 fn message(app: &App, text: &str) {
     app.borrow()
@@ -108,7 +178,8 @@ async fn head(
                     .read_page(scope, head.sequence(), 1, 8192)
                     .await
                     .map_err(|_| {
-                        "Saved author history is incomplete. Preserve storage before recovery."
+                        app.borrow_mut().failed = true;
+                        "Saved author history is incomplete. Preserve storage and reload before recovery."
                     })?;
                 if page.head != head
                     || page.events.len() != 1
@@ -166,6 +237,8 @@ async fn sign_reserved(
     })?;
     if clear_composer {
         composer(app).set_value("");
+        COMPOSER.with(|draft| draft.borrow_mut().clear_saved());
+        COMPOSER_NAME.with(|name| *name.borrow_mut() = None);
     }
     super::puzzles::observe(app, &verified);
     message(
@@ -177,6 +250,20 @@ async fn sign_reserved(
     );
     Ok(())
 }
+pub(super) fn selected_room_name(app: &App) -> String {
+    let selected = selection(app).value();
+    let document = app.borrow().document.clone();
+    let element = document.get_element_by_id("activity-room").unwrap();
+    let mut child = element.first_element_child();
+    while let Some(option) = child {
+        if option.get_attribute("value").as_deref() == Some(&selected) {
+            return option.text_content().unwrap_or(selected);
+        }
+        child = option.next_element_sibling();
+    }
+    selected
+}
+
 async fn queue(
     app: &App,
     session: &Session,
@@ -186,15 +273,46 @@ async fn queue(
     let author = ui::activity_author()?;
     let scope = scope(app, session)?;
     let author_scope = AuthorScope::new(scope, author);
+    // Check exact text and destination before any await or author-state write.
+    // Resume uses its immutable reservation; puzzle preview remains separate.
+    let typed = if !resume && puzzle.is_none() {
+        let context = ComposerContext {
+            room: scope,
+            bootstrap_pin: session.head.scope().bootstrap_pin(),
+            author,
+        };
+        Some(COMPOSER.with(|draft| draft.borrow().queue_text(&composer(app).value(), context))?)
+    } else {
+        None
+    };
+    if let Some(preview) = &puzzle {
+        super::puzzles::validate_prepared(
+            app,
+            preview,
+            scope,
+            session.head.scope().bootstrap_pin(),
+            author,
+            false,
+        )?;
+    }
     let mut storage = outbox().await?;
     let retained = head(app, &mut storage, author_scope).await?;
-    let pending = storage
-        .load_pending(author_scope)
-        .await
-        .map_err(|_| "Could not read the pending draft. Reload before continuing.")?;
+    let pending = storage.load_pending(author_scope).await.map_err(|_| {
+        app.borrow_mut().failed = true;
+        "Could not read the pending draft. Reload before continuing."
+    })?;
     let puzzle_content = puzzle
         .as_ref()
-        .map(|preview| preview.queue_text(&super::puzzles::part_input(app), pending.is_some()))
+        .map(|preview| {
+            super::puzzles::validate_prepared(
+                app,
+                preview,
+                scope,
+                session.head.scope().bootstrap_pin(),
+                author,
+                pending.is_some(),
+            )
+        })
         .transpose()?;
     let clear_composer = puzzle.is_none();
     if let Some(draft) = pending {
@@ -202,11 +320,13 @@ async fn queue(
             return Err("An exact draft is already reserved for this room. Use Resume saved draft; it cannot be replaced safely.".into());
         }
         if draft.base() != retained {
+            app.borrow_mut().failed = true;
             return Err(
-                "Pending draft and author floor disagree. Preserve storage before recovery.".into(),
+                "Pending draft and author floor disagree. Preserve storage and reload before recovery.".into(),
             );
         }
-        return sign_reserved(app, session, &mut storage, &draft, clear_composer).await;
+        // Resume must not discard unrelated unsaved composer text.
+        return sign_reserved(app, session, &mut storage, &draft, false).await;
     }
     if resume {
         return Err("There is no pending draft in this room.".into());
@@ -222,9 +342,7 @@ async fn queue(
         .ok_or("Public activity is closed in this room.")?;
     let content = match puzzle_content {
         Some(content) => content,
-        None => Text::new(&composer(app).value()).map_err(|_| {
-            "Write 1–4,096 UTF-8 bytes of plain text without unsupported control characters."
-        })?,
+        None => typed.ok_or("No scope-bound public text was prepared.")?,
     };
     let request = UnsignedEvent::new(EventClaims {
         scope,
@@ -324,6 +442,13 @@ pub(super) fn render(app: &App, session: Option<&Session>, available: bool) {
     super::puzzles::render(app, session, puzzle_room, available);
     select.set_disabled(!available || !ready || select.length() == 0);
     composer(app).set_disabled(!available || !room_selected);
+    app.borrow()
+        .document
+        .get_element_by_id("use-composer-here")
+        .unwrap()
+        .unchecked_into::<HtmlButtonElement>()
+        .set_disabled(!available || !room_selected);
+    render_composer_scope(app);
     for id in ["import-author-file", "recovery-room-genesis"] {
         field(app, id).set_disabled(!available || !ready);
     }
@@ -352,6 +477,58 @@ pub(super) fn render(app: &App, session: Option<&Session>, available: bool) {
     }
 }
 pub(super) fn bind_actions(app: &App) {
+    let draft_app = app.clone();
+    let edited = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+        if draft_app.borrow().busy || draft_app.borrow().failed {
+            return;
+        }
+        let context = current_composer_context(&draft_app);
+        let text = composer(&draft_app).value();
+        let starting = COMPOSER.with(|draft| !draft.borrow().started());
+        let result = COMPOSER.with(|draft| draft.borrow_mut().edit(&text, context));
+        if starting || text.is_empty() {
+            remember_composer_name(&draft_app, if text.is_empty() { None } else { context });
+        }
+        if let Err(error) = result {
+            message(&draft_app, error);
+        }
+        render_composer_scope(&draft_app);
+    });
+    composer(app)
+        .add_event_listener_with_callback("input", edited.as_ref().unchecked_ref())
+        .unwrap();
+    edited.forget();
+    let move_app = app.clone();
+    let use_here = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+        if move_app.borrow().busy || move_app.borrow().failed {
+            return;
+        }
+        let context = current_composer_context(&move_app);
+        let result = context
+            .ok_or("Unlock the intended identity and select a verified room first.")
+            .and_then(|context| {
+                COMPOSER.with(|draft| {
+                    draft
+                        .borrow_mut()
+                        .use_here(&composer(&move_app).value(), context)
+                })
+            });
+        match result {
+            Ok(()) => {
+                remember_composer_name(&move_app, context);
+                message(&move_app, "Text now targets the selected public room and author. Review before signing; nothing was signed or sent.");
+            }
+            Err(error) => message(&move_app, error),
+        }
+        render_composer_scope(&move_app);
+    });
+    app.borrow()
+        .document
+        .get_element_by_id("use-composer-here")
+        .unwrap()
+        .add_event_listener_with_callback("click", use_here.as_ref().unchecked_ref())
+        .unwrap();
+    use_here.forget();
     let selected = selection(app);
     let changed_app = app.clone();
     let changed = Closure::<dyn FnMut(Event)>::new(move |_: Event| {

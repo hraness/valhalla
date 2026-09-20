@@ -15,8 +15,8 @@ use vhalla_public_protocol::{
         RECEIPT_BYTES,
     },
     discovery::{DiscoveryKind, DiscoveryRequest, MAX_REGISTRATION_BYTES},
-    response::ReadRequest,
-    Endpoint,
+    response::{ReadKind, ReadRequest, MAX_RESPONSE_PROOF_BYTES},
+    Endpoint, MAX_ADVERTISEMENT_BYTES,
 };
 use vhalla_room_activity::SignedEvent;
 
@@ -109,7 +109,7 @@ fn run(
     Ok(raw)
 }
 
-pub(super) fn preflight() -> Result<(), String> {
+pub(in crate::public_network) fn preflight() -> Result<(), String> {
     let mut command = command();
     command.arg("--version");
     let raw = run(
@@ -136,7 +136,7 @@ pub(super) fn preflight() -> Result<(), String> {
         })
     {
         return Err(
-            "/usr/bin/curl >=7.59.0 with HTTPS support is required for selected-seed registration"
+            "/usr/bin/curl >=7.59.0 with HTTPS support is required for selected public peer requests"
                 .into(),
         );
     }
@@ -172,13 +172,6 @@ pub(super) fn exchange(
 /// Transport only: the caller must authenticate the returned proof against its
 /// independently pinned network, full peer key and exact request before using
 /// the body. A successful HTTP response is not a saved delivery receipt.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "native activity delivery controller is a separate integration"
-    )
-)]
 pub(in crate::public_network) fn exchange_activity(
     endpoint: &Endpoint,
     request: &ActivityRequest,
@@ -211,6 +204,26 @@ pub(in crate::public_network) fn exchange_activity(
         body,
         max_body,
         MAX_ACTIVITY_PROOF_BYTES * 2,
+        cancel,
+    )
+}
+
+/// Refresh only a typed advertisement request at the selected route.
+/// The caller must verify the full pinned peer and retain its newer floor.
+pub(in crate::public_network) fn exchange_advertisement(
+    endpoint: &Endpoint,
+    request: &ReadRequest,
+    cancel: &AtomicBool,
+) -> Result<(Vec<u8>, String), String> {
+    if request.kind() != ReadKind::Advertisement {
+        return Err("selected-peer refresh requires an advertisement request".into());
+    }
+    exchange_bounded(
+        endpoint,
+        &request.target(),
+        None,
+        MAX_ADVERTISEMENT_BYTES,
+        MAX_RESPONSE_PROOF_BYTES * 2,
         cancel,
     )
 }

@@ -161,6 +161,18 @@ pub(crate) fn compare_identity(
     }
 }
 
+// Password authentication remains the worker's responsibility. Revalidation
+// requires an existing exact pair, and never creates provenance or writes data.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn revalidated(
+    expected: &IdentitySnapshot,
+    observed: &IdentitySnapshot,
+) -> Result<IdentitySnapshot, Error> {
+    vault_public(expected.vault().ok_or(Error::RecoveryRequired)?)?;
+    compare_identity(expected, observed)?;
+    Ok(observed.clone())
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn fresh_author_check(
     expected: &IdentitySnapshot,

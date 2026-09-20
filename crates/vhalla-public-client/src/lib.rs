@@ -9,6 +9,7 @@
 //! advances the visible frontier. The caller owns durable publication.
 
 mod bootstrap;
+pub mod checkpoint;
 pub use bootstrap::{
     Bootstrap, Validator, ValidatorActivation, MAX_BOOTSTRAP_BYTES, MAX_VALIDATORS,
     MAX_VALIDATOR_SETS,
@@ -47,6 +48,12 @@ pub enum Error {
     BundleFields,
     /// Candidate was prepared under a different configuration or base frontier.
     StaleCandidate,
+    /// Local checkpoint authentication failed.
+    Authentication,
+    /// Checkpoint state or canonical framing is inconsistent.
+    Checkpoint,
+    /// Exact retained policy ancestry does not match this chain.
+    Anchor,
 }
 
 /// A private, move-only verified application candidate, not a durable receipt.
@@ -65,6 +72,7 @@ pub struct VerifiedCandidate {
     base: Frontier,
     checked: Checked,
     bundle: Bundle,
+    anchor: Option<checkpoint::Anchor>,
 }
 
 impl VerifiedCandidate {
@@ -96,14 +104,16 @@ impl VerifiedCandidate {
 
 /// A portable read replica whose only advancement path consumes a checked bundle.
 ///
-/// No unverified snapshot/frontier setter exists. Restart recovery currently
-/// replays retained certified bundles incrementally from the pinned bootstrap.
+/// No unverified snapshot/frontier setter exists. Restart recovery uses retained
+/// certified bundles from genesis or a locally authenticated checkpoint.
 /// Caller budgets bound total work and retained disk history across operations.
 pub struct CertifiedClient {
     network: [u8; 32],
     bootstrap: [u8; 32],
     application: Application,
     schedule: Vec<(u64, RoomValidatorSet)>,
+    last_bundle: [u8; 32],
+    anchor: Option<checkpoint::Anchor>,
 }
 
 impl CertifiedClient {
@@ -122,6 +132,8 @@ impl CertifiedClient {
             bootstrap: bootstrap.pin,
             application,
             schedule: bootstrap.schedule,
+            last_bundle: [0; 32],
+            anchor: None,
         })
     }
 
@@ -217,12 +229,21 @@ impl CertifiedClient {
         if canonical.bytes() != raw || canonical.id() != bundle.id() {
             return Err(Error::BundleFields);
         }
+        let next_head = checkpoint::CheckpointHead::new(next, canonical.id())?;
+        if self.anchor.is_some_and(|anchor| {
+            !anchor.matched
+                && anchor.head.frontier().height == next.height
+                && anchor.head != next_head
+        }) {
+            return Err(Error::Anchor);
+        }
         Ok(VerifiedCandidate {
             network: self.network,
             bootstrap: self.bootstrap,
             base,
             checked,
             bundle: canonical,
+            anchor: self.anchor,
         })
     }
 
@@ -244,11 +265,27 @@ impl CertifiedClient {
         if candidate.network != self.network
             || candidate.bootstrap != self.bootstrap
             || candidate.base != self.frontier()
+            || candidate.anchor != self.anchor
             || candidate.checked.batch().parent != self.frontier()
         {
             return Err(Error::StaleCandidate);
         }
+        let next =
+            checkpoint::CheckpointHead::new(candidate.checked.next(), candidate.bundle.id())?;
+        if self.anchor.is_some_and(|anchor| {
+            !anchor.matched
+                && anchor.head.frontier().height == next.frontier().height
+                && anchor.head != next
+        }) {
+            return Err(Error::Anchor);
+        }
+        self.last_bundle = candidate.bundle.id();
         self.application.apply_locally(candidate.checked);
+        if let Some(anchor) = &mut self.anchor {
+            if anchor.head == next {
+                anchor.matched = true;
+            }
+        }
         Ok(self.frontier())
     }
 }

@@ -61,15 +61,22 @@
       <label for="activity-room">Verified room</label><select id="activity-room" disabled></select>
       <label for="activity-text">Your post</label><textarea id="activity-text" rows="4" maxlength="4096" disabled placeholder="Share an update, an idea, or a question…"></textarea>
       <small>Public plain text, up to 4,096 UTF-8 bytes. Anyone may copy public activity. Author attribution is to a key, not a verified person.</small>
+      <p id="composer-scope" class="status" role="status" aria-live="polite">New typed text binds to the selected room and unlocked identity.</p>
+      <details><summary>Full draft destination</summary><pre id="composer-scope-details" class="status"></pre></details>
+      <button id="use-composer-here" class="secondary" type="button" disabled>Use text in selected room</button>
       <div class="actions"><button id="queue-activity" type="button" disabled>Sign and save post</button><button id="resume-activity" class="secondary" type="button" disabled>Resume saved draft</button><button id="show-outbox" class="secondary" type="button" disabled>View local outbox</button></div>
       <div class="actions"><button id="send-activity" type="button" disabled>Send saved posts</button><button id="read-activity" type="button" class="secondary" disabled>Read public posts</button><button id="more-activity" type="button" class="secondary" disabled>Next page</button></div>
       <p id="activity-status" class="status" role="status" aria-live="polite">Choose a verified room to read public activity. Unlock your identity to compose a post.</p>
       <div id="activity-list" aria-label="Room activity"></div>
       <details class="puzzles"><summary>Exchange public Clankdar puzzle artifacts</summary>
         <p>Share CLI-prepared public challenges, responses or admission artifacts as signed room posts. Each part uses the normal saved draft and outbox. Public artifacts may be copied; do not share private answers, credentials or hidden issuer state.</p>
+        <label for="puzzle-release-kind">Artifact to share</label><select id="puzzle-release-kind" disabled><option value="public-challenges">Public challenges</option><option value="responses">Responses</option><option value="admission">Admission</option></select>
+        <label for="puzzle-artifact">Complete public artifact JSON</label><textarea id="puzzle-artifact" rows="6" maxlength="262144" spellcheck="false" disabled placeholder="Paste the complete public artifact, including all prompt, context, subject and answer fields…"></textarea>
+        <div class="actions"><button id="preview-puzzle-artifact" class="secondary" type="button" disabled>Review complete artifact</button><button id="approve-puzzle-artifact" class="secondary" type="button" disabled>Approve this artifact for public sharing</button></div>
+        <pre id="puzzle-readable" class="artifact-preview" aria-label="Complete decoded artifact preview"></pre>
         <label for="puzzle-part">One CLI-prepared public part</label><textarea id="puzzle-part" rows="4" maxlength="4096" spellcheck="false" disabled placeholder="Paste one complete puzzle-share part from the CLI…"></textarea>
         <div class="actions"><button id="preview-puzzle" class="secondary" type="button" disabled>Validate and preview part</button><button id="queue-puzzle" type="button" disabled>Sign and save this part</button></div>
-        <p id="puzzle-preview" class="status" role="status" aria-live="polite">Validate one part, then explicitly sign it. This never replaces or resumes an existing reserved draft. Sending saved posts remains a separate action.</p>
+        <p id="puzzle-preview" class="status" role="status" aria-live="polite">Review and approve the complete artifact for this room and identity, then validate matching parts. This never replaces or resumes an existing reserved draft. Sending saved posts remains a separate action.</p>
         <h3>Collect one public artifact</h3>
         <p>Choose the complete sharer key, kind and digest. Only signature-verified posts read for the selected room can contribute. Read public posts and then Next page; collection progress is held only in this tab.</p>
         <label for="puzzle-author">Full sharer public key</label><input id="puzzle-author" type="text" maxlength="64" pattern="[0-9a-f]{64}" autocomplete="off" spellcheck="false" disabled>
@@ -88,7 +95,7 @@
         <p id="author-state-status" class="status" role="status" aria-live="polite">Choose a verified room or enter its full recovery room ID, then unlock the matching identity. Recovery preserves existing author state and never resets a used sequence.</p>
       </details>
     </section>
-    <footer><span>vhalla (valhalla)</span><p>Development build: verified directory reads are being qualified; public posting is not yet available. Browser storage can be cleared or evicted; keep an encrypted identity backup.</p><a href="https://github.com/hraness/valhalla" target="_blank" rel="noopener noreferrer">Source ↗</a></footer>
+    <footer><span>vhalla (valhalla)</span><p>Development build: public posts are signed plaintext. A local save and a peer receipt are different states. Browser storage can be cleared or evicted; keep your encrypted key and complete room author-state backups.</p><a href="https://github.com/hraness/valhalla" target="_blank" rel="noopener noreferrer">Source ↗</a></footer>
   </main>
   <noscript><p class="no-script">Valhalla requires WebAssembly and browser scripting to verify evidence and protect your identity.</p></noscript>
 </body>

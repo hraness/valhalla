@@ -2,12 +2,14 @@
 use super::{history_cli, Args};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::{Signature, VerifyingKey};
-use serde::de::{self, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fmt, path::Path};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use valhalla_clankdar_attest_prototype::{
-    canonical_json, Admission, AdmissionBody, Challenge, RoomSession, ATTEST_PROTOCOL,
+    canonical_json, Admission, AdmissionBody, Challenge, GatePolicy, RoomSession, ATTEST_PROTOCOL,
     GATE_PROTOCOL, MAX_ANSWER_LENGTH, MAX_POLICY_CHALLENGES,
 };
 use vhalla_room_activity::{
@@ -16,6 +18,7 @@ use vhalla_room_activity::{
 };
 
 const MAX_SESSION_BYTES: usize = 1024 * 1024;
+const RESPONSE_PROTOCOL: &str = "clankdar-room-responses/1";
 const SCOPE_FLAGS: &[&str] = &[
     "network",
     "realm",
@@ -130,6 +133,8 @@ fn public_session(raw: &[u8]) -> Result<Vec<u8>, String> {
     .into_bytes())
 }
 
+#[derive(Serialize)]
+#[serde(transparent)]
 struct Responses(BTreeMap<String, String>);
 impl<'de> Deserialize<'de> for Responses {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -143,12 +148,7 @@ impl<'de> Deserialize<'de> for Responses {
                 let mut answers = BTreeMap::new();
                 while let Some((id, answer)) = map.next_entry::<String, String>()? {
                     if answers.len() >= MAX_POLICY_CHALLENGES as usize
-                        || id.len() > 128
-                        || !id.starts_with("att_")
-                        || id.len() <= 4
-                        || !id
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                        || !valid_response_id(&id)
                         || answer.len() > MAX_ANSWER_LENGTH
                         || answers.insert(id, answer).is_some()
                     {
@@ -168,6 +168,198 @@ fn response_artifact(raw: &[u8]) -> Result<Vec<u8>, String> {
         serde_json::from_slice(raw).map_err(|_| "invalid bounded response map")?;
     Ok(canonical_json(
         &serde_json::to_value(answers.0).map_err(|_| "response serialization failed")?,
+    )
+    .into_bytes())
+}
+// Selection JSON is deliberately stricter than legacy Clankdar JSON.parse:
+// duplicate members at any depth are ambiguous operator input, not a selection.
+struct UniqueJson(Value);
+impl<'de> Deserialize<'de> for UniqueJson {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Unique;
+        impl<'de> Visitor<'de> for Unique {
+            type Value = UniqueJson;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("JSON without duplicate object members")
+            }
+            fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(UniqueJson(Value::Bool(v)))
+            }
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(UniqueJson(v.into()))
+            }
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(UniqueJson(v.into()))
+            }
+            fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(v)
+                    .map(|n| UniqueJson(Value::Number(n)))
+                    .ok_or_else(|| E::custom("nonfinite JSON number"))
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(UniqueJson(v.into()))
+            }
+            fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(UniqueJson(v.into()))
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueJson(Value::Null))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(UniqueJson(value)) = seq.next_element()? {
+                    values.push(value);
+                }
+                Ok(UniqueJson(Value::Array(values)))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((key, UniqueJson(value))) = map.next_entry::<String, UniqueJson>()? {
+                    if values.insert(key, value).is_some() {
+                        return Err(de::Error::custom("duplicate JSON member"));
+                    }
+                }
+                Ok(UniqueJson(Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(Unique)
+    }
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PublicChallenges {
+    protocol: String,
+    kind: String,
+    session_id: String,
+    policy: GatePolicy,
+    issued_at: String,
+    expires_at: String,
+    challenges: Vec<Challenge>,
+}
+struct ChallengeSelection {
+    session_id: String,
+    digest: String,
+    ids: std::collections::BTreeSet<String>,
+}
+impl ChallengeSelection {
+    fn parse(raw: &[u8]) -> Result<Self, String> {
+        if raw.is_empty() || raw.len() > MAX_ARTIFACT_BYTES {
+            return Err("selected challenge artifact exceeds its byte bound".into());
+        }
+        let UniqueJson(value) = serde_json::from_slice(raw)
+            .map_err(|_| "selected challenge artifact contains malformed or duplicate JSON")?;
+        let mut public: PublicChallenges = serde_json::from_value(value.clone()).map_err(|_| {
+            "expected the exact public-challenges artifact, not a session or parts bundle"
+        })?;
+        if public.protocol != GATE_PROTOCOL
+            || public.kind != "public-challenges"
+            || public.session_id.len() != 15
+            || !public.session_id.starts_with("gs_")
+            || !public.session_id[3..]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err("invalid selected challenge protocol, kind or session".into());
+        }
+        public.policy.validate().map_err(|e| e.to_string())?;
+        if public.challenges.len() as u64 != public.policy.challenges {
+            return Err("selected challenge count differs from policy".into());
+        }
+        let issued = OffsetDateTime::parse(&public.issued_at, &Rfc3339)
+            .map_err(|_| "invalid selected issuance time")?;
+        let expires = OffsetDateTime::parse(&public.expires_at, &Rfc3339)
+            .map_err(|_| "invalid selected deadline")?;
+        if issued.checked_add(Duration::seconds(public.policy.ttl_seconds as i64)) != Some(expires)
+        {
+            return Err("selected deadline differs from the policy session window".into());
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for challenge in &mut public.challenges {
+            *challenge = public_challenge(challenge.clone())?;
+            if challenge.session_id.as_deref() != Some(public.session_id.as_str())
+                || challenge.expires_at != public.expires_at
+                || !valid_response_id(&challenge.challenge_id)
+                || !ids.insert(challenge.challenge_id.clone())
+            {
+                return Err(
+                    "selected challenge has duplicate ID or foreign session/deadline".into(),
+                );
+            }
+        }
+        // Typed public projections have no unknown/private nested fields either.
+        if serde_json::to_value(&public).map_err(|_| "invalid public projection")? != value {
+            return Err("selected challenges contain unknown or nonpublic fields".into());
+        }
+        Ok(Self {
+            session_id: public.session_id,
+            digest: hex(&Sha256::digest(raw)),
+            ids,
+        })
+    }
+    fn check_answers(&self, responses: &Responses) -> Result<(), String> {
+        if responses.0.keys().any(|id| !self.ids.contains(id)) {
+            return Err("response ID is not in the selected challenge artifact".into());
+        }
+        Ok(())
+    }
+}
+fn valid_response_id(id: &str) -> bool {
+    id.len() <= 128
+        && id.starts_with("att_")
+        && id.len() > 4
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BoundResponses {
+    protocol: String,
+    kind: String,
+    session_id: String,
+    challenge_digest: String,
+    responses: Responses,
+}
+fn bound_response_artifact(raw: &[u8], selected: &ChallengeSelection) -> Result<Vec<u8>, String> {
+    if raw.len() > MAX_ARTIFACT_BYTES {
+        return Err("response input exceeds its byte bound".into());
+    }
+    let responses: Responses =
+        serde_json::from_slice(raw).map_err(|_| "invalid bounded response map")?;
+    selected.check_answers(&responses)?;
+    let envelope = BoundResponses {
+        protocol: RESPONSE_PROTOCOL.into(),
+        kind: "responses".into(),
+        session_id: selected.session_id.clone(),
+        challenge_digest: selected.digest.clone(),
+        responses,
+    };
+    let raw =
+        canonical_json(&serde_json::to_value(envelope).map_err(|_| "response encoding failed")?)
+            .into_bytes();
+    if raw.len() > MAX_ARTIFACT_BYTES {
+        return Err("bound response envelope exceeds its byte bound".into());
+    }
+    Ok(raw)
+}
+fn checked_response_map(raw: &[u8], selected: &ChallengeSelection) -> Result<Vec<u8>, String> {
+    if raw.len() > MAX_ARTIFACT_BYTES {
+        return Err("response artifact exceeds its byte bound".into());
+    }
+    let envelope: BoundResponses = serde_json::from_slice(raw)
+        .map_err(|_| "expected a bounded response envelope with unique known fields")?;
+    if envelope.protocol != RESPONSE_PROTOCOL
+        || envelope.kind != "responses"
+        || envelope.session_id != selected.session_id
+        || envelope.challenge_digest != selected.digest
+    {
+        return Err(
+            "response envelope does not match the exact selected challenge artifact/session".into(),
+        );
+    }
+    selected.check_answers(&envelope.responses)?;
+    Ok(canonical_json(
+        &serde_json::to_value(envelope.responses).map_err(|_| "response encoding failed")?,
     )
     .into_bytes())
 }
@@ -346,16 +538,24 @@ fn execute(args: &Args) -> Result<Value, String> {
         .positional
         .first()
         .map(String::as_str)
-        .ok_or("exchange requires challenges, responses, admission or collect")?;
+        .ok_or("exchange requires challenges, responses, admission, response-map or collect")?;
     let collecting = command == "collect";
+    let extracting = command == "response-map";
+    let accepts_selection = command == "responses" || extracting;
     for (name, values) in &args.flag_lists {
-        if (name != "out" && (!collecting || !SCOPE_FLAGS.contains(&name.as_str())))
+        if !(name == "out"
+            || (collecting && SCOPE_FLAGS.contains(&name.as_str()))
+            || (accepts_selection && name == "challenges"))
             || values.len() != 1
         {
             return Err(format!("unsupported or repeated exchange option --{name}"));
         }
     }
-    if !args.switches.is_empty() {
+    if args
+        .switches
+        .iter()
+        .any(|s| !extracting || s != "unbound-legacy")
+    {
         return Err("unsupported exchange switch".into());
     }
     let out = Path::new(required(args, "out")?);
@@ -367,6 +567,30 @@ fn execute(args: &Args) -> Result<Value, String> {
     }
     if args.positional.len() != 2 {
         return Err("packing requires exactly one input file".into());
+    }
+    let selected = args
+        .flags
+        .get("challenges")
+        .map(|path| ChallengeSelection::parse(&history_cli::read(path, MAX_ARTIFACT_BYTES)?))
+        .transpose()?;
+    if extracting {
+        let legacy = args.switches.contains("unbound-legacy");
+        if legacy == selected.is_some() {
+            return Err(
+                "response-map requires exactly one of --challenges FILE or --unbound-legacy".into(),
+            );
+        }
+        let raw = history_cli::read(&args.positional[1], MAX_ARTIFACT_BYTES)?;
+        let map = match selected.as_ref() {
+            Some(selected) => checked_response_map(&raw, selected)?,
+            None => response_artifact(&raw)?,
+        };
+        write_new(out, &map)?;
+        return Ok(
+            json!({"output": out, "correlation": if legacy {"unbound_legacy"} else {"selected_challenges"},
+            "sessionId": selected.as_ref().map(|s| &s.session_id), "challengeDigest": selected.as_ref().map(|s| &s.digest),
+            "semantics": "Local correlation check only. The extracted map does not carry the binding; submit it with the same selected session. No solve, issuer trust, subject proof or freshness is established."}),
+        );
     }
     let kind = match command {
         "challenges" => Kind::PublicChallenges,
@@ -384,13 +608,25 @@ fn execute(args: &Args) -> Result<Value, String> {
     )?;
     let artifact = match kind {
         Kind::PublicChallenges => public_session(&raw)?,
-        Kind::Responses => response_artifact(&raw)?,
+        Kind::Responses => match selected.as_ref() {
+            Some(selected) => bound_response_artifact(&raw, selected)?,
+            None => response_artifact(&raw)?,
+        },
         Kind::Admission => admission_artifact(&raw)?,
     };
-    let bundle = pack_bundle(kind, &artifact)?;
+    let mut bundle = pack_bundle(kind, &artifact)?;
+    if kind == Kind::Responses {
+        bundle["correlation"] = json!(if selected.is_some() {
+            "selected_challenges"
+        } else {
+            "unbound_legacy"
+        });
+        bundle["sessionId"] = json!(selected.as_ref().map(|s| &s.session_id));
+        bundle["challengeDigest"] = json!(selected.as_ref().map(|s| &s.digest));
+    }
     write_new(out, canonical_json(&bundle).as_bytes())?;
     Ok(
-        json!({"kind": kind_name(kind), "digest": bundle["digest"], "artifactBytes": artifact.len(), "partCount": bundle["parts"].as_array().ok_or("invalid parts")?.len(), "output": out}),
+        json!({"kind": kind_name(kind), "digest": bundle["digest"], "artifactBytes": artifact.len(), "partCount": bundle["parts"].as_array().ok_or("invalid parts")?.len(), "output": out, "correlation": bundle.get("correlation"), "sessionId": bundle.get("sessionId"), "challengeDigest": bundle.get("challengeDigest")}),
     )
 }
 pub(super) fn run(args: &Args) -> Result<(), String> {

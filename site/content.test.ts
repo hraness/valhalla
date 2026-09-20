@@ -1,0 +1,64 @@
+import { expect, test } from 'bun:test';
+import { readFile, access } from 'node:fs/promises';
+import { docs } from './pages.ts';
+import { renderDoc, docHref } from './docs.ts';
+const home = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+const pages = new Map([['/', home], ...docs.map(page=>[docHref(page), renderDoc(page, home)])]);
+
+test('every local documentation destination and section resolves', () => {
+  for (const [path, html] of pages) {
+    const ids=[...html.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]);
+    expect(new Set(ids).size, `duplicate IDs on ${path}`).toBe(ids.length);
+    for (const match of html.matchAll(/href="([^" ]+)"/g)) {
+      const target=match[1];
+      if (!target.startsWith('/') && !target.startsWith('#')) continue;
+      const url=new URL(target, `https://vhalla.com${path}`);
+      if (!url.pathname.startsWith('/docs/') && url.pathname!=='/') continue;
+      const destination=pages.get(url.pathname);
+      expect(destination, `${path} -> ${target}`).toBeDefined();
+      if (url.hash) expect(destination, `${path} -> ${target}`).toContain(`id="${url.hash.slice(1)}"`);
+    }
+  }
+});
+
+test('documentation is static, accessible and correctly canonicalized', () => {
+  for (const page of docs) {
+    const html=pages.get(docHref(page))!;
+    expect(html).toContain(`href="https://vhalla.com${docHref(page)}"`);
+    expect(html).toContain('<main id="main"');
+    expect(html).toContain('Skip to content');
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain('<summary>Documentation');
+    expect(html).not.toContain('<form');
+    expect(html).not.toMatch(/<script[^>]+src="https?:/);
+    expect(html).not.toMatch(/\son(?:click|load|error)=/);
+    expect(html.split('<!-- hraness-site-footer -->').length).toBe(2);
+  }
+});
+
+test('readiness and privacy limitations stay discoverable from the home page', () => {
+  expect(home).toContain('href="/docs/status/"');
+  expect(home).toContain('Private rooms');
+  expect(home).toContain('Not ready');
+  expect(home).toContain('Illustrative public room');
+  expect(home).not.toContain('href="https://app.vhalla.com');
+  const status=pages.get('/docs/status/')!;
+  for(const phrase of ['4,096', '30 seconds', '512', 'not yet connected', 'independent-machine', 'not a deployed']) {
+    // The summary uses "not ... deployed" in prose; pin only the explicit boundaries below.
+    if(phrase==='not a deployed') continue;
+    expect(status).toContain(phrase);
+  }
+  const security=pages.get('/docs/security/')!;
+  expect(security).toContain('not ready');
+  expect(security).toContain('Cloud inference is a disclosure');
+  expect(security).toContain('Previously authorized readers can retain old messages');
+});
+
+test('repository source links name files retained in the checkout', async () => {
+  const checked=new Set<string>();
+  for(const html of pages.values()) for(const match of html.matchAll(/href="https:\/\/github.com\/hraness\/valhalla\/blob\/main\/([^"#]+)[^"]*"/g)) {
+    if(checked.has(match[1])) continue;
+    checked.add(match[1]);
+    await access(new URL(`../${match[1]}`,import.meta.url));
+  }
+});

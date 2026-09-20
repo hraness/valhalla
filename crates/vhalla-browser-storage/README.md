@@ -46,6 +46,11 @@ On WASM, `browser::IndexedStorage` provides:
 - `needs_reopen()`: after failed/canceled publication or schema invalidation,
   drop the handle, reopen and load the actual surviving image before proceeding.
 
+Application writes request IndexedDB `durability: "strict"` and check the returned
+transaction mode before queuing a mutation. Browsers that ignore or reject it
+refuse writes; unchanged identity unlock remains read-only. This durability hint
+is not protection against eviction, coherent rollback or dishonest storage.
+
 Slots do not form an atomic multi-slot transaction. A workflow that needs
 evidence and outbox changes to commit together must put its bounded publication
 unit in one image or introduce a separately reviewed journal/transaction API.
@@ -119,8 +124,15 @@ requires an absent pair and atomically adds the encrypted vault plus a canonical
 `identity/v1/local-birth`. `replace_identity(expected, next)` compares the exact
 pair, permits only the same existing key, and preserves the birth record or its
 absence. Importing a backup into an empty profile never manufactures provenance.
-Same-key password changes preserve provenance. An unchanged normal unlock still
-performs this exact pair CAS before claiming the worker identity is saved.
+Same-key password changes preserve provenance. An unchanged normal unlock calls
+`revalidate_identity(expected)`: one readonly transaction rereads and compares
+the exact encrypted vault and provenance pair before acknowledging the worker
+identity. It performs no `put` or `add`, keeping unlock and author-state export
+available when storage reads succeed but writes fail. Missing, changed or
+malformed state fails closed. Cancellation or failed completion requires reopen;
+no cached identity is substituted. New identities and changed backup imports
+still require their write CAS. This removes an unnecessary write dependency;
+actual browser quota failures and export remain a separate qualification gate.
 
 `IndexedOutbox::initialize_locally_created_author(scope, expected)` checks the
 exact saved pair and matching author in the same transaction that requires an
@@ -367,3 +379,9 @@ browser fixture with isolated namespaces: competing tabs, abort after queued
 put, close/reopen, missing/corrupt/oversized values, blocked and canceled opens,
 late success buffered before polling, version changes, quota failure, and page
 interruption. Use fresh test-owned namespaces and preserve any existing data.
+
+The browser adapter resolves a typed IndexedDB factory in its current global
+realm. A dedicated custody worker can own the same strict transactions without
+sending decrypted state or database handles through the window. The synthetic
+`qualify_storage.mjs` harness exercises both Window and dedicated-worker realms;
+this does not by itself implement private-room storage or worker authorization.

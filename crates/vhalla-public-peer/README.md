@@ -5,8 +5,9 @@ bootstrap artifacts, and bounded pages of locally published journal bundles.
 The default service is READ-only. An explicitly enabled discovery registry also
 accepts bounded signed route registrations. Neither mode grants room membership
 or validator admission, writes the consensus journal, or starts implicitly.
-Public activity service code is present for focused integration tests, but its
-operator startup and PUBLISH advertisement activation are not available yet.
+Public activity requires the separate explicit `ManagedPeer::create_with_activity`
+or `open_with_activity` API. Ordinary `create`, `open` and the existing READ CLI
+remain READ-only. No activity service starts implicitly.
 
 `Peer::open(Config)` bounded-reads and validates an independently supplied
 bootstrap file and full pin, derives its genesis frontier, opens an existing
@@ -29,6 +30,31 @@ browser HTTPS Origin explicitly. `CorsOrigin::loopback_development` is a separat
 opt-in local development setting. Cookies, authorization headers, credentials,
 CORS wildcards, and public wildcard listeners are unsupported. CORS is a browser
 access policy, not peer or application authorization.
+
+## Explicit activity publisher
+
+`ManagedPeer::create_with_activity(config, NEW_STATE, activity_config)` opens every
+explicitly listed existing activity store with its exact full room scope and
+immutable limits before signing a READ|PUBLISH advertisement. It never creates a
+missing store or upgrades existing READ state. Room admission still requires
+independently verified current owner policy; a PUBLISH claim grants no membership,
+validator authority, global ordering or private-room secrecy.
+
+The new private `activity-mode` marker binds the sorted full room IDs, absolute
+store paths, limits, network, peer key and endpoint. `open_with_activity` requires
+the exact marker/configuration before store recovery. Ordinary `open` refuses it;
+a missing, corrupt or torn marker is preserved and refused. Reordering the same
+room configuration is harmless. Marker mutation poisons renewal until a valid
+reopen; no API changes mode or reconstructs missing counters. Incomplete initial
+marker/reservation creation fails closed and requires operator investigation,
+not a silent reset. Existing partial-renewal recovery applies in both modes and
+checks the exact expected advertisement capabilities before removing preparation.
+
+The operator-controlled proxy must explicitly permit the bounded `/vhalla/v1/activity`
+GET/POST/OPTIONS route when using this API. It carries public signed plaintext,
+not private messages. Keep proxy rate/body limits and exact CORS origin guards.
+Native startup/recovery and loopback HTTP fixture tests qualify this source path;
+they do not constitute external TLS or public deployment qualification.
 
 ## Version 1 wire
 

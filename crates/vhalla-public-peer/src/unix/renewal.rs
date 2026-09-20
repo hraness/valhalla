@@ -13,7 +13,7 @@ const RESERVATION_BYTES: usize = 5 + 32 * 3 + 8 * 2 + 32;
 const ADVERTISEMENT: &str = "advertisement";
 const SEQUENCE: &str = "sequence";
 
-/// An explicitly activated process-owned publisher plus read-only peer.
+/// A process-owned advertisement publisher; activity requires explicit opt-in.
 /// State and custody locks are retained until all owner references are dropped.
 /// Only create() creates a state directory; open() never reconstructs a missing
 /// reservation from an advertisement or resets a counter.
@@ -36,7 +36,33 @@ impl ManagedPeer {
     pub fn open(config: Config, state_dir: impl AsRef<Path>) -> Result<Self, Error> {
         Self::start(config, state_dir.as_ref(), false)
     }
+    /// Create NEW publisher state explicitly advertising durable public activity.
+    /// Stores must already exist; this never migrates a READ publisher in place.
+    pub fn create_with_activity(
+        config: Config,
+        state_dir: impl AsRef<Path>,
+        activity: ActivityConfig,
+    ) -> Result<Self, Error> {
+        Self::start_mode(config, state_dir.as_ref(), true, Some(activity))
+    }
+    /// Reopen with the exact retained activity configuration. Ordinary open
+    /// refuses this mode rather than silently downgrading a PUBLISH claim.
+    pub fn open_with_activity(
+        config: Config,
+        state_dir: impl AsRef<Path>,
+        activity: ActivityConfig,
+    ) -> Result<Self, Error> {
+        Self::start_mode(config, state_dir.as_ref(), false, Some(activity))
+    }
     fn start(config: Config, state_dir: &Path, create: bool) -> Result<Self, Error> {
+        Self::start_mode(config, state_dir, create, None)
+    }
+    fn start_mode(
+        config: Config,
+        state_dir: &Path,
+        create: bool,
+        activity: Option<ActivityConfig>,
+    ) -> Result<Self, Error> {
         let state_dir = custody::absolute(state_dir).map_err(Error::Custody)?;
         if custody::absolute(&config.advertisement_file).map_err(Error::Custody)?
             != state_dir.join(ADVERTISEMENT)
@@ -50,14 +76,41 @@ impl ManagedPeer {
             key: identity.public_key(),
             endpoint: config.public_endpoint.clone(),
         };
+        let mode = activity
+            .as_ref()
+            .map(activity_mode::config_digest)
+            .transpose()?;
+        let open_activity = || {
+            activity
+                .as_ref()
+                .map(|activity| {
+                    super::activity::ActivityService::open(
+                        &loaded.raw,
+                        config.bootstrap_pin,
+                        activity.clone(),
+                    )
+                })
+                .transpose()
+        };
         let clock = now()?;
-        let mut publisher = if create {
-            Publisher::create(&state_dir, scope, clock)?
+        let (mut publisher, service) = if create {
+            // Refuse missing/foreign stores before creating a new publisher.
+            let service = open_activity()?;
+            let mut publisher = Publisher::create(&state_dir, scope, clock)?;
+            if let Some(mode) = mode {
+                publisher.create_activity_mode(mode)?;
+            }
+            (publisher, service)
         } else {
-            Publisher::open(&state_dir, scope, clock)?
+            // Validate retained mode before opening stores: their recovery must
+            // never run for a configuration rejected by this publisher.
+            let publisher = Publisher::open_mode(&state_dir, scope, clock, mode)?;
+            (publisher, open_activity()?)
         };
         let raw = publisher.publish(&identity, clock, None)?;
-        let peer = Arc::new(Peer::finish(config, loaded, identity, raw, true)?);
+        let peer = Arc::new(Peer::finish_with_activity(
+            config, loaded, identity, raw, true, service,
+        )?);
         Ok(Self {
             peer,
             publisher: Mutex::new(publisher),
@@ -219,7 +272,11 @@ struct Scope {
     endpoint: Endpoint,
 }
 impl Scope {
-    fn unsigned_ad(&self, reservation: Reservation) -> Result<UnsignedAdvertisement, Error> {
+    fn unsigned_ad(
+        &self,
+        reservation: Reservation,
+        capabilities: Capabilities,
+    ) -> Result<UnsignedAdvertisement, Error> {
         UnsignedAdvertisement::new(AdvertisementClaims {
             network: self.network,
             application_key: self.key,
@@ -230,7 +287,7 @@ impl Scope {
                 .checked_add(ADVERTISEMENT_LIFETIME_SECONDS)
                 .ok_or(Error::State("clock overflow"))?,
             protocol: PROTOCOL_VERSION,
-            capabilities: Capabilities::READ,
+            capabilities,
             endpoints: vec![self.endpoint.clone()],
         })
         .map_err(|_| Error::Advertisement)
@@ -241,7 +298,7 @@ impl Scope {
             self.endpoint.as_str().as_bytes(),
         )
     }
-    fn check_ad(&self, raw: &[u8]) -> Result<PeerAdvertisement, Error> {
+    fn check_ad(&self, raw: &[u8], capabilities: Capabilities) -> Result<PeerAdvertisement, Error> {
         let ad = PeerAdvertisement::decode(raw)
             .map_err(|_| Error::State("invalid signed advertisement"))?;
         ad.restore_sequence_anchor(self.network)
@@ -249,7 +306,7 @@ impl Scope {
         let claims = ad.unverified_claims();
         if claims.application_key != self.key
             || claims.endpoints.as_slice() != [self.endpoint.clone()]
-            || claims.capabilities != Capabilities::READ
+            || claims.capabilities != capabilities
         {
             return Err(Error::State("advertisement identity or route changed"));
         }
@@ -328,6 +385,7 @@ struct Publisher {
     persisted: Option<Vec<u8>>,
     advertisement: Option<Vec<u8>>,
     poisoned: bool,
+    activity_mode: Option<Vec<u8>>,
 }
 impl Publisher {
     fn create(dir: &Path, scope: Scope, clock: u64) -> Result<Self, Error> {
@@ -350,16 +408,28 @@ impl Publisher {
             persisted: None,
             advertisement: None,
             poisoned: false,
+            activity_mode: None,
         })
     }
+    #[cfg(test)]
     fn open(dir: &Path, scope: Scope, clock: u64) -> Result<Self, Error> {
+        Self::open_mode(dir, scope, clock, None)
+    }
+    fn open_mode(
+        dir: &Path,
+        scope: Scope,
+        clock: u64,
+        mode: Option<[u8; 32]>,
+    ) -> Result<Self, Error> {
         let (directory, uid) = custody::open_private_directory(dir).map_err(Error::Custody)?;
         let lock = custody::open_private_file(&dir.join("lock"), uid, 0).map_err(Error::Custody)?;
         custody::acquire_exclusive(&lock).map_err(Error::Custody)?;
+        let activity_mode = activity_mode::read_mode(dir, uid, &scope, mode)?;
+        let capabilities = activity_mode::capabilities(activity_mode.is_some())?;
         for (index, entry) in fs::read_dir(dir)?.enumerate() {
             let entry = entry?;
-            if index >= 5
-                || ![
+            if index >= 6
+                || (![
                     "lock",
                     SEQUENCE,
                     "sequence.tmp",
@@ -368,6 +438,7 @@ impl Publisher {
                 ]
                 .iter()
                 .any(|name| entry.file_name() == *name)
+                    && !(activity_mode.is_some() && entry.file_name() == activity_mode::MODE))
             {
                 return Err(Error::State("unexpected publisher artifact"));
             }
@@ -418,7 +489,9 @@ impl Publisher {
         let advertisement = read_optional(dir, uid, ADVERTISEMENT, MAX_ADVERTISEMENT_BYTES)?;
         let pending_ad = read_optional(dir, uid, "advertisement.tmp", MAX_ADVERTISEMENT_BYTES)?;
         let partial_ad = if let Some(raw) = pending_ad.as_deref() {
-            let expected = scope.unsigned_ad(reservation)?.encoded_claims();
+            let expected = scope
+                .unsigned_ad(reservation, capabilities)?
+                .encoded_claims();
             if raw.len() < expected.len() + 64 {
                 if pending.is_some() {
                     return Err(Error::State(
@@ -449,7 +522,7 @@ impl Publisher {
         .into_iter()
         .flatten()
         {
-            let ad = scope.check_ad(raw)?;
+            let ad = scope.check_ad(raw, capabilities)?;
             let claims = ad.unverified_claims();
             if claims.sequence > reservation.sequence || claims.issued_at > reservation.issued {
                 return Err(Error::State("advertisement exceeds durable reservation"));
@@ -496,6 +569,7 @@ impl Publisher {
             persisted: Some(reservation.encode(&scope)),
             advertisement,
             poisoned: false,
+            activity_mode,
         })
     }
     fn publish(
@@ -513,7 +587,13 @@ impl Publisher {
         if clock < self.reservation.issued {
             return Err(Error::ClockRollback);
         }
-        if read_optional(&self.dir, self.uid, SEQUENCE, RESERVATION_BYTES)? != self.persisted
+        if read_optional(
+            &self.dir,
+            self.uid,
+            activity_mode::MODE,
+            activity_mode::MODE_BYTES,
+        )? != self.activity_mode
+            || read_optional(&self.dir, self.uid, SEQUENCE, RESERVATION_BYTES)? != self.persisted
             || read_optional(&self.dir, self.uid, ADVERTISEMENT, MAX_ADVERTISEMENT_BYTES)?
                 != self.advertisement
             || read_optional(&self.dir, self.uid, "sequence.tmp", RESERVATION_BYTES)?.is_some()
@@ -535,7 +615,10 @@ impl Publisher {
                 .ok_or(Error::State("sequence exhausted"))?,
             issued: clock,
         };
-        let unsigned = self.scope.unsigned_ad(reservation)?;
+        let unsigned = self.scope.unsigned_ad(
+            reservation,
+            activity_mode::capabilities(self.activity_mode.is_some())?,
+        )?;
         let reserved = reservation.encode(&self.scope);
         self.atomic(
             SEQUENCE,
@@ -643,3 +726,5 @@ fn digest(domain: &[u8], raw: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests;
+
+mod activity_mode;

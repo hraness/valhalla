@@ -1,0 +1,40 @@
+window.qid=id=>document.getElementById(id);
+window.qassert=(v,m)=>{if(!v)throw Error(m)};
+window.qwait=async(f,m)=>{const t=Date.now()+45000;while(!f()){if(Date.now()>t)throw Error(m+' status='+qid('status').textContent+' network='+qid('network-status').textContent+' activity='+qid('activity-status').textContent);await new Promise(r=>setTimeout(r,20));}};
+window.qset=(id,v,event='input')=>{qid(id).value=v;qid(id).dispatchEvent(new Event(event,{bubbles:true}));};
+window.qclick=async id=>{await qwait(()=>!qid(id).disabled,id+' enabled');qid(id).click();};
+window.qfile=(id,b64,name)=>{const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob(b64),c=>c.charCodeAt(0))],name));qid(id).files=dt.files;qid(id).dispatchEvent(new Event('change',{bubbles:true}));};
+window.qidle=()=>qwait(()=>!qid('show-outbox').disabled,'network idle');
+(async()=>{
+  qset('password',qa.password);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','unlock after failure');
+  await qwait(()=>qid('activity-room').options.length===2&&!qid('activity-room').disabled,'retained directory');
+  qset('activity-room',qa.rooms[1].id,'change');qset('activity-text','UNRELATED_UNSAVED_TEXT');
+  await qclick('resume-activity');await qidle();qassert(qid('activity-status').textContent.includes('Post 2 saved'),'reserved retry failed');qassert(qid('activity-text').value==='UNRELATED_UNSAVED_TEXT','resume erased unrelated draft');
+  qa.facts.push('Reload resumed exact reserved draft; unrelated composer text retained');
+  const raw='{"context":"\\u0053YNTHETIC_SECRET","responses":[]}';
+  qset('puzzle-release-kind','responses');qset('puzzle-artifact',raw);
+  await qclick('preview-puzzle-artifact');qassert(qid('puzzle-readable').textContent.includes('SYNTHETIC_SECRET'),'complete preview hides escaped text');
+  await qclick('approve-puzzle-artifact');
+  const bytes=new TextEncoder().encode(raw), digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+  const encoded=btoa(String.fromCharCode(...bytes)).replaceAll('+','-').replaceAll('/','_').replaceAll('=','');
+  const part=['vhalla-puzzle-share/1','responses',digest,String(bytes.length),'0/1',encoded].join('\n');
+  qset('puzzle-part',part);await qclick('preview-puzzle');
+  window.qwrites=[];for(const name of ['add','put','delete']){const original=IDBObjectStore.prototype[name];IDBObjectStore.prototype[name]=function(...args){qwrites.push({name,key:String(name==='delete'?args[0]:args[1])});return original.apply(this,args);};}
+  qid('puzzle-artifact').value=raw+' ';
+  await qclick('queue-puzzle');await qidle();qassert(qwrites.length===0,'changed artifact attempted storage mutation');
+  qassert(/changed|Validate|Review/.test(qid('puzzle-preview').textContent),'changed artifact not refused');
+  qa.facts.push('Complete decoded JSON preview; changed bytes refused before storage');
+  qset('puzzle-artifact',raw);await qclick('preview-puzzle-artifact');await qclick('approve-puzzle-artifact');await qclick('preview-puzzle');
+  qset('activity-room',qa.rooms[0].id,'change');qassert(qid('queue-puzzle').disabled,'room change kept part approved');
+  qid('queue-puzzle').dispatchEvent(new Event('click',{bubbles:true}));await qidle();qassert(qwrites.length===0,'stale room part attempted storage mutation');
+  qa.facts.push('Room switch invalidated complete artifact approval before mutation');
+  qset('activity-room',qa.rooms[1].id,'change');await qclick('preview-puzzle-artifact');await qclick('approve-puzzle-artifact');await qclick('preview-puzzle');await qclick('queue-puzzle');await qidle();
+  qassert(qid('activity-status').textContent.includes('Post 3 saved'),'approved part not saved');qassert(qid('activity-text').value==='UNRELATED_UNSAVED_TEXT','puzzle erased ordinary draft');
+  qfile('peer-file',qa.ads[1],'synthetic-b.vhad');await qclick('add-peer');await qidle();
+  await qclick('send-activity');await qidle();qassert(qid('activity-status').textContent.includes('acknowledged through post 3'),'peer receipts absent');
+  qa.delivery=qid('activity-status').textContent;qassert((qa.delivery.match(/acknowledged through post 3/g)||[]).length===2,'both peer receipts required');
+  await qclick('read-activity');await qidle();qassert(qid('activity-list').children.length===3,'peer did not return all saved posts');
+  qassert(qid('activity-list').textContent.includes('SYNTHETIC_RESERVED_BEFORE_CRASH'),'reserved exact bytes absent');
+  qa.facts.push('Three saved posts sent through browser transport with durable receipts; signed peer history read back');
+  return {facts:qa.facts,delivery:qa.delivery,author:qa.author,rooms:qa.rooms,userAgent:navigator.userAgent};
+})()

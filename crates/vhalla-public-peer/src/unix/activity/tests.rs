@@ -197,8 +197,8 @@ impl ActivityFixture {
     }
     fn peer(&self) -> Arc<Peer> {
         let peer = Peer::open(self.base.config.clone()).unwrap();
-        // Direct test-only initialization: production READ startup never activates
-        // activity until the separately reviewed opt-in publisher API is wired.
+        // Isolate admission unit tests from publisher state. The HTTP test below
+        // exercises the explicit production activity publisher startup API.
         let service = ActivityService::open(
             &peer.bootstrap,
             peer.config.bootstrap_pin,
@@ -447,10 +447,23 @@ fn activity_request_framing_cors_and_per_ip_limits_are_bounded() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn activity_http_chunked_size_and_slow_body_have_deadlines() {
     let fixture = ActivityFixture::new();
-    let peer = fixture.peer();
+    let state = fixture.base.dir.join("activity-publisher");
+    let mut config = fixture.base.config.clone();
+    config.advertisement_file = state.join("advertisement");
+    let peer = Arc::new(
+        ManagedPeer::create_with_activity(config.clone(), &state, fixture.config.clone()).unwrap(),
+    );
+    assert_eq!(
+        peer.current_public_advertisement()
+            .unwrap()
+            .unverified_claims()
+            .capabilities
+            .bits(),
+        Capabilities::READ.bits() | Capabilities::PUBLISH.bits()
+    );
     let request = ActivityRequest::post([1; 32], *fixture.room.as_bytes(), b"x").unwrap();
     let peer_key = peer.application_key();
-    let bound = peer.bind().await.unwrap();
+    let bound = peer.clone().bind().await.unwrap();
     let address = bound.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(bound.run(async {
@@ -528,4 +541,8 @@ async fn activity_http_chunked_size_and_slow_body_have_deadlines() {
     assert!(start.elapsed() < Duration::from_secs(9));
     stop.send(()).unwrap();
     server.await.unwrap().unwrap();
+    drop(peer);
+    let reopened = ManagedPeer::open_with_activity(config, &state, fixture.config.clone()).unwrap();
+    assert_eq!(reopened.advertisement_sequence().unwrap(), 2);
+    assert_eq!(reopened.application_key(), peer_key);
 }

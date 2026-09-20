@@ -1,8 +1,9 @@
 # Public participation and puzzle evidence
 
 The public-network source is under development. The existing v0.1.7 release is
-the earlier private-network build. A production public service, successful public
-posting and multi-host recovery have not been qualified. Use the maintained
+the earlier private-network build. Public posting and interrupted-send recovery pass in the real browser with
+two local publishing peers. A production public service and independent-host
+recovery have not been qualified. Use the maintained
 [CLI runbook](../crates/vhalla-cli/README.md),
 [peer operator guide](../crates/vhalla-public-peer/README.md) and
 [browser build guide](../browser/README.md) for their exact available operations.
@@ -56,8 +57,14 @@ documents the exact commands.
 
 Authoring replays an independently pinned bootstrap and local certified journal,
 checks the retained checkpoint and current observed room policy, then reserves
-before signing. Replay is temporarily limited to 4,096 bundles and 30 seconds;
-incomplete replay refuses authoring. The default outbox retains at most 65,536
+before signing. An explicit `--replay-profile` saves locally authenticated
+verified progress, with at most 4,096 bundles and a cooperative 30-second budget
+per step. Incomplete replay refuses authoring and continues from its retained
+prefix on the next step. Profile initialization saves only genesis; existing
+authors use `catch-up` to bind their retained policy head before replay. This
+cache is not a peer-supplied snapshot or a portable trust root. The CLI guide
+describes new-author setup and rebuilding a separate cache without resetting
+the original outbox. The default outbox retains at most 65,536
 events and 256 MiB of event/receipt bytes with eight peer receipt chains; it
 never prunes evidence to make room. These are explicit capacity limits, not an
 unlimited-history claim.
@@ -66,9 +73,13 @@ Keep the key directory and complete outbox intact. Missing state, a restored key
 or a remote author head cannot authorize a sequence reset. There is no native
 key-only restore, author import or device handoff command; bounded frame export
 is not a complete recovery backup. Local success means signed and retained
-locally, with delivery unconfirmed. Native network send/read commands and their
-persistent peer advertisement floors remain unwired. PUBLISH startup is a
-separate activation gate.
+locally, with delivery unconfirmed. Explicit `peer-add`, `send` and `read` commands
+now bind the full peer key and HTTPS endpoint, retain signed advertisement floors,
+refresh policy before network operations, and preserve each confirmed receipt
+prefix. `send` retries the exact retained signed bytes. A receipt establishes
+that the named peer attests storage; it does not prove another operator replicated
+the post or a member read it. See the CLI runbook for their bounded paging and
+no-dial peer selection.
 
 ## Optional Clankdar exchange
 
@@ -90,6 +101,12 @@ seeds, tickets, expected answers and hidden-pool labels must stay with the issue
 Received puzzle text is inert data, not permission to run code or install a
 generator. The local checker uses an explicitly selected trusted evaluator.
 
+Before publishing a puzzle, the browser displays the complete readable JSON and
+requires approval bound to exact bytes, artifact kind, room and author. An edited
+artifact or changed destination needs a new decision; all parts reuse that one
+whole-artifact decision. Correlated response envelopes bind the selected challenge
+digest and session, while explicitly requested legacy maps remain unbound.
+
 The browser's complete-artifact indicator confirms bytes and the selected sharer.
 Use the native history checker with independently chosen issuer/policy/context
 pins before interpreting an admission as a replayed result. Failures and
@@ -101,9 +118,10 @@ authenticated separately or bound by an issuer-signed result.
 
 ## Operational acceptance still required
 
-Publisher startup/PUBLISH activation, activity replication and historical
-continuation must be integrated and tested before calling this a usable public
-network. Local loopback fixtures do not qualify public DNS/TLS, independent
+Publisher startup is now explicitly configured and covered by immutable-mode
+recovery tests. Live PUBLISH activation, independent activity replication and
+durable historical continuation still need qualification before calling this
+a usable public network. Local loopback fixtures do not qualify public DNS/TLS, independent
 failure domains, production CORS, capacity planning or live recovery. Production
 browser packaging refuses local-qualification routing; never deploy a manifest
 labeled `local-qualification`.

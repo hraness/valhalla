@@ -45,6 +45,8 @@ pub use vhalla_social::OwnerId;
 /// tests and engine-level integration tests in `vhalla-rooms-node`.
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
+#[cfg(test)]
+mod restore_tests;
 #[cfg(all(test, unix))]
 mod tests;
 
@@ -609,6 +611,41 @@ impl Application {
             social,
             registry,
         }
+    }
+    /// Restore application state from an authenticated local checkpoint.
+    ///
+    /// The caller must first authenticate the exact canonical archive,
+    /// registry and full frontier as a checkpoint of its own previously
+    /// verified history, and bind them to the expected immutable bootstrap.
+    /// This method checks state consistency only: matching realms, all three
+    /// state commitments at the saved clock, and the exact genesis frontier
+    /// at height zero. It does not verify historical certificates, authenticate
+    /// the producing value/height, or establish current global freshness.
+    /// Arbitrary remote snapshots must not use this trusted-local boundary.
+    pub fn restore_locally_authenticated(
+        social: Archive,
+        registry: Registry,
+        frontier: Frontier,
+    ) -> Result<Self, ApplyError> {
+        if social.realm() != registry.realm()
+            || *social.root().as_bytes() != frontier.social
+            || registry.digest() != frontier.registry
+            || control_of(&social, &registry, frontier.time) != frontier.control
+        {
+            return Err(ApplyError::Result);
+        }
+        if frontier.height == 0 {
+            let genesis = Self::genesis(social, registry);
+            if genesis.frontier != frontier {
+                return Err(ApplyError::Parent);
+            }
+            return Ok(genesis);
+        }
+        Ok(Self {
+            social,
+            registry,
+            frontier,
+        })
     }
     /// Resume from store-loaded states under a frontier reconstructed from
     /// the journal — the reopen path, where the states are already durable

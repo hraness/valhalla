@@ -1140,14 +1140,90 @@ advance can update the reservation's policy checkpoint only if the exact signed
 room policy still permits the unchanged event. Revoked or changed policy refuses
 the operation and preserves the pending sequence; there is no discard/reset path.
 
-Each authoring invocation replays canonical certificates from the pinned genesis,
-matches the retained history checkpoint and checks that the observed journal
-head has not advanced before signing. The temporary replay budget is **4,096
-bundles and 30 seconds**. Exhaustion or an incomplete/invalid journal fails
-closed; a signed peer response cannot replace that replay or prove global
-freshness. One exclusive writer owns the outbox during an operation. An uncertain
-publication requires reopening to reconcile the exact retained intent, never
-deleting files to make the next sequence available.
+Without a replay profile, each authoring invocation replays canonical certificates
+from the pinned genesis. It matches the retained history checkpoint and checks
+that the observed local journal head has not advanced before signing. The
+per-invocation budget remains **4,096 bundles and 30 seconds**. A replay profile
+saves verified progress across invocations, as described below; exhaustion never
+authorizes signing. An incomplete or invalid journal fails closed. A signed peer
+response cannot replace certified replay or prove global freshness. One exclusive
+writer owns the outbox during an operation. An uncertain publication requires
+reopening to reconcile exact retained state, never deleting files to make the
+next sequence available.
+
+### Restartable certified replay
+
+A replay profile caches one locally verified replica, independently of the
+application key and outbox. Its private storage-only key authenticates canonical
+snapshots, the full bootstrap/configuration pin, exact frontier and bundle ID.
+It does not create another public identity. Snapshot checksums, peer signatures
+and arbitrary imported snapshots cannot establish this local provenance.
+
+For a **new author**, create a new profile and advance it before initializing the
+new key/outbox:
+
+```console
+vhalla public activity replay-init BOOTSTRAP PIN64 JOURNAL NEW_PROFILE
+vhalla public activity replay-step BOOTSTRAP PIN64 JOURNAL PROFILE
+vhalla public activity init BOOTSTRAP PIN64 JOURNAL NEW_KEY_DIR NEW_OUTBOX ROOM64 --replay-profile PROFILE
+vhalla public activity queue BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE --replay-profile PROFILE
+```
+
+Here `PROFILE` is the path just created as `NEW_PROFILE`. `replay-init` only
+publishes independently verified genesis at height zero and prints
+`status replay-profile-created`; it consumes no journal bundles and makes no
+claim about the journal's current head. `replay-step` prints `replayed-from`,
+`durable-height`, `bundle-id`, `elapsed-ms` and one of:
+
+- `status more`: the bounded verified prefix is durably saved. Repeat
+  `replay-step` with the same profile.
+- `status caught-up-local-journal`: that invocation reached and rechecked the
+  exact observed local HEAD. It is not a global latest-state claim or posting
+  authorization; `init`/`queue` still perform their policy and current-head checks.
+
+For an **existing author**, supply the retained outbox before replaying any
+bundle. Create a new profile only if you do not already have its valid profile:
+
+```console
+vhalla public activity replay-init BOOTSTRAP PIN64 JOURNAL NEW_PROFILE
+vhalla public activity catch-up BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 --replay-profile PROFILE
+vhalla public activity resume BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 --replay-profile PROFILE
+```
+
+Do not run bare `replay-step` between `replay-init` and this first `catch-up`.
+`catch-up` binds the exact outbox policy head before replay, persists the verified
+cache first, then advances the outbox history head. It never signs, replaces a
+pending draft, resets an author sequence or grants room permission. If its
+nonzero result specifically reports **bounded replay progress saved**, repeat
+`catch-up` with the same outbox/profile; other integrity, custody or policy errors
+are not progress reports. `resume` remains an explicit request to sign only the
+unchanged retained draft under a still-permitted policy.
+
+Use **one profile per author workflow**. Once an author anchor is retained, bare
+`replay-step` refuses. An unrelated `init` cannot advance or replace that anchor;
+only an exact same-head retry is possible. Existing author commands may also
+carry the trailing `--replay-profile PROFILE` flag; `peer-add`, `send` and `read`
+do not use it. Author activity and its receipts remain in the outbox, never in
+the replay cache.
+
+The cache uses private exclusive custody and a bounded authenticated `STATE` plus
+one publication scratch. A crash before/after the cache-to-outbox handoff retains
+proof for either the old outbox head or the exact saved frontier. Uncertain
+publication requires reopening; preserve malformed state and scratch rather
+than deleting evidence. If a cache is unavailable or corrupt, preserve that
+entire path and create a **separate new profile**, then use the existing-author
+`catch-up` flow above with the original key/outbox and complete journal. No
+command silently resets or migrates a cache, author or journal. A different
+bootstrap/configuration pin cannot reuse the retained profile.
+
+The bundle/time budget includes snapshot work. It is cooperative: a single
+bounded snapshot decode, certificate validation or filesystem operation is not
+an interruptible hard deadline. Registry/archive state retains its existing size
+ceilings; cached replay removes the journal-length restart wall, not those
+application limits. Complete malicious rollback or theft of the local profile
+and its authentication key remains outside the cooperating OS-owner custody
+boundary. No history pruning, remote policy synchronization or peer snapshot
+trust is introduced.
 
 CLI creation fixes the default store limits at **65,536 retained events, 256 MiB
 of event plus receipt bytes, and eight peer receipt chains**. Bounded control,
@@ -1167,11 +1243,10 @@ destination for the next page. Export remains available when a room stops
 allowing new posts; it does not authorize signing. This bounded local page is
 neither proof of peer delivery nor a complete author-state recovery backup.
 
-There is no native activity network send/read command yet. The prepared typed
-HTTP adapter preserves the discovery transport's DNS/curl guards, but a delivery
-controller still needs durable peer advertisement floors and verified receipt
-publication. Activity PUBLISH startup is separately gated; these local commands
-do not activate it or qualify public delivery.
+The explicit `peer-add`, `send` and `read` controller below adds destination-bound
+network delivery with durable peer advertisement floors and receipt publication.
+These local authoring/export commands still do not dial or activate serving;
+controller validation with synthetic peers does not qualify any public deployment.
 
 The focused CLI regression uses real certified room policy and process restarts:
 
@@ -1181,7 +1256,10 @@ cargo test --locked -p vhalla-cli --features experimental-public --test public_a
 
 It covers new authoring/export, exact pending resume, compatible history advance,
 policy revocation, missing-state refusal and invalid bootstrap/certificate
-rejection. See the [participation contract](../../docs/public-participation.md)
+rejection. The `replay_profile` filter additionally exercises restart continuation
+past 4,096 real certified bundles, cache tampering, lost checkpoint markers,
+cache-to-outbox handoff, anchored-init refusal and fresh-cache adoption by an
+existing author. See the [participation contract](../../docs/public-participation.md)
 for the distinction between a signed artifact and independently checked evidence.
 
 ## Public discovery peer
@@ -1278,3 +1356,98 @@ cargo test --locked -p vhalla-cli --features experimental-public --bin vhalla --
 
 These tests do not qualify an external HTTPS seed, DNS deployment, or public
 multi-peer availability.
+
+
+### Explicit native activity delivery and page export
+
+With `--features experimental-public`, select a peer locally using an independently
+pinned bootstrap, its complete application key, exact HTTPS endpoint, and signed
+advertisement. Selection does not dial. The new private peer-state directory retains
+its immutable route and highest accepted advertisement/clock floors; preserve it.
+
+```sh
+vhalla public activity peer-add BOOTSTRAP PIN64 NEW_PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT AD_FILE
+vhalla public activity send BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT
+vhalla public activity read BOOTSTRAP PIN64 ROOM64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT AFTER_CURSOR NEW_EXPORT_DIR
+```
+
+`send` attempts at most three already finalized signed posts at that exact selected
+peer, starting after its durably retained receipt. It never opens an identity key,
+re-signs old content, changes the pending draft, or resets an author floor. Retry
+keeps exact signed bytes, including their original policy. These public activity
+frames are signed plaintext; this command adds no private-room encryption. Only use
+an outbox whose content you intend to disclose to the explicitly selected peer.
+
+Before posting, fresh nonce-bound same-key evidence is verified and durably retained.
+Newer withdrawals and route removals remain saved even when they prevent sending;
+older PUBLISH advertisements cannot replace them. An expired selected route may
+request its renewal, but cannot send/read activity until the refreshed exact route
+and required READ/PUBLISH capabilities verify. There is no automatic discovery,
+endpoint change, failover, proxy or redirect. System `/usr/bin/curl` and the existing
+bounded public-address DNS pinning preserve the selected TLS hostname.
+
+JSON reports only receipt sequences saved locally after full peer/network/request
+verification. A failure stops the call and leaves any confirmed prefix explicit;
+uncertain local writes require reopening preserved state before retry. A peer receipt
+claims that peer's local retention, not network-wide delivery or current room policy.
+
+`read` requests at most 16 events after an explicit peer-local cursor. It verifies
+peer proof and every author signature/full network/realm/directory/room scope before
+creating a new export directory. The export retains exact request target, response
+proof, page bytes, signed event frames and a manifest. No existing path is replaced;
+partial exports remain on I/O failure. It does not establish author continuity,
+current policy admission, a complete network feed, or a verified puzzle solve.
+It advances no implicit inbox cursor. Local authoring still uses its separately
+certified journal; remote policy synchronization is outside these commands.
+
+Network operations have a 90-second cancellation deadline. SIGINT/SIGTERM cancel
+and drain the owned transport, whose DNS/curl subprocesses are killed/reaped before
+return. This bounds supervised transport, not arbitrary stalled filesystem calls.
+Enabling these explicit client commands does not activate a serving peer's PUBLISH
+mode or provision any external service.
+
+
+### Explicit public activity publisher
+
+READ remains the default for `public serve` and `public discovery-serve`. To
+prepare public activity storage without starting a listener:
+
+```text
+vhalla public activity-store-init BOOTSTRAP PIN64 ROOM64 NEW_STORE 100000 268435456
+```
+
+This exclusively creates a new owner-private store bound to the pinned network,
+realm, directory and selected full room ID. It does not establish that the room
+exists or its posting policy is enabled. Store limits are immutable local budgets,
+not promised indefinite storage; additional filesystem/transaction overhead needs
+free disk. Existing paths are never reset or overwritten. Preserve incomplete
+creation for operator investigation.
+
+Start an explicitly opted-in public publisher using those existing stores:
+
+```text
+vhalla public serve BOOTSTRAP PIN64 KEY_DIR JOURNAL NEW_PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN --new-state --activity-store ROOM64 STORE 100000 268435456
+```
+
+Repeat `--activity-store ROOM64 STORE MAX_EVENTS MAX_HISTORY_BYTES` for at most32
+distinct rooms. Limits must be canonical positive decimal u64 values. This signs
+READ|PUBLISH only after all configured stores open. Each new post still requires
+independently verified current owner policy from the certified journal. Initial
+catch-up is bounded per request; retry unavailable responses without changing
+signed event bytes. This endpoint is public plaintext, never a private-room API.
+
+On restart omit `--new-state` and supply exactly the same room/store/limit entries.
+Their ordering may differ, but the immutable publisher mode binds their canonical
+values and the full network, peer and endpoint. Ordinary READ reopen refuses a
+PUBLISH publisher. Existing READ state cannot be upgraded; there is no automatic
+store creation, mode migration, counter reset or history deletion. Paths supplied
+on restart must resolve to the same absolute configuration. Keep identity,
+publisher state and activity stores together in an operator-managed backup plan.
+
+The listener remains loopback HTTP. Operate TLS for the exact advertised HTTPS
+endpoint and explicitly permit the bounded `/vhalla/v1/activity` GET/POST/OPTIONS
+route at the proxy with body/rate/connection limits and the selected browser
+origin. A local receipt is one peer's retention statement, not validator admission,
+global delivery or private membership. Source fixture tests do not qualify an
+external proxy/deployment. `discovery-serve` remains READ-only; this first CLI
+publisher does not implicitly register itself or change discovery policy.

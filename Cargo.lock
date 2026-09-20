@@ -5414,6 +5414,8 @@ version = "0.0.0"
 dependencies = [
  "futures-channel",
  "js-sys",
+ "serde",
+ "serde_json",
  "vhalla-browser-storage",
  "vhalla-browser-vault",
  "vhalla-public-client",
@@ -5433,14 +5435,18 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "futures-channel",
+ "getrandom 0.3.4",
  "js-sys",
  "sha2 0.10.9",
  "vhalla-browser-vault",
  "vhalla-custody",
+ "vhalla-public-client",
  "vhalla-public-protocol",
  "vhalla-room-activity",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
+ "zeroize",
 ]
 
 [[package]]
@@ -5484,6 +5490,7 @@ dependencies = [
  "vhalla-public-protocol",
  "vhalla-retrieval",
  "vhalla-room-activity",
+ "vhalla-room-activity-store",
  "vhalla-rooms",
  "vhalla-rooms-app",
  "vhalla-rooms-consensus",
@@ -5650,10 +5657,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-private-protocol"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "vhalla-public-client"
 version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
+ "hmac 0.12.1",
  "sha2 0.10.9",
  "vhalla-core",
  "vhalla-journal",
@@ -5721,6 +5737,8 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "ed25519-dalek 2.2.0",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "vhalla-core",
  "vhalla-rooms",
