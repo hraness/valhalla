@@ -84,7 +84,9 @@ fn fixture(count: u64, pending: bool) -> (Snapshot, Vec<Entry>, IdentitySnapshot
     let hex = include_str!("../../../../vhalla-browser-vault/vectors/v1-envelope.hex").trim();
     let mut raw: Vec<u8> = hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
         .collect();
     raw[45..77].copy_from_slice(&scope.author());

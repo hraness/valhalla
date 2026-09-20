@@ -348,7 +348,10 @@ fn parse_digest(raw: &str) -> Result<[u8; 32], Error> {
         return Err(Error::Encoding);
     }
     let mut digest = [0; 32];
-    for (out, pair) in digest.iter_mut().zip(raw.as_bytes().chunks_exact(2)) {
+    for (out, pair) in digest
+        .iter_mut()
+        .zip(raw.as_bytes().as_chunks::<2>().0.iter())
+    {
         let nibble = |v| match v {
             b'0'..=b'9' => Ok(v - b'0'),
             b'a'..=b'f' => Ok(v - b'a' + 10),

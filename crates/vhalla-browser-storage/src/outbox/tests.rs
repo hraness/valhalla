@@ -10,7 +10,9 @@ fn unsigned(text: &str) -> UnsignedEvent {
     let key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
     let key: Vec<u8> = key
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
         .collect();
     let mut raw = b"VHRA\x01".to_vec();
@@ -331,7 +333,9 @@ fn deterministic_signatures_are_bound_to_the_exact_reserved_event() {
     let envelope = include_str!("../../../vhalla-browser-vault/vectors/v1-envelope.hex").trim();
     let raw: Vec<u8> = envelope
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16).unwrap())
         .collect();
     let identity =

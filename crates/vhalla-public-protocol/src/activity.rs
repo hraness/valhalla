@@ -626,7 +626,7 @@ pub fn proof_from_hex(raw: &str) -> Result<ActivityResponseProof, ResponseError>
         return Err(ResponseError::Bounds);
     }
     let mut out = Vec::with_capacity(raw.len() / 2);
-    for pair in raw.as_bytes().chunks_exact(2) {
+    for pair in raw.as_bytes().as_chunks::<2>().0.iter() {
         out.push(nibble(pair[0])? * 16 + nibble(pair[1])?);
     }
     ActivityResponseProof::decode(&out)
@@ -636,7 +636,7 @@ fn unhex32(raw: &str) -> Result<[u8; 32], ResponseError> {
         return Err(ResponseError::Encoding);
     }
     let mut out = [0; 32];
-    for (slot, pair) in out.iter_mut().zip(raw.as_bytes().chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(raw.as_bytes().as_chunks::<2>().0.iter()) {
         *slot = nibble(pair[0])? * 16 + nibble(pair[1])?;
     }
     Ok(out)

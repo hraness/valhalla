@@ -79,7 +79,9 @@ impl Fixture {
 }
 fn from_hex(raw: &str) -> Vec<u8> {
     raw.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|bytes| u8::from_str_radix(core::str::from_utf8(bytes).unwrap(), 16).unwrap())
         .collect()
 }

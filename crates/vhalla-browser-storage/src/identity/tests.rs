@@ -7,7 +7,9 @@ fn vault(variant: u8) -> Image {
     let hex = include_str!("../../../vhalla-browser-vault/vectors/v1-envelope.hex").trim();
     let mut raw: Vec<u8> = hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
         .collect();
     raw[30] ^= variant;
@@ -62,7 +64,9 @@ fn replacement_preserves_birth_or_its_absence_and_never_changes_identity() {
     let foreign = include_str!("../../../vhalla-browser-vault/vectors/v1-wrong-public.hex").trim();
     let foreign: Vec<u8> = foreign
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
         .collect();
     let foreign = Image::new(Slot::Vault, &[&foreign]).unwrap();
