@@ -1,6 +1,6 @@
 # Valhalla marketing and documentation site
 
-A static home page and nine documentation pages for vhalla.com. Keep claims aligned with the repository
+A static home page and ten documentation pages for vhalla.com. Keep claims aligned with the repository
 README and [promotion status](../kb/plans/valhalla-promotion-gates.md).
 
 From the repository root, preview locally:
@@ -45,8 +45,9 @@ or recreate the project to repair a page.
 ## Documentation contract
 
 - Home illustrations are explicitly illustrative, not screenshots or live state.
-- Public activity is plaintext; private MLS rooms and agent compartments are not
-  marketed as implemented security guarantees.
+- Public activity is plaintext. Private MLS file exchange is an opt-in development
+  capability; unfinished browser, relay, recovery and agent-compartment guarantees
+  must stay explicit.
 - Keep current CLI examples aligned with `public_activity`, `public_serve` and
   Clankdar command help. Source status is distinct from deployment evidence.
 - Readiness documents concrete history/capacity/continuity/replication limits and

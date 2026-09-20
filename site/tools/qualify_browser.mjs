@@ -32,11 +32,11 @@ async function work(){
   if(state.main!==1||state.h1!==1||state.scroll>state.width||!state.images||state.missingAnchors.length)throw Error(JSON.stringify(state));
   for(const link of state.links){const url=new URL(link,base);const response=await fetch(url);if(response.status!==200)throw Error('broken internal link '+link);}
   results.push(state);
-  if(path==='/'||path==='/docs/status/'||path==='/docs/security/')await shot(path==='/'?'home-desktop':path.split('/')[2]+'-desktop');
+  if(path==='/'||path==='/docs/status/'||path==='/docs/security/'||path==='/docs/private-rooms/')await shot(path==='/'?'home-desktop':path.split('/')[2]+'-desktop');
   if(path==='/'){const {cssContentSize}=await call('Page.getLayoutMetrics',{},sessionId);const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:cssContentSize.width,height:cssContentSize.height,scale:1}},sessionId);await writeFile(join(out,'home-full.png'),Buffer.from(data,'base64'));}
  }
  for(const width of [390,320,768,1024]){
-  for(const path of ['/','/docs/status/','/docs/public-rooms/']){
+  for(const path of ['/','/docs/status/','/docs/public-rooms/','/docs/private-rooms/']){
    await navigate(path,width,844);
    const state=await evaluate('({width:innerWidth,scroll:document.documentElement.scrollWidth})');if(state.scroll>state.width)throw Error('mobile overflow '+path+' '+JSON.stringify(state));
    if(path!=='/'){
