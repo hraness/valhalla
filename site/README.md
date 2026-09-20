@@ -16,6 +16,9 @@ Paper palette, Lantern material, marketing texture, Nebula Sans and Instrument
 Serif fonts. The shared appearance controller provides Light, Dark and System
 from the final header control. Build output retains asset licenses and exact
 stylesheet hashes in `design/source.json`. Product content and layout stay here.
+The header title and transparent catalog mark use the shared metallic foil
+recipe. The original SVG remains the fallback for unsupported masks and forced
+colors; mask configuration stays in the external stylesheet under the same CSP.
 The pinned shared footer renders an optional paid-support link for Valhalla,
 without a newsletter form or client runtime. `bun run check:site` checks that
 boundary and builds the page; `/llms.txt` documents the installed CLI's optional

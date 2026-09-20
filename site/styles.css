@@ -20,7 +20,6 @@ p, h1, h2, dl, dd { margin: 0; }
 .page { max-width: 1248px; min-height: 100svh; margin: auto; padding: 0 64px; display: flex; flex-direction: column; }
 .masthead { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 0; }
 .wordmark { text-decoration: none; font-size: 25px; font-weight: 650; letter-spacing: -0.04em; }
-.wordmark .product-icon { font-size: 24px; font-weight: 400; letter-spacing: 0; margin-right: 8px; }
 .source-link { display: inline-flex; align-items: center; gap: 9px; font-size: 14px; text-decoration: none; }
 .source-link svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 main { flex: 1; }
@@ -60,7 +59,6 @@ h2 { font-size: 17px; line-height: 1.55; font-weight: 550; }
   .page { padding: 0 24px; }
   .masthead { padding: 25px 0; }
   .wordmark { font-size: 23px; }
-  .wordmark .product-icon { font-size: 22px; margin-left: 0; }
   .source-link { font-size: 13px; }
   .introduction { grid-template-columns: 1fr; padding: 52px 0 40px; gap: 46px; }
   h1 { font-size: clamp(58px, 14vw, 78px); }
@@ -84,3 +82,7 @@ h2 { font-size: 17px; line-height: 1.55; font-weight: 550; }
 .header-actions .hraness-design-theme-toggle__popover { box-shadow: var(--hraness-material-lift); }
 @media (max-width: 640px) { .introduction { padding-inline: 18px; margin-inline: -18px; } .header-actions { gap: 12px; } }
 @media (forced-colors: active) { .room, .hraness-design-theme-toggle__trigger, .hraness-design-theme-toggle__popover { border: 1px solid CanvasText; } }
+
+/* Header identity follows the same checked mark as the public project catalog. */
+.masthead .wordmark { display: inline-flex; align-items: center; gap: 8px; }
+.masthead .brand-mark { --hraness-foil-size: 24px; --hraness-foil-mask: url("/valhalla-mark.svg"); }
