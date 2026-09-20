@@ -124,6 +124,19 @@ impl UnlockedIdentity {
         self.key.verifying_key().to_bytes()
     }
 
+    /// Derive opaque private storage custody for this exact account and context.
+    /// Keep the returned key and private kernel inside the unlocked worker; no
+    /// worker response may export secret bytes. Lock must destroy both identity
+    /// and kernels. This neither restores missing state nor prevents clones.
+    /// See `StorageKey::derive_for_account` for the fixed versioned contract.
+    #[cfg(feature = "private-storage")]
+    pub fn private_storage_key(
+        &self,
+        context: vhalla_private_kernel::Context,
+    ) -> Result<vhalla_private_kernel::StorageKey, vhalla_private_kernel::Error> {
+        vhalla_private_kernel::StorageKey::derive_for_account(&self.key, context)
+    }
+
     /// Sign the exact private-room anchor request with its owner account key.
     /// The trusted controller must authorize room creation independently and
     /// persist the corresponding device before releasing any MLS artifact.

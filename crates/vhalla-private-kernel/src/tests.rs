@@ -737,14 +737,12 @@ fn cryptographically_valid_foreign_control_and_wrong_recipient_refuse_before_wel
         assert!(pair.member_disk.snapshot() == before);
         pair.reopen_member().await;
         pair.member.join(original.bytes(), pair.now).await.unwrap();
-        let mut packet = packets::RemovalPacket::decode(
-            pair.owner
-                .remove(op(2), pair.member.status().context.device, pair.now)
-                .await
-                .unwrap()
-                .bytes(),
-        )
-        .unwrap();
+        let removal = pair
+            .owner
+            .remove(op(2), pair.member.status().context.device, pair.now)
+            .await
+            .unwrap();
+        let mut packet = decode_for_member(&pair, removal.bytes());
         let mut claims = packet.control.claims().clone();
         claims.owner_device = key(&attacker);
         packet.control = UnsignedOwnerControl::new(claims)
@@ -753,11 +751,10 @@ fn cryptographically_valid_foreign_control_and_wrong_recipient_refuse_before_wel
             .unwrap()
             .verify()
             .unwrap();
+        let forged_wire = wrap_for_member(&pair, &packet);
         let before = pair.member_disk.snapshot();
         assert!(matches!(
-            pair.member
-                .apply_removal(&packet.encode().unwrap(), pair.now)
-                .await,
+            pair.member.apply_removal(&forged_wire, pair.now).await,
             Err(Error::Policy)
         ));
         assert!(pair.member_disk.snapshot() == before);
@@ -956,7 +953,7 @@ async fn add_device(pair: &mut Pair, member: &mut Kernel<Memory>, operation: u64
         .await
         .unwrap();
     member.join(invitation.bytes(), pair.now).await.unwrap();
-    let page = pair.owner.controls(before, 1).await.unwrap();
+    let page = pair.owner.encrypted_controls(before, 1).await.unwrap();
     assert_eq!(page.records.len(), 1);
     page.records[0].bytes().to_vec()
 }
@@ -1019,7 +1016,7 @@ fn four_devices_late_join_ordered_catchup_and_explicit_new_device_rejoin() {
             .unwrap();
         let removal = pair
             .owner
-            .controls(before, 1)
+            .encrypted_controls(before, 1)
             .await
             .unwrap()
             .records
@@ -1149,11 +1146,44 @@ fn sixteen_device_capacity_and_bounded_control_pages_do_not_scan_lifetime_histor
     });
 }
 
+fn control_proof(pair: &Pair, raw: &[u8]) -> VerifiedOwnerControl {
+    if let Ok(signed) = SignedOwnerControl::decode(raw) {
+        return signed.verify().unwrap();
+    }
+    let frame = transport::Envelope::decode(raw).unwrap();
+    let key = RecordKey::Control(frame.sequence);
+    let record = pair.owner_disk.0.borrow().records[&key].clone();
+    let mut purpose = b"record/".to_vec();
+    purpose.extend(key.encode());
+    let clear = codec::unseal(
+        &pair.owner_key,
+        pair.owner.status().context,
+        &purpose,
+        record.as_bytes(),
+        MAX_STORED_RECORD_BYTES,
+    )
+    .unwrap();
+    transport::RetainedControl::decode(&clear).unwrap().control
+}
+fn decode_for_member(pair: &Pair, raw: &[u8]) -> packets::ControlPacket {
+    let work = retained_work(
+        &pair.member_disk,
+        &pair.member_key,
+        pair.member.status().context,
+    );
+    transport::open(&work, &transport::Envelope::decode(raw).unwrap()).unwrap()
+}
+fn wrap_for_member(pair: &Pair, packet: &packets::ControlPacket) -> Vec<u8> {
+    let work = retained_work(
+        &pair.member_disk,
+        &pair.member_key,
+        pair.member.status().context,
+    );
+    transport::seal(&work, &work.group().unwrap(), packet).unwrap()
+}
 fn conflicting_control(pair: &Pair, raw: &[u8]) -> Vec<u8> {
     use openmls_traits::signatures::Signer;
-    let mut packet = packets::ControlPacket::decode(raw).unwrap();
-    let mut claims = packet.control.claims().clone();
-    // A second canonical owner-signed transition at the same accepted sequence.
+    let mut claims = control_proof(pair, raw).claims().clone();
     claims.change = ControlChange::Membership {
         additions: Vec::new(),
         removals: vec![pair.owner.status().context.device],
@@ -1164,7 +1194,7 @@ fn conflicting_control(pair: &Pair, raw: &[u8]) -> Vec<u8> {
         &pair.owner_key,
         pair.owner.status().context,
     );
-    packet.control = unsigned
+    unsigned
         .attach(
             owner
                 .signer()
@@ -1175,11 +1205,7 @@ fn conflicting_control(pair: &Pair, raw: &[u8]) -> Vec<u8> {
                 .unwrap(),
         )
         .unwrap()
-        .verify()
-        .unwrap();
-    packet.invitation = None;
-    packet.enrollment = None;
-    packet.encode().unwrap()
+        .encode()
 }
 
 #[test]
@@ -1195,7 +1221,7 @@ fn owner_fork_is_durable_quarantine_and_failed_publication_preserves_observation
             let fork = conflicting_control(&pair, page.records[0].bytes());
             let before = pair.member_disk.snapshot();
             pair.member_disk.fault(fault);
-            let result = pair.member.apply_control(&fork, pair.now).await;
+            let result = pair.member.observe_owner_control(&fork, pair.now).await;
             match fault {
                 Fault::None => {
                     assert!(matches!(result, Err(Error::Quarantined)));
@@ -1218,7 +1244,7 @@ fn owner_fork_is_durable_quarantine_and_failed_publication_preserves_observation
             if matches!(fault, Fault::Before) {
                 assert!(!pair.member.status().quarantined); // no impossible persistence claim
                 assert!(matches!(
-                    pair.member.apply_control(&fork, pair.now).await,
+                    pair.member.observe_owner_control(&fork, pair.now).await,
                     Err(Error::Quarantined)
                 ));
             }
@@ -1235,7 +1261,7 @@ fn owner_fork_is_durable_quarantine_and_failed_publication_preserves_observation
             ));
             assert!(matches!(
                 pair.member
-                    .apply_control(page.records[0].bytes(), pair.now)
+                    .observe_owner_control(page.records[0].bytes(), pair.now)
                     .await,
                 Err(Error::Quarantined)
             ));
@@ -1330,7 +1356,7 @@ fn missing_precheckpoint_history_cannot_quarantine_but_known_checkpoint_floor_ca
         let before = disk.snapshot();
         assert!(matches!(
             fourth
-                .apply_control(&conflicting_control(&pair, first.bytes()), pair.now)
+                .observe_owner_control(&conflicting_control(&pair, first.bytes()), pair.now)
                 .await,
             Err(Error::Missing)
         ));
@@ -1340,7 +1366,7 @@ fn missing_precheckpoint_history_cannot_quarantine_but_known_checkpoint_floor_ca
             .unwrap();
         assert!(matches!(
             fourth
-                .apply_control(&conflicting_control(&pair, &second), pair.now)
+                .observe_owner_control(&conflicting_control(&pair, &second), pair.now)
                 .await,
             Err(Error::Quarantined)
         ));
@@ -1371,14 +1397,14 @@ fn canceled_fork_commit_requires_reopen_and_exact_group_control_retry_does_not_w
             .remove(0);
         let before = pair.member_disk.snapshot();
         pair.member
-            .apply_control(control.bytes(), pair.now + 8000)
+            .observe_owner_control(control.bytes(), pair.now + 8000)
             .await
             .unwrap();
         assert!(pair.member_disk.snapshot() == before); // history retry, not expired admission
         pair.member_disk.fault(Fault::HangAfter);
         let fork = conflicting_control(&pair, control.bytes());
         {
-            let pending = pair.member.apply_control(&fork, pair.now);
+            let pending = pair.member.observe_owner_control(&fork, pair.now);
             futures::pin_mut!(pending);
             assert!(futures::poll!(pending).is_pending());
         }
@@ -1400,7 +1426,10 @@ fn observing_unsupported_owner_claim_cannot_admit_future_state_but_records_known
             .controls(ControlFloor::new(0, None).unwrap(), 1)
             .await
             .unwrap();
-        let packet = packets::ControlPacket::decode(page.records[0].bytes()).unwrap();
+        let proof = SignedOwnerControl::decode(page.records[0].bytes())
+            .unwrap()
+            .verify()
+            .unwrap();
         let owner = retained_work(
             &pair.owner_disk,
             &pair.owner_key,
@@ -1420,7 +1449,7 @@ fn observing_unsupported_owner_claim_cannot_admit_future_state_but_records_known
                 )
                 .unwrap()
         };
-        let mut future = packet.control.claims().clone();
+        let mut future = proof.claims().clone();
         future.parent = pair.owner.status().control_floor;
         future.prior_epoch = 1;
         future.next_epoch = 2;
@@ -1435,7 +1464,7 @@ fn observing_unsupported_owner_claim_cannot_admit_future_state_but_records_known
         ));
         assert!(pair.member_disk.snapshot() == before);
         pair.reopen_member().await;
-        let mut claims = packet.control.claims().clone();
+        let mut claims = proof.claims().clone();
         claims.change = ControlChange::OwnerUpdate;
         let known = sign(claims);
         assert!(matches!(
@@ -1756,7 +1785,7 @@ fn valid_owner_renewal_label_cannot_hide_membership_proposals_or_a_different_pat
         let enrollment = renewal(&pair, Validity::new(pair.now, pair.now + 14400).unwrap());
         let (mut third, _, _) = pending_device(&pair, &account()).await;
         let addition = add_device(&mut pair, &mut third, 10).await;
-        let mut packet = packets::ControlPacket::decode(&addition).unwrap();
+        let mut packet = decode_for_member(&pair, &addition);
         let mut claims = packet.control.claims().clone();
         claims.change = ControlChange::OwnerUpdate;
         let unsigned = UnsignedOwnerControl::new(claims).unwrap();
@@ -1780,11 +1809,10 @@ fn valid_owner_renewal_label_cannot_hide_membership_proposals_or_a_different_pat
             .unwrap();
         packet.invitation = None;
         packet.enrollment = Some(enrollment.verify().unwrap());
+        let forged_wire = wrap_for_member(&pair, &packet);
         let before = pair.member_disk.snapshot();
         assert!(matches!(
-            pair.member
-                .apply_control(&packet.encode().unwrap(), pair.now)
-                .await,
+            pair.member.apply_control(&forged_wire, pair.now).await,
             Err(Error::Policy)
         ));
         assert!(pair.member_disk.snapshot() == before);
@@ -1799,13 +1827,12 @@ fn valid_owner_renewal_label_cannot_hide_membership_proposals_or_a_different_pat
             .await
             .unwrap();
         let other = renewal(&pair, Validity::new(pair.now, pair.now + 20000).unwrap());
-        let mut packet = packets::ControlPacket::decode(actual.bytes()).unwrap();
+        let mut packet = decode_for_member(&pair, actual.bytes());
         packet.enrollment = Some(other.verify().unwrap());
+        let forged_wire = wrap_for_member(&pair, &packet);
         let before = pair.member_disk.snapshot();
         assert!(matches!(
-            pair.member
-                .apply_control(&packet.encode().unwrap(), pair.now)
-                .await,
+            pair.member.apply_control(&forged_wire, pair.now).await,
             Err(Error::Policy)
         ));
         assert!(pair.member_disk.snapshot() == before);
@@ -1860,3 +1887,5 @@ fn renewal_controls_cannot_skip_parent_floor_or_reactivate_expired_local_member(
         assert_eq!(pair.member.status().roster, pair.owner.status().roster);
     });
 }
+
+mod confidential;

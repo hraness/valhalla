@@ -113,7 +113,7 @@ jobs:
       - name: WASM pure crate checks
         run: |
           cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
-          cargo check -p vhalla-private-kernel -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-rooms --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-private-kernel -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/agent-portraits/Cargo.toml --lib --target wasm32-unknown-unknown --locked
@@ -170,7 +170,7 @@ jobs:
           shared-key: browser-artifact
           cache-all-crates: true
       - name: Browser and portable adapter lint
-        run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-rooms --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown -- -D warnings
       - name: Install pinned Trunk
         run: cargo install trunk --locked --version 0.21.14
       - name: Build production without local qualification routes

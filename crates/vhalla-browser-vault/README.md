@@ -156,3 +156,23 @@ it without Rust or handwritten cryptographic algorithms. Fixture keys are public
 After workspace integration, validation includes focused native tests/Clippy
 and `wasm32-unknown-unknown` compilation. Actual browser execution and platform
 ciphertext persistence remain separate gates.
+
+## Optional private storage custody
+
+The `private-storage` feature adds
+`UnlockedIdentity::private_storage_key(Context) -> Result<StorageKey, vhalla_private_kernel::Error>`.
+The shared kernel HKDF checks the exact authenticated account and full
+room/anchor/account/device. It returns an opaque zeroizing StorageKey, never
+seed bytes. This separate feature deliberately enables the kernel; existing
+`private-rooms` signing remains protocol-only and defaults remain unchanged.
+
+Keep identity, derived custody and private kernels inside the same worker. A
+worker command must not return derived keys or raw provider state to Window.
+Lock, identity switch and timeout must terminate the whole custody session:
+merely dropping this identity does not erase a key already retained by a kernel.
+
+Re-encrypting the same account under another password preserves derived access.
+An account-key change does not. The key envelope is still only an account backup,
+not a complete private-state backup or permission to restart a previous device.
+No state import, device handoff, rollback detection or clone prevention is added.
+The production worker/UI is not activated by these library methods.

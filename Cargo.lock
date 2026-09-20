@@ -6282,6 +6282,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "hkdf 0.12.4",
  "sha2 0.10.9",
+ "vhalla-private-kernel",
  "vhalla-private-protocol",
  "vhalla-room-activity",
  "vhalla-social",
@@ -6422,13 +6423,16 @@ version = "0.0.0"
 dependencies = [
  "bip39",
  "ed25519-dalek 2.2.0",
+ "futures",
  "getrandom 0.3.4",
  "hegeltest",
  "proptest",
  "sha2 0.10.9",
+ "vhalla-browser-vault",
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-custody",
+ "vhalla-private-kernel",
  "vhalla-private-protocol",
  "vhalla-public-protocol",
  "vhalla-room-activity",
@@ -6490,6 +6494,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures",
  "getrandom 0.2.17",
+ "hkdf 0.12.4",
  "js-sys",
  "openmls",
  "openmls_basic_credential",
@@ -6513,6 +6518,7 @@ dependencies = [
  "rusqlite",
  "sha2 0.10.9",
  "vhalla-custody",
+ "vhalla-identity",
  "vhalla-private-kernel",
 ]
 
@@ -6574,6 +6580,7 @@ dependencies = [
  "vhalla-botcaptcha",
  "vhalla-core",
  "vhalla-room-activity",
+ "vhalla-rooms",
  "vhalla-witness",
 ]
 

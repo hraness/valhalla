@@ -6,6 +6,7 @@ use std::{
     task::{Context as TaskContext, Poll, Waker},
 };
 use vhalla_private_kernel::OperationId;
+use wasm_bindgen::JsValue;
 
 fn fail(error: impl std::fmt::Debug) -> JsValue {
     JsValue::from_str(&format!("private storage qualification: {error:?}"))

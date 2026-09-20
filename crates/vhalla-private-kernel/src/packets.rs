@@ -190,9 +190,6 @@ impl ControlPacket {
         )?)
     }
 }
-#[cfg(test)]
-pub(crate) type RemovalPacket = ControlPacket;
-
 pub(crate) struct Sent {
     pub(crate) sequence: u64,
     pub(crate) operation: OperationId,

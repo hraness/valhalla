@@ -257,7 +257,7 @@ impl Pair {
         let page = self
             .owner
             .session()
-            .controls(ControlFloor::new(0, None).map_err(fail)?, 1)
+            .encrypted_controls(ControlFloor::new(0, None).map_err(fail)?, 1)
             .await
             .map_err(fail)?;
         ensure(page.records.len() == 1, "initial control not indexed")?;
@@ -418,7 +418,7 @@ async fn lifecycle_add(
     let controls = pair
         .owner
         .session()
-        .controls(first_floor, 1)
+        .encrypted_controls(first_floor, 1)
         .await
         .map_err(fail)?;
     ensure(controls.records.len() == 1, "third member control missing")?;
@@ -467,7 +467,7 @@ async fn lifecycle_remove(
     let removed_controls = pair
         .owner
         .session()
-        .controls(third_floor, 1)
+        .encrypted_controls(third_floor, 1)
         .await
         .map_err(fail)?;
     ensure(

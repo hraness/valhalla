@@ -9,9 +9,11 @@ description = "Portable password-encrypted application keys with typed social an
 [features]
 default = []
 private-rooms = ["dep:vhalla-private-protocol"]
+private-storage = ["private-rooms", "dep:vhalla-private-kernel"]
 
 [dependencies]
 vhalla-private-protocol = { path = "../vhalla-private-protocol", optional = true }
+vhalla-private-kernel = { path = "../vhalla-private-kernel", optional = true }
 argon2 = { version = "=0.5.3", default-features = false, features = ["zeroize"] }
 chacha20poly1305 = { version = "=0.10.1", default-features = false }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "zeroize"] }

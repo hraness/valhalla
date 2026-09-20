@@ -15,14 +15,17 @@
 //! local state cannot detect coherent rollback, cloned custody keys or a backend
 //! that lies about durability. Never initialize a replacement after uncertain I/O.
 
+mod account_custody;
 mod checkpoint;
 mod codec;
 mod engine;
 mod model;
 mod packets;
 pub mod storage;
+mod transport;
+pub use transport::{CommittedEncryptedControl, EncryptedControlPage};
 
-pub use engine::{Kernel, MemberDraft, OwnerDraft};
+pub use engine::{Kernel, MemberDraft, MembershipSnapshot, OwnerDraft};
 pub use vhalla_private_protocol as protocol;
 
 use protocol::{Key, PrivateRoomScope};
@@ -123,6 +126,15 @@ impl Context {
 
 /// Caller-retained storage secret. Never exported, logged, cloned publicly or
 /// generated from an account label. A fresh device must not reuse a live image.
+///
+/// ```compile_fail
+/// use vhalla_private_kernel::StorageKey;
+/// fn copy(key: &StorageKey) -> StorageKey { key.clone() }
+/// ```
+/// ```compile_fail
+/// use vhalla_private_kernel::StorageKey;
+/// fn expose(key: &StorageKey) { println!("{key:?}"); }
+/// ```
 pub struct StorageKey(Zeroizing<[u8; 32]>);
 impl StorageKey {
     /// Import an explicit custody-provided secret; all-zero fixture/default keys

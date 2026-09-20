@@ -12,6 +12,7 @@
 extern crate alloc;
 
 pub mod activity;
+pub mod continuity;
 pub mod discovery;
 pub mod response;
 

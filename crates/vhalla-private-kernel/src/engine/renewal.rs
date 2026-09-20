@@ -99,7 +99,7 @@ impl<S: Store> Kernel<S> {
             invitation: None,
             enrollment: Some(replacement.clone()),
         };
-        let output = packet.encode()?;
+        let output = transport::seal(&work, &group, &packet)?;
         group
             .merge_pending_commit(&work.provider)
             .map_err(|_| Error::Mls)?;
@@ -111,8 +111,8 @@ impl<S: Store> Kernel<S> {
             operation,
             request,
             OutboxKind::OwnerUpdate,
-            output,
-            Some(&packet),
+            output.clone(),
+            Some((&packet, &output)),
         )
         .await
     }
@@ -121,6 +121,7 @@ impl<S: Store> Kernel<S> {
         &mut self,
         mut work: Working,
         packet: ControlPacket,
+        envelope: &[u8],
         now: u64,
     ) -> Result<Status> {
         if packet.control.claims().change != ControlChange::OwnerUpdate {
@@ -160,7 +161,8 @@ impl<S: Store> Kernel<S> {
         work.state.set_membership_phase();
         let record = self.encrypt_record(
             RecordKey::Control(packet.floor()?.sequence()),
-            &packet.encode()?,
+            &transport::RetainedControl::new(packet.control.clone(), Some(envelope.to_vec()))?
+                .encode()?,
         )?;
         self.publish(work, vec![record]).await?;
         self.needs_reopen = false;

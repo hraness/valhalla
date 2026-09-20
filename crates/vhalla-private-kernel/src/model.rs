@@ -11,8 +11,8 @@ use crate::{
 
 pub(crate) const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 const MAX_PROVIDER_RECORDS: usize = 256;
-// No automatic migration from the preserved two-device qualification image.
-const MAGIC: &[u8] = b"VHPKSTATE\x02";
+// No automatic migration from preserved plaintext-control qualification images.
+const MAGIC: &[u8] = b"VHPKSTATE\x03";
 const FAULT_RESERVE: usize = MAX_RECORD_BYTES + 64;
 
 pub(crate) struct State {

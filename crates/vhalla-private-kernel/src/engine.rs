@@ -13,7 +13,16 @@ mod drafts;
 mod membership;
 mod messages;
 mod renewal;
+mod snapshot;
 pub use drafts::{MemberDraft, OwnerDraft};
+pub use snapshot::MembershipSnapshot;
+
+fn encrypted_base(work: &Working) -> protocol::ControlFloor {
+    work.state
+        .checkpoint
+        .as_ref()
+        .map_or(work.state.base, |checkpoint| checkpoint.claims().accepted)
+}
 
 /// One private room/device custody session. Operations borrow it exclusively;
 /// separate sessions still require the backend's exact atomic image comparison.
@@ -237,7 +246,7 @@ impl<S: Store> Kernel<S> {
         request: [u8; 32],
         kind: OutboxKind,
         bytes: Vec<u8>,
-        control: Option<&packets::ControlPacket>,
+        control: Option<(&packets::ControlPacket, &[u8])>,
     ) -> Result<CommittedOutbox> {
         let index = work.state.outbox.checked_add(1).ok_or(Error::Bounds)?;
         let sent = Sent {
@@ -252,11 +261,17 @@ impl<S: Store> Kernel<S> {
             self.encrypt_record(RecordKey::Outbox(index), &clear)?,
             self.encrypt_record(RecordKey::Operation(operation), &index.to_be_bytes())?,
         ];
-        if let Some(control) = control {
-            records.push(self.encrypt_record(
-                RecordKey::Control(control.floor()?.sequence()),
-                &control.encode()?,
-            )?);
+        if let Some((control, envelope)) = control {
+            records.push(
+                self.encrypt_record(
+                    RecordKey::Control(control.floor()?.sequence()),
+                    &transport::RetainedControl::new(
+                        control.control.clone(),
+                        Some(envelope.to_vec()),
+                    )?
+                    .encode()?,
+                )?,
+            );
         }
         work.state.outbox = index;
         self.publish(work, records).await?;

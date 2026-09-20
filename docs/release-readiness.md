@@ -24,41 +24,53 @@ and [publisher guide](../crates/vhalla-public-peer/README.md). Tests use fresh
 synthetic keys and local fixtures. Production browser packaging refuses local
 qualification routing. Never deploy its test manifest or fixture peers.
 
-## Private rooms: integration still required
+## Private rooms: core implemented, client release unfinished
 
-The isolated [OpenMLS qualification](../prototypes/private-rooms-mls/README.md)
-uses OpenMLS 0.9.0, encrypted staged provider snapshots and atomic in-memory
-replacement to test create/add/Welcome/send/remove, exact retained ciphertext,
-receive quarantine, failed/uncertain commit and competing state. Its exact browser
-bindings also passed in a dedicated Chromium worker, including secure-entropy
-denial. It is a model
-of the required transaction, not a filesystem or IndexedDB implementation.
+The workspace now contains the maintained [private kernel and native/browser
+backends](private-rooms.md). The earlier isolated OpenMLS prototype remains
+qualification history, not the shipping persistence implementation. The kernel
+uses account-signed anchors and device enrollments, an owner-serialized MLS
+control chain, exact encrypted image transactions, durable outbox/inbox records,
+and bounded membership inspection. Native SQLite and browser IndexedDB publish
+state and output together before releasing ciphertext or plaintext.
 
-A usable private-room path still needs all of these together:
+Existing-member controls encrypt the owner, enrollment and roster metadata in a
+predecessor-epoch MLS exporter envelope. The original ciphertext is retained for
+exact retry. The inner owner signature and actual MLS proposals remain required;
+sharing an epoch encryption key does not grant owner authority. KeyPackage and
+Welcome bootstrap packets still require an independently confidential path.
+Generic outbox artifacts must not be uploaded to an untrusted relay.
 
-- A canonical full network/room origin and separate owner and member-device
-  identities. Private room titles, membership and task context must never enter
-  a public bootstrap, directory, URL, error or unencrypted operational log.
-- Recipient/device-bound owner invitations, proof of possession, one-use
-  consumption at the owner, expiry and exact accepted control-head checks.
-- One owner-serialized membership/MLS control chain. Credentials and committers
-  must be authorized at join and each commit; competing same-parent changes
-  preserve conflict evidence and stop progress. A withheld newer head cannot be
-  detected merely by asking an untrusted relay.
-- Real encrypted state/outbox/inbox transactions. Commit sender ratchet state and
-  exact ciphertext before delivery; commit receiver state and deduplication before
-  plaintext reaches an agent. Failed or uncertain commits require reconciliation.
-- Bounded interchangeable ciphertext relays, offline catch-up and current-control
-  checks. Removal excludes the member after an accepted epoch transition; an
-  isolated sender cannot know about an unseen removal.
-- Fresh-device recovery with new leaf keys and explicit retirement of the old
-  member. History recovery is a separate choice. Do not restore an old live
-  sender ratchet or promise that ciphertext recovers erased history keys.
+Optional native `RoomSession` joins account and room custody in one lifetime.
+Storage keys derive from the account secret and the exact room/anchor/account/
+device context. Lock drops both custodians. Reopen requires the original context
+and current retained image; account restoration alone never recreates MLS state.
+Browser vaults expose the same typed derivation, but their private session/worker
+and user interface are not integrated yet. These features remain optional and
+do not add MLS or SQLite to the default public browser dependency graph.
 
-Owner serialization is the minimal initial ordering choice. It means owner
-availability gates membership and key updates. Relays remain untrusted for
-plaintext but can observe traffic sizes, timing and endpoints. Neither MLS nor
-pseudonymous keys provide anonymity.
+Before a private-room release, complete and qualify:
+
+- Native and browser creation, recipient-bound confidential invitations,
+  membership inspection, ordered control catch-up, removal and renewal flows.
+  Never publish private room titles, membership, task context or bootstrap secrets
+  into discovery, public URLs or unencrypted operational logs.
+- Bounded interchangeable ciphertext relays, offline retry and explicit
+  retention/acceptance status. An isolated sender cannot detect an unseen removal
+  merely by asking an untrusted relay.
+- Complete-state backup and clean-device recovery, with explicit fresh-device
+  admission and retirement when current ratchet custody cannot safely move.
+  History recovery is a separate choice; a key-only restore cannot recover
+  erased history keys or justify restarting old counters.
+- Browser custody locking, account and room recovery UX, and an explicit
+  owner-device succession policy for newly created rooms. Existing anchors
+  cannot acquire new recovery authority implicitly.
+
+Owner availability currently gates membership and key updates. Loss of all
+current owner-device custody can strand administration. Relays can observe
+traffic sizes, timing and endpoints; MLS and pseudonymous keys do not provide
+anonymity. The exact primitives, limits, evidence and remaining work are in the
+[private-room guide](private-rooms.md).
 
 ## Agent disclosure: enforcement still required
 
@@ -78,8 +90,11 @@ exact full destination. Changes require a new decision. The broker records the
 release locally without publishing private source metadata. Ordinary authorized
 same-room work should not need repeated prompts. Durable effect intent and
 provider idempotency or reconciliation are required before claiming restart-safe
-external actions. The existing typed in-memory policy demonstration is not this
-runtime sandbox.
+external actions. The native fixed-room grant interface now enforces exact context, epoch, roster,
+method, quota, expiry and host revocation checks around kernel operations. It
+returns no generic signer, raw ciphertext, membership capability or ambient
+network/filesystem tool. It still does not sandbox an independently privileged
+agent or provide a room-lifetime inference compartment.
 
 ## Public history, capacity and operations
 
@@ -95,8 +110,11 @@ ancestry. The protected local checkpoint key does not make the cache a portable
 trust root or defend against coherent rollback of the host's complete state.
 
 Continuity staging separately retains at most 4,096 ancestor bundles across 64
-slots with 32-bundle pages. That needs incremental finalization with historical
-peer-role checks. Public peer hints are bounded to 512 entries; signatures do not
+slots with 32-bundle pages. The new portable continuity codec separates staged ancestry, admitted terminals,
+status and role-aware evidence, and binds each reply to the exact selected peer,
+request, body and nonce. It does not activate a peer route or install client
+receipts. Limits-checked peer/store integration, weighted work admission, client
+continuation and incremental finalization beyond that bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;
 never silently prune or reset a used sequence to recover capacity.

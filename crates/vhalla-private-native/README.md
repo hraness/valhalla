@@ -1,6 +1,13 @@
 # Native private-room storage
 
-This workspace crate provides native persistence and fixed-room agent capabilities. It does not enable private networking. See [release boundaries](../../docs/private-rooms.md). The kernel wrapper owns MLS and encryption; this backend accepts only opaque stored images and records, with no key, wire, plaintext or execution API. An opaque byte constructor is not itself proof of encryption.
+This workspace crate provides native persistence, a fixed-room agent interface
+and an optional trusted private-room session. It does not enable private
+networking or install a CLI. See [release boundaries](../../docs/private-rooms.md).
+The `private_rooms` backend accepts only opaque stored images and records, with
+no key or plaintext API. An opaque byte constructor is not proof of encryption.
+The kernel supplies MLS and authenticated encryption. The separate optional
+`client` interface may return private metadata, plaintext inbox and retained
+artifacts to trusted local code; it must not be exposed wholesale as agent tools.
 
 The API is `NativePrivateStore::{create_new,open,load,read,publish}` with a full 128-byte `Context` (room, signed anchor, account, device), immutable `Limits`, and closed `RecordKey::{Outbox,Inbox,Operation,Received,Control}`. Images are at most 4 MiB +40 bytes; immutable records at most266,280 bytes, at most3 per transaction. The kernel adapter supplies canonical key fields, maps the four failure classes, and authenticates reloaded state/records before releasing anything.
 
@@ -30,7 +37,77 @@ The trait methods complete one bounded synchronous native operation in one poll 
 
 `tests/journey.rs` uses real owner/account signatures, OS-generated MLS device keys, explicit signed invitations and actual native stores. The journeys cover bidirectional messages and removal; exact retained ciphertext after reopen; no returned plaintext/ciphertext after uncertain publication; cancellation after actual SQL commit; stale logical writers under one physical custody lock; and capacity/scope refusal. Fault wrappers are test-only and run actual SQLite publication before injecting an uncertain or canceled completion. The production bridge is not cloneable. Synthetic account/wrapping keys are never written in plaintext; encrypted device state is deliberately persisted.
 
-These are private native API journeys. There is no CLI key custody, artifact export, network delivery or production activation in this crate. Histories have explicit caps; no quota failure grants permission to reset a device. The separate browser adapter and every changed integration require their own qualification.
+These are private native API journeys, not a CLI, transport or activation. The
+optional trusted session below adds account custody and access to retained
+artifacts. Histories have explicit caps; no quota failure grants permission to
+reset a device. The browser adapter and every changed integration require their
+own qualification.
+
+## Optional trusted native session
+
+Enable `client` to use `client::{RoomCreation, RoomSession}`. The feature is off
+by default and enables `vhalla-identity/private-storage`. It retains the existing
+account's exclusive custodian and derives an opaque storage key through the
+kernel's fixed HKDF-SHA256 contract. No seed getter, generic signer, storage-key
+getter, kernel getter or clone is exposed. The feature does not add networking.
+
+For a new owner, call `RoomCreation::owner(identity, validity)`. For a genuinely
+fresh member, use `RoomCreation::member` with the independently selected full
+scope, signed anchor and owner enrollment. Inspect and retain `context()` before
+consuming `commit(path, limits)`; keep anchor and enrollment metadata private.
+Creation uses a never-existing destination and commits a fresh device before
+returning a session. It is not account-key restoration of an old device.
+
+If creation fails, is interrupted or reports uncertainty, preserve its exact path
+and context. `RoomSession::open(identity, path, context)` recovers only an existing
+store and authenticates its retained image. A wrong account is rejected before
+the backend is opened. A missing image or incomplete namespace remains an error;
+there is no fallback initialization, reset or implicit migration. The underlying
+native calls finish synchronously within one poll, so async cancellation cannot
+interrupt one in-progress native call; process death and uncertain I/O still need
+explicit recovery. Run this work away from a UI event loop.
+
+A `RoomSession` owns the kernel before the account in drop order. `lock()` or drop
+destroys room key/state/store custody and then releases account custody. A live
+kernel cannot survive an account-only lock through this API. An outstanding
+borrowed operation must be dropped before lock; callers must also clear their own
+previously returned plaintext and draft buffers. Reopening the same account path
+or store while that session owns it refuses. This currently serializes sessions
+using one native identity directory; do not copy credentials to bypass that lock.
+
+`membership()` reauthenticates the locally retained anchor, owner/local
+enrollments and complete roster for recipient display. The view includes private
+full account/device keys and validity periods; it is not global freshness or
+permission to send after removal/quarantine. `prepare_message` binds exact
+content to the full context, epoch and roster. `send` rechecks those values before
+committing. Renewal or membership change needs new explicit consent. Local
+publication and a returned artifact are not remote receipt or member acceptance.
+
+The session exposes bounded inbox/outbox, key-package preparation, explicit
+invite/join, targeted removal, encrypted control acceptance/catch-up and same-device
+owner renewal. Renewal signs only the typed replacement through its retained
+account custodian. Retain its exact operation ID and validity for retry. System
+wall time is checked internally; there is no peer-supplied clock or automatic
+renewal. Owner-device succession remains unimplemented.
+
+Existing-member catch-up uses `encrypted_controls` and `apply_control` with exact
+retained predecessor-epoch envelopes. New-member KeyPackage and invitation
+outbox artifacts still contain private bootstrap metadata and require an
+independently confidential transfer channel. Generic outbox output must not be
+sent to public discovery/activity or assumed safe for an untrusted relay.
+
+Derivation can reopen complete existing encrypted state after the same account
+is unlocked. Password re-encryption does not change that key; account-key rotation
+does. A restored account alone cannot recover missing ratchets, histories or
+membership, prevent coherent rollback, or authorize two live copies. Existing
+stores encrypted under explicit keys are not automatically converted.
+
+`tests/client.rs` contains actual account/SQLite/MLS cases for joint lock/drop,
+exact reopen and ciphertext retry, complete membership inspection, stale consent
+after renewal/removal, wrong-account rejection and absent-image preservation.
+`tests/derived_custody.rs` checks account-derived custody against a reopened real
+SQLite store. These new tests and the combined state-v3 candidate still require
+the current integration gate; source presence alone is not a passing result.
 
 ## Fixed-room agent session
 
@@ -41,6 +118,12 @@ One `MessageDraft` is retained at a time; a new successful preparation invalidat
 Queue results and outbox pages contain metadata only, with no ciphertext or delivery claim. Inbox bodies are already committed authenticated content, but are still untrusted text. The interface never interprets instructions, loads paths, reads environment values, invokes tools, signs arbitrary data or sends network requests. This is a cooperating-host API boundary, not an operating-system sandbox or universal secret detector. Exposing inbox contents to a remote inference provider is itself an egress decision. An agent with independent host access can bypass this surface; restarting or constructing another grant can reset process quotas, so these are not durable account-wide limits.
 
 
-## Current integrated renewal evidence
+## Earlier renewal qualification
 
-The owner-renewal source passed 21 native backend/agent tests plus six actual MLS/SQLite journeys, and strict all-target lint. The added journey recovers owner renewal after a real commit with uncertain completion, cancels member acceptance after commit, reopens exact retained state, rejects old roster consent and exchanges current-epoch traffic. Workspace CI requalifies the promoted source; prior source-specific receipts remain historical evidence.
+The earlier owner-renewal source, before the state-v3 confidential controls and
+optional trusted session, passed 21 native backend/agent tests plus six actual
+MLS/SQLite journeys and strict all-target lint. The added journey recovers owner
+renewal after a real commit with uncertain completion, cancels member acceptance
+after commit, reopens exact retained state, rejects old roster consent and
+exchanges current-epoch traffic. Workspace CI requalifies the promoted source;
+prior source-specific receipts remain historical evidence.

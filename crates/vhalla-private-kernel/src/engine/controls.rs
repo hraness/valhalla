@@ -1,11 +1,78 @@
 use super::*;
 use crate::{
     model::FaultEvidence as StoredFault,
-    packets::ControlPacket,
     protocol::{ControlFloor, SignedOwnerControl, VerifiedOwnerControl},
+    transport::RetainedControl,
 };
 
 impl<S: Store> Kernel<S> {
+    /// Read a bounded exact encrypted suffix. The fresh-join transition has only
+    /// a locally checked owner proof; its predecessor key is never given to the
+    /// new member. This method reports that separate wire-history boundary.
+    pub async fn encrypted_controls(
+        &mut self,
+        after: ControlFloor,
+        limit: usize,
+    ) -> Result<EncryptedControlPage> {
+        if limit == 0 || limit > MAX_PAGE_RECORDS {
+            return Err(Error::Bounds);
+        }
+        let work = self.begin().await?;
+        let base = encrypted_base(&work);
+        let head = work.state.floor;
+        if after.sequence() < base.sequence() {
+            return Err(Error::Missing);
+        }
+        if after.sequence() > head.sequence() {
+            return Err(Error::Bounds);
+        }
+        let accepted = if after.sequence() == base.sequence() {
+            base
+        } else {
+            self.control_at(after.sequence()).await?.floor()?
+        };
+        if accepted != after {
+            return Err(Error::Conflict);
+        }
+        let mut cursor = after;
+        let mut records = Vec::new();
+        let mut total = 0usize;
+        while cursor.sequence() < head.sequence() && records.len() < limit {
+            let retained = self.control_at(cursor.next_sequence()?).await?;
+            if retained.control.claims().owner_device != work.state.owner.claims().device
+                || retained.control.claims().parent != cursor
+            {
+                return Err(Error::Policy);
+            }
+            let floor = retained.floor()?;
+            let bytes = retained.envelope.ok_or(Error::Missing)?;
+            let size = total.checked_add(bytes.len()).ok_or(Error::Bounds)?;
+            if size > MAX_PAGE_BYTES {
+                break;
+            }
+            total = size;
+            cursor = floor;
+            records.push(CommittedEncryptedControl {
+                scope: self.context.scope,
+                floor,
+                bytes,
+            });
+        }
+        if cursor == after && cursor.sequence() < head.sequence() {
+            return Err(Error::Bounds);
+        }
+        if cursor.sequence() == head.sequence() && cursor != head {
+            return Err(Error::Conflict);
+        }
+        self.needs_reopen = false;
+        Ok(EncryptedControlPage {
+            base,
+            head,
+            next: (cursor != head).then_some(cursor),
+            records,
+        })
+    }
+
     /// Compare a canonical signed owner claim with already-known history only.
     /// This also detects conflicting unsupported transition kinds. It never
     /// accepts a future floor, admits a device, or processes MLS ciphertext.
@@ -44,12 +111,12 @@ impl<S: Store> Kernel<S> {
         self.pending_fault.as_ref()
     }
 
-    async fn control_at(&mut self, sequence: u64) -> Result<ControlPacket> {
+    pub(super) async fn control_at(&mut self, sequence: u64) -> Result<RetainedControl> {
         let raw = self
             .read_clear(RecordKey::Control(sequence))
             .await?
             .ok_or(Error::Missing)?;
-        let packet = ControlPacket::decode(&raw)?;
+        let packet = RetainedControl::decode(&raw)?;
         if packet.floor()?.sequence() != sequence
             || packet.control.claims().scope != self.context.scope
         {
@@ -80,7 +147,7 @@ impl<S: Store> Kernel<S> {
         }
     }
 
-    /// Export only this device's independently retained control suffix. The exact
+    /// Export only this device's plaintext signed-proof suffix, never relay wire. The exact
     /// floor cursor prevents an accidental gap or a cursor from a different fork.
     pub async fn controls(&mut self, after: ControlFloor, limit: usize) -> Result<ControlPage> {
         if limit == 0 || limit > MAX_PAGE_RECORDS {
@@ -113,7 +180,7 @@ impl<S: Store> Kernel<S> {
             {
                 return Err(Error::Policy);
             }
-            let bytes = packet.encode()?;
+            let bytes = packet.control.signed().encode();
             let size = total.checked_add(bytes.len()).ok_or(Error::Bounds)?;
             if size > MAX_PAGE_BYTES {
                 break;

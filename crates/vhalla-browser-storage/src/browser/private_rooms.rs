@@ -16,7 +16,7 @@ use vhalla_private_kernel::{
     storage::{Image, RecordKey, Store, StoreError, StoredRecord},
     Context, MAX_IMAGE_BYTES, MAX_STORED_RECORD_BYTES,
 };
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 use web_sys::IdbKeyRange;
 
 fn error(error: Error) -> StoreError {

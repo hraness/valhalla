@@ -203,6 +203,7 @@ impl<S: Store> Kernel<S> {
             invitation: Some(invitation.clone()),
             enrollment: Some(join.enrollment.clone()),
         };
+        let envelope = transport::seal(&work, &group, &control_packet)?;
         group
             .merge_pending_commit(&work.provider)
             .map_err(|_| Error::Mls)?;
@@ -225,7 +226,7 @@ impl<S: Store> Kernel<S> {
             request,
             OutboxKind::Invitation,
             output,
-            Some(&control_packet),
+            Some((&control_packet, &envelope)),
         )
         .await
     }
@@ -356,7 +357,7 @@ impl<S: Store> Kernel<S> {
         advance(&mut work, &packet.control, now)?;
         let record = self.encrypt_record(
             RecordKey::Control(control_packet.floor()?.sequence()),
-            &control_packet.encode()?,
+            &transport::RetainedControl::new(control_packet.control.clone(), None)?.encode()?,
         )?;
         self.publish(work, vec![record]).await?;
         self.needs_reopen = false;
@@ -422,7 +423,7 @@ impl<S: Store> Kernel<S> {
             invitation: None,
             enrollment: None,
         };
-        let output = packet.encode()?;
+        let output = transport::seal(&work, &group, &packet)?;
         group
             .merge_pending_commit(&work.provider)
             .map_err(|_| Error::Mls)?;
@@ -434,26 +435,59 @@ impl<S: Store> Kernel<S> {
             operation,
             request,
             OutboxKind::Removal,
-            output,
-            Some(&packet),
+            output.clone(),
+            Some((&packet, &output)),
         )
         .await
     }
 
-    /// Apply exactly the next owner-authorized private control. An existing
-    /// member cannot jump a gap using a fresh-join checkpoint. A conflicting
-    /// owner signature at known history is durably quarantined before refusal.
+    /// Apply a strict confidential envelope for exactly the next owner control.
+    /// Plaintext proof packets are never accepted by this input. Old ciphertext
+    /// retries require exact retained bytes; a changed old envelope is not proof
+    /// of an owner fork. Use observe_owner_control for signed fork evidence.
     pub async fn apply_control(&mut self, raw: &[u8], now: u64) -> Result<Status> {
-        let packet = ControlPacket::decode(raw)?;
+        self.apply_envelope(raw, now, false).await
+    }
+
+    async fn apply_envelope(&mut self, raw: &[u8], now: u64, removal_only: bool) -> Result<Status> {
+        let envelope = transport::Envelope::decode(raw)?;
+        if removal_only && envelope.kind != 2 {
+            return Err(Error::Policy);
+        }
         let work = self.begin_live().await?;
-        let Some(mut work) = self.reconcile_control(work, &packet.control, now).await? else {
+        if now < work.state.clock {
+            return Err(Error::Time);
+        }
+        if envelope.sequence <= work.state.floor.sequence() {
+            if envelope.sequence <= encrypted_base(&work).sequence() {
+                return Err(Error::Missing);
+            }
+            let retained = self.control_at(envelope.sequence).await?;
+            if retained.envelope.as_deref() != Some(raw) {
+                return Err(Error::Conflict);
+            }
+            self.needs_reopen = false;
             return Ok(self.status);
-        };
+        }
+        if work.state.phase != Phase::MemberJoined {
+            return Err(Error::Policy);
+        }
+        let packet = transport::open(&work, &envelope)?;
+        self.apply_control_packet(work, packet, raw, now).await
+    }
+
+    async fn apply_control_packet(
+        &mut self,
+        mut work: Working,
+        packet: ControlPacket,
+        envelope: &[u8],
+        now: u64,
+    ) -> Result<Status> {
         if work.state.phase != Phase::MemberJoined {
             return Err(Error::Policy);
         }
         if packet.control.claims().change == ControlChange::OwnerUpdate {
-            return self.apply_owner_renewal(work, packet, now).await;
+            return self.apply_owner_renewal(work, packet, envelope, now).await;
         }
         work.state.check_time(now)?;
         check_control(&work, &packet.control, &packet.commit)?;
@@ -520,23 +554,17 @@ impl<S: Store> Kernel<S> {
         work.state.set_membership_phase();
         let record = self.encrypt_record(
             RecordKey::Control(packet.floor()?.sequence()),
-            &packet.encode()?,
+            &transport::RetainedControl::new(packet.control.clone(), Some(envelope.to_vec()))?
+                .encode()?,
         )?;
         self.publish(work, vec![record]).await?;
         self.needs_reopen = false;
         Ok(self.status)
     }
 
-    /// Compatibility name for an exact removal control; it does not accept an
-    /// invitation or a checkpoint as permission to replace this device's floor.
+    /// Accept only a strict removal envelope; no plaintext or invitation fallback.
     pub async fn apply_removal(&mut self, raw: &[u8], now: u64) -> Result<Status> {
-        let packet = ControlPacket::decode(raw)?;
-        if !matches!(&packet.control.claims().change, ControlChange::Membership { additions, removals }
-            if additions.is_empty() && removals.len() == 1)
-        {
-            return Err(Error::Policy);
-        }
-        self.apply_control(raw, now).await
+        self.apply_envelope(raw, now, true).await
     }
 }
 

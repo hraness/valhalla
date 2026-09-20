@@ -107,3 +107,34 @@ boundary instead of claiming this parser provides SSRF protection.
 Public discovery, proof of endpoint control, serving adapters, browser custody,
 durable peer tracking, multi-provider failover and end-to-end qualification
 remain separate work.
+
+
+## Historical continuity protocol
+
+The optional-to-use `continuity` module defines a separate canonical request,
+reply and proof boundary for bounded historical staging. Stage acknowledgments,
+terminal admission receipts, author status, public terminal feed and historical
+evidence are distinct types. Historical ancestry never becomes a current-policy
+post merely because a peer retains it. A terminal receipt does not prove that a
+peer retained the entire prefix and cannot be installed as a v1 multi-event
+delivery acknowledgment.
+
+Each request binds the full network/realm/directory/room, selected author or
+room feed, nonce, operation, independently checked floor and exact body hash.
+Commit also binds the complete signed terminal frame hash; its EventId alone
+would not bind the signature bytes. A typed response proof binds the exact peer,
+request and canonical reply. Stage acknowledgments identify the submitted page
+separately from a possibly later retained aggregate tail.
+
+Hard maxima are 1,230 target bytes, 145,008 body bytes, 142,176 reply bytes and
+735 binary proof bytes (1,470 lowercase hexadecimal header bytes). Stage pages
+contain exactly 32 ancestors; commit carries zero through 32 inline ancestors
+and one terminal. Retained staging remains bounded to 128 pages/4,096 ancestors.
+These bounds require independent request, cryptographic work, retained-prefix
+and maintenance admission at a serving adapter; a byte limit alone is not a
+resource budget.
+
+This module opens no endpoint and changes no existing activity writer. Peer
+integration, immutable store/configuration checks before recovery, explicit
+fresh-work preconditions, role-aware client receipt installation and live
+multi-peer qualification remain separate release work.

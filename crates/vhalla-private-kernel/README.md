@@ -58,11 +58,34 @@ control when accepting it. A fresh join stores its joining control and one bound
 initial checkpoint/history-base marker. There is no lifetime-growing control map
 inside current state and no rescan of old outbox records to discover the head.
 
-`controls(after_full_floor, limit)` returns a bounded immutable suffix with its
-available base, observed head and full continuation. Earlier history that this
-device never accepted is an explicit error, not an empty successful page. The
-owner retains controls from genesis subject to the backend's explicit quota.
-An exact accepted control retry is read-only and does not renew any permission.
+`encrypted_controls(after_full_floor, limit)` returns a bounded immutable suffix
+of `CommittedEncryptedControl` envelopes with its available base, observed head
+and full continuation. It returns the original ciphertext without retaining an
+old exporter key or encrypting it again. A fresh joiner's encrypted base is its
+joining floor: it cannot supply the predecessor envelope it never authenticated.
+Earlier unavailable history is an error, not an empty successful page. The owner
+retains controls from genesis subject to the backend's explicit quota.
+
+Each envelope uses XChaCha20Poly1305 with a key exported from the predecessor MLS
+epoch under `vhalla/private/control-envelope/v1`. Exporter context and AEAD bind
+full room/anchor, epoch, complete control floor, canonical roster commitment and
+anchored owner device; the complete header is authenticated. Decryption is only
+one gate: the inner owner signature, exact next parent and actual MLS staged
+control are still checked. The fixed header exposes kind, epoch, sequence and
+length. It does not promise traffic-analysis protection.
+
+`apply_control` accepts only these encrypted envelopes, never a plaintext fallback.
+At an old known sequence, only the exact retained envelope is a read-only retry;
+changed ciphertext is a conflict, not authenticated owner-fork evidence. It does
+not renew permission. `controls(after_full_floor, limit)` instead returns the
+retained **signed owner proofs** for local inspection and evidence. Those proof
+bytes are private metadata, not encrypted transport packets.
+
+The invitation response and KeyPackage request remain confidential bootstrap
+artifacts with visible enrollment/roster metadata. `invite` retains both the
+recipient bootstrap in its outbox and a separate encrypted next control for
+existing members. Generic `outbox` output therefore is not uniformly suitable
+for an untrusted relay. No transport is implemented by this crate.
 
 `observe_owner_control` compares a signed claim with known history without
 admitting future state, including owner credential renewal claims.
@@ -82,6 +105,18 @@ reserve does not guarantee free disk, browser persistence or successful sync.
 If all writes fail and the process loses memory, the software cannot promise to
 remember that observation. A controller must not automatically resume after that
 error or claim the fault survived merely because it was observed.
+
+## Membership inspection
+
+`membership()` authenticates the exact retained state before returning a bounded
+`MembershipSnapshot`: status, signed anchor, local enrollment, current owner
+enrollment and the complete roster. It exposes full account/device identities
+and validity periods for trusted recipient inspection. These are private metadata.
+The snapshot is the last locally accepted state, not a remote freshness check.
+History inspection remains available after removal or fork quarantine; that does
+not permit sending. A failed, stale or canceled storage access leaves the same
+reopen latch as other kernel operations. A snapshot never refreshes a draft's
+sharing consent or a host's agent grant.
 
 ## Time and remaining recovery boundaries
 
@@ -126,12 +161,13 @@ still apply when nested pieces are individually valid. Histories use checked u64
 counters and separate indexed records with no artificial lifetime message cap.
 Backend quotas must refuse without pruning, reset or partial acknowledgment.
 
-This group candidate uses explicit current-state format `VHPKSTATE\x02` and
-invitation format `VHPKINVITE\x02`; it does not load or migrate the preserved
-`v1` two-device synthetic images. Record-key and encrypted-envelope formats,
-Store API and max3 transaction contract are unchanged. Old source/manifests and
-receipts are preserved separately without copying target directories or changing
-retained databases. There is no implicit migration into the current format.
+Current state uses `VHPKSTATE\x03` and invitation format `VHPKINVITE\x02`.
+The control envelope is `VHPKCTRL\x01`; encrypted local control records contain
+`VHPKCTRLREC\x01` framing around the signed proof and optional retained envelope.
+State versions 1 and 2 are refused, not loaded or migrated. Storage record keys,
+outer storage AEAD and the maximum-three-record Store transaction contract remain
+unchanged. Preserve compatible source and complete custody when inspecting older
+experimental stores; there is no automatic format or storage-key migration.
 
 Upstream provider/serialization allocations may contain secret copies. Wrapping
 keys and serialized clear buffers use zeroizing ownership; this is not a claim
@@ -143,19 +179,46 @@ abort/trap on OS entropy failure; invalidate the worker/session, with no fallbac
 Pinned graph: OpenMLS0.9.0, provider/credential/storage/traits0.6.0, standard
 `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`, no draft features. WASM development
 pins match browser wasm-bindgen0.2.108/js-sys0.3.85. Native group tests, strict lint
-and WASM checks have separate exact-tree receipts. The real SQLite and IndexedDB
-journeys cover group transactions, quotas, cancellation after commit, reopen,
-removal and owner renewal. The browser journey runs in both Window and a dedicated
-worker. Workspace native tests and browser runtime CI repeat this coverage.
+and WASM checks have separate exact-tree receipts. Earlier real SQLite and
+IndexedDB journeys covered group transactions, quotas, cancellation after commit,
+reopen, removal and owner renewal; the browser journey ran in both Window and a
+dedicated worker. These earlier receipts do not qualify the changed state-v3
+control, account-custody or membership snapshot APIs. Combined-candidate validation
+is pending. Workspace native tests and browser runtime CI cover the integrations.
 
 All private descriptors, invitations, member identities, controls, content and
 puzzle metadata stay out of public discovery/activity by default. Returning a
 committed artifact means local durable storage only, not transport delivery,
 verified useful work, owner acceptance of a result or authority to execute tools.
-Production private transport, complete custody/recovery, invite UX and enforced
-agent compartments remain integration gates before private-client claims. The
-fixed-room agent API and storage journeys do not substitute for these workflows.
+Private bootstrap transport, browser custody integration, complete-state recovery,
+invite UX and enforced agent compartments remain gates before private-client
+claims. The fixed-room agent API and storage journeys do not substitute for these workflows.
 
 ## Owner renewal
 
 The exact anchored device can renew through a current account-signed enrollment using `owner_renewal_request` and `renew_owner`. This narrowly permits an expired prior owner enrollment while ordinary operations and the accepting member retain their validity checks. The checked MLS self-update advances the epoch and invalidates old roster consent. Its control, outbox, operation and current state commit together; exact retries preserve the original artifact. Owner-device succession remains unimplemented.
+
+## Optional account-derived storage custody
+
+`StorageKey::derive_for_account(&SigningKey, Context)` implements one frozen
+HKDF-SHA256 contract for existing account custodians. It checks exact account
+public-key equality, then derives 32 bytes from the secret Ed25519 seed with salt
+`vhalla/private-room/storage/extract/v1\0` and expansion info
+`vhalla/private-room/storage/key/v1\0` followed by the 32-byte room, anchor, account and
+device fields, in that order. Both labels include the terminating NUL. All fields
+are full fixed-width values; password, epoch, enrollment and roster are deliberately absent. The output
+is opaque zeroizing custody, not a generic key derivation or signing callback.
+
+This derives a key to open complete existing state; it does not initialize,
+restore, import, clone, migrate or authorize it. Password changes with the same
+account retain access. Account-key rotation requires old account custody or a
+separately reviewed migration. Compromised account custody exposes every retained
+derived store. Missing ratchets or histories cannot be recovered from the account
+backup alone. Coherent rollback and two active copies remain outside this boundary.
+
+A live kernel retains its own storage-key copy: locking the account alone does
+not lock the kernel. The controller must drop both or terminate their shared
+worker. The native crate's optional `client::RoomSession` enforces that joint
+lifetime; the browser private-room worker/controller is not yet wired. No worker
+response or agent method should expose secret bytes. Previously created
+explicit-key stores are not automatically converted to this scheme.

@@ -72,7 +72,7 @@ Start with the current public product path:
 | Browser UI, worker custody and durable author state | [browser](../browser/README.md), [storage](../crates/vhalla-browser-storage/README.md), [encrypted vault](../crates/vhalla-browser-vault/README.md) |
 | Native authoring, peer delivery and operators | [CLI](../crates/vhalla-cli/README.md) |
 | Optional puzzle exchange and recent solve evidence | [Clankdar](../prototypes/clankdar-attest/README.md) |
-| Private-room records; group integration remains unfinished | [private protocol](../crates/vhalla-private-protocol/README.md), [MLS qualification](../prototypes/private-rooms-mls/README.md) |
+| Private group kernel, durable custody and release boundaries | [private-room guide](private-rooms.md), [private protocol](../crates/vhalla-private-protocol/README.md), [kernel](../crates/vhalla-private-kernel/README.md), [native backend](../crates/vhalla-private-native/README.md) |
 
 The following foundation and experimental modules retain their own narrower
 contracts. Their presence does not add features or dependencies to the default
