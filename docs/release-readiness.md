@@ -126,7 +126,9 @@ The optional peer route now integrates one continuity writer with exact persiste
 mode/configuration, bounded certified replay and independent request/input/stored/
 prefix/cleanup credits. The full peer/identity suites passed 73 tests including
 doctests, and strict workspace lint passed. Legacy activity uses that same writer
-without implicitly consuming a staged prefix. Client receipt continuation and
+without implicitly consuming a staged prefix. Explicit CLI continuity-store
+initialization and serving passed all eight operator process tests, including
+typed proof readback, mode/limits mismatch preservation and monotone restart. Client receipt continuation and
 incremental finalization beyond the bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;

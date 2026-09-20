@@ -20,7 +20,7 @@ mod discovery;
 #[path = "public_activity.rs"]
 mod activity;
 
-pub const HELP: &str = "vhalla public bootstrap-export CONFIG GENESIS_SOCIAL NEW_FILE\nvhalla public bootstrap-check FILE FULL_PIN64\nvhalla public serve BOOTSTRAP PIN64 KEY_DIR JOURNAL PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN [--listen LOOPBACK_IP:PORT] [--new-state] [--dev-origin] [--activity-store ROOM64 STORE MAX_EVENTS MAX_HISTORY_BYTES]...\nvhalla public activity-store-init BOOTSTRAP PIN64 ROOM64 NEW_STORE MAX_EVENTS MAX_HISTORY_BYTES\nNative local authoring and bounded outbox export: vhalla public activity (see command help).\nDiscovery serving/selected-seed registration: vhalla public discovery-serve (see command help).\nServe creates no identity and remains loopback HTTP; public TLS requires an explicit reverse proxy. New advertisement state requires --new-state.\nExport binds the exact signed genesis archive and validator schedule. Compare the full pin through an independent trusted channel; it is not a server's authority claim.";
+pub const HELP: &str = "vhalla public bootstrap-export CONFIG GENESIS_SOCIAL NEW_FILE\nvhalla public bootstrap-check FILE FULL_PIN64\nvhalla public serve BOOTSTRAP PIN64 KEY_DIR JOURNAL PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN [--listen LOOPBACK_IP:PORT] [--new-state] [--dev-origin] [--activity-store ROOM64 STORE MAX_EVENTS MAX_HISTORY_BYTES]...\nvhalla public activity-store-init BOOTSTRAP PIN64 ROOM64 NEW_STORE MAX_EVENTS MAX_HISTORY_BYTES\nContinuity store creation: vhalla public continuity-store-init (see command help). Continuity serving: vhalla public serve ... --continuity-store ROOM64 STORE MAX_EVENTS MAX_HISTORY_BYTES MAX_STAGE_SLOTS MAX_STAGE_EVENTS MAX_STAGE_BYTES TTL_SECONDS. Never mix with --activity-store.\nNative local authoring and bounded outbox export: vhalla public activity (see command help).\nDiscovery serving/selected-seed registration: vhalla public discovery-serve (see command help).\nServe creates no identity and remains loopback HTTP; public TLS requires an explicit reverse proxy. New advertisement state requires --new-state.\nExport binds the exact signed genesis archive and validator schedule. Compare the full pin through an independent trusted channel; it is not a server's authority claim.";
 
 fn bytes(path: &Path, max: usize) -> Result<Vec<u8>, String> {
     let file = OpenOptions::new()
@@ -74,6 +74,7 @@ pub fn run(args: Vec<OsString>) -> Result<(), String> {
     match args.get(1).and_then(|s| s.to_str()) {
         Some("serve") => serve::run(&args),
         Some("activity-store-init") => serve::init_store(&args),
+        Some("continuity-store-init") => serve::init_continuity_store(&args),
         Some("activity") => activity::run(&args),
         Some("discovery-serve") => discovery::run(&args),
         // Private self-exec protocol: bounded resolver process, no network dial.

@@ -501,3 +501,184 @@ fn serve_activity_flags_are_bounded_and_missing_store_never_initializes_state() 
         assert!(!home.dir.join("peer-state").exists());
     }
 }
+
+fn continuity_init_args(home: &Home) -> Vec<OsString> {
+    let mut args = init_args(home);
+    args[1] = "continuity-store-init".into();
+    args[5] = home.dir.join("continuity").into();
+    args.extend(["2", "4096", "33554432", "600"].map(OsString::from));
+    args
+}
+fn init_continuity(home: &Home) {
+    let result = invoke(continuity_init_args(home));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).contains("continuity-format VHCF2"));
+}
+fn continuity_args(home: &Home, create: bool) -> Vec<OsString> {
+    let mut args = home.args(create);
+    args.extend([
+        "--continuity-store".into(),
+        hex(&[5; 32]).into(),
+        home.dir.join("continuity").into(),
+        "100".into(),
+        "1000000".into(),
+        "2".into(),
+        "4096".into(),
+        "33554432".into(),
+        "600".into(),
+    ]);
+    args
+}
+
+#[test]
+fn continuity_init_rejects_invalid_pin_limits_and_existing_store_without_reset() {
+    let home = Home::new();
+    for (index, value) in [
+        (3, hex(&[0; 32])),
+        (6, "0".into()),
+        (7, "01000000".into()),
+        (8, "65".into()),
+        (8, "65536".into()),
+        (9, "31".into()),
+        (9, "4097".into()),
+        (10, "33554433".into()),
+        (11, "59".into()),
+        (11, "86401".into()),
+    ] {
+        let mut args = continuity_init_args(&home);
+        args[index] = value.into();
+        assert!(!invoke(args).status.success());
+        assert!(!home.dir.join("continuity").exists());
+    }
+    init_continuity(&home);
+    assert!(!home.dir.join("peer-state").exists());
+    assert!(!home.dir.join("journal").exists());
+    let before = fs::read(home.dir.join("continuity/HEAD")).unwrap();
+    assert!(!invoke(continuity_init_args(&home)).status.success());
+    assert_eq!(fs::read(home.dir.join("continuity/HEAD")).unwrap(), before);
+    let mut legacy = init_args(&home);
+    legacy[5] = home.dir.join("continuity").into();
+    assert!(!invoke(legacy).status.success());
+    assert_eq!(fs::read(home.dir.join("continuity/HEAD")).unwrap(), before);
+}
+
+#[test]
+fn continuity_serve_requires_existing_store_and_one_exact_mode() {
+    let home = Home::new();
+    assert!(!invoke(continuity_args(&home, true)).status.success());
+    assert!(!home.dir.join("continuity").exists());
+    assert!(!home.dir.join("peer-state").exists());
+    init_continuity(&home);
+    init_activity(&home);
+    let mut mixed = continuity_args(&home, true);
+    mixed.extend(
+        activity_args(&home, false)
+            .into_iter()
+            .skip(home.args(false).len()),
+    );
+    let mut reversed = activity_args(&home, true);
+    reversed.extend(
+        continuity_args(&home, false)
+            .into_iter()
+            .skip(home.args(false).len()),
+    );
+    let mut duplicate = continuity_args(&home, true);
+    duplicate.extend(
+        continuity_args(&home, false)
+            .into_iter()
+            .skip(home.args(false).len()),
+    );
+    let mut invalid = continuity_args(&home, true);
+    *invalid.last_mut().unwrap() = "59".into();
+    for args in [mixed, reversed, duplicate, invalid] {
+        assert!(!invoke(args).status.success());
+        assert!(!home.dir.join("peer-state").exists());
+    }
+}
+
+#[test]
+fn continuity_serve_has_typed_proof_and_preserves_mode_and_counter_on_restart() {
+    use vhalla_public_protocol::{continuity as wire, Capabilities};
+    let home = Home::new();
+    init_continuity(&home);
+    let (running, address, sequence) = start_args(continuity_args(&home, true));
+    assert_eq!(sequence, 1);
+    let ad = PeerAdvertisement::decode(&fetch(&home, address, ReadKind::Advertisement, 1)).unwrap();
+    assert!(ad
+        .unverified_claims()
+        .capabilities
+        .contains(Capabilities::PUBLISH));
+    let request = wire::Request::new(
+        wire::RequestContext {
+            scope: wire::Scope {
+                network: home.network,
+                realm: 77u128.to_be_bytes(),
+                directory: [8; 32],
+                room: [5; 32],
+            },
+            nonce: [3; 32],
+            operation: [4; 16],
+            floor: wire::Observed {
+                height: 0,
+                frontier: home.frontier,
+            },
+        },
+        wire::Selection::RoomFeed,
+        wire::Kind::Feed {
+            after: 0,
+            count: 16,
+        },
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect_timeout(&address, Duration::from_secs(3)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        socket,
+        "GET {} HTTP/1.1\r\nHost: peer.vhalla.dev\r\n\r\n",
+        request.target()
+    )
+    .unwrap();
+    let mut raw = Vec::new();
+    socket.read_to_end(&mut raw).unwrap();
+    let split = raw.windows(4).position(|v| v == b"\r\n\r\n").unwrap();
+    let headers = std::str::from_utf8(&raw[..split]).unwrap();
+    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+    let proof = headers
+        .lines()
+        .find_map(|s| s.strip_prefix("x-vhalla-proof: "))
+        .unwrap();
+    let response = wire::ResponseProof::from_hex(proof)
+        .unwrap()
+        .verify(home.key, &request, &raw[split + 4..])
+        .unwrap();
+    let wire::Reply::Feed(page) = response.reply() else {
+        panic!("expected terminal feed")
+    };
+    assert_eq!(page.tip, 0);
+    assert!(page.entries.is_empty());
+    shutdown(running);
+    let before = publisher_files(&home);
+    assert!(!invoke(home.args(false)).status.success());
+    let mut legacy = activity_args(&home, false);
+    let n = legacy.len();
+    legacy[n - 3] = home.dir.join("continuity").into();
+    assert!(!invoke(legacy).status.success());
+    let mut changed = continuity_args(&home, false);
+    *changed.last_mut().unwrap() = "601".into();
+    assert!(!invoke(changed).status.success());
+    assert_eq!(publisher_files(&home), before);
+    let (running, address, sequence) = start_args(continuity_args(&home, false));
+    assert_eq!(sequence, 2);
+    let ad = PeerAdvertisement::decode(&fetch(&home, address, ReadKind::Advertisement, 5)).unwrap();
+    assert!(ad
+        .unverified_claims()
+        .capabilities
+        .contains(Capabilities::PUBLISH));
+    shutdown(running);
+}

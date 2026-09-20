@@ -1646,3 +1646,41 @@ Network endpoint/timing/size correlation, long-term local storage compromise,
 coherent rollback and forwarding by legitimate members remain outside the
 confidential file-exchange guarantee. Live multi-machine relay operation and
 agent process isolation are not implemented by this CLI slice.
+
+## Explicit public continuity serving
+
+The optional `experimental-public` CLI can create and serve the new continuity
+store format. This is an explicit alternative to v1 `--activity-store` publishing;
+never use it to reinterpret an existing publisher, reset counters or migrate a
+used v1 store. It does not activate discovery or start an external TLS service.
+
+```console
+vhalla public continuity-store-init BOOTSTRAP PIN64 ROOM64 NEW_STORE 100000 268435456 8 4096 33554432 600
+vhalla public serve BOOTSTRAP PIN64 KEY_DIR JOURNAL NEW_PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN --new-state --continuity-store ROOM64 NEW_STORE 100000 268435456 8 4096 33554432 600
+```
+
+Limits after the store path are permanent event count and history bytes, staged
+slots, staged event count, staged bytes and fixed lease seconds. Every value is
+explicit and immutable. Stage bounds are 1–64 slots, 32–4096 events, at most32MiB,
+and a60–86400-second lease. Permanent quotas grant no room or posting rights.
+The64-argument process bound still applies to repeated store selections.
+
+A full4096-event upload requires128 pages and at least six rate windows under
+the current per-IP verification budget. The example600-second lease is a
+qualification starting point, not a speed or availability guarantee; choose it
+from measured replay/upload/finalization and contention. Expiry never silently
+renews a lease. Stage acknowledgements are temporary; admitted terminal proof
+and peer-asserted retained historical evidence have different meanings.
+
+On restart retain the exact store and publisher paths, full room IDs and limits,
+and omit `--new-state`. Mode/version/configuration mismatches refuse before the
+selected store's recovery. Never combine `--activity-store` and
+`--continuity-store`. Source must be independently pinned; selecting storage
+cannot create room policy, validator authority or admission permission. The
+listener remains loopback HTTP with an explicitly operated HTTPS reverse proxy.
+
+The typed continuity route and legacy activity compatibility use one writer.
+Legacy activity cannot consume a staged prefix. Ordinary client receipt state
+cannot treat a jumped terminal as proof that every ancestor was delivered;
+continuity-aware client persistence remains separate work. See the
+[peer resource and recovery contract](../vhalla-public-peer/README.md).

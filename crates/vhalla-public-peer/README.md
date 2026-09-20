@@ -287,8 +287,11 @@ The new publisher marker is `VHPM2`; existing READ and `VHPM1` paths retain thei
 old APIs and bytes. A different mode, path, scope or limit refuses before store
 recovery. No constructor migrates, resets, or opens a second writer. Preserve
 existing publisher counters and identity floors; a new directory is not a way
-to reset a previously advertised identity. This library slice adds no CLI flag,
-listener deployment, automatic peer selection, or client receipt installation.
+to reset a previously advertised identity. The optional CLI exposes explicit `continuity-store-init` and mutually exclusive
+`public serve --continuity-store` selection; see the
+[operator commands](../vhalla-cli/README.md#explicit-public-continuity-serving).
+No listener deployment, automatic peer selection or client receipt installation
+is included.
 
 Only the selected mode serves `/vhalla/v1/continuity`. Its canonical typed request
 binds the full scope, exact author (except room-wide Feed), operation, nonce,
