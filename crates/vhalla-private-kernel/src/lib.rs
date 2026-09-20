@@ -18,11 +18,15 @@
 mod account_custody;
 mod checkpoint;
 mod codec;
+mod contact;
 mod engine;
 mod model;
 mod packets;
 pub mod storage;
 mod transport;
+pub use contact::{
+    ConfidentialContactOffer, ContactBootstrap, MAX_CONTACT_OFFERS, MAX_CONTACT_TTL,
+};
 pub use transport::{CommittedEncryptedControl, EncryptedControlPage};
 
 pub use engine::{Kernel, MemberDraft, MembershipSnapshot, OwnerDraft};
@@ -188,6 +192,12 @@ pub enum Phase {
 /// Exact type of a retained outbox artifact, without a delivery claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutboxKind {
+    /// Secret issuance metadata only; recover keys through the dedicated offer API.
+    ContactOffer,
+    /// Complete encrypted one-use bootstrap request.
+    ContactRequest,
+    /// Complete encrypted recipient-bound invitation response.
+    ContactInvitation,
     /// Recipient enrollment plus exact one-use MLS KeyPackage.
     KeyPackage,
     /// Owner-signed invitation/control plus exact Commit and Welcome.
@@ -238,6 +248,51 @@ impl CommittedOutbox {
     }
 }
 
+/// Closed contiguous outbox entry. Secret offers have no generic byte accessor.
+pub enum OutboxEntry {
+    /// Retained ordinary artifact. Bootstrap ciphertext still requires explicit delivery authority.
+    Artifact(CommittedOutbox),
+    /// Secret issuance exists, without exposing either one-use direction key.
+    ConfidentialOffer {
+        /// Immutable local outbox position.
+        sequence: u64,
+        /// Local issuance operation; never a transferable admission authority.
+        operation: OperationId,
+    },
+}
+impl OutboxEntry {
+    /// Ordinary retained artifact, or no exportable artifact for secret issuance.
+    /// Callers must handle confidential metadata explicitly; absence is not an
+    /// empty ciphertext or a missing outbox position.
+    pub fn artifact(&self) -> Option<&CommittedOutbox> {
+        match self {
+            Self::Artifact(artifact) => Some(artifact),
+            Self::ConfidentialOffer { .. } => None,
+        }
+    }
+    /// Exact retained index, including confidential issuance metadata.
+    pub fn sequence(&self) -> u64 {
+        match self {
+            Self::Artifact(a) => a.sequence(),
+            Self::ConfidentialOffer { sequence, .. } => *sequence,
+        }
+    }
+    /// Original operation, never a token permitting another operation.
+    pub fn operation(&self) -> OperationId {
+        match self {
+            Self::Artifact(a) => a.operation(),
+            Self::ConfidentialOffer { operation, .. } => *operation,
+        }
+    }
+    /// Closed artifact classification; ContactOffer never carries key bytes here.
+    pub fn kind(&self) -> OutboxKind {
+        match self {
+            Self::Artifact(a) => a.kind(),
+            Self::ConfidentialOffer { .. } => OutboxKind::ContactOffer,
+        }
+    }
+}
+
 /// Authenticated message read from a committed encrypted inbox. Its bytes are
 /// inert content and never instructions or authority to run host tools.
 #[derive(Clone)]
@@ -268,7 +323,7 @@ pub struct OutboxPage {
     /// Next exclusive cursor, or none when this snapshot is exhausted.
     pub next: Option<u64>,
     /// Bounded retained output records in ascending order.
-    pub records: Vec<CommittedOutbox>,
+    pub records: Vec<OutboxEntry>,
 }
 
 /// A bounded immutable inbox page from a snapshotted local head. These are

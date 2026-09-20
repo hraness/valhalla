@@ -115,11 +115,45 @@ returns local signed proof records, not catch-up packets safe for public sharing
 An altered old ciphertext is refused, not treated as proof of an owner fork;
 quarantine requires authenticated signed evidence at a known retained floor.
 
-The recipient bootstrap is a separate unfinished transport boundary. KeyPackage
-requests, invitation packets and the owner's checkpoint expose private enrollment
-or roster metadata around MLS artifacts. Generic outbox output can contain these
-bootstrap artifacts. It must not be uploaded unchanged to public discovery,
-public activity or an untrusted relay. No current API automatically sends it.
+## Confidential recipient bootstrap
+
+`create_contact_offer` produces one 713-byte secret file bound to a full recipient
+account. It contains the signed anchor and current owner enrollment, a separate
+random offer ID, expiry, and two independently random direction keys. The anchored
+owner device signs the entire canonical file, including those keys. An attacker
+cannot copy legitimate bootstrap records and substitute its own encryption keys.
+The file still requires confidential transfer; signing does not make it public.
+
+`ContactBootstrap::inspect` checks the complete offer against independently
+selected owner and recipient account keys and current time. Its metadata getters
+are enough to initialize a fresh member device. `contact_request` commits a fully
+encrypted KeyPackage request. `accept_contact` consumes the unused offer together
+with membership state, encrypted invitation, operation record and existing-member
+control in the same transaction, still at most three immutable records.
+`join_contact` requires the exact retained request hash as well as the existing
+owner, recipient, MLS Welcome and roster checks.
+
+There are at most 64 outstanding offers. Each lasts at most 24 hours from issuance
+and no later than the owner enrollment's expiry. Owner renewal invalidates the old
+enrollment's offers. Exact creation retry returns the original secret without
+reactivating consumed, expired or invalidated authority; exact admission retry
+returns the original encrypted response. If a committed pending request expires
+or is invalidated before admission, retain its evidence and explicitly prepare a
+fresh device for another attempt. Never silently replace the old KeyPackage.
+
+`OutboxEntry` is a closed choice between an ordinary artifact and confidential
+issuance metadata. Its `artifact()` returns `None` for secret offers; normal
+outbox export cannot retrieve their keys. A dedicated exact offer retry can
+recover the secret from encrypted storage. Archived bootstrap secrets therefore
+do not have a forward-secrecy guarantee against later storage-custody compromise.
+The wire exposes direction, random offer ID, request/response correlation, nonce,
+length and network timing/endpoints. It exposes no caller operation ID or room,
+account, device or roster field in the clear header. It does not provide anonymity.
+
+The earlier `key_package`/`invite` methods remain explicit local artifact APIs;
+their plaintext metadata must not be uploaded through a generic relay path.
+Contact encryption does not implement delivery, discover a relay, grant network
+authority or prove that a remote member received anything.
 
 ## Durable state and limits
 
@@ -146,8 +180,8 @@ fork at a known retained floor quarantines the device and preserves bounded proo
 if publication succeeds. If storage cannot write, the pending proof must be
 preserved separately; observing it in memory does not make it durable.
 
-Current state uses `VHPKSTATE\x03`; invitation packets use `VHPKINVITE\x02`.
-State versions 1 and 2 are not automatically migrated. Opening an old, incomplete
+Current state uses `VHPKSTATE\x04`; invitation packets use `VHPKINVITE\x02`.
+State versions 1, 2 and 3 are not automatically migrated. Opening an old, incomplete
 or inconsistent store refuses; it does not overwrite, migrate or silently
 regenerate it. Retain compatible source and complete custody when inspecting
 older experimental artifacts.
@@ -200,6 +234,20 @@ WASM library Clippy with all features, the separate production-feature WASM
 Clippy configuration, and the real private-room browser fixture build. The actual Window and worker runtime each passed with 66 strict writes and 374
 reads. The fresh 53-lock dependency audit found no active vulnerabilities; three
 inactive/archive findings and 14 warnings remain recorded without suppression.
+The current state-v4 confidential contact candidate passed 87 kernel/native/client/
+agent tests and compile-fail examples. Its actual Window and dedicated-worker
+group journeys each performed 74 strict writes and 447 reads, including the
+owner-signed one-use contact exchange and refusal of a modified offer. A separate
+real account-derived custody fixture passed in both contexts, each with six
+strict writes and 57 reads: saved-vault authentication, joint account/kernel drop,
+exact image reopen and ciphertext retry, password re-encryption parity,
+wrong-account preservation and missing-image refusal. Both retained the standard
+WASM stack, 20-second worker/45-second outer deadlines and full Argon2 parameters.
+The complete harnesses took 9.126 and 11.361 seconds respectively on the measured
+Chromium 153/macOS host; these are fixture timings, not throughput guarantees.
+Full-workspace strict Clippy, all-feature and production-feature WASM Clippy,
+both browser fixture builds and a fresh 53-lock security audit also passed.
+The public continuity store's 39 tests and strict lint passed separately.
 These checks do not establish a complete private-room UI or live relay delivery.
 
 Before a private-room release, finish and qualify:
@@ -209,9 +257,9 @@ Before a private-room release, finish and qualify:
    clients. Key-only restoration must not restart an old device or clone custody.
 2. Usable room creation, recipient-bound invitation, member/device inspection,
    catch-up, removal, renewal and explicit recovery UX in both clients.
-3. Recipient-bound confidential bootstrap transport, and usable ordered delivery
-   of the implemented encrypted controls. Keep plaintext invitation, enrollment,
-   roster checkpoint and local proof artifacts out of public relay uploads.
+3. Usable delivery of the implemented confidential bootstrap and encrypted
+   controls. Keep secret offers, legacy plaintext bootstrap and local proof
+   artifacts out of public relay uploads.
 4. Bounded interchangeable encrypted relays, offline retry, congestion/quota
    behavior and strict separation between relay retention and member acceptance.
 5. Enforced agent compartments and inference-provider grants, with fresh contexts

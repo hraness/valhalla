@@ -91,8 +91,8 @@ wall time is checked internally; there is no peer-supplied clock or automatic
 renewal. Owner-device succession remains unimplemented.
 
 Existing-member catch-up uses `encrypted_controls` and `apply_control` with exact
-retained predecessor-epoch envelopes. New-member KeyPackage and invitation
-outbox artifacts still contain private bootstrap metadata and require an
+retained predecessor-epoch envelopes. Legacy manual KeyPackage and invitation
+outbox artifacts contain private bootstrap metadata and require an
 independently confidential transfer channel. Generic outbox output must not be
 sent to public discovery/activity or assumed safe for an untrusted relay.
 
@@ -106,8 +106,31 @@ stores encrypted under explicit keys are not automatically converted.
 exact reopen and ciphertext retry, complete membership inspection, stale consent
 after renewal/removal, wrong-account rejection and absent-image preservation.
 `tests/derived_custody.rs` checks account-derived custody against a reopened real
-SQLite store. These new tests and the combined state-v3 candidate still require
-the current integration gate; source presence alone is not a passing result.
+SQLite store. These cases passed in the custody/control checkpoint. Each later protocol
+candidate still needs its current integration gate; source presence alone is not
+a passing result.
+
+## Trusted confidential invitation flow
+
+`RoomSession::create_contact_offer` returns the committed secret file through an
+explicit confidential-export type. `RoomCreation::from_contact` verifies it using
+the independently selected owner account and actual unlocked recipient account,
+then prepares a fresh device. Inspect and retain its exact context before commit.
+`contact_request`, `accept_contact` and `join_contact` wrap the complete encrypted
+exchange with the session's trusted clock and joint account/kernel custody.
+They open no network connection and provide no agent invitation capability.
+
+Ordinary outbox pages contain `OutboxEntry`; callers must explicitly select an
+ordinary artifact through `artifact()`. Secret issuance returns metadata only.
+The agent's `QueuedStatus::artifact_bytes` is `None` for that metadata and `Some`
+for ordinary artifacts. It never returns secret offers or ciphertext. Exact
+offer recovery is available only through the trusted session's issuance retry.
+
+The native contact integration test covers full-file owner/recipient pinning,
+real SQLite create/reopen/join, encrypted message exchange, redacted paging,
+exact admission retry and refusal to reactivate consumed authority. Together
+with the kernel/backend/agent suites, 87 tests and compile-fail examples passed
+for this candidate. Browser/runtime and final aggregate checks remain separate.
 
 ## Fixed-room agent session
 

@@ -231,3 +231,120 @@ fn wrong_account_and_missing_image_never_initialize_or_replace_state() {
         drop(store);
     });
 }
+
+#[test]
+fn one_confidential_offer_bootstraps_a_recipient_and_never_reactivates_on_retry() {
+    block_on(async {
+        use vhalla_private_kernel::{protocol::Key, OutboxKind};
+        let temp = Temp::new();
+        let owner_account = temp.0.join("owner-account");
+        let member_account = temp.0.join("member-account");
+        let owner_room = temp.0.join("owner-room");
+        let member_room = temp.0.join("member-room");
+        let validity = validity();
+        let creation =
+            RoomCreation::owner(Identity::create_new(&owner_account).unwrap(), validity).unwrap();
+        let owner_context = creation.context();
+        let mut owner = creation.commit(&owner_room, limits()).await.unwrap();
+        let recipient = Identity::create_new(&member_account).unwrap();
+        let recipient_key = Key::from_bytes(recipient.public_key()).unwrap();
+        drop(recipient);
+        let offer = owner
+            .create_contact_offer(op(1), recipient_key, validity)
+            .await
+            .unwrap();
+        let page = owner.outbox(0, 16).await.unwrap();
+        assert_eq!(page.head, 1);
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].kind(), OutboxKind::ContactOffer);
+        assert!(page.records[0].artifact().is_none());
+        assert!(matches!(
+            RoomCreation::from_contact(
+                Identity::open(&member_account).unwrap(),
+                offer.confidential_bytes(),
+                recipient_key,
+                validity
+            ),
+            Err(Error::Kernel(KernelError::Scope))
+        ));
+        assert!(!member_room.exists());
+        let creation = RoomCreation::from_contact(
+            Identity::open(&member_account).unwrap(),
+            offer.confidential_bytes(),
+            owner_context.account,
+            validity,
+        )
+        .unwrap();
+        assert_eq!(creation.context().scope, owner_context.scope);
+        let member_context = creation.context();
+        let mut member = creation.commit(&member_room, limits()).await.unwrap();
+        let request = member
+            .contact_request(op(1), offer.confidential_bytes())
+            .await
+            .unwrap();
+        assert_eq!(request.kind(), OutboxKind::ContactRequest);
+        owner.lock();
+        let mut owner = RoomSession::open(
+            Identity::open(&owner_account).unwrap(),
+            &owner_room,
+            owner_context,
+        )
+        .await
+        .unwrap();
+        let response = owner
+            .accept_contact(op(2), request.bytes(), validity)
+            .await
+            .unwrap();
+        assert_eq!(response.kind(), OutboxKind::ContactInvitation);
+        member.join_contact(response.bytes()).await.unwrap();
+        assert_eq!(
+            member.membership().await.unwrap().members(),
+            owner.membership().await.unwrap().members()
+        );
+        let before = owner.status().unwrap();
+        let recovered = owner
+            .create_contact_offer(op(1), recipient_key, validity)
+            .await
+            .unwrap();
+        assert_eq!(recovered.confidential_bytes(), offer.confidential_bytes());
+        assert_eq!(
+            owner
+                .accept_contact(op(2), request.bytes(), validity)
+                .await
+                .unwrap()
+                .bytes(),
+            response.bytes()
+        );
+        assert_eq!(owner.status().unwrap(), before);
+        assert!(matches!(
+            owner.accept_contact(op(3), request.bytes(), validity).await,
+            Err(Error::Kernel(KernelError::Missing))
+        ));
+        owner.lock();
+        let mut owner = RoomSession::open(
+            Identity::open(&owner_account).unwrap(),
+            &owner_room,
+            owner_context,
+        )
+        .await
+        .unwrap();
+        assert_eq!(owner.status().unwrap(), before);
+        member.lock();
+        let mut member = RoomSession::open(
+            Identity::open(&member_account).unwrap(),
+            &member_room,
+            member_context,
+        )
+        .await
+        .unwrap();
+        member.join_contact(response.bytes()).await.unwrap();
+        let draft = member
+            .prepare_message(b"explicitly invited private member")
+            .unwrap();
+        let sent = member.send(op(2), &draft).await.unwrap();
+        assert_eq!(
+            owner.receive(sent.bytes()).await.unwrap().body(),
+            b"explicitly invited private member"
+        );
+    });
+}

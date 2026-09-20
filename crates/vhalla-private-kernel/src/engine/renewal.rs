@@ -224,5 +224,7 @@ fn replace_owner(state: &mut State, replacement: VerifiedDeviceEnrollment) -> Re
     }
     state.roster[index] = replacement.clone();
     state.owner = replacement;
+    // A former account-signed owner basis cannot authorize a pending contact.
+    state.offers.clear();
     Ok(())
 }

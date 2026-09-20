@@ -3,13 +3,18 @@ use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305, XNonce,
 };
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{Context, Error, Result, StorageKey};
 
 pub(crate) struct Writer {
     bytes: Vec<u8>,
     limit: usize,
+}
+impl Drop for Writer {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
 }
 impl Writer {
     pub(crate) fn new(magic: &[u8], limit: usize) -> Result<Self> {
@@ -49,8 +54,8 @@ impl Writer {
         )?;
         self.put(bytes)
     }
-    pub(crate) fn finish(self) -> Vec<u8> {
-        self.bytes
+    pub(crate) fn finish(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
     }
 }
 

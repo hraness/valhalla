@@ -7,6 +7,8 @@ use std::{fs, path::PathBuf};
 use vhalla_room_activity::{Content, EventClaims, Text, UnsignedEvent};
 use vhalla_rooms::{Applied, RoomRecordId, RoomUpdate, UpdateAction};
 use vhalla_social::{archive::Archive, control::ControlView};
+#[path = "prerequisite_tests.rs"]
+mod prerequisites;
 const NETWORK: [u8; 32] = [7; 32];
 fn limits() -> ContinuityLimits {
     ContinuityLimits {

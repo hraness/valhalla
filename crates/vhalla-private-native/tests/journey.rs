@@ -413,7 +413,10 @@ fn native_invite_bidirectional_messages_removal_and_exact_reopen() {
         assert_eq!(history.head, 2);
         assert_eq!(history.next, Some(1));
         assert_eq!(
-            pair.member.outbox(1, 1).await.unwrap().records[0].bytes(),
+            pair.member.outbox(1, 1).await.unwrap().records[0]
+                .artifact()
+                .expect("ordinary artifact")
+                .bytes(),
             reply.bytes()
         );
         assert!(matches!(
@@ -446,7 +449,10 @@ fn native_uncertain_commit_releases_nothing_then_recovers_exact_ciphertext_and_p
         let exact = send(&mut pair.owner, op(2), b"commit before release", pair.now)
             .await
             .unwrap();
-        assert_eq!(saved.bytes(), exact.bytes());
+        assert_eq!(
+            saved.artifact().expect("ordinary artifact").bytes(),
+            exact.bytes()
+        );
         assert_eq!(exact.sequence(), 2);
         let before = pair.member_disk.image(pair.member.status().context);
         pair.member_disk.fault(Fault::Before);
@@ -500,7 +506,10 @@ fn native_canceled_after_commit_requires_reopen_and_never_resigns() {
         )
         .await
         .unwrap();
-        assert_eq!(retained.bytes(), retry.bytes());
+        assert_eq!(
+            retained.artifact().expect("ordinary artifact").bytes(),
+            retry.bytes()
+        );
         assert_eq!(pair.owner.status().outbox_head, 2);
     });
 }

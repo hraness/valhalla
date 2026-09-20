@@ -1,9 +1,10 @@
 use crate::{
     codec::{Reader, Writer},
     protocol::*,
-    CommittedOutbox, Context, Error, OperationId, OutboxKind, ReceivedMessage, Result,
+    CommittedOutbox, Context, Error, OperationId, OutboxEntry, OutboxKind, ReceivedMessage, Result,
     MAX_BODY_BYTES, MAX_STORED_RECORD_BYTES, MAX_WIRE_BYTES,
 };
+use zeroize::Zeroize;
 
 pub(crate) const MAX_PACKET: usize = MAX_STORED_RECORD_BYTES - 256;
 
@@ -197,6 +198,11 @@ pub(crate) struct Sent {
     pub(crate) kind: OutboxKind,
     pub(crate) bytes: Vec<u8>,
 }
+impl Drop for Sent {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
 impl Sent {
     pub(crate) fn encode(&self) -> Result<Vec<u8>> {
         if self.sequence == 0 {
@@ -219,8 +225,9 @@ impl Sent {
         let operation = OperationId::from_bytes(r.array()?)?;
         let request = r.array()?;
         let kind = decode_kind(r.byte()?)?;
-        let bytes = nonempty(r.blob(MAX_PACKET)?)?.to_vec();
+        let bytes = nonempty(r.blob(MAX_PACKET)?)?;
         r.end()?;
+        let bytes = bytes.to_vec();
         Ok(Self {
             sequence,
             operation,
@@ -229,13 +236,27 @@ impl Sent {
             bytes,
         })
     }
-    pub(crate) fn committed(self) -> CommittedOutbox {
-        CommittedOutbox {
+    pub(crate) fn committed(mut self) -> Result<CommittedOutbox> {
+        if self.kind == OutboxKind::ContactOffer {
+            self.bytes.zeroize();
+            return Err(Error::Policy);
+        }
+        Ok(CommittedOutbox {
             sequence: self.sequence,
             operation: self.operation,
             kind: self.kind,
-            bytes: self.bytes,
+            bytes: std::mem::take(&mut self.bytes),
+        })
+    }
+    pub(crate) fn entry(mut self) -> Result<OutboxEntry> {
+        if self.kind == OutboxKind::ContactOffer {
+            self.bytes.zeroize();
+            return Ok(OutboxEntry::ConfidentialOffer {
+                sequence: self.sequence,
+                operation: self.operation,
+            });
         }
+        Ok(OutboxEntry::Artifact(self.committed()?))
     }
 }
 
@@ -319,6 +340,9 @@ fn kind_byte(kind: OutboxKind) -> u8 {
         OutboxKind::Application => 2,
         OutboxKind::Removal => 3,
         OutboxKind::OwnerUpdate => 4,
+        OutboxKind::ContactOffer => 5,
+        OutboxKind::ContactRequest => 6,
+        OutboxKind::ContactInvitation => 7,
     }
 }
 fn decode_kind(value: u8) -> Result<OutboxKind> {
@@ -328,6 +352,9 @@ fn decode_kind(value: u8) -> Result<OutboxKind> {
         2 => Ok(OutboxKind::Application),
         3 => Ok(OutboxKind::Removal),
         4 => Ok(OutboxKind::OwnerUpdate),
+        5 => Ok(OutboxKind::ContactOffer),
+        6 => Ok(OutboxKind::ContactRequest),
+        7 => Ok(OutboxKind::ContactInvitation),
         _ => Err(Error::Encoding),
     }
 }

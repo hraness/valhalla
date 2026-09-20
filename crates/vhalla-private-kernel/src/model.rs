@@ -12,7 +12,7 @@ use crate::{
 pub(crate) const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 const MAX_PROVIDER_RECORDS: usize = 256;
 // No automatic migration from preserved plaintext-control qualification images.
-const MAGIC: &[u8] = b"VHPKSTATE\x03";
+const MAGIC: &[u8] = b"VHPKSTATE\x04";
 const FAULT_RESERVE: usize = MAX_RECORD_BYTES + 64;
 
 pub(crate) struct State {
@@ -33,6 +33,8 @@ pub(crate) struct State {
     pub(crate) key_package: Option<KeyPackageDigest>,
     pub(crate) joined: Option<[u8; 32]>,
     pub(crate) records: Vec<(Vec<u8>, Vec<u8>)>,
+    pub(crate) offers: Vec<crate::contact::Offer>,
+    pub(crate) contact: Option<crate::contact::PendingContact>,
 }
 impl State {
     pub(crate) fn context(&self) -> Context {
@@ -160,6 +162,28 @@ impl State {
         {
             return Err(Error::Policy);
         }
+        if self.offers.len() > crate::MAX_CONTACT_OFFERS || (!is_owner && !self.offers.is_empty()) {
+            return Err(Error::Policy);
+        }
+        let mut previous_offer = None;
+        for offer in &self.offers {
+            offer.check_owner(self)?;
+            if offer.issued > self.clock || previous_offer.is_some_and(|prior| prior >= offer.id) {
+                return Err(Error::Policy);
+            }
+            previous_offer = Some(offer.id);
+        }
+        if let Some(pending) = &self.contact {
+            pending.offer.check_owner(self)?;
+            if self.phase != Phase::AwaitingWelcome
+                || self.key_package.is_none()
+                || pending.offer.recipient != self.local.claims().account
+                || pending.offer.issued > self.clock
+                || pending.request == [0; 32]
+            {
+                return Err(Error::Policy);
+            }
+        }
         if self.records.len() > MAX_PROVIDER_RECORDS {
             return Err(Error::Bounds);
         }
@@ -277,6 +301,17 @@ impl State {
         } else {
             w.byte(0)?;
         }
+        w.byte(u8::try_from(self.offers.len()).map_err(|_| Error::Bounds)?)?;
+        for offer in &self.offers {
+            w.blob(&offer.encode()?, crate::contact::MAX_OFFER_BYTES)?;
+        }
+        if let Some(pending) = &self.contact {
+            w.byte(1)?;
+            w.blob(&pending.offer.encode()?, crate::contact::MAX_OFFER_BYTES)?;
+            w.put(&pending.request)?;
+        } else {
+            w.byte(0)?;
+        }
         w.put(
             &u16::try_from(self.records.len())
                 .map_err(|_| Error::Bounds)?
@@ -344,6 +379,24 @@ impl State {
             1 => Some(r.array()?),
             _ => return Err(Error::Encoding),
         };
+        let offer_count = usize::from(r.byte()?);
+        if offer_count > crate::MAX_CONTACT_OFFERS {
+            return Err(Error::Bounds);
+        }
+        let mut offers = Vec::with_capacity(offer_count);
+        for _ in 0..offer_count {
+            offers.push(crate::contact::Offer::decode(
+                r.blob(crate::contact::MAX_OFFER_BYTES)?,
+            )?);
+        }
+        let contact = match r.byte()? {
+            0 => None,
+            1 => Some(crate::contact::PendingContact {
+                offer: crate::contact::Offer::decode(r.blob(crate::contact::MAX_OFFER_BYTES)?)?,
+                request: r.array()?,
+            }),
+            _ => return Err(Error::Encoding),
+        };
         let count = usize::from(u16::from_be_bytes(r.array()?));
         if count > MAX_PROVIDER_RECORDS {
             return Err(Error::Bounds);
@@ -380,6 +433,8 @@ impl State {
             key_package,
             joined,
             records,
+            offers,
+            contact,
         };
         state.validate(context)?;
         Ok(state)

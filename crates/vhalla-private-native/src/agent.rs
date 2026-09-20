@@ -22,7 +22,7 @@ use std::{
 };
 use vhalla_private_kernel::{
     storage::Store, CommittedOutbox, Context, InboxPage, Kernel, MessageDraft, OperationId,
-    OutboxKind, Phase, Status, MAX_BODY_BYTES, MAX_PAGE_BYTES, MAX_PAGE_RECORDS,
+    OutboxEntry, OutboxKind, Phase, Status, MAX_BODY_BYTES, MAX_PAGE_BYTES, MAX_PAGE_RECORDS,
 };
 
 /// A local refusal; none permits replacing missing or uncertain durable state.
@@ -165,16 +165,30 @@ pub struct QueuedStatus {
     pub operation: OperationId,
     /// Typed artifact kind.
     pub kind: OutboxKind,
-    /// Retained artifact length, not its contents.
-    pub artifact_bytes: usize,
+    /// Retained ordinary artifact length; secret issuance metadata has no length.
+    pub artifact_bytes: Option<usize>,
 }
 impl QueuedStatus {
+    fn from_entry(entry: &OutboxEntry) -> Self {
+        match entry {
+            OutboxEntry::Artifact(record) => Self::from_committed(record),
+            OutboxEntry::ConfidentialOffer {
+                sequence,
+                operation,
+            } => Self {
+                sequence: *sequence,
+                operation: *operation,
+                kind: OutboxKind::ContactOffer,
+                artifact_bytes: None,
+            },
+        }
+    }
     fn from_committed(record: &CommittedOutbox) -> Self {
         Self {
             sequence: record.sequence(),
             operation: record.operation(),
             kind: record.kind(),
-            artifact_bytes: record.bytes().len(),
+            artifact_bytes: Some(record.bytes().len()),
         }
     }
 }
@@ -327,11 +341,7 @@ impl<S: Store> AgentRoomSession<S> {
         let result = OutboxStatusPage {
             head: page.head,
             next: page.next,
-            records: page
-                .records
-                .iter()
-                .map(QueuedStatus::from_committed)
-                .collect(),
+            records: page.records.iter().map(QueuedStatus::from_entry).collect(),
         };
         self.failed = false;
         Ok(result)

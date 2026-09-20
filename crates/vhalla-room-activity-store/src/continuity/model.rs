@@ -42,12 +42,43 @@ impl ContinuityLimits {
 pub struct StageTicket {
     pub(super) id: [u8; 32],
     pub(super) author: [u8; 32],
+    pub(super) base: AuthorPosition,
     pub(super) sequence: u64,
     pub(super) event: EventId,
     pub(super) pages: u32,
     pub(super) expires: u64,
 }
 impl StageTicket {
+    /// Check a request's positional ticket shape and reject the impossible zero
+    /// author sentinel. This proves no persistence or full-key validity; checked
+    /// operations bind the author to strictly verified events and retained state.
+    pub fn new(
+        id: [u8; 32],
+        author: [u8; 32],
+        base: AuthorPosition,
+        tail: AuthorPosition,
+        pages: u32,
+        expires_at: u64,
+    ) -> Result<Self, Error> {
+        if id == [0; 32]
+            || author == [0; 32]
+            || pages == 0
+            || u64::from(pages) > MAX_STAGE_EVENTS / 32
+            || expires_at == 0
+            || base.sequence.checked_add(u64::from(pages) * 32) != Some(tail.sequence)
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(Self {
+            id,
+            author,
+            base,
+            sequence: tail.sequence,
+            event: tail.event,
+            pages,
+            expires: expires_at,
+        })
+    }
     /// Full local stage identifier, bound to scope, author and published base.
     pub const fn id(&self) -> [u8; 32] {
         self.id
@@ -55,6 +86,17 @@ impl StageTicket {
     /// Full author key.
     pub const fn author(&self) -> [u8; 32] {
         self.author
+    }
+    /// Exact published author base from which this temporary suffix extends.
+    pub const fn base(&self) -> AuthorPosition {
+        self.base
+    }
+    /// Exact temporary tail, never an admitted author head.
+    pub const fn tail(&self) -> AuthorPosition {
+        AuthorPosition {
+            sequence: self.sequence,
+            event: self.event,
+        }
     }
     /// Last checked staged sequence, not an admitted position.
     pub const fn sequence(&self) -> u64 {
@@ -71,6 +113,130 @@ impl StageTicket {
     /// Exclusive expiry; progress and exact retries do not renew it.
     pub const fn expires_at(&self) -> u64 {
         self.expires
+    }
+}
+
+/// Structurally checked full author position; metadata alone is not evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorPosition {
+    pub(super) sequence: u64,
+    pub(super) event: EventId,
+}
+impl AuthorPosition {
+    /// No published event; both sentinel fields are zero.
+    pub const EMPTY: Self = Self {
+        sequence: 0,
+        event: EventId::ZERO,
+    };
+    /// Check the empty/nonempty shape without accepting any history.
+    pub fn new(sequence: u64, event: EventId) -> Result<Self, Error> {
+        if (sequence == 0) != (event == EventId::ZERO) {
+            return Err(Error::Conflict);
+        }
+        Ok(Self { sequence, event })
+    }
+    /// Full sequence, zero only for the empty sentinel.
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+    /// Exact event ID, zero only for the empty sentinel.
+    pub const fn event_id(self) -> EventId {
+        self.event
+    }
+}
+
+/// Explicit fresh-work precondition supplied by a requester, not authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkExpectation {
+    /// Exact published author floor before fresh work.
+    pub published: AuthorPosition,
+    /// Exact temporary prefix, or none for direct next-event admission.
+    pub stage: Option<StageTicket>,
+}
+
+/// Checked read-only view at a caller-supplied trusted time. Reading neither
+/// advances the retained clock nor expires/deletes files.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorStatus {
+    pub(super) published: AuthorPosition,
+    pub(super) stage: Option<StageTicket>,
+    pub(super) cleanup_pages: u32,
+}
+impl AuthorStatus {
+    /// Exact validated admitted author floor.
+    pub const fn published(self) -> AuthorPosition {
+        self.published
+    }
+    /// Live exact prefix only; expired or published cleanup is never live.
+    pub const fn stage(self) -> Option<StageTicket> {
+        self.stage
+    }
+    /// This author's expired/published duplicate pages awaiting maintenance.
+    pub const fn cleanup_pages(self) -> u32 {
+        self.cleanup_pages
+    }
+}
+
+/// Logical bounded work charged before a checked mutation. This is not a
+/// timing/fsync estimate: the current implementation can verify a frame more
+/// than once, and finalization traverses the retained prefix several times.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkQuote {
+    pub(super) frames: usize,
+    pub(super) retained_ancestors: u64,
+    pub(super) reconciled: bool,
+}
+impl WorkQuote {
+    /// Submitted signed frames; independently bounded by 33.
+    pub const fn frames(self) -> usize {
+        self.frames
+    }
+    /// Retained ancestors participating in a new terminal finalization.
+    pub const fn retained_ancestors(self) -> u64 {
+        self.retained_ancestors
+    }
+    /// Exact already-retained page or terminal retry.
+    pub const fn reconciled(self) -> bool {
+        self.reconciled
+    }
+    pub(super) fn check(self, allowance: WorkAllowance) -> Result<(), Error> {
+        if self.frames > allowance.frames || self.retained_ancestors > allowance.retained_ancestors
+        {
+            return Err(Error::Capacity);
+        }
+        Ok(())
+    }
+}
+
+/// Caller-reserved local work credits. Checked operations recompute the quote
+/// and refuse before writes if it exceeds these credits. They do no cleanup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkAllowance {
+    /// Maximum charged submitted frames.
+    pub frames: usize,
+    /// Maximum charged retained ancestors for new finalization.
+    pub retained_ancestors: u64,
+}
+
+/// Bounded read-only maintenance quote at a trusted time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaintenanceQuote {
+    pub(super) pages: u32,
+    pub(super) clock_transition: bool,
+    pub(super) more: bool,
+}
+impl MaintenanceQuote {
+    /// Maximum pages this bounded maintenance call will remove.
+    pub const fn pages(self) -> u32 {
+        self.pages
+    }
+    /// A retained clock/catalogue transition is needed before cleanup.
+    pub const fn clock_transition(self) -> bool {
+        self.clock_transition
+    }
+    /// Further bounded calls will be needed to finish current cleanup.
+    pub const fn more(self) -> bool {
+        self.more
     }
 }
 

@@ -37,9 +37,10 @@ state and output together before releasing ciphertext or plaintext.
 Existing-member controls encrypt the owner, enrollment and roster metadata in a
 predecessor-epoch MLS exporter envelope. The original ciphertext is retained for
 exact retry. The inner owner signature and actual MLS proposals remain required;
-sharing an epoch encryption key does not grant owner authority. KeyPackage and
-Welcome bootstrap packets still require an independently confidential path.
-Generic outbox artifacts must not be uploaded to an untrusted relay.
+sharing an epoch encryption key does not grant owner authority. The contact flow now uses one confidential owner-signed recipient offer and
+fully encrypted KeyPackage/Welcome requests and replies, with atomic one-use
+consumption. Ordinary outbox paging reveals only metadata for secret issuance.
+Legacy raw bootstrap artifacts still must not be uploaded to an untrusted relay.
 
 Optional native `RoomSession` joins account and room custody in one lifetime.
 Storage keys derive from the account secret and the exact room/anchor/account/
@@ -113,8 +114,11 @@ Continuity staging separately retains at most 4,096 ancestor bundles across 64
 slots with 32-bundle pages. The new portable continuity codec separates staged ancestry, admitted terminals,
 status and role-aware evidence, and binds each reply to the exact selected peer,
 request, body and nonce. It does not activate a peer route or install client
-receipts. Limits-checked peer/store integration, weighted work admission, client
-continuation and incremental finalization beyond that bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
+receipts. The store now checks exact limits before recovery, exposes checked author/stage
+positions, refuses implicit stage consumption and separates bounded maintenance
+from checked mutations. Its complete 39-test suite and strict lint passed.
+Peer-route integration, weighted request/work admission, client continuation
+and incremental finalization beyond that bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;
 never silently prune or reset a used sequence to recover capacity.

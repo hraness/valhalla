@@ -50,6 +50,46 @@ controls cannot grant sender authority. Delayed old-epoch ciphertext may be refu
 after a membership change. It is never automatically decrypted and re-shared with
 an expanded roster. Membership changes cannot retract plaintext already received.
 
+## Confidential recipient bootstrap
+
+`create_contact_offer` produces one 713-byte secret file bound to a full recipient
+account. It contains the signed anchor and current owner enrollment, a separate
+random offer ID, expiry, and two independently random direction keys. The anchored
+owner device signs the entire canonical file, including those keys. An attacker
+cannot copy legitimate bootstrap records and substitute its own encryption keys.
+The file still requires confidential transfer; signing does not make it public.
+
+`ContactBootstrap::inspect` checks the complete offer against independently
+selected owner and recipient account keys and current time. Its metadata getters
+are enough to initialize a fresh member device. `contact_request` commits a fully
+encrypted KeyPackage request. `accept_contact` consumes the unused offer together
+with membership state, encrypted invitation, operation record and existing-member
+control in the same transaction, still at most three immutable records.
+`join_contact` requires the exact retained request hash as well as the existing
+owner, recipient, MLS Welcome and roster checks.
+
+There are at most 64 outstanding offers. Each lasts at most 24 hours from issuance
+and no later than the owner enrollment's expiry. Owner renewal invalidates the old
+enrollment's offers. Exact creation retry returns the original secret without
+reactivating consumed, expired or invalidated authority; exact admission retry
+returns the original encrypted response. If a committed pending request expires
+or is invalidated before admission, retain its evidence and explicitly prepare a
+fresh device for another attempt. Never silently replace the old KeyPackage.
+
+`OutboxEntry` is a closed choice between an ordinary artifact and confidential
+issuance metadata. Its `artifact()` returns `None` for secret offers; normal
+outbox export cannot retrieve their keys. A dedicated exact offer retry can
+recover the secret from encrypted storage. Archived bootstrap secrets therefore
+do not have a forward-secrecy guarantee against later storage-custody compromise.
+The wire exposes direction, random offer ID, request/response correlation, nonce,
+length and network timing/endpoints. It exposes no caller operation ID or room,
+account, device or roster field in the clear header. It does not provide anonymity.
+
+The earlier `key_package`/`invite` methods remain explicit local artifact APIs;
+their plaintext metadata must not be uploaded through a generic relay path.
+Contact encryption does not implement delivery, discover a relay, grant network
+authority or prove that a remote member received anything.
+
 ## Retained controls and fork quarantine
 
 Owner transitions atomically append `Control(sequence)`, `Outbox(position)` and
@@ -81,8 +121,8 @@ not renew permission. `controls(after_full_floor, limit)` instead returns the
 retained **signed owner proofs** for local inspection and evidence. Those proof
 bytes are private metadata, not encrypted transport packets.
 
-The invitation response and KeyPackage request remain confidential bootstrap
-artifacts with visible enrollment/roster metadata. `invite` retains both the
+The earlier manual invitation response and KeyPackage request are local bootstrap
+artifacts with visible enrollment/roster metadata; the contact APIs encrypt both. `invite` retains both the
 recipient bootstrap in its outbox and a separate encrypted next control for
 existing members. Generic `outbox` output therefore is not uniformly suitable
 for an untrusted relay. No transport is implemented by this crate.
@@ -161,10 +201,10 @@ still apply when nested pieces are individually valid. Histories use checked u64
 counters and separate indexed records with no artificial lifetime message cap.
 Backend quotas must refuse without pruning, reset or partial acknowledgment.
 
-Current state uses `VHPKSTATE\x03` and invitation format `VHPKINVITE\x02`.
+Current state uses `VHPKSTATE\x04` and invitation format `VHPKINVITE\x02`.
 The control envelope is `VHPKCTRL\x01`; encrypted local control records contain
 `VHPKCTRLREC\x01` framing around the signed proof and optional retained envelope.
-State versions 1 and 2 are refused, not loaded or migrated. Storage record keys,
+State versions 1, 2 and 3 are refused, not loaded or migrated. Storage record keys,
 outer storage AEAD and the maximum-three-record Store transaction contract remain
 unchanged. Preserve compatible source and complete custody when inspecting older
 experimental stores; there is no automatic format or storage-key migration.
@@ -182,9 +222,16 @@ pins match browser wasm-bindgen0.2.108/js-sys0.3.85. Native group tests, strict 
 and WASM checks have separate exact-tree receipts. Earlier real SQLite and
 IndexedDB journeys covered group transactions, quotas, cancellation after commit,
 reopen, removal and owner renewal; the browser journey ran in both Window and a
-dedicated worker. These earlier receipts do not qualify the changed state-v3
-control, account-custody or membership snapshot APIs. Combined-candidate validation
-is pending. Workspace native tests and browser runtime CI cover the integrations.
+dedicated worker. These earlier receipts do not qualify the changed state-v4
+contact APIs. The state-v3 custody/control candidate subsequently passed
+214 tests, strict native/WASM lint and real Window/worker runtime. The current
+contact candidate passed 87 kernel/native/client/agent tests and compile-fail
+examples, full-workspace strict lint and explicit WASM library/fixture/product
+lint and builds. The current real browser group fixture passed in Window and a
+dedicated worker (74 strict writes/447 reads each); separate account-derived
+custody qualification passed (six writes/57 reads each), retaining the original
+stack, deadlines and password KDF. Workspace native tests and browser runtime CI
+cover the integrations.
 
 All private descriptors, invitations, member identities, controls, content and
 puzzle metadata stay out of public discovery/activity by default. Returning a

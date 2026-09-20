@@ -8,10 +8,11 @@ use vhalla_browser_storage::{
 use vhalla_private_kernel::{
     protocol::{ControlFloor, Key, SignedDeviceEnrollment, SignedRoomAnchor, Validity},
     storage::{Image, RecordKey, Store, StoreError, StoredRecord},
-    CommittedOutbox, Context, Error, Kernel, MemberDraft, OperationId, OwnerDraft, Phase,
-    StorageKey,
+    CommittedOutbox, ConfidentialContactOffer, ContactBootstrap, Context, Error, Kernel,
+    MemberDraft, OperationId, OutboxKind, OwnerDraft, Phase, StorageKey,
 };
 use wasm_bindgen::JsValue;
+use zeroize::Zeroizing;
 
 fn fail(error: impl std::fmt::Debug) -> JsValue {
     JsValue::from_str(&format!("private MLS IndexedDB qualification: {error:?}"))
@@ -521,7 +522,12 @@ async fn lifecycle_remove(
     )?;
     let history = pair.member.session().outbox(1, 1).await.map_err(fail)?;
     ensure(
-        history.records.len() == 1 && history.records[0].bytes() == reply.bytes(),
+        history.records.len() == 1
+            && history.records[0]
+                .artifact()
+                .ok_or_else(|| fail("ordinary artifact missing"))?
+                .bytes()
+                == reply.bytes(),
         "outbox history changed",
     )?;
     ensure(
@@ -592,7 +598,11 @@ async fn uncertain(namespace: Namespace) -> Result<(), JsValue> {
         .await
         .map_err(fail)?;
     ensure(
-        retained.bytes() == exact.bytes(),
+        retained
+            .artifact()
+            .ok_or_else(|| fail("ordinary artifact missing"))?
+            .bytes()
+            == exact.bytes(),
         "uncertain send retry regenerated",
     )?;
 
@@ -693,7 +703,12 @@ async fn canceled(namespace: Namespace) -> Result<(), JsValue> {
         .await
         .map_err(fail)?;
     ensure(
-        retained.bytes() == exact.bytes() && pair.owner.session().status().outbox_head == 2,
+        retained
+            .artifact()
+            .ok_or_else(|| fail("ordinary artifact missing"))?
+            .bytes()
+            == exact.bytes()
+            && pair.owner.session().status().outbox_head == 2,
         "cancel recovery resigned or advanced",
     )?;
     Ok(())
@@ -891,6 +906,196 @@ async fn renewal(namespace: Namespace) -> Result<(), JsValue> {
     Ok(())
 }
 
+async fn contact_bootstrap(namespace: Namespace) -> Result<(), JsValue> {
+    // A separate harness-owned synthetic namespace; no existing phase uses this
+    // offset. Full fresh room/device contexts still come from actual CSPRNGs.
+    let mut identifier = *namespace.identifier();
+    identifier[0] ^= 0x40;
+    let mut pair = Box::pin(Pair::fresh(Namespace::new(identifier), 1000)).await?;
+    let offer = Box::pin(contact_offer(&mut pair)).await?;
+    let (request, response) = Box::pin(contact_join(&mut pair, &offer)).await?;
+    Box::pin(contact_recovery(&mut pair, &offer, &request, &response)).await
+}
+
+async fn contact_offer(pair: &mut Pair) -> Result<ConfidentialContactOffer, JsValue> {
+    let now = pair.now;
+    let recipient = pair.member.context.account;
+    let offer = pair
+        .owner
+        .session()
+        .create_contact_offer(op(1), recipient, validity(now), now)
+        .await
+        .map_err(fail)?;
+    let bootstrap = ContactBootstrap::inspect(
+        offer.confidential_bytes(),
+        pair.owner.context.account,
+        recipient,
+        now,
+    )
+    .map_err(fail)?;
+    ensure(
+        bootstrap.scope() == pair.member.context.scope,
+        "contact bootstrap changed pinned room",
+    )?;
+    let page = pair.owner.session().outbox(0, 1).await.map_err(fail)?;
+    ensure(
+        page.head == 1
+            && page.next.is_none()
+            && page.records.len() == 1
+            && page.records[0].sequence() == 1
+            && page.records[0].operation() == op(1)
+            && page.records[0].kind() == OutboxKind::ContactOffer
+            && page.records[0].artifact().is_none(),
+        "secret contact offer escaped generic outbox metadata",
+    )?;
+    let before = pair.member.image().await?;
+    let mut tampered = Zeroizing::new(offer.confidential_bytes().to_vec());
+    *tampered
+        .last_mut()
+        .ok_or_else(|| fail("empty signed contact offer"))? ^= 1;
+    ensure(
+        matches!(
+            pair.member
+                .session()
+                .contact_request(op(1), &tampered, now)
+                .await,
+            Err(Error::Authentication)
+        ),
+        "tampered owner signature released a contact request",
+    )?;
+    ensure(
+        pair.member.image().await? == before
+            && pair.member.absent(RecordKey::Operation(op(1))).await?
+            && pair.member.absent(RecordKey::Outbox(1)).await?,
+        "tampered offer changed member evidence",
+    )?;
+    Ok(offer)
+}
+
+async fn contact_join(
+    pair: &mut Pair,
+    offer: &ConfidentialContactOffer,
+) -> Result<(CommittedOutbox, CommittedOutbox), JsValue> {
+    let now = pair.now;
+    let request = pair
+        .member
+        .session()
+        .contact_request(op(1), offer.confidential_bytes(), now)
+        .await
+        .map_err(fail)?;
+    ensure(
+        request.kind() == OutboxKind::ContactRequest,
+        "contact request has the wrong retained kind",
+    )?;
+    pair.member.reopen().await?;
+    let before = pair.member.image().await?;
+    ensure(
+        pair.member
+            .session()
+            .contact_request(op(1), offer.confidential_bytes(), now)
+            .await
+            .map_err(fail)?
+            .bytes()
+            == request.bytes()
+            && pair.member.image().await? == before,
+        "contact request retry changed retained KeyPackage or ciphertext",
+    )?;
+    let response = pair
+        .owner
+        .session()
+        .accept_contact(op(2), request.bytes(), validity(now), now)
+        .await
+        .map_err(fail)?;
+    ensure(
+        response.kind() == OutboxKind::ContactInvitation,
+        "contact response has the wrong retained kind",
+    )?;
+    let joined = pair
+        .member
+        .session()
+        .join_contact(response.bytes(), now)
+        .await
+        .map_err(fail)?;
+    let owner = pair.owner.session().status();
+    ensure(
+        joined.phase == Phase::MemberJoined
+            && joined.members == 2
+            && owner.members == 2
+            && joined.roster == owner.roster
+            && joined.control_floor == owner.control_floor,
+        "contact admission did not converge on the exact roster/control",
+    )?;
+    Ok((request, response))
+}
+
+async fn contact_recovery(
+    pair: &mut Pair,
+    offer: &ConfidentialContactOffer,
+    request: &CommittedOutbox,
+    response: &CommittedOutbox,
+) -> Result<(), JsValue> {
+    let now = pair.now;
+    pair.owner.reopen().await?;
+    pair.member.reopen().await?;
+    let owner_before = pair.owner.image().await?;
+    let member_before = pair.member.image().await?;
+    let owner_status = pair.owner.session().status();
+    let member_status = pair.member.session().status();
+    let recipient = pair.member.context.account;
+    let recovered = pair
+        .owner
+        .session()
+        .create_contact_offer(op(1), recipient, validity(now), now)
+        .await
+        .map_err(fail)?;
+    ensure(
+        recovered.confidential_bytes() == offer.confidential_bytes(),
+        "contact issuance retry regenerated secret keys",
+    )?;
+    ensure(
+        pair.owner
+            .session()
+            .accept_contact(op(2), request.bytes(), validity(now), now)
+            .await
+            .map_err(fail)?
+            .bytes()
+            == response.bytes()
+            && pair
+                .member
+                .session()
+                .join_contact(response.bytes(), now)
+                .await
+                .map_err(fail)?
+                == member_status,
+        "contact acceptance/join retry changed retained results",
+    )?;
+    ensure(
+        pair.owner.image().await? == owner_before && pair.member.image().await? == member_before,
+        "exact contact recovery advanced durable state",
+    )?;
+    ensure(
+        matches!(
+            pair.owner
+                .session()
+                .accept_contact(op(3), request.bytes(), validity(now), now)
+                .await,
+            Err(Error::Missing)
+        ),
+        "recovered secret issuance reactivated consumed admission",
+    )?;
+    ensure(
+        pair.owner.image().await? == owner_before
+            && pair.owner.absent(RecordKey::Operation(op(3))).await?,
+        "consumed offer refusal changed owner evidence",
+    )?;
+    pair.owner.reopen().await?;
+    ensure(
+        pair.owner.session().status() == owner_status,
+        "consumed authority changed after final reopen",
+    )?;
+    Ok(())
+}
+
 /// Execute only synthetic, fresh custody contexts in the isolated fixture.
 pub async fn run(namespace: Namespace, hook: js_sys::Function) -> Result<String, JsValue> {
     hook.call1(&JsValue::NULL, &"require-strict".into())?;
@@ -899,6 +1104,7 @@ pub async fn run(namespace: Namespace, hook: js_sys::Function) -> Result<String,
     Box::pin(canceled(namespace)).await?;
     Box::pin(stale_and_capacity(namespace)).await?;
     Box::pin(renewal(namespace)).await?;
+    Box::pin(contact_bootstrap(namespace)).await?;
     hook.call1(&JsValue::NULL, &"finish".into())?;
-    Ok("real MLS/IndexedDB: 3-device control, encrypted bidirectional traffic, removal, owner renewal, exact reopen, post-commit uncertainty/cancellation, stale writer, wrong key/scope and capacity passed".into())
+    Ok("real MLS/IndexedDB: 3-device control, encrypted bidirectional traffic, removal, owner renewal, exact reopen, post-commit uncertainty/cancellation, stale writer, wrong key/scope, capacity and one-use confidential contact bootstrap passed".into())
 }

@@ -1889,3 +1889,5 @@ fn renewal_controls_cannot_skip_parent_floor_or_reactivate_expired_local_member(
 }
 
 mod confidential;
+
+mod contact;

@@ -14,8 +14,9 @@ use vhalla_identity::Identity;
 use vhalla_private_kernel::{
     protocol::{Key, PrivateRoomScope, SignedDeviceEnrollment, SignedRoomAnchor, Validity},
     storage::StoreError,
-    CommittedOutbox, Context, EncryptedControlPage, InboxPage, Kernel, MemberDraft,
-    MembershipSnapshot, MessageDraft, OperationId, OutboxPage, OwnerDraft, ReceivedMessage, Status,
+    CommittedOutbox, ConfidentialContactOffer, ContactBootstrap, Context, EncryptedControlPage,
+    InboxPage, Kernel, MemberDraft, MembershipSnapshot, MessageDraft, OperationId, OutboxPage,
+    OwnerDraft, ReceivedMessage, Status,
 };
 
 /// Closed local failures; errors contain no key, password, message or path.
@@ -120,6 +121,30 @@ impl RoomCreation {
             enrollment,
             anchor,
         })
+    }
+
+    /// Prepare a fresh member from one complete confidential owner-signed offer.
+    /// The caller independently selects the owner account and reviews the signed
+    /// room before committing. This does not contact a relay or join the room.
+    pub fn from_contact(
+        identity: Identity,
+        offer: &[u8],
+        expected_owner: Key,
+        validity: Validity,
+    ) -> Result<Self> {
+        let bootstrap = ContactBootstrap::inspect(
+            offer,
+            expected_owner,
+            Key::from_bytes(identity.public_key())?,
+            now()?,
+        )?;
+        Self::member(
+            identity,
+            bootstrap.scope(),
+            bootstrap.anchor().clone(),
+            bootstrap.owner().clone(),
+            validity,
+        )
     }
 
     /// Retain this exact nonsecret locator before consuming commit. It does not
@@ -254,9 +279,68 @@ impl RoomSession {
     }
 
     /// Bounded exact local artifacts, not permission to publish them. Bootstrap
-    /// kinds contain private metadata and require a confidential transfer path.
+    /// kinds may contain private metadata and require confidential transfer.
+    /// Secret contact offers appear only as metadata, without their key bytes.
     pub async fn outbox(&mut self, after: u64, limit: usize) -> Result<OutboxPage> {
         Ok(self.live_mut()?.kernel.outbox(after, limit).await?)
+    }
+
+    /// Issue one recipient-account-bound secret after committing it locally.
+    /// It contains one-use keys: transfer it confidentially, never to a relay.
+    /// Recovering the original issuance does not reactivate a consumed offer.
+    pub async fn create_contact_offer(
+        &mut self,
+        operation: OperationId,
+        recipient: Key,
+        validity: Validity,
+    ) -> Result<ConfidentialContactOffer> {
+        let time = now()?;
+        Ok(self
+            .live_mut()?
+            .kernel
+            .create_contact_offer(operation, recipient, validity, time)
+            .await?)
+    }
+
+    /// Commit one complete encrypted KeyPackage request from an inspected offer.
+    /// Durable output is not network delivery or an automatic export grant.
+    pub async fn contact_request(
+        &mut self,
+        operation: OperationId,
+        offer: &[u8],
+    ) -> Result<CommittedOutbox> {
+        let time = now()?;
+        Ok(self
+            .live_mut()?
+            .kernel
+            .contact_request(operation, offer, time)
+            .await?)
+    }
+
+    /// Authorize the exact recipient request and consume its outstanding offer
+    /// atomically with admission, encrypted response and existing-member control.
+    pub async fn accept_contact(
+        &mut self,
+        operation: OperationId,
+        encrypted_request: &[u8],
+        validity: Validity,
+    ) -> Result<CommittedOutbox> {
+        let time = now()?;
+        Ok(self
+            .live_mut()?
+            .kernel
+            .accept_contact(operation, encrypted_request, validity, time)
+            .await?)
+    }
+
+    /// Admit only the owner response bound to this exact retained request.
+    pub async fn join_contact(&mut self, encrypted_response: &[u8]) -> Result<Status> {
+        let time = now()?;
+        Ok(self
+            .live_mut()?
+            .kernel
+            .join_contact(encrypted_response, time)
+            .await?)
     }
 
     /// Produce a one-use join request only after the fresh device is durable.

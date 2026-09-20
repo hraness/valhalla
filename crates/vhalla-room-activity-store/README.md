@@ -136,3 +136,36 @@ a sandbox against the directory owner/root replacing paths, deleting entire
 indexes, or rolling back coherent state. Retain an independent exact pin where
 local replacement detection is required. Fault tests exercise application
 interruptions and reconciliation, not every filesystem or power-loss behavior.
+
+
+## Explicit continuity admission and recovery
+
+The separate `ContinuityStore` format remains explicitly initialized, never an
+automatic conversion of a v1 store. `open_checked` requires exact configured scope
+and every immutable `ContinuityLimits` field before any recovery or temporary-file
+cleanup. A wrong configuration preserves interrupted intents and scratch files.
+
+`author_status` authenticates the published author position and a live bounded
+stage tail. `StageTicket` includes its exact published base. Read-only status can
+hide an expired ticket but never repairs files, renews a lease or persists a new
+clock floor. The controller supplies trustworthy time.
+
+`stage_checked` and `commit_checked` bind fresh work to `WorkExpectation` and
+reserved `WorkAllowance`. No-stage admission cannot silently consume an active
+prefix. Exact retained terminal/inline bytes can reconcile after revocation or
+cleanup without becoming a new admission. These checked methods do no automatic
+cleanup. `maintenance_quote` and `maintain_bounded` separately cap reclamation to
+0–32 exact temporary pages; published history and author floors are never pruned.
+
+Quotes perform bounded authenticated reads, including up to a 32-frame live tail;
+they are not free scalar lookups. A serving adapter must reserve fixed read/crypto
+overhead before quoting, then charge the retained prefix before new finalization.
+Input verification, repeated quote checks, reply verification, registry replay,
+cleanup and filesystem costs require their own bounded admission. Current
+finalization traverses the retained prefix multiple times; these APIs do not
+claim constant-time admission or increase the 4,096-ancestor temporary limit.
+
+The complete store suite passed 39 tests, including 11 regressions for pre-recovery
+limit refusal, stale/foreign tickets, exact retry, explicit work allowances,
+read-only expiry and bounded cleanup. This is local store evidence; it does not
+activate a public endpoint or establish multi-peer durability.

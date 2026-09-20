@@ -12,6 +12,40 @@ use crate::{
     protocol::*,
 };
 
+pub(super) fn make_key_package(work: &mut Working, now: u64) -> Result<Vec<u8>> {
+    if work.state.phase != Phase::AwaitingWelcome || work.state.key_package.is_some() {
+        return Err(Error::Policy);
+    }
+    work.state.check_time(now)?;
+    let validity = work.state.local.claims().validity;
+    let lifetime = Lifetime::init(validity.not_before(), validity.expires_at());
+    if !lifetime.has_acceptable_range() {
+        return Err(Error::Time);
+    }
+    let package = KeyPackage::builder()
+        .key_package_lifetime(lifetime)
+        .build(SUITE, &work.provider, &work.signer()?, work.credential())
+        .map_err(|_| Error::Mls)?;
+    let package = wire(package.key_package())?;
+    work.state.key_package = Some(KeyPackageDigest::of_bytes(&package)?);
+    let output = JoinRequest {
+        scope: work.state.context().scope,
+        enrollment: work.state.local.clone(),
+        package,
+    }
+    .encode()?;
+    Ok(output)
+}
+
+pub(super) struct InvitePreparation {
+    pub(super) operation: OperationId,
+    pub(super) request: [u8; 32],
+    pub(super) join: JoinRequest,
+    pub(super) validity: Validity,
+    pub(super) now: u64,
+    pub(super) response: Option<(crate::contact::Offer, [u8; 32])>,
+}
+
 impl<S: Store> Kernel<S> {
     /// Publish exactly one fresh-device KeyPackage. A different operation cannot
     /// mint a replacement package for the same pending device. Exact retries
@@ -35,27 +69,7 @@ impl<S: Store> Kernel<S> {
             self.needs_reopen = false;
             return Ok(retained);
         }
-        if work.state.phase != Phase::AwaitingWelcome || work.state.key_package.is_some() {
-            return Err(Error::Policy);
-        }
-        work.state.check_time(now)?;
-        let validity = work.state.local.claims().validity;
-        let lifetime = Lifetime::init(validity.not_before(), validity.expires_at());
-        if !lifetime.has_acceptable_range() {
-            return Err(Error::Time);
-        }
-        let package = KeyPackage::builder()
-            .key_package_lifetime(lifetime)
-            .build(SUITE, &work.provider, &work.signer()?, work.credential())
-            .map_err(|_| Error::Mls)?;
-        let package = wire(package.key_package())?;
-        work.state.key_package = Some(KeyPackageDigest::of_bytes(&package)?);
-        let output = JoinRequest {
-            scope: self.context.scope,
-            enrollment: work.state.local.clone(),
-            package,
-        }
-        .encode()?;
+        let output = make_key_package(&mut work, now)?;
         work.state.clock = now;
         self.publish_sent(work, operation, request, OutboxKind::KeyPackage, output)
             .await
@@ -81,7 +95,7 @@ impl<S: Store> Kernel<S> {
                 &validity.expires_at().to_be_bytes(),
             ],
         )?;
-        let mut work = self.begin_live().await?;
+        let work = self.begin_live().await?;
         if let Some(retained) = self
             .retained(
                 operation,
@@ -94,6 +108,33 @@ impl<S: Store> Kernel<S> {
             self.needs_reopen = false;
             return Ok(retained);
         }
+        self.invite_prepared(
+            work,
+            InvitePreparation {
+                operation,
+                request,
+                join,
+                validity,
+                now,
+                response: None,
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn invite_prepared(
+        &mut self,
+        mut work: Working,
+        prepared: InvitePreparation,
+    ) -> Result<CommittedOutbox> {
+        let InvitePreparation {
+            operation,
+            request,
+            join,
+            validity,
+            now,
+            response,
+        } = prepared;
         if !work.state.owner_role() {
             return Err(Error::Policy);
         }
@@ -217,6 +258,16 @@ impl<S: Store> Kernel<S> {
             checkpoint,
         }
         .encode()?;
+        let kind = if response.is_some() {
+            OutboxKind::ContactInvitation
+        } else {
+            OutboxKind::Invitation
+        };
+        let output = if let Some((offer, request_hash)) = response {
+            offer.seal(Some(request_hash), &output)?
+        } else {
+            output
+        };
         work.state.roster = roster;
         advance(&mut work, &control, now)?;
         work.state.set_membership_phase();
@@ -224,7 +275,7 @@ impl<S: Store> Kernel<S> {
             work,
             operation,
             request,
-            OutboxKind::Invitation,
+            kind,
             output,
             Some((&control_packet, &envelope)),
         )
@@ -238,11 +289,24 @@ impl<S: Store> Kernel<S> {
     pub async fn join(&mut self, raw: &[u8], now: u64) -> Result<Status> {
         let packet = InvitePacket::decode(raw)?;
         let id = codec::hash(b"vhalla/private-kernel/join-packet/v1\0", raw);
-        let mut work = self.begin_live().await?;
+        let work = self.begin_live().await?;
         if work.state.phase == Phase::MemberJoined && work.state.joined == Some(id) {
             self.needs_reopen = false;
             return Ok(self.status);
         }
+        if work.state.contact.is_some() {
+            return Err(Error::Policy);
+        }
+        self.join_prepared(work, packet, id, now).await
+    }
+
+    pub(super) async fn join_prepared(
+        &mut self,
+        mut work: Working,
+        packet: InvitePacket,
+        id: [u8; 32],
+        now: u64,
+    ) -> Result<Status> {
         if work.state.phase != Phase::AwaitingWelcome {
             return Err(Error::Policy);
         }
@@ -354,6 +418,7 @@ impl<S: Store> Kernel<S> {
         work.state.checkpoint = Some(packet.checkpoint.clone());
         work.state.phase = Phase::MemberJoined;
         work.state.joined = Some(id);
+        work.state.contact = None;
         advance(&mut work, &packet.control, now)?;
         let record = self.encrypt_record(
             RecordKey::Control(control_packet.floor()?.sequence()),

@@ -8,6 +8,7 @@ use crate::{
     *,
 };
 
+mod contact;
 mod controls;
 mod drafts;
 mod membership;
@@ -189,11 +190,16 @@ impl<S: Store> Kernel<S> {
             return Ok(None);
         };
         let index = decode_index(&lookup)?;
-        let sent = self.sent_at(index, head).await?;
+        let mut sent = self.sent_at(index, head).await?;
+        if sent.kind == OutboxKind::ContactOffer {
+            use zeroize::Zeroize;
+            sent.bytes.zeroize();
+            return Err(Error::Conflict);
+        }
         if sent.operation != operation || sent.request != request || sent.kind != kind {
             return Err(Error::Conflict);
         }
-        Ok(Some(sent.committed()))
+        Ok(Some(sent.committed()?))
     }
     async fn sent_at(&mut self, index: u64, head: u64) -> Result<Sent> {
         if index == 0 || index > head {
@@ -331,7 +337,7 @@ impl<S: Store> Kernel<S> {
             }
             total = size;
             cursor = next;
-            records.push(sent.committed());
+            records.push(sent.entry()?);
         }
         if cursor == after && cursor < head {
             return Err(Error::Bounds);

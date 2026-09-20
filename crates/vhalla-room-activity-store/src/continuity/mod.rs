@@ -16,7 +16,10 @@ use frames::{
     MAX_TERMINAL_BYTES, SEGMENT_EVENTS,
 };
 use intent::{Intent, Operation};
-pub use model::{ContinuityLimits, ContinuityReceipt, Maintenance, PublishedEvidence, StageTicket};
+pub use model::{
+    AuthorPosition, AuthorStatus, ContinuityLimits, ContinuityReceipt, Maintenance,
+    MaintenanceQuote, PublishedEvidence, StageTicket, WorkAllowance, WorkExpectation, WorkQuote,
+};
 pub use pin::{ContinuityPin, CONTINUITY_PIN_BYTES};
 use std::{collections::BTreeMap, path::Path};
 use vhalla_room_activity::{
@@ -74,10 +77,28 @@ impl ContinuityStore {
         scope: RoomScope,
         expected: Option<ContinuityPin>,
     ) -> Result<Self, Error> {
-        let disk = Disk::open(path.as_ref())?;
+        Self::open_inner(path.as_ref(), scope, None, expected)
+    }
+    /// Open only with the exact immutable configured limits. Scope and limits
+    /// are checked before any recovery, temporary cleanup, or publication write.
+    pub fn open_checked(
+        path: impl AsRef<Path>,
+        scope: RoomScope,
+        limits: ContinuityLimits,
+        expected: Option<ContinuityPin>,
+    ) -> Result<Self, Error> {
+        Self::open_inner(path.as_ref(), scope, Some(limits), expected)
+    }
+    fn open_inner(
+        path: &Path,
+        scope: RoomScope,
+        expected_limits: Option<ContinuityLimits>,
+        expected: Option<ContinuityPin>,
+    ) -> Result<Self, Error> {
+        let disk = Disk::open(path)?;
         let (actual, limits, scope_id) =
             pin::decode_format(&disk.read("format", pin::FORMAT_BYTES)?)?;
-        if scope != actual {
+        if scope != actual || expected_limits.is_some_and(|expected| expected != limits) {
             return Err(Error::Conflict);
         }
         let pin = ContinuityPin::decode(&disk.read("HEAD", CONTINUITY_PIN_BYTES)?)?;
@@ -318,6 +339,249 @@ impl ContinuityStore {
             Some(_) => Err(Error::Capacity),
         }
     }
+    fn check_clock(&self, now: u64) -> Result<(), Error> {
+        self.healthy()?;
+        if now < self.catalogue.clock {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
+    /// Validate this author's published head and the last page of a live stage.
+    /// At most one 32-event stage page is read; no lifetime scan or repair occurs.
+    /// Trusted caller time may hide an expired ticket but never renew its lease.
+    pub fn author_status(&self, author: [u8; 32], now: u64) -> Result<AuthorStatus, Error> {
+        self.check_clock(now)?;
+        let (chain, _) = self.chain(author)?;
+        let published = public_position(position(&chain));
+        let mut status = AuthorStatus {
+            published,
+            stage: None,
+            cleanup_pages: 0,
+        };
+        if let Some(stage) = self.catalogue.stages.get(&author) {
+            if stage.state == StageState::Active {
+                if public_position(stage.base) != published {
+                    return Err(Error::Corrupt);
+                }
+                if now < stage.expires {
+                    self.staged_position(&chain, author)?;
+                    status.stage = Some(ticket(stage));
+                    return Ok(status);
+                }
+            }
+            status.cleanup_pages = stage
+                .pages
+                .checked_sub(stage.cleaned)
+                .ok_or(Error::Corrupt)?;
+        }
+        Ok(status)
+    }
+    fn expected_tail(
+        &self,
+        author: [u8; 32],
+        expected: WorkExpectation,
+    ) -> Result<AuthorPosition, Error> {
+        if let Some(stage) = expected.stage {
+            if stage.author != author || stage.base != expected.published {
+                return Err(Error::Conflict);
+            }
+            Ok(stage.tail())
+        } else {
+            Ok(expected.published)
+        }
+    }
+    fn check_extension<'a>(
+        &self,
+        events: impl Iterator<Item = &'a VerifiedEvent>,
+        author: [u8; 32],
+        mut prior: AuthorPosition,
+    ) -> Result<(), Error> {
+        for event in events {
+            if event.claims().scope != self.scope
+                || event.claims().author != author
+                || prior.sequence.checked_add(1) != Some(event.claims().sequence)
+                || prior.event != event.claims().previous
+            {
+                return Err(Error::Conflict);
+            }
+            prior = public_position(Position::of(event));
+        }
+        Ok(())
+    }
+    /// Read-only bounded admission quote. Old exact page retries may use their
+    /// original prior ticket while the same retained stage has advanced. Equality
+    /// of the submitted frames is checked again before returning a stage receipt.
+    /// This is not a zero-crypto metadata read: reserve up to 68 signed-event
+    /// decodes (two 32-frame pages and four published-head evidence reads) before
+    /// calling it. Input-frame verification is a separate caller charge.
+    pub fn quote_stage(
+        &self,
+        events: &[VerifiedEvent],
+        expected: WorkExpectation,
+        now: u64,
+    ) -> Result<WorkQuote, Error> {
+        self.check_clock(now)?;
+        if events.len() != SEGMENT_EVENTS {
+            return Err(Error::Capacity);
+        }
+        let author = events[0].claims().author;
+        let prior = self.expected_tail(author, expected)?;
+        self.check_extension(events.iter(), author, prior)?;
+        let actual = self.author_status(author, now)?;
+        if actual.published != expected.published {
+            return Err(Error::Conflict);
+        }
+        if actual.cleanup_pages != 0 {
+            return Err(Error::Capacity);
+        }
+        let reconciled = match (actual.stage, expected.stage) {
+            (None, None) => false,
+            (Some(actual), requested) => {
+                if let Some(requested) = requested {
+                    if requested.id != actual.id
+                        || requested.expires != actual.expires
+                        || requested.pages > actual.pages
+                        || (requested.pages == actual.pages && requested != actual)
+                    {
+                        return Err(Error::Conflict);
+                    }
+                }
+                // A missing ticket can retry only page zero. A novel page must
+                // follow the exact aggregate tail, never an inferred prefix.
+                events.last().ok_or(Error::Conflict)?.claims().sequence <= actual.sequence
+            }
+            _ => return Err(Error::Conflict),
+        };
+        if reconciled {
+            let stage = self.catalogue.stages.get(&author).ok_or(Error::Corrupt)?;
+            let offset = prior
+                .sequence
+                .checked_sub(stage.base.sequence)
+                .ok_or(Error::Conflict)?;
+            if !offset.is_multiple_of(SEGMENT_EVENTS as u64) {
+                return Err(Error::Conflict);
+            }
+            let number =
+                u32::try_from(offset / SEGMENT_EVENTS as u64).map_err(|_| Error::Capacity)?;
+            let retained = self.page(stage, number)?;
+            if !retained
+                .events
+                .iter()
+                .zip(events)
+                .all(|(old, supplied)| old.encode() == supplied.encode())
+            {
+                return Err(Error::Conflict);
+            }
+        }
+        Ok(WorkQuote {
+            frames: events.len(),
+            retained_ancestors: 0,
+            reconciled,
+        })
+    }
+    /// Stage with explicit request expectations and reserved work credits. This
+    /// performs no clock-only transaction or automatic page cleanup. Expired or
+    /// copied pages require explicit, separately budgeted maintenance first.
+    pub fn stage_checked(
+        &mut self,
+        events: Vec<VerifiedEvent>,
+        expected: WorkExpectation,
+        context: &AdmissionContext<'_>,
+        now: u64,
+        allowance: WorkAllowance,
+    ) -> Result<StageTicket, Error> {
+        self.quote_stage(&events, expected, now)?.check(allowance)?;
+        self.stage_inner(events, context, now, false)
+    }
+    /// Quote fresh finalization or an exact retained terminal retry. At most 32
+    /// submitted inline records are checked here; a retained prefix is counted
+    /// from the fixed catalogue, not scanned. No policy admission/write occurs.
+    /// Reserve up to 67 signed-event decodes before quoting: an exact retry can
+    /// read the terminal three times and two evidence frames per inline event.
+    /// Fresh work instead reads at most one 32-frame tail and four head frames.
+    pub fn quote_commit(
+        &self,
+        inline: &[VerifiedEvent],
+        terminal: &VerifiedEvent,
+        expected: WorkExpectation,
+        now: u64,
+    ) -> Result<WorkQuote, Error> {
+        self.check_clock(now)?;
+        if inline.len() > SEGMENT_EVENTS {
+            return Err(Error::Capacity);
+        }
+        let author = terminal.claims().author;
+        let prior = self.expected_tail(author, expected)?;
+        self.check_extension(
+            inline.iter().chain(std::iter::once(terminal)),
+            author,
+            prior,
+        )?;
+        let mut quote = WorkQuote {
+            frames: inline.len() + 1,
+            retained_ancestors: 0,
+            reconciled: false,
+        };
+        if self.retained_terminal(inline, terminal)?.is_some() {
+            quote.reconciled = true;
+            return Ok(quote);
+        }
+        let actual = self.author_status(author, now)?;
+        if actual.published != expected.published || actual.stage != expected.stage {
+            return Err(Error::Conflict);
+        }
+        if actual.cleanup_pages != 0 {
+            return Err(Error::Capacity);
+        }
+        quote.retained_ancestors = actual.stage.map_or(0, |stage| u64::from(stage.pages) * 32);
+        Ok(quote)
+    }
+    /// Commit only against an explicit published base and exact optional stage.
+    /// None never absorbs an active prefix. Exact retained terminal+inline bytes
+    /// may reconcile after base advancement, stage cleanup or policy revocation;
+    /// they never become a fresh admission. No implicit cleanup is performed.
+    pub fn commit_checked(
+        &mut self,
+        inline: Vec<VerifiedEvent>,
+        terminal: VerifiedEvent,
+        expected: WorkExpectation,
+        context: &AdmissionContext<'_>,
+        now: u64,
+        allowance: WorkAllowance,
+    ) -> Result<ContinuityReceipt, Error> {
+        self.quote_commit(&inline, &terminal, expected, now)?
+            .check(allowance)?;
+        self.commit_inner(inline, terminal, context, now, false)
+    }
+    /// Count at most 64 catalogue slots without reading history or changing state.
+    /// The caller owns the same exclusive store between quote and maintenance;
+    /// max_pages (0..32) remains a hard cap even if metadata changes meanwhile.
+    pub fn maintenance_quote(&self, now: u64, max_pages: u32) -> Result<MaintenanceQuote, Error> {
+        self.check_clock(now)?;
+        if max_pages > SEGMENT_EVENTS as u32 {
+            return Err(Error::Capacity);
+        }
+        let mut remaining = 0u32;
+        let mut expiry = false;
+        for stage in self.catalogue.stages.values() {
+            if stage.state != StageState::Active || now >= stage.expires {
+                expiry |= stage.state == StageState::Active;
+                remaining = remaining
+                    .checked_add(
+                        stage
+                            .pages
+                            .checked_sub(stage.cleaned)
+                            .ok_or(Error::Corrupt)?,
+                    )
+                    .ok_or(Error::Corrupt)?;
+            }
+        }
+        Ok(MaintenanceQuote {
+            pages: remaining.min(max_pages),
+            clock_transition: now != self.catalogue.clock || expiry,
+            more: remaining > max_pages,
+        })
+    }
     /// Upload exactly 32 historical ancestors. Smaller final remainders belong
     /// inline in `commit`. Fixed pages bound file-count amplification. A returned
     /// ticket is temporary staging, never a delivery or admission receipt.
@@ -327,11 +591,22 @@ impl ContinuityStore {
         context: &AdmissionContext<'_>,
         now: u64,
     ) -> Result<StageTicket, Error> {
+        self.stage_inner(events, context, now, true)
+    }
+    fn stage_inner(
+        &mut self,
+        events: Vec<VerifiedEvent>,
+        context: &AdmissionContext<'_>,
+        now: u64,
+        cleanup: bool,
+    ) -> Result<StageTicket, Error> {
         self.healthy()?;
         if events.len() != SEGMENT_EVENTS {
             return Err(Error::Capacity);
         }
-        self.maintain(now)?;
+        if cleanup {
+            self.maintain(now)?;
+        }
         let author = events[0].claims().author;
         if let Some(stage) = self.catalogue.stages.get(&author) {
             let sequence = events[0].claims().sequence;
@@ -399,6 +674,16 @@ impl ContinuityStore {
         context: &AdmissionContext<'_>,
         now: u64,
     ) -> Result<ContinuityReceipt, Error> {
+        self.commit_inner(inline, terminal, context, now, true)
+    }
+    fn commit_inner(
+        &mut self,
+        inline: Vec<VerifiedEvent>,
+        terminal: VerifiedEvent,
+        context: &AdmissionContext<'_>,
+        now: u64,
+        cleanup: bool,
+    ) -> Result<ContinuityReceipt, Error> {
         self.healthy()?;
         if inline.len() > SEGMENT_EVENTS {
             return Err(Error::Capacity);
@@ -407,47 +692,12 @@ impl ContinuityStore {
         if terminal.claims().scope != self.scope {
             return Err(Error::Conflict);
         }
-        if let Some(old) = self.load_evidence(author, terminal.claims().sequence, self.pin)? {
-            if old.role != EvidenceRole::CurrentAdmission || old.event.encode() != terminal.encode()
-            {
-                return Err(Error::Conflict);
-            }
-            let start = terminal
-                .claims()
-                .sequence
-                .checked_sub(inline.len() as u64)
-                .ok_or(Error::Conflict)?;
-            for (offset, event) in inline.iter().enumerate() {
-                let sequence = start.checked_add(offset as u64).ok_or(Error::Conflict)?;
-                if sequence == 0
-                    || event.claims().scope != self.scope
-                    || event.claims().author != author
-                    || event.claims().sequence != sequence
-                {
-                    return Err(Error::Conflict);
-                }
-                let retained = self
-                    .load_evidence(author, sequence, self.pin)?
-                    .ok_or(Error::Conflict)?;
-                if retained.role != EvidenceRole::HistoricalContinuity
-                    || retained.committed_by != old.committed_by
-                    || retained.event.encode() != event.encode()
-                {
-                    return Err(Error::Conflict);
-                }
-            }
-            if inline
-                .last()
-                .is_some_and(|event| event.id() != terminal.claims().previous)
-            {
-                return Err(Error::Conflict);
-            }
-            return Ok(ContinuityReceipt {
-                terminal: self.load_terminal(old.committed_by, self.pin)?,
-                reconciled: true,
-            });
+        if let Some(receipt) = self.retained_terminal(&inline, &terminal)? {
+            return Ok(receipt);
         }
-        self.maintain(now)?;
+        if cleanup {
+            self.maintain(now)?;
+        }
         let (chain, base) = self.chain(author)?;
         let mut staged = self.staged_position(&chain, author)?;
         if !inline.is_empty() {
@@ -496,10 +746,65 @@ impl ContinuityStore {
         })?;
         Ok(receipt)
     }
+    fn retained_terminal(
+        &self,
+        inline: &[VerifiedEvent],
+        terminal: &VerifiedEvent,
+    ) -> Result<Option<ContinuityReceipt>, Error> {
+        let author = terminal.claims().author;
+        if let Some(old) = self.load_evidence(author, terminal.claims().sequence, self.pin)? {
+            if old.role != EvidenceRole::CurrentAdmission || old.event.encode() != terminal.encode()
+            {
+                return Err(Error::Conflict);
+            }
+            let start = terminal
+                .claims()
+                .sequence
+                .checked_sub(inline.len() as u64)
+                .ok_or(Error::Conflict)?;
+            for (offset, event) in inline.iter().enumerate() {
+                let sequence = start.checked_add(offset as u64).ok_or(Error::Conflict)?;
+                if sequence == 0
+                    || event.claims().scope != self.scope
+                    || event.claims().author != author
+                    || event.claims().sequence != sequence
+                {
+                    return Err(Error::Conflict);
+                }
+                let retained = self
+                    .load_evidence(author, sequence, self.pin)?
+                    .ok_or(Error::Conflict)?;
+                if retained.role != EvidenceRole::HistoricalContinuity
+                    || retained.committed_by != old.committed_by
+                    || retained.event.encode() != event.encode()
+                {
+                    return Err(Error::Conflict);
+                }
+            }
+            if inline
+                .last()
+                .is_some_and(|event| event.id() != terminal.claims().previous)
+            {
+                return Err(Error::Conflict);
+            }
+            return Ok(Some(ContinuityReceipt {
+                terminal: self.load_terminal(old.committed_by, self.pin)?,
+                reconciled: true,
+            }));
+        }
+        Ok(None)
+    }
     /// Bound automatic abandoned-stage reclamation to at most 32 exact pages.
     /// No published record or author floor is eligible. An uncertain intent must
     /// be reconciled by reopening before any reclamation is permitted.
     pub fn maintain(&mut self, now: u64) -> Result<Maintenance, Error> {
+        self.maintain_bounded(now, SEGMENT_EVENTS as u32)
+    }
+    /// Explicit writer maintenance, capped at the caller's reserved page budget
+    /// (zero through 32). Zero may advance the clock/expiry state but removes no
+    /// pages. Checked stage/commit never invoke this implicitly.
+    pub fn maintain_bounded(&mut self, now: u64, max_pages: u32) -> Result<Maintenance, Error> {
+        self.maintenance_quote(now, max_pages)?;
         self.healthy()?;
         if now < self.catalogue.clock {
             return Err(Error::Conflict);
@@ -515,7 +820,7 @@ impl ContinuityStore {
             })?;
         }
         let mut removed = 0;
-        while removed < SEGMENT_EVENTS as u32 {
+        while removed < max_pages {
             let Some(stage) = self
                 .catalogue
                 .stages
@@ -930,10 +1235,17 @@ fn position(chain: &AuthorChain) -> Position {
         id: value.id(),
     })
 }
+fn public_position(value: Position) -> AuthorPosition {
+    AuthorPosition {
+        sequence: value.sequence,
+        event: value.id,
+    }
+}
 fn ticket(stage: &Stage) -> StageTicket {
     StageTicket {
         id: stage.id,
         author: stage.author,
+        base: public_position(stage.base),
         sequence: stage.tail.sequence,
         event: stage.tail.id,
         pages: stage.pages,

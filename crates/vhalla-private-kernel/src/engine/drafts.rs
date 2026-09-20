@@ -229,5 +229,7 @@ fn initial(
         key_package: None,
         joined: None,
         records: Vec::new(),
+        offers: Vec::new(),
+        contact: None,
     })
 }

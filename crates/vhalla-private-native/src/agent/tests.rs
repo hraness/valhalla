@@ -301,7 +301,13 @@ fn agent_inert_prompt_injection_is_only_explicit_room_content() {
             .await
             .unwrap();
         let record = host.outbox(1, 1).await.unwrap().records.remove(0);
-        pair.member.receive(record.bytes(), pair.now).await.unwrap();
+        pair.member
+            .receive(
+                record.artifact().expect("ordinary artifact").bytes(),
+                pair.now,
+            )
+            .await
+            .unwrap();
         let (mut reader, _reader_authority) = session(pair.member);
         let page = reader.inbox(0, 1).await.unwrap();
         assert_eq!(page.records.len(), 1);
@@ -475,7 +481,10 @@ fn agent_revocation_or_expiry_after_actual_commit_withholds_confirmation() {
             let retained = host.outbox(1, 1).await.unwrap().records.remove(0);
             let draft = host.prepare_message(b"durable but unreleased").unwrap();
             let retry = host.send(op(2), &draft, pair.now).await.unwrap();
-            assert_eq!(retained.bytes(), retry.bytes());
+            assert_eq!(
+                retained.artifact().expect("ordinary artifact").bytes(),
+                retry.bytes()
+            );
             assert_eq!(host.status().outbox_head, 2);
         }
     });
@@ -658,7 +667,10 @@ fn agent_removed_member_retained_ciphertext_is_not_a_renewed_grant() {
         kernel.apply_control(removal.bytes(), now).await.unwrap();
         assert_eq!(kernel.status().phase, Phase::Removed);
         let retained = kernel.send(op(2), &exact_draft, pair.now).await.unwrap();
-        assert_eq!(retained.bytes(), original.bytes());
+        assert_eq!(
+            retained.bytes(),
+            original.artifact().expect("ordinary artifact").bytes()
+        );
         assert!(matches!(
             LocalGrant::for_status(
                 kernel.status(),
@@ -672,5 +684,36 @@ fn agent_removed_member_retained_ciphertext_is_not_a_renewed_grant() {
             AgentRoomSession::new(kernel, grant),
             Err(Error::AuthorityChanged)
         ));
+    });
+}
+
+#[test]
+fn secret_offer_issuance_has_only_metadata_in_agent_outbox() {
+    block_on(async {
+        let mut pair = Pair::fresh(100, 100).await;
+        let recipient = pair.member.status().context.account;
+        let validity = pair
+            .owner
+            .membership()
+            .await
+            .unwrap()
+            .owner()
+            .claims()
+            .validity;
+        let offer = pair
+            .owner
+            .create_contact_offer(op(1), recipient, validity, pair.now)
+            .await
+            .unwrap();
+        assert!(!offer.confidential_bytes().is_empty());
+        let (mut agent, _authority) = session(pair.owner);
+        let page = agent.outbox_status(0, 1).await.unwrap();
+        assert_eq!(page.head, 1);
+        assert_eq!(page.next, None);
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].sequence, 1);
+        assert_eq!(page.records[0].operation, op(1));
+        assert_eq!(page.records[0].kind, OutboxKind::ContactOffer);
+        assert_eq!(page.records[0].artifact_bytes, None);
     });
 }

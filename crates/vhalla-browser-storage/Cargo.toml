@@ -10,6 +10,8 @@ description = "Bounded opaque browser images with exact IndexedDB compare-and-sw
 default = []
 private-rooms = ["dep:vhalla-private-kernel"]
 qualification = []
+# Synthetic Window/worker fixture only; never enabled by the public client.
+private-custody-qualification = ["private-rooms", "qualification", "vhalla-browser-vault/private-storage"]
 
 [dependencies]
 vhalla-private-kernel = { path = "../vhalla-private-kernel", optional = true }
@@ -29,6 +31,7 @@ wasm-bindgen = "=0.2.108"
 web-sys = { version = "=0.3.85", features = ["Window", "IdbFactory", "IdbDatabase", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbObjectStore", "IdbKeyRange", "Event", "DomStringList"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+zeroize = "1.9"
 wasm-bindgen-futures = "=0.4.58"
 
 [target.'cfg(unix)'.dependencies]
@@ -47,3 +50,7 @@ required-features = ["private-rooms", "qualification"]
 [[example]]
 name = "private_mls_indexeddb"
 required-features = ["private-rooms", "qualification"]
+
+[[example]]
+name = "private_custody_indexeddb"
+required-features = ["private-custody-qualification"]
