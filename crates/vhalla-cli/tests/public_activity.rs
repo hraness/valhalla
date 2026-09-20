@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use vhalla_journal::{Bundle, BundleParts, FsStore, Journal};
 use vhalla_public_client::{Bootstrap, CertifiedClient, Validator, ValidatorActivation};
@@ -148,9 +148,21 @@ impl Home {
             height: next.height,
         })
         .unwrap();
-        Journal::with_genesis(self.path.join("journal"), FsStore, self.genesis)
-            .commit(&bundle)
-            .unwrap();
+        let journal = Journal::with_genesis(self.path.join("journal"), FsStore, self.genesis);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match journal.commit(&bundle) {
+                Ok(_) => break,
+                // A sibling test can fork while this process holds the lock;
+                // close-on-exec closes the child's inherited handle at exec,
+                // but contention can briefly outlive our local handle. Retry
+                // only contention, always using this exact certified bundle.
+                Err(vhalla_journal::JournalError::Busy) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("fixture journal {}: {error}", self.path.display()),
+            }
+        }
         self.scenario.app.apply_locally(checked);
     }
     fn policy(&mut self, enabled: bool) {

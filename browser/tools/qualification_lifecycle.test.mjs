@@ -85,8 +85,8 @@ test('former-writer closure requires success and observed absence before continu
     await assert.rejects(closeTargetChecked(async method=>{methods.push(method);return reply;},'old'),/refused/);
     assert.deepEqual(methods,['Target.closeTarget']);
   }
-  await assert.rejects(closeTargetChecked(async method=>method==='Target.closeTarget'?{success:true}:{targetInfos:[{targetId:'old'}]},'old'),/remains/);
-  await assert.rejects(closeTargetChecked(async method=>method==='Target.closeTarget'?{success:true}:{},'old'),/remains/);
+  await assert.rejects(closeTargetChecked(async method=>method==='Target.closeTarget'?{success:true}:{targetInfos:[{targetId:'old'}]},'old',{timeoutMs:5,pollMs:1}),/remains/);
+  await assert.rejects(closeTargetChecked(async method=>method==='Target.closeTarget'?{success:true}:{},'old'),/invalid target inventory/);
   const calls=[];
   await closeTargetChecked(async(method,params)=>{calls.push([method,params]);return method==='Target.closeTarget'?{success:true}:{targetInfos:[{targetId:'other'}]};},'old');
   assert.deepEqual(calls,[['Target.closeTarget',{targetId:'old'}],['Target.getTargets',undefined]]);
@@ -113,4 +113,28 @@ test('deadline aborts delayed setup before cleanup; resumed setup cannot start o
   resume();
   await assert.rejects(lateWork, /closing/);
   assert.equal(childStarts, 0); assert.equal(serverStarts, 0);
+});
+
+test('asynchronous target teardown is observed before the restored writer can proceed', async () => {
+  let inventories = 0, closed = 0;
+  await closeTargetChecked(async method => {
+    if (method === 'Target.closeTarget') { closed++; return {success:true}; }
+    return {targetInfos: ++inventories < 3 ? [{targetId:'old'}] : []};
+  }, 'old', {timeoutMs:100,pollMs:1});
+  assert.equal(closed,1); assert.equal(inventories,3);
+});
+
+test('a hung close or inventory request cannot continue after the closure deadline', async () => {
+  for (const hungMethod of ['Target.closeTarget','Target.getTargets']) {
+    let resume; const methods=[];
+    await assert.rejects(closeTargetChecked(async method => {
+      methods.push(method);
+      if (method === hungMethod) return new Promise(resolve => { resume = resolve; });
+      return {success:true};
+    },'old',{timeoutMs:5,pollMs:1}),/closure.*deadline/);
+    const count=methods.length;
+    resume(hungMethod === 'Target.closeTarget' ? {success:true} : {targetInfos:[]});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(methods.length,count);
+  }
 });

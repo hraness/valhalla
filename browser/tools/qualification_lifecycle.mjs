@@ -102,11 +102,30 @@ export async function runQualification({work, timeoutMs, cleanup, publish}) {
   await publish(result);
 }
 
-export async function closeTargetChecked(call, targetId) {
-  const closed = await call('Target.closeTarget', {targetId});
-  if (closed?.success !== true) throw Error('browser refused to close the selected target');
-  const targets = await call('Target.getTargets');
-  if (!Array.isArray(targets?.targetInfos) || targets.targetInfos.some(target => target.targetId === targetId)) {
-    throw Error('selected browser target remains after close');
-  }
+export async function closeTargetChecked(call, targetId, {timeoutMs = 2000, pollMs = 20} = {}) {
+  let timer, stopped = false;
+  const observe = async () => {
+    const closed = await call('Target.closeTarget', {targetId});
+    if (stopped) return;
+    if (closed?.success !== true) throw Error('browser refused to close the selected target');
+    // CDP acknowledges the close request before asynchronous target teardown
+    // necessarily disappears from getTargets. Require observed absence, with
+    // a deadline, before the restored writer is allowed to proceed.
+    while (!stopped) {
+      const targets = await call('Target.getTargets');
+      if (stopped) return;
+      if (!Array.isArray(targets?.targetInfos)) throw Error('browser returned invalid target inventory');
+      if (!targets.targetInfos.some(target => target.targetId === targetId)) return;
+      await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+  };
+  try {
+    await Promise.race([
+      observe(),
+      new Promise((_, reject) => { timer = setTimeout(() => {
+        stopped = true;
+        reject(Error('selected browser target remains or its closure was not confirmed before deadline'));
+      }, timeoutMs); }),
+    ]);
+  } finally { stopped = true; clearTimeout(timer); }
 }

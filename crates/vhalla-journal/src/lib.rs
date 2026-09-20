@@ -528,7 +528,13 @@ impl Store for FsStore {
             .write(true)
             .truncate(false)
             .open(dir.join(LOCK_FILE))?;
-        flock_exclusive(&file).map_err(|_| JournalError::Busy)?;
+        match flock_exclusive(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                return Err(JournalError::Busy);
+            }
+            Err(error) => return Err(error.into()),
+        }
         File::open(dir)?.sync_all()?;
         Ok(file)
     }
@@ -1001,7 +1007,7 @@ impl<S: Store> Journal<S> {
     /// the complete retained pin, bounded bundle bytes and height marker first;
     /// missing or altered accepted evidence is never repaired or acknowledged.
     pub fn commit(&self, bundle: &Bundle) -> Result<Outcome, JournalError> {
-        let lock = self.store.lock(&self.dir).map_err(|_| JournalError::Busy)?;
+        let lock = self.store.lock(&self.dir)?;
         let current = match self.store.read_pin(&self.dir)? {
             None => self.genesis(),
             Some(bytes) => Pin::decode(&bytes)?,
