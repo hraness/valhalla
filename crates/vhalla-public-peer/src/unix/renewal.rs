@@ -30,8 +30,9 @@ impl ManagedPeer {
     }
     /// Reopen existing private state, reconcile fully validated reservation/temp
     /// evidence, skip every reserved sequence, and publish a fresh higher one.
-    /// Corrupt/truncated evidence, missing reservation, changed scope or clock
-    /// rollback fail closed; retained artifacts are never silently discarded.
+    /// Interrupted unpublished preparation is discarded only against validated
+    /// committed state. Corrupt authoritative evidence, a missing reservation,
+    /// changed scope or clock rollback fail closed without resetting a floor.
     pub fn open(config: Config, state_dir: impl AsRef<Path>) -> Result<Self, Error> {
         Self::start(config, state_dir.as_ref(), false)
     }
@@ -218,6 +219,22 @@ struct Scope {
     endpoint: Endpoint,
 }
 impl Scope {
+    fn unsigned_ad(&self, reservation: Reservation) -> Result<UnsignedAdvertisement, Error> {
+        UnsignedAdvertisement::new(AdvertisementClaims {
+            network: self.network,
+            application_key: self.key,
+            sequence: reservation.sequence,
+            issued_at: reservation.issued,
+            expires_at: reservation
+                .issued
+                .checked_add(ADVERTISEMENT_LIFETIME_SECONDS)
+                .ok_or(Error::State("clock overflow"))?,
+            protocol: PROTOCOL_VERSION,
+            capabilities: Capabilities::READ,
+            endpoints: vec![self.endpoint.clone()],
+        })
+        .map_err(|_| Error::Advertisement)
+    }
     fn route_hash(&self) -> [u8; 32] {
         digest(
             b"vhalla/public-peer-route/v1\0",
@@ -283,9 +300,13 @@ impl Reservation {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Fault {
+    ReserveCreated,
+    ReservePartial,
     ReserveFileSync,
     ReserveRename,
     ReserveDirSync,
+    AdvertisementCreated,
+    AdvertisementPartial,
     AdvertisementFileSync,
     AdvertisementRename,
     AdvertisementDirSync,
@@ -357,10 +378,19 @@ impl Publisher {
             .as_deref()
             .map(|raw| Reservation::decode(raw, &scope))
             .transpose()?;
-        let next = pending
+        let partial_sequence = pending
             .as_deref()
-            .map(|raw| Reservation::decode(raw, &scope))
-            .transpose()?;
+            .is_some_and(|raw| raw.len() < RESERVATION_BYTES);
+        let next = if partial_sequence {
+            let basis = old.ok_or(Error::State("partial reservation without a durable base"))?;
+            check_partial_reservation(pending.as_deref().unwrap_or_default(), &scope, basis)?;
+            None
+        } else {
+            pending
+                .as_deref()
+                .map(|raw| Reservation::decode(raw, &scope))
+                .transpose()?
+        };
         let reservation = match (old, next) {
             (None, None) => {
                 return Err(Error::State(
@@ -387,10 +417,37 @@ impl Publisher {
         }
         let advertisement = read_optional(dir, uid, ADVERTISEMENT, MAX_ADVERTISEMENT_BYTES)?;
         let pending_ad = read_optional(dir, uid, "advertisement.tmp", MAX_ADVERTISEMENT_BYTES)?;
+        let partial_ad = if let Some(raw) = pending_ad.as_deref() {
+            let expected = scope.unsigned_ad(reservation)?.encoded_claims();
+            if raw.len() < expected.len() + 64 {
+                if pending.is_some() {
+                    return Err(Error::State(
+                        "partial advertisement with uncommitted reservation",
+                    ));
+                }
+                let present = raw.len().min(expected.len());
+                if raw[..present] != expected[..present] {
+                    return Err(Error::State("foreign or conflicting partial advertisement"));
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if partial_sequence && pending_ad.is_some() {
+            return Err(Error::State(
+                "advertisement exists before its reservation publication",
+            ));
+        }
         let mut ads = Vec::new();
-        for raw in [advertisement.as_deref(), pending_ad.as_deref()]
-            .into_iter()
-            .flatten()
+        for raw in [
+            advertisement.as_deref(),
+            pending_ad.as_deref().filter(|_| !partial_ad),
+        ]
+        .into_iter()
+        .flatten()
         {
             let ad = scope.check_ad(raw)?;
             let claims = ad.unverified_claims();
@@ -478,32 +535,21 @@ impl Publisher {
                 .ok_or(Error::State("sequence exhausted"))?,
             issued: clock,
         };
-        let expiry = clock
-            .checked_add(ADVERTISEMENT_LIFETIME_SECONDS)
-            .ok_or(Error::State("clock overflow"))?;
+        let unsigned = self.scope.unsigned_ad(reservation)?;
         let reserved = reservation.encode(&self.scope);
         self.atomic(
             SEQUENCE,
             &reserved,
             fault,
             [
+                Fault::ReserveCreated,
+                Fault::ReservePartial,
                 Fault::ReserveFileSync,
                 Fault::ReserveRename,
                 Fault::ReserveDirSync,
             ],
         )?;
         // Signing starts only after durable reservation publication succeeds.
-        let unsigned = UnsignedAdvertisement::new(AdvertisementClaims {
-            network: self.scope.network,
-            application_key: self.scope.key,
-            sequence: reservation.sequence,
-            issued_at: clock,
-            expires_at: expiry,
-            protocol: PROTOCOL_VERSION,
-            capabilities: Capabilities::READ,
-            endpoints: vec![self.scope.endpoint.clone()],
-        })
-        .map_err(|_| Error::Advertisement)?;
         let raw = identity
             .sign_public_advertisement(unsigned)
             .map_err(|_| Error::Advertisement)?
@@ -513,6 +559,8 @@ impl Publisher {
             &raw,
             fault,
             [
+                Fault::AdvertisementCreated,
+                Fault::AdvertisementPartial,
                 Fault::AdvertisementFileSync,
                 Fault::AdvertisementRename,
                 Fault::AdvertisementDirSync,
@@ -529,18 +577,55 @@ impl Publisher {
         name: &str,
         raw: &[u8],
         fault: Option<Fault>,
-        points: [Fault; 3],
+        points: [Fault; 5],
     ) -> Result<(), Error> {
         let pending = self.dir.join(format!("{name}.tmp"));
         let mut file = custody::create_private_file(&pending).map_err(Error::Custody)?;
-        file.write_all(raw)?;
-        file.sync_all()?;
         inject(fault, points[0])?;
-        fs::rename(pending, self.dir.join(name))?;
+        let split = raw.len() / 2;
+        file.write_all(&raw[..split])?;
         inject(fault, points[1])?;
+        file.write_all(&raw[split..])?;
+        file.sync_all()?;
+        inject(fault, points[2])?;
+        fs::rename(pending, self.dir.join(name))?;
+        inject(fault, points[3])?;
         self.directory.sync_all()?;
-        inject(fault, points[2])
+        inject(fault, points[4])
     }
+}
+// A truncated temp precedes reservation rename and therefore cannot have
+// authorized signing. Only an exact available scope/next-sequence prefix can
+// be discarded, after all committed state and the caller clock pass validation.
+fn check_partial_reservation(raw: &[u8], scope: &Scope, old: Reservation) -> Result<(), Error> {
+    let sequence = old
+        .sequence
+        .checked_add(1)
+        .ok_or(Error::State("sequence exhausted"))?;
+    let expected = Reservation {
+        sequence,
+        issued: old.issued,
+    }
+    .encode(scope);
+    let present = raw.len().min(109);
+    if raw[..present] != expected[..present] {
+        return Err(Error::State("foreign or conflicting partial reservation"));
+    }
+    if raw.len() >= 117 {
+        let issued = u64::from_be_bytes(
+            raw[109..117]
+                .try_into()
+                .map_err(|_| Error::State("issued"))?,
+        );
+        if issued < old.issued {
+            return Err(Error::ClockRollback);
+        }
+        let exact = Reservation { sequence, issued }.encode(scope);
+        if raw != &exact[..raw.len()] {
+            return Err(Error::State("corrupt partial reservation checksum"));
+        }
+    }
+    Ok(())
 }
 fn read_optional(dir: &Path, uid: u32, name: &str, max: usize) -> Result<Option<Vec<u8>>, Error> {
     match custody::read_private_file(&dir.join(name), uid, max) {

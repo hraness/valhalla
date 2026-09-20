@@ -11,6 +11,10 @@ use vhalla_custody as custody;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Point {
+    IntentCreated,
+    IntentPartial,
+    IntentStageSynced,
+    IntentRenamed,
     IntentWritten,
     IntentSynced,
     RecordSynced,
@@ -181,6 +185,46 @@ impl Disk {
         self.hit(Point::StateRenamed)?;
         self.sync()
     }
+    // New operations stage an unpublished scratch before publishing the existing
+    // authoritative INTENT name. No effects precede rename + directory sync.
+    pub fn stage_intent(&mut self, raw: &[u8]) -> Result<(), Error> {
+        if raw.len() > MAX_INTENT {
+            return Err(Error::Bounds);
+        }
+        if self.present("INTENT", MAX_INTENT)? || self.present("INTENT.tmp", MAX_INTENT)? {
+            return Err(Error::RecoveryRequired);
+        }
+        let mut file =
+            custody::create_private_file(&self.path.join("INTENT.tmp")).map_err(check)?;
+        self.hit(Point::IntentCreated)?;
+        let split = raw.len() / 2;
+        file.write_all(&raw[..split]).map_err(io)?;
+        self.hit(Point::IntentPartial)?;
+        file.write_all(&raw[split..]).map_err(io)?;
+        self.hit(Point::IntentWritten)?;
+        file.sync_all().map_err(io)?;
+        self.hit(Point::IntentStageSynced)?;
+        self.promote_staged_intent(raw)
+    }
+    pub fn promote_staged_intent(&mut self, raw: &[u8]) -> Result<(), Error> {
+        if self.present("INTENT", MAX_INTENT)? || self.read("INTENT.tmp", MAX_INTENT)? != raw {
+            return Err(Error::Corrupt);
+        }
+        self.resync("INTENT.tmp", MAX_INTENT)?;
+        fs::rename(self.path.join("INTENT.tmp"), self.path.join("INTENT")).map_err(io)?;
+        self.hit(Point::IntentRenamed)?;
+        self.sync()?;
+        self.hit(Point::IntentSynced)
+    }
+    // Caller must first validate current scope/state and prove this is incomplete
+    // nonauthoritative scratch with no final intent or post-intent effects.
+    pub fn discard_staged_intent(&self) -> Result<(), Error> {
+        if self.present("INTENT", MAX_INTENT)? {
+            return Err(Error::Corrupt);
+        }
+        self.remove_temp("INTENT.tmp", MAX_INTENT)
+    }
+
     pub fn remove_intent(&mut self) -> Result<(), Error> {
         if !self.present("INTENT", MAX_INTENT)? {
             return Err(Error::Corrupt);

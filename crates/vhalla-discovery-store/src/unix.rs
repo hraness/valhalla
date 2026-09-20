@@ -20,6 +20,8 @@ const PIN_BYTES: usize = 80;
 const LOCK: &str = "lock";
 const STATE: &str = "state";
 const INTENT: &str = "intent";
+// Unpublished preparation only; successor effects require durable INTENT.
+const INTENT_TEMP: &str = "intent.tmp";
 const TEMP: &str = "state.tmp";
 
 /// Private publication errors never authorize resetting either store.
@@ -402,6 +404,9 @@ impl Store {
             fault: None,
         };
         result.inventory()?;
+        if result.exists(INTENT_TEMP)? {
+            result.staged_intent()?;
+        }
         if result.exists(INTENT)? {
             result.intent()?;
         } else if result.exists(TEMP)? {
@@ -419,9 +424,9 @@ impl Store {
     pub fn pin(&self) -> Pin {
         self.image.pin()
     }
-    /// Whether an exact publication needs explicit reconciliation.
+    /// Whether retained preparation or publication needs reconciliation.
     pub fn recovery_required(&self) -> Result<bool, Error> {
-        self.exists(INTENT)
+        Ok(self.exists(INTENT)? || self.exists(INTENT_TEMP)?)
     }
     /// Publish one typed candidate under exact private CAS, only after newly
     /// claimed canonical source IDs are durable in the independently locked store.
@@ -443,6 +448,15 @@ impl Store {
         self.inventory()?;
         self.check_disk()?;
         check_source_ready(self.image.state.scope, sources)?;
+        if self.exists(INTENT_TEMP)? {
+            if let Some(intent) = self.staged_intent()? {
+                if expected != intent.expected || candidate.payload() != intent.next.state.payload()
+                {
+                    return Err(Error::RecoveryRequired);
+                }
+            }
+            self.reconcile_staged(sources)?;
+        }
         if self.exists(INTENT)? {
             let intent = self.intent()?;
             if expected != intent.expected || candidate.payload() != intent.next.state.payload() {
@@ -474,24 +488,33 @@ impl Store {
                 state: candidate,
             },
         };
-        let mut file = create_private(&self.path.join(INTENT))?;
+        let mut file = create_private(&self.path.join(INTENT_TEMP))?;
         self.step(Step::IntentCreated)?;
         file.write_all(&intent.encode())?;
         self.step(Step::IntentWritten)?;
         file.sync_all()?;
+        self.step(Step::IntentSynced)?;
+        fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
+        self.step(Step::IntentRenamed)?;
         self.directory.sync_all()?;
         self.step(Step::IntentDurable)?;
         self.finish(intent, sources, false)
     }
-    /// Recover only the retained complete exact intent. Missing new source claims
-    /// block promotion while already-published missing claims remain unresolved.
+    /// Recover an exact intent or resolve unpublished preparation. Missing new
+    /// source claims block promotion; malformed authoritative intents are preserved.
     pub fn recover(&mut self, sources: &SocialStore) -> Result<Publication, Error> {
+        self.recover_inner(sources).map_err(indeterminate)
+    }
+    fn recover_inner(&mut self, sources: &SocialStore) -> Result<Publication, Error> {
         self.inventory()?;
         self.check_disk()?;
         check_source_ready(self.image.state.scope, sources)?;
+        if self.exists(INTENT_TEMP)? {
+            self.reconcile_staged(sources)?;
+        }
         if self.exists(INTENT)? {
             let intent = self.intent()?;
-            self.finish(intent, sources, true).map_err(indeterminate)
+            self.finish(intent, sources, true)
         } else if self.exists(TEMP)? {
             Err(Error::RecoveryRequired)
         } else {
@@ -500,6 +523,70 @@ impl Store {
                 reconciled: true,
             })
         }
+    }
+    // Validate without writing or depending on mutable source availability.
+    // Incomplete scratch is disposable only while the exact pre-effect image
+    // remains pinned. Complete bytes must decode canonically; never hide damage
+    // by treating a malformed complete frame as interrupted preparation.
+    fn staged_intent(&self) -> Result<Option<Intent>, Error> {
+        self.check_disk()?;
+        if self.exists(INTENT)? || self.exists(TEMP)? {
+            return Err(Error::Corrupt);
+        }
+        let raw = read_bounded(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?;
+        let generation = self
+            .image
+            .generation
+            .checked_add(1)
+            .ok_or(Error::Capacity)?;
+        let mut prefix = Vec::new();
+        prefix.extend_from_slice(INTENT_MAGIC);
+        prefix.extend_from_slice(&self.pin().encode());
+        prefix.extend_from_slice(IMAGE_MAGIC);
+        prefix.extend_from_slice(&generation.to_be_bytes());
+        let checked = raw.len().min(prefix.len());
+        if raw[..checked] != prefix[..checked] {
+            return Err(Error::Corrupt);
+        }
+        const HEADER: usize = 8 + PIN_BYTES + 20;
+        if raw.len() < HEADER {
+            return Ok(None);
+        }
+        let size = u32::from_be_bytes(
+            raw[HEADER - 4..HEADER]
+                .try_into()
+                .map_err(|_| Error::Corrupt)?,
+        ) as usize;
+        if !(40..=MAX_BYTES - 52).contains(&size) {
+            return Err(Error::Corrupt);
+        }
+        let scope_bytes = (raw.len() - HEADER).min(32);
+        if raw[HEADER..HEADER + scope_bytes] != self.image.state.scope.digest()[..scope_bytes] {
+            return Err(Error::Corrupt);
+        }
+        if raw.len() < HEADER + size + 64 {
+            return Ok(None);
+        }
+        let intent = Intent::decode(&raw, self.image.state.scope)?;
+        if intent.expected != self.pin() {
+            return Err(Error::Conflict);
+        }
+        Ok(Some(intent))
+    }
+    fn reconcile_staged(&mut self, sources: &SocialStore) -> Result<(), Error> {
+        if let Some(intent) = self.staged_intent()? {
+            validate_candidate(&self.image.state, &intent.next.state, sources)?;
+            open_private(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+            self.step(Step::IntentSynced)?;
+            fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
+            self.step(Step::IntentRenamed)?;
+            self.directory.sync_all()?;
+            self.step(Step::IntentDurable)?;
+        } else {
+            fs::remove_file(self.path.join(INTENT_TEMP))?;
+            self.directory.sync_all()?;
+        }
+        Ok(())
     }
     fn intent(&self) -> Result<Intent, Error> {
         let intent = Intent::decode(
@@ -520,6 +607,10 @@ impl Store {
         self.inventory()?;
         self.check_disk()?;
         validate_candidate(&self.image.state, &intent.next.state, sources)?;
+        // Re-establish authoritative intent durability after an uncertain
+        // rename/directory sync before publishing any successor state.
+        open_private(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+        self.directory.sync_all()?;
         let next_bytes = intent.next.encode();
         if self.pin() == intent.expected {
             let mut file = if self.exists(TEMP)? {
@@ -596,7 +687,7 @@ impl Store {
     }
     fn inventory(&self) -> Result<(), Error> {
         for (count, entry) in fs::read_dir(&self.path)?.enumerate() {
-            if count >= 4 {
+            if count >= 5 {
                 return Err(Error::Capacity);
             };
             let entry = entry?;
@@ -607,7 +698,7 @@ impl Store {
             let max = match name.as_str() {
                 LOCK => 0,
                 STATE | TEMP => MAX_BYTES,
-                INTENT => MAX_INTENT_BYTES,
+                INTENT | INTENT_TEMP => MAX_INTENT_BYTES,
                 _ => return Err(Error::UnsafePath),
             };
             regular(&fs::symlink_metadata(entry.path())?, self.uid, max)?;
@@ -687,6 +778,8 @@ fn check_source_ready(scope: ReaderScope, sources: &SocialStore) -> Result<(), E
 enum Step {
     IntentCreated,
     IntentWritten,
+    IntentSynced,
+    IntentRenamed,
     IntentDurable,
     TempWritten,
     TempDurable,

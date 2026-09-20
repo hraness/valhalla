@@ -17,6 +17,7 @@ const LOCK: &str = "lock";
 const FORMAT: &str = "format";
 const HEAD: &str = "HEAD";
 const INTENT: &str = "intent";
+const INTENT_TEMP: &str = "intent.tmp";
 const HEAD_TEMP: &str = "HEAD.tmp";
 const AUTHOR_TEMP: &str = "author.tmp";
 const RECORDS: &str = "records";
@@ -231,7 +232,9 @@ impl Store {
         };
         store.root_inventory()?;
         store.validate_pin(pin)?;
-        if store.present(INTENT, MAX_INTENT_BYTES)? {
+        if store.present(INTENT_TEMP, MAX_INTENT_BYTES)? {
+            store.validate_staged_intent()?;
+        } else if store.present(INTENT, MAX_INTENT_BYTES)? {
             store.validate_intent()?;
         } else {
             store.ready()?;
@@ -249,7 +252,8 @@ impl Store {
     }
     /// True when an exact retained local admission needs explicit completion.
     pub fn recovery_required(&self) -> Result<bool, Error> {
-        self.present(INTENT, MAX_INTENT_BYTES)
+        Ok(self.present(INTENT, MAX_INTENT_BYTES)?
+            || self.present(INTENT_TEMP, MAX_INTENT_BYTES)?)
     }
     /// Current full-key author floor, obtained from verified local log/index bytes.
     /// Missing, torn or inconsistent referenced evidence refuses the read.
@@ -293,6 +297,17 @@ impl Store {
         self.check_pin()?;
         if event.claims().scope != self.scope {
             return Err(Error::Conflict);
+        }
+        if self.present(INTENT_TEMP, MAX_INTENT_BYTES)? {
+            if self
+                .validate_staged_intent()?
+                .is_some_and(|intent| intent.record.event.encode() != event.encode())
+            {
+                return Err(Error::RecoveryRequired);
+            }
+            if let Some(stored) = self.recover_inner()? {
+                return Ok(stored);
+            }
         }
         if self.present(INTENT, MAX_INTENT_BYTES)? {
             let intent = self.validate_intent()?;
@@ -361,11 +376,18 @@ impl Store {
             old: old.map(|(index, _)| index),
             record,
         };
-        let mut file = create(&self.path.join(INTENT))?;
+        let mut file = create(&self.path.join(INTENT_TEMP))?;
         self.step(Step::IntentCreated)?;
-        file.write_all(&intent.encode())?;
+        let raw = intent.encode();
+        let split = raw.len() / 2;
+        file.write_all(&raw[..split])?;
+        self.step(Step::IntentPartial)?;
+        file.write_all(&raw[split..])?;
         self.step(Step::IntentWritten)?;
         file.sync_all()?;
+        self.step(Step::IntentSynced)?;
+        fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
+        self.step(Step::IntentRenamed)?;
         self.directory.sync_all()?;
         self.step(Step::IntentDurable)?;
         let result = self.finish_intent(intent, false)?;
@@ -382,6 +404,19 @@ impl Store {
     }
     fn recover_inner(&mut self) -> Result<Option<StoredEvent>, Error> {
         self.check_pin()?;
+        if self.present(INTENT_TEMP, MAX_INTENT_BYTES)? {
+            if self.validate_staged_intent()?.is_some() {
+                open(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+                self.step(Step::IntentSynced)?;
+                fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
+                self.step(Step::IntentRenamed)?;
+                self.directory.sync_all()?;
+                self.step(Step::IntentDurable)?;
+            } else {
+                fs::remove_file(self.path.join(INTENT_TEMP))?;
+                self.directory.sync_all()?;
+            }
+        }
         if !self.present(INTENT, MAX_INTENT_BYTES)? {
             self.ready()?;
             return Ok(None);
@@ -506,6 +541,42 @@ impl Store {
             reconciled,
         })
     }
+    fn validate_staged_intent(&self) -> Result<Option<Intent>, Error> {
+        self.root_inventory()?;
+        self.check_pin()?;
+        self.validate_pin(self.pin)?;
+        self.validate_published_tip()?;
+        // No successor effect is lawful until final intent publication.
+        if self.present(INTENT, MAX_INTENT_BYTES)?
+            || self.present(HEAD_TEMP, PIN_BYTES)?
+            || self.present(AUTHOR_TEMP, INDEX_BYTES)?
+        {
+            return Err(Error::Corrupt);
+        }
+        if let Some(next) = self.pin.count.checked_add(1) {
+            if exists(&self.record_path(next), self.uid, MAX_RECORD_BYTES)? {
+                return Err(Error::Corrupt);
+            }
+        }
+        let raw = read(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?;
+        let intent = Intent::decode_staged(&raw, self.pin, self.scope, self.limits)?;
+        if let Some(intent) = &intent {
+            self.validate_intent_structure(intent)?;
+            let author = intent.record.event.claims().author;
+            if self.read_author_index(author)? != intent.old
+                || self
+                    .lookup_sequence(
+                        author,
+                        intent.record.event.claims().sequence,
+                        self.pin.count,
+                    )?
+                    .is_some()
+            {
+                return Err(Error::Corrupt);
+            }
+        }
+        Ok(intent)
+    }
     fn validate_intent(&self) -> Result<Intent, Error> {
         let intent = Intent::decode(
             &read(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?,
@@ -554,6 +625,7 @@ impl Store {
     }
     fn ready(&self) -> Result<(), Error> {
         if self.present(INTENT, MAX_INTENT_BYTES)?
+            || self.present(INTENT_TEMP, MAX_INTENT_BYTES)?
             || self.present(HEAD_TEMP, PIN_BYTES)?
             || self.present(AUTHOR_TEMP, INDEX_BYTES)?
         {
@@ -758,7 +830,7 @@ impl Store {
                 HEAD | HEAD_TEMP => {
                     open(&entry.path(), self.uid, PIN_BYTES)?;
                 }
-                INTENT => {
+                INTENT | INTENT_TEMP => {
                     open(&entry.path(), self.uid, MAX_INTENT_BYTES)?;
                 }
                 AUTHOR_TEMP => {
@@ -784,7 +856,10 @@ impl Store {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Step {
     IntentCreated,
+    IntentPartial,
     IntentWritten,
+    IntentSynced,
+    IntentRenamed,
     IntentDurable,
     RecoveryIntentSynced,
     RecordPublished,

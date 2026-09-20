@@ -231,6 +231,41 @@ chain continuity after the read transaction. Missing published entries fail.
 Outbox events are retained for explicit retries without a lifetime image cap.
 No storage frame is a remotely certified author floor or freshness proof.
 
+## Native custody and peer sessions
+
+`native::NativeOutbox` uses the same typed reservation, signed-event and delivery
+checks under an exclusive lock in a private directory. Creation is explicit;
+opening missing or corrupt state never creates a fresh author. Reservations
+become durable before signing; immutable signed events and receipts precede
+their published heads. Retained history uses bounded direct-index pages and
+explicit configured capacity, without automatic pruning.
+
+`native::peers::NativePeerSession` is a separate, bounded store for one explicitly
+selected full peer key and immutable HTTPS endpoint. Its scope binds both the
+stable network ID and independently pinned bootstrap/configuration digest.
+`create_new` requires a fresh signed advertisement with READ and that exact
+endpoint. `open` checks the caller's full scope, key and endpoint before recovery
+writes. Snapshot compare-and-swap operations durably checkpoint a nondecreasing
+local clock and retain the latest signed advertisement sequence. Expired evidence
+restores a sequence floor; it does not authorize activity. Valid newer route or
+capability withdrawals are persisted before the caller decides whether the peer
+is usable, preventing a later older advertisement from restoring withdrawn claims.
+There is no reset, route replacement, automatic migration or network operation.
+
+Both native stores stage future updates in private `INTENT.tmp`, sync it, then
+atomically publish and sync authoritative `INTENT` before any transition effects.
+Reopening promotes an exact complete staged transition. Only a structurally
+incomplete unpublished scratch prefix bound to the exact retained state can be
+removed, with guards against already-created transition effects. Malformed,
+foreign or stale scratch and corrupt authoritative intents remain evidence and
+fail closed. An uncertain write requires dropping and reopening the handle;
+recovery resyncs retained evidence before acknowledging completion. This preserves
+the existing outbox format and does not repair legacy partial authoritative
+intents. Coherent disk rollback and hostile mutation by the same OS owner remain
+outside this local custody boundary. Controllers still must verify certified
+history, fresh peer proofs and current route/capability suitability; this API adds
+no sending or public publishing command.
+
 ## Per-peer delivery evidence
 
 `outbox::delivery::{DeliveryHead, DeliveryRecord}` retain a complete canonical

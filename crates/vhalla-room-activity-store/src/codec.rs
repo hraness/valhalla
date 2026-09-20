@@ -266,6 +266,109 @@ impl Intent {
         finish(&mut raw);
         raw
     }
+    /// Classify only an unpublished exact-basis prefix. This grants no admission.
+    pub fn decode_staged(
+        raw: &[u8],
+        expected: Pin,
+        scope: RoomScope,
+        limits: Limits,
+    ) -> Result<Option<Self>, Error> {
+        fn prefix(raw: &[u8], offset: usize, expected: &[u8]) -> Result<(), Error> {
+            let available = raw.len().saturating_sub(offset).min(expected.len());
+            if available != 0 && raw[offset..offset + available] != expected[..available] {
+                return Err(Error::Corrupt);
+            }
+            Ok(())
+        }
+        if raw.len() > MAX_INTENT_BYTES {
+            return Err(Error::Corrupt);
+        }
+        prefix(raw, 0, INTENT_MAGIC)?;
+        prefix(raw, 8, &expected.encode())?;
+        let next_at = 8 + PIN_BYTES;
+        prefix(raw, next_at, PIN_MAGIC)?;
+        let count = expected.count.checked_add(1).ok_or(Error::Capacity)?;
+        prefix(raw, next_at + 8, &count.to_be_bytes())?;
+        let flag_at = next_at + PIN_BYTES;
+        if raw.len() < flag_at {
+            return Ok(None);
+        }
+        let next = Pin::decode(&raw[next_at..flag_at])?;
+        if next.count != count
+            || next.count > limits.max_events
+            || next.bytes > limits.max_history_bytes
+        {
+            return Err(Error::Corrupt);
+        }
+        if raw.len() == flag_at {
+            return Ok(None);
+        }
+        let index_at = flag_at + 1;
+        match raw[flag_at] {
+            0 => prefix(raw, index_at, &[0; INDEX_BYTES])?,
+            1 => {
+                prefix(raw, index_at, INDEX_MAGIC)?;
+                if raw.len() >= index_at + INDEX_BYTES {
+                    let old = Index::decode(&raw[index_at..index_at + INDEX_BYTES])?;
+                    if old.ordinal > expected.count {
+                        return Err(Error::Corrupt);
+                    }
+                }
+            }
+            _ => return Err(Error::Corrupt),
+        }
+        let length_at = index_at + INDEX_BYTES;
+        let record_at = length_at + 4;
+        if raw.len() < record_at {
+            return Ok(None);
+        }
+        let len = u32::from_be_bytes(
+            raw[length_at..record_at]
+                .try_into()
+                .map_err(|_| Error::Corrupt)?,
+        ) as usize;
+        if len <= RECORD_OVERHEAD
+            || len > MAX_RECORD_BYTES
+            || expected.bytes.checked_add((len + INDEX_BYTES) as u64) != Some(next.bytes)
+        {
+            return Err(Error::Corrupt);
+        }
+        let mut record_prefix = RECORD_MAGIC.to_vec();
+        put_u64(&mut record_prefix, next.count);
+        put_u64(&mut record_prefix, next.bytes);
+        record_prefix.extend_from_slice(&expected.tail);
+        prefix(raw, record_at, &record_prefix)?;
+        // v1 Record holds an exact v1 signed activity frame. Validate every
+        // available byte of its length and full network/realm/directory/room.
+        let event_length_at = record_at + RECORD_OVERHEAD - 32 - 4;
+        let event_at = event_length_at + 4;
+        prefix(
+            raw,
+            event_length_at,
+            &((len - RECORD_OVERHEAD) as u32).to_be_bytes(),
+        )?;
+        let mut event_prefix = b"VHRA".to_vec();
+        event_prefix.push(vhalla_room_activity::PROTOCOL_VERSION);
+        event_prefix.extend_from_slice(&scope.network);
+        event_prefix.extend_from_slice(&scope.realm.0.to_be_bytes());
+        event_prefix.extend_from_slice(scope.directory.as_bytes());
+        event_prefix.extend_from_slice(scope.room.as_bytes());
+        prefix(raw, event_at, &event_prefix)?;
+        if raw.len() >= record_at + len {
+            let record = Record::decode(&raw[record_at..record_at + len], scope)?;
+            if record.pin() != next {
+                return Err(Error::Corrupt);
+            }
+        }
+        if raw.len() < record_at + len + 32 {
+            return Ok(None);
+        }
+        let intent = Self::decode(raw, scope, limits)?;
+        if intent.expected != expected {
+            return Err(Error::Conflict);
+        }
+        Ok(Some(intent))
+    }
     pub fn decode(raw: &[u8], scope: RoomScope, limits: Limits) -> Result<Self, Error> {
         if raw.len() > MAX_INTENT_BYTES {
             return Err(Error::Corrupt);

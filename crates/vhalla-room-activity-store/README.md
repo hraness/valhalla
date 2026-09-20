@@ -23,8 +23,9 @@ key and signed scope; a local index/checksum alone provides no network authority
 - `append(verified_event, expected_author_head, context, current_registry_digest)`
   prepares admission internally, checks the exact author compare-and-set base,
   and requires the context digest to equal the caller's pinned current digest.
-- `recover()` completes one exact prior local admission intent. A torn or
-  conflicting intent fails closed; it is never guessed or replaced.
+- `recover()` completes one exact prior local admission intent or resolves
+  unpublished preparation scratch. A torn authoritative intent fails closed;
+  it is never guessed or replaced.
 - `read_page(after_cursor, limit)` reads up to 64 records directly by local disk
   ordinal. A local paging cursor is separate from author sequence and consensus
   height and is not proof of global completeness.
@@ -46,7 +47,9 @@ and stale expected heads refuse without creating a new intent.
 ## Durable transaction
 
 The private root contains `format`, `lock`, `HEAD`, `records/`, `authors/`, and at
-most one `intent`, `HEAD.tmp`, and `author.tmp`. The immutable format records
+most one `intent`, `HEAD.tmp`, and `author.tmp`. Before any successor effect,
+`intent.tmp` prepares the future intent; it cannot coexist with those publication
+files. The root inventory remains bounded to eight entries. The immutable format records
 scope and local capacity limits. Every metadata envelope has a versioned magic,
 fixed bounds, exact framing and SHA-256 checksum. Checksums are local integrity
 evidence, not hostile-host authentication.
@@ -61,8 +64,9 @@ The root `HEAD` pins the latest global ordinal, accounted bytes and receipt dige
 Publication proceeds in this order:
 
 1. Validate current policy, exact author base, scope and capacity while the caller
-   holds its registry lock. Persist and sync one bounded exact `intent`, then
-   sync the root directory. This freezes a previously checked local admission
+   holds its registry lock. Write one bounded exact `intent.tmp`, sync that file,
+   atomically rename it to `intent`, then sync the root directory before any
+   successor effects. This freezes a previously checked local admission
    decision; its acknowledged outcome may still be uncertain.
 2. Write the immutable record and sync it and the records directory. Write the
    immutable sequence index and sync it and the author directory.
@@ -73,16 +77,29 @@ Publication proceeds in this order:
 5. Remove only the reconciled transaction intent and sync the root directory.
    Return the stored receipt only after all steps succeed.
 
-A failure after intent creation is indeterminate. Preserve all files and reopen;
+A failure after preparation creation is indeterminate. Preserve all files and reopen;
 never delete state, reset counters, or sign another event on an assumed outcome.
 A byte-identical `append` retry or explicit `recover` can finish a valid retained
 intent after later policy revocation because it completes the exact already-checked
 local decision, not a new admission. A different pending event is refused. Recovery first syncs the validated intent file and root again, since the original
 writer may have stopped before syncing it. Recovery
 accepts only exact complete bytes or a known unpublished prefix of that intent.
+Writer open remains write-free and reads refuse while scratch remains. Explicit
+recovery first validates the exact current head, full format scope and limits,
+published tip, and absence of any successor record or publication temporary.
+Every available scratch pin/scope prefix must match this state. Structurally
+incomplete `intent.tmp` can then be discarded without advancing any head or
+returning a stored receipt. A later retry must satisfy the then-current policy
+and exact author basis. Complete canonical scratch is strictly signature/scope/
+chain checked and synced before promotion; identical retries can finish that
+exact previously checked admission after policy revocation. Different complete
+pending events, malformed complete scratch, and contradictory effects refuse.
+
 Committed corruption, unrelated temp contents, missing referenced evidence and
-torn indexes refuse. A torn intent without enough authenticated content cannot
-be recovered automatically.
+torn indexes refuse. A torn authoritative `intent`, including an empty file left
+by an older version, remains preserved and cannot be recovered automatically.
+This prospective change does not repair old damaged stores or authorize deleting
+state. Such repair requires a separate explicit history-bound procedure.
 
 The durable append-only log also provides replayable outbound bytes. This crate
 does not claim network delivery, create a separate delivery queue, or track peer

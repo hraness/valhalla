@@ -172,10 +172,12 @@ fn new_source_claims_require_durable_canonical_commit_before_private_intent() {
 }
 
 #[test]
-fn every_private_publication_boundary_recovers_exact_candidate_or_preserves_torn_intent() {
+fn every_private_publication_boundary_recovers_or_retries_unpublished_preparation() {
     for step in [
         Step::IntentCreated,
         Step::IntentWritten,
+        Step::IntentSynced,
+        Step::IntentRenamed,
         Step::IntentDurable,
         Step::TempWritten,
         Step::TempDurable,
@@ -192,18 +194,167 @@ fn every_private_publication_boundary_recovers_exact_candidate_or_preserves_torn
         let pin = store.pin();
         assert!(store.commit(candidate.clone(), pin, &sources).is_err());
         drop(store);
-        let reopened = Store::open(temp.private(), scope, None);
+        let mut reopened = Store::open(temp.private(), scope, None).unwrap();
         if step == Step::IntentCreated {
-            assert!(matches!(reopened, Err(Error::Corrupt)));
-            assert_eq!(fs::metadata(temp.private().join(INTENT)).unwrap().len(), 0);
+            assert_eq!(
+                fs::metadata(temp.private().join(INTENT_TEMP))
+                    .unwrap()
+                    .len(),
+                0
+            );
+            assert!(!temp.private().join(INTENT).exists());
+            assert!(reopened.recovery_required().unwrap());
+            assert_eq!(reopened.recover(&sources).unwrap().pin(), pin);
+            assert!(!reopened.state().discovery().preferences().wider());
+            reopened.commit(candidate.clone(), pin, &sources).unwrap();
         } else {
-            let mut reopened = reopened.unwrap();
             reopened.recover(&sources).unwrap();
-            assert_eq!(reopened.state().payload(), candidate.payload());
-            assert_eq!(reopened.pin().generation(), 1);
-            assert_eq!(fs::read_dir(temp.private()).unwrap().count(), 2);
         }
+        assert_eq!(reopened.state().payload(), candidate.payload());
+        assert_eq!(reopened.pin().generation(), 1);
+        assert_eq!(fs::read_dir(temp.private()).unwrap().count(), 2);
         assert_eq!(sources.archive().snapshot(), public);
+    }
+}
+
+#[test]
+fn incomplete_preparation_reopens_without_writes_and_retries_only_after_source_check() {
+    for cut in [0, 1, 8, 80, 100, 108, 120, usize::MAX] {
+        let (temp, sources, scope, _) = setup();
+        let mut store = Store::create(temp.private(), scope, &sources).unwrap();
+        let before = fs::read(temp.private().join(STATE)).unwrap();
+        let pin = store.pin();
+        let candidate = changed(store.state());
+        store.fault = Some(Step::IntentWritten);
+        assert!(store.commit(candidate.clone(), pin, &sources).is_err());
+        let raw = fs::read(temp.private().join(INTENT_TEMP)).unwrap();
+        let raw = &raw[..cut.min(raw.len() - 1)];
+        rewrite(&temp.private().join(INTENT_TEMP), raw);
+        drop(store);
+        let mut reopened = Store::open(temp.private(), scope, Some(pin)).unwrap();
+        assert_eq!(fs::read(temp.private().join(INTENT_TEMP)).unwrap(), raw);
+        assert_eq!(fs::read(temp.private().join(STATE)).unwrap(), before);
+        assert!(!temp.private().join(INTENT).exists());
+        let empty_source =
+            SocialStore::create(temp.0.join("empty-source"), REALM, Limits::default()).unwrap();
+        assert!(matches!(
+            reopened.recover(&empty_source),
+            Err(Error::MissingSource)
+        ));
+        assert_eq!(fs::read(temp.private().join(INTENT_TEMP)).unwrap(), raw);
+        assert_eq!(reopened.recover(&sources).unwrap().pin(), pin);
+        assert!(!reopened.recovery_required().unwrap());
+        assert_eq!(fs::read(temp.private().join(STATE)).unwrap(), before);
+        reopened.commit(candidate.clone(), pin, &sources).unwrap();
+        assert_eq!(reopened.state().payload(), candidate.payload());
+    }
+}
+
+#[test]
+fn malformed_or_ambiguous_preparation_and_legacy_authority_are_preserved() {
+    for mutation in 0..10 {
+        let (temp, sources, scope, _) = setup();
+        let mut store = Store::create(temp.private(), scope, &sources).unwrap();
+        let pin = store.pin();
+        let candidate = changed(store.state());
+        store.fault = Some(Step::IntentWritten);
+        assert!(store.commit(candidate, pin, &sources).is_err());
+        let stage = temp.private().join(INTENT_TEMP);
+        let mut raw = fs::read(&stage).unwrap();
+        match mutation {
+            0 => *raw.last_mut().unwrap() ^= 1,
+            1 => raw.push(0),
+            2 => {
+                raw[24] ^= 1;
+                raw.truncate(40);
+            }
+            3 => {
+                raw[108] ^= 1;
+                raw.truncate(120);
+            }
+            4 => {
+                raw[104..108].copy_from_slice(&u32::MAX.to_be_bytes());
+                raw.truncate(108);
+            }
+            5 => {
+                drop(create_private(&temp.private().join(TEMP)).unwrap());
+            }
+            6 => {
+                drop(create_private(&temp.private().join(INTENT)).unwrap());
+            }
+            7 | 8 => {
+                fs::rename(&stage, temp.private().join(INTENT)).unwrap();
+                raw.truncate(if mutation == 7 { 0 } else { 120 });
+            }
+            9 => rewrite(
+                &temp.private().join(STATE),
+                &Image {
+                    generation: 1,
+                    state: changed(store.state()),
+                }
+                .encode(),
+            ),
+            _ => unreachable!(),
+        }
+        let target = if matches!(mutation, 7 | 8) {
+            temp.private().join(INTENT)
+        } else {
+            stage
+        };
+        rewrite(&target, &raw);
+        let before = fs::read(temp.private().join(STATE)).unwrap();
+        drop(store);
+        assert!(matches!(
+            Store::open(temp.private(), scope, None),
+            Err(Error::Corrupt)
+        ));
+        assert_eq!(fs::read(&target).unwrap(), raw);
+        assert_eq!(fs::read(temp.private().join(STATE)).unwrap(), before);
+    }
+}
+
+#[test]
+fn complete_preparation_recovery_rechecks_sources_and_survives_promotion_cuts() {
+    for step in [Step::IntentSynced, Step::IntentRenamed, Step::IntentDurable] {
+        let (temp, mut sources, scope, control) = setup();
+        let original = sources.archive().clone();
+        let mut full = original.clone();
+        add(&mut full, &post(scope, control));
+        sources.commit(full, sources.pin()).unwrap();
+        let mut restored =
+            SocialStore::create(temp.0.join("restored-source"), REALM, Limits::default()).unwrap();
+        restored.commit(original, restored.pin()).unwrap();
+        let mut store = Store::create(temp.private(), scope, &sources).unwrap();
+        let pin = store.pin();
+        let candidate = observed(store.state(), sources.archive());
+        store.fault = Some(Step::IntentWritten);
+        assert!(store.commit(candidate.clone(), pin, &sources).is_err());
+        let raw = fs::read(temp.private().join(INTENT_TEMP)).unwrap();
+        drop(store);
+        let mut store = Store::open(temp.private(), scope, Some(pin)).unwrap();
+        assert!(matches!(
+            store.commit(changed(store.state()), pin, &sources),
+            Err(Error::RecoveryRequired)
+        ));
+        assert!(matches!(
+            store.recover(&restored),
+            Err(Error::MissingSource)
+        ));
+        assert_eq!(fs::read(temp.private().join(INTENT_TEMP)).unwrap(), raw);
+        assert!(!temp.private().join(INTENT).exists());
+        store.fault = Some(step);
+        assert!(matches!(
+            store.recover(&sources),
+            Err(Error::Indeterminate(_))
+        ));
+        assert_eq!(store.pin(), pin);
+        assert!(!temp.private().join(TEMP).exists());
+        drop(store);
+        let mut store = Store::open(temp.private(), scope, Some(pin)).unwrap();
+        store.recover(&sources).unwrap();
+        assert_eq!(store.state().payload(), candidate.payload());
+        assert_eq!(store.pin().generation(), 1);
+        assert_eq!(fs::read_dir(temp.private()).unwrap().count(), 2);
     }
 }
 
@@ -442,9 +593,11 @@ fn coherent_private_rollback_is_detected_only_with_an_independent_exact_pin() {
 const NOW: u64 = 10;
 
 /// Every private publication-boundary step a case can inject, mirroring `Step`.
-const BOUNDARY: [Step; 9] = [
+const BOUNDARY: [Step; 11] = [
     Step::IntentCreated,
     Step::IntentWritten,
+    Step::IntentSynced,
+    Step::IntentRenamed,
     Step::IntentDurable,
     Step::TempWritten,
     Step::TempDurable,
@@ -534,10 +687,9 @@ fn post_at(
     })
 }
 
-/// The `intent` file as the store decodes it: either the torn empty file a
-/// crash at `Step::IntentCreated` leaves — undecodable, failing closed — or the
-/// complete retained candidate. Sync state is not modeled: written bytes are
-/// always readable back.
+/// Preparation or authoritative intent bytes. Torn unpublished preparation
+/// can be discarded only before effects; torn authoritative evidence refuses.
+/// Sync state is not modeled: written bytes are always readable back.
 enum MIntent {
     Torn,
     Complete {
@@ -557,9 +709,8 @@ fn image_pin(generation: u64, state: &PrivateState) -> Pin {
     .pin()
 }
 
-/// One live social-store handle and whether a torn intent file is parked in
-/// its directory — the residue a crash at the social store's first boundary
-/// step leaves, and what `recovery_required` reports.
+/// One live social-store handle and whether a legacy torn authoritative intent
+/// is parked in its directory, as reported by `recovery_required`.
 struct Source {
     store: SocialStore,
     torn: bool,
@@ -583,6 +734,8 @@ struct Trace {
     handle: (u64, PrivateState),
     /// The `intent` file's decode status, when the file exists.
     intent: Option<MIntent>,
+    /// Whether `intent` represents unpublished `intent.tmp` instead.
+    staged: bool,
     /// The `state.tmp` bytes when the file exists — always a complete image
     /// under this fault model, since injected step faults fire after write_all.
     temp: Option<Vec<u8>>,
@@ -632,6 +785,7 @@ impl Trace {
             disk: image.clone(),
             handle: image.clone(),
             intent: None,
+            staged: false,
             temp: None,
             history: vec![(store.pin(), image.1)],
             posts: Vec::new(),
@@ -687,6 +841,32 @@ impl Trace {
             }) => Some((*expected, *generation, state.as_ref().clone())),
             _ => None,
         }
+    }
+
+    fn reconcile_staged_model(&mut self, fault: Option<Step>) -> Result<(), K> {
+        if !self.staged {
+            return Ok(());
+        }
+        if self.temp.is_some() {
+            return Err(K::Corrupt);
+        }
+        if let Some((expected, _, state)) = self.intent_parts() {
+            if expected != self.handle_pin() {
+                return Err(K::Corrupt);
+            }
+            self.validate(&state)?;
+            if fault == Some(Step::IntentSynced) {
+                return Err(K::Indeterminate);
+            }
+            self.staged = false;
+            if fault == Some(Step::IntentRenamed) || fault == Some(Step::IntentDurable) {
+                return Err(K::Indeterminate);
+            }
+        } else {
+            self.intent = None;
+            self.staged = false;
+        }
+        Ok(())
     }
 
     /// `Store::finish`: re-check the disk, validate the retained candidate
@@ -754,6 +934,14 @@ impl Trace {
     ) -> Result<(Pin, bool), K> {
         self.check_disk()?;
         self.source_ready()?;
+        if self.staged {
+            if let Some((pin, _, state)) = self.intent_parts() {
+                if expected != pin || candidate.payload() != state.payload() {
+                    return Err(K::RecoveryRequired);
+                }
+            }
+            self.reconcile_staged_model(fault)?;
+        }
         if self.intent.is_some() {
             let Some((pin, generation, state)) = self.intent_parts() else {
                 return Err(K::Corrupt);
@@ -778,8 +966,9 @@ impl Trace {
         }
         self.validate(candidate)?;
         let generation = self.handle.0.checked_add(1).ok_or(K::Capacity)?;
-        // `create_private` has already made the empty file when the drawn step
-        // fires at IntentCreated — that torn file fails closed forever after.
+        // Preparation is not authoritative until its complete synced bytes
+        // have been renamed. Neither preparation cut permits successor effects.
+        self.staged = true;
         if fault == Some(Step::IntentCreated) {
             self.intent = Some(MIntent::Torn);
             return Err(K::Indeterminate);
@@ -789,7 +978,11 @@ impl Trace {
             generation,
             state: Box::new(candidate.clone()),
         });
-        if fault == Some(Step::IntentWritten) || fault == Some(Step::IntentDurable) {
+        if fault == Some(Step::IntentWritten) || fault == Some(Step::IntentSynced) {
+            return Err(K::Indeterminate);
+        }
+        self.staged = false;
+        if fault == Some(Step::IntentRenamed) || fault == Some(Step::IntentDurable) {
             return Err(K::Indeterminate);
         }
         self.finish_model(expected, generation, candidate.clone(), fault, false)
@@ -800,6 +993,7 @@ impl Trace {
     fn recover_model(&mut self, fault: Option<Step>) -> Result<(Pin, bool), K> {
         self.check_disk()?;
         self.source_ready()?;
+        self.reconcile_staged_model(fault)?;
         if self.intent.is_some() {
             let Some((pin, generation, state)) = self.intent_parts() else {
                 return Err(K::Corrupt);
@@ -827,7 +1021,15 @@ impl Trace {
         if expected.is_some_and(|pin| pin != self.disk_pin()) {
             return Err(K::Freshness);
         }
-        if self.intent.is_some() {
+        if self.staged {
+            if self.temp.is_some()
+                || self
+                    .intent_parts()
+                    .is_some_and(|(pin, _, _)| pin != self.disk_pin())
+            {
+                return Err(K::Corrupt);
+            }
+        } else if self.intent.is_some() {
             let Some((pin, generation, state)) = self.intent_parts() else {
                 return Err(K::Corrupt);
             };
@@ -1309,8 +1511,7 @@ impl Trace {
         }
     }
 
-    /// Park a torn intent file — the empty residue a crash at a store's first
-    /// boundary step leaves — in the private directory or a drawn source, or
+    /// Park a legacy torn authoritative intent in the private directory or a drawn source, or
     /// remove a source's, the operator repair the readiness check observes. A
     /// torn private intent fails closed for good: commit, recover and reopen
     /// all see `Corrupt` until the trace stops.
@@ -1355,6 +1556,11 @@ impl Trace {
         assert_eq!(store.pin(), self.handle_pin());
         assert_eq!(store.state().payload(), self.handle.1.payload());
         assert_eq!(store.recovery_required().unwrap(), self.intent.is_some());
+        assert_eq!(temp.private().join(INTENT_TEMP).exists(), self.staged);
+        assert_eq!(
+            temp.private().join(INTENT).exists(),
+            self.intent.is_some() && !self.staged
+        );
         let files = 2 + usize::from(self.intent.is_some()) + usize::from(self.temp.is_some());
         assert_eq!(fs::read_dir(temp.private()).unwrap().count(), files);
     }

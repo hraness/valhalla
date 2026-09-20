@@ -36,6 +36,28 @@ struct Entry {
     advertisement: PeerAdvertisement,
 }
 impl Entry {
+    fn check(
+        &self,
+        network: [u8; 32],
+        key: [u8; 32],
+        generation: u64,
+        clock: u64,
+    ) -> Result<(), Error> {
+        let c = self.advertisement.unverified_claims();
+        if key != c.application_key
+            || self.accepted_at > clock
+            || self.generation == 0
+            || self.generation > generation
+            || c.issued_at > self.issue_horizon()?
+            || c.expires_at > self.retire_at()?
+        {
+            return Err(Error::State("corrupt discovery entry; preserve state"));
+        }
+        self.advertisement
+            .restore_sequence_anchor(network)
+            .map_err(|_| Error::State("invalid retained discovery advertisement"))?;
+        Ok(())
+    }
     fn retire_at(&self) -> Result<u64, Error> {
         self.accepted_at
             .checked_add(MAX_CLOCK_SKEW_SECONDS)
@@ -102,7 +124,7 @@ impl Snapshot {
             return Err(corrupt());
         }
         let mut entries = BTreeMap::new();
-        let mut prior = [0; 32];
+        let mut prior = [0u8; 32];
         for _ in 0..count {
             let key = r.array::<32>()?;
             let accepted_at = r.u64()?;
@@ -114,20 +136,10 @@ impl Snapshot {
                 generation: admitted,
                 advertisement: ad,
             };
-            let c = e.advertisement.unverified_claims();
-            if key <= prior
-                || key != c.application_key
-                || accepted_at > clock
-                || admitted == 0
-                || admitted > generation
-                || c.issued_at > e.issue_horizon()?
-                || c.expires_at > e.retire_at()?
-            {
+            if key <= prior {
                 return Err(corrupt());
             }
-            e.advertisement
-                .restore_sequence_anchor(network)
-                .map_err(|_| corrupt())?;
+            e.check(network, key, generation, clock)?;
             prior = key;
             entries.insert(key, e);
         }
@@ -216,6 +228,174 @@ impl Snapshot {
         }
         Ok(())
     }
+    // Accept only a structurally incomplete canonical successor prefix. This
+    // grants no authority to the uncommitted bytes: the verified stable image
+    // remains unchanged. Every complete entry and already-determined omission
+    // must nevertheless preserve its replay floors before scratch is removed.
+    fn check_incomplete(&self, raw: &[u8], now: u64) -> Result<(), Error> {
+        if now < self.clock {
+            return Err(Error::ClockRollback);
+        }
+        if raw.len() > SNAPSHOT_BYTES {
+            return Err(Error::State("oversized discovery preparation"));
+        }
+        let mut scope = b"VHDS\x01".to_vec();
+        scope.extend_from_slice(&self.network);
+        scope.extend_from_slice(&self.receiver);
+        let n = raw.len().min(scope.len());
+        if raw[..n] != scope[..n] {
+            return Err(Error::State("foreign discovery preparation"));
+        }
+        if raw.len() < scope.len() {
+            return Ok(());
+        }
+        let mut r = DiskReader(&raw[scope.len()..]);
+        let Some(generation) = r.partial_u64(self.generation, u64::MAX)? else {
+            return Ok(());
+        };
+        let Some(clock) = r.partial_u64(self.clock, now)? else {
+            return Ok(());
+        };
+        let max_cutoff = if generation == self.generation {
+            self.cutoff
+        } else {
+            clock
+        };
+        let Some(cutoff) = r.partial_u64(self.cutoff, max_cutoff)? else {
+            return Ok(());
+        };
+        let (min_count, max_count) = if generation == self.generation {
+            (self.entries.len() as u16, self.entries.len() as u16)
+        } else {
+            (0, MAX_DISCOVERY_PEERS as u16)
+        };
+        let Some(count) = r.partial_array(min_count.to_be_bytes(), max_count.to_be_bytes())? else {
+            return Ok(());
+        };
+        let count = usize::from(u16::from_be_bytes(count));
+        let mut next = Self {
+            network: self.network,
+            receiver: self.receiver,
+            generation,
+            clock,
+            cutoff,
+            entries: BTreeMap::new(),
+        };
+        let mut prior = [0u8; 32];
+        for _ in 0..count {
+            // Canonical keys are strictly increasing and nonzero.
+            let mut lower = prior;
+            let mut carry = true;
+            for byte in lower.iter_mut().rev() {
+                if !carry {
+                    break;
+                }
+                (*byte, carry) = byte.overflowing_add(1);
+            }
+            if carry {
+                return Err(Error::State("discovery preparation key overflow"));
+            }
+            let Some(key) = r.partial_array(lower, [u8::MAX; 32])? else {
+                // Available leading bytes may already prove an old key was
+                // omitted. Do not fill that key back in as an unknown suffix.
+                let mut minimum = [0u8; 32];
+                minimum[..r.0.len()].copy_from_slice(r.0);
+                return next.check_prefix(self, minimum.max(lower));
+            };
+            let old = self.entries.get(&key);
+            let Some(accepted_at) = r.partial_u64(
+                old.map_or(0, |e| e.accepted_at),
+                clock.min(u64::MAX - MAX_CLOCK_SKEW_SECONDS - MAX_TTL_SECONDS),
+            )?
+            else {
+                return next.check_prefix(self, key);
+            };
+            let Some(admitted) = r.partial_u64(old.map_or(1, |e| e.generation), generation)? else {
+                return next.check_prefix(self, key);
+            };
+            let Some(size) = r.partial_array(
+                1u16.to_be_bytes(),
+                (MAX_ADVERTISEMENT_BYTES as u16).to_be_bytes(),
+            )?
+            else {
+                return next.check_prefix(self, key);
+            };
+            let size = usize::from(u16::from_be_bytes(size));
+            if r.0.len() < size {
+                check_ad_prefix(r.0, self.network, key, old, accepted_at, admitted)?;
+                return next.check_prefix(self, key);
+            }
+            let advertisement = PeerAdvertisement::decode(r.take(size)?)
+                .map_err(|_| Error::State("malformed discovery preparation advertisement"))?;
+            let entry = Entry {
+                accepted_at,
+                generation: admitted,
+                advertisement,
+            };
+            entry.check(self.network, key, generation, clock)?;
+            next.entries.insert(key, entry);
+            prior = key;
+        }
+        next.succeeds(self)?;
+        // Once all entries exist, only the checksum may be incomplete. Reject
+        // malformed complete frames and mismatching checksum prefixes as evidence.
+        if r.0.len() >= 32 {
+            return Err(Error::State("malformed complete discovery preparation"));
+        }
+        let sum = Sha256::digest(&raw[..raw.len() - r.0.len()]);
+        if r.0 != &sum[..r.0.len()] {
+            return Err(Error::State(
+                "invalid discovery preparation checksum prefix",
+            ));
+        }
+        Ok(())
+    }
+    fn check_prefix(&self, old: &Self, unfinished_key: [u8; 32]) -> Result<(), Error> {
+        // Entries at or after the unfinished key have not been claimed or
+        // omitted yet. Preserve them for the ordinary monotonicity check.
+        let mut prefix = self.clone();
+        prefix.entries.extend(
+            old.entries
+                .range(unfinished_key..)
+                .map(|(k, e)| (*k, e.clone())),
+        );
+        prefix.succeeds(old)
+    }
+}
+fn check_ad_prefix(
+    raw: &[u8],
+    network: [u8; 32],
+    key: [u8; 32],
+    old: Option<&Entry>,
+    accepted_at: u64,
+    generation: u64,
+) -> Result<(), Error> {
+    let mut scope = b"VHPA\x01".to_vec();
+    scope.extend_from_slice(&network);
+    scope.extend_from_slice(&key);
+    let n = raw.len().min(scope.len());
+    if raw[..n] != scope[..n] {
+        return Err(Error::State("foreign discovery advertisement preparation"));
+    }
+    if raw.len() >= scope.len() {
+        let mut r = DiskReader(&raw[scope.len()..]);
+        let previous = old.map(|e| e.advertisement.unverified_claims().sequence);
+        if let Some(sequence) = r.partial_u64(previous.unwrap_or(1), u64::MAX)? {
+            if previous == Some(sequence) {
+                let retained = old.ok_or(Error::Config)?;
+                let known = retained.advertisement.encode();
+                if retained.accepted_at != accepted_at
+                    || retained.generation != generation
+                    || !known.starts_with(raw)
+                {
+                    return Err(Error::State(
+                        "changed discovery advertisement at retained sequence",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 struct DiskReader<'a>(&'a [u8]);
 impl<'a> DiskReader<'a> {
@@ -235,9 +415,32 @@ impl<'a> DiskReader<'a> {
     fn u64(&mut self) -> Result<u64, Error> {
         Ok(u64::from_be_bytes(self.array()?))
     }
+    fn partial_array<const N: usize>(
+        &mut self,
+        min: [u8; N],
+        max: [u8; N],
+    ) -> Result<Option<[u8; N]>, Error> {
+        let n = self.0.len().min(N);
+        if min > max || self.0[..n] < min[..n] || self.0[..n] > max[..n] {
+            return Err(Error::State("invalid discovery preparation field prefix"));
+        }
+        if n < N {
+            return Ok(None);
+        }
+        self.array().map(Some)
+    }
+    fn partial_u64(&mut self, min: u64, max: u64) -> Result<Option<u64>, Error> {
+        Ok(self
+            .partial_array(min.to_be_bytes(), max.to_be_bytes())?
+            .map(u64::from_be_bytes))
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Fault {
+    StableFileSync,
+    StableDirectorySync,
+    Create,
+    PartialWrite,
     Write,
     FileSync,
     Rename,
@@ -257,6 +460,15 @@ impl Registry {
         network: [u8; 32],
         receiver: [u8; 32],
         now: u64,
+    ) -> Result<Self, Error> {
+        Self::start_with_fault(config, network, receiver, now, None)
+    }
+    fn start_with_fault(
+        config: DiscoveryConfig,
+        network: [u8; 32],
+        receiver: [u8; 32],
+        now: u64,
+        fault: Option<Fault>,
     ) -> Result<Self, Error> {
         let path = custody::absolute(&config.directory).map_err(Error::Custody)?;
         let (directory, uid) = if config.create_new {
@@ -300,10 +512,24 @@ impl Registry {
                 .as_deref()
                 .map(|r| Snapshot::decode(r, network, receiver))
                 .transpose()?;
-            let new = pending
-                .as_deref()
-                .map(|r| Snapshot::decode(r, network, receiver))
-                .transpose()?;
+            if old.as_ref().is_some_and(|old| now < old.clock) {
+                return Err(Error::ClockRollback);
+            }
+            let mut incomplete = false;
+            let new = match pending.as_deref() {
+                Some(raw) => match Snapshot::decode(raw, network, receiver) {
+                    Ok(new) => Some(new),
+                    Err(error) => {
+                        let Some(old) = old.as_ref() else {
+                            return Err(error);
+                        };
+                        old.check_incomplete(raw, now)?;
+                        incomplete = true;
+                        None
+                    }
+                },
+                None => None,
+            };
             let state = match (old, new) {
                 (Some(old), Some(new)) => {
                     new.succeeds(&old)?;
@@ -325,7 +551,21 @@ impl Registry {
                 return Err(Error::ClockRollback);
             }
             out.state = state;
-            if pending.is_some() {
+            if stable.is_some() {
+                // A previous publisher may have died after final rename but
+                // before directory sync. Re-establish the validated stable
+                // image's durability even when time has not advanced.
+                custody::open_private_file(&out.path.join(SNAPSHOT), uid, SNAPSHOT_BYTES)
+                    .map_err(Error::Custody)?
+                    .sync_all()?;
+                inject(fault, Fault::StableFileSync)?;
+                out.directory.sync_all()?;
+                inject(fault, Fault::StableDirectorySync)?;
+            }
+            if incomplete {
+                fs::remove_file(out.path.join(TEMP))?;
+                out.directory.sync_all()?;
+            } else if pending.is_some() {
                 custody::open_private_file(&out.path.join(TEMP), uid, SNAPSHOT_BYTES)
                     .map_err(Error::Custody)?
                     .sync_all()?;
@@ -359,6 +599,11 @@ impl Registry {
         self.poisoned = true;
         let raw = next.encode();
         let mut f = custody::create_private_file(&self.path.join(TEMP)).map_err(Error::Custody)?;
+        inject(fault, Fault::Create)?;
+        if fault == Some(Fault::PartialWrite) {
+            f.write_all(&raw[..raw.len() / 2])?;
+            inject(fault, Fault::PartialWrite)?;
+        }
         f.write_all(&raw)?;
         inject(fault, Fault::Write)?;
         f.sync_all()?;

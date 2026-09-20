@@ -96,6 +96,8 @@ fn discovery_publication_faults_reconcile_without_reusing_or_extending_admission
         .unverified_claims()
         .application_key;
     for fault in [
+        Fault::Create,
+        Fault::PartialWrite,
         Fault::Write,
         Fault::FileSync,
         Fault::Rename,
@@ -111,12 +113,239 @@ fn discovery_publication_faults_reconcile_without_reusing_or_extending_admission
         assert!(registry.register(registration.clone(), None).is_err());
         drop(registry);
         let mut registry = open(&base, false, 1000);
+        if matches!(fault, Fault::Create | Fault::PartialWrite) {
+            assert!(registry.state.entries.is_empty());
+            assert_eq!(registry.state.generation, 1);
+            assert!(!registry.path.join(TEMP).exists());
+            registry.register(registration.clone(), None).unwrap();
+        }
         assert_eq!(registry.state.entries.len(), 1);
         let before = registry.state.entries[&key].clone();
         let receipt = registry.register(registration.clone(), None).unwrap();
         assert_eq!(receipt.sequence(), 1);
         assert_eq!(registry.state.entries[&key], before);
         assert_eq!(registry.state.generation, 2);
+    }
+}
+
+fn successor(old: &Snapshot) -> Snapshot {
+    let mut next = old.clone();
+    next.bump().unwrap();
+    next.clock += 10;
+    for seed in [3, 5] {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let sequence = if seed == 3 { 2 } else { 1 };
+        next.entries.insert(
+            key.verifying_key().to_bytes(),
+            Entry {
+                accepted_at: next.clock,
+                generation: next.generation,
+                advertisement: ad(&key, sequence, next.clock, next.clock + 3600),
+            },
+        );
+    }
+    next
+}
+
+#[test]
+fn discovery_every_successor_truncation_checks_before_discarding_only_scratch() {
+    let base = Fixture::new();
+    let mut registry = open(&base, true, 1000);
+    registry.register(first(), None).unwrap();
+    let old = registry.state.clone();
+    let next = successor(&old);
+    next.succeeds(&old).unwrap();
+    let raw = next.encode();
+    for end in 0..raw.len() {
+        old.check_incomplete(&raw[..end], next.clock)
+            .unwrap_or_else(|e| panic!("prefix {end}: {e:?}"));
+    }
+    assert!(old.check_incomplete(&raw, next.clock).is_err());
+    assert!(old.check_incomplete(&[], old.clock - 1).is_err());
+    // Reopen at the same clock discards a valid incomplete preparation while
+    // retaining exact stable bytes and every previously admitted sequence floor.
+    let mut next = old.clone();
+    next.bump().unwrap();
+    let raw = next.encode();
+    let stable = fs::read(registry.path.join(SNAPSHOT)).unwrap();
+    let mut f = custody::create_private_file(&registry.path.join(TEMP)).unwrap();
+    f.write_all(&raw[..raw.len() - 1]).unwrap();
+    f.sync_all().unwrap();
+    drop(f);
+    drop(registry);
+    let reopened = open(&base, false, old.clock);
+    assert_eq!(reopened.state, old);
+    assert_eq!(fs::read(reopened.path.join(SNAPSHOT)).unwrap(), stable);
+    assert!(!reopened.path.join(TEMP).exists());
+}
+
+#[test]
+fn discovery_malformed_prefixes_completed_entries_and_clock_rollback_are_preserved() {
+    for mutation in 0..15 {
+        let base = Fixture::new();
+        let mut registry = open(&base, true, 1000);
+        registry.register(first(), None).unwrap();
+        let old = registry.state.clone();
+        let mut next = successor(&old);
+        let mut raw = next.encode();
+        let mut clock = next.clock;
+        match mutation {
+            0 => {
+                raw[5] ^= 1;
+                raw.truncate(20);
+            }
+            1 => {
+                raw[37] ^= 1;
+                raw.truncate(50);
+            }
+            2 => {
+                raw[69..77].copy_from_slice(&(old.generation - 1).to_be_bytes());
+                raw.truncate(77);
+            }
+            3 => {
+                raw[77..85].copy_from_slice(&(old.clock - 1).to_be_bytes());
+                raw.truncate(85);
+            }
+            4 => {
+                clock = next.clock - 1;
+                raw.truncate(85);
+            }
+            5 => {
+                raw[93..95].copy_from_slice(&513u16.to_be_bytes());
+                raw.truncate(95);
+            }
+            6 => {
+                *raw.last_mut().unwrap() ^= 1;
+            }
+            7 => {
+                raw.push(0);
+            }
+            8 => {
+                raw.clear();
+                clock = old.clock - 1;
+            }
+            9 => {
+                next.entries.clear();
+                raw = next.encode();
+                raw.truncate(raw.len() - 1);
+            }
+            10 => {
+                let e = next.entries.values_mut().next().unwrap();
+                let mut ad = e.advertisement.encode();
+                *ad.last_mut().unwrap() ^= 1;
+                e.advertisement = PeerAdvertisement::decode(&ad).unwrap();
+                raw = next.encode();
+                raw.truncate(raw.len() - 1);
+            }
+            11 => {
+                // Completed first advertisement is malformed even though a
+                // later entry/checksum is still incomplete.
+                raw[145] ^= 1;
+                raw.truncate(raw.len() - 33);
+            }
+            12 => {
+                raw[150] ^= 1;
+                raw.truncate(165);
+            }
+            13 => {
+                assert!(old.entries.keys().next().unwrap()[0] < 255);
+                raw.truncate(95);
+                raw[93..95].copy_from_slice(&1u16.to_be_bytes());
+                // Even this one available key byte proves the old live key
+                // was skipped in the canonical increasing entry order.
+                raw.push(255);
+            }
+            14 => {
+                next.entries = old.entries.clone();
+                let entry = next.entries.values_mut().next().unwrap();
+                entry.accepted_at = next.clock;
+                entry.generation = next.generation;
+                raw = next.encode();
+                // Same advertisement sequence cannot change either already
+                // complete metadata field, even before its signature arrives.
+                raw.truncate(95 + 50 + 77);
+            }
+            _ => unreachable!(),
+        }
+        let stable = fs::read(registry.path.join(SNAPSHOT)).unwrap();
+        let mut f = custody::create_private_file(&registry.path.join(TEMP)).unwrap();
+        f.write_all(&raw).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+        drop(registry);
+        assert!(
+            Registry::start(config(&base, false), old.network, old.receiver, clock).is_err(),
+            "mutation {mutation}"
+        );
+        assert_eq!(
+            fs::read(base.dir.join("discovery/registry")).unwrap(),
+            stable
+        );
+        assert_eq!(
+            fs::read(base.dir.join("discovery/registry.tmp")).unwrap(),
+            raw
+        );
+    }
+}
+
+#[test]
+fn discovery_reopen_resyncs_stable_before_same_clock_retry_or_scratch_cleanup() {
+    for partial in [false, true] {
+        for fault in [Fault::StableFileSync, Fault::StableDirectorySync] {
+            let base = Fixture::new();
+            let mut registry = open(&base, true, 1000);
+            assert!(registry.register(first(), Some(Fault::Rename)).is_err());
+            let stable = fs::read(registry.path.join(SNAPSHOT)).unwrap();
+            let state =
+                Snapshot::decode(&stable, registry.state.network, registry.state.receiver).unwrap();
+            if partial {
+                drop(custody::create_private_file(&registry.path.join(TEMP)).unwrap());
+            }
+            drop(registry);
+            assert!(Registry::start_with_fault(
+                config(&base, false),
+                state.network,
+                state.receiver,
+                1000,
+                Some(fault)
+            )
+            .is_err());
+            assert_eq!(
+                fs::read(base.dir.join("discovery/registry")).unwrap(),
+                stable
+            );
+            assert_eq!(base.dir.join("discovery/registry.tmp").exists(), partial);
+            let mut registry = open(&base, false, 1000);
+            let receipt = registry.register(first(), None).unwrap();
+            assert_eq!(receipt.sequence(), 1);
+            assert_eq!(registry.state, state);
+            assert!(!registry.path.join(TEMP).exists());
+        }
+    }
+}
+
+#[test]
+fn discovery_incomplete_initial_creation_or_corrupt_stable_is_not_reset() {
+    for corrupt_stable in [false, true] {
+        let base = Fixture::new();
+        let registry = open(&base, true, 1000);
+        let path = registry.path.clone();
+        let network = registry.state.network;
+        let receiver = registry.state.receiver;
+        drop(custody::create_private_file(&path.join(TEMP)).unwrap());
+        drop(registry);
+        if corrupt_stable {
+            fs::write(path.join(SNAPSHOT), b"corrupt").unwrap();
+        } else {
+            fs::remove_file(path.join(SNAPSHOT)).unwrap();
+        }
+        assert!(Registry::start(config(&base, false), network, receiver, 1000).is_err());
+        assert_eq!(fs::read(path.join(TEMP)).unwrap(), b"");
+        if corrupt_stable {
+            assert_eq!(fs::read(path.join(SNAPSHOT)).unwrap(), b"corrupt");
+        } else {
+            assert!(!path.join(SNAPSHOT).exists());
+        }
     }
 }
 #[test]

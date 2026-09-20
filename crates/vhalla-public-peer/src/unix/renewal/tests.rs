@@ -279,3 +279,178 @@ async fn managed_socket_discovery_bootstrap_and_empty_page_survive_restart() {
     let restarted = ManagedPeer::open(config, &state).unwrap();
     assert_eq!(restarted.advertisement_sequence().unwrap(), 2);
 }
+
+#[test]
+fn interrupted_preparation_preserves_the_last_ad_and_never_reuses_a_signed_sequence() {
+    for (fault, expected) in [
+        (Fault::ReserveCreated, 2),
+        (Fault::ReservePartial, 2),
+        (Fault::AdvertisementCreated, 3),
+        (Fault::AdvertisementPartial, 3),
+    ] {
+        let (_fixture, state, config) = managed_fixture();
+        let peer = ManagedPeer::create(config.clone(), &state).unwrap();
+        let before = fs::read(state.join(ADVERTISEMENT)).unwrap();
+        let issued = peer.publisher.lock().unwrap().reservation.issued;
+        assert!(peer.renew_at(issued, false, Some(fault)).is_err());
+        assert_eq!(
+            peer.peer.answer(ad_request()),
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        );
+        assert!(peer.renew().is_err());
+        assert_eq!(fs::read(state.join(ADVERTISEMENT)).unwrap(), before);
+        drop(peer);
+        let reopened = ManagedPeer::open(config, &state).unwrap();
+        assert_eq!(
+            reopened.advertisement_sequence().unwrap(),
+            expected,
+            "{fault:?}"
+        );
+        assert!(!state.join("sequence.tmp").exists());
+        assert!(!state.join("advertisement.tmp").exists());
+    }
+}
+
+fn scratch(state: &Path, name: &str, bytes: &[u8]) {
+    let mut file = custody::create_private_file(&state.join(name)).unwrap();
+    file.write_all(bytes).unwrap();
+    file.sync_all().unwrap();
+}
+
+#[test]
+fn every_reservation_prefix_recovers_only_against_the_intact_accepted_floor() {
+    let (_fixture, state, config) = managed_fixture();
+    let peer = ManagedPeer::create(config, &state).unwrap();
+    let publisher = peer.publisher.lock().unwrap();
+    let scope = publisher.scope.clone();
+    let old = publisher.reservation;
+    drop(publisher);
+    drop(peer);
+    let committed = fs::read(state.join(SEQUENCE)).unwrap();
+    let ad = fs::read(state.join(ADVERTISEMENT)).unwrap();
+    let proposed = Reservation {
+        sequence: old.sequence + 1,
+        issued: old.issued + 1,
+    }
+    .encode(&scope);
+    for cut in 0..proposed.len() {
+        scratch(&state, "sequence.tmp", &proposed[..cut]);
+        let reopened = Publisher::open(&state, scope.clone(), old.issued + 1).unwrap();
+        assert_eq!(reopened.reservation, old, "cut {cut}");
+        assert_eq!(fs::read(state.join(SEQUENCE)).unwrap(), committed);
+        assert_eq!(fs::read(state.join(ADVERTISEMENT)).unwrap(), ad);
+        assert!(!state.join("sequence.tmp").exists());
+        drop(reopened);
+    }
+    for mut invalid in [
+        proposed[..109].to_vec(),
+        proposed[..148].to_vec(),
+        proposed.clone(),
+    ] {
+        let last = invalid.len() - 1;
+        invalid[last] ^= 1;
+        scratch(&state, "sequence.tmp", &invalid);
+        assert!(Publisher::open(&state, scope.clone(), old.issued + 1).is_err());
+        assert_eq!(fs::read(state.join("sequence.tmp")).unwrap(), invalid);
+        assert_eq!(fs::read(state.join(SEQUENCE)).unwrap(), committed);
+        fs::remove_file(state.join("sequence.tmp")).unwrap();
+    }
+    // Neither a rollback clock nor a foreign route may discard even an empty temp.
+    scratch(&state, "sequence.tmp", &[]);
+    assert!(matches!(
+        Publisher::open(&state, scope.clone(), old.issued - 1),
+        Err(Error::ClockRollback)
+    ));
+    let mut foreign = scope.clone();
+    foreign.endpoint = Endpoint::parse("https://different.vhalla.dev:443/vhalla/v1").unwrap();
+    assert!(Publisher::open(&state, foreign, old.issued + 1).is_err());
+    assert_eq!(
+        fs::read(state.join("sequence.tmp")).unwrap(),
+        Vec::<u8>::new()
+    );
+    // The signed advertisement cannot reconstruct a missing durable reservation.
+    fs::remove_file(state.join(SEQUENCE)).unwrap();
+    assert!(Publisher::open(&state, scope, old.issued + 1).is_err());
+    assert_eq!(fs::read(state.join(ADVERTISEMENT)).unwrap(), ad);
+    assert!(state.join("sequence.tmp").exists());
+}
+
+#[test]
+fn every_advertisement_prefix_keeps_the_reserved_sequence_and_prior_evidence() {
+    let (_fixture, state, config) = managed_fixture();
+    let peer = ManagedPeer::create(config, &state).unwrap();
+    let clock = peer.publisher.lock().unwrap().reservation.issued;
+    // Sequence 2 is durable, but no signature for it has been published.
+    assert!(peer
+        .renew_at(clock, false, Some(Fault::ReserveDirSync))
+        .is_err());
+    let scope = peer.publisher.lock().unwrap().scope.clone();
+    let reserved = Reservation {
+        sequence: 2,
+        issued: clock,
+    };
+    let proposed = peer
+        .peer
+        .identity
+        .sign_public_advertisement(scope.unsigned_ad(reserved).unwrap())
+        .unwrap()
+        .encode();
+    drop(peer);
+    let committed = fs::read(state.join(SEQUENCE)).unwrap();
+    let previous = fs::read(state.join(ADVERTISEMENT)).unwrap();
+    for cut in 0..proposed.len() {
+        scratch(&state, "advertisement.tmp", &proposed[..cut]);
+        let reopened = Publisher::open(&state, scope.clone(), clock).unwrap();
+        assert_eq!(reopened.reservation, reserved, "cut {cut}");
+        assert_eq!(fs::read(state.join(SEQUENCE)).unwrap(), committed);
+        assert_eq!(fs::read(state.join(ADVERTISEMENT)).unwrap(), previous);
+        assert!(!state.join("advertisement.tmp").exists());
+        drop(reopened);
+    }
+    // A complete signed frame still requires verification; a foreign prefix is not torn local data.
+    for mut invalid in [proposed[..37].to_vec(), proposed.clone()] {
+        let last = invalid.len() - 1;
+        invalid[last] ^= 1;
+        scratch(&state, "advertisement.tmp", &invalid);
+        assert!(Publisher::open(&state, scope.clone(), clock).is_err());
+        assert_eq!(fs::read(state.join("advertisement.tmp")).unwrap(), invalid);
+        assert_eq!(fs::read(state.join(SEQUENCE)).unwrap(), committed);
+        assert_eq!(fs::read(state.join(ADVERTISEMENT)).unwrap(), previous);
+        fs::remove_file(state.join("advertisement.tmp")).unwrap();
+    }
+    scratch(&state, "advertisement.tmp", &[]);
+    scratch(&state, "sequence.tmp", &[]);
+    assert!(Publisher::open(&state, scope.clone(), clock).is_err());
+    assert!(state.join("advertisement.tmp").exists());
+    assert!(state.join("sequence.tmp").exists());
+    fs::remove_file(state.join("sequence.tmp")).unwrap();
+    assert!(matches!(
+        Publisher::open(&state, scope, clock - 1),
+        Err(Error::ClockRollback)
+    ));
+    assert!(state.join("advertisement.tmp").exists());
+}
+
+#[test]
+fn incomplete_first_reservation_preserves_evidence_instead_of_inventing_a_floor() {
+    for fault in [Fault::ReserveCreated, Fault::ReservePartial] {
+        let (_fixture, state, config) = managed_fixture();
+        let loaded = Peer::load(&config).unwrap();
+        let identity = Identity::open(&config.identity_dir).unwrap();
+        let scope = Scope {
+            network: loaded.network,
+            key: identity.public_key(),
+            endpoint: config.public_endpoint.clone(),
+        };
+        let clock = now().unwrap();
+        let mut publisher = Publisher::create(&state, scope, clock).unwrap();
+        assert!(publisher.publish(&identity, clock, Some(fault)).is_err());
+        let retained = fs::read(state.join("sequence.tmp")).unwrap();
+        drop(publisher);
+        drop(identity);
+        assert!(ManagedPeer::open(config, &state).is_err());
+        assert_eq!(fs::read(state.join("sequence.tmp")).unwrap(), retained);
+        assert!(!state.join(SEQUENCE).exists());
+        assert!(!state.join(ADVERTISEMENT).exists());
+    }
+}

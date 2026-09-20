@@ -752,3 +752,58 @@ fn interleaved_faults_preserve_commit_recovery_semantics(tc: TestCase) {
     }
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn exact_committed_retry_revalidates_all_retained_evidence_without_repair() {
+    for corruption in 0..9 {
+        let dir = fixture();
+        let original = bundle(GENESIS_NEXT, [1; 32], 1, "accepted-tip");
+        fs_journal(&dir).commit(&original).unwrap();
+        let bundle_path = FsStore::bundle_path(&dir, original.id());
+        let marker_path = FsStore::height_path(&dir, original.height());
+        let mut pin = Pin::decode(&fs::read(dir.join(HEAD_FILE)).unwrap()).unwrap();
+        match corruption {
+            0 => fs::remove_file(&bundle_path).unwrap(),
+            1 => fs::write(&bundle_path, []).unwrap(),
+            2 => {
+                let substitute = bundle(GENESIS_NEXT, [1; 32], 1, "different-certificate");
+                fs::write(&bundle_path, substitute.bytes()).unwrap();
+            }
+            3 => fs::remove_file(&marker_path).unwrap(),
+            4 => fs::write(&marker_path, [0; 7]).unwrap(),
+            5 => fs::write(&marker_path, [9; 32]).unwrap(),
+            6 => pin.predecessor = [7; 32],
+            7 => pin.next = [8; 32],
+            8 => pin.height += 1,
+            _ => unreachable!(),
+        }
+        fs::write(dir.join(HEAD_FILE), pin.encode()).unwrap();
+        // Neither an old interrupted publication nor a scratch candidate may
+        // be removed to make this exact retry look successful.
+        let pin_tmp = dir.join(HEAD_TMP);
+        let scratch = dir.join(BUNDLES).join(".bundle.tmp");
+        fs::write(&pin_tmp, b"retained pin evidence").unwrap();
+        fs::write(&scratch, b"retained scratch evidence").unwrap();
+        let paths = [
+            dir.join(HEAD_FILE),
+            bundle_path,
+            marker_path,
+            pin_tmp,
+            scratch,
+        ];
+        let before: Vec<_> = paths
+            .iter()
+            .map(|path| read_opt(path, MAX_BUNDLE_BYTES).unwrap())
+            .collect();
+        let journal = fault_journal(&dir, &[]);
+        assert!(
+            matches!(journal.commit(&original), Err(JournalError::Corrupt)),
+            "corruption {corruption}"
+        );
+        assert_eq!(*journal.store.log.borrow(), [Step::Lock, Step::ReadPin]);
+        for (path, expected) in paths.iter().zip(before) {
+            assert_eq!(read_opt(path, MAX_BUNDLE_BYTES).unwrap(), expected);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+}

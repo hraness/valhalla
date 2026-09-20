@@ -454,3 +454,200 @@ fn native_existing_conflicting_immutable_file_and_symlink_are_never_overwritten(
     std::os::unix::fs::symlink(&saved, home.path().join("STATE")).unwrap();
     assert!(NativeOutbox::open(home.path(), fresh().scope(), policy(1).scope()).is_err());
 }
+
+#[test]
+fn native_staged_intent_crashes_before_publication_never_strand_authoring() {
+    for point in [
+        Point::IntentCreated,
+        Point::IntentPartial,
+        Point::IntentWritten,
+        Point::IntentStageSynced,
+        Point::IntentRenamed,
+    ] {
+        let home = Home::new();
+        let mut store = home.create(Limits::default());
+        let (draft, event) = draft(&store, "exact reserved and signed bytes");
+        store.disk.fault = Some(point);
+        assert!(matches!(
+            store.reserve(&draft),
+            Err(PublishError::ReopenRequired(_))
+        ));
+        drop(store);
+        let mut store = home.open();
+        let incomplete = matches!(point, Point::IntentCreated | Point::IntentPartial);
+        assert_eq!(
+            store.load_pending().unwrap().is_none(),
+            incomplete,
+            "{point:?}"
+        );
+        assert_eq!(store.head().unwrap(), fresh());
+        store.reserve(&draft).unwrap();
+        store.disk.fault = Some(point);
+        assert!(matches!(
+            store.finalize(&draft, &event),
+            Err(PublishError::ReopenRequired(_))
+        ));
+        drop(store);
+        let mut store = home.open();
+        assert_eq!(
+            store.head().unwrap().sequence(),
+            if incomplete { 0 } else { 1 },
+            "{point:?}"
+        );
+        assert_eq!(store.load_pending().unwrap().is_some(), incomplete);
+        store.finalize(&draft, &event).unwrap();
+        assert_eq!(store.read_page(0, 16).unwrap().events, vec![event.clone()]);
+        let next = finalize(&mut store, "continues after both crashes");
+        assert_eq!(next.claims().previous, event.id());
+        assert!(!home.path().join("INTENT.tmp").exists());
+    }
+}
+
+#[test]
+fn native_staged_receipt_partial_write_keeps_old_ack_and_all_author_evidence() {
+    for point in [Point::IntentCreated, Point::IntentPartial] {
+        let home = Home::new();
+        let mut store = home.create(Limits::default());
+        let event = finalize(&mut store, "retained before receipt crash");
+        let record = receipt(&event, 8, 1, 10);
+        store.disk.fault = Some(point);
+        assert!(deliver(&mut store, &record, None).is_err());
+        drop(store);
+        let mut store = home.open();
+        assert!(store.load_delivery(record.head().peer()).unwrap().is_none());
+        assert_eq!(store.read_page(0, 16).unwrap().events, vec![event]);
+        deliver(&mut store, &record, None).unwrap();
+        assert_eq!(
+            store
+                .load_delivery_receipt(record.head().peer(), 1)
+                .unwrap()
+                .unwrap(),
+            record
+        );
+    }
+}
+
+#[test]
+fn native_incomplete_scratch_requires_valid_scope_and_no_effects_but_final_empty_intent_is_kept() {
+    let home = Home::new();
+    let mut store = home.create(Limits::default());
+    let (draft, _) = draft(&store, "never dispatched before durable reserve");
+    store.disk.fault = Some(Point::IntentCreated);
+    assert!(store.reserve(&draft).is_err());
+    drop(store);
+    assert!(NativeOutbox::open(
+        home.path(),
+        fresh().scope(),
+        HistoryScope::new([7; 32], [99; 32])
+    )
+    .is_err());
+    assert_eq!(
+        fs::read(home.path().join("INTENT.tmp")).unwrap(),
+        Vec::<u8>::new()
+    );
+    fs::rename(home.path().join("INTENT.tmp"), home.path().join("INTENT")).unwrap();
+    assert!(NativeOutbox::open(home.path(), fresh().scope(), policy(1).scope()).is_err());
+    assert_eq!(
+        fs::read(home.path().join("INTENT")).unwrap(),
+        Vec::<u8>::new()
+    );
+    let home = Home::new();
+    let mut store = home.create(Limits::default());
+    store.disk.fault = Some(Point::IntentCreated);
+    assert!(store.reserve(&draft).is_err());
+    store
+        .disk
+        .create_file("RECORD.tmp", b"unexpected post-intent evidence")
+        .unwrap();
+    drop(store);
+    assert!(NativeOutbox::open(home.path(), fresh().scope(), policy(1).scope()).is_err());
+    assert!(home.path().join("INTENT.tmp").exists());
+}
+
+#[test]
+fn native_complete_bad_scratch_is_preserved_and_full_staging_replays_exact_v1_intent() {
+    let home = Home::new();
+    let mut store = home.create(Limits::default());
+    let (draft, _) = draft(&store, "complete frame corruption is not truncation");
+    store.disk.fault = Some(Point::IntentWritten);
+    assert!(store.reserve(&draft).is_err());
+    drop(store);
+    let path = home.path().join("INTENT.tmp");
+    let mut raw = fs::read(&path).unwrap();
+    assert!(Intent::decode(&raw).is_ok());
+    assert!(!incomplete_outbox_stage(&raw, &fs::read(home.path().join("STATE")).unwrap()).unwrap());
+    for size in 0..raw.len() {
+        assert!(incomplete_outbox_stage(
+            &raw[..size],
+            &fs::read(home.path().join("STATE")).unwrap()
+        )
+        .unwrap());
+    }
+    *raw.last_mut().unwrap() ^= 1;
+    fs::write(&path, &raw).unwrap();
+    assert!(NativeOutbox::open(home.path(), fresh().scope(), policy(1).scope()).is_err());
+    assert_eq!(fs::read(path).unwrap(), raw);
+}
+
+#[test]
+fn native_truncated_foreign_or_stale_before_state_is_never_discarded() {
+    for foreign in [false, true] {
+        let home = Home::new();
+        let mut store = home.create(Limits::default());
+        let (draft, _) = draft(&store, "unpublished foreign prefix");
+        let mut before = store.state.clone();
+        if foreign {
+            before.policy = HistoryHead::new(
+                HistoryScope::new([7; 32], [99; 32]),
+                policy(1).frontier(),
+                [5; 32],
+            )
+            .unwrap();
+        } else {
+            before.generation += 1;
+        }
+        let prefix_end = 12 + before.encode().len() + 1;
+        let intent = Intent {
+            before,
+            change: Change::Reserve(draft),
+        };
+        let bytes = intent.encode()[..prefix_end].to_vec();
+        store.disk.create_file("INTENT.tmp", &bytes).unwrap();
+        drop(store);
+        assert!(NativeOutbox::open(home.path(), fresh().scope(), policy(1).scope()).is_err());
+        assert_eq!(fs::read(home.path().join("INTENT.tmp")).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn native_partial_scratch_never_clears_future_immutable_event_or_receipt() {
+    let home = Home::new();
+    let mut store = home.create(Limits::default());
+    store.disk.create_file("INTENT.tmp", b"").unwrap();
+    let future = event(1, EventId::ZERO, "future immutable evidence");
+    store
+        .disk
+        .create_file(&event_name(1), &future.encode())
+        .unwrap();
+    drop(store);
+    assert!(NativeOutbox::open(home.path(), fresh().scope(), policy(1).scope()).is_err());
+    assert!(home.path().join("INTENT.tmp").exists());
+    assert_eq!(
+        fs::read(home.path().join(event_name(1))).unwrap(),
+        future.encode()
+    );
+    let home = Home::new();
+    let mut store = home.create(Limits::default());
+    let first = finalize(&mut store, "first");
+    let first_receipt = receipt(&first, 8, 1, 10);
+    deliver(&mut store, &first_receipt, None).unwrap();
+    let second = finalize(&mut store, "second");
+    let future = receipt(&second, 8, 2, 11);
+    store.disk.create_file("INTENT.tmp", b"").unwrap();
+    let name = receipt_name(future.head().peer(), 2);
+    store.disk.create_file(&name, future.as_bytes()).unwrap();
+    drop(store);
+    assert!(NativeOutbox::open(home.path(), fresh().scope(), policy(1).scope()).is_err());
+    assert!(home.path().join("INTENT.tmp").exists());
+    assert_eq!(fs::read(home.path().join(name)).unwrap(), future.as_bytes());
+}

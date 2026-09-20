@@ -10,6 +10,7 @@
 
 mod codec;
 mod disk;
+pub mod peers;
 #[cfg(test)]
 mod tests;
 
@@ -24,7 +25,9 @@ use crate::{
     Error, PublishError,
 };
 use codec::{Change, Intent, State, MAX_INTENT, MAX_STATE};
-use disk::{Disk, Point};
+use disk::Disk;
+#[cfg(test)]
+use disk::Point;
 use std::{fs::File, path::Path};
 use vhalla_public_protocol::activity::{ActivityRequest, ActivityResponseProof};
 use vhalla_room_activity::{EventId, SignedEvent, VerifiedEvent, MAX_EVENT_BYTES};
@@ -128,7 +131,51 @@ impl NativeOutbox {
             state,
             poisoned: true,
         };
-        if let Some(raw) = out.disk.optional("INTENT", MAX_INTENT)? {
+        let mut final_intent = out.disk.optional("INTENT", MAX_INTENT)?;
+        let staged = out.disk.optional("INTENT.tmp", MAX_INTENT)?;
+        if final_intent.is_some() && staged.is_some() {
+            return Err(Error::Corrupt);
+        }
+        if final_intent.is_none() {
+            if let Some(raw) = staged {
+                if out.disk.present("STATE.tmp", MAX_STATE)?
+                    || out
+                        .disk
+                        .present("RECORD.tmp", MAX_EVENT_BYTES.max(MAX_DELIVERY_RECORD_BYTES))?
+                {
+                    return Err(Error::RecoveryRequired);
+                }
+                out.check_tips()?;
+                if incomplete_outbox_stage(&raw, &out.state.encode())? {
+                    if let Some(sequence) = out.state.head.sequence().checked_add(1) {
+                        if out.disk.present(&event_name(sequence), MAX_EVENT_BYTES)? {
+                            return Err(Error::RecoveryRequired);
+                        }
+                    }
+                    for head in &out.state.deliveries {
+                        if let Some(sequence) = head.sequence().checked_add(1) {
+                            if out.disk.present(
+                                &receipt_name(head.peer(), sequence),
+                                MAX_DELIVERY_RECORD_BYTES,
+                            )? {
+                                return Err(Error::RecoveryRequired);
+                            }
+                        }
+                    }
+                    out.disk.discard_staged_intent()?;
+                } else {
+                    let intent = Intent::decode(&raw)?;
+                    scope(&intent.before, expected_author, expected_history)?;
+                    if out.state != intent.before {
+                        return Err(Error::Corrupt);
+                    }
+                    out.calculate(&intent.before, &intent.change)?;
+                    out.disk.promote_staged_intent(&raw)?;
+                    final_intent = Some(raw);
+                }
+            }
+        }
+        if let Some(raw) = final_intent {
             let intent = Intent::decode(&raw)?;
             scope(&intent.before, expected_author, expected_history)?;
             let next = out.calculate(&intent.before, &intent.change)?;
@@ -480,8 +527,7 @@ impl NativeOutbox {
         let raw = intent.encode();
         self.poisoned = true;
         let result = (|| {
-            self.disk.create_file("INTENT", &raw)?;
-            self.disk.hit(Point::IntentSynced)?;
+            self.disk.stage_intent(&raw)?;
             self.apply(&intent, &next)
         })();
         result.map_err(PublishError::ReopenRequired)?;
@@ -518,4 +564,69 @@ fn event_name(sequence: u64) -> String {
 fn receipt_name(peer: [u8; 32], sequence: u64) -> String {
     let key: String = peer.iter().map(|b| format!("{b:02x}")).collect();
     format!("receipt-{key}-{sequence:016x}")
+}
+
+// Recognize only an exact-current-state prefix of an unpublished v1 intent.
+// Complete malformed/checksum-invalid frames and stale/foreign prefixes stay.
+fn incomplete_outbox_stage(raw: &[u8], expected: &[u8]) -> Result<bool, Error> {
+    use crate::outbox::MAX_RESERVATION_BYTES;
+    if raw.len() > MAX_INTENT || expected.len() > MAX_STATE {
+        return Err(Error::Bounds);
+    }
+    let magic = b"VHNAIN01";
+    let prefix = raw.len().min(magic.len());
+    if raw[..prefix] != magic[..prefix] {
+        return Err(Error::Corrupt);
+    }
+    if raw.len() < 8 {
+        return Ok(true);
+    }
+    let length = (expected.len() as u32).to_be_bytes();
+    let length_prefix = (raw.len() - 8).min(4);
+    if raw[8..8 + length_prefix] != length[..length_prefix] {
+        return Err(Error::Stale);
+    }
+    if raw.len() < 12 {
+        return Ok(true);
+    }
+    let available = (raw.len() - 12).min(expected.len());
+    if raw[12..12 + available] != expected[..available] {
+        return Err(Error::Stale);
+    }
+    let mut at = 12 + expected.len();
+    if raw.len() <= at {
+        return Ok(true);
+    }
+    fn part(raw: &[u8], at: &mut usize, max: usize) -> Result<bool, Error> {
+        let length_end = at.checked_add(4).ok_or(Error::Bounds)?;
+        if raw.len() < length_end {
+            return Ok(true);
+        }
+        let size = u32::from_be_bytes(
+            raw[*at..length_end]
+                .try_into()
+                .map_err(|_| Error::Corrupt)?,
+        ) as usize;
+        if size == 0 || size > max {
+            return Err(Error::Bounds);
+        }
+        *at = length_end.checked_add(size).ok_or(Error::Bounds)?;
+        Ok(raw.len() < *at)
+    }
+    let tag = raw[at];
+    at += 1;
+    let maxima: &[usize] = match tag {
+        0 => &[248],
+        1 => &[MAX_RESERVATION_BYTES],
+        2 => &[MAX_RESERVATION_BYTES, MAX_RESERVATION_BYTES],
+        3 => &[MAX_RESERVATION_BYTES, MAX_EVENT_BYTES],
+        4 => &[MAX_DELIVERY_RECORD_BYTES],
+        _ => return Err(Error::Corrupt),
+    };
+    for max in maxima {
+        if part(raw, &mut at, *max)? {
+            return Ok(true);
+        }
+    }
+    Ok(raw.len() < at.checked_add(32).ok_or(Error::Bounds)?)
 }

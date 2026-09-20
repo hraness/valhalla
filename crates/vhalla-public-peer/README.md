@@ -125,11 +125,17 @@ reopen; the renewal loop stops the listener. Reopen validates the canonical scop
 reservation and any complete temporary reservation, retains the highest floor,
 and validates every existing signed descriptor against that floor. It normalizes
 only validated temporary artifacts, then reserves a strictly higher sequence and
-publishes fresh evidence. Reserved sequences are skipped, never reused. A valid
-old advertisement remains intact until its replacement is published. Tests inject
-stops after file sync, rename and directory sync at both publication stages.
+publishes fresh evidence. An incomplete `sequence.tmp` is discarded only when its
+available bytes match the next reservation under the intact committed scope.
+An incomplete `advertisement.tmp` must match the durable reservation and route;
+that reserved sequence is skipped. No signature can precede reservation
+publication. Clock, scope and existing signed evidence checks precede cleanup.
+A valid old advertisement remains intact until its replacement is published.
+Tests cover creation, partial writes, syncs and renames, plus every truncated
+reservation and advertisement prefix.
 
-Corrupt/truncated files, foreign scope, advertisements above the reservation,
+Corrupt/truncated authoritative files, malformed complete temporary files, foreign
+scope, advertisements above the reservation,
 conflicting same-sequence evidence, unknown files, missing all reservation evidence,
 sequence exhaustion and clock rollback fail closed while preserving evidence.
 Recovery never reconstructs a lost counter from a descriptor. Operator-controlled
@@ -228,8 +234,16 @@ Registry state is one bounded, checksummed canonical snapshot under private
 custody and a lifetime writer lock. Updates fsync the temporary snapshot before
 rename and directory sync; memory becomes visible only after that completes.
 An uncertain publication poisons the current owner. Reopen validates and
-reconciles complete retained pending evidence; corrupt or truncated evidence is
-preserved and fails closed. Exact retained-ad retries return the prior admission
+reconciles complete retained pending evidence. With a valid stable registry,
+structurally incomplete canonical temporary bytes can be discarded only after
+scope, available monotone fields, complete signed entries, retained replay floors
+and clock checks pass. A validated stable file and its directory are re-synced
+before restart succeeds, including a same-clock retry after an uncertain rename.
+This preserves the stable registry and requires retrying
+the interrupted registration; it does not acknowledge the incomplete candidate.
+Malformed complete snapshots, foreign prefixes, clock rollback and incomplete
+initial creation without a valid stable registry remain preserved and fail closed.
+Exact retained-ad retries return the prior admission
 without extending its timestamp, floor, or receipt generation. The existing
 snapshot remains until the replacement is fully written and fsynced; successful
 publication additionally requires rename and directory sync. This does not

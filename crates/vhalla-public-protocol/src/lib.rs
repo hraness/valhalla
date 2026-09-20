@@ -135,6 +135,12 @@ impl UnsignedAdvertisement {
         Ok(Self { claims })
     }
 
+    /// Canonical unsigned frame prefix, excluding the detached signature.
+    /// This is encoding only, never proof of a signed or admitted advertisement.
+    pub fn encoded_claims(&self) -> Vec<u8> {
+        unsigned_bytes(&self.claims)
+    }
+
     /// Exact domain-separated message for an external Ed25519 signing provider.
     pub fn signing_bytes(&self) -> Vec<u8> {
         transcript(&self.claims)

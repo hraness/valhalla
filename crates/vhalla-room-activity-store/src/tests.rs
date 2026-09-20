@@ -222,6 +222,8 @@ fn forks_gaps_stale_heads_and_wrong_registry_basis_never_write_intent() {
 fn each_publication_interruption_recovers_exact_old_admission_once() {
     for step in [
         Step::IntentWritten,
+        Step::IntentSynced,
+        Step::IntentRenamed,
         Step::IntentDurable,
         Step::RecoveryIntentSynced,
         Step::RecordPublished,
@@ -289,6 +291,9 @@ fn torn_intent_and_unknown_temporaries_fail_closed_without_cleanup() {
         Err(Error::Indeterminate(_))
     ));
     drop(store);
+    // Legacy final intent corruption remains refused; new publication never
+    // exposes this partial inode under the authoritative name.
+    fs::rename(temp.path().join(INTENT_TEMP), temp.path().join(INTENT)).unwrap();
     assert!(matches!(
         Store::open(temp.path(), f.scope, limits(), None),
         Err(Error::Corrupt)
@@ -613,4 +618,183 @@ fn observed_live_record_directory_symlink_refuses_first_publication() {
     assert!(fs::read_dir(&target).unwrap().next().is_none());
     assert!(fs::read_dir(&retained).unwrap().next().is_none());
     assert_eq!(store.pin(), Pin::EMPTY);
+}
+
+#[test]
+fn staged_zero_and_midwrite_preserve_previous_head_and_require_current_admission() {
+    for step in [Step::IntentCreated, Step::IntentPartial] {
+        let temp = Temp::new();
+        let mut f = Fixture::new();
+        let mut store = Store::create(temp.path(), f.scope, limits()).unwrap();
+        let first = f.event(1, EventId::ZERO, "already admitted");
+        append(&mut store, first.clone(), &f);
+        let head = store.author_head(f.author()).unwrap();
+        let pin = store.pin();
+        let second = f.event(2, first.id(), "interrupted preparation");
+        let context = f.context();
+        store.fault = Some(step);
+        assert!(matches!(
+            store.append(second.clone(), head, &context, *context.registry_digest()),
+            Err(Error::Indeterminate(_))
+        ));
+        assert!(!temp.path().join(INTENT).exists());
+        let raw = fs::read(temp.path().join(INTENT_TEMP)).unwrap();
+        drop(store);
+        f.set_policy(false);
+        let mut store = Store::open(temp.path(), f.scope, limits(), Some(pin)).unwrap();
+        assert_eq!(fs::read(temp.path().join(INTENT_TEMP)).unwrap(), raw);
+        assert!(matches!(
+            store.read_page(0, 1),
+            Err(Error::RecoveryRequired)
+        ));
+        assert!(matches!(
+            store.author_head(f.author()),
+            Err(Error::RecoveryRequired)
+        ));
+        assert!(store.recover().unwrap().is_none());
+        assert_eq!(store.pin(), pin);
+        assert_eq!(store.author_head(f.author()).unwrap(), head);
+        assert_eq!(store.read_page(0, 64).unwrap().records().len(), 1);
+        let context = f.context();
+        assert!(store
+            .append(second, head, &context, *context.registry_digest())
+            .is_err());
+        assert_eq!(store.pin(), pin);
+        assert!(!store.recovery_required().unwrap());
+    }
+}
+
+#[test]
+fn staged_all_prefixes_keep_exact_scope_pin_and_no_receipt_for_incomplete_bytes() {
+    let f = Fixture::new();
+    let temp = Temp::new();
+    let mut store = Store::create(temp.path(), f.scope, limits()).unwrap();
+    let event = f.event(1, EventId::ZERO, "bounded canonical scratch");
+    let context = f.context();
+    store.fault = Some(Step::IntentWritten);
+    assert!(store
+        .append(event, None, &context, *context.registry_digest())
+        .is_err());
+    let raw = fs::read(temp.path().join(INTENT_TEMP)).unwrap();
+    for cut in 0..raw.len() {
+        assert!(
+            Intent::decode_staged(&raw[..cut], Pin::EMPTY, f.scope, limits())
+                .unwrap()
+                .is_none(),
+            "cut{cut}"
+        );
+    }
+    assert!(Intent::decode_staged(&raw, Pin::EMPTY, f.scope, limits())
+        .unwrap()
+        .is_some());
+    // Representative disk interruptions include half-written pin/index/record.
+    drop(store);
+    for cut in [
+        0,
+        9,
+        8 + PIN_BYTES + 5,
+        8 + 2 * PIN_BYTES + 4,
+        raw.len() / 2,
+        raw.len() - 1,
+    ] {
+        fs::write(temp.path().join(INTENT_TEMP), &raw[..cut]).unwrap();
+        let mut store = Store::open(temp.path(), f.scope, limits(), Some(Pin::EMPTY)).unwrap();
+        assert!(store.recover().unwrap().is_none());
+        assert_eq!(store.pin(), Pin::EMPTY);
+        assert!(store.read_page(0, 1).unwrap().records().is_empty());
+        drop(store);
+        if cut != raw.len() - 1 {
+            create(&temp.path().join(INTENT_TEMP)).unwrap();
+        }
+    }
+}
+
+#[test]
+fn staged_wrong_scope_basis_corruption_and_successor_effects_are_preserved() {
+    for damage in 0..8 {
+        let temp = Temp::new();
+        let f = Fixture::new();
+        let mut store = Store::create(temp.path(), f.scope, limits()).unwrap();
+        let event = f.event(1, EventId::ZERO, "preserve ambiguous evidence");
+        let context = f.context();
+        store.fault = Some(Step::IntentWritten);
+        assert!(store
+            .append(event, None, &context, *context.registry_digest())
+            .is_err());
+        let path = temp.path().join(INTENT_TEMP);
+        let mut raw = fs::read(&path).unwrap();
+        match damage {
+            0 => {
+                let last = raw.len() - 1;
+                raw[last] ^= 1;
+            }
+            1 => {
+                raw[8 + 16] ^= 1;
+                raw.truncate(40);
+            }
+            2 => {
+                raw[8 + 2 * PIN_BYTES] = 255;
+                raw.pop();
+            }
+            3 => {
+                write_new(&temp.path().join(HEAD_TEMP), b"").unwrap();
+                raw.clear();
+            }
+            4 => {
+                write_new(&temp.path().join(AUTHOR_TEMP), b"").unwrap();
+                raw.clear();
+            }
+            5 => {
+                write_new(&store.record_path(1), b"").unwrap();
+                raw.clear();
+            }
+            6 => {
+                write_new(&temp.path().join(INTENT), b"").unwrap();
+                raw.clear();
+            }
+            7 => {
+                let record_at = 8 + 2 * PIN_BYTES + 1 + INDEX_BYTES + 4;
+                let scope_at = record_at + RECORD_OVERHEAD - 32 + 5;
+                raw[scope_at] ^= 1;
+                raw.truncate(scope_at + 1);
+            }
+            _ => unreachable!(),
+        }
+        fs::write(&path, &raw).unwrap();
+        drop(store);
+        assert!(
+            Store::open(temp.path(), f.scope, limits(), None).is_err(),
+            "damage{damage}"
+        );
+        assert_eq!(fs::read(path).unwrap(), raw, "damage{damage}");
+    }
+}
+
+#[test]
+fn staged_full_decision_retries_exactly_after_revocation_and_refuses_replacement() {
+    let temp = Temp::new();
+    let mut f = Fixture::new();
+    let mut store = Store::create(temp.path(), f.scope, limits()).unwrap();
+    let event = f.event(1, EventId::ZERO, "exact prior checked decision");
+    let context = f.context();
+    store.fault = Some(Step::IntentWritten);
+    assert!(store
+        .append(event.clone(), None, &context, *context.registry_digest())
+        .is_err());
+    drop(store);
+    f.set_policy(false);
+    let mut store = Store::open(temp.path(), f.scope, limits(), None).unwrap();
+    let context = f.context();
+    let other = f.event(1, EventId::ZERO, "different bytes");
+    assert!(matches!(
+        store.append(other, None, &context, *context.registry_digest()),
+        Err(Error::RecoveryRequired)
+    ));
+    let stored = store
+        .append(event.clone(), None, &context, *context.registry_digest())
+        .unwrap();
+    assert_eq!(stored.event().encode(), event.encode());
+    assert!(stored.reconciled());
+    assert_eq!(store.pin().count(), 1);
+    assert!(!store.recovery_required().unwrap());
 }
