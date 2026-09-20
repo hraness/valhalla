@@ -169,14 +169,25 @@ pub fn register(
             now()?,
         )
         .map_err(debug)?;
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(20);
     let mut offset = 0;
     let work = loop {
-        if offset >= MAX_SOLVE_ATTEMPTS
-            || Instant::now() >= deadline
-            || now()? >= challenge.expires_at()
-        {
-            return Err("fixture discovery work/time budget exhausted".into());
+        let reason = if offset >= MAX_SOLVE_ATTEMPTS {
+            Some("attempt ceiling")
+        } else if Instant::now() >= deadline {
+            Some("20-second solve deadline")
+        } else if now()? >= challenge.expires_at() {
+            Some("signed challenge expired")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(format!(
+                "fixture discovery work/time budget exhausted: {reason}; attempts={offset}/{MAX_SOLVE_ATTEMPTS}; elapsed-ms={}; difficulty={}",
+                started.elapsed().as_millis(),
+                verified.difficulty(),
+            ));
         }
         let count = 8192.min(MAX_SOLVE_ATTEMPTS - offset);
         if let Some(work) = verified.solve_range(offset, count).map_err(debug)? {

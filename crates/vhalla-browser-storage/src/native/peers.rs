@@ -135,6 +135,15 @@ pub struct NativePeerSession {
     selection: PeerSelection,
     poisoned: bool,
 }
+impl Drop for NativePeerSession {
+    fn drop(&mut self) {
+        // A fork or duplicated descriptor can retain this open file description
+        // after the owning session ends. Release custody at this owner boundary,
+        // rather than waiting for the final unrelated descriptor to close.
+        // No field destructor publishes storage after this point.
+        let _ = self._lock.unlock();
+    }
+}
 impl NativePeerSession {
     /// Create only a new directory. Require a fresh signed advertisement naming
     /// the expected full key, selected HTTPS route, and READ. No PUBLISH required.

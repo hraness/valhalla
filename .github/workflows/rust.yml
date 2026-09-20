@@ -214,14 +214,16 @@ jobs:
           node prototypes/private-rooms-mls/tools/qualify_browser.mjs "$RUNNER_TEMP/vhalla-mls-runtime" "$chrome" "$RUNNER_TEMP/vhalla-mls-results"
       - name: Build isolated public browser journey
         run: |
-          cargo build --locked -p vhalla-public-peer --example browser_fixture
+          # Real 20-bit discovery work keeps its fixed deadline; qualify the
+          # optimized fixture rather than debug SHA-256 throughput on CI hosts.
+          cargo build --release --locked -p vhalla-public-peer --example browser_fixture
           cd browser
           trunk --skip-version-check build --release --locked --features local-qualification --dist "$RUNNER_TEMP/vhalla-product-runtime"
           python3 tools/package.py "$RUNNER_TEMP/vhalla-product-runtime" --allow-local-qualification
         env:
           NO_COLOR: "true"
       - name: Exercise scope, interrupted signing, puzzle review and peer delivery
-        run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/debug/examples/browser_fixture" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-product-results" --recovery
+        run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/release/examples/browser_fixture" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-product-results" --recovery
       - name: Retain bounded browser runtime evidence
         if: always()
         uses: actions/upload-artifact@v4

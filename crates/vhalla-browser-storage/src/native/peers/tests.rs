@@ -446,3 +446,19 @@ fn peer_session_invalid_available_change_framing_is_not_treated_as_incomplete() 
     assert!(NativePeerSession::open(home.path(), scope(), peer(), &route()).is_err());
     assert_eq!(fs::read(home.path().join("INTENT.tmp")).unwrap(), raw);
 }
+
+#[test]
+fn peer_session_drop_releases_custody_even_with_inherited_description() {
+    let home = Home::new();
+    let session = home.create();
+    // Like a pre-exec fork, this retains the same open file description.
+    let inherited = session._lock.try_clone().unwrap();
+    assert!(NativePeerSession::open(home.path(), scope(), peer(), &route()).is_err());
+    drop(session);
+    let reopened = home.open();
+    // Closing the stale reference must not unlock the new owner's description.
+    drop(inherited);
+    assert!(NativePeerSession::open(home.path(), scope(), peer(), &route()).is_err());
+    drop(reopened);
+    let _final_owner = home.open();
+}
