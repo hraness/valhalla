@@ -49,6 +49,7 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
   submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
   submit REPLICA_HOME NODE_HOME archive OWNER_KEYDIR SLUG --config FILE
+  submit REPLICA_HOME NODE_HOME public-policy OWNER_KEYDIR SLUG NETWORK64 open|closed --config FILE
   pending REPLICA_HOME NODE_HOME --config FILE
   status REPLICA_HOME NODE_HOME --config FILE
 SOCIAL_STORE is an existing `vhalla social` store; ROOMS_STORE is created by `init`.
@@ -589,6 +590,19 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
                     ("revisions", room.revisions().len().to_string()),
                     ("createdAt", room.created_at().to_string()),
                     ("archived", room.archived().to_string()),
+                    (
+                        "publicActivityPolicy",
+                        room.public_activity_policy().map_or_else(
+                            || "null".into(),
+                            |policy| {
+                                json::object(vec![
+                                    ("record", json::id(policy.record.as_bytes())),
+                                    ("network", json::id(&policy.network)),
+                                    ("enabled", (policy.enabled && !room.archived()).to_string()),
+                                ])
+                            },
+                        ),
+                    ),
                 ])
             }
             "account" => {

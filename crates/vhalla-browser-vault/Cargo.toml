@@ -1,0 +1,20 @@
+[package]
+name = "vhalla-browser-vault"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Portable password-encrypted application keys with typed social and activity signing."
+
+[dependencies]
+argon2 = { version = "=0.5.3", default-features = false, features = ["zeroize"] }
+chacha20poly1305 = { version = "=0.10.1", default-features = false }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
+hkdf = { version = "=0.12.4", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false }
+vhalla-social = { path = "../vhalla-social" }
+vhalla-room-activity = { path = "../vhalla-room-activity" }
+
+[lints]
+workspace = true

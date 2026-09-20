@@ -525,8 +525,8 @@ impl App {
 
 /// Parses 64 hex characters.
 fn hex32(text: &str) -> Result<[u8; 32], String> {
-    if text.len() != 64 {
-        return Err(format!("expected 64 hex characters: {text:?}"));
+    if text.len() != 64 || !text.is_ascii() {
+        return Err(format!("expected 64 ASCII hex characters: {text:?}"));
     }
     let mut out = [0; 32];
     for (i, byte) in out.iter_mut().enumerate() {

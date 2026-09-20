@@ -1,5 +1,18 @@
 # Bounded game replay
 
+This legacy Platonik verifier is maintained as an opt-in source build. The normal
+CLI build and newly built release archives omit it; public-room and browser
+participation do not execute Platonik. Existing witness/game code and vectors
+remain available for independent verification.
+
+```console
+cargo build --locked -p vhalla-cli --no-default-features --features experimental-game
+./target/debug/vhalla game --help
+```
+
+Add `experimental-game` to another explicit feature selection to combine it with
+other CLI commands. Building it grants no automatic permission to run any file.
+
 `vhalla game replay BUNDLE` independently checks the signed records in a frozen
 `key: value` session bundle and reproduces its checkpoints and final receipt.
 It holds no identity key and does not grant the sender access to the machine.

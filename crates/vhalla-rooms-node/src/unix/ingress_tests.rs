@@ -39,7 +39,6 @@ impl Harness {
             held_by_id: BTreeMap::new(),
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
-            decided: BTreeMap::new(),
             stream_seq: 0,
             boundary_latency: Arc::new(Mutex::new(Vec::new())),
             store,

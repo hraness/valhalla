@@ -613,6 +613,7 @@ impl Application {
     /// Resume from store-loaded states under a frontier reconstructed from
     /// the journal — the reopen path, where the states are already durable
     /// and only the in-memory frontier is rebuilt.
+    #[cfg(unix)]
     fn resume(social: Archive, registry: Registry, frontier: Frontier) -> Self {
         Self {
             social,
@@ -813,6 +814,7 @@ impl Application {
 /// Whether the live states already reflect this batch's claimed results —
 /// the replay skip check. `result_control` is implied: it is a pure
 /// function of the registry authority and archive the other two digests pin.
+#[cfg(unix)]
 fn reflected(app: &Application, batch: &Batch) -> bool {
     app.registry.digest() == batch.result_registry
         && *app.social.root().as_bytes() == batch.result_social
@@ -1184,6 +1186,17 @@ impl<S: Store> Adapter<S> {
     pub fn committed_at_height(&self, height: u64) -> Option<Bundle> {
         let id = self.journal.at_height(height).ok().flatten()?;
         self.journal.bundle(id).ok().flatten()
+    }
+
+    /// Read a bounded, contiguous range below one published journal HEAD.
+    /// This never recovers or changes storage. Callers serving consensus sync
+    /// also clamp to the applied frontier so uncertain unpublished application
+    /// progress cannot become a served decided value.
+    pub fn read_published_range(
+        &self,
+        request: vhalla_journal::PublishedRange,
+    ) -> Result<vhalla_journal::PublishedPage, vhalla_journal::PublishedReadError> {
+        self.journal.read_published_range(request)
     }
 
     /// Drops retained batches that can never validate again: after a

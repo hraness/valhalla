@@ -1728,7 +1728,6 @@ fn reordered_proposal_parts_still_assemble_and_verify() {
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
-        decided: BTreeMap::new(),
         stream_seq: 0,
         boundary_latency: Arc::new(Mutex::new(Vec::new())),
         store,
@@ -1837,7 +1836,6 @@ fn large_values_chunk_into_bounded_data_parts() {
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
-        decided: BTreeMap::new(),
         stream_seq: 0,
         boundary_latency: Arc::new(Mutex::new(Vec::new())),
         store,
@@ -1922,7 +1920,6 @@ async fn held_get_value_reply_resolves_on_late_submit() {
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
-        decided: BTreeMap::new(),
         stream_seq: 0,
         boundary_latency: Arc::new(Mutex::new(Vec::new())),
         store,
@@ -2046,7 +2043,6 @@ fn undecided_values_resupply_from_durable_store() {
             held_by_id: held,
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
-            decided: BTreeMap::new(),
             stream_seq: 0,
             boundary_latency: Arc::new(Mutex::new(Vec::new())),
             store: store.clone(),
@@ -2276,7 +2272,6 @@ fn intake_files_submit_or_reject_deterministically() {
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
-        decided: BTreeMap::new(),
         stream_seq: 0,
         boundary_latency: Arc::new(Mutex::new(Vec::new())),
         store,
@@ -2366,7 +2361,6 @@ fn losing_body_reassembles_against_live_frontier() {
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
-        decided: BTreeMap::new(),
         stream_seq: 0,
         boundary_latency: Arc::new(Mutex::new(Vec::new())),
         store,
@@ -2511,7 +2505,6 @@ fn eligible_intake_file_queues_a_config_transition() {
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
-        decided: BTreeMap::new(),
         stream_seq: 0,
         boundary_latency: Arc::new(Mutex::new(Vec::new())),
         store,
@@ -2644,7 +2637,6 @@ fn test_app(tag: &str, key: &PrivateKey, set: &RoomValidatorSet) -> App {
         held_by_id: BTreeMap::new(),
         streams: BTreeMap::new(),
         parts_cache: BTreeMap::new(),
-        decided: BTreeMap::new(),
         stream_seq: 0,
         boundary_latency: Arc::new(Mutex::new(Vec::new())),
         store,
@@ -2774,7 +2766,7 @@ fn sweep_decided_retires_dead_state() {
     assert!(app.parts_cache.contains_key(&ids[2]));
     assert!(
         !app.held_by_id.contains_key(&ids[0]),
-        "the committed batch's copy is dead — `decided` and the journal keep it"
+        "the committed batch's copy is dead — the complete disk-backed journal keeps it"
     );
     assert!(app.held_by_id.contains_key(&ids[1]), "pending stays");
     assert!(
@@ -2831,12 +2823,12 @@ fn tombstone_ids_are_unique_per_node_height_round() {
 }
 
 /// A restarted node serves decided values out of the journal, not
-/// memory: commit a batch through the durable path, then `load_decided`
-/// must rebuild the `RawDecidedValue` — value bytes plus an extended
+/// memory: commit a batch through the durable path, then an on-demand range read
+/// must reconstruct the `RawDecidedValue` — value bytes plus an extended
 /// certificate decoded from the stored `VC2` — so `GetDecidedValues`
 /// still answers for heights the process never saw in memory.
 #[test]
-fn decided_history_rebuilds_from_the_journal() {
+fn decided_history_reads_from_the_journal() {
     let (keys, _set) = validators(1);
     let base = fixture("load-decided");
     let mut adapter = Adapter::open(base.join("app"), &genesis()).unwrap();
@@ -2865,8 +2857,8 @@ fn decided_history_rebuilds_from_the_journal() {
     assert_eq!(outcome, DecidedOutcome::Acked);
     assert_eq!(adapter.frontier().height, 1);
 
-    let decided = load_decided(&adapter);
-    let raw = decided.get(&1).expect("a committed height serves sync");
+    let decided = read_decided_range(&adapter, 1, 1).unwrap();
+    let raw = decided.first().expect("a committed height serves sync");
     let value = RoomCodec::decode_value(raw.value_bytes.clone()).unwrap();
     assert_eq!(&value.bytes[..], &batch.encode()[..]);
     assert_eq!(raw.certificate.height, Height::new(1));
@@ -3128,9 +3120,9 @@ fn sweep_decided_retires_exactly_dead_state(tc: TestCase) {
     assert_eq!(app.proposals.len(), assigned);
 }
 
-/// Generative companion to `decided_history_rebuilds_from_the_journal`:
+/// Generative companion to `decided_history_reads_from_the_journal`:
 /// interleave drawn commits with drawn restarts, then require the reopened
-/// `load_decided` to serve exactly the committed heights — value bytes and
+/// on-demand range reads to serve exactly the committed heights — value bytes and
 /// certificates intact — whatever the crash schedule was. Each case runs real
 /// journal reopen + store reconciliation, so the TooSlow check is suppressed.
 #[hegel::test(test_cases = 32, suppress_health_check = [HealthCheck::TooSlow])]
@@ -3174,14 +3166,20 @@ fn decided_history_survives_interleaved_restarts(tc: TestCase) {
 
     drop(adapter);
     let adapter = Adapter::open(base.join("app"), &genesis()).unwrap();
-    let decided = load_decided(&adapter);
+    let decided = read_decided_range(&adapter, 1, 6).unwrap();
     assert_eq!(
-        decided.keys().copied().collect::<Vec<_>>(),
+        decided
+            .iter()
+            .map(|raw| raw.certificate.height.as_u64())
+            .collect::<Vec<_>>(),
         committed,
         "reopened decided history must be exactly the committed heights"
     );
     for h in &committed {
-        let raw = &decided[h];
+        let raw = decided
+            .iter()
+            .find(|raw| raw.certificate.height.as_u64() == *h)
+            .unwrap();
         let value = RoomCodec::decode_value(raw.value_bytes.clone()).unwrap();
         assert_eq!(&value.bytes[..], &plan[h].encode()[..]);
         assert_eq!(raw.certificate.height, Height::new(*h));

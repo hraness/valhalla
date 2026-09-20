@@ -16,10 +16,11 @@
 //!
 //! This module mirrors `bench/gate.ts` in the clankdar repository. One
 //! deliberate divergence: the TypeScript `parsePolicy` rejects cells absent
-//! from the suite pool, while [`GatePolicy::parse`] validates the
+//! from the suite pool, while [`GatePolicy::parse`] validates legacy suites'
 //! `family:tier` shape only — "cell exists" is enforced by receipt
 //! regeneration instead, since a receipt for a nonexistent cell fails its
-//! own deep check and can never count toward the verdict.
+//! own deep check and can never count toward the verdict. The frozen Algal
+//! suite instead checks its only three base cells (`algal:t1` through `algal:t3`).
 //!
 //! Held-out cells (`h:family:tN`, clankdar-holdout-v1) resolve against a
 //! supplied [`HoldoutPool`]: policies validate pool membership only when a
@@ -29,7 +30,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
+use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
@@ -45,6 +46,9 @@ use crate::{
 
 /// Wire protocol identifier.
 pub const GATE_PROTOCOL: &str = "clankdar-gate-v1";
+
+/// Frozen official Algal expression evaluator suite.
+pub const ALGAL_SUITE_VERSION: &str = "clankdar-algal-v1";
 
 /// Generator pool version for the `v2` suite.
 pub const V2_SUITE_VERSION: &str = "clankdar-suite-v2";
@@ -67,6 +71,7 @@ pub const MAX_POLICY_TTL_SECONDS: u64 = 3600;
 /// [`GatePolicy::parse`] rejects unknown names before this is reached.
 pub fn suite_version(suite: &str) -> &'static str {
     match suite {
+        "algal" => ALGAL_SUITE_VERSION,
         "frontier" => FRONTIER_SUITE_VERSION,
         "agent" => AGENT_SUITE_VERSION,
         _ => V2_SUITE_VERSION,
@@ -78,7 +83,7 @@ pub fn suite_version(suite: &str) -> &'static str {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatePolicy {
-    /// Suite name: `"v2"`, `"frontier"`, or `"agent"`.
+    /// Suite name: `"v2"`, `"frontier"`, `"agent"`, or `"algal"`.
     pub suite: String,
     /// Cell ids as `"family:tier"`, e.g. `"registervm:t5"`. 1..64 distinct
     /// entries.
@@ -230,8 +235,8 @@ fn member_key(member: Option<&Value>) -> String {
 
 impl GatePolicy {
     /// Strictly parse and bound a gate policy, mirroring `parsePolicy` in
-    /// `bench/gate.ts` — except suite-pool membership. The TypeScript side
-    /// looks every cell up in the suite pool; this side validates the
+    /// `bench/gate.ts` — except legacy suite-pool membership. The frozen
+    /// Algal cells are checked directly. For legacy suites this validates the
     /// `family:tier` shape and defers "cell exists" to receipt
     /// regeneration, which fails for a nonexistent cell anyway.
     ///
@@ -252,8 +257,8 @@ impl GatePolicy {
             .as_object()
             .ok_or_else(|| fail("expected an object"))?;
         let suite = match object.get("suite").and_then(Value::as_str) {
-            Some(suite @ ("v2" | "frontier" | "agent")) => suite.to_string(),
-            _ => return Err(fail("suite must be v2, frontier, or agent")),
+            Some(suite @ ("v2" | "frontier" | "agent" | "algal")) => suite.to_string(),
+            _ => return Err(fail("suite must be v2, frontier, agent, or algal")),
         };
         let cells: Vec<String> = match object.get("cells").and_then(Value::as_array) {
             Some(cells)
@@ -280,6 +285,14 @@ impl GatePolicy {
             return Err(fail("holdout pool is for a different suite"));
         }
         for cell in &cells {
+            // The new Algal suite is frozen to one family and three tiers.
+            // Preserve the legacy suites' documented oracle-based membership.
+            if suite == "algal"
+                && !parse_cell(cell.strip_prefix("h:").unwrap_or(cell))
+                    .is_some_and(|(family, tier)| family == "algal" && (1..=3).contains(&tier))
+            {
+                return Err(fail(&format!("unknown cell for suite {suite}: {cell}")));
+            }
             if let Some(rest) = cell.strip_prefix("h:") {
                 if let Some((family, tier)) = parse_cell(rest) {
                     // Held-out cells are shape-checked always and resolved
@@ -839,7 +852,10 @@ pub fn check_admission_with_pool(
             b64url_decode(&admission.signature)
                 .ok()
                 .and_then(|bytes| Signature::from_slice(&bytes).ok())
-                .map(|signature| key.verify(admission.payload.as_bytes(), &signature).is_ok())
+                .map(|signature| {
+                    key.verify_strict(admission.payload.as_bytes(), &signature)
+                        .is_ok()
+                })
         })
         .unwrap_or(false);
     if !verified {

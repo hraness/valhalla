@@ -16,9 +16,15 @@ experimental-rooms-tui = ["experimental-rooms-node", "dep:vhalla-rooms-app", "de
 experimental-sync = ["experimental-social", "experimental-network", "dep:vhalla-retrieval"]
 experimental-game = ["dep:vhalla-game-platonik", "dep:vhalla-witness", "dep:vhalla-core", "dep:libc"]
 
+experimental-public = ["experimental-rooms-node", "vhalla-identity/room-activity", "dep:vhalla-room-activity", "dep:vhalla-browser-storage", "dep:vhalla-public-client", "dep:vhalla-public-peer", "dep:vhalla-public-protocol", "dep:vhalla-rooms-app"]
+
 [dependencies]
 hraness-support-foundation = { git = "https://github.com/hraness/support-foundation", rev = "b32c1c81bb2444f50509ed54388758ecfab1f1c0" }
 vhalla-identity = { path = "../vhalla-identity" }
+vhalla-room-activity = { path = "../vhalla-room-activity", optional = true }
+vhalla-browser-storage = { path = "../vhalla-browser-storage", optional = true }
+vhalla-public-client = { path = "../vhalla-public-client", optional = true }
+vhalla-public-protocol = { path = "../vhalla-public-protocol", optional = true }
 vhalla-social = { path = "../vhalla-social", optional = true }
 vhalla-discovery = { path = "../vhalla-discovery", optional = true }
 vhalla-attention = { path = "../vhalla-attention", optional = true }
@@ -32,6 +38,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
+vhalla-public-peer = { path = "../vhalla-public-peer", optional = true }
 libc = { version = "0.2", optional = true }
 vhalla-social-store = { path = "../vhalla-social-store", optional = true }
 vhalla-rooms-store = { path = "../vhalla-rooms-store", optional = true }
@@ -47,6 +54,7 @@ tokio = { version = "1.53", default-features = false, features = ["rt", "rt-mult
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
 getrandom = "0.3"
 serde_json = "1"
 sha2 = "0.10"

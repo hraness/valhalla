@@ -127,6 +127,93 @@ impl Identity {
         self.key.verifying_key().to_bytes()
     }
 
+    /// Sign a checked room activity with this exact application key, without
+    /// exporting its seed or accepting arbitrary signing bytes. The returned
+    /// event has a strictly verified signature; policy admission, durable author
+    /// sequence reservation and publication remain the caller's responsibility.
+    #[cfg(feature = "room-activity")]
+    pub fn sign_activity(
+        &self,
+        request: vhalla_room_activity::UnsignedEvent,
+    ) -> Result<vhalla_room_activity::SignedEvent, vhalla_room_activity::Error> {
+        if request.claims().author != self.public_key() {
+            return Err(vhalla_room_activity::Error::Signer);
+        }
+        request.sign_with_key(&self.key)
+    }
+
+    /// Sign only a checked public-peer advertisement with this application key.
+    /// Claims grant no validator, room, host or posting authority.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_public_advertisement(
+        &self,
+        advertisement: vhalla_public_protocol::UnsignedAdvertisement,
+    ) -> Result<vhalla_public_protocol::PeerAdvertisement, vhalla_public_protocol::Error> {
+        advertisement.sign_with_key(&self.key)
+    }
+
+    /// Sign only a typed successful read response, binding network, full key,
+    /// fresh nonce, exact request and body digest. No arbitrary bytes signing.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_public_response(
+        &self,
+        response: vhalla_public_protocol::response::UnsignedResponse,
+    ) -> Result<
+        vhalla_public_protocol::response::PeerResponseProof,
+        vhalla_public_protocol::response::ResponseError,
+    > {
+        response.sign_with_key(&self.key)
+    }
+
+    /// Sign only a typed nonce-bound activity response. Its receipt claims local
+    /// durable storage, never consensus or current-policy authority.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_activity_response(
+        &self,
+        response: vhalla_public_protocol::activity::UnsignedActivityResponse,
+    ) -> Result<
+        vhalla_public_protocol::activity::ActivityResponseProof,
+        vhalla_public_protocol::response::ResponseError,
+    > {
+        response.sign_with_key(&self.key)
+    }
+
+    /// Sign only the fixed discovery Hashcash issuer contract for this peer.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_discovery_challenge(
+        &self,
+        challenge: vhalla_public_protocol::discovery::UnsignedRegistrationChallenge,
+    ) -> Result<
+        vhalla_public_protocol::discovery::RegistrationChallenge,
+        vhalla_public_protocol::discovery::DiscoveryError,
+    > {
+        challenge.sign_with_key(&self.key)
+    }
+
+    /// Sign only a typed nonce-bound discovery response.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_discovery_response(
+        &self,
+        response: vhalla_public_protocol::discovery::UnsignedDiscoveryResponse,
+    ) -> Result<
+        vhalla_public_protocol::discovery::DiscoveryResponseProof,
+        vhalla_public_protocol::discovery::DiscoveryError,
+    > {
+        response.sign_with_key(&self.key)
+    }
+
+    /// Sign only this publisher's solved, exact-advertisement registration.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_peer_registration(
+        &self,
+        registration: vhalla_public_protocol::discovery::UnsignedRegistration,
+    ) -> Result<
+        vhalla_public_protocol::discovery::Registration,
+        vhalla_public_protocol::discovery::DiscoveryError,
+    > {
+        registration.sign_with_key(&self.key)
+    }
+
     /// Encode the 256-bit seed as a 24-word BIP39 mnemonic. The phrase is
     /// returned in a `Zeroizing` string so the caller can avoid leaking it in
     /// their own heap; the seed bytes themselves are never exposed.

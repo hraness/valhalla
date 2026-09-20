@@ -733,36 +733,38 @@ impl Service {
             }
         };
         if let Some(room) = room {
-            return match marker.kind.as_str() {
+            match marker.kind.as_str() {
                 "create" => {
-                    if room.record().id() == record_id {
+                    return if room.record().id() == record_id {
                         (PendingState::Committed, None)
                     } else {
                         (
                             PendingState::Collision,
                             Some("slug already exists with a different record".into()),
                         )
-                    }
+                    };
                 }
                 "update" => {
                     if room.revisions().iter().any(|r| r.id() == record_id)
                         || room.record().id() == record_id
                     {
-                        (PendingState::Committed, None)
+                        return (PendingState::Committed, None);
                     } else {
                         let base_ok = marker
                             .base
                             .as_deref()
                             .and_then(|b| hex32(b).ok())
                             .is_some_and(|b| room.head() == RoomRecordId::from_bytes(b));
-                        if base_ok {
-                            (PendingState::Submitted, None)
-                        } else {
-                            (
+                        if !base_ok {
+                            return (
                                 PendingState::Collision,
                                 Some("room head has moved past the requested base".into()),
-                            )
+                            );
                         }
+                        // An unchanged committed base says this update could
+                        // still apply, not that the node consumed its body.
+                        // Inspect rejection/queue markers below before calling
+                        // it submitted, exactly as for an unresolved create.
                     }
                 }
                 _ => unreachable!("kind was validated above"),

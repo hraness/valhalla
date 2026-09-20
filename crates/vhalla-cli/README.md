@@ -61,7 +61,8 @@ launch is `VHALLA_MENUBAR_PATH`, the installed copy, a binary adjacent to
 
 Pushing a version tag such as `v0.1.7` runs the complete Rust, Kani,
 desktop, and site gates at that commit, then builds unbundled binaries:
-`vhalla` (`--all-features --release --locked`)
+`vhalla` (`--release --locked --no-default-features --features
+experimental-network,experimental-sync,experimental-rooms-tui,experimental-public`)
 for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`, plus
 `vhalla-menubar` for `aarch64-apple-darwin`, each as a tarball with a
 `.sha256` sidecar. A single publisher requires that the tag still names
@@ -71,6 +72,12 @@ downloaded bytes, then publishes the complete release. Failed uploads
 leave a draft; retries never overwrite an already published release.
 The workflow uses only the repository `GITHUB_TOKEN`. These are developer
 binaries without application signing or notarization.
+
+The release feature selection preserves paired networking, social sync, the
+room-directory CLI/TUI and public-peer commands. Platonik `game replay` remains
+an [opt-in source build](../../docs/game-replay.md); newly built release archives
+omit it. Older archives keep the commands they were published with. The complete
+all-features checks and game vectors still run before publication.
 
 Each archive has a different top-level directory. On Apple Silicon macOS,
 download both archives and their checksum sidecars from the same release,
@@ -1084,3 +1091,190 @@ makes that choice explicit. Every revision replaces its facets, so a legacy edit
 clears them. Existing signed bytes and IDs stay unchanged. Older clients reject
 the new opcodes and can lose writer-chain closure; mixed-client networking needs
 explicit capability negotiation. Stripping annotations cannot repair signed history.
+
+## Native local public activity
+
+The native Unix author commands use the maintained room-activity protocol and
+custody identity, independently of the optional Platonik feature. Build them with:
+
+```console
+cargo build --locked -p vhalla-cli --features experimental-public --bin vhalla
+```
+
+Supply a canonical `BOOTSTRAP`, its independently obtained full lowercase
+`PIN64`, the matching local certified `JOURNAL`, and the full lowercase room
+genesis `ROOM64`. The room must have a verified open public-activity policy for
+authoring. These commands do not grant owner control, validator membership or
+host execution permission.
+
+```console
+vhalla public activity init BOOTSTRAP PIN64 JOURNAL NEW_KEY_DIR NEW_OUTBOX ROOM64
+vhalla public activity queue BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE
+vhalla public activity outbox BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 0 NEW_EXPORT_DIR
+```
+
+`init` creates a genuinely new application key and one outbox bound to its full
+author, room scope, network and bootstrap pin. Both paths must be new. This
+initial command does not attach an existing or restored key to an absent outbox,
+or reuse a key to initialize another room. Creation spans two directories;
+an interrupted operation may leave partial paths. Preserve them instead of
+deleting state or treating an existing key as fresh.
+
+`queue` reads one bounded regular UTF-8 text file, at most 4,096 bytes, without
+silently trimming it. It reserves the exact unsigned event durably before using
+the typed signer, then retains the signed frame before reporting
+`status signed-and-retained-locally` and `delivery unconfirmed`. A CLI-prepared
+Clankdar puzzle part is ordinary text for this command; its signature attributes
+the shared bytes but does not independently verify a solve.
+
+To separate reservation and signing explicitly:
+
+```console
+vhalla public activity reserve BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE
+vhalla public activity resume BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64
+```
+
+An existing pending draft blocks `reserve` and `queue`. Only `resume` uses that
+retained draft; it takes no replacement text. An unrelated certified height
+advance can update the reservation's policy checkpoint only if the exact signed
+room policy still permits the unchanged event. Revoked or changed policy refuses
+the operation and preserves the pending sequence; there is no discard/reset path.
+
+Each authoring invocation replays canonical certificates from the pinned genesis,
+matches the retained history checkpoint and checks that the observed journal
+head has not advanced before signing. The temporary replay budget is **4,096
+bundles and 30 seconds**. Exhaustion or an incomplete/invalid journal fails
+closed; a signed peer response cannot replace that replay or prove global
+freshness. One exclusive writer owns the outbox during an operation. An uncertain
+publication requires reopening to reconcile the exact retained intent, never
+deleting files to make the next sequence available.
+
+CLI creation fixes the default store limits at **65,536 retained events, 256 MiB
+of event plus receipt bytes, and eight peer receipt chains**. Bounded control,
+intent and temporary metadata add less than 64 KiB. No command prunes signed
+evidence to regain capacity, and this CLI currently exposes no limit-change
+option. Filesystem allocation/metadata overhead is additional; the byte budget
+does not reserve free disk space. Keep the private key directory and complete
+outbox together. Native key-only restore, author import/reset and device handoff
+are not implemented;
+a missing outbox is not evidence that the key has never signed.
+
+`outbox` exports at most 16 signed frames strictly after `AFTER_SEQUENCE` into a
+new directory, never overwriting an existing destination. Its manifest names
+the full network, realm, directory, room and author, plus the retained head and
+each frame's sequence/content ID. Use the printed `next-after` value and a new
+destination for the next page. Export remains available when a room stops
+allowing new posts; it does not authorize signing. This bounded local page is
+neither proof of peer delivery nor a complete author-state recovery backup.
+
+There is no native activity network send/read command yet. The prepared typed
+HTTP adapter preserves the discovery transport's DNS/curl guards, but a delivery
+controller still needs durable peer advertisement floors and verified receipt
+publication. Activity PUBLISH startup is separately gated; these local commands
+do not activate it or qualify public delivery.
+
+The focused CLI regression uses real certified room policy and process restarts:
+
+```console
+cargo test --locked -p vhalla-cli --features experimental-public --test public_activity
+```
+
+It covers new authoring/export, exact pending resume, compatible history advance,
+policy revocation, missing-state refusal and invalid bootstrap/certificate
+rejection. See the [participation contract](../../docs/public-participation.md)
+for the distinction between a signed artifact and independently checked evidence.
+
+## Public discovery peer
+
+Build the maintained native Unix operator command with its explicit feature:
+
+```console
+cargo build --locked -p vhalla-cli --features experimental-public --bin vhalla
+vhalla public discovery-serve BOOTSTRAP PIN64 KEY_DIR JOURNAL PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN DISCOVERY_DIR --new-state --new-discovery
+```
+
+`BOOTSTRAP` is a canonical exported bootstrap and `PIN64` is its independently
+obtained full pin. `KEY_DIR` must contain an existing custody identity. The
+command verifies these inputs before creating state; it never creates a key or
+changes the application journal. `HTTPS_ENDPOINT` is the exact advertised route
+ending in `/vhalla/v1`. Configure its TLS reverse proxy and the exact allowed
+browser HTTPS Origin separately. The listener defaults to loopback;
+`--listen LOOPBACK_IP:PORT` changes it without permitting public/wildcard binds.
+`--dev-origin` explicitly allows a loopback HTTP browser Origin for local tests.
+
+Use `--new-state` only for a genuinely new publisher directory and
+`--new-discovery` only for a genuinely new discovery directory. Retain both
+directories and omit both flags on restart. They contain durable sequence and
+replay evidence; never reset them to resolve a failure. Normal restart is:
+
+```console
+vhalla public discovery-serve BOOTSTRAP PIN64 KEY_DIR JOURNAL PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN DISCOVERY_DIR
+```
+
+With no `--seed`, the command serves READ and discovery without outgoing network
+requests. To register this peer with an operator-selected seed, append
+`--seed SIGNED_SEED_AD_FILE EXACT_HTTPS_ENDPOINT`; repeat for at most four
+distinct seed keys. Each file must contain a fresh canonical signed advertisement
+for this exact network, full seed key, READ capability, and chosen endpoint.
+It supplies the initial sequence floor. Each attempt first refreshes that same
+route with a fresh nonce-bound signed response, checks the full pinned key and
+monotone advertisement sequence, then obtains and solves the typed registration
+challenge. The command never follows discovered candidates or redirects.
+
+Outgoing registration requires system `/usr/bin/curl` version 7.59.0 or newer
+with HTTPS support, verified before state creation when seeds are configured.
+The subprocess uses system TLS validation, no inherited environment or curl
+configuration, no proxy, and no redirects. Requests and responses use bounded
+pipes; response headers and bodies remain independently bounded even for chunked
+input. No private key is exported or placed in process arguments.
+
+Every selected DNS route is resolved once in a supervised copy of the same
+executable. The lookup uses an absolute name, has a five-second deadline and
+at most 16 answers, and returns only a bounded canonical address frame. Timeout
+or cancellation kills and reaps the resolver child and joins its pipe workers;
+there are no detached DNS threads. Any non-public, scoped, mapped, transition,
+reserved, or malformed answer rejects the entire set, including a mixed
+public/private answer set. Literal addresses use the same conservative protocol
+address policy without DNS.
+
+The exact checked addresses are pinned with curl's `--resolve`, retaining the
+original HTTPS hostname for SNI and certificate validation. The checked list's
+starting priority rotates across requests; fallback can use only that list.
+There is no unguarded second lookup, expiring pin, proxy or redirect fallback.
+Connection setup is limited to five seconds, curl transfer to 15 seconds, and
+the whole lookup-plus-transfer has one 18-second supervision deadline. This
+prevents a selected name from rebinding to an unchecked address between lookup
+and connection. It does not attest DNS ownership, remote operator independence,
+global reachability, or the host's own routing configuration. Seed selection
+remains explicit, and the browser's separate Fetch limitations still apply.
+
+`--solve-attempts N` sets the per-attempt Hashcash budget: default `4194304`,
+maximum `16777216`, plus a ten-second work deadline. Work is checked in bounded
+chunks for shutdown and challenge expiry. Exhaustion sends no registration and
+the next minute's attempt can retry. A successful registration renews after
+the local advertisement sequence changes; failed attempts also retry on the
+minute cadence. SIGINT/SIGTERM stop the listener and cancel outstanding work.
+
+Remote sequence floors observed during the process are kept in memory only.
+On restart, the explicitly supplied signed seed files are the retained floors;
+keep those files current through a trusted operator workflow. This command does
+not promise durable highest-observed remote floors or global newest-state proof.
+
+The advertisements remain READ-only. A successful registration receipt binds
+this exact signed route to the receiving seed's local registry; it grants no room
+rights, validator authority, reachability guarantee, operator independence, or
+personhood. Activity PUBLISH startup is not available through this command. See
+the [peer adapter runbook](../vhalla-public-peer/README.md) for proxy rules,
+finite discovery capacity and replay retention, and durable recovery behavior.
+
+The focused CLI checks exercise bounded inputs and HTTP, public-address and
+mixed-answer refusal, exact TLS-host dial pins, DNS child deadline/cancellation,
+plus real CLI helper refusal and seedless startup, signed loopback challenge,
+shutdown, and retained-state restart:
+
+```console
+cargo test --locked -p vhalla-cli --features experimental-public --bin vhalla --test public_discovery discovery_ -- --nocapture
+```
+
+These tests do not qualify an external HTTPS seed, DNS deployment, or public
+multi-peer availability.

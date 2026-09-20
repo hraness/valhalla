@@ -1,0 +1,20 @@
+[package]
+name = "vhalla-room-activity"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Portable signed public room activity with exact policy admission and guarded author chains."
+
+[dependencies]
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+vhalla-core = { path = "../vhalla-core" }
+vhalla-rooms = { path = "../vhalla-rooms" }
+
+[dev-dependencies]
+vhalla-social = { path = "../vhalla-social" }
+
+[lints]
+workspace = true

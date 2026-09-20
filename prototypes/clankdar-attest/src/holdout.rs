@@ -22,8 +22,9 @@
 //! deliberate divergence, matching [`crate::GatePolicy::parse`]: the
 //! TypeScript `parsePool` checks every cell's family and tier against the
 //! suite's base pool, while [`HoldoutPool::parse`] validates the cell
-//! *shape* and the `poolKey` commitment only — base-pool membership is
-//! enforced by regeneration through the generator oracle instead.
+//! *shape* and the `poolKey` commitment for legacy suites — base-pool
+//! membership is enforced by regeneration through the oracle instead. The
+//! frozen Algal suite checks its only three base cells directly.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -119,8 +120,8 @@ impl HoldoutPool {
             return Err(fail(&format!("protocol must be {HOLDOUT_PROTOCOL}")));
         }
         let suite = match object.get("suite").and_then(Value::as_str) {
-            Some(suite @ ("v2" | "frontier" | "agent")) => suite.to_string(),
-            _ => return Err(fail("suite must be v2, frontier, or agent")),
+            Some(suite @ ("v2" | "frontier" | "agent" | "algal")) => suite.to_string(),
+            _ => return Err(fail("suite must be v2, frontier, agent, or algal")),
         };
         let raw_cells = match object.get("cells").and_then(Value::as_array) {
             Some(cells) if !cells.is_empty() && cells.len() <= MAX_POOL_CELLS => cells,
@@ -136,6 +137,9 @@ impl HoldoutPool {
                     serde_json::to_string(raw).unwrap_or_default()
                 )));
             };
+            if suite == "algal" && (family != "algal" || !(1..=3).contains(&tier)) {
+                return Err(fail("unknown Algal base cell"));
+            }
             let label = match raw.get("label").and_then(Value::as_str) {
                 Some(label) if is_label(label) => label.to_string(),
                 _ => return Err(fail("cell label must be 22..128 base64url chars")),

@@ -1,7 +1,7 @@
 # Clankdar attestation prototype
 
-An independent Rust implementation of `clankdar-attest-v1`, the sealed-seed
-capability attestation protocol defined by the Clankdar benchmark
+An independent Rust implementation of `clankdar-attest-v1`, Clankdar's
+protocol for signed puzzle-answer evidence
 (`bench/attest.ts` in the clankdar repository is the reference), plus
 `clankdar-gate-v1` admission checking (`bench/gate.ts`),
 `clankdar-tlog-v1` transparency-log checking (`bench/tlog.ts`),
@@ -9,14 +9,80 @@ capability attestation protocol defined by the Clankdar benchmark
 and `clankdar-badge-v1` subject-signed portable badges
 (`bench/badge.ts`).
 
-A verifier issues a challenge whose generator seed is committed but
-unrevealed: the puzzle instance has never existed publicly, so it cannot be
-pre-solved or looked up. On a response, the verifier rescores
-deterministically and signs a receipt that reveals the seed. Afterward anyone
-can replay the episode: verify the Ed25519 signature over the verbatim
-payload, recompute the seed commitment, regenerate the instance through the
-canonical generator oracle, rescore the response, and check the answer landed
-before expiry — no trust in the verifier beyond the signed episode.
+A verifier issues a challenge with a committed, unrevealed generator seed,
+then signs a receipt recording the submitted response and revealed seed.
+The commitment binds that seed; it does not prove that the puzzle is new,
+unseen, or resistant to precomputation. Public puzzles may be solved with
+code or delegated.
+
+A checker verifies the Ed25519 signature over the exact payload, recomputes
+the seed commitment, regenerates the instance through its selected trusted
+generator, and rescores the response. It also checks that the issuer's
+recorded answer time precedes the recorded expiry. Those timestamps remain
+issuer claims, not independently observed arrival times. A consumer must
+choose its trusted issuer, policy, context and freshness requirements; replay
+alone does not establish who solved the puzzle or confer authority.
+
+## Current integration boundary
+
+This remains a standalone Rust prototype. The public browser and room transport
+are not yet connected to it. Valhalla's normal release build omits Platonik;
+Clankdar evidence does not depend on Platonik and never grants validator
+membership, host/tool access or a claim of model identity.
+
+The `algal` suite recognizes `clankdar-algal-v1`, integer answers and exactly
+`algal:t1` through `algal:t3`, including the corresponding held-out cells. Its
+reference evaluator stays in Clankdar; Valhalla does not create another solver.
+Frozen fixtures were generated with the official Algal WASM through Clankdar
+source `80fa17a41dc11efe4094279d747c408b9dc7b95e`. They test compatibility,
+not independent agent intelligence or hosted-service operation.
+
+The Rust checker deliberately rejects weak Ed25519 keys and uses strict
+signature verification throughout receipt, subject, gate, badge and log checks.
+Ordinary upstream-generated signatures and their wire formats are unchanged.
+
+## Inspect recent solves
+
+The `history recent` command checks saved `clankdar-gate-v1` admissions and
+`clankdar-badge-v1` dossiers against independently configured full keys, an
+exact context and policy, and the observer's clock. A valid failure stays in
+the result alongside passes. Each record shows the puzzle family, tier, result,
+issuer decision time, replay status and subject-binding scope. An omitted or
+unanswered challenge is not a successful solve.
+
+```sh
+clankdar-attest history recent admission.json badge.json \
+  --issuer "$TRUSTED_ISSUER_PUBLIC_KEY" --subject "$AGENT_PUBLIC_KEY" \
+  --context room-check --policy policy.json --max-age 86400 \
+  --clankdar /absolute/path/to/trusted/clankdar --bun /absolute/path/to/bun
+```
+
+Use `--no-context` to require absence of a context; it is not a wildcard.
+`--pool FILE` may be repeated for at most four explicitly disclosed pools.
+Without a matching pool, held-out scores remain issuer claims and never count
+as independently replayed passes. The selected local generator and its installed
+runtime must come from trusted, pinned sources; no source path or executable is
+learned from a receipt, and this command does not fetch or install either.
+
+Output is always **partial shared history**. It cannot reveal omitted attempts,
+prove who actually solved an answer, certify a model, or establish ongoing
+liveness. `session_authorized` signs the old session transcript;
+`badge_endorsed` signs the carried evidence collection; `issuer_claimed` merely
+names a subject in the issuer's signed result. Zero-answer failures can have
+only the latter binding and remain visible, outside subject-bound totals.
+Duplicate copies count once. Conflicting signed results for the same issuer and
+session are flagged and excluded from totals, rather than choosing a winner.
+
+The CLI reads at most 64 regular files, 1 MiB each and 4 MiB total; an embedded
+admission is at most 256 KiB. Pages contain at most 16 results. Continue with
+`--cursor TOKEN --now OBSERVED_AT` using the previous report's `nextCursor` and
+`observedAt`, the same exact files and pins. Changed inputs, clock or results
+refuse the old cursor. The local generator has a 30-second per-call and
+120-second total deadline, a 1 MiB output cap and an 8 MiB retained-instance
+budget. Missing generators or incomplete replay are reported as rejections.
+Exit 2 reports invalid/incomplete evidence or conflicts; an honestly recorded
+failed score alone does not make the command fail. These limits intentionally
+refuse oversized work without discarding its source files.
 
 ## Commands
 
@@ -38,7 +104,8 @@ clankdar-attest holdout info POOL.json
 ```
 
 `check` on a receipt is fully offline: signature, key identity, seed
-commitment, response format, verdict rescore, and answer-before-expiry.
+commitment, response format, verdict rescore, and consistency of the issuer's
+recorded answer time with the recorded expiry.
 `check --deep`, `issue`, and `verify` additionally call the canonical
 generator oracle — `bun bench/instance.ts` inside the clankdar repository
 located by `--clankdar`, `$CLANKDAR_DIR`, or `../clankdar` — so the recorded
@@ -82,9 +149,10 @@ compatibility.
 
 ### Subject binding (optional)
 
-A receipt may carry a `subjectProof` — `{publicKey, signature}` — binding the
-response to an Ed25519 key the respondent controls (the same JWK shape as
-verifier keys; `verify --subject-key KEY.json` mints one). The signature
+A receipt may carry a `subjectProof` — `{publicKey, signature}` — proving key
+possession for a session or challenge transcript (the same JWK shape as
+verifier keys; `verify --subject-key KEY.json` mints one). It does not sign the
+exact answers, issuer, policy, context or receipt. The signature
 covers a domain-separated transcript: `["clankdar/subject/v1", sessionId,
 publicKey]` for session-bound challenges — one proof then serves the whole
 gate session — or `["clankdar/subject/v1", challengeId, nonce, publicKey]`
@@ -95,7 +163,7 @@ challenge's transcript. `check_admission` additionally requires every
 proofed receipt in a session to share one `publicKey` — one subject per
 session. Receipts and admissions without proofs remain fully valid.
 
-**Documented divergence from the TypeScript checker.** `GatePolicy` (and the
+**Documented divergence for legacy suites.** `GatePolicy` (and the
 embedded policy inside an admission) validates cell *shape* —
 `family:tier` with the family-name charset — but does not check that the
 cell exists in the suite pool, where `parsePolicy` rejects unknown cells
@@ -145,11 +213,12 @@ elsewhere (gossip or external anchoring, both future work).
 
 ## Rooms dogfood: the room-side admission decision
 
-Valhalla "rooms" are consensus groups (`crates/vhalla-*`). The product
-vision: an agent joining a room presents a `clankdar-gate-v1` admission
-proving it passed the room's published capability floor — admission
-receipts as proof of cognitive work. The `rooms` mode runs that flow end
-to end in Rust, the way a rooms node would:
+Valhalla "rooms" are consensus groups (`crates/vhalla-*`). The prototype
+explores checking a `clankdar-gate-v1` admission against a room's published
+puzzle policy and issuer key. A passing result shows that the recorded answers
+meet that policy when replayed; it does not establish who solved them or prove
+cognitive work by an agent. The `rooms` mode exercises this verification flow
+through local files in Rust:
 
 ```sh
 # The room publishes POLICY.json (its floor) and its verifier key.
@@ -203,11 +272,11 @@ verifier key are CLI inputs — a real room publishes them to members (and
 would version and rotate them). Consumption: `decide` prints
 `{admit, reason}` — join logic in `vhalla-*` must consume the verdict,
 bind it to the join request (`subject`/`context` are the binding hooks),
-and decide what an admission does and does not authorize. As ever, an
-admission is capability evidence under one policy in one window — never
-identity, liveness, or authority — and it must never mint room membership
-or host capability by itself. The room helpers currently issue published
-cells only and fail closed when an admission contains `unreplayed` held-out
+and decide what an admission does and does not authorize. An admission records
+issuer-signed puzzle results under one policy with issuer-claimed timing. It
+establishes neither the solver's identity nor liveness or authority, and it must
+never mint room membership or host capability by itself. The room helpers
+currently issue published cells only and fail closed when an admission contains `unreplayed` held-out
 scores; pool-aware room issuance and decisions remain future integration.
 
 ## Held-out pools (clankdar-holdout-v1)
@@ -252,7 +321,7 @@ admission check without the pool reports `unreplayed` — the count of
 receipts whose held-out scores stayed issuer-claimed — alongside `ok`,
 `verdict`, and `passed`.
 
-**Documented divergence, same as gate policies.** `HoldoutPool::parse`
+**Documented divergence for legacy suites, same as gate policies.** `HoldoutPool::parse`
 validates protocol, suite, cell count and shape (including the
 `^[A-Za-z0-9_-]{22,128}$` labels and distinct cell ids) and recomputes the
 `poolKey` commitment, but — like `GatePolicy::parse` — does not confirm
@@ -302,15 +371,93 @@ with a JS-only timestamp passes there and fails here.
 
 ## Honest scope
 
-A receipt attests that **one signed response satisfied one challenge inside
-one time window**; with a `subjectProof` it additionally attests that the
-holder of that key signed the challenge's subject transcript. It does not
-prove that a model, an AI, or any particular principal produced the response
-— the answer can be outsourced or delegated, and a proof binds a key to a
-response, never a model or a person. It is not a liveness credential, grants
-no authority, and provides no durable replay protection; consumers should
-issue fresh challenges and bind `context` to their own scope. It must never
+A receipt is the issuer's signed record of an answer, a verdict and claimed
+timing. Deep replay checks the answer against the selected trusted generator;
+the signature alone does not establish correctness or independently observed
+submission time. An embedded `subjectProof` authenticates only the holder's
+signature over the session or standalone challenge transcript. It does not sign
+the exact answer, issuer, policy, context or receipt.
+
+Neither proof establishes that a model, an agent or a particular person produced
+the answer; solutions can be scripted or delegated. Receipts are not liveness
+credentials, grant no authority and provide no durable replay protection.
+Consumers must pin their expected issuer, policy and context, enforce freshness,
+and track replay separately. A fresh challenge identifier does not establish
+puzzle novelty or resistance to precomputation. No receipt or subject proof may
 mint host/tool capability by itself.
 
 Run tests with
 `cargo test --manifest-path prototypes/clankdar-attest/Cargo.toml --locked`.
+
+## Local room puzzle exchange
+
+The `exchange` commands prepare or collect saved public-room Text artifacts. They
+make no network requests, sign nothing, execute no puzzle, and do not enable
+publishing. Use the existing application-key activity signer and an authorized
+room posting path separately. Keep the issuer's private `RoomSession` local:
+
+```sh
+clankdar-attest exchange challenges SESSION.json --out challenges.parts.json
+clankdar-attest exchange responses RESPONSES.json --out responses.parts.json
+clankdar-attest exchange admission ADMISSION.json --out admission.parts.json
+```
+
+Each output JSON contains `kind`, the exact artifact SHA-256 `digest`, its byte
+length, and a `parts` array. Each array element is one complete inert Text value
+for the existing room activity format; its digest binds every part to the same
+artifact. These are unsigned parts, not signed activity frames. Challenge packing
+constructs a public projection from the session's typed challenges and public
+policy/session times. Ticket seeds, expected answers, private pools and unknown
+extra fields are never copied; a held-out marker retains only its public
+`poolKey`. Public prompt/subject/context text remains public text supplied by the
+issuer, so inspect it before sharing. Response input is the existing
+`{"att_challengeId":"exact answer"}` map accepted by `rooms submit`: at most
+16 unique challenge IDs, with answer bytes preserved, including an empty map for
+an unanswered session. Admission packing checks the signature under the
+artifact's self-declared issuer key; that key is independently unpinned, and this
+step does not check its policy or solve. Signed admissions intentionally reveal
+receipt seeds and expected answers needed for replay; private issuance sessions
+are never accepted by that command.
+
+Collect saved canonical binary signed activity frames using explicit pins for
+the full network, realm, directory, room genesis, sharer, artifact kind and
+digest. Obtain these pins independently; an artifact does not choose its own
+trusted scope or identity. The realm is 32 lowercase hex characters (the full
+128-bit value in big-endian order); other pins are 64 lowercase hex characters.
+For example, after replacing the uppercase placeholders with actual pins:
+
+```sh
+clankdar-attest exchange collect part-0.frame part-1.frame \
+  --network NETWORK_HEX --realm REALM_HEX --directory DIRECTORY_HEX \
+  --room ROOM_GENESIS_HEX --author SHARER_PUBLIC_KEY_HEX \
+  --kind admission --digest ARTIFACT_SHA256_HEX --out admission.collected.json \
+  > admission.attribution.json
+```
+
+Collection verifies every activity signature and requires one selected full
+scope/key/kind/digest. Parts may arrive out of order; exact duplicates are safe.
+No artifact bytes are written until the complete length and digest agree. The
+output must not already exist, including a symlink. Publication uses a synced
+private staging file and an atomic no-replace link in an operator-owned output
+directory. A failure after publication but before directory-sync acknowledgment
+can leave the complete output present; inspect it instead of overwriting it.
+Incomplete, mismatched or invalid inputs leave the final output absent and retain
+the input evidence. The JSON attribution report on stdout records the checked
+scope, sharer and digest; it is a local report, not another signed receipt.
+
+The limits are 1 MiB for private source sessions, 256 KiB per public artifact,
+2,800 raw bytes per Text part and 94 parts or selected input frames. Reads refuse
+symlinks and special files and are bounded before parsing. No directory scan,
+URL fetching, implicit key loading, second subject key or answer execution occurs.
+The native file guards require Unix.
+
+A response share's room signature binds the exact answer artifact bytes to an
+application key. It does not turn the legacy Clankdar session proof into an
+answer signature or upgrade a history row to `session_authorized`. Collection
+also does not prove room policy admission, a complete author chain, the issuer's
+identity, freshness, or correctness. Feed a collected admission into the separate
+`history recent` command with independently selected `--issuer`, `--subject`,
+`--policy`, `--context` (or `--no-context`), freshness limits and trusted pinned
+`--clankdar`/`--bun` evaluator. That check retains its existing binding labels and
+honest limitations. Shared challenge/response text itself is not solve evidence,
+room membership, rank or host/tool authority.

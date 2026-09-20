@@ -3,6 +3,9 @@
 
 mod support;
 
+#[cfg(all(unix, feature = "experimental-public"))]
+mod public_network;
+
 #[cfg(unix)]
 mod intro;
 
@@ -74,9 +77,17 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         println!("\n{}", social::help());
         #[cfg(feature = "experimental-rooms")]
         println!("\n{}", rooms::HELP);
+        #[cfg(feature = "experimental-public")]
+        println!("\n{}", public_network::HELP);
         #[cfg(feature = "experimental-game")]
         println!("\n{}", game::HELP);
         return Ok(());
+    }
+    if args.first().is_some_and(|s| s == "public") {
+        #[cfg(feature = "experimental-public")]
+        return public_network::run(args);
+        #[cfg(not(feature = "experimental-public"))]
+        return Err("public network tools require --features experimental-public".into());
     }
     if args.first().is_some_and(|s| s == "social") {
         #[cfg(feature = "experimental-social")]

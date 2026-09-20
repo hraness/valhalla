@@ -10,6 +10,8 @@ description = "Explicit native custody for Valhalla application signing identiti
 default = []
 social = ["dep:vhalla-social"]
 rooms = ["dep:vhalla-rooms"]
+room-activity = ["dep:vhalla-room-activity"]
+public-peer = ["dep:vhalla-public-protocol"]
 
 [dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "zeroize"] }
@@ -23,7 +25,10 @@ vhalla-session = { path = "../vhalla-session" }
 vhalla-custody = { path = "../vhalla-custody" }
 vhalla-social = { path = "../vhalla-social", optional = true }
 vhalla-rooms = { path = "../vhalla-rooms", optional = true }
+vhalla-room-activity = { path = "../vhalla-room-activity", optional = true }
 bip39 = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+
+vhalla-public-protocol = { path = "../vhalla-public-protocol", optional = true }
 
 [dev-dependencies]
 hegeltest = "0.46.0"

@@ -372,6 +372,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2",
+ "cpufeatures 0.2.17",
+ "zeroize",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2163,6 +2175,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "humantime"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2201,6 +2219,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -5390,9 +5409,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-browser"
+version = "0.0.0"
+dependencies = [
+ "futures-channel",
+ "js-sys",
+ "vhalla-browser-storage",
+ "vhalla-browser-vault",
+ "vhalla-public-client",
+ "vhalla-public-protocol",
+ "vhalla-room-activity",
+ "vhalla-rooms",
+ "vhalla-rooms-consensus",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "zeroize",
+]
+
+[[package]]
+name = "vhalla-browser-storage"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "futures-channel",
+ "js-sys",
+ "sha2 0.10.9",
+ "vhalla-browser-vault",
+ "vhalla-custody",
+ "vhalla-public-protocol",
+ "vhalla-room-activity",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "vhalla-browser-vault"
+version = "0.0.0"
+dependencies = [
+ "argon2",
+ "chacha20poly1305",
+ "ed25519-dalek 2.2.0",
+ "hkdf 0.12.4",
+ "sha2 0.10.9",
+ "vhalla-room-activity",
+ "vhalla-social",
+ "zeroize",
+]
+
+[[package]]
 name = "vhalla-cli"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "hraness-support-foundation",
  "libc",
@@ -5402,6 +5471,7 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "vhalla-attention",
+ "vhalla-browser-storage",
  "vhalla-core",
  "vhalla-discovery",
  "vhalla-discovery-store",
@@ -5409,7 +5479,11 @@ dependencies = [
  "vhalla-identity",
  "vhalla-journal",
  "vhalla-native",
+ "vhalla-public-client",
+ "vhalla-public-peer",
+ "vhalla-public-protocol",
  "vhalla-retrieval",
+ "vhalla-room-activity",
  "vhalla-rooms",
  "vhalla-rooms-app",
  "vhalla-rooms-consensus",
@@ -5523,6 +5597,8 @@ dependencies = [
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-custody",
+ "vhalla-public-protocol",
+ "vhalla-room-activity",
  "vhalla-rooms",
  "vhalla-session",
  "vhalla-social",
@@ -5574,6 +5650,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-public-client"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-journal",
+ "vhalla-rooms",
+ "vhalla-rooms-consensus",
+ "vhalla-rooms-node",
+ "vhalla-social",
+]
+
+[[package]]
+name = "vhalla-public-peer"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "ed25519-dalek 2.2.0",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "sha2 0.10.9",
+ "tokio",
+ "vhalla-core",
+ "vhalla-custody",
+ "vhalla-identity",
+ "vhalla-journal",
+ "vhalla-public-client",
+ "vhalla-public-protocol",
+ "vhalla-room-activity",
+ "vhalla-room-activity-store",
+ "vhalla-rooms",
+ "vhalla-rooms-consensus",
+ "vhalla-rooms-node",
+ "vhalla-social",
+]
+
+[[package]]
+name = "vhalla-public-protocol"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "sha2 0.10.9",
+ "vhalla-botcaptcha",
+ "vhalla-core",
+ "vhalla-room-activity",
+ "vhalla-witness",
+]
+
+[[package]]
 name = "vhalla-retrieval"
 version = "0.0.0"
 dependencies = [
@@ -5585,6 +5713,32 @@ dependencies = [
  "vhalla-discovery",
  "vhalla-social",
  "vhalla-wire",
+]
+
+[[package]]
+name = "vhalla-room-activity"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek 2.2.0",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-rooms",
+ "vhalla-social",
+]
+
+[[package]]
+name = "vhalla-room-activity-store"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "getrandom 0.3.4",
+ "sha2 0.10.9",
+ "vhalla-core",
+ "vhalla-custody",
+ "vhalla-room-activity",
+ "vhalla-rooms",
+ "vhalla-social",
 ]
 
 [[package]]

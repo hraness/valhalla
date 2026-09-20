@@ -37,9 +37,28 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build vhalla
-        run: cargo build --release --locked -p vhalla-cli --all-features --target "${{ matrix.target }}"
+        # Preserve the maintained non-game commands. Legacy Platonik replay is
+        # opt-in; the complete all-features verification gate still runs above.
+        run: cargo build --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public --target "${{ matrix.target }}"
       - name: Smoke check
-        run: ./target/${{ matrix.target }}/release/vhalla --help
+        shell: bash
+        env:
+          HRANESS_SUPPORT: "off"
+        run: |
+          set -euo pipefail
+          cli="./target/${{ matrix.target }}/release/vhalla"
+          help="$("$cli" --help)"
+          printf '%s\n' "$help"
+          [[ "$help" == *"vhalla experimental "* ]]
+          [[ "$help" == *"vhalla social "* ]]
+          [[ "$help" == *"vhalla rooms "* ]]
+          [[ "$help" == *"vhalla public "* ]]
+          [[ "$help" != *"vhalla game replay "* ]]
+          if "$cli" game --help > game-disabled.txt 2>&1; then
+            cat game-disabled.txt
+            exit 1
+          fi
+          [[ "$(cat game-disabled.txt)" == *"require an explicit build with --features experimental-game"* ]]
       - name: Package
         shell: bash
         run: |

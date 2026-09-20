@@ -64,6 +64,8 @@ jobs:
             args: -- --skip enabled::live_mesh_soak_duplicate_churn_rotation_converges --skip enabled::live_mesh_full_restart_resumes_mid_flight --skip enabled::live_mesh_rotates_validator_set_mid_flight
           - name: stateful-storage
             packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
+          - name: public-network
+            packages: -p vhalla-public-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
           - name: remaining
             packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-game-platonik -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
     steps:
@@ -108,7 +110,7 @@ jobs:
           cargo test -p vhalla-cli --features experimental-game --test game --locked
       - name: WASM pure crate checks
         run: |
-          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik -p vhalla-public-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/agent-portraits/Cargo.toml --lib --target wasm32-unknown-unknown --locked
@@ -149,9 +151,43 @@ jobs:
       - name: DNS compatibility backport tests
         run: cargo test --locked --manifest-path vendor/libp2p-dns/Cargo.toml --features tokio -- backport_
 
+  browser-artifact:
+    name: Browser production artifact
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: browser-artifact
+          cache-all-crates: true
+      - name: Browser and portable adapter lint
+        run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --target wasm32-unknown-unknown -- -D warnings
+      - name: Install pinned Trunk
+        run: cargo install trunk --locked --version 0.21.14
+      - name: Build production without local qualification routes
+        working-directory: browser
+        run: |
+          trunk --skip-version-check build --release --locked
+          python3 tools/package.py dist
+          python3 -m unittest discover -s tools -p 'test_*.py'
+        env:
+          NO_COLOR: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vhalla-browser
+          path: browser/dist
+          if-no-files-found: error
+          retention-days: 14
+
   check:
     if: always()
-    needs: [quality, workspace-tests, workspace-aux, prototype-checks, kani-spent, desktop, site, security]
+    needs: [quality, workspace-tests, workspace-aux, browser-artifact, prototype-checks, kani-spent, desktop, site, security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -160,6 +196,7 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           WORKSPACE_TESTS: ${{ needs.workspace-tests.result }}
           WORKSPACE_AUX: ${{ needs.workspace-aux.result }}
+          BROWSER: ${{ needs.browser-artifact.result }}
           PROTOTYPES: ${{ needs.prototype-checks.result }}
           KANI: ${{ needs.kani-spent.result }}
           DESKTOP: ${{ needs.desktop.result }}
@@ -169,6 +206,7 @@ jobs:
           test "$QUALITY" = success
           test "$WORKSPACE_TESTS" = success
           test "$WORKSPACE_AUX" = success
+          test "$BROWSER" = success
           test "$PROTOTYPES" = success
           test "$KANI" = success
           test "$DESKTOP" = success

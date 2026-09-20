@@ -21,6 +21,14 @@
 //! binds verified certificate bytes and resulting state commitments into
 //! each bundle.
 
+#[cfg(unix)]
+mod read;
+#[cfg(unix)]
+pub use read::{
+    PublishedPage, PublishedRange, PublishedReadError, MAX_PUBLISHED_PAGE_BUNDLES,
+    MAX_PUBLISHED_PAGE_BYTES,
+};
+
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::cell::RefCell;
@@ -35,6 +43,7 @@ use std::io::{Read, Write};
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
 const HEAD_MAGIC: &[u8; 4] = b"VHP1";
 const BUNDLE_MAGIC: &[u8; 4] = b"VJB1";
 #[cfg(unix)]
@@ -275,6 +284,7 @@ pub struct Pin {
     pub height: u64,
 }
 
+#[cfg(unix)]
 impl Pin {
     fn encode(self) -> Vec<u8> {
         let mut out = Vec::with_capacity(4 + 104);

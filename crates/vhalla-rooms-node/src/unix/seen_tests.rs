@@ -49,7 +49,6 @@ impl Home {
             held_by_id,
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
-            decided: BTreeMap::new(),
             stream_seq: 0,
             boundary_latency: Arc::new(Mutex::new(Vec::new())),
             store,
@@ -467,4 +466,131 @@ fn seen_first_arrival_pol_tamper_cannot_poison_authentic_retry() {
             accepted.value.id
         )
         .is_some());
+}
+
+#[test]
+fn stalled_height_budget_survives_restart_without_pruning_or_new_artifacts() {
+    let home = Home::new("retention-budget");
+    let mut app = home.open();
+    let retained = batch("retained-budget");
+    let id = app.register_batch(retained.clone());
+    let proposer = hex(&app.address.into_inner());
+    // Model an already durable store at the exact production boundary. The
+    // loader must derive its admission budget from retained files after restart.
+    for round in 0..MAX_SEEN_RECORDS_PER_HEIGHT {
+        let name = format!("1_{round}_{proposer}_{}", hex(&id.0));
+        std::fs::write(app.store.join("seen").join(name), seen_body(id, Round::Nil)).unwrap();
+    }
+    drop(app);
+    let mut app = home.open();
+    assert_eq!(app.seen[&1].len(), MAX_SEEN_RECORDS_PER_HEIGHT);
+    let fresh = batch("refused-budget");
+    let fresh_parts = app.build_parts(&proposed(&fresh, MAX_SEEN_RECORDS_PER_HEIGHT as u32));
+    assert!(feed(&mut app, &fresh_parts, 0).is_none());
+    assert!(!app.held_by_id.contains_key(&RoomValueId(fresh.value_id())));
+    assert!(!app
+        .store
+        .join("batches")
+        .join(hex(&fresh.value_id()))
+        .exists());
+    assert_eq!(
+        std::fs::read_dir(app.store.join("seen")).unwrap().count(),
+        MAX_SEEN_RECORDS_PER_HEIGHT
+    );
+    // Previously admitted exact headers remain usable at capacity.
+    let repeated = app.build_parts(&proposed(&retained, 0));
+    assert!(feed(&mut app, &repeated, 1).unwrap().validity.is_valid());
+    assert!(app.held_by_id.contains_key(&id));
+    // A new local round is refused without fabricating/publishing a signature
+    // result or deleting the batch that may support a retained WAL lock.
+    assert!(prepare_local_parts(
+        &mut app,
+        &proposed(&retained, MAX_SEEN_RECORDS_PER_HEIGHT as u32)
+    )
+    .is_none());
+    assert_eq!(app.seen[&1].len(), MAX_SEEN_RECORDS_PER_HEIGHT);
+    assert!(app.store.join("batches").join(hex(&id.0)).exists());
+}
+
+#[test]
+fn stalled_parent_value_budget_refuses_disk_growth_but_keeps_exact_retries() {
+    let home = Home::new("value-budget");
+    let mut app = home.open();
+    let kept = batch("retention-kept");
+    let id = app.register_batch(kept.clone());
+    // Fill the capacity accounting with other IDs at this exact parent. The
+    // canonical incoming value still goes through the real verification path.
+    for n in 1..MAX_RETAINED_VALUES_PER_PARENT {
+        let mut key = [0; 32];
+        key[..8].copy_from_slice(&(n as u64).to_be_bytes());
+        app.held_by_id.insert(RoomValueId(key), kept.clone());
+    }
+    let other = batch("retention-other");
+    let parts = app.build_parts(&proposed(&other, 1));
+    assert!(!feed(&mut app, &parts, 0).unwrap().validity.is_valid());
+    assert!(!app
+        .store
+        .join("batches")
+        .join(hex(&other.value_id()))
+        .exists());
+    assert!(app.seen.is_empty());
+    let existing = RoomValue::new(id.0, kept.encode().into());
+    assert!(app.verdict_for(&existing).is_valid());
+    assert!(app.held_by_id.contains_key(&id));
+}
+
+#[test]
+fn startup_scan_retains_live_evidence_without_materializing_old_history() {
+    let home = Home::new("streaming-reopen");
+    let app = home.open();
+    let mut frontier = app.adapter.lock().unwrap().frontier();
+    frontier.height = 1024;
+    let store = &app.store;
+    let proposer = hex(&app.address.into_inner());
+    let template = batch("streaming-history");
+    for height in 0..1024u64 {
+        let mut historical = template.clone();
+        historical.parent.height = height;
+        let id = RoomValueId(historical.value_id());
+        std::fs::write(store.join("batches").join(hex(&id.0)), historical.encode()).unwrap();
+        let name = format!("{}_0_{}_{}", height + 1, proposer, hex(&id.0));
+        std::fs::write(store.join("seen").join(name), seen_body(id, Round::Nil)).unwrap();
+    }
+    // Legacy overwrite can leave an unreferenced live-parent value. Preserve it.
+    let mut live = template.clone();
+    live.parent = frontier;
+    let live_id = RoomValueId(live.value_id());
+    std::fs::write(store.join("batches").join(hex(&live_id.0)), live.encode()).unwrap();
+    // A retained undecided reference survives even when its parent differs.
+    let referenced_id = RoomValueId(template.value_id());
+    std::fs::write(
+        store
+            .join("seen")
+            .join(format!("1025_1_{}_{}", proposer, hex(&referenced_id.0))),
+        seen_body(referenced_id, Round::Nil),
+    )
+    .unwrap();
+    // Sparse corrupt input is bounded before decoding and remains untouched.
+    let oversized = store.join("batches/oversized");
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+    let StoreScan {
+        held,
+        seen,
+        scanned,
+    } = load_store_at(store, Some(frontier));
+    assert_eq!(scanned, (1025, 1025));
+    assert_eq!(held.len(), 2);
+    assert_eq!(held[&live_id], live);
+    assert_eq!(held[&referenced_id], template);
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[&1025].len(), 1);
+    assert_eq!(
+        std::fs::read_dir(store.join("batches")).unwrap().count(),
+        1026
+    );
+    assert_eq!(std::fs::read_dir(store.join("seen")).unwrap().count(), 1025);
+    assert_eq!(std::fs::metadata(oversized).unwrap().len(), 1 << 30);
 }

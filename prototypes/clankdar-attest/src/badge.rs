@@ -28,7 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
+use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
@@ -422,7 +422,11 @@ pub fn check_badge(
     let verified = b64url_decode(signature_member)
         .ok()
         .and_then(|bytes| Signature::from_slice(&bytes).ok())
-        .map(|signature| subject_key.verify(payload.as_bytes(), &signature).is_ok())
+        .map(|signature| {
+            subject_key
+                .verify_strict(payload.as_bytes(), &signature)
+                .is_ok()
+        })
         .unwrap_or(false);
     if !verified {
         return BadgeCheck::fail("badge signature does not verify");
