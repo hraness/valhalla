@@ -66,6 +66,8 @@ jobs:
             packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
           - name: public-network
             packages: -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
+          - name: private-rooms
+            packages: -p vhalla-private-kernel -p vhalla-private-native
           - name: remaining
             packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-game-platonik -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
     steps:
@@ -111,6 +113,7 @@ jobs:
       - name: WASM pure crate checks
         run: |
           cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-private-kernel -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-rooms --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/agent-portraits/Cargo.toml --lib --target wasm32-unknown-unknown --locked
@@ -167,7 +170,7 @@ jobs:
           shared-key: browser-artifact
           cache-all-crates: true
       - name: Browser and portable adapter lint
-        run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-rooms --target wasm32-unknown-unknown -- -D warnings
       - name: Install pinned Trunk
         run: cargo install trunk --locked --version 0.21.14
       - name: Build production without local qualification routes
@@ -189,12 +192,15 @@ jobs:
         run: |
           cargo build --locked -p vhalla-browser-storage --example indexeddb_qualification --target wasm32-unknown-unknown
           wasm-bindgen target/wasm32-unknown-unknown/debug/examples/indexeddb_qualification.wasm --target web --out-dir "$RUNNER_TEMP/vhalla-storage-runtime"
+          cargo build --locked -p vhalla-browser-storage --example private_mls_indexeddb --features private-rooms,qualification --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_mls_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-group-runtime"
           cargo build --locked --manifest-path prototypes/private-rooms-mls/Cargo.toml --target wasm32-unknown-unknown
           wasm-bindgen prototypes/private-rooms-mls/target/wasm32-unknown-unknown/debug/valhalla_private_rooms_mls_qualification.wasm --target web --out-name private_rooms_mls --out-dir "$RUNNER_TEMP/vhalla-mls-runtime"
       - name: Exercise real IndexedDB and MLS in dedicated workers
         run: |
           chrome=$(command -v google-chrome)
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-storage-runtime" "$chrome"
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-group-runtime" "$chrome"
           node prototypes/private-rooms-mls/tools/qualify_browser.mjs "$RUNNER_TEMP/vhalla-mls-runtime" "$chrome" "$RUNNER_TEMP/vhalla-mls-results"
       - name: Build isolated public browser journey
         run: |
@@ -214,6 +220,8 @@ jobs:
           path: |
             ${{ runner.temp }}/vhalla-storage-runtime/indexeddb-receipt.json
             ${{ runner.temp }}/vhalla-storage-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-group-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-private-group-runtime/chromium.stderr.log
             ${{ runner.temp }}/vhalla-mls-results/receipt.json
             ${{ runner.temp }}/vhalla-mls-results/chrome.log
             ${{ runner.temp }}/vhalla-product-results/receipt.json

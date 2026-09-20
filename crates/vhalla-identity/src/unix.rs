@@ -127,6 +127,30 @@ impl Identity {
         self.key.verifying_key().to_bytes()
     }
 
+    /// Sign the exact private-room anchor request with its owner account key.
+    /// The trusted controller must authorize room creation independently and
+    /// persist the corresponding device before releasing any MLS artifact.
+    /// This account signature never grants host execution or relay authority.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_anchor(
+        &self,
+        request: &vhalla_private_protocol::UnsignedRoomAnchor,
+    ) -> Result<vhalla_private_protocol::SignedRoomAnchor, vhalla_private_protocol::Error> {
+        request.sign(&self.key)
+    }
+
+    /// Sign one exact account/device/validity binding without exposing key bytes.
+    /// Enrollment alone is not room membership. Creation, renewal and recovery
+    /// require separately checked owner policy, current state and durable output.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_enrollment(
+        &self,
+        request: &vhalla_private_protocol::UnsignedDeviceEnrollment,
+    ) -> Result<vhalla_private_protocol::SignedDeviceEnrollment, vhalla_private_protocol::Error>
+    {
+        request.sign(&self.key)
+    }
+
     /// Sign a checked room activity with this exact application key, without
     /// exporting its seed or accepting arbitrary signing bytes. The returned
     /// event has a strictly verified signature; policy admission, durable author

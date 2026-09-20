@@ -1,0 +1,574 @@
+#![cfg(unix)]
+//! Real OpenMLS kernel journeys over the staged native SQLite backend.
+use ed25519_dalek::SigningKey;
+use futures::{executor::block_on, FutureExt};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+use vhalla_private_kernel::{
+    protocol::{Key, Validity},
+    storage::{Image, RecordKey, Store, StoreError, StoredRecord},
+    Context, Error, Kernel, MemberDraft, OperationId, OwnerDraft, Phase, StorageKey,
+};
+use vhalla_private_native::{bridge::KernelStore, private_rooms::Limits};
+
+#[derive(Clone, Copy, Default)]
+enum Fault {
+    #[default]
+    None,
+    Before,
+    After,
+    PendingAfter,
+}
+struct Backing {
+    store: Option<KernelStore>,
+    fault: Fault,
+}
+/// Test-only sequential logical clients share one physical lifetime custody lock.
+/// The production bridge is not cloneable and never shares a live connection.
+#[derive(Clone)]
+struct Disk(Rc<RefCell<Backing>>);
+impl Disk {
+    fn new(path: &PathBuf, context: Context, limits: Limits) -> Self {
+        Self(Rc::new(RefCell::new(Backing {
+            store: Some(KernelStore::create_new(path, context, limits).unwrap()),
+            fault: Fault::None,
+        })))
+    }
+    fn fault(&self, fault: Fault) {
+        self.0.borrow_mut().fault = fault;
+    }
+    fn reopen(&self, path: &PathBuf, context: Context) {
+        let mut backing = self.0.borrow_mut();
+        drop(backing.store.take());
+        backing.store = Some(KernelStore::open(path, context).unwrap());
+        backing.fault = Fault::None;
+    }
+    fn image(&self, context: Context) -> Image {
+        self.0
+            .borrow_mut()
+            .store
+            .as_mut()
+            .unwrap()
+            .load(context)
+            .now_or_never()
+            .expect("native bridge must complete in one poll")
+            .unwrap()
+            .unwrap()
+    }
+}
+impl Store for Disk {
+    async fn load(&mut self, context: Context) -> Result<Option<Image>, StoreError> {
+        self.0
+            .borrow_mut()
+            .store
+            .as_mut()
+            .unwrap()
+            .load(context)
+            .now_or_never()
+            .expect("bounded synchronous native load")
+    }
+    async fn read(
+        &mut self,
+        context: Context,
+        key: RecordKey,
+    ) -> Result<Option<StoredRecord>, StoreError> {
+        self.0
+            .borrow_mut()
+            .store
+            .as_mut()
+            .unwrap()
+            .read(context, key)
+            .now_or_never()
+            .expect("bounded synchronous native read")
+    }
+    async fn publish(
+        &mut self,
+        context: Context,
+        expected: Option<&Image>,
+        next: &Image,
+        records: &[StoredRecord],
+    ) -> Result<(), StoreError> {
+        let fault = {
+            let mut backing = self.0.borrow_mut();
+            let fault = std::mem::take(&mut backing.fault);
+            if matches!(fault, Fault::Before) {
+                return Err(StoreError::Refused);
+            }
+            backing
+                .store
+                .as_mut()
+                .unwrap()
+                .publish(context, expected, next, records)
+                .now_or_never()
+                .expect("bounded synchronous native publication")?;
+            fault
+        };
+        match fault {
+            Fault::After => Err(StoreError::Uncertain),
+            Fault::PendingAfter => std::future::pending().await,
+            _ => Ok(()),
+        }
+    }
+}
+fn home() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "vhalla-private-native-journey-{}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+fn limits(records: u64) -> Limits {
+    Limits {
+        max_records: records,
+        max_record_bytes: 16 * 1024 * 1024,
+    }
+}
+fn key(account: &SigningKey) -> Key {
+    Key::from_bytes(account.verifying_key().to_bytes()).unwrap()
+}
+fn op(n: u64) -> OperationId {
+    let mut bytes = [0; 16];
+    bytes[8..].copy_from_slice(&n.to_be_bytes());
+    OperationId::from_bytes(bytes).unwrap()
+}
+fn validity(now: u64) -> Validity {
+    Validity::new(now - 30, now + 7200).unwrap()
+}
+
+struct Pair {
+    owner: Kernel<Disk>,
+    member: Kernel<Disk>,
+    owner_disk: Disk,
+    member_disk: Disk,
+    owner_home: PathBuf,
+    member_home: PathBuf,
+    owner_key: StorageKey,
+    member_key: StorageKey,
+    now: u64,
+}
+impl Pair {
+    async fn fresh(owner_records: u64, member_records: u64) -> Self {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Deliberately synthetic accounts and wrapping secrets; device/MLS keys
+        // are generated by the actual kernel's OS entropy path. No plaintext account or wrapping keys are written.
+        let owner_account = SigningKey::from_bytes(&[71; 32]);
+        let member_account = SigningKey::from_bytes(&[72; 32]);
+        let draft = OwnerDraft::new(key(&owner_account), validity(now)).unwrap();
+        let anchor = draft.anchor_request().sign(&owner_account).unwrap();
+        let enrollment = draft.enrollment_request().sign(&owner_account).unwrap();
+        let owner_context = draft.context(&anchor).unwrap();
+        let member_draft = MemberDraft::new(
+            anchor.verify().unwrap().scope(),
+            anchor.clone(),
+            enrollment.clone(),
+            key(&member_account),
+            validity(now),
+            now,
+        )
+        .unwrap();
+        let member_enrollment = member_draft
+            .enrollment_request()
+            .sign(&member_account)
+            .unwrap();
+        let member_context = member_draft.context();
+        let owner_home = home();
+        let member_home = home();
+        let owner_key = StorageKey::from_secret([81; 32]).unwrap();
+        let member_key = StorageKey::from_secret([82; 32]).unwrap();
+        let owner_disk = Disk::new(&owner_home, owner_context, limits(owner_records));
+        let member_disk = Disk::new(&member_home, member_context, limits(member_records));
+        let owner = draft
+            .create(owner_disk.clone(), &owner_key, enrollment, anchor, now)
+            .await
+            .unwrap();
+        let member = member_draft
+            .initialize(member_disk.clone(), &member_key, member_enrollment, now)
+            .await
+            .unwrap();
+        Self {
+            owner,
+            member,
+            owner_disk,
+            member_disk,
+            owner_home,
+            member_home,
+            owner_key,
+            member_key,
+            now,
+        }
+    }
+    async fn join(&mut self) -> (Vec<u8>, Vec<u8>) {
+        let package = self.member.key_package(op(1), self.now).await.unwrap();
+        let invite = self
+            .owner
+            .invite(op(1), package.bytes(), validity(self.now), self.now)
+            .await
+            .unwrap();
+        self.member.join(invite.bytes(), self.now).await.unwrap();
+        (package.bytes().to_vec(), invite.bytes().to_vec())
+    }
+    async fn reopen_owner(&mut self) {
+        let context = self.owner.status().context;
+        self.owner_disk.reopen(&self.owner_home, context);
+        self.owner = Kernel::open(self.owner_disk.clone(), &self.owner_key, context)
+            .await
+            .unwrap();
+    }
+    async fn reopen_member(&mut self) {
+        let context = self.member.status().context;
+        self.member_disk.reopen(&self.member_home, context);
+        self.member = Kernel::open(self.member_disk.clone(), &self.member_key, context)
+            .await
+            .unwrap();
+    }
+}
+
+async fn send(
+    kernel: &mut Kernel<Disk>,
+    operation: OperationId,
+    body: &[u8],
+    now: u64,
+) -> Result<vhalla_private_kernel::CommittedOutbox, Error> {
+    let draft = kernel.prepare_message(body)?;
+    kernel.send(operation, &draft, now).await
+}
+
+#[test]
+fn native_owner_renewal_recovers_committed_update_and_invalidates_old_consent() {
+    block_on(async {
+        let mut pair = Pair::fresh(1000, 1000).await;
+        pair.join().await;
+        let context = pair.owner.status().context;
+        let old = pair.owner.prepare_message(b"old roster consent").unwrap();
+        let enrollment = pair
+            .owner
+            .owner_renewal_request(Validity::new(pair.now, pair.now + 14400).unwrap())
+            .unwrap()
+            .sign(&SigningKey::from_bytes(&[71; 32]))
+            .unwrap();
+        pair.owner_disk.fault(Fault::After);
+        assert!(matches!(
+            pair.owner
+                .renew_owner(op(10), enrollment.clone(), pair.now)
+                .await,
+            Err(Error::NeedsReopen)
+        ));
+        pair.reopen_owner().await;
+        let committed = pair.owner_disk.image(context);
+        let update = pair
+            .owner
+            .renew_owner(op(10), enrollment.clone(), pair.now)
+            .await
+            .unwrap();
+        assert!(pair.owner_disk.image(context) == committed);
+        assert_eq!(pair.owner.status().context, context);
+        pair.member_disk.fault(Fault::PendingAfter);
+        assert!(pair
+            .member
+            .apply_control(update.bytes(), pair.now)
+            .now_or_never()
+            .is_none());
+        pair.reopen_member().await;
+        pair.member
+            .apply_control(update.bytes(), pair.now)
+            .await
+            .unwrap();
+        assert_eq!(pair.member.status().roster, pair.owner.status().roster);
+        assert!(pair.owner.send(op(11), &old, pair.now).await.is_err());
+        assert!(pair.owner_disk.image(context) == committed);
+        pair.reopen_owner().await;
+        assert_eq!(
+            pair.owner
+                .renew_owner(op(10), enrollment, pair.now)
+                .await
+                .unwrap()
+                .bytes(),
+            update.bytes()
+        );
+        let fresh = send(&mut pair.owner, op(11), b"current roster consent", pair.now)
+            .await
+            .unwrap();
+        assert_eq!(
+            pair.member
+                .receive(fresh.bytes(), pair.now)
+                .await
+                .unwrap()
+                .body(),
+            b"current roster consent"
+        );
+    });
+}
+
+#[test]
+fn native_invite_bidirectional_messages_removal_and_exact_reopen() {
+    block_on(async {
+        let mut pair = Pair::fresh(1000, 1000).await;
+        let (package, invitation) = pair.join().await;
+        pair.reopen_owner().await;
+        assert_eq!(
+            pair.owner
+                .invite(op(1), &package, validity(pair.now), pair.now)
+                .await
+                .unwrap()
+                .bytes(),
+            invitation
+        );
+        pair.reopen_member().await;
+        assert_eq!(
+            pair.member.join(&invitation, pair.now).await.unwrap().phase,
+            Phase::MemberJoined
+        );
+        assert_eq!(
+            pair.member
+                .key_package(op(1), pair.now)
+                .await
+                .unwrap()
+                .bytes(),
+            package
+        );
+        let sent = send(&mut pair.owner, op(2), b"inert private puzzle", pair.now)
+            .await
+            .unwrap();
+        let got = pair.member.receive(sent.bytes(), pair.now).await.unwrap();
+        assert_eq!(got.body(), b"inert private puzzle");
+        assert_eq!(got.sender(), pair.owner.status().context.device);
+        pair.reopen_owner().await;
+        pair.reopen_member().await;
+        assert_eq!(
+            send(&mut pair.owner, op(2), b"inert private puzzle", pair.now)
+                .await
+                .unwrap()
+                .bytes(),
+            sent.bytes()
+        );
+        assert_eq!(
+            pair.member
+                .receive(sent.bytes(), pair.now)
+                .await
+                .unwrap()
+                .sequence(),
+            got.sequence()
+        );
+        let reply = send(&mut pair.member, op(2), b"inert private answer", pair.now)
+            .await
+            .unwrap();
+        assert_eq!(
+            pair.owner
+                .receive(reply.bytes(), pair.now)
+                .await
+                .unwrap()
+                .body(),
+            b"inert private answer"
+        );
+        let removal = pair
+            .owner
+            .remove(op(3), pair.member.status().context.device, pair.now)
+            .await
+            .unwrap();
+        assert_eq!(
+            pair.member
+                .apply_removal(removal.bytes(), pair.now)
+                .await
+                .unwrap()
+                .phase,
+            Phase::Removed
+        );
+        pair.reopen_owner().await;
+        pair.reopen_member().await;
+        assert_eq!(
+            pair.owner
+                .remove(op(3), pair.member.status().context.device, pair.now)
+                .await
+                .unwrap()
+                .bytes(),
+            removal.bytes()
+        );
+        assert_eq!(
+            pair.member
+                .apply_removal(removal.bytes(), pair.now)
+                .await
+                .unwrap()
+                .phase,
+            Phase::Removed
+        );
+        // Removal blocks new participation while preserving already admitted local history.
+        assert_eq!(
+            pair.member.inbox(0, 16).await.unwrap().records[0].body(),
+            b"inert private puzzle"
+        );
+        let history = pair.member.outbox(0, 1).await.unwrap();
+        assert_eq!(history.head, 2);
+        assert_eq!(history.next, Some(1));
+        assert_eq!(
+            pair.member.outbox(1, 1).await.unwrap().records[0].bytes(),
+            reply.bytes()
+        );
+        assert!(matches!(
+            send(&mut pair.member, op(3), b"must refuse", pair.now).await,
+            Err(Error::Policy)
+        ));
+        pair.reopen_member().await;
+        assert!(pair.member.join(&invitation, pair.now).await.is_err());
+        pair.reopen_member().await;
+        let after = send(&mut pair.owner, op(4), b"after removal", pair.now)
+            .await
+            .unwrap();
+        assert!(pair.member.receive(after.bytes(), pair.now).await.is_err());
+    });
+}
+
+#[test]
+fn native_uncertain_commit_releases_nothing_then_recovers_exact_ciphertext_and_plaintext() {
+    block_on(async {
+        let mut pair = Pair::fresh(100, 100).await;
+        pair.join().await;
+        pair.owner_disk.fault(Fault::After);
+        assert!(matches!(
+            send(&mut pair.owner, op(2), b"commit before release", pair.now).await,
+            Err(Error::NeedsReopen)
+        ));
+        assert!(pair.owner.needs_reopen());
+        pair.reopen_owner().await;
+        let saved = pair.owner.outbox(1, 1).await.unwrap().records.remove(0);
+        let exact = send(&mut pair.owner, op(2), b"commit before release", pair.now)
+            .await
+            .unwrap();
+        assert_eq!(saved.bytes(), exact.bytes());
+        assert_eq!(exact.sequence(), 2);
+        let before = pair.member_disk.image(pair.member.status().context);
+        pair.member_disk.fault(Fault::Before);
+        assert!(matches!(
+            pair.member.receive(exact.bytes(), pair.now).await,
+            Err(Error::Refused)
+        ));
+        assert!(pair.member_disk.image(pair.member.status().context) == before);
+        pair.reopen_member().await;
+        pair.member_disk.fault(Fault::After);
+        // The durable inbox exists, but no ReceivedMessage/plaintext is returned on error.
+        assert!(matches!(
+            pair.member.receive(exact.bytes(), pair.now).await,
+            Err(Error::NeedsReopen)
+        ));
+        assert!(pair.member.needs_reopen());
+        pair.reopen_member().await;
+        let got = pair.member.receive(exact.bytes(), pair.now).await.unwrap();
+        assert_eq!(got.body(), b"commit before release");
+        assert_eq!(got.sequence(), 1);
+        assert_eq!(pair.member.inbox(0, 16).await.unwrap().records.len(), 1);
+    });
+}
+
+#[test]
+fn native_canceled_after_commit_requires_reopen_and_never_resigns() {
+    block_on(async {
+        let mut pair = Pair::fresh(100, 100).await;
+        pair.join().await;
+        pair.owner_disk.fault(Fault::PendingAfter);
+        assert!(send(
+            &mut pair.owner,
+            op(2),
+            b"canceled after SQL commit",
+            pair.now
+        )
+        .now_or_never()
+        .is_none());
+        assert!(pair.owner.needs_reopen());
+        assert!(matches!(
+            send(&mut pair.owner, op(3), b"blocked", pair.now).await,
+            Err(Error::NeedsReopen)
+        ));
+        pair.reopen_owner().await;
+        let retained = pair.owner.outbox(1, 1).await.unwrap().records.remove(0);
+        let retry = send(
+            &mut pair.owner,
+            op(2),
+            b"canceled after SQL commit",
+            pair.now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(retained.bytes(), retry.bytes());
+        assert_eq!(pair.owner.status().outbox_head, 2);
+    });
+}
+
+#[test]
+fn native_stale_logical_writer_cannot_advance_from_old_ratchet() {
+    block_on(async {
+        let mut pair = Pair::fresh(100, 100).await;
+        pair.join().await;
+        let context = pair.owner.status().context;
+        // A second physical writer is excluded by custody. Two deliberately stale
+        // logical kernels on the one test connection exercise exact image checks.
+        assert!(KernelStore::open(&pair.owner_home, context).is_err());
+        let mut stale = Kernel::open(pair.owner_disk.clone(), &pair.owner_key, context)
+            .await
+            .unwrap();
+        send(&mut pair.owner, op(2), b"first writer", pair.now)
+            .await
+            .unwrap();
+        let current = pair.owner_disk.image(context);
+        assert!(matches!(
+            send(&mut stale, op(3), b"stale writer", pair.now).await,
+            Err(Error::Conflict)
+        ));
+        assert!(stale.needs_reopen());
+        assert!(pair.owner_disk.image(context) == current);
+        assert!(pair
+            .owner_disk
+            .clone()
+            .read(context, RecordKey::Operation(op(3)))
+            .await
+            .unwrap()
+            .is_none());
+    });
+}
+
+#[test]
+fn native_capacity_and_wrong_context_preserve_current_state_and_retry_records() {
+    block_on(async {
+        let mut pair = Pair::fresh(3, 100).await;
+        let (package, invitation) = pair.join().await;
+        let context = pair.owner.status().context;
+        let before = pair.owner_disk.image(context);
+        assert!(matches!(
+            send(&mut pair.owner, op(2), b"over capacity", pair.now).await,
+            Err(Error::Refused)
+        ));
+        assert!(pair.owner.needs_reopen());
+        assert!(pair.owner_disk.image(context) == before);
+        pair.reopen_owner().await;
+        assert_eq!(
+            pair.owner
+                .invite(op(1), &package, validity(pair.now), pair.now)
+                .await
+                .unwrap()
+                .bytes(),
+            invitation
+        );
+        assert!(pair
+            .owner_disk
+            .clone()
+            .read(context, RecordKey::Operation(op(2)))
+            .await
+            .unwrap()
+            .is_none());
+        let foreign = pair.member.status().context;
+        assert!(pair.owner_disk.clone().load(foreign).await.is_err());
+        assert!(pair.owner_disk.image(context) == before);
+        assert!(KernelStore::open(&pair.owner_home, foreign).is_err());
+    });
+}

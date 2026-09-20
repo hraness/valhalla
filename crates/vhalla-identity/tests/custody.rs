@@ -293,3 +293,56 @@ fn reopen_keeps_identity_but_os_nonces_reject_old_handshake_and_chat() {
         b"after restart"
     );
 }
+
+#[cfg(feature = "private-rooms")]
+#[test]
+fn private_account_requests_refuse_wrong_custodian_and_preserve_exact_claims() {
+    use vhalla_private_protocol::{
+        DeviceEnrollmentClaims, Error, Key, RoomAnchorClaims, RoomId, UnsignedDeviceEnrollment,
+        UnsignedRoomAnchor, Validity,
+    };
+    let dir = Temp::new();
+    let owner = Identity::create_new(dir.child()).unwrap();
+    let wrong = Identity::create_new(dir.0.join("other")).unwrap();
+    let account = Key::from_bytes(owner.public_key()).unwrap();
+    let device = Key::from_bytes(wrong.public_key()).unwrap();
+    let mut room = [0; 32];
+    getrandom::fill(&mut room).unwrap();
+    let anchor = UnsignedRoomAnchor::new(RoomAnchorClaims {
+        room: RoomId::from_bytes(room).unwrap(),
+        owner_account: account,
+        owner_device: device,
+    })
+    .unwrap();
+    let enrollment = UnsignedDeviceEnrollment::new(DeviceEnrollmentClaims {
+        account,
+        device,
+        validity: Validity::new(10, 20).unwrap(),
+    })
+    .unwrap();
+    assert!(matches!(
+        wrong.sign_private_anchor(&anchor),
+        Err(Error::Signer)
+    ));
+    assert!(matches!(
+        wrong.sign_private_enrollment(&enrollment),
+        Err(Error::Signer)
+    ));
+    let first = owner.sign_private_anchor(&anchor).unwrap();
+    assert_eq!(first.verify().unwrap().claims(), anchor.claims());
+    let signed = owner.sign_private_enrollment(&enrollment).unwrap();
+    assert_eq!(signed.verify().unwrap().claims(), enrollment.claims());
+    drop(owner);
+    let reopened = Identity::open(dir.child()).unwrap();
+    assert_eq!(
+        reopened.sign_private_anchor(&anchor).unwrap().encode(),
+        first.encode()
+    );
+    assert_eq!(
+        reopened
+            .sign_private_enrollment(&enrollment)
+            .unwrap()
+            .encode(),
+        signed.encode()
+    );
+}

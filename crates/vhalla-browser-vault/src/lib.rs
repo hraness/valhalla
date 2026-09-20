@@ -124,6 +124,30 @@ impl UnlockedIdentity {
         self.key.verifying_key().to_bytes()
     }
 
+    /// Sign the exact private-room anchor request with its owner account key.
+    /// The trusted controller must authorize room creation independently and
+    /// persist the corresponding device before releasing any MLS artifact.
+    /// This account signature never grants host execution or relay authority.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_anchor(
+        &self,
+        request: &vhalla_private_protocol::UnsignedRoomAnchor,
+    ) -> Result<vhalla_private_protocol::SignedRoomAnchor, vhalla_private_protocol::Error> {
+        request.sign(&self.key)
+    }
+
+    /// Sign one exact account/device/validity binding without exposing key bytes.
+    /// Enrollment alone is not room membership. Creation, renewal and recovery
+    /// require separately checked owner policy, current state and durable output.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_enrollment(
+        &self,
+        request: &vhalla_private_protocol::UnsignedDeviceEnrollment,
+    ) -> Result<vhalla_private_protocol::SignedDeviceEnrollment, vhalla_private_protocol::Error>
+    {
+        request.sign(&self.key)
+    }
+
     /// Sign a typed public-room event with this exact author key.
     ///
     /// The host must durably reserve these exact unsigned bytes before calling,
@@ -247,3 +271,72 @@ pub fn unlock(raw: &[u8], password: &[u8]) -> Result<UnlockedIdentity, Error> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "private-rooms"))]
+mod private_signing_tests {
+    use super::*;
+    use vhalla_private_protocol::{
+        DeviceEnrollmentClaims, Key, RoomAnchorClaims, RoomId, UnsignedDeviceEnrollment,
+        UnsignedRoomAnchor, Validity,
+    };
+
+    #[test]
+    fn private_signatures_bind_account_device_room_and_validity() {
+        let owner = UnlockedIdentity {
+            key: SigningKey::from_bytes(&[101; 32]),
+        };
+        let wrong = UnlockedIdentity {
+            key: SigningKey::from_bytes(&[102; 32]),
+        };
+        let account = Key::from_bytes(owner.public_key()).unwrap();
+        let device = Key::from_bytes(wrong.public_key()).unwrap();
+        let request = UnsignedRoomAnchor::new(RoomAnchorClaims {
+            room: RoomId::from_bytes([103; 32]).unwrap(),
+            owner_account: account,
+            owner_device: device,
+        })
+        .unwrap();
+        let enrollment = UnsignedDeviceEnrollment::new(DeviceEnrollmentClaims {
+            account,
+            device,
+            validity: Validity::new(10, 20).unwrap(),
+        })
+        .unwrap();
+        assert!(matches!(
+            wrong.sign_private_anchor(&request),
+            Err(vhalla_private_protocol::Error::Signer)
+        ));
+        assert!(matches!(
+            wrong.sign_private_enrollment(&enrollment),
+            Err(vhalla_private_protocol::Error::Signer)
+        ));
+        assert_eq!(
+            owner
+                .sign_private_anchor(&request)
+                .unwrap()
+                .verify()
+                .unwrap()
+                .claims(),
+            request.claims()
+        );
+        assert_eq!(
+            owner
+                .sign_private_enrollment(&enrollment)
+                .unwrap()
+                .verify()
+                .unwrap()
+                .claims(),
+            enrollment.claims()
+        );
+        let other = UnsignedDeviceEnrollment::new(DeviceEnrollmentClaims {
+            account,
+            device,
+            validity: Validity::new(10, 21).unwrap(),
+        })
+        .unwrap();
+        let signed = owner.sign_private_enrollment(&enrollment).unwrap().encode();
+        assert!(other
+            .attach(signed[signed.len() - 64..].try_into().unwrap())
+            .is_err());
+    }
+}

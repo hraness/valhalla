@@ -8,6 +8,8 @@ mod durability;
 pub mod history;
 pub mod identity;
 pub mod outbox;
+#[cfg(feature = "private-rooms")]
+pub mod private_rooms;
 use futures_channel::oneshot;
 use js_sys::Uint8Array;
 use std::{
