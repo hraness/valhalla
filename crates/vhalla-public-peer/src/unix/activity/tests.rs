@@ -10,18 +10,18 @@ use vhalla_room_activity::{Content, EventClaims, EventId, Text, UnsignedEvent};
 use vhalla_rooms::{RoomRecordId, RoomUpdate, Slug, UpdateAction};
 use vhalla_rooms_consensus::fixture;
 
-struct ActivityFixture {
-    base: Fixture,
-    scenario: fixture::Scenario,
+pub(in crate::unix) struct ActivityFixture {
+    pub(in crate::unix) base: Fixture,
+    pub(in crate::unix) scenario: fixture::Scenario,
     validators: Vec<SigningKey>,
-    room: RoomGenesisId,
-    policy: RoomRecordId,
-    network: [u8; 32],
-    genesis: [u8; 32],
-    config: ActivityConfig,
+    pub(in crate::unix) room: RoomGenesisId,
+    pub(in crate::unix) policy: RoomRecordId,
+    pub(in crate::unix) network: [u8; 32],
+    pub(in crate::unix) genesis: [u8; 32],
+    pub(in crate::unix) config: ActivityConfig,
 }
 impl ActivityFixture {
-    fn new() -> Self {
+    pub(in crate::unix) fn new() -> Self {
         let mut base = Fixture::new();
         let scenario = fixture::scenario(1, 1);
         let validators = (101..=104)
@@ -113,7 +113,7 @@ impl ActivityFixture {
         });
         out
     }
-    fn scope(&self) -> RoomScope {
+    pub(in crate::unix) fn scope(&self) -> RoomScope {
         RoomScope {
             network: self.network,
             realm: self.scenario.genesis.realm,
@@ -166,7 +166,7 @@ impl ActivityFixture {
             .unwrap();
         self.scenario.app.apply_locally(checked);
     }
-    fn set_policy(&mut self, enabled: bool) {
+    pub(in crate::unix) fn set_policy(&mut self, enabled: bool) {
         let room = self
             .scenario
             .app
@@ -205,10 +205,10 @@ impl ActivityFixture {
             self.config.clone(),
         )
         .unwrap();
-        *peer.activity.lock().unwrap() = Some(service);
+        *peer.activity.lock().unwrap() = Some(service.into());
         Arc::new(peer)
     }
-    fn event(&self, sequence: u64, previous: EventId, text: &str) -> Vec<u8> {
+    pub(in crate::unix) fn event(&self, sequence: u64, previous: EventId, text: &str) -> Vec<u8> {
         let key = SigningKey::from_bytes(&[49; 32]);
         UnsignedEvent::new(EventClaims {
             scope: self.scope(),
@@ -304,9 +304,15 @@ fn activity_forks_gaps_bad_signatures_and_current_policy_change_do_not_append() 
         Err(StatusCode::FORBIDDEN)
     );
     assert_eq!(
-        peer.activity.lock().unwrap().as_ref().unwrap().stores[fixture.room.as_bytes()]
-            .pin()
-            .count(),
+        peer.activity
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .legacy()
+            .stores[fixture.room.as_bytes()]
+        .pin()
+        .count(),
         1
     );
 }
@@ -324,15 +330,22 @@ fn activity_advancing_journal_after_replay_refuses_stale_admission() {
         .unwrap()
         .as_mut()
         .unwrap()
+        .legacy_mut()
         .after_refresh = Some(Box::new(move || writer.lock().unwrap().set_policy(false)));
     assert_eq!(
         post(&peer, &raw, room),
         Err(StatusCode::SERVICE_UNAVAILABLE)
     );
     assert_eq!(
-        peer.activity.lock().unwrap().as_ref().unwrap().stores[room.as_bytes()]
-            .pin()
-            .count(),
+        peer.activity
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .legacy()
+            .stores[room.as_bytes()]
+        .pin()
+        .count(),
         0
     );
 }
@@ -351,7 +364,7 @@ fn activity_certified_catchup_is_bounded_and_resumes_without_stale_admission() {
     );
     {
         let guard = peer.activity.lock().unwrap();
-        let service = guard.as_ref().unwrap();
+        let service = guard.as_ref().unwrap().legacy();
         assert_eq!(
             service.client.frontier().height,
             ACTIVITY_REPLAY_BUDGET as u64
@@ -396,9 +409,15 @@ fn activity_concurrent_identical_requests_publish_once_and_reconcile() {
     });
     assert!(post(&peer, &raw, fixture.room).unwrap().reconciled());
     assert_eq!(
-        peer.activity.lock().unwrap().as_ref().unwrap().stores[fixture.room.as_bytes()]
-            .pin()
-            .count(),
+        peer.activity
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .legacy()
+            .stores[fixture.room.as_bytes()]
+        .pin()
+        .count(),
         1
     );
 }

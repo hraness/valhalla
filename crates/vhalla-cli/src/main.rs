@@ -3,6 +3,9 @@
 
 mod support;
 
+#[cfg(all(unix, feature = "experimental-private"))]
+mod private_rooms;
+
 #[cfg(all(unix, feature = "experimental-public"))]
 mod public_network;
 
@@ -77,11 +80,19 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         println!("\n{}", social::help());
         #[cfg(feature = "experimental-rooms")]
         println!("\n{}", rooms::HELP);
+        #[cfg(feature = "experimental-private")]
+        println!("\n{}", private_rooms::HELP);
         #[cfg(feature = "experimental-public")]
         println!("\n{}", public_network::HELP);
         #[cfg(feature = "experimental-game")]
         println!("\n{}", game::HELP);
         return Ok(());
+    }
+    if args.first().is_some_and(|s| s == "private") {
+        #[cfg(feature = "experimental-private")]
+        return private_rooms::run(&args);
+        #[cfg(not(feature = "experimental-private"))]
+        return Err("private room tools require --features experimental-private".into());
     }
     if args.first().is_some_and(|s| s == "public") {
         #[cfg(feature = "experimental-public")]

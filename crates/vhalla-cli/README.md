@@ -1451,3 +1451,198 @@ origin. A local receipt is one peer's retention statement, not validator admissi
 global delivery or private membership. Source fixture tests do not qualify an
 external proxy/deployment. `discovery-serve` remains READ-only; this first CLI
 publisher does not implicitly register itself or change discovery policy.
+
+
+## Local encrypted private-room files (experimental-private)
+
+Build with `cargo build --locked -p vhalla-cli --features experimental-private --bin vhalla`. This optional Unix feature uses the maintained private-room
+controller, MLS kernel and encrypted SQLite store. It adds no network listener,
+relay client, public directory entry, agent tool registration or automatic
+background task. The default CLI dependency graph does not enable these tools.
+Use `vhalla private --help` for the complete command list.
+
+A private store belongs to one complete room/anchor/account/device context. The
+existing account identity and room store remain separate explicit paths. Create
+or import only into a never-used path. Reopen uses the existing bounded `FORMAT`
+record as an **unauthenticated locator**, checks the selected account, then opens
+and authenticates the complete encrypted image before exposing room data. A
+missing/partial marker, a missing image, a mismatched account or a failed
+publication never triggers creation, deletion, migration or a ratchet reset.
+Account backup alone does not restore a room device or its current MLS state.
+
+Every artifact or plaintext output is a new mode 0600 file in an existing mode 0700
+directory; existing files, links and stdout output are refused. Input files use
+the same custody checks and fixed size bounds. `--offer -` and `--text -` accept
+bounded pipes, not interactive terminal input. Text is at most 4096 UTF-8 bytes
+including any trailing newline; encrypted input is bounded by the kernel's
+stored-record limit. Secret offers and message text are never command-line
+values, success output or error contents. Treat membership JSON, inbox files and
+bootstrap offers as private data. Inert received text must not be executed or
+promoted into agent instructions.
+
+### Create and inspect
+
+The examples use existing `owner-key` and `member-key` identity directories.
+Create those separately with the ordinary explicit `identity init` command if
+needed; private-room commands never generate a replacement account. Use full
+lowercase public keys and a fresh 32-digit nonzero operation ID for each action.
+The illustrative IDs below are local examples, not globally assigned IDs.
+
+```sh
+umask 077
+mkdir -m 700 private-files
+PRIVATE_NOW=$(date +%s)
+PRIVATE_FROM=$((PRIVATE_NOW - 30))
+PRIVATE_UNTIL=$((PRIVATE_NOW + 7200))
+PRIVATE_OFFER_UNTIL=$((PRIVATE_NOW + 3600))
+
+vhalla private create owner-key owner-room \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_UNTIL"
+vhalla private inspect owner-key owner-room --out private-files/owner.json
+```
+
+`inspect` includes every accepted recipient's complete account/device keys and
+signed enrollment interval, the signed room anchor, phase, epoch, roster hash and
+control floor. This is the last authenticated local view, not global freshness
+or assurance that a removed member erased earlier plaintext. Default immutable
+retention limits are 100,000 records and 256 MiB of encrypted record payloads;
+database overhead is additional. `create` and `import` accept explicit
+`--max-records` and `--max-bytes` within the backend's limits. Reaching a limit
+refuses new writes; it does not prune history.
+
+### One confidential offer, encrypted request and response
+
+Set `PRIVATE_OWNER_KEY` and `PRIVATE_MEMBER_KEY` to the independently selected
+full account public keys. Obtain these through the existing identity interface
+and verify them with the intended person/account. They are public identifiers,
+not secret signing keys. Do not learn the expected owner solely from the offer
+being checked.
+
+```sh
+vhalla private offer owner-key owner-room \
+  --recipient "$PRIVATE_MEMBER_KEY" \
+  --operation 00000000000000000000000000000001 \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_OFFER_UNTIL" \
+  --out private-files/contact.secret
+
+vhalla private offer-inspect member-key \
+  --offer private-files/contact.secret --owner "$PRIVATE_OWNER_KEY" \
+  --out private-files/contact-review.json
+```
+
+Transfer `contact.secret` through an independently confidential channel. It is
+an owner-signed secret bootstrap file containing separate one-use direction
+keys, not a relay artifact. Its signature authenticates its full recipient,
+room, lifetime and keys but does not make public disclosure safe. Review
+`contact-review.json`, then set `PRIVATE_ROOM` and `PRIVATE_ANCHOR` to the full
+room and anchor shown there. Import explicitly pins both values before creating
+a fresh device; it does not join or send anything.
+
+```sh
+vhalla private import member-key member-room \
+  --offer private-files/contact.secret --owner "$PRIVATE_OWNER_KEY" \
+  --room "$PRIVATE_ROOM" --anchor "$PRIVATE_ANCHOR" \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_UNTIL"
+vhalla private request member-key member-room \
+  --offer private-files/contact.secret \
+  --operation 00000000000000000000000000000001 \
+  --out private-files/request.cipher
+vhalla private accept owner-key owner-room \
+  --request private-files/request.cipher \
+  --operation 00000000000000000000000000000002 \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_OFFER_UNTIL" \
+  --out private-files/response.cipher
+vhalla private join member-key member-room \
+  --response private-files/response.cipher
+```
+
+Transfer only the encrypted request/response files through an explicitly chosen
+file channel. This CLI performs no transport. Owner acceptance consumes the
+retained offer in the same transaction as membership, response and control
+publication. Offers are limited to 64 outstanding, at most 24 hours and the owner
+credential's lifetime. Expiration or owner renewal invalidates unused authority.
+Exact offer-creation retry can recover the original secret but never reactivate
+it. A pending device whose request expires cannot silently replace its
+KeyPackage; preserve that state and use an explicitly fresh device namespace
+for a new attempt.
+
+### Inert messages and recipient changes
+
+Inspect again after joining. Set `PRIVATE_EPOCH` and `PRIVATE_ROSTER` from the
+owner's latest inspection. Place the intended text in a mode 0600 file using your
+chosen trusted local editor; do not pass its content as an argument.
+
+```sh
+vhalla private inspect owner-key owner-room --out private-files/current.json
+vhalla private send owner-key owner-room \
+  --text private-files/message.txt \
+  --epoch "$PRIVATE_EPOCH" --roster "$PRIVATE_ROSTER" \
+  --operation 00000000000000000000000000000003 \
+  --out private-files/message.cipher
+vhalla private receive member-key member-room \
+  --message private-files/message.cipher --out private-files/received.txt
+vhalla private inbox member-key member-room \
+  --after 0 --limit 16 --out private-files/inbox.json
+```
+
+The send command authenticates membership and checks the exact epoch and roster
+**before reading or preparing text**. A changed destination/roster refuses and
+requires an explicit new disclosure decision. The roster commitment includes
+the full private room scope. File paths alone are not long-lived send authority.
+Inbox JSON is bounded local accepted history; it includes exact body hex plus
+UTF-8 text when valid, not a complete remote conversation.
+
+Remove one exact device with `private remove ID STORE --device DEVICE64
+--operation OP32 --out CONTROL`. Deliver that encrypted control to remaining
+members, who use `private apply ID STORE --control CONTROL`. Same-account devices
+are distinct. Removal blocks future participation after the control is applied;
+it cannot revoke knowledge or prior plaintext. `private renew ID STORE
+--operation OP32 --not-before UNIX --expires UNIX --out CONTROL` explicitly
+renews the same anchored owner device; recipients apply its encrypted control.
+Retain both validity endpoints unchanged for exact retries.
+
+Adding a later member also produces an encrypted control for existing members.
+Use `private control-export ID STORE --after SEQUENCE --parent CONTROL_ID|none
+--out FILE` to export exactly the next retained envelope, then apply it in order.
+The genesis cursor is `--after 0 --parent none`; later cursors require the exact
+signed control ID. A fresh joiner's decryptable history begins after its joining
+checkpoint. There is no automatic polling, resend, membership update or remote
+receipt claim.
+
+### Output uncertainty and exact recovery
+
+Keep each operation ID and all exact arguments, including validity endpoints,
+epoch and roster. Kernel publication finishes before an artifact or plaintext is
+released. Output copying can fail afterward: the command reports a static
+recovery instruction, preserves every partial output and the original store,
+and never prints sensitive bytes. Retry the identical action into a **new output
+path**. An existing destination is never overwritten, even if its bytes match.
+Do not delete/reset a store because a command was interrupted.
+
+```sh
+vhalla private outbox owner-key owner-room \
+  --after 0 --limit 16 --out private-files/outbox.json
+vhalla private export owner-key owner-room \
+  --sequence 3 --out private-files/recovered-message.cipher
+```
+
+Outbox pages are contiguous and show secret issuance only as metadata with no
+artifact length. Generic export accepts only application ciphertext, encrypted
+controls and encrypted contact request/response artifacts. It refuses secret
+offers and legacy plaintext KeyPackage/invitation artifacts. Recover a secret
+only through exact dedicated `offer` retry with its original operation,
+recipient and validity. After membership changes, recovering retained ciphertext
+by index avoids rebinding old text to a new roster; it does not claim the
+original recipients are still authorized today.
+
+A complete FORMAT with no authenticated image can occur before a fresh device's
+first publication. The locator permits an honest missing-state diagnosis, not
+reconstruction of lost unpublished key material. Preserve that namespace and
+use a separately authorized never-used path when creation truly never finished.
+No command exports an encrypted state image, wrapping key, MLS ratchet clone or
+generic signing capability.
+
+Network endpoint/timing/size correlation, long-term local storage compromise,
+coherent rollback and forwarding by legitimate members remain outside the
+confidential file-exchange guarantee. Live multi-machine relay operation and
+agent process isolation are not implemented by this CLI slice.

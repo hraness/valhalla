@@ -18,6 +18,8 @@ experimental-game = ["dep:vhalla-game-platonik", "dep:vhalla-witness", "dep:vhal
 
 experimental-public = ["experimental-rooms-node", "vhalla-identity/room-activity", "dep:vhalla-room-activity", "dep:vhalla-room-activity-store", "dep:vhalla-browser-storage", "dep:vhalla-public-client", "dep:vhalla-public-peer", "dep:vhalla-public-protocol", "dep:vhalla-rooms-app"]
 
+experimental-private = ["dep:vhalla-private-native", "dep:vhalla-private-kernel", "dep:vhalla-custody", "dep:zeroize", "dep:tokio", "dep:serde_json"]
+
 [dependencies]
 hraness-support-foundation = { git = "https://github.com/hraness/support-foundation", rev = "b32c1c81bb2444f50509ed54388758ecfab1f1c0" }
 vhalla-identity = { path = "../vhalla-identity" }
@@ -39,6 +41,10 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
 [target.'cfg(unix)'.dependencies]
+vhalla-private-native = { path = "../vhalla-private-native", features = ["client"], optional = true }
+vhalla-private-kernel = { path = "../vhalla-private-kernel", optional = true }
+vhalla-custody = { path = "../vhalla-custody", optional = true }
+zeroize = { version = "1", optional = true }
 vhalla-public-peer = { path = "../vhalla-public-peer", optional = true }
 libc = { version = "0.2", optional = true }
 vhalla-social-store = { path = "../vhalla-social-store", optional = true }

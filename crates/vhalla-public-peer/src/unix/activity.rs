@@ -37,6 +37,32 @@ pub struct ActivityConfig {
     /// Nonempty list of distinct full rooms; at most MAX_ACTIVITY_ROOMS.
     pub rooms: Vec<ActivityRoomConfig>,
 }
+/// Exactly one activity implementation is selected for a publisher lifetime.
+pub(super) enum Owner {
+    Legacy(ActivityService),
+    Continuity(super::continuity::Service),
+}
+impl Owner {
+    #[cfg(test)]
+    fn legacy(&self) -> &ActivityService {
+        match self {
+            Self::Legacy(value) => value,
+            Self::Continuity(_) => panic!("legacy fixture"),
+        }
+    }
+    #[cfg(test)]
+    fn legacy_mut(&mut self) -> &mut ActivityService {
+        match self {
+            Self::Legacy(value) => value,
+            Self::Continuity(_) => panic!("legacy fixture"),
+        }
+    }
+}
+impl From<ActivityService> for Owner {
+    fn from(value: ActivityService) -> Self {
+        Self::Legacy(value)
+    }
+}
 pub(super) struct ActivityService {
     client: CertifiedClient,
     stores: BTreeMap<[u8; 32], Store>,
@@ -78,57 +104,15 @@ impl ActivityService {
     // Applied state comes only from independently pinned bootstrap and verified
     // certificates in the published journal, never a raw registry snapshot.
     fn refresh(&mut self, journal: &Journal<FsStore>) -> Result<(), StatusCode> {
-        let base = self.client.frontier();
-        let page = journal
-            .read_published_range(PublishedRange {
-                after_height: base.height,
-                expected_predecessor: Some(base.commitment()),
-                max_bundles: ACTIVITY_REPLAY_BUDGET,
-                max_bytes: vhalla_journal::MAX_PUBLISHED_PAGE_BYTES,
-            })
-            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        let observed = page.observed_head();
-        for bundle in page.bundles() {
-            let candidate = self
-                .client
-                .prepare(self.client.network_id(), bundle.bytes())
-                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-            // Journal publication already durably retained these exact bytes.
-            self.client
-                .commit_after_persist(candidate)
-                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        }
-        if self.client.frontier().height != observed.height
-            || self.client.frontier().commitment() != observed.next
-        {
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
-        }
+        refresh_client(&mut self.client, journal)?;
         #[cfg(test)]
         if let Some(hook) = self.after_refresh.take() {
             hook();
         }
         self.check_current(journal)
     }
-    // This final snapshot rejects observed advancement during catch-up. A
-    // different process can still publish immediately afterward; the receipt
-    // binds this observed local certified frontier, never global atomic latest.
     fn check_current(&self, journal: &Journal<FsStore>) -> Result<(), StatusCode> {
-        let frontier = self.client.frontier();
-        let page = journal
-            .read_published_range(PublishedRange {
-                after_height: frontier.height,
-                expected_predecessor: Some(frontier.commitment()),
-                max_bundles: 1,
-                max_bytes: vhalla_journal::MAX_PUBLISHED_PAGE_BYTES,
-            })
-            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        if page.observed_head().height != frontier.height
-            || page.observed_head().next != frontier.commitment()
-            || !page.bundles().is_empty()
-        {
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
-        }
-        Ok(())
+        check_current_client(&self.client, journal)
     }
     fn answer(
         &mut self,
@@ -229,7 +213,7 @@ impl ActivityService {
     }
 }
 impl Peer {
-    fn activity_answer(
+    pub(super) fn activity_answer(
         &self,
         request: ActivityRequest,
         body: &[u8],
@@ -241,7 +225,10 @@ impl Peer {
             .try_lock()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         let service = slot.as_mut().ok_or(StatusCode::NOT_FOUND)?;
-        let body = service.answer(self, request, body, source)?;
+        let body = match service {
+            Owner::Legacy(service) => service.answer(self, request, body, source)?,
+            Owner::Continuity(service) => service.answer_legacy(self, request, body, source)?,
+        };
         let unsigned =
             UnsignedActivityResponse::new(self.network, self.identity.public_key(), request, &body)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -440,7 +427,7 @@ async fn read_body(
     }
     Ok(bytes)
 }
-fn cors(headers: &mut HeaderMap, origin: &str) {
+pub(super) fn cors(headers: &mut HeaderMap, origin: &str) {
     for (name, value) in [
         (header::CONTENT_TYPE, "application/octet-stream"),
         (header::CACHE_CONTROL, "no-store"),
@@ -458,12 +445,12 @@ fn cors(headers: &mut HeaderMap, origin: &str) {
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
     }
 }
-fn activity_failure(status: StatusCode, origin: &str) -> Response<Full<Bytes>> {
+pub(super) fn activity_failure(status: StatusCode, origin: &str) -> Response<Full<Bytes>> {
     let mut response = failure(status);
     cors(response.headers_mut(), origin);
     response
 }
-fn store_status(error: vhalla_room_activity_store::Error) -> StatusCode {
+pub(super) fn store_status(error: vhalla_room_activity_store::Error) -> StatusCode {
     use vhalla_room_activity_store::Error as E;
     match error {
         E::Capacity => StatusCode::INSUFFICIENT_STORAGE,
@@ -510,5 +497,57 @@ impl PostRate {
         true
     }
 }
+pub(super) fn refresh_client(
+    client: &mut CertifiedClient,
+    journal: &Journal<FsStore>,
+) -> Result<(), StatusCode> {
+    let base = client.frontier();
+    let page = journal
+        .read_published_range(PublishedRange {
+            after_height: base.height,
+            expected_predecessor: Some(base.commitment()),
+            max_bundles: ACTIVITY_REPLAY_BUDGET,
+            max_bytes: vhalla_journal::MAX_PUBLISHED_PAGE_BYTES,
+        })
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let observed = page.observed_head();
+    for bundle in page.bundles() {
+        let candidate = client
+            .prepare(client.network_id(), bundle.bytes())
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        // Journal publication already durably retained these exact bytes.
+        client
+            .commit_after_persist(candidate)
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    }
+    if client.frontier().height != observed.height
+        || client.frontier().commitment() != observed.next
+    {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    check_current_client(client, journal)
+}
+pub(super) fn check_current_client(
+    client: &CertifiedClient,
+    journal: &Journal<FsStore>,
+) -> Result<(), StatusCode> {
+    let frontier = client.frontier();
+    let page = journal
+        .read_published_range(PublishedRange {
+            after_height: frontier.height,
+            expected_predecessor: Some(frontier.commitment()),
+            max_bundles: 1,
+            max_bytes: vhalla_journal::MAX_PUBLISHED_PAGE_BYTES,
+        })
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    if page.observed_head().height != frontier.height
+        || page.observed_head().next != frontier.commitment()
+        || !page.bundles().is_empty()
+    {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

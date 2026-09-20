@@ -274,3 +274,100 @@ without extending its timestamp, floor, or receipt generation. The existing
 snapshot remains until the replacement is fully written and fsynced; successful
 publication additionally requires rename and directory sync. This does not
 defend against an owner rolling back the entire state directory from backup.
+
+
+## Explicit continuity publisher mode
+
+`ManagedPeer::create_with_continuity` and `open_with_continuity` select one
+continuity owner instead of the legacy activity owner. `ContinuityConfig` names
+1–32 full room genesis IDs, existing private `ContinuityStore` directories and
+exact immutable `ContinuityLimits`. Stores are explicitly initialized using
+`ContinuityStore::create` under their full network/realm/directory/room scope.
+The new publisher marker is `VHPM2`; existing READ and `VHPM1` paths retain their
+old APIs and bytes. A different mode, path, scope or limit refuses before store
+recovery. No constructor migrates, resets, or opens a second writer. Preserve
+existing publisher counters and identity floors; a new directory is not a way
+to reset a previously advertised identity. This library slice adds no CLI flag,
+listener deployment, automatic peer selection, or client receipt installation.
+
+Only the selected mode serves `/vhalla/v1/continuity`. Its canonical typed request
+binds the full scope, exact author (except room-wide Feed), operation, nonce,
+requested certified floor, body digest and stage positions. Stage uploads exactly
+32 signed historical frames. Commit supplies 0–32 inline ancestors and one
+current-policy terminal. Status and Evidence are author-scoped; Feed spans all
+authors and includes admitted terminals only. Historical evidence remains public
+plaintext and has an explicit historical-only role. Temporary acknowledgements
+never move an admitted author or delivery floor, and retries do not renew leases.
+
+The legacy `/activity` POST in this mode uses the same continuity store with an
+explicit no-stage next-event expectation. It cannot finalize an active uploaded
+prefix. An exact retained terminal can reconcile after policy revocation; this
+recovers the original decision and does not admit old-policy work afresh. Legacy
+pages expose the same terminal-only feed. A terminal jump is not a v1 consecutive
+delivery receipt or proof of whole-prefix retention; current clients need a
+separate continuity-aware receipt persistence design before acknowledging such
+jumps. The 4,096 total staged-event limit and whole-prefix finalization remain.
+
+The existing activity mutex owns certified replay and store admission. At most
+32 published certified bundles are applied per request; incomplete catch-up
+returns 503 and keeps checked progress in memory. The current local journal head
+is checked after refresh and immediately before store mutation. This mutex does
+not lock an external consensus writer: a cross-process publication immediately
+after that final observation cannot be excluded. Successful proofs report that
+observed certified frontier, not global latest policy or consensus authority.
+
+HTTP limits stay 8,192 header bytes/32 fields, 5 seconds for headers, 5 seconds for
+a body, 10 seconds for blocking work and 15 seconds per connection. Continuity
+alone accepts up to 145,008 body bytes; replies are at most 142,176 bytes, proof
+headers 1,470 hex characters and targets 1,230 bytes. Content length, chunked
+bodies, trailers, methods, exact Host/Origin, credentials and content encoding
+are checked before admission. Timed-out blocking work retains its connection
+permit until completion; a timeout can leave an uncertain successful write, so
+retry the exact signed request rather than changing its author sequence.
+
+Work uses process-local 60-second credits, separately bounded for the process
+and immediate connection IP (a reverse proxy is one IP):
+
+| Credit | Process | Immediate IP |
+| --- | ---: | ---: |
+| Requests | 120 | 30 |
+| Submitted signed frames | 4,096 | 1,024 |
+| Fixed stored-frame verification | 16,384 | 4,096 |
+| Retained prefix ancestors | 16,384 | 4,096 |
+| Cleanup pages | 128 | 32 |
+
+A prefix credit covers the current six finalization traversals per ancestor;
+these are additional to fixed stored-read verification. Request admission
+charges before body allocation/signature checks and bounded certified replay.
+Stage reserves 168 fixed stored-frame verifications (quote 68 + checked write
+100); Commit reserves 202 (quote 67 + checked write 134 + terminal proof decode
+1), then charges actual retained ancestors before finalization. Status reserves
+36; a Feed page reserves `2*n+1`; Evidence reserves `3*n+42`. Input frames are
+charged separately. These conservative credits are not performance estimates,
+Sybil protection, or proof that finalization fits the response deadline.
+
+Checked requests perform no hidden cleanup. The managed 60-second renewal loop
+also runs maintenance, at most one page per configured room in each turn.
+`maintain_continuity` exposes that same bounded, globally charged local operation
+for explicit managed owners; it skips while the activity mutex is busy. Each
+cleanup page reserves 162 stored-frame verifications plus one cleanup credit.
+Expired status reads do not write a new clock floor. Maintenance and successful
+writes retain monotone clock/lease state; exhausted credits pause cleanup, and
+uncertain storage errors require explicit reopen. No maintenance removes
+published history or extends an expired upload lease.
+
+Lease sizing must include these credits: one immediate IP can stage at most
+`floor(4096/168) = 24` pages (768 ancestors) per 60-second window, before any
+other work consumes those same stored-read credits. A full 4,096-ancestor upload
+needs 128 pages across at least six rate windows; the minimum 60-second lease
+cannot support that full-capacity workflow. Choose a longer fixed lease from
+measured upload, replay and finalization times with headroom for contention and
+retries. A 600-second or longer lease is a reasonable qualification starting
+point for that case, not a throughput/availability guarantee. Small leases are
+for correspondingly small suffixes. Expiry never grants a silent lease extension.
+
+The integrated adapter passed all 54 peer tests and 19 identity tests/doctests,
+including typed loopback HTTP, stage/commit restart retries, mode preservation,
+policy changes and exhausted-credit refusal before a corrupt-tail quote.
+Full-workspace/all-target/all-feature strict Clippy passed. These local checks
+do not qualify an independent public deployment or complete client continuation.

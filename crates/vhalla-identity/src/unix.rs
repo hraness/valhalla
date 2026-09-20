@@ -215,6 +215,20 @@ impl Identity {
         response.sign_with_key(&self.key)
     }
 
+    /// Sign a checked continuity reply for this exact peer key, request and body.
+    /// Temporary stages, historical evidence and terminal durability retain their
+    /// distinct roles; this signs no generic bytes or global admission claim.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_continuity_response(
+        &self,
+        response: vhalla_public_protocol::continuity::UnsignedResponse,
+    ) -> Result<
+        vhalla_public_protocol::continuity::ResponseProof,
+        vhalla_public_protocol::continuity::Error,
+    > {
+        response.sign_with_key(&self.key)
+    }
+
     /// Sign only the fixed discovery Hashcash issuer contract for this peer.
     #[cfg(feature = "public-peer")]
     pub fn sign_discovery_challenge(
@@ -485,6 +499,66 @@ fn decode(raw: &[u8]) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[cfg(feature = "public-peer")]
+    #[test]
+    fn continuity_signer_binds_only_the_current_custody_key_and_exact_request() {
+        use vhalla_public_protocol::continuity as wire;
+        // Private unit fixture only; production uses its existing custody lock.
+        let identity = Identity {
+            key: SigningKey::from_bytes(&[17; 32]),
+            _lock: File::open("/dev/null").unwrap(),
+        };
+        let author = SigningKey::from_bytes(&[19; 32]).verifying_key().to_bytes();
+        let request = wire::Request::new(
+            wire::RequestContext {
+                scope: wire::Scope {
+                    network: [1; 32],
+                    realm: [2; 16],
+                    directory: [3; 32],
+                    room: [4; 32],
+                },
+                nonce: [5; 32],
+                operation: [6; 16],
+                floor: wire::Observed {
+                    height: 0,
+                    frontier: [7; 32],
+                },
+            },
+            wire::Selection::Author(author),
+            wire::Kind::Status {
+                minimum: wire::Position::EMPTY,
+            },
+        )
+        .unwrap();
+        let reply = wire::Reply::Status(wire::Status {
+            observed: request.context().floor,
+            published: wire::Position::EMPTY,
+            stage: None,
+        })
+        .encode(&request)
+        .unwrap();
+        let proof = identity
+            .sign_continuity_response(
+                wire::UnsignedResponse::new(identity.public_key(), request, &reply).unwrap(),
+            )
+            .unwrap();
+        proof
+            .verify(identity.public_key(), &request, &reply)
+            .unwrap();
+        let foreign = SigningKey::from_bytes(&[18; 32]).verifying_key().to_bytes();
+        assert!(identity
+            .sign_continuity_response(
+                wire::UnsignedResponse::new(foreign, request, &reply).unwrap()
+            )
+            .is_err());
+        let mut changed = request.context();
+        changed.nonce = [8; 32];
+        let changed = wire::Request::new(changed, request.selection(), request.kind()).unwrap();
+        assert!(proof
+            .verify(identity.public_key(), &changed, &reply)
+            .is_err());
+    }
 
     proptest! {
         #[test]

@@ -9,8 +9,8 @@
 mod unix;
 #[cfg(unix)]
 pub use unix::{
-    ActivityConfig, ActivityRoomConfig, BoundPeer, Config, CorsOrigin, DiscoveryConfig, Error,
-    ManagedBoundPeer, ManagedPeer, Peer, ACTIVITY_REPLAY_BUDGET, ADVERTISEMENT_LIFETIME_SECONDS,
-    DEFAULT_LISTEN, MAX_ACTIVITY_ROOMS, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP,
-    MAX_DISCOVERY_PEERS,
+    ActivityConfig, ActivityRoomConfig, BoundPeer, Config, ContinuityConfig, ContinuityRoomConfig,
+    CorsOrigin, DiscoveryConfig, Error, ManagedBoundPeer, ManagedPeer, Peer,
+    ACTIVITY_REPLAY_BUDGET, ADVERTISEMENT_LIFETIME_SECONDS, DEFAULT_LISTEN, MAX_ACTIVITY_ROOMS,
+    MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP, MAX_DISCOVERY_PEERS,
 };

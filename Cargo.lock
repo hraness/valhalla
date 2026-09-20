@@ -6305,12 +6305,15 @@ dependencies = [
  "vhalla-attention",
  "vhalla-browser-storage",
  "vhalla-core",
+ "vhalla-custody",
  "vhalla-discovery",
  "vhalla-discovery-store",
  "vhalla-game-platonik",
  "vhalla-identity",
  "vhalla-journal",
  "vhalla-native",
+ "vhalla-private-kernel",
+ "vhalla-private-native",
  "vhalla-public-client",
  "vhalla-public-peer",
  "vhalla-public-protocol",
@@ -6326,6 +6329,7 @@ dependencies = [
  "vhalla-social",
  "vhalla-social-store",
  "vhalla-witness",
+ "zeroize",
 ]
 
 [[package]]

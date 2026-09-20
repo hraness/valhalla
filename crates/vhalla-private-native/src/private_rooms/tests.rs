@@ -550,3 +550,38 @@ fn sigkill_transaction_boundaries_recover_all_or_nothing() {
         );
     }
 }
+
+#[test]
+fn locator_is_only_a_bounded_hint_and_never_repairs_partial_state() {
+    let path = home();
+    let ctx = context();
+    let store = NativePrivateStore::create_new(&path, ctx, limits()).unwrap();
+    // Even while the writer is held and no kernel image exists, this is merely
+    // a FORMAT hint. It neither claims initialization nor acquires/recover SQLite.
+    assert_eq!(NativePrivateStore::locate_context(&path).unwrap(), ctx);
+    let original = fs::read(path.join("FORMAT")).unwrap();
+    let database = fs::read(path.join(DB)).unwrap();
+    fs::rename(path.join("FORMAT"), path.join("FORMAT.tmp")).unwrap();
+    assert!(NativePrivateStore::locate_context(&path).is_err());
+    assert_eq!(fs::read(path.join("FORMAT.tmp")).unwrap(), original);
+    assert_eq!(fs::read(path.join(DB)).unwrap(), database);
+    fs::rename(path.join("FORMAT.tmp"), path.join("FORMAT")).unwrap();
+    for raw in [&original[..0], &original[..original.len() - 1]] {
+        fs::write(path.join("FORMAT"), raw).unwrap();
+        assert!(NativePrivateStore::locate_context(&path).is_err());
+        assert_eq!(fs::read(path.join("FORMAT")).unwrap(), raw);
+    }
+    fs::write(path.join("FORMAT"), &original).unwrap();
+    let mut changed = original.clone();
+    changed[8] ^= 1;
+    fs::write(path.join("FORMAT"), &changed).unwrap();
+    assert!(NativePrivateStore::locate_context(&path).is_err());
+    assert_eq!(fs::read(path.join("FORMAT")).unwrap(), changed);
+    fs::remove_file(path.join("FORMAT")).unwrap();
+    fs::write(path.join("retained-marker"), &original).unwrap();
+    symlink(path.join("retained-marker"), path.join("FORMAT")).unwrap();
+    assert!(NativePrivateStore::locate_context(&path).is_err());
+    assert_eq!(fs::read(path.join("retained-marker")).unwrap(), original);
+    drop(store);
+    fs::remove_dir_all(path).unwrap();
+}

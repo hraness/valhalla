@@ -28,6 +28,8 @@ use vhalla_public_protocol::{
 };
 
 mod activity;
+mod continuity;
+pub use continuity::{ContinuityConfig, ContinuityRoomConfig};
 mod discovery;
 pub use activity::{
     ActivityConfig, ActivityRoomConfig, ACTIVITY_REPLAY_BUDGET, MAX_ACTIVITY_ROOMS,
@@ -153,7 +155,7 @@ pub struct Peer {
     journal: Journal<FsStore>,
     admission: Arc<Admission>,
     managed: bool,
-    activity: Mutex<Option<activity::ActivityService>>,
+    activity: Mutex<Option<activity::Owner>>,
     discovery: Mutex<Option<discovery::DiscoveryService>>,
 }
 impl Peer {
@@ -208,7 +210,7 @@ impl Peer {
         identity: Identity,
         advertisement: Vec<u8>,
         managed: bool,
-        activity: Option<activity::ActivityService>,
+        activity: Option<activity::Owner>,
     ) -> Result<Self, Error> {
         let capabilities = if activity.is_some() {
             Capabilities::from_bits(Capabilities::READ.bits() | Capabilities::PUBLISH.bits())
@@ -469,6 +471,9 @@ impl Peer {
             "/vhalla/v1/peers" | "/vhalla/v1/peers/challenge" | "/vhalla/v1/peers/register"
         ) {
             return self.handle_discovery(request, permit).await;
+        }
+        if request.uri().path() == "/vhalla/v1/continuity" {
+            return self.handle_continuity(request, permit).await;
         }
         if request.uri().path() == "/vhalla/v1/activity" {
             return self.handle_activity(request, permit).await;

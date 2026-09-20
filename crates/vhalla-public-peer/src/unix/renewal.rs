@@ -21,7 +21,36 @@ pub struct ManagedPeer {
     peer: Arc<Peer>,
     publisher: Mutex<Publisher>,
 }
+enum ActivitySelection {
+    Legacy(ActivityConfig),
+    Continuity(ContinuityConfig),
+}
+impl ActivitySelection {
+    fn mode(&self) -> Result<activity_mode::Selection, Error> {
+        match self {
+            Self::Legacy(value) => {
+                activity_mode::config_digest(value).map(activity_mode::Selection::Legacy)
+            }
+            Self::Continuity(value) => {
+                activity_mode::continuity_digest(value).map(activity_mode::Selection::Continuity)
+            }
+        }
+    }
+    fn open(&self, raw: &[u8], pin: [u8; 32]) -> Result<activity::Owner, Error> {
+        match self {
+            Self::Legacy(value) => activity::ActivityService::open(raw, pin, value.clone())
+                .map(activity::Owner::Legacy),
+            Self::Continuity(value) => {
+                continuity::Service::open(raw, pin, value.clone()).map(activity::Owner::Continuity)
+            }
+        }
+    }
+}
 impl ManagedPeer {
+    #[cfg(test)]
+    pub(super) fn peer_for_test(&self) -> &Arc<Peer> {
+        &self.peer
+    }
     /// Create an entirely new private publisher state directory. The configured
     /// advertisement_file must be STATE/advertisement. Existing paths fail.
     /// Reservation and publication are durably completed before any bind.
@@ -63,11 +92,59 @@ impl ManagedPeer {
         create: bool,
         activity: Option<ActivityConfig>,
     ) -> Result<Self, Error> {
+        Self::start_selected(
+            config,
+            state_dir,
+            create,
+            activity.map(ActivitySelection::Legacy),
+        )
+    }
+    /// Explicit continuity publisher in a NEW immutable v2 mode. Existing READ
+    /// or v1 activity state is never upgraded or reset; stores must already exist.
+    pub fn create_with_continuity(
+        config: Config,
+        state_dir: impl AsRef<Path>,
+        activity: ContinuityConfig,
+    ) -> Result<Self, Error> {
+        Self::start_selected(
+            config,
+            state_dir.as_ref(),
+            true,
+            Some(ActivitySelection::Continuity(activity)),
+        )
+    }
+    /// Reopen only the exact retained continuity scope, paths, format and limits.
+    /// Mode/configuration checks precede every store recovery operation.
+    pub fn open_with_continuity(
+        config: Config,
+        state_dir: impl AsRef<Path>,
+        activity: ContinuityConfig,
+    ) -> Result<Self, Error> {
+        Self::start_selected(
+            config,
+            state_dir.as_ref(),
+            false,
+            Some(ActivitySelection::Continuity(activity)),
+        )
+    }
+    fn start_selected(
+        config: Config,
+        state_dir: &Path,
+        create: bool,
+        activity: Option<ActivitySelection>,
+    ) -> Result<Self, Error> {
         let state_dir = custody::absolute(state_dir).map_err(Error::Custody)?;
         if custody::absolute(&config.advertisement_file).map_err(Error::Custody)?
             != state_dir.join(ADVERTISEMENT)
         {
             return Err(Error::Config);
+        }
+        if create {
+            match fs::symlink_metadata(&state_dir) {
+                Ok(_) => return Err(Error::State("new publisher state must not exist")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         let loaded = Peer::load(&config)?;
         let identity = Identity::open(&config.identity_dir).map_err(Error::Identity)?;
@@ -76,20 +153,11 @@ impl ManagedPeer {
             key: identity.public_key(),
             endpoint: config.public_endpoint.clone(),
         };
-        let mode = activity
-            .as_ref()
-            .map(activity_mode::config_digest)
-            .transpose()?;
+        let mode = activity.as_ref().map(ActivitySelection::mode).transpose()?;
         let open_activity = || {
             activity
                 .as_ref()
-                .map(|activity| {
-                    super::activity::ActivityService::open(
-                        &loaded.raw,
-                        config.bootstrap_pin,
-                        activity.clone(),
-                    )
-                })
+                .map(|value| value.open(&loaded.raw, config.bootstrap_pin))
                 .transpose()
         };
         let clock = now()?;
@@ -98,13 +166,13 @@ impl ManagedPeer {
             let service = open_activity()?;
             let mut publisher = Publisher::create(&state_dir, scope, clock)?;
             if let Some(mode) = mode {
-                publisher.create_activity_mode(mode)?;
+                publisher.create_selected_mode(mode)?;
             }
             (publisher, service)
         } else {
             // Validate retained mode before opening stores: their recovery must
             // never run for a configuration rejected by this publisher.
-            let publisher = Publisher::open_mode(&state_dir, scope, clock, mode)?;
+            let publisher = Publisher::open_selected_mode(&state_dir, scope, clock, mode)?;
             (publisher, open_activity()?)
         };
         let raw = publisher.publish(&identity, clock, None)?;
@@ -178,6 +246,12 @@ impl ManagedPeer {
     pub fn renew(&self) -> Result<u64, Error> {
         self.renew_at(now()?, false, None)
     }
+    /// One bounded continuity cleanup step: at most one page per configured
+    /// room, charged to global verification/cleanup budgets. Busy/rate-limited
+    /// stores wait for a later call; no published history or author floor expires.
+    pub fn maintain_continuity(&self) -> Result<(), Error> {
+        self.peer.maintain_continuity(now()?)
+    }
     fn renew_at(&self, clock: u64, only_if_due: bool, fault: Option<Fault>) -> Result<u64, Error> {
         let mut publisher = self
             .publisher
@@ -244,7 +318,11 @@ impl ManagedBoundPeer {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 let owner = self.owner.clone();
-                let work = tokio::task::spawn_blocking(move || owner.renew_at(now()?, true, None));
+                let work = tokio::task::spawn_blocking(move || {
+                    let sequence = owner.renew_at(now()?, true, None)?;
+                    owner.maintain_continuity()?;
+                    Ok::<u64, Error>(sequence)
+                });
                 timeout(READ_TIMEOUT, work)
                     .await
                     .map_err(|_| Error::State("renewal timed out; reopen state"))?
@@ -415,16 +493,30 @@ impl Publisher {
     fn open(dir: &Path, scope: Scope, clock: u64) -> Result<Self, Error> {
         Self::open_mode(dir, scope, clock, None)
     }
+    #[cfg(test)]
     fn open_mode(
         dir: &Path,
         scope: Scope,
         clock: u64,
         mode: Option<[u8; 32]>,
     ) -> Result<Self, Error> {
+        Self::open_selected_mode(
+            dir,
+            scope,
+            clock,
+            mode.map(activity_mode::Selection::Legacy),
+        )
+    }
+    fn open_selected_mode(
+        dir: &Path,
+        scope: Scope,
+        clock: u64,
+        mode: Option<activity_mode::Selection>,
+    ) -> Result<Self, Error> {
         let (directory, uid) = custody::open_private_directory(dir).map_err(Error::Custody)?;
         let lock = custody::open_private_file(&dir.join("lock"), uid, 0).map_err(Error::Custody)?;
         custody::acquire_exclusive(&lock).map_err(Error::Custody)?;
-        let activity_mode = activity_mode::read_mode(dir, uid, &scope, mode)?;
+        let activity_mode = activity_mode::read_selected_mode(dir, uid, &scope, mode)?;
         let capabilities = activity_mode::capabilities(activity_mode.is_some())?;
         for (index, entry) in fs::read_dir(dir)?.enumerate() {
             let entry = entry?;

@@ -46,14 +46,19 @@ Optional native `RoomSession` joins account and room custody in one lifetime.
 Storage keys derive from the account secret and the exact room/anchor/account/
 device context. Lock drops both custodians. Reopen requires the original context
 and current retained image; account restoration alone never recreates MLS state.
-Browser vaults expose the same typed derivation, but their private session/worker
-and user interface are not integrated yet. These features remain optional and
+The optional native private CLI now implements the complete local encrypted-file
+invitation and messaging path, recipient review, exact retry/export, removal and
+renewal. Four real process journeys and the read-only locator regression pass.
+Browser vaults expose the same typed derivation and real Window/worker custody
+qualification passes, but their private product session and interface are not yet
+integrated. These features remain optional and
 do not add MLS or SQLite to the default public browser dependency graph.
 
 Before a private-room release, complete and qualify:
 
-- Native and browser creation, recipient-bound confidential invitations,
-  membership inspection, ordered control catch-up, removal and renewal flows.
+- Browser creation, recipient-bound confidential invitations, membership
+  inspection, ordered control catch-up, removal and renewal flows; integrate
+  explicit private recovery in both clients.
   Never publish private room titles, membership, task context or bootstrap secrets
   into discovery, public URLs or unencrypted operational logs.
 - Bounded interchangeable ciphertext relays, offline retry and explicit
@@ -117,8 +122,12 @@ request, body and nonce. It does not activate a peer route or install client
 receipts. The store now checks exact limits before recovery, exposes checked author/stage
 positions, refuses implicit stage consumption and separates bounded maintenance
 from checked mutations. Its complete 39-test suite and strict lint passed.
-Peer-route integration, weighted request/work admission, client continuation
-and incremental finalization beyond that bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
+The optional peer route now integrates one continuity writer with exact persisted
+mode/configuration, bounded certified replay and independent request/input/stored/
+prefix/cleanup credits. The full peer/identity suites passed 73 tests including
+doctests, and strict workspace lint passed. Legacy activity uses that same writer
+without implicitly consuming a staged prefix. Client receipt continuation and
+incremental finalization beyond the bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;
 never silently prune or reset a used sequence to recover capacity.

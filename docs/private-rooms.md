@@ -2,10 +2,10 @@
 
 Valhalla's private room core is implemented in the workspace. It is not yet a
 private-room end-user release. An optional trusted native session now joins
-account and room custody under one lock lifetime. Native CLI and browser UI
-invitation, complete-state recovery and confidential delivery workflows remain
-unfinished. Public discovery and
-public author backups must never carry private state or private invitations.
+account and room custody under one lock lifetime. The optional Unix CLI supports
+explicit local file exchange. Browser UI, complete-state recovery and automatic
+confidential delivery remain unfinished. Public discovery and public author
+backups must never carry private state or private invitations.
 
 ## Components and default dependencies
 
@@ -27,6 +27,21 @@ public author backups must never carry private state or private invitations.
   private protocol, not the MLS implementation. Their separate optional
   `private-storage` features add the shared typed HKDF storage-key derivation
   and require the kernel. These features are also off by default.
+
+The CLI's optional `experimental-private` feature exposes create, signed offer
+inspection/import, encrypted contact request/response, message send/receive,
+exact retry/export, membership inspection, removal and owner renewal. Its
+[command guide](../crates/vhalla-cli/README.md#local-encrypted-private-room-files-experimental-private)
+includes the full two-account file exchange. It opens existing identity custody,
+uses only explicit local stores, and has no network or relay command. Input is a
+bounded pipe or owner-private file; outputs are exclusive-create, synced private
+files. Fresh send checks authenticated membership, validity and the exact selected
+epoch/roster before reading text. Output failure preserves the state and partial
+file; retry exact inputs to a fresh output path or export retained ciphertext.
+The FORMAT locator is an unauthenticated hint; the selected account and complete
+private image authenticate before display or action. Four actual CLI process
+journeys and the read-only locator regression pass; strict enabled-target CLI
+and full-feature native lints also pass.
 
 There is no dependency on Platonik. Clankdar puzzle bytes are inert application
 content; solve evidence never changes membership, file access, or tool authority.

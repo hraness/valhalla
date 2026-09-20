@@ -282,6 +282,32 @@ impl NativePrivateStore {
         create()
     }
 
+    /// Read the bounded full-context locator from existing owner-private FORMAT.
+    /// This checksum is NOT authentication or membership evidence. The caller must
+    /// pin the selected account and authenticate the complete image through the
+    /// kernel before exposing room data or performing an action. This method
+    /// opens no database, takes no writer lock, repairs nothing and never creates.
+    /// Missing, partial and foreign markers remain intact and are refused.
+    pub fn locate_context(path: impl AsRef<Path>) -> Result<Context> {
+        let path = resolved_parent(path.as_ref()).map_err(|_| Error::Corrupt)?;
+        let (_directory, uid) =
+            custody::open_private_directory(&path).map_err(|_| Error::Corrupt)?;
+        let raw = custody::read_private_file(&path.join("FORMAT"), uid, FORMAT_BYTES)
+            .map_err(|_| Error::Corrupt)?;
+        if raw.len() != FORMAT_BYTES {
+            return Err(Error::Corrupt);
+        }
+        let field = |start: usize| {
+            raw[start..start + 32]
+                .try_into()
+                .map_err(|_| Error::Corrupt)
+        };
+        let context = Context::new(field(8)?, field(40)?, field(72)?, field(104)?)
+            .map_err(|_| Error::Corrupt)?;
+        parse_format(&raw, context)?;
+        Ok(context)
+    }
+
     /// Explicit writer recovery. Exact external context and immutable FORMAT are
     /// checked before SQLite can recover its rollback journal. No CREATE flag.
     pub fn open(path: impl AsRef<Path>, expected: Context) -> Result<Self> {
