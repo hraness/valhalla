@@ -74,7 +74,9 @@ Before a private-room release, complete and qualify:
 - The private-native relay boundary now supplies bounded canonical opaque items,
   namespace binding, idempotent retries, quota refusal and retention-only
   receipts, plus a durable file-backed mailbox that re-verifies retained items
-  on open behind an exclusive lock. A real network adapter still needs offline
+  on open behind an exclusive lock. The CLI exposes it as
+  `relay-mailbox`/`relay-put`/`relay-get`/`relay-page`, which never open
+  identity or room custody. A real network adapter still needs offline
   scheduling, congestion handling, relay authentication and independent
   acceptance status. An isolated sender cannot detect an unseen removal merely
   by asking an untrusted relay.

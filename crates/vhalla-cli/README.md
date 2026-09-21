@@ -1639,6 +1639,33 @@ service, recipient acknowledgment or evidence that another member processed the
 item. Keep the namespace separate from room metadata and do not reuse it as a
 secret or membership credential.
 
+A durable opaque mailbox gives the same handoff a file-backed adapter. These
+commands take a mailbox directory in place of an identity and never open
+identity or room custody:
+
+```sh
+vhalla private relay-mailbox mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --max-items 4096 --max-bytes 268435456   # both optional; these are the defaults
+vhalla private relay-put mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --relay private-files/item.vhrelay --out private-files/receipt.json
+vhalla private relay-page mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --after 0 --limit 8 --out private-files/page.json
+vhalla private relay-get mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --sequence 3 --out private-files/item-copy.vhrelay
+```
+
+`relay-mailbox` creates one 0700 directory bound permanently to its namespace
+and quota; an existing path refuses. `relay-put` retains a verified canonical
+item idempotently and reports only `sequence`, `digest` and `duplicate`.
+`relay-page` emits a metadata manifest (sequence, operation, kind, digest, byte
+count) with a `next` cursor; it never prints ciphertext. `relay-get` writes the
+exact canonical item for `relay-apply` or onward transport. The mailbox holds an
+exclusive lock while open, re-verifies every retained item on open, syncs each
+accepted mutation before its receipt, and never prunes or rewrites retained
+items. Quota exhaustion, foreign namespaces, conflicting sequence/operation
+reuse and a second live handle all refuse. Retention is still not delivery,
+scheduling or authentication.
+
 ### Output uncertainty and exact recovery
 
 Keep each operation ID and all exact arguments, including validity endpoints,

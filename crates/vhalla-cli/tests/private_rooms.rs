@@ -572,5 +572,145 @@ fn private_cli_complete_locator_without_image_never_recreates_lost_device() {
     assert!(!f.root.join("not-authenticated").exists());
 }
 
+#[test]
+fn private_cli_relay_mailbox_is_opaque_durable_and_never_member_acceptance() {
+    let f = Fixture::new();
+    f.join();
+    let owner = f.inspect("owner-key", "owner-room", "owner-inspect");
+    f.write("text", b"opaque relay ciphertext\n");
+    f.ok(
+        "send",
+        "owner-key",
+        Some("owner-room"),
+        &send_options(&f, &owner, 3, "message"),
+    );
+    let namespace = "ab".repeat(32);
+    f.ok(
+        "relay-export",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("sequence", "3".into()),
+            ("out", f.path("item")),
+        ],
+    );
+    let mailbox = f.path("mailbox");
+    f.ok(
+        "relay-mailbox",
+        &mailbox,
+        None,
+        &[("namespace", namespace.clone()), ("max-items", "8".into())],
+    );
+    // A mailbox is created once; an existing path and a foreign namespace refuse.
+    assert!(!f
+        .run(
+            "relay-mailbox",
+            &mailbox,
+            None,
+            &[("namespace", namespace.clone())],
+            None
+        )
+        .status
+        .success());
+    let foreign = "cd".repeat(32);
+    assert!(!f
+        .run(
+            "relay-page",
+            &mailbox,
+            None,
+            &[
+                ("namespace", foreign.clone()),
+                ("after", "0".into()),
+                ("limit", "8".into()),
+                ("out", f.path("must-not-exist")),
+            ],
+            None
+        )
+        .status
+        .success());
+    assert!(!f.root.join("must-not-exist").exists());
+    let put = |out: &str| {
+        f.ok(
+            "relay-put",
+            &mailbox,
+            None,
+            &[
+                ("namespace", namespace.clone()),
+                ("relay", f.path("item")),
+                ("out", f.path(out)),
+            ],
+        );
+        f.json(out)
+    };
+    let receipt = put("receipt");
+    assert_eq!(receipt["sequence"], 3);
+    assert_eq!(receipt["duplicate"], false);
+    // An exact retry is idempotent; the receipt never claims member acceptance.
+    assert_eq!(put("receipt-retry")["duplicate"], true);
+    f.ok(
+        "relay-page",
+        &mailbox,
+        None,
+        &[
+            ("namespace", namespace.clone()),
+            ("after", "0".into()),
+            ("limit", "8".into()),
+            ("out", f.path("page")),
+        ],
+    );
+    let page = f.json("page");
+    assert_eq!(page["head"], 3);
+    assert_eq!(page["next"], Value::Null);
+    let records = page["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["sequence"], 3);
+    assert_eq!(records[0]["kind"], "Application");
+    assert!(records[0]["digest"].as_str().unwrap().len() == 64);
+    // The durable mailbox survives across processes; get returns canonical bytes.
+    f.ok(
+        "relay-get",
+        &mailbox,
+        None,
+        &[
+            ("namespace", namespace.clone()),
+            ("sequence", "3".into()),
+            ("out", f.path("item-copy")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("item")).unwrap(),
+        fs::read(f.root.join("item-copy")).unwrap()
+    );
+    assert!(!f
+        .run(
+            "relay-get",
+            &mailbox,
+            None,
+            &[
+                ("namespace", namespace.clone()),
+                ("sequence", "4".into()),
+                ("out", f.path("must-not-exist")),
+            ],
+            None
+        )
+        .status
+        .success());
+    f.ok(
+        "relay-apply",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace),
+            ("relay", f.path("item-copy")),
+            ("out", f.path("applied")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("applied")).unwrap(),
+        b"opaque relay ciphertext\n"
+    );
+}
+
 #[path = "private_rooms/archive.rs"]
 mod archive;

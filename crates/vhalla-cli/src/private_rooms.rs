@@ -38,6 +38,10 @@ vhalla private inbox ID STORE --after N --limit N --out PRIVATE_JSON
 vhalla private export ID STORE --sequence N --out CIPHERTEXT
 vhalla private relay-export ID STORE --namespace NS64 --sequence N --out RELAY_ITEM
 vhalla private relay-apply ID STORE --namespace NS64 --relay RELAY_ITEM --out PRIVATE_RESULT
+vhalla private relay-mailbox NEW_DIR --namespace NS64 [--max-items N --max-bytes N]
+vhalla private relay-put MAILBOX --namespace NS64 --relay RELAY_ITEM --out RECEIPT_JSON
+vhalla private relay-get MAILBOX --namespace NS64 --sequence N --out RELAY_ITEM
+vhalla private relay-page MAILBOX --namespace NS64 --after N --limit N --out PAGE_JSON
 vhalla private control-export ID STORE --after N --parent CONTROL64|none --out CIPHERTEXT
 vhalla private remove ID STORE --device KEY64 --operation OP32 --out CIPHERTEXT
 vhalla private apply ID STORE --control FILE
@@ -48,13 +52,16 @@ vhalla private archive-resume ID ARCHIVE_STORE --archive FILE.vharchive [--max-r
 vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out PRIVATE_JSON [--max-records N --max-bytes N]
 vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
 Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
-Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. There is no listener, relay service, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
+Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. There is no listener, relay service, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
 const OFFER_LIMIT: usize = 1024;
 
 struct Args {
     command: String,
+    /// Identity directory for custody commands; the relay mailbox directory for
+    /// `relay-mailbox`/`relay-put`/`relay-get`/`relay-page`, which never open
+    /// identity or room custody.
     identity: PathBuf,
     store: Option<PathBuf>,
     flags: BTreeMap<String, OsString>,
@@ -100,13 +107,24 @@ impl Args {
             "export" => &["sequence", "out"],
             "relay-export" => &["namespace", "sequence", "out"],
             "relay-apply" => &["namespace", "relay", "out"],
+            "relay-mailbox" => &["namespace", "max-items", "max-bytes"],
+            "relay-put" => &["namespace", "relay", "out"],
+            "relay-get" => &["namespace", "sequence", "out"],
+            "relay-page" => &["namespace", "after", "limit", "out"],
             "control-export" => &["after", "parent", "out"],
             "remove" => &["device", "operation", "out"],
             "apply" => &["control"],
             "renew" => &["operation", "not-before", "expires", "out"],
             _ => return Err(HELP.into()),
         };
-        let start = if command == "offer-inspect" { 3 } else { 4 };
+        let start = if matches!(
+            command,
+            "offer-inspect" | "relay-mailbox" | "relay-put" | "relay-get" | "relay-page"
+        ) {
+            3
+        } else {
+            4
+        };
         if raw.len() < start || !(raw.len() - start).is_multiple_of(2) {
             return Err(HELP.into());
         }
@@ -125,7 +143,7 @@ impl Args {
         }
         for required in allowed
             .iter()
-            .filter(|name| !matches!(**name, "max-records" | "max-bytes"))
+            .filter(|name| !matches!(**name, "max-records" | "max-items" | "max-bytes"))
         {
             if !flags.contains_key(*required) {
                 return Err("missing required private option; see private --help".into());
@@ -226,6 +244,12 @@ pub fn run(raw: &[OsString]) -> Result<(), String> {
 }
 
 async fn execute(args: Args) -> Result<(), String> {
+    if matches!(
+        args.command.as_str(),
+        "relay-mailbox" | "relay-put" | "relay-get" | "relay-page"
+    ) {
+        return relay_mailbox(&args);
+    }
     let identity =
         Identity::open(&args.identity).map_err(|_| "existing identity custody unavailable")?;
     if args.command.starts_with("archive-") {
@@ -497,6 +521,100 @@ async fn execute(args: Args) -> Result<(), String> {
     }
     room.lock();
     Ok(())
+}
+
+/// Durable local relay mailbox commands. The mailbox is untrusted opaque
+/// storage: these commands never open identity custody or a private room
+/// store, and a retention receipt is never recipient acceptance.
+fn relay_mailbox(args: &Args) -> Result<(), String> {
+    use vhalla_private_native::relay::{FileStore, RelayItem, MAX_RELAY_PAYLOAD};
+    let mailbox = args.identity.as_path();
+    match args.command.as_str() {
+        "relay-mailbox" => {
+            FileStore::create_new(mailbox, args.namespace()?, relay_limits(args)?)
+                .map_err(relay_error)?;
+        }
+        "relay-put" => {
+            let raw = args.input("relay", MAX_RELAY_PAYLOAD + 256, false)?;
+            let item = RelayItem::decode(&raw)
+                .map_err(|_| "relay item is malformed, oversized or fails its commitment")?;
+            let mut store = FileStore::open(mailbox, args.namespace()?).map_err(relay_error)?;
+            let receipt = store.put(item).map_err(relay_error)?;
+            args.json(json!({"coverage":"local mailbox retention only; not delivery or member acceptance",
+                "sequence":receipt.sequence,"digest":hex(&receipt.digest),"duplicate":receipt.duplicate}))?;
+        }
+        "relay-get" => {
+            let sequence = args.number("sequence")?;
+            let after = sequence.checked_sub(1).ok_or("sequence must be positive")?;
+            let store = FileStore::open(mailbox, args.namespace()?).map_err(relay_error)?;
+            let page = store.page(after, 1).map_err(relay_error)?;
+            let item = page
+                .records
+                .first()
+                .filter(|item| item.sequence() == sequence)
+                .ok_or("no retained relay item at this exact sequence")?;
+            args.output(&item.encode().map_err(|_| "relay item encoding failed")?)?;
+        }
+        "relay-page" => {
+            let limit = relay_page_limit(args)?;
+            let store = FileStore::open(mailbox, args.namespace()?).map_err(relay_error)?;
+            let page = store
+                .page(args.number("after")?, limit)
+                .map_err(relay_error)?;
+            let records: Vec<Value> = page
+                .records
+                .iter()
+                .map(|item| {
+                    json!({"sequence":item.sequence(),"operation":hex(item.operation().as_bytes()),
+                        "kind":format!("{:?}",item.kind()),"digest":hex(&item.digest()),
+                        "bytes":item.payload().len()})
+                })
+                .collect();
+            args.json(json!({"coverage":"local retained mailbox manifest only; not delivery or member acceptance",
+                "head":page.head,"next":page.next,"records":records}))?;
+        }
+        _ => return Err(HELP.into()),
+    }
+    Ok(())
+}
+
+fn relay_limits(args: &Args) -> Result<vhalla_private_native::relay::Limits, String> {
+    let limits = vhalla_private_native::relay::Limits {
+        max_items: if args.flags.contains_key("max-items") {
+            usize::try_from(args.number("max-items")?).map_err(|_| "max-items out of range")?
+        } else {
+            4096
+        },
+        max_bytes: if args.flags.contains_key("max-bytes") {
+            usize::try_from(args.number("max-bytes")?).map_err(|_| "max-bytes out of range")?
+        } else {
+            256 * 1024 * 1024
+        },
+    };
+    Ok(limits)
+}
+
+fn relay_page_limit(args: &Args) -> Result<usize, String> {
+    let limit = usize::try_from(args.number("limit")?).map_err(|_| "page limit out of range")?;
+    if !(1..=vhalla_private_native::relay::MAX_RELAY_PAGE).contains(&limit) {
+        return Err("relay page limit must be 1..64".into());
+    }
+    Ok(limit)
+}
+
+fn relay_error(error: vhalla_private_native::relay::Error) -> String {
+    use vhalla_private_native::relay::Error;
+    match error {
+        Error::Bounds => "relay input is malformed, noncanonical or exceeds a fixed bound",
+        Error::Scope => "relay item or mailbox belongs to another explicit namespace",
+        Error::Conflict => {
+            "the same relay sequence or operation was presented with different bytes"
+        }
+        Error::Confidential => "confidential offer metadata cannot be relayed",
+        Error::Capacity => "relay mailbox quota is full; retained items are never pruned",
+        Error::Storage => "relay mailbox storage is unavailable, locked or failed verification",
+    }
+    .into()
 }
 
 fn page_limit(args: &Args) -> Result<usize, String> {
