@@ -1609,6 +1609,36 @@ signed control ID. A fresh joiner's decryptable history begins after its joining
 checkpoint. There is no automatic polling, resend, membership update or remote
 receipt claim.
 
+### Opaque relay handoff
+
+The native client can package one retained ordinary artifact as a bounded,
+canonical `RelayItem` for an adapter or an explicit local handoff. The namespace
+is a nonzero 32-byte rendezvous token selected out of band; it is not a room ID,
+account key or authorization proof. The envelope binds that namespace, the
+sender-local sequence, operation ID, artifact kind and exact ciphertext. Secret
+contact offers are refused before encoding.
+
+```sh
+PRIVATE_RELAY_NS=... # 64 lowercase hex bytes, shared out of band
+vhalla private relay-export owner-key owner-room \
+  --namespace "$PRIVATE_RELAY_NS" --sequence 3 \
+  --out private-files/item.vhrelay
+
+vhalla private relay-apply member-key member-room \
+  --namespace "$PRIVATE_RELAY_NS" --relay private-files/item.vhrelay \
+  --out private-files/result
+```
+
+`relay-apply` verifies the canonical commitment and namespace before dispatching
+an application message, ordered control, invitation or contact invitation to its
+dedicated authenticated kernel path. KeyPackage and contact-request envelopes
+require their explicit owner/member commands; they are never silently admitted.
+The output is either the locally accepted plaintext or a bounded status JSON.
+This is an adapter boundary and explicit local transport, not a listener, relay
+service, recipient acknowledgment or evidence that another member processed the
+item. Keep the namespace separate from room metadata and do not reuse it as a
+secret or membership credential.
+
 ### Output uncertainty and exact recovery
 
 Keep each operation ID and all exact arguments, including validity endpoints,

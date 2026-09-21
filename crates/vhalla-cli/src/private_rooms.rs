@@ -36,6 +36,8 @@ vhalla private receive ID STORE --message FILE --out PRIVATE_PLAINTEXT
 vhalla private outbox ID STORE --after N --limit N --out PRIVATE_JSON
 vhalla private inbox ID STORE --after N --limit N --out PRIVATE_JSON
 vhalla private export ID STORE --sequence N --out CIPHERTEXT
+vhalla private relay-export ID STORE --namespace NS64 --sequence N --out RELAY_ITEM
+vhalla private relay-apply ID STORE --namespace NS64 --relay RELAY_ITEM --out PRIVATE_RESULT
 vhalla private control-export ID STORE --after N --parent CONTROL64|none --out CIPHERTEXT
 vhalla private remove ID STORE --device KEY64 --operation OP32 --out CIPHERTEXT
 vhalla private apply ID STORE --control FILE
@@ -46,7 +48,7 @@ vhalla private archive-resume ID ARCHIVE_STORE --archive FILE.vharchive [--max-r
 vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out PRIVATE_JSON [--max-records N --max-bytes N]
 vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
 Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
-Local files only. Existing identity; create/import always require a never-used store. No listener, relay, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
+Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. There is no listener, relay service, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
 const OFFER_LIMIT: usize = 1024;
@@ -96,6 +98,8 @@ impl Args {
             "receive" => &["message", "out"],
             "outbox" | "inbox" => &["after", "limit", "out"],
             "export" => &["sequence", "out"],
+            "relay-export" => &["namespace", "sequence", "out"],
+            "relay-apply" => &["namespace", "relay", "out"],
             "control-export" => &["after", "parent", "out"],
             "remove" => &["device", "operation", "out"],
             "apply" => &["control"],
@@ -160,6 +164,10 @@ impl Args {
     fn operation(&self) -> Result<OperationId, String> {
         OperationId::from_bytes(unhex(self.text("operation")?)?)
             .map_err(|_| "operation must be a nonzero 32-digit lowercase hex ID".into())
+    }
+    fn namespace(&self) -> Result<vhalla_private_native::relay::RelayNamespace, String> {
+        vhalla_private_native::relay::RelayNamespace::from_bytes(unhex(self.text("namespace")?)?)
+            .map_err(|_| "namespace must be a nonzero full 64-digit lowercase hex token".into())
     }
     fn validity(&self) -> Result<Validity, String> {
         Validity::new(self.number("not-before")?, self.number("expires")?)
@@ -388,6 +396,65 @@ async fn execute(args: Args) -> Result<(), String> {
                 );
             }
             args.output(artifact.bytes())?;
+        }
+        "relay-export" => {
+            let sequence = args.number("sequence")?;
+            let after = sequence.checked_sub(1).ok_or("sequence must be positive")?;
+            let page = room.outbox(after, 1).await.map_err(|_| REFUSED)?;
+            let artifact = page
+                .records
+                .first()
+                .and_then(|entry| entry.artifact())
+                .ok_or("no ordinary artifact; secret offers cannot be relayed")?;
+            if artifact.sequence() != sequence {
+                return Err("selected sequence is not retained in the local outbox".into());
+            }
+            let item =
+                vhalla_private_native::relay::RelayItem::from_artifact(args.namespace()?, artifact)
+                    .map_err(|_| "artifact kind is not eligible for opaque relay export")?;
+            args.output(&item.encode().map_err(|_| REFUSED)?)?;
+        }
+        "relay-apply" => {
+            let raw = args.input(
+                "relay",
+                vhalla_private_native::relay::MAX_RELAY_PAYLOAD + 256,
+                false,
+            )?;
+            let item = vhalla_private_native::relay::RelayItem::decode(&raw)
+                .map_err(|_| "relay item is malformed, oversized or fails its commitment")?;
+            if item.namespace() != args.namespace()? {
+                return Err("relay item belongs to another explicit namespace".into());
+            }
+            match item.kind() {
+                OutboxKind::Application => {
+                    let result = room.receive(item.payload()).await.map_err(|_| REFUSED)?;
+                    args.output(result.body())?;
+                }
+                OutboxKind::Removal | OutboxKind::OwnerUpdate => {
+                    let result = room
+                        .apply_control(item.payload())
+                        .await
+                        .map_err(|_| REFUSED)?;
+                    args.json(json!({"kind": format!("{:?}", item.kind()), "sequence": item.sequence(), "status": status(result), "coverage": "local authenticated control application; not relay acceptance"}))?;
+                }
+                OutboxKind::Invitation => {
+                    let result = room.join(item.payload()).await.map_err(|_| REFUSED)?;
+                    args.json(json!({"kind": "Invitation", "sequence": item.sequence(), "status": status(result), "coverage": "local authenticated invitation application; not relay acceptance"}))?;
+                }
+                OutboxKind::ContactInvitation => {
+                    let result = room
+                        .join_contact(item.payload())
+                        .await
+                        .map_err(|_| REFUSED)?;
+                    args.json(json!({"kind": "ContactInvitation", "sequence": item.sequence(), "status": status(result), "coverage": "local authenticated contact application; not relay acceptance"}))?;
+                }
+                OutboxKind::KeyPackage | OutboxKind::ContactRequest => {
+                    return Err("this relay kind requires its dedicated explicit owner/member command; no generic admission".into());
+                }
+                OutboxKind::ContactOffer => {
+                    return Err("confidential contact offers cannot be relayed".into());
+                }
+            }
         }
         "control-export" => {
             let id = if args.text("parent")? == "none" {

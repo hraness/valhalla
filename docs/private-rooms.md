@@ -35,7 +35,8 @@ inspection/import, encrypted contact request/response, message send/receive,
 exact retry/export, membership inspection, removal and owner renewal. Its
 [command guide](../crates/vhalla-cli/README.md#local-encrypted-private-room-files-experimental-private)
 includes the full two-account file exchange. It opens existing identity custody,
-uses only explicit local stores, and has no network or relay command. Input is a
+uses only explicit local stores, and has explicit canonical relay-item export and
+apply commands but no listener or automatic transport. Input is a
 bounded pipe or owner-private file; outputs are exclusive-create, synced private
 files. Fresh send checks authenticated membership, validity and the exact selected
 epoch/roster before reading text. Output failure preserves the state and partial
@@ -181,8 +182,10 @@ canonical bytes bind an out-of-band namespace, sender sequence, operation, kind
 and ciphertext, while a bounded reference store provides idempotent retries and
 retention-only receipts. It refuses confidential offer metadata and never
 exposes room, anchor, account, device or plaintext fields to the relay. This is
-the transport boundary, not a deployed relay or delivery acknowledgment; an
-HTTP/QUIC/file adapter and live failure-domain qualification remain required.
+the transport boundary, not a deployed relay or delivery acknowledgment; the CLI
+can export and explicitly apply the canonical envelope for local adapter
+integration, while an HTTP/QUIC/file adapter and live failure-domain
+qualification remain required.
 
 ## Durable state and limits
 
