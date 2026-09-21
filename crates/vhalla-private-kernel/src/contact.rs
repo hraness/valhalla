@@ -67,14 +67,52 @@ impl ContactBootstrap {
         now: u64,
     ) -> Result<Self> {
         let offer = Offer::decode(raw)?;
+        Self::from_offer(&offer, expected_owner, expected_recipient, now)
+    }
+
+    /// Authenticate one encrypted request against the exact confidential offer
+    /// and independently selected owner/recipient accounts. Returns only signed
+    /// metadata, never KeyPackage bytes or contact keys. A controller can cap its
+    /// invitation interval to both returned validity intervals before admission.
+    ///
+    /// This does not check current retained owner state, unused offer authority,
+    /// roster capacity or the actual MLS KeyPackage. The caller must still compare
+    /// the selected room/current owner and use `Kernel::accept_contact`; inspection
+    /// performs no storage access and does not grant or consume membership.
+    pub fn inspect_request(
+        raw_offer: &[u8],
+        raw_request: &[u8],
+        expected_owner: Key,
+        expected_recipient: Key,
+        now: u64,
+    ) -> Result<(Self, SignedDeviceEnrollment)> {
+        let offer = Offer::decode(raw_offer)?;
+        let metadata = Self::from_offer(&offer, expected_owner, expected_recipient, now)?;
+        let frame = Frame::decode(raw_request)?;
+        let clear = offer.open(&frame, None)?;
+        let join = crate::packets::JoinRequest::decode(&clear)?;
+        if join.scope != metadata.scope() || join.enrollment.claims().account != expected_recipient
+        {
+            return Err(Error::Scope);
+        }
+        join.enrollment.claims().validity.check_at(now)?;
+        Ok((metadata, join.enrollment.signed().clone()))
+    }
+
+    fn from_offer(
+        offer: &Offer,
+        expected_owner: Key,
+        expected_recipient: Key,
+        now: u64,
+    ) -> Result<Self> {
         if offer.owner_account != expected_owner || offer.recipient != expected_recipient {
             return Err(Error::Scope);
         }
         offer.check_time(now)?;
         offer.owner.claims().validity.check_at(now)?;
         Ok(Self {
-            anchor: offer.anchor,
-            owner: offer.owner,
+            anchor: offer.anchor.clone(),
+            owner: offer.owner.clone(),
             recipient: offer.recipient,
             validity: offer.validity,
         })

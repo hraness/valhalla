@@ -50,6 +50,23 @@ class Packaging(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     package.package(root)
 
+    def test_private_qualification_exports_never_look_like_production(self):
+        for extension in ["wasm", "js"]:
+            for marker in [b"qualify_private_session", b"qualify_private_cancel"]:
+                with self.subTest(extension=extension, marker=marker), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    html = '<script type="module">generated</script>'
+                    (root / "index.html").write_text(html)
+                    # No public qualification route marker: the private entry
+                    # point must independently prevent a production label.
+                    (root / ("app." + extension)).write_bytes(marker)
+                    with self.assertRaises(ValueError):
+                        package.package(root)
+                    self.assertEqual((root / "index.html").read_text(), html)
+                    self.assertFalse((root / "artifact.json").exists())
+                    package.package(root, allow_local_qualification=True)
+                    self.assertEqual(json.loads((root / "artifact.json").read_text())["purpose"], "local-qualification")
+
 
 if __name__ == "__main__":
     unittest.main()

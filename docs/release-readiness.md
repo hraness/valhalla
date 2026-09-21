@@ -49,16 +49,26 @@ and current retained image; account restoration alone never recreates MLS state.
 The optional native private CLI now implements the complete local encrypted-file
 invitation and messaging path, recipient review, exact retry/export, removal and
 renewal. Four real process journeys and the read-only locator regression pass.
-Browser vaults expose the same typed derivation and real Window/worker custody
-qualification passes, but their private product session and interface are not yet
-integrated. These features remain optional and
-do not add MLS or SQLite to the default public browser dependency graph.
+The native CLI also supports complete encrypted archives, exact interrupted-import
+resume, and read-only membership/history inspection. Three native custody tests,
+three process journeys and one file-framing fault test passed locally. These
+archives cannot activate a device or recover owner authority.
+The optional browser session now joins account and kernel custody in its existing
+worker. Actual-worker qualification covers irreversible private entry, exact
+locator retention/reopen, cancellation after commit, stale replies and replaced
+account refusal. The optional private panel passed a real two-account DOM journey:
+confidential invitations, bidirectional file messages, exact ciphertext reopen,
+ordered renewal control, keyboard locator acknowledgment, consent invalidation,
+secret export refusal, and lock cleanup. Desktop/tablet/mobile layouts passed at
+1280/768/390 pixels. Browser archive and fresh-device recovery remain unfinished.
+These features remain optional and do not add MLS or SQLite to the default public
+browser dependency graph.
 
 Before a private-room release, complete and qualify:
 
-- Browser creation, recipient-bound confidential invitations, membership
-  inspection, ordered control catch-up, removal and renewal flows; integrate
-  explicit private recovery in both clients.
+- Extend browser coverage to owner removal and every retained-control edge case;
+  integrate explicit archive and fresh-device recovery. Creation, confidential
+  invitations, membership inspection and renewal/catch-up are implemented.
   Never publish private room titles, membership, task context or bootstrap secrets
   into discovery, public URLs or unencrypted operational logs.
 - Bounded interchangeable ciphertext relays, offline retry and explicit
@@ -128,8 +138,15 @@ prefix/cleanup credits. The full peer/identity suites passed 73 tests including
 doctests, and strict workspace lint passed. Legacy activity uses that same writer
 without implicitly consuming a staged prefix. Explicit CLI continuity-store
 initialization and serving passed all eight operator process tests, including
-typed proof readback, mode/limits mismatch preservation and monotone restart. Client receipt continuation and
-incremental finalization beyond the bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
+typed proof readback, mode/limits mismatch preservation and monotone restart. Portable receipt state and native/IndexedDB persistence now retain exact signed
+terminal and role-aware Evidence replies, tied to the selected peer, endpoint,
+author, latest request/nonce and immutable source outbox. Stage and Status never
+advance the retained prefix; the legacy delivery floor is unchanged. The native
+controller now explicitly initializes/selects an exact signed target, saves an
+attempt before dialing, and performs one advertisement refresh plus at most three
+continuity exchanges within a 90-second step. Fifteen real-store/typed-HTTP tests
+and strict native CLI lint passed. Browser orchestration, old-policy unsigned-draft
+recovery and incremental finalization beyond the bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;
 never silently prune or reset a used sequence to recover capacity.
@@ -153,7 +170,7 @@ browser packaging, dependency/advisory checks and exact-head CI. New source need
 new evidence; earlier commit checks do not cover a dirty working tree. Prototype
 success cannot substitute for tests of a promoted production boundary.
 
-The marketing site includes a home page and nine static documentation pages.
+The marketing site includes a home page and ten static documentation pages.
 Its release gate includes content/link tests, production build, desktop/mobile
 and dark-mode visual review, keyboard navigation, direct documentation URLs,
 JavaScript-disabled reading and CSP. Publishing the website does not activate

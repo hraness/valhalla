@@ -1682,5 +1682,184 @@ listener remains loopback HTTP with an explicitly operated HTTPS reverse proxy.
 The typed continuity route and legacy activity compatibility use one writer.
 Legacy activity cannot consume a staged prefix. Ordinary client receipt state
 cannot treat a jumped terminal as proof that every ancestor was delivered;
-continuity-aware client persistence remains separate work. See the
+use the separate continuity receipt session below. See the
 [peer resource and recovery contract](../vhalla-public-peer/README.md).
+
+
+## Native continuity receipt sessions
+
+The `experimental-public` native client can transfer **already finalized signed
+outbox frames** to one explicitly selected continuity peer. It never opens an
+identity, signs a draft, chooses another endpoint, rewrites v1 delivery receipts,
+or starts a listener. The selected peer must independently enable continuity
+serving. Its signed statements establish that peer's claims, not global delivery
+or current room permission.
+
+The following commands reuse the existing pinned bootstrap, author outbox and
+`peer-add` state. Every room, author, peer key, HTTPS endpoint and receipt limit is
+explicit. Replace the placeholders with the exact existing local configuration.
+The receipt ceilings below are examples, not automatically chosen capacity.
+
+```console
+vhalla public activity continuity-init BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT NEW_RECEIPTS 1000 67108864 TERMINAL_SEQUENCE
+vhalla public activity continuity-status BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS 1000 67108864
+vhalla public activity continuity-step BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS 1000 67108864 JOURNAL
+vhalla public activity continuity-select BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS 1000 67108864 LATER_TERMINAL_SEQUENCE
+```
+
+`init` exclusively creates a new receipt directory and saves the exact selected
+terminal and a random operation ID. `select` opens the existing directory with
+the same immutable quotas: the same exact terminal resumes its operation; only
+an explicitly selected later terminal begins another. It never follows a later
+local head automatically. If initialization stops after directory creation,
+reopen with `select`; preserve the directory rather than repeating `init` or
+resetting receipt state. `status` and selection do not dial. Explicit native
+open may reconcile a retained receipt intent; status never synthesizes missing
+author, peer or receipt state.
+
+Each `step` uses one advertisement refresh and at most three continuity
+exchanges inside the existing 90-second cancellation supervisor. Individual
+HTTP calls retain the 18-second bound, exact public DNS pinning, TLS identity,
+no proxy/redirect fallback, and bounded subprocess reaping. Certified replay
+retains its 4,096-bundle/30-second slice; append `--replay-profile PROFILE` to
+`step` to reuse an existing authenticated profile. `more-policy-replay-no-network`
+means this slice saved policy progress without publication. As with ordinary
+catch-up, the exact author policy checkpoint may advance while all signed frames
+and any pending draft remain unchanged.
+
+A fresh nonce-bound attempt is saved before each continuity request. Status and
+Stage replies never advance permanent retention. The JSON reports terminal
+admission separately from `peerAssertedRetainedThrough`; only `complete: true`
+means the saved admission agrees with a contiguous exact local-source Evidence
+prefix ending at that terminal with the current-admission role. It still means
+one peer's historical signed claim. `continuityAttempts` counts started attempts
+conservatively, including a local refusal before transport; it is never greater
+than three. `more` requests another bounded invocation using the same custody.
+HTTP errors, quota refusal, expiry, cancellation or uncertainty stop this call;
+there is no retry loop, sleep, fallback peer or automatic quota increase.
+
+The client uploads exactly 32 historical frames per Stage and at most 32 final
+inline ancestors with the fixed terminal, preserving the existing 4,096 staged
+ancestor ceiling. The terminal must match the independently replayed current
+room policy immediately before new work. If the peer reports a newer frontier,
+obtain certified journal catch-up before attempting fresh publication. Peer
+reports cannot replace certificates. Journal advancement concurrent with the
+final local check is resolved by the peer's own admission checks.
+
+After an uncertain prior Commit, exact Evidence can show the selected terminal
+already retained as admitted. Only then can the client request the same terminal's
+original admission after revocation, without treating an old signature as a new
+posting grant or converting historical-only evidence to admitted content. A peer
+already beyond the selected target requires explicit selection of a later local
+terminal. Keep every source, peer and receipt directory after a refusal;
+`needsReopen` requires exact reopen/reconciliation before another attempt.
+
+A still-unsigned old-policy pending draft can block author continuity. This
+slice explicitly refuses that case: it does not discard, rebase, sign or recover
+the draft. Separate reviewed historical draft recovery remains a usability gap.
+Full uploads also need an operator-sized lease: the minimum 60 seconds cannot
+reliably cover 4,096 staged ancestors under the existing per-IP credits. Refer to
+the serving resource contract above rather than assuming minimum TTL is adequate.
+
+
+## Native private archives (experimental-private)
+
+The optional private CLI can export the complete encrypted state of one existing
+local private room/device, copy it into a separate **inert archive store**, and
+inspect its retained membership, inbox and redacted outbox. This is an archive,
+not a device transfer or a live restore. Ordinary room open, signing, MLS receive,
+and sending refuse the archive's distinct storage purpose. It does not reset a
+ratchet, recreate a lost device from its account key, or introduce owner succession.
+The same account's existing identity custody must be available for every operation.
+
+Use existing local account and room paths below. The selected output directory
+must already be owner-private `0700`; files are exclusively created as `0600`.
+The `.vharchive` extension identifies the binary container for people; filenames
+and the container's context/ID header confer no authority. No content is printed
+or sent over a network. Keep archive files private: they contain encrypted provider
+state, secret contact offers and complete retained evidence, and expose their
+private full-context/archive identifiers plus lengths in the outer header.
+
+```sh
+# Optional build; default CLI dependency graph is unchanged.
+cargo build --locked -p vhalla-cli --features experimental-private
+
+# Hold existing account + source store custody while streaming one exact snapshot.
+vhalla private archive-export ./owner-key ./owner-room \
+  --out ./private-files/owner-2026-09-20.vharchive
+
+# Create a never-used, explicitly separate inert destination.
+vhalla private archive-import ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive
+
+# Read authenticated destination metadata into a new private JSON file.
+vhalla private archive-inspect ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive \
+  --out ./private-files/archive-membership.json
+
+# Bounded pages, with after exclusive and limit between 1 and 16.
+vhalla private archive-inbox ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive --after 0 --limit 16 \
+  --out ./private-files/archive-inbox.json
+vhalla private archive-outbox ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive --after 0 --limit 16 \
+  --out ./private-files/archive-outbox.json
+```
+
+`archive-inbox` intentionally releases retained plaintext into the chosen private
+file. Treat it as inert data and review any later disclosure separately.
+`archive-outbox` exposes metadata and encrypted-artifact lengths, never secret
+offer bytes; `artifact_bytes: null` denotes confidential issuance metadata.
+None of these commands exports a storage key, raw provider map or live kernel.
+
+Files use a small versioned container with a full-context/ID selection, bounded
+length-prefixed encrypted pages, an explicit end marker and exact EOF. Import
+authenticates the complete initial image and exact selected account/context before
+creating the destination, then checks record/index completeness and the final
+archive claim through the maintained kernel codec. Extra/truncated framing and
+trailing bytes refuse. Inspection bounds/scans the file to locate its authenticated
+final seal and checks the existing completed destination. It is **not a fresh
+cryptographic verification of every middle page in that file**; import performs
+that verification. It also does not prove the archived device was newest or that
+no live clone exists. An older coherent copy cannot establish global freshness.
+
+All file scans and allocations are bounded. Each encrypted page is at most
+512 KiB; import retains at most two pages plus the bounded current image, not a
+whole lifetime history. Default import/input caps are 100,000 records and
+256 MiB of encrypted record payload. `--max-records N --max-bytes N` on import,
+resume and archive-view commands select explicit caps (maximum 1,000,000 records
+and 8 GiB payload, plus bounded container overhead). On import these become the
+destination's immutable native quotas. On resume/view they bound the input file;
+they do not resize an existing store. Export derives its stream cap from the
+source's existing immutable limits. Disk/database overhead is additional.
+
+On interruption, preserve the exact source file and every destination file:
+
+```sh
+# Only authenticated receiving progress can resume. Uses the SAME archive file.
+vhalla private archive-resume ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive
+
+# If final completion was uncertain, use archive-inspect with a new output path.
+# A completed archive intentionally refuses archive-resume and ordinary inspect.
+vhalla private archive-inspect ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive \
+  --out ./private-files/reconciled-archive.json
+```
+
+Resume rereads the bounded source prefix, rechecks the last committed records page
+as an exact retry, and continues from authenticated durable progress. It cannot
+switch archives, discard records or restart an existing namespace. FORMAT-only,
+missing and malformed destination states remain preserved and refuse. A failed
+export may leave an incomplete private file; restart export to a **new** path,
+never append to the prefix or combine streams. Source state remains authoritative
+and usable. Output failures never authorize resetting a source or destination.
+
+Archive inspection is read-only at the authenticated application layer. The
+existing native custody open still takes its exclusive lock and may perform
+SQLite journal recovery and durability sync; no new storage repair/reset mode
+was added. Account custody and archive/store custody remain owned together until
+lock/drop. Retain both the encrypted archive file and the account's established
+custody; losing either is not repaired by creating a new identity or device.
+Active transfer/fencing, live backup restoration, automatic owner recovery and
+owner succession are not supplied by these commands.

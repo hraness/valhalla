@@ -385,3 +385,73 @@ realm. A dedicated custody worker can own the same strict transactions without
 sending decrypted state or database handles through the window. The synthetic
 `qualify_storage.mjs` harness exercises both Window and dedicated-worker realms;
 this does not by itself implement private-room storage or worker authorization.
+
+## Public continuity receipts (separate from v1 authoring)
+
+`outbox::continuity` frames one exact author/bootstrap/peer/endpoint session. It
+has no key, signature-generation, network, policy-admission, pruning or author
+reset API. A `Snapshot` prepares a move-only `Publication`; inspecting its
+projected state is not a persistence receipt. Reserve the exact attempt before
+HTTP and generate a new unpredictable nonce for each new exchange. An ambiguous
+retry keeps the logical operation and signed content while replacing the nonce;
+late replies cannot match the retained attempt. Immediate nonce reuse refuses;
+entropy and avoiding older nonce reuse remain the controller's responsibility.
+
+`Reply::Status` and `Reply::Staged` are hints only. `TerminalEvidence` records one
+selected peer's admission assertion. It never acknowledges its ancestors. Only
+strictly verified `Reply::Evidence` records whose canonical signed frames match
+the actual immutable local outbox advance `RetentionHead`. The retained role and
+transaction boundary are checked across page edges, including pages with distinct
+original registry bases. Completion requires the selected terminal's role,
+original cursor and registry to match both evidence types. No global completeness,
+latest policy, peer availability or continued physical remote storage is proved.
+
+A job fixes an existing local signed terminal. Explicit replacement can move to a
+strictly later terminal with a new operation, preserving retained evidence and
+all original response files. This slice does not implement the HTTP controller
+or signing/recovering an old-policy reserved draft. Existing v1 `AuthorHead`,
+`DeliveryHead`, reservations, delivery proofs and native directory bytes stay
+unchanged. There is no conversion of a jumped terminal into a v1 delivery head.
+
+Native `native::continuity::NativeContinuity::{create_new,open,snapshot,publish,
+read_record}` uses a separately created private receipt directory and lifetime
+custody lock. Every call also borrows the existing `NativeOutbox`; it never opens
+a second author writer. FORMAT binds the exact complete scope/route and immutable
+limits before recovery writes. Missing prior sessions refuse; use `create_new`
+only for an explicitly new receipt session, never to repair a lost one. Reads
+reauthenticate a fixed maximum of three referenced proofs plus one pending body,
+then compare the actual indexed author records. Older proofs are checked on direct
+indexed reads; open is not an all-history file-integrity scan. Missing published
+records fail when referenced/read, without reinitialization.
+
+Future native operations publish `INTENT.tmp`, synchronize it, atomically rename
+to INTENT and synchronize the directory before effects. Exact immutable proof
+bytes precede atomic STATE and acknowledgement; INTENT removal is synchronized
+last. Reopen first validates scope, quota, current state and source. A complete
+canonical staged intent can finish its exact prior operation. An incomplete
+unpublished frame is removed only with exact current-before framing and no
+successor/temporary effects. Full malformed or authoritative partial intents stay
+untouched. Initial never-completed FORMAT/STATE creation remains fail closed.
+Any ambiguous write poisons the handle; no success is reported before explicit
+reconciliation. The model assumes a cooperating private-directory owner; coherent
+hostile local rollback is outside its guarantee.
+
+IndexedDB `IndexedOutbox::{create_continuity,load_continuity,publish_continuity,
+continuity_record}` stores a new `continuity/v1` prefix inside the existing
+profile database. Strict transaction completion is the success boundary. The
+same transaction rechecks source author/history, exact source event keys and
+receipt STATE before adding immutable evidence and the next state. Access latches
+before await; cancellation, abort or uncertainty requires drop/open/load. An
+existing prefix cannot be recreated and missing state is not a fresh author.
+
+Each wire mutation contains at most33 frames and Evidence at most32. A candidate
+rechecks at most40 source checks; fixed referenced proofs plus a pending attempt
+use at most136 checks. Publication performs both (at most176 checks), independent
+of lifetime history. A response record is at
+most `MAX_REPLY_BYTES+8192`; state is at most `MAX_BODY_BYTES+8192`. Native bounded
+intent/temp/control overhead is separate from retained response quotas (under
+one MiB total), not the v1 64KiB allowance. Explicit quotas are one to one million
+response records and at most8GiB retained response bytes. Exhaustion preserves
+all evidence and refuses the new operation. These are storage bounds, not
+throughput or production capacity recommendations. Server 4096 staging and lease
+limits remain unchanged.

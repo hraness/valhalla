@@ -9,6 +9,8 @@
 //! hostile writer with the same OS identity are outside the custody contract.
 
 mod codec;
+/// Independent receipt-only public continuity sessions.
+pub mod continuity;
 mod disk;
 pub mod peers;
 pub mod replay;

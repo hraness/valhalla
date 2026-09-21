@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 #![cfg(unix)]
 pub mod agent;
+#[cfg(feature = "client")]
+pub mod archive;
 pub mod bridge;
 #[cfg(feature = "client")]
 pub mod client;

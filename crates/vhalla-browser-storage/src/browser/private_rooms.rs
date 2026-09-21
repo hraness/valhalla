@@ -320,3 +320,28 @@ fn read_offered<T: 'static>(
 
 #[cfg(feature = "qualification")]
 pub mod qualification;
+
+impl vhalla_private_kernel::storage::ArchiveStore for IndexedPrivateStore {
+    async fn accounting(
+        &mut self,
+        context: Context,
+    ) -> Result<vhalla_private_kernel::storage::Accounting, StoreError> {
+        self.matches(context)?;
+        let limits = self.limits;
+        self.run(false, move |tx| {
+            read_meta(tx, context, Some(limits), |tx, limits, state| {
+                let (image, records, bytes) =
+                    state.map_or((None, 0, 0), |s| (Some(s.image), s.records, s.bytes));
+                *tx.result.borrow_mut() = Some(Ok(vhalla_private_kernel::storage::Accounting {
+                    image,
+                    records,
+                    bytes,
+                    max_records: limits.max_records,
+                    max_bytes: limits.max_record_bytes,
+                }));
+                Ok(())
+            })
+        })
+        .await
+    }
+}

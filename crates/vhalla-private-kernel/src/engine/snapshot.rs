@@ -13,6 +13,15 @@ pub struct MembershipSnapshot {
     members: Vec<SignedDeviceEnrollment>,
 }
 impl MembershipSnapshot {
+    pub(super) fn from_state(state: &State) -> Self {
+        Self {
+            status: state.status(),
+            anchor: state.anchor.signed().clone(),
+            local: state.local.signed().clone(),
+            owner: state.owner.signed().clone(),
+            members: state.roster.iter().map(|e| e.signed().clone()).collect(),
+        }
+    }
     /// Exact accepted context, epoch, roster commitment and lifecycle state.
     pub const fn status(&self) -> Status {
         self.status

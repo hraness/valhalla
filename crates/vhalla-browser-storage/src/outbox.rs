@@ -7,6 +7,7 @@
 use crate::{history::HistoryHead, Error};
 use vhalla_room_activity::{EventId, RoomScope, UnsignedEvent, VerifiedEvent, MAX_UNSIGNED_BYTES};
 
+pub mod continuity;
 pub mod delivery;
 pub mod recovery;
 

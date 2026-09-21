@@ -35,6 +35,9 @@ use vhalla_room_activity::RoomScope;
 use vhalla_rooms::RoomGenesisId;
 
 pub(super) const HELP: &str = "vhalla public activity peer-add BOOTSTRAP PIN64 NEW_PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT AD_FILE\nvhalla public activity send BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT\nvhalla public activity read BOOTSTRAP PIN64 ROOM64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT AFTER_CURSOR NEW_EXPORT_DIR\npeer-add explicitly saves one fresh signed READ peer without dialing. send attempts at most 3 retained posts to that exact peer, persisting its receipts before reporting confirmation. read exports at most 16 full-scope signed frames plus the exact request/proof/page into a new directory; AFTER_CURSOR is explicit and peer-local. JSON reports continuation; received pages are not independently admitted room history. No key use, endpoint discovery/failover, PUBLISH startup, or author-floor reset occurs. Keep peer state to preserve signed advertisement and clock floors; no route/key migration is implemented.";
+#[path = "network/continuity.rs"]
+pub(super) mod continuity;
+
 const SEND_LIMIT: usize = 3;
 const PAGE_LIMIT: u8 = 16;
 

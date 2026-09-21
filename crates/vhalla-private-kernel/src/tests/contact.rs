@@ -942,3 +942,242 @@ fn contact_rekeyed_offer_with_attacker_signature_never_releases_key_package() {
             .unwrap();
     });
 }
+
+#[test]
+fn contact_request_preview_binds_offer_pins_ciphertext_scope_and_enrollment() {
+    block_on(async {
+        let mut pair = fresh().await;
+        let (secret, request) = request(&mut pair).await;
+        let owner = pair.owner.status().context.account;
+        let recipient = pair.member.status().context.account;
+        let other = pair
+            .owner
+            .create_contact_offer(op(201), recipient, validity(pair.now), pair.now)
+            .await
+            .unwrap();
+        let before_owner = pair.owner_disk.snapshot();
+        let before_member = pair.member_disk.snapshot();
+        let inspect = |offer: &[u8], request: &[u8], owner, recipient, now| {
+            ContactBootstrap::inspect_request(offer, request, owner, recipient, now)
+        };
+        let (metadata, enrollment) = inspect(
+            secret.confidential_bytes(),
+            request.bytes(),
+            owner,
+            recipient,
+            pair.now,
+        )
+        .unwrap();
+        assert_eq!(metadata.scope(), pair.owner.status().context.scope);
+        assert_eq!(metadata.owner(), owner_work(&pair).state.owner.signed());
+        assert_eq!(enrollment.claims().account, recipient);
+        assert_eq!(
+            enrollment.claims().device,
+            pair.member.status().context.device
+        );
+        assert!(inspect(
+            other.confidential_bytes(),
+            request.bytes(),
+            owner,
+            recipient,
+            pair.now
+        )
+        .is_err());
+        assert!(inspect(
+            secret.confidential_bytes(),
+            request.bytes(),
+            key(&account()),
+            recipient,
+            pair.now
+        )
+        .is_err());
+        assert!(inspect(
+            secret.confidential_bytes(),
+            request.bytes(),
+            owner,
+            key(&account()),
+            pair.now
+        )
+        .is_err());
+        assert!(inspect(
+            secret.confidential_bytes(),
+            request.bytes(),
+            owner,
+            recipient,
+            metadata.validity().expires_at()
+        )
+        .is_err());
+        for length in [0, 1, request.bytes().len() - 1] {
+            assert!(inspect(
+                secret.confidential_bytes(),
+                &request.bytes()[..length],
+                owner,
+                recipient,
+                pair.now
+            )
+            .is_err());
+        }
+        let mut changed = request.bytes().to_vec();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(inspect(
+            secret.confidential_bytes(),
+            &changed,
+            owner,
+            recipient,
+            pair.now
+        )
+        .is_err());
+        let mut trailing = request.bytes().to_vec();
+        trailing.push(0);
+        assert!(inspect(
+            secret.confidential_bytes(),
+            &trailing,
+            owner,
+            recipient,
+            pair.now
+        )
+        .is_err());
+
+        // Authenticated wrong-scope and wrong-recipient payloads still refuse.
+        let offer = Offer::decode(secret.confidential_bytes()).unwrap();
+        let clear = offer
+            .open(&Frame::decode(request.bytes()).unwrap(), None)
+            .unwrap();
+        let mut join = crate::packets::JoinRequest::decode(&clear).unwrap();
+        join.scope.room = RoomId::from_bytes([3; 32]).unwrap();
+        let foreign = offer.seal(None, &join.encode().unwrap()).unwrap();
+        assert!(matches!(
+            inspect(
+                secret.confidential_bytes(),
+                &foreign,
+                owner,
+                recipient,
+                pair.now
+            ),
+            Err(Error::Scope)
+        ));
+        let mut join = crate::packets::JoinRequest::decode(&clear).unwrap();
+        let alien = account();
+        join.enrollment = UnsignedDeviceEnrollment::new(DeviceEnrollmentClaims {
+            account: key(&alien),
+            device: join.enrollment.claims().device,
+            validity: validity(pair.now),
+        })
+        .unwrap()
+        .sign(&alien)
+        .unwrap()
+        .verify()
+        .unwrap();
+        let foreign = offer.seal(None, &join.encode().unwrap()).unwrap();
+        assert!(matches!(
+            inspect(
+                secret.confidential_bytes(),
+                &foreign,
+                owner,
+                recipient,
+                pair.now
+            ),
+            Err(Error::Scope)
+        ));
+        let response = offer
+            .seal(Some(crate::contact::request_hash(request.bytes())), &clear)
+            .unwrap();
+        assert!(inspect(
+            secret.confidential_bytes(),
+            &response,
+            owner,
+            recipient,
+            pair.now
+        )
+        .is_err());
+        assert!(pair.owner_disk.snapshot() == before_owner);
+        assert!(pair.member_disk.snapshot() == before_member);
+    });
+}
+
+#[test]
+fn contact_request_preview_preserves_signed_expiry_for_delayed_admission() {
+    block_on(async {
+        let mut pair = fresh().await;
+        let end = pair.now + 3600;
+        let secret = pair
+            .owner
+            .create_contact_offer(
+                op(100),
+                pair.member.status().context.account,
+                Validity::new(pair.now, end).unwrap(),
+                pair.now,
+            )
+            .await
+            .unwrap();
+        let request = pair
+            .member
+            .contact_request(op(200), secret.confidential_bytes(), pair.now)
+            .await
+            .unwrap();
+        let later = pair.now + 5;
+        let before = pair.owner_disk.snapshot();
+        assert!(matches!(
+            pair.owner
+                .accept_contact(
+                    op(101),
+                    request.bytes(),
+                    Validity::new(later, later + 3600).unwrap(),
+                    later
+                )
+                .await,
+            Err(Error::Time)
+        ));
+        assert!(pair.owner_disk.snapshot() == before);
+        pair.reopen_owner().await;
+        let (metadata, enrollment) = ContactBootstrap::inspect_request(
+            secret.confidential_bytes(),
+            request.bytes(),
+            pair.owner.status().context.account,
+            pair.member.status().context.account,
+            later,
+        )
+        .unwrap();
+        let expiry = metadata
+            .validity()
+            .expires_at()
+            .min(enrollment.claims().validity.expires_at());
+        assert_eq!(expiry, end);
+        let response = pair
+            .owner
+            .accept_contact(
+                op(101),
+                request.bytes(),
+                Validity::new(later, expiry).unwrap(),
+                later,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            pair.member
+                .join_contact(response.bytes(), later)
+                .await
+                .unwrap()
+                .phase,
+            Phase::MemberJoined
+        );
+    });
+}
+
+#[test]
+fn contact_request_preview_refuses_expired_recipient_before_owner_mutation() {
+    block_on(async {
+        let mut pair = fresh_with_lifetimes(7200, 10).await;
+        let (secret, request) = request(&mut pair).await;
+        let before = pair.owner_disk.snapshot();
+        assert!(ContactBootstrap::inspect_request(
+            secret.confidential_bytes(),
+            request.bytes(),
+            pair.owner.status().context.account,
+            pair.member.status().context.account,
+            pair.now + 10
+        )
+        .is_err());
+        assert!(pair.owner_disk.snapshot() == before);
+    });
+}

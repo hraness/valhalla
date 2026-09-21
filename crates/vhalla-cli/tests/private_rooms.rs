@@ -571,3 +571,6 @@ fn private_cli_complete_locator_without_image_never_recreates_lost_device() {
     assert_eq!(f.snapshot("unfinished"), before);
     assert!(!f.root.join("not-authenticated").exists());
 }
+
+#[path = "private_rooms/archive.rs"]
+mod archive;

@@ -3,8 +3,10 @@
 Valhalla's private room core is implemented in the workspace. It is not yet a
 private-room end-user release. An optional trusted native session now joins
 account and room custody under one lock lifetime. The optional Unix CLI supports
-explicit local file exchange. Browser UI, complete-state recovery and automatic
-confidential delivery remain unfinished. Public discovery and public author
+explicit local file exchange. The optional browser worker now joins account and
+room custody. A bounded read-only archive core and native encrypted-file archive workflow are
+implemented. The optional browser interface has passed its two-account file-exchange journey; browser archive
+recovery, fresh-device recovery and automatic confidential delivery remain unfinished. Public discovery and public author
 backups must never carry private state or private invitations.
 
 ## Components and default dependencies
@@ -113,8 +115,13 @@ retain the exact context before `commit`. A failed or uncertain creation is
 reconciled only by opening that context and existing store. Missing state refuses;
 there is no delete-and-recreate fallback. Native storage operations run on a
 suitable worker because SQLite and filesystem barriers block within one poll.
-The browser has the custody primitive and IndexedDB backend, but no integrated
-private-room worker/session or lock/unlock UI yet.
+The optional browser controller uses the existing identity worker for both
+custodians. Private entry prevents public signing/export for the lifetime of that
+worker, including busy and failed states. Each operation revalidates the retained
+account image; cancellation requires exact-context reopen. Creation separates
+locator preparation, explicit retention acknowledgment and commit. The real
+worker journey exercises these boundaries; a complete product interface and
+private backup/import workflow remain separate work.
 
 Existing-member control catch-up now uses an authenticated encrypted envelope.
 Its key comes from the predecessor MLS epoch exporter and binds full room/anchor,
@@ -284,3 +291,27 @@ Before a private-room release, finish and qualify:
 
 The public site's readiness page remains the end-user status. This document
 describes implemented foundations and does not advertise a live private network.
+
+
+## Archive recovery boundary
+
+The kernel now exports complete authenticated room state and retained evidence in
+bounded encrypted pages. Import uses an explicit fresh namespace and exact source
+context/archive ID, checks source-key possession before writes, preserves exact
+progress across uncertain writes, and publishes only after a complete final seal.
+The destination remains a read-only archive: it cannot send, sign or reopen as a
+live MLS device. Secret offer issuance remains redacted in normal history views.
+See the [archive contract](../crates/vhalla-private-kernel/README.md#encrypted-read-only-archives).
+
+The optional native CLI supplies bounded `.vharchive` export, fresh-destination
+import, exact receiving-state resume, and membership/inbox/redacted-outbox
+inspection. Its three account-custody tests, three process journeys and interrupted
+file-framing test passed locally. See the [native archive runbook](../crates/vhalla-cli/README.md#native-private-archives-experimental-private)
+for private file permissions, immutable quotas and recovery after uncertainty.
+Archive inspection authenticates the completed destination and final file seal;
+it does not freshly verify every middle page of an already imported file.
+
+Browser archive workflows and fresh-device admission remain unfinished. Historical
+inspection never authorizes resuming the old device. Retain all encrypted parts
+and the full locator; never silently clone a ratchet. Owner-device succession and
+safe live-custody transfer remain unimplemented.

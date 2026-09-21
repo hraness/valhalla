@@ -165,3 +165,29 @@ pub trait Store {
         records: &[StoredRecord],
     ) -> impl Future<Output = Result<(), StoreError>>;
 }
+
+/// One atomic read of image, retained accounting and immutable local limits.
+/// Counts are trusted backend metadata, not proof of archive completeness; the
+/// recovery kernel independently enumerates and authenticates every required key.
+pub struct Accounting {
+    /// Exact current opaque image observed with these counters.
+    pub image: Option<Image>,
+    /// Number of immutable published records.
+    pub records: u64,
+    /// Sum of exact encrypted record payload sizes.
+    pub bytes: u64,
+    /// Immutable record capacity; no pruning is implied.
+    pub max_records: u64,
+    /// Immutable encrypted-payload byte capacity.
+    pub max_bytes: u64,
+}
+/// Optional bounded recovery accounting. Ordinary Store implementations and
+/// normal kernel operations do not acquire a new requirement. A failed or
+/// canceled read obeys the same poison/reopen contract as load/read.
+pub trait ArchiveStore: Store {
+    /// Read the exact image and all counters in one transaction/owner snapshot.
+    fn accounting(
+        &mut self,
+        context: Context,
+    ) -> impl Future<Output = Result<Accounting, StoreError>>;
+}

@@ -428,3 +428,6 @@ pub async fn run(
     control(&hook, "finish")?;
     Ok("private IndexedDB exact CAS, strict completion, stale tabs, cancellation, markers, orphan keys and bounded refusal passed".into())
 }
+
+#[cfg(feature = "private-archive-qualification")]
+pub mod archive;

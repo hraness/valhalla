@@ -130,7 +130,7 @@ impl RecordKey {
     fn encode(self) -> Result<Vec<u8>> {
         let (tag, rest) = match self {
             Self::Outbox(n) | Self::Inbox(n) | Self::Control(n) if n == 0 => {
-                return Err(Error::Refused)
+                return Err(Error::Refused);
             }
             Self::Outbox(n) => (1, n.to_be_bytes().to_vec()),
             Self::Inbox(n) => (2, n.to_be_bytes().to_vec()),
@@ -183,6 +183,19 @@ enum Point {
     StateUpdated,
     Committed,
     DirectorySynced,
+}
+
+/// Atomic image and accounting snapshot for explicit bounded archive work.
+/// It grants no decryption, completeness or live-restore authority.
+pub struct Accounting {
+    /// Exact opaque current image.
+    pub image: Option<Vec<u8>>,
+    /// Retained immutable-record count.
+    pub records: u64,
+    /// Exact sum of encrypted record payload lengths.
+    pub bytes: u64,
+    /// Immutable operator-selected capacity.
+    pub limits: Limits,
 }
 
 /// One exclusive native backend. Reopen is required after uncertain I/O.
@@ -368,6 +381,21 @@ impl NativePrivateStore {
             .check_files()
             .and_then(|_| self.meta())
             .map(|m| m.image);
+        self.finish_read(result)
+    }
+    /// Read image, counters and configured budgets under this exclusive owner.
+    /// No repair, history enumeration, or new database transaction occurs.
+    pub fn accounting(&mut self, context: Context) -> Result<Accounting> {
+        self.ready(context)?;
+        let result = self
+            .check_files()
+            .and_then(|_| self.meta())
+            .map(|m| Accounting {
+                image: m.image,
+                records: m.records,
+                bytes: m.bytes,
+                limits: self.limits,
+            });
         self.finish_read(result)
     }
     /// Read one indexed immutable record without recovery or a history scan.

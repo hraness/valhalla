@@ -585,3 +585,43 @@ fn locator_is_only_a_bounded_hint_and_never_repairs_partial_state() {
     drop(store);
     fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn archive_accounting_is_exact_bounded_and_preserves_failed_read_evidence() {
+    let path = home();
+    let ctx = context();
+    let mut store = NativePrivateStore::create_new(&path, ctx, limits()).unwrap();
+    let pristine = store.accounting(ctx).unwrap();
+    assert!(pristine.image.is_none());
+    assert_eq!((pristine.records, pristine.bytes), (0, 0));
+    assert_eq!(pristine.limits, limits());
+    let records = [
+        record(RecordKey::Outbox(1), 7),
+        record(RecordKey::Operation([5; 16]), 8),
+    ];
+    store.publish(ctx, None, &[3; 40], &records).unwrap();
+    let snapshot = store.accounting(ctx).unwrap();
+    assert_eq!(snapshot.image.as_deref(), Some(&[3; 40][..]));
+    assert_eq!((snapshot.records, snapshot.bytes), (2, 160));
+    drop(store);
+    let mut store = NativePrivateStore::open(&path, ctx).unwrap();
+    let reopened = store.accounting(ctx).unwrap();
+    assert_eq!(reopened.image, snapshot.image);
+    assert_eq!(
+        (reopened.records, reopened.bytes),
+        (snapshot.records, snapshot.bytes)
+    );
+    // A mismatched metadata digest must not be repaired or presented as a smaller
+    // complete archive; the failed read latches this owner just like load().
+    store
+        .conn
+        .execute("UPDATE meta SET bytes=bytes+1 WHERE id=1", [])
+        .unwrap();
+    assert!(matches!(store.accounting(ctx), Err(Error::Corrupt)));
+    assert!(matches!(store.load(ctx), Err(Error::Uncertain)));
+    let retained: i64 = store
+        .conn
+        .query_row("SELECT bytes FROM meta WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(retained, 161);
+}

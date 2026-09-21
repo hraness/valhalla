@@ -1,4 +1,10 @@
 //! The password KDF and unlocked key live in a dedicated browser worker.
+#[cfg(all(target_arch = "wasm32", feature = "private-rooms"))]
+#[path = "../private/wire.rs"]
+pub mod private_wire;
+#[cfg(all(target_arch = "wasm32", feature = "private-rooms"))]
+#[path = "../private/worker.rs"]
+mod private_worker;
 #[cfg(target_arch = "wasm32")]
 mod runtime {
     use js_sys::{Array, Uint8Array};
@@ -13,8 +19,20 @@ mod runtime {
     pub fn start() -> Result<(), JsValue> {
         let scope: DedicatedWorkerGlobalScope = js_sys::global().dyn_into()?;
         let identity: Rc<RefCell<Option<UnlockedIdentity>>> = Rc::new(RefCell::new(None));
+        #[cfg(feature = "private-rooms")]
+        let authenticated = Rc::new(RefCell::new(None));
+        #[cfg(feature = "private-rooms")]
+        let private = crate::private_worker::Broker::new(
+            scope.clone(),
+            identity.clone(),
+            authenticated.clone(),
+        );
         let send = scope.clone();
         let handler = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+            #[cfg(feature = "private-rooms")]
+            if private.dispatch(&event.data()) {
+                return;
+            }
             let result = (|| -> Result<Array, &'static str> {
                 if !Array::is_array(&event.data()) {
                     return Err("Invalid identity request.");
@@ -153,6 +171,10 @@ mod runtime {
                     unlock(&raw, &password).map_err(|_| "The password or backup is incorrect.")?;
                 let public = key.public_key();
                 *identity.borrow_mut() = Some(key);
+                #[cfg(feature = "private-rooms")]
+                {
+                    *authenticated.borrow_mut() = Some(raw.clone());
+                }
                 let response = Array::new();
                 response.push(&JsValue::from_str("unlocked"));
                 response.push(&Uint8Array::from(raw.as_slice()));

@@ -478,7 +478,10 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
     let command = args
         .get(2)
         .and_then(|arg| arg.to_str())
-        .ok_or_else(|| format!("{HELP}\n{}", network::HELP))?;
+        .ok_or_else(|| format!("{HELP}\n{}\n{}", network::HELP, network::continuity::HELP))?;
+    if network::continuity::recognizes(command) {
+        return network::continuity::run(args, profile);
+    }
     if matches!(command, "replay-init" | "replay-step") {
         if profile.is_some() {
             return Err(HELP.into());
@@ -495,7 +498,13 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         "init" | "resume" | "catch-up" => 9,
         "reserve" | "queue" => 10,
         "outbox" => 11,
-        _ => return Err(format!("{HELP}\n{}", network::HELP)),
+        _ => {
+            return Err(format!(
+                "{HELP}\n{}\n{}",
+                network::HELP,
+                network::continuity::HELP
+            ))
+        }
     };
     if args.len() != count {
         return Err(HELP.into());

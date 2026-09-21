@@ -1,0 +1,479 @@
+//! One account plus one selected private room, owned only by the existing worker.
+use crate::private_wire::types::*;
+use vhalla_browser_storage::{
+    browser::{
+        private_rooms::{IndexedPrivateStore, Limits},
+        IndexedStorage,
+    },
+    identity::IdentitySnapshot,
+    Image, Namespace, Slot,
+};
+use vhalla_browser_vault::{Envelope, UnlockedIdentity};
+use vhalla_private_kernel::{
+    protocol::{Key, SignedDeviceEnrollment, SignedRoomAnchor},
+    CommittedOutbox, Context, Kernel, MemberDraft, MessageDraft, OutboxEntry, OwnerDraft, Phase,
+};
+use zeroize::Zeroizing;
+
+#[derive(Clone, Copy, Debug)]
+pub enum Failure {
+    Invalid,
+    IdentityChanged,
+    State,
+    Storage,
+    Kernel,
+}
+type Result<T> = std::result::Result<T, Failure>;
+impl From<vhalla_private_kernel::Error> for Failure {
+    fn from(_: vhalla_private_kernel::Error) -> Self {
+        Self::Kernel
+    }
+}
+impl From<vhalla_private_kernel::protocol::Error> for Failure {
+    fn from(_: vhalla_private_kernel::protocol::Error) -> Self {
+        Self::Invalid
+    }
+}
+impl From<vhalla_private_kernel::storage::StoreError> for Failure {
+    fn from(_: vhalla_private_kernel::storage::StoreError) -> Self {
+        Self::Storage
+    }
+}
+
+enum CreationKind {
+    Owner(Box<OwnerDraft>),
+    Member(Box<MemberDraft>),
+}
+struct Creation {
+    context: Context,
+    kind: CreationKind,
+    anchor: SignedRoomAnchor,
+    enrollment: SignedDeviceEnrollment,
+}
+struct PendingMessage {
+    id: u64,
+    draft: MessageDraft,
+}
+
+pub struct Session {
+    // Kernel and drafts drop before account custody. No public accessor returns
+    // any of these fields or an alternate signing handle.
+    kernel: Option<Kernel<IndexedPrivateStore>>,
+    creation: Option<Creation>,
+    message: Option<PendingMessage>,
+    identity: UnlockedIdentity,
+    saved: IdentitySnapshot,
+    counter: u64,
+}
+fn now() -> Result<u64> {
+    let millis = js_sys::Date::now();
+    if !millis.is_finite() || !(0.0..=9_007_199_254_740_991.0).contains(&millis) {
+        return Err(Failure::Invalid);
+    }
+    Ok((millis / 1000.0) as u64)
+}
+fn artifact(value: &CommittedOutbox) -> Artifact {
+    Artifact {
+        sequence: value.sequence(),
+        operation: value.operation(),
+        kind: value.kind(),
+        bytes: Some(Zeroizing::new(value.bytes().to_vec())),
+    }
+}
+
+impl Session {
+    pub async fn enter(
+        identity: UnlockedIdentity,
+        authenticated_envelope: &[u8],
+        expected: &[u8],
+        local_birth: bool,
+    ) -> Result<Self> {
+        if authenticated_envelope != expected {
+            return Err(Failure::IdentityChanged);
+        }
+        let envelope = Envelope::from_bytes(expected).map_err(|_| Failure::Invalid)?;
+        if envelope.claimed_public_key() != identity.public_key() {
+            return Err(Failure::IdentityChanged);
+        }
+        let image = Image::new(Slot::Vault, &[expected]).map_err(|_| Failure::Invalid)?;
+        let mut profile = IndexedStorage::open(Namespace::new(PROFILE))
+            .await
+            .map_err(|_| Failure::Storage)?;
+        let saved = profile
+            .load_identity()
+            .await
+            .map_err(|_| Failure::Storage)?;
+        if saved.vault() != Some(&image)
+            || saved.local_creation(identity.public_key()).is_ok() != local_birth
+        {
+            return Err(Failure::IdentityChanged);
+        }
+        Ok(Self {
+            kernel: None,
+            creation: None,
+            message: None,
+            identity,
+            saved,
+            counter: 0,
+        })
+    }
+    async fn revalidate(&self) -> Result<()> {
+        let mut profile = IndexedStorage::open(Namespace::new(PROFILE))
+            .await
+            .map_err(|_| Failure::Storage)?;
+        profile
+            .revalidate_identity(&self.saved)
+            .await
+            .map_err(|_| Failure::IdentityChanged)?;
+        Ok(())
+    }
+    fn account(&self) -> Result<Key> {
+        Ok(Key::from_bytes(self.identity.public_key())?)
+    }
+    fn kernel(&mut self) -> Result<&mut Kernel<IndexedPrivateStore>> {
+        let kernel = self.kernel.as_mut().ok_or(Failure::State)?;
+        if kernel.needs_reopen() {
+            return Err(Failure::State);
+        }
+        Ok(kernel)
+    }
+    fn empty(&self) -> Result<()> {
+        if self.kernel.is_some() || self.creation.is_some() {
+            return Err(Failure::State);
+        }
+        Ok(())
+    }
+    fn prepared(&mut self, creation: Creation) -> Response {
+        let preview = Preview {
+            context: creation.context,
+            anchor: creation.anchor.clone(),
+            enrollment: creation.enrollment.clone(),
+        };
+        self.creation = Some(creation);
+        Response::Prepared(Box::new(preview))
+    }
+    async fn membership(&mut self) -> Result<Response> {
+        let value = self.kernel()?.membership().await?;
+        Ok(Response::Membership(Box::new(Membership {
+            status: value.status(),
+            anchor: value.anchor().clone(),
+            owner: value.owner().clone(),
+            local: value.local().clone(),
+            members: value.members().to_vec(),
+        })))
+    }
+
+    /// A failure is terminal to this worker dispatch. Its caller must drop this
+    /// value and reopen an exact retained Context in a new unlocked worker.
+    pub async fn execute(&mut self, request: Request) -> Result<Response> {
+        self.revalidate().await?;
+        let reply = self.execute_selected(request).await?;
+        // A vault replacement during an await withholds the output, even if a
+        // private transaction already committed. Reopen resolves that exact
+        // retained operation; it never regenerates a device or ciphertext.
+        self.revalidate().await?;
+        Ok(reply)
+    }
+
+    async fn execute_selected(&mut self, request: Request) -> Result<Response> {
+        let time = now()?;
+        match request {
+            Request::Enter { .. } => Err(Failure::State),
+            Request::PrepareOwner(validity) => {
+                self.empty()?;
+                validity.check_at(time)?;
+                let draft = OwnerDraft::new(self.account()?, validity)?;
+                let enrollment = self
+                    .identity
+                    .sign_private_enrollment(draft.enrollment_request())?;
+                let anchor = self.identity.sign_private_anchor(draft.anchor_request())?;
+                let context = draft.context(&anchor)?;
+                Ok(self.prepared(Creation {
+                    context,
+                    kind: CreationKind::Owner(Box::new(draft)),
+                    anchor,
+                    enrollment,
+                }))
+            }
+            Request::PrepareContact {
+                offer,
+                owner,
+                validity,
+            } => {
+                self.empty()?;
+                let selected = vhalla_private_kernel::ContactBootstrap::inspect(
+                    &offer,
+                    owner,
+                    self.account()?,
+                    time,
+                )?;
+                let anchor = selected.anchor().clone();
+                let draft = MemberDraft::new(
+                    selected.scope(),
+                    anchor.clone(),
+                    selected.owner().clone(),
+                    self.account()?,
+                    validity,
+                    time,
+                )?;
+                let enrollment = self
+                    .identity
+                    .sign_private_enrollment(draft.enrollment_request())?;
+                let context = draft.context();
+                Ok(self.prepared(Creation {
+                    context,
+                    kind: CreationKind::Member(Box::new(draft)),
+                    anchor,
+                    enrollment,
+                }))
+            }
+            Request::CommitCreation(expected) => {
+                if self.kernel.is_some() {
+                    return Err(Failure::State);
+                }
+                let creation = self.creation.take().ok_or(Failure::State)?;
+                if creation.context != expected {
+                    return Err(Failure::State);
+                }
+                creation.enrollment.claims().validity.check_at(time)?;
+                let key = self.identity.private_storage_key(expected)?;
+                // Fixed local budgets, never inherited from an imported file.
+                let store = IndexedPrivateStore::create_new(
+                    Namespace::new(PROFILE),
+                    expected,
+                    Limits {
+                        max_records: 100_000,
+                        max_record_bytes: 256 * 1024 * 1024,
+                    },
+                )
+                .await?;
+                let kernel = match creation.kind {
+                    CreationKind::Owner(draft) => {
+                        draft
+                            .create(store, &key, creation.enrollment, creation.anchor, time)
+                            .await?
+                    }
+                    CreationKind::Member(draft) => {
+                        draft
+                            .initialize(store, &key, creation.enrollment, time)
+                            .await?
+                    }
+                };
+                self.kernel = Some(kernel);
+                self.membership().await
+            }
+            Request::Open(context) => {
+                self.empty()?;
+                // This account check/derivation precedes backend access. Open
+                // never initializes an absent image, FORMAT, device or ratchet.
+                let key = self.identity.private_storage_key(context)?;
+                let store = IndexedPrivateStore::open(Namespace::new(PROFILE), context).await?;
+                self.kernel = Some(Kernel::open(store, &key, context).await?);
+                self.membership().await
+            }
+            Request::Membership => self.membership().await,
+            Request::PrepareMessage(body) => {
+                self.kernel()?.membership().await?;
+                let draft = self.kernel()?.prepare_message(&body)?;
+                self.counter = self.counter.checked_add(1).ok_or(Failure::State)?;
+                let preview = Consent {
+                    id: self.counter,
+                    context: draft.context(),
+                    epoch: draft.epoch(),
+                    roster: *draft.roster(),
+                    body: Zeroizing::new(draft.body().to_vec()),
+                };
+                self.message = Some(PendingMessage {
+                    id: self.counter,
+                    draft,
+                });
+                Ok(Response::Draft(Box::new(preview)))
+            }
+            Request::Send { operation, consent } => {
+                let current = self.kernel()?.membership().await?.status();
+                let pending = self.message.take().ok_or(Failure::State)?;
+                if pending.id != consent.id
+                    || pending.draft.context() != consent.context
+                    || pending.draft.epoch() != consent.epoch
+                    || pending.draft.roster() != &consent.roster
+                    || pending.draft.body() != consent.body.as_slice()
+                    || current.context != consent.context
+                    || current.epoch != consent.epoch
+                    || current.roster != consent.roster
+                    || current.quarantined
+                    || !matches!(
+                        current.phase,
+                        Phase::OwnerGenesis
+                            | Phase::OwnerJoined
+                            | Phase::OwnerAfterRemoval
+                            | Phase::MemberJoined
+                    )
+                {
+                    return Err(Failure::State);
+                }
+                let output = self.kernel()?.send(operation, &pending.draft, time).await?;
+                self.message = Some(pending);
+                Ok(Response::Artifact {
+                    context: current.context,
+                    artifact: artifact(&output),
+                })
+            }
+            Request::Offer {
+                operation,
+                recipient,
+                validity,
+            } => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let offer = kernel
+                    .create_contact_offer(operation, recipient, validity, time)
+                    .await?;
+                Ok(Response::Offer {
+                    context,
+                    operation,
+                    secret: Zeroizing::new(offer.confidential_bytes().to_vec()),
+                })
+            }
+            Request::ContactRequest { operation, offer } => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let output = kernel.contact_request(operation, &offer, time).await?;
+                Ok(Response::Artifact {
+                    context,
+                    artifact: artifact(&output),
+                })
+            }
+            Request::Accept {
+                operation,
+                request,
+                validity,
+            } => {
+                self.message = None;
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let output = kernel
+                    .accept_contact(operation, &request, validity, time)
+                    .await?;
+                Ok(Response::Artifact {
+                    context,
+                    artifact: artifact(&output),
+                })
+            }
+            Request::Join(raw) => {
+                self.message = None;
+                self.kernel()?.join_contact(&raw, time).await?;
+                self.membership().await
+            }
+            Request::Receive(raw) => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let output = kernel.receive(&raw, time).await?;
+                Ok(Response::Received {
+                    context,
+                    message: Inbound {
+                        sequence: output.sequence(),
+                        sender: output.sender(),
+                        body: Zeroizing::new(output.body().to_vec()),
+                    },
+                })
+            }
+            Request::Remove { operation, device } => {
+                self.message = None;
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let output = kernel.remove(operation, device, time).await?;
+                Ok(Response::Artifact {
+                    context,
+                    artifact: artifact(&output),
+                })
+            }
+            Request::Renew {
+                operation,
+                validity,
+            } => {
+                self.message = None;
+                let request = self.kernel()?.owner_renewal_request(validity)?;
+                let enrollment = self.identity.sign_private_enrollment(&request)?;
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let output = kernel.renew_owner(operation, enrollment, time).await?;
+                Ok(Response::Artifact {
+                    context,
+                    artifact: artifact(&output),
+                })
+            }
+            Request::ApplyControl(raw) => {
+                self.message = None;
+                self.kernel()?.apply_control(&raw, time).await?;
+                self.membership().await
+            }
+            Request::Controls { after, limit } => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let page = kernel.encrypted_controls(after, limit).await?;
+                let records = page
+                    .records
+                    .into_iter()
+                    .map(|r| Control {
+                        floor: r.floor(),
+                        bytes: Zeroizing::new(r.bytes().to_vec()),
+                    })
+                    .collect();
+                Ok(Response::Controls {
+                    context,
+                    base: page.base,
+                    head: page.head,
+                    next: page.next,
+                    records,
+                })
+            }
+            Request::Outbox { after, limit } => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let page = kernel.outbox(after, limit).await?;
+                let records = page
+                    .records
+                    .into_iter()
+                    .map(|r| match r {
+                        OutboxEntry::Artifact(a) => artifact(&a),
+                        OutboxEntry::ConfidentialOffer {
+                            sequence,
+                            operation,
+                        } => Artifact {
+                            sequence,
+                            operation,
+                            kind: vhalla_private_kernel::OutboxKind::ContactOffer,
+                            bytes: None,
+                        },
+                    })
+                    .collect();
+                Ok(Response::Outbox {
+                    context,
+                    head: page.head,
+                    next: page.next,
+                    records,
+                })
+            }
+            Request::Inbox { after, limit } => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let page = kernel.inbox(after, limit).await?;
+                let records = page
+                    .records
+                    .into_iter()
+                    .map(|r| Inbound {
+                        sequence: r.sequence(),
+                        sender: r.sender(),
+                        body: Zeroizing::new(r.body().to_vec()),
+                    })
+                    .collect();
+                Ok(Response::Inbox {
+                    context,
+                    head: page.head,
+                    next: page.next,
+                    records,
+                })
+            }
+        }
+    }
+}

@@ -22,12 +22,24 @@ HEADERS = {
     # Revalidation also prevents obsolete HTML from referring to deleted assets.
     "Cache-Control": "no-cache",
 }
+QUALIFICATION_MARKERS = (
+    b"/__qualification/",
+    b"qualify_private_session",
+    b"qualify_private_cancel",
+)
 
 
 def package(root: Path, allow_local_qualification: bool = False) -> None:
-    local = any(b"/__qualification/" in p.read_bytes() for p in root.glob("*.wasm"))
+    # Independently recognize fixed test entry points even if a future compiler
+    # removes the public loopback route from an otherwise private-only artifact.
+    code = (
+        path.read_bytes()
+        for path in root.iterdir()
+        if path.is_file() and path.suffix in {".wasm", ".js"}
+    )
+    local = any(any(marker in raw for marker in QUALIFICATION_MARKERS) for raw in code)
     if local and not allow_local_qualification:
-        raise ValueError("local qualification routes cannot enter a production artifact")
+        raise ValueError("qualification routes or entry points cannot enter a production artifact")
     html_file = root / "index.html"
     html = html_file.read_text(encoding="utf-8")
     scripts = list(re.finditer(r'<script type="module">(.*?)</script>', html, re.S))

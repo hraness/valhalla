@@ -10,6 +10,10 @@ description = "Bounded opaque browser images with exact IndexedDB compare-and-sw
 default = []
 private-rooms = ["dep:vhalla-private-kernel"]
 qualification = []
+# Synthetic Window/worker receipt fixture only; excluded from the public client.
+continuity-qualification = ["qualification"]
+# Real archive recovery over isolated Window/worker IndexedDB only.
+private-archive-qualification = ["private-rooms", "qualification"]
 # Synthetic Window/worker fixture only; never enabled by the public client.
 private-custody-qualification = ["private-rooms", "qualification", "vhalla-browser-vault/private-storage"]
 
@@ -54,3 +58,11 @@ required-features = ["private-rooms", "qualification"]
 [[example]]
 name = "private_custody_indexeddb"
 required-features = ["private-custody-qualification"]
+
+[[example]]
+name = "private_archive_indexeddb"
+required-features = ["private-archive-qualification"]
+
+[[example]]
+name = "continuity_indexeddb"
+required-features = ["continuity-qualification"]

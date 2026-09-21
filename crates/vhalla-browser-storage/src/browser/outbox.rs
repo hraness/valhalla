@@ -1,4 +1,7 @@
 //! Per-room author reservations and immutable signed local outbox.
+mod continuity;
+#[cfg(feature = "continuity-qualification")]
+pub use continuity::qualification as continuity_qualification;
 mod delivery;
 mod recovery;
 use super::{

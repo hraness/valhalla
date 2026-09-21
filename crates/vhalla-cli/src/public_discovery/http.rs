@@ -208,6 +208,42 @@ pub(in crate::public_network) fn exchange_activity(
     )
 }
 
+/// Canonical selected-author continuity transport only. This never installs a
+/// receipt; callers verify the exact peer/request/body and publish it durably.
+pub(in crate::public_network) fn exchange_continuity(
+    endpoint: &Endpoint,
+    request: &vhalla_public_protocol::continuity::Request,
+    body: Option<&[u8]>,
+    cancel: &AtomicBool,
+) -> Result<(Vec<u8>, String), String> {
+    let bound = continuity_bound(request, body)?;
+    exchange_bounded(
+        endpoint,
+        &request.target(),
+        body,
+        bound,
+        vhalla_public_protocol::continuity::MAX_PROOF_BYTES * 2,
+        cancel,
+    )
+}
+fn continuity_bound(
+    request: &vhalla_public_protocol::continuity::Request,
+    body: Option<&[u8]>,
+) -> Result<usize, String> {
+    use vhalla_public_protocol::continuity::{Kind, MAX_REPLY_BYTES};
+    match (request.kind(), body) {
+        (Kind::Stage { .. } | Kind::Commit { .. }, Some(raw)) => {
+            request.check_body(raw).map_err(|_| "continuity body differs from exact typed request")?;
+        }
+        (Kind::Status { .. } | Kind::Evidence { .. }, None) => (),
+        _ => return Err("continuity mutations require exact bodies; author reads forbid bodies; room feed is outside this controller".into()),
+    }
+    Ok(MAX_REPLY_BYTES)
+}
+#[cfg(test)]
+#[path = "http_continuity_tests.rs"]
+mod continuity_tests;
+
 /// Refresh only a typed advertisement request at the selected route.
 /// The caller must verify the full pinned peer and retain its newer floor.
 pub(in crate::public_network) fn exchange_advertisement(

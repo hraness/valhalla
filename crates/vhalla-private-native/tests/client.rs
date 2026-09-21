@@ -5,6 +5,7 @@ use std::{
     fs,
     os::unix::fs::DirBuilderExt,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use vhalla_identity::Identity;
@@ -20,9 +21,12 @@ use vhalla_private_native::{
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
+        // Wall-clock reads can coincide across parallel tests.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let ordinal = NEXT.fetch_add(1, Ordering::Relaxed);
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let path = std::env::temp_dir().join(format!(
-            "vhalla-private-client-{}-{}",
+            "vhalla-private-client-{}-{}-{ordinal}",
             std::process::id(),
             stamp.as_nanos()
         ));

@@ -150,3 +150,19 @@ renewal after a real commit with uncertain completion, cancels member acceptance
 after commit, reopens exact retained state, rejects old roster consent and
 exchanges current-epoch traffic. Workspace CI requalifies the promoted source;
 prior source-specific receipts remain historical evidence.
+
+
+## Account-owned read-only archives
+
+The optional `client` feature exposes `archive::ArchiveExporter`, `ArchiveInput`,
+`ArchiveReceiver` and `ArchiveSession`. Each owns account custody together with its
+opaque kernel operation; lock/drop releases the archive before the account. Source
+prefix authentication precedes destination creation, and final-seal authentication
+precedes opening an existing archive. No wrapper returns a live kernel or storage
+key. Native open retains SQLite recovery/sync effects; archive reads do not publish.
+
+The [native CLI archive runbook](../vhalla-cli/README.md#native-private-archives-experimental-private)
+covers bounded encrypted files and exact interrupted-import resume. Archives are
+read-only historical recovery, with secret offers redacted from ordinary outbox
+views. They do not establish freshness, absence of clones, owner succession or
+safe live-device transfer.

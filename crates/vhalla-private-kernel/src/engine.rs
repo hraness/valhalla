@@ -13,6 +13,7 @@ mod controls;
 mod drafts;
 mod membership;
 mod messages;
+pub mod recovery;
 mod renewal;
 mod snapshot;
 pub use drafts::{MemberDraft, OwnerDraft};

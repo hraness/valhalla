@@ -22,6 +22,12 @@ use web_sys::{
 };
 use zeroize::Zeroizing;
 
+#[cfg(feature = "private-rooms")]
+#[path = "ui/private.rs"]
+pub mod private;
+#[cfg(all(feature = "private-rooms", feature = "local-qualification"))]
+#[path = "ui/private_qualification.rs"]
+pub mod private_qualification;
 #[path = "ui/recovery.rs"]
 mod recovery;
 pub use recovery::{
@@ -53,6 +59,8 @@ enum Stage {
     Signing,
     Authorizing,
     Backup,
+    #[cfg(feature = "private-rooms")]
+    Private,
 }
 #[derive(Default)]
 struct Cancellation {
@@ -96,6 +104,11 @@ struct Pending {
     kind: PendingKind,
 }
 enum PendingKind {
+    #[cfg(feature = "private-rooms")]
+    Private {
+        expected: private::Expected,
+        reply: oneshot::Sender<Result<crate::private_wire::Response, String>>,
+    },
     Vault {
         created: bool,
     },
@@ -114,6 +127,8 @@ struct Callbacks {
     _error: Closure<dyn FnMut(ErrorEvent)>,
 }
 struct State {
+    #[cfg(feature = "private-rooms")]
+    private: private::PrivateState,
     document: Document,
     clock: Performance,
     storage: Option<IndexedStorage>,
@@ -138,8 +153,15 @@ impl State {
     fn busy(&self) -> bool {
         self.loading || self.pending.is_some() || !self.ready
     }
-    fn can_operate(&self) -> bool {
+    fn can_operate_base(&self) -> bool {
         !self.failed && !self.busy() && self.storage.as_ref().is_some_and(|s| !s.needs_reopen())
+    }
+    fn can_operate(&self) -> bool {
+        #[cfg(feature = "private-rooms")]
+        if self.private.active {
+            return false;
+        }
+        self.can_operate_base()
     }
     fn current(&self, token: Token, stage: Stage) -> bool {
         !self.failed
@@ -177,7 +199,7 @@ fn render(app: &App) {
         ),
         ("restore", can),
         ("backup", can && state.saved.vault().is_some()),
-        ("lock", can && state.unlocked),
+        ("lock", state.can_operate_base() && state.unlocked),
     ] {
         state
             .document
@@ -203,7 +225,18 @@ fn render(app: &App) {
         } else if state.busy() {
             "Working"
         } else if state.unlocked {
-            "Unlocked"
+            #[cfg(feature = "private-rooms")]
+            {
+                if state.private.active {
+                    "Private custody"
+                } else {
+                    "Unlocked"
+                }
+            }
+            #[cfg(not(feature = "private-rooms"))]
+            {
+                "Unlocked"
+            }
         } else {
             "Locked"
         }));
@@ -247,6 +280,8 @@ fn hex(raw: &[u8]) -> String {
     raw.iter().map(|b| format!("{b:02x}")).collect()
 }
 fn stop_worker(app: &App) {
+    #[cfg(feature = "private-rooms")]
+    crate::private_panel::clear_sensitive_state();
     let mut state = app.borrow_mut();
     state.generation = state.generation.saturating_add(1);
     if let Some(worker) = state.worker.take() {
@@ -260,6 +295,8 @@ fn stop_worker(app: &App) {
     state.ready = false;
     state.ready_deadline = None;
     state.unlocked = false;
+    #[cfg(feature = "private-rooms")]
+    state.private.stopped();
 }
 fn fail(app: &App, message: &str) {
     let (loading, pending, storage) = {
@@ -332,6 +369,13 @@ fn start_worker(app: &App) -> Result<(), JsValue> {
         }
         let fields = Array::from(&event.data());
         match fields.get(0).as_string().as_deref() {
+            #[cfg(feature = "private-rooms")]
+            Some("private-reply") if fields.length() == 3 => private::finish(&app, &fields),
+            #[cfg(feature = "private-rooms")]
+            Some("private-error") if fields.length() == 1 => fail(
+                &app,
+                "Private custody refused or was interrupted. Preserve its exact locator, reload and reopen; never create replacement state.",
+            ),
             Some("ready") if fields.length() == 1 => {
                 {
                     let mut state = app.borrow_mut();
@@ -999,6 +1043,8 @@ pub fn start() {
     };
     let load_cancel = Rc::new(Cancellation::default());
     let app = Rc::new(RefCell::new(State {
+        #[cfg(feature = "private-rooms")]
+        private: private::PrivateState::default(),
         document,
         clock,
         storage: None,
@@ -1059,7 +1105,7 @@ pub fn start() {
         request(app, "unlock", raw.as_deref());
     });
     bind(&app, "lock", "click", |app, _| {
-        if !app.borrow().can_operate() {
+        if !app.borrow().can_operate_base() {
             return;
         }
         input(app, "password").set_value("");

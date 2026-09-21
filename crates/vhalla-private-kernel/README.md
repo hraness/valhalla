@@ -237,9 +237,8 @@ All private descriptors, invitations, member identities, controls, content and
 puzzle metadata stay out of public discovery/activity by default. Returning a
 committed artifact means local durable storage only, not transport delivery,
 verified useful work, owner acceptance of a result or authority to execute tools.
-Private bootstrap transport, browser custody integration, complete-state recovery,
-invite UX and enforced agent compartments remain gates before private-client
-claims. The fixed-room agent API and storage journeys do not substitute for these workflows.
+Automatic confidential delivery, private recovery workflows, completed invite
+UX and enforced agent compartments remain gates before private-client claims. The fixed-room agent API and storage journeys do not substitute for these workflows.
 
 ## Owner renewal
 
@@ -266,6 +265,42 @@ backup alone. Coherent rollback and two active copies remain outside this bounda
 A live kernel retains its own storage-key copy: locking the account alone does
 not lock the kernel. The controller must drop both or terminate their shared
 worker. The native crate's optional `client::RoomSession` enforces that joint
-lifetime; the browser private-room worker/controller is not yet wired. No worker
+lifetime; the optional browser worker/controller now enforces the same joint
+custody boundary and exact-context reopen. Its UI and recovery workflows remain
+separate integration work. No worker
 response or agent method should expose secret bytes. Previously created
 explicit-key stores are not automatically converted to this scheme.
+
+
+## Encrypted read-only archives
+
+`recovery::{ArchiveExport, ArchiveSourceReader, ArchiveImport, ArchiveView}`
+implements bounded complete-state archival. It does not restore a live MLS
+device. Export pins one authenticated current image, full context and archive ID,
+then rechecks image and accounting for every page. It covers every retained
+outbox/operation pair, inbox/received pair and signed control suffix. Missing,
+extra, reordered or altered evidence refuses instead of producing a partial
+history presented as complete.
+
+Pages are at most 512 KiB, with at most 256 KiB of current-image material in one
+fragment. The existing 4 MiB image limit remains; histories are traversed through
+bounded indexed reads. `ArchiveStore` adds exact atomic image, count, encrypted
+byte and immutable capacity accounting to the existing backend contract. Import
+requires an explicit fresh destination and independently pinned source context
+and archive ID. A private source-key possession proof is checked before destination
+creation or resume. Each append atomically adds at most two immutable records;
+an exact last-page retry reads its prior progress without publishing again.
+
+Source pages, receiving progress and completed archives use distinct HKDF/AEAD
+purposes. Only the complete final seal makes the destination an `ArchiveView`.
+Ordinary `Kernel::open` refuses receiving and archive images. The archive exposes
+bounded authenticated membership, inbox and outbox inspection, redacts secret
+offer issuance, and has no signer, MLS send or conversion into a live kernel.
+Canceled or uncertain writes require exact reopen; source and destination evidence
+is preserved. Native and strict IndexedDB adapters implement the accounting
+contract without changing ordinary version-four room images.
+
+This does not prove rollback protection, safe concurrent live clones, owner
+succession, or complete device handoff. An account-key backup alone still cannot
+reconstruct lost MLS state. Trusted native/browser backup and import workflows
+must additionally retain all source pages and their exact recovery locator.

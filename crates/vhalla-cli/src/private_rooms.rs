@@ -20,6 +20,7 @@ use vhalla_private_native::{
     private_rooms::{Limits, NativePrivateStore},
 };
 
+mod archive;
 mod files;
 
 pub const HELP: &str = "vhalla private create ID NEW_STORE --not-before UNIX --expires UNIX [--max-records N --max-bytes N]
@@ -39,6 +40,12 @@ vhalla private control-export ID STORE --after N --parent CONTROL64|none --out C
 vhalla private remove ID STORE --device KEY64 --operation OP32 --out CIPHERTEXT
 vhalla private apply ID STORE --control FILE
 vhalla private renew ID STORE --operation OP32 --not-before UNIX --expires UNIX --out CIPHERTEXT
+vhalla private archive-export ID STORE --out NEW_FILE.vharchive
+vhalla private archive-import ID NEW_ARCHIVE_STORE --archive FILE.vharchive [--max-records N --max-bytes N]
+vhalla private archive-resume ID ARCHIVE_STORE --archive FILE.vharchive [--max-records N --max-bytes N]
+vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out PRIVATE_JSON [--max-records N --max-bytes N]
+vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
+Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
 Local files only. Existing identity; create/import always require a never-used store. No listener, relay, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
@@ -57,6 +64,17 @@ impl Args {
         }
         let command = raw[1].to_str().ok_or(HELP)?;
         let allowed: &[&str] = match command {
+            "archive-export" => &["out"],
+            "archive-import" | "archive-resume" => &["archive", "max-records", "max-bytes"],
+            "archive-inspect" => &["archive", "out", "max-records", "max-bytes"],
+            "archive-inbox" | "archive-outbox" => &[
+                "archive",
+                "after",
+                "limit",
+                "out",
+                "max-records",
+                "max-bytes",
+            ],
             "create" => &["not-before", "expires", "max-records", "max-bytes"],
             "inspect" => &["out"],
             "offer-inspect" => &["offer", "owner", "out"],
@@ -202,6 +220,9 @@ pub fn run(raw: &[OsString]) -> Result<(), String> {
 async fn execute(args: Args) -> Result<(), String> {
     let identity =
         Identity::open(&args.identity).map_err(|_| "existing identity custody unavailable")?;
+    if args.command.starts_with("archive-") {
+        return archive::execute(args, identity).await;
+    }
     let account = Key::from_bytes(identity.public_key()).map_err(|_| REFUSED)?;
     if args.command == "offer-inspect" {
         let raw = args.input("offer", OFFER_LIMIT, true)?;

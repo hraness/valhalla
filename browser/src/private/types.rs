@@ -1,0 +1,347 @@
+//! Closed local UI/worker vocabulary. None of these reports is network authority.
+use vhalla_private_kernel::{
+    protocol::{ControlFloor, Key, SignedDeviceEnrollment, SignedRoomAnchor, Validity},
+    Context, OperationId, OutboxKind, Status,
+};
+use zeroize::Zeroizing;
+
+/// Fixed application profile; never selected by a room, peer, or imported file.
+pub const PROFILE: [u8; 32] = *b"vhalla-browser-local-profile-v01";
+/// Exact upper bound of a complete signed confidential contact offer.
+pub const MAX_OFFER: usize = 713;
+/// Maximum encoded encrypted artifact accepted by the local worker interface.
+pub const MAX_ARTIFACT: usize = vhalla_private_kernel::MAX_STORED_RECORD_BYTES;
+/// Bounded local message size, including page payload and framing overhead.
+pub const MAX_FRAME: usize = vhalla_private_kernel::MAX_PAGE_BYTES + 16 * 1024;
+/// Owned sensitive bytes cleared on drop; browser-managed copies remain outside this guarantee.
+pub type Bytes = Zeroizing<Vec<u8>>;
+
+/// Move-only disclosure preview. No Debug/Clone, implicit room move or re-sign.
+pub struct Consent {
+    /// Nonzero identifier for the worker's retained draft in this session.
+    pub id: u64,
+    /// Complete room, anchor, account, and device to which the draft belongs.
+    pub context: Context,
+    /// MLS epoch under which the draft was prepared.
+    pub epoch: u64,
+    /// Exact current roster commitment shown when preparing the draft.
+    pub roster: [u8; 32],
+    /// Exact inert message bytes; edits require a new preparation.
+    pub body: Bytes,
+}
+impl Consent {
+    /// Compare every scope, lifecycle, identifier, and content byte without rebinding a draft.
+    pub fn same(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.context == other.context
+            && self.epoch == other.epoch
+            && self.roster == other.roster
+            && self.body == other.body
+    }
+}
+
+/// Caller-selected operations only. No URL, generic signature or storage key.
+pub enum Request {
+    /// Irreversibly select private mode and revalidate the saved account pair.
+    Enter {
+        /// Exact encrypted envelope already authenticated by this worker.
+        vault: Bytes,
+        /// Expected presence of matching durable local-creation metadata.
+        local_birth: bool,
+    },
+    /// Prepare a fresh owner device with an explicitly selected validity interval.
+    PrepareOwner(Validity),
+    /// Prepare a recipient device from a confidential offer and independent owner pin.
+    PrepareContact {
+        /// Complete signed confidential contact offer; never a public directory record.
+        offer: Bytes,
+        /// Independently selected owner account, not trusted from the offer alone.
+        owner: Key,
+        /// Caller-selected recipient enrollment validity interval.
+        validity: Validity,
+    },
+    /// Exact preview locator, retained by the trusted UI before consumption.
+    CommitCreation(Context),
+    /// Open only an existing exact context; missing state never means creation.
+    Open(Context),
+    /// Authenticate and return the selected room's retained membership snapshot.
+    Membership,
+    /// Retain one exact body and prepare its current epoch/roster disclosure preview.
+    PrepareMessage(Bytes),
+    /// Publish the exact retained draft locally after full consent comparison.
+    Send {
+        /// Stable nonzero operation identifier, reused only for an exact retry.
+        operation: OperationId,
+        /// Unchanged preview of the worker's still-retained draft.
+        consent: Box<Consent>,
+    },
+    /// Issue a one-time confidential offer for an independently selected recipient account.
+    Offer {
+        /// Stable operation identifier for exact secret-issuance retries.
+        operation: OperationId,
+        /// Account permitted to answer the offer.
+        recipient: Key,
+        /// Explicit finite offer validity; the kernel enforces its tighter cap.
+        validity: Validity,
+    },
+    /// Answer an exact confidential offer using this recipient's retained device state.
+    ContactRequest {
+        /// Stable operation identifier for the encrypted request.
+        operation: OperationId,
+        /// Complete independently selected signed offer.
+        offer: Bytes,
+    },
+    /// Consume an authenticated encrypted request and admit its selected device.
+    Accept {
+        /// Stable operation identifier for admission and its encrypted response.
+        operation: OperationId,
+        /// Exact encrypted contact request bound to the owner's retained offer.
+        request: Bytes,
+        /// Explicit invitation validity interval, bounded by kernel policy.
+        validity: Validity,
+    },
+    /// Join from the exact encrypted contact response for this pending request.
+    Join(Bytes),
+    /// Authenticate, commit, and only then expose one encrypted application message.
+    Receive(Bytes),
+    /// Remove one full admitted device key through an owner-authorized MLS transition.
+    Remove {
+        /// Stable identifier for the removal transition.
+        operation: OperationId,
+        /// Complete target device key, never a display label or leaf index alone.
+        device: Key,
+    },
+    /// Renew the same owner device through a typed account grant and MLS update.
+    Renew {
+        /// Stable identifier for the renewal transition.
+        operation: OperationId,
+        /// Explicit monotonically extended enrollment validity interval.
+        validity: Validity,
+    },
+    /// Authenticate and apply one encrypted owner control at the current floor.
+    ApplyControl(Bytes),
+    /// Read one bounded page of immutable encrypted owner controls.
+    Controls {
+        /// Exact retained control floor preceding the requested page.
+        after: ControlFloor,
+        /// Maximum page count; must be between one and the kernel's fixed page cap.
+        limit: usize,
+    },
+    /// Read a bounded local outbox page; confidential offers return metadata only.
+    Outbox {
+        /// Exclusive local outbox sequence cursor, with zero before the first entry.
+        after: u64,
+        /// Maximum page count within the fixed kernel limit.
+        limit: usize,
+    },
+    /// Read one bounded page of already committed inert inbox messages.
+    Inbox {
+        /// Exclusive local inbox sequence cursor, with zero before the first entry.
+        after: u64,
+        /// Maximum page count within the fixed kernel limit.
+        limit: usize,
+    },
+}
+
+/// Nonsecret creation locator and signed metadata, returned before any room commit.
+pub struct Preview {
+    /// Exact context the trusted UI must retain before authorizing creation.
+    pub context: Context,
+    /// Signed owner anchor; signature verification alone does not admit a member.
+    pub anchor: SignedRoomAnchor,
+    /// Account-signed enrollment of the fresh local device.
+    pub enrollment: SignedDeviceEnrollment,
+}
+/// Authenticated local membership report; it does not prove global freshness.
+pub struct Membership {
+    /// Retained local epoch, floor, roster and lifecycle state.
+    pub status: Status,
+    /// Immutable signed room authority anchor.
+    pub anchor: SignedRoomAnchor,
+    /// Retained current owner device enrollment.
+    pub owner: SignedDeviceEnrollment,
+    /// Enrollment of the device held by this worker.
+    pub local: SignedDeviceEnrollment,
+    /// Bounded current admitted roster, including the owner.
+    pub members: Vec<SignedDeviceEnrollment>,
+}
+/// Local outbox report, not evidence that any peer received the artifact.
+pub struct Artifact {
+    /// Nonzero immutable local outbox sequence.
+    pub sequence: u64,
+    /// Original operation identifier for exact retry correlation.
+    pub operation: OperationId,
+    /// Closed artifact kind; secret issuance is distinguished from transport bytes.
+    pub kind: OutboxKind,
+    /// None only for secret issuance. Never an empty ciphertext substitute.
+    pub bytes: Option<Bytes>,
+}
+/// Already committed application message; its body remains inert untrusted content.
+pub struct Inbound {
+    /// Nonzero immutable local inbox sequence.
+    pub sequence: u64,
+    /// Full authenticated MLS sender device key.
+    pub sender: Key,
+    /// Committed plaintext for this private view only; never automatic public export.
+    pub body: Bytes,
+}
+/// Immutable encrypted owner control with its exact full control floor.
+pub struct Control {
+    /// Sequence and control identifier committed by this record.
+    pub floor: ControlFloor,
+    /// Exact retained confidential control bytes, not a plaintext membership export.
+    pub bytes: Bytes,
+}
+/// Closed local worker reports; decoding is not independent network admission.
+pub enum Response {
+    /// Private entry completed for this authenticated account key.
+    Entered(Key),
+    /// Fresh preparation awaiting exact locator retention and explicit commit.
+    Prepared(Box<Preview>),
+    /// Reauthenticated membership and local lifecycle metadata.
+    Membership(Box<Membership>),
+    /// Exact preview of one worker-retained message draft.
+    Draft(Box<Consent>),
+    /// Locally committed artifact; no network delivery is implied.
+    Artifact {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// Exact committed output and operation metadata.
+        artifact: Artifact,
+    },
+    /// Explicitly confidential transfer only; excluded from ordinary outbox.
+    Offer {
+        /// Complete context in which the offer was issued.
+        context: Context,
+        /// Exact secret-issuance operation identifier.
+        operation: OperationId,
+        /// Explicit confidential output; must never enter ordinary outbox sharing.
+        secret: Bytes,
+    },
+    /// One authenticated message exposed only after local inbox publication.
+    Received {
+        /// Complete context that authenticated and committed the message.
+        context: Context,
+        /// Committed sender and inert plaintext content.
+        message: Inbound,
+    },
+    /// Bounded encrypted-control page from one retained snapshot.
+    Controls {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// Earliest independently retained control floor for this local history.
+        base: ControlFloor,
+        /// Observed complete retained control head.
+        head: ControlFloor,
+        /// Exclusive continuation floor when another retained page remains.
+        next: Option<ControlFloor>,
+        /// Ordered bounded immutable encrypted control records.
+        records: Vec<Control>,
+    },
+    /// Bounded outbox page; secret issuance remains metadata-only.
+    Outbox {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// Observed local outbox head, not a delivery cursor.
+        head: u64,
+        /// Exclusive continuation sequence when another page remains.
+        next: Option<u64>,
+        /// Ordered immutable local outputs; confidential offers have no artifact bytes.
+        records: Vec<Artifact>,
+    },
+    /// Bounded page of already committed private inbox messages.
+    Inbox {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// Observed complete local inbox head.
+        head: u64,
+        /// Exclusive continuation sequence when another page remains.
+        next: Option<u64>,
+        /// Ordered committed messages with bounded inert bodies.
+        records: Vec<Inbound>,
+    },
+}
+impl Response {
+    /// Return the complete selected context, absent only for account-only entry.
+    pub fn context(&self) -> Option<Context> {
+        match self {
+            Self::Entered(_) => None,
+            Self::Prepared(p) => Some(p.context),
+            Self::Membership(m) => Some(m.status.context),
+            Self::Draft(d) => Some(d.context),
+            Self::Artifact { context, .. }
+            | Self::Offer { context, .. }
+            | Self::Received { context, .. }
+            | Self::Controls { context, .. }
+            | Self::Outbox { context, .. }
+            | Self::Inbox { context, .. } => Some(*context),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+/// Response correlation tag; never an authority or permission token.
+pub enum ReplyKind {
+    /// Account-only private entry.
+    Entered,
+    /// Uncommitted creation preparation.
+    Prepared,
+    /// Authenticated local membership.
+    Membership,
+    /// Retained disclosure preview.
+    Draft,
+    /// Committed ordinary outbox artifact.
+    Artifact,
+    /// Explicit confidential offer output.
+    Offer,
+    /// Committed inbox message.
+    Received,
+    /// Immutable encrypted-control page.
+    Controls,
+    /// Bounded ordinary outbox page.
+    Outbox,
+    /// Bounded committed inbox page.
+    Inbox,
+}
+impl Request {
+    /// Expected closed response kind used by the generation-checked UI broker.
+    pub fn reply_kind(&self) -> ReplyKind {
+        match self {
+            Self::Enter { .. } => ReplyKind::Entered,
+            Self::PrepareOwner(_) | Self::PrepareContact { .. } => ReplyKind::Prepared,
+            Self::CommitCreation(_)
+            | Self::Open(_)
+            | Self::Membership
+            | Self::Join(_)
+            | Self::ApplyControl(_) => ReplyKind::Membership,
+            Self::PrepareMessage(_) => ReplyKind::Draft,
+            Self::Send { .. }
+            | Self::ContactRequest { .. }
+            | Self::Accept { .. }
+            | Self::Remove { .. }
+            | Self::Renew { .. } => ReplyKind::Artifact,
+            Self::Offer { .. } => ReplyKind::Offer,
+            Self::Receive(_) => ReplyKind::Received,
+            Self::Controls { .. } => ReplyKind::Controls,
+            Self::Outbox { .. } => ReplyKind::Outbox,
+            Self::Inbox { .. } => ReplyKind::Inbox,
+        }
+    }
+}
+impl Response {
+    /// Closed report kind for exact request/response correlation.
+    pub fn kind(&self) -> ReplyKind {
+        match self {
+            Self::Entered(_) => ReplyKind::Entered,
+            Self::Prepared(_) => ReplyKind::Prepared,
+            Self::Membership(_) => ReplyKind::Membership,
+            Self::Draft(_) => ReplyKind::Draft,
+            Self::Artifact { .. } => ReplyKind::Artifact,
+            Self::Offer { .. } => ReplyKind::Offer,
+            Self::Received { .. } => ReplyKind::Received,
+            Self::Controls { .. } => ReplyKind::Controls,
+            Self::Outbox { .. } => ReplyKind::Outbox,
+            Self::Inbox { .. } => ReplyKind::Inbox,
+        }
+    }
+}

@@ -188,6 +188,31 @@ jobs:
         run: node --test browser/tools/qualification_lifecycle.test.mjs
       - name: Install exact browser bindings for runtime qualification
         run: cargo install wasm-bindgen-cli --version 0.2.108 --locked
+      - name: Check archive and continuity receipt browser fixtures
+        run: cargo clippy --locked -p vhalla-browser-storage --example private_archive_indexeddb --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown -- -D warnings
+      - name: Build archive and continuity receipt browser fixtures
+        run: |
+          cargo build --locked -p vhalla-browser-storage --example private_archive_indexeddb --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_archive_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-archive-runtime"
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/continuity_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-continuity-runtime"
+      - name: Exercise archive and receipt recovery in Window and dedicated worker
+        run: |
+          chrome=$(command -v google-chrome)
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-archive-runtime" "$chrome"
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-continuity-runtime" "$chrome"
+      - name: Check optional private room worker and local qualification entry points
+        run: cargo clippy --locked -p vhalla-browser --features private-rooms,local-qualification --target wasm32-unknown-unknown -- -D warnings
+      - name: Build isolated private room worker journey
+        working-directory: browser
+        run: |
+          trunk --skip-version-check build --release --locked --features private-rooms,local-qualification --dist "$RUNNER_TEMP/vhalla-private-worker-runtime"
+          python3 tools/package.py "$RUNNER_TEMP/vhalla-private-worker-runtime" --allow-local-qualification
+        env:
+          NO_COLOR: "true"
+      - name: Exercise private worker custody, cancellation and exact reopen
+        run: node browser/tools/qualify_private_session.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-worker-results"
+      - name: Exercise private room invitations, consent and file exchange through the UI
+        run: node browser/tools/qualify_private_panel.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-panel-results"
       - name: Check account-derived private browser custody fixture
         run: cargo clippy --locked -p vhalla-browser-storage --example private_custody_indexeddb --features private-custody-qualification --target wasm32-unknown-unknown -- -D warnings
       - name: Build account-derived private browser custody fixture
@@ -236,6 +261,15 @@ jobs:
             ${{ runner.temp }}/vhalla-private-group-runtime/chromium.stderr.log
             ${{ runner.temp }}/vhalla-private-custody-runtime/indexeddb-receipt.json
             ${{ runner.temp }}/vhalla-private-custody-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-archive-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-private-archive-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-continuity-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-continuity-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-worker-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-worker-results/*.log
+            ${{ runner.temp }}/vhalla-private-panel-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-panel-results/*.log
+            ${{ runner.temp }}/vhalla-private-panel-results/*.png
             ${{ runner.temp }}/vhalla-mls-results/receipt.json
             ${{ runner.temp }}/vhalla-mls-results/chrome.log
             ${{ runner.temp }}/vhalla-product-results/receipt.json

@@ -118,3 +118,25 @@ fn store_error(error: native::Error) -> StoreError {
         native::Error::Corrupt => StoreError::Corrupt,
     }
 }
+
+impl vhalla_private_kernel::storage::ArchiveStore for KernelStore {
+    async fn accounting(
+        &mut self,
+        context: Context,
+    ) -> Result<vhalla_private_kernel::storage::Accounting, StoreError> {
+        let value = self
+            .0
+            .accounting(native_context(context)?)
+            .map_err(store_error)?;
+        Ok(vhalla_private_kernel::storage::Accounting {
+            image: value
+                .image
+                .map(|raw| Image::from_bytes(&raw).map_err(|_| StoreError::Corrupt))
+                .transpose()?,
+            records: value.records,
+            bytes: value.bytes,
+            max_records: value.limits.max_records,
+            max_bytes: value.limits.max_record_bytes,
+        })
+    }
+}

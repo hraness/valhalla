@@ -116,7 +116,7 @@ For the complete client, build and package a separate local-qualification
 artifact and the synthetic two-room fixture:
 
 ```sh
-cargo build --locked -p vhalla-public-peer --example browser_fixture
+cargo build --release --locked -p vhalla-public-peer --example browser_fixture
 # In browser/, use a separate absolute output path:
 trunk --skip-version-check build --release --locked --features local-qualification --dist TEST_DIST
 python3 tools/package.py TEST_DIST --allow-local-qualification
@@ -162,3 +162,55 @@ writer was locked and its browser target closed before restored signing. The
 two peers observed exactly eight POSTs in total, with no resend of acknowledged
 history. This is a single-machine Chromium result, not independent-device or
 private MLS recovery evidence.
+
+
+## Optional private room custody
+
+The off-by-default `private-rooms` feature adds a typed trusted-UI broker and
+private commands to the existing identity worker. Entering private mode is
+irreversible for that worker: public signing, public author export and account
+replacement refuse while private custody is ready, busy or failed. Leaving ends
+both account and kernel custody and requires explicit unlock in a new worker.
+It adds no relay, automatic network operation or agent execution environment.
+
+Each operation rechecks the exact saved account image before and after kernel
+access. Interrupted, failed or canceled work terminates custody; reopen must use
+the exact full room/anchor/account/device locator and retained store. Missing
+state refuses. Creation has separate preparation, explicit locator-retention
+acknowledgment and commit steps. A download request alone is not acknowledgment
+that the locator has been retained. Message consent binds exact content, operation,
+epoch and roster; changing membership requires fresh review.
+
+The actual emitted-worker journey is reproducible with a separate artifact:
+
+```sh
+# From browser/, select a new absolute test output directory.
+trunk --skip-version-check build --release --locked --features private-rooms,local-qualification --dist TEST_DIST
+python3 tools/package.py TEST_DIST --allow-local-qualification
+# From the repository root:
+node browser/tools/qualify_private_session.mjs TEST_DIST CHROMIUM_EXECUTABLE NEW_OUTPUT_DIR
+```
+
+It uses a fresh synthetic Chromium profile and the real account KDF, worker and
+IndexedDB. It checks public-command refusal in all three private modes, locator
+retention before creation, cancellation after a committed send, late old-worker
+reply refusal, exact reopen and ciphertext recovery, changed vault/account
+refusal, and missing-store preservation. The public production artifact excludes
+these local qualification hooks; packaging rejects their presence by default.
+The optional private panel also has a real DOM/file-exchange journey:
+
+```sh
+node browser/tools/qualify_private_panel.mjs TEST_DIST CHROMIUM_EXECUTABLE NEW_PANEL_OUTPUT_DIR
+```
+
+It creates two isolated browser accounts with the normal KDF, retains real `.vhroom`
+locator downloads before initialization, reviews confidential recipient-bound offers,
+exchanges encrypted join requests/replies and bidirectional messages, and reopens
+exact retained ciphertext. It checks real keyboard activation, inert imported text,
+ordered control catch-up, consent invalidation on roster/text changes, metadata-only
+secret outbox entries, and clearing plaintext/file selections/blob URLs on lock.
+Responsive checks cover 1280, 768 and 390 CSS pixels. This journey uses local file
+exchange with no external relay or network publication. Production packaging still
+rejects qualification hooks; the optional private interface requires an explicit
+`private-rooms` build. Browser archives, fresh-device recovery, owner succession
+and safe live-device transfer remain separate work.

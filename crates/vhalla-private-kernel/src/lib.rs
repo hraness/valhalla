@@ -29,7 +29,7 @@ pub use contact::{
 };
 pub use transport::{CommittedEncryptedControl, EncryptedControlPage};
 
-pub use engine::{Kernel, MemberDraft, MembershipSnapshot, OwnerDraft};
+pub use engine::{recovery, Kernel, MemberDraft, MembershipSnapshot, OwnerDraft};
 pub use vhalla_private_protocol as protocol;
 
 use protocol::{Key, PrivateRoomScope};

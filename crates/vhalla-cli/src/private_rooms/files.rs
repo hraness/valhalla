@@ -5,6 +5,8 @@ use std::{
 use vhalla_custody as custody;
 use zeroize::Zeroizing;
 
+pub(super) mod archive;
+
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const OUTPUT_ERROR: &str = "private output failed or may be incomplete; preserve every file and the original store, reopen exact custody, then retry the same operation/inputs into a NEW output path or export its retained ciphertext; never reset or regenerate a device";
 
