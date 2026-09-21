@@ -40,6 +40,19 @@ async function task(abortSignal){
     try {
       signal.throwIfAborted();
       for(const h of provider) res.setHeader(h.key,h.value);
+      if(req.url==='/__qualification/advance-policy' && req.method==='POST'){
+        await writeFile(join(fixture,'advance-policy'),'');
+        const until=Date.now()+15000;
+        while(Date.now()<until){
+          const marker=await readFile(join(fixture,'policy-advanced'),'utf8').catch(()=>null);
+          if(marker!==null){res.writeHead(200,{'content-type':'text/plain'});res.end(marker);return;}
+          const failed=await readFile(join(fixture,'policy-advance-failed'),'utf8').catch(()=>null);
+          if(failed!==null){res.writeHead(500,{'content-type':'text/plain'});res.end(failed);return;}
+          await new Promise(r=>setTimeout(r,150));
+        }
+        res.writeHead(504,{'content-type':'text/plain'});res.end('policy advance timed out');
+        return;
+      }
       const match=req.url.match(/^\/__qualification\/(peer-[abc])\/(vhalla\/v1(?:\?|\/).*)$/);
       if(match){
         if(req.method==='POST'&&match[2].startsWith('vhalla/v1/activity'))activityPosts++;
@@ -105,10 +118,14 @@ async function task(abortSignal){
   // Helpers are reinstalled on the fresh page; no persisted test-only globals.
   const helper=await readFile(new URL('./qualify_product_continue.txt',import.meta.url),'utf8');
   const result=await evaluate(`window.qa=${JSON.stringify({...saved,ads})};`+helper);
+  await call('Page.reload',{},sessionId);
+  await wait(()=>evaluate("!!document.getElementById('unlock') && !document.getElementById('unlock').disabled"),'policy reload unlock');
+  const policyHelper=await readFile(new URL('./qualify_product_policy.txt',import.meta.url),'utf8');
+  const policy=await evaluate(`window.qa=${JSON.stringify({...saved,ads,facts:result.facts})};`+policyHelper);
   await evaluate("document.querySelector('.puzzles').open=true;document.querySelector('.puzzles').scrollIntoView();");
   const shot=await call('Page.captureScreenshot',{format:'png'},sessionId);await writeFile(join(output,'puzzle-preview.png'),Buffer.from(shot.data,'base64'));
   const recovery = recoveryFlag ? await qualifyRecovery({call,targetId,sessionId,bootstrap,pin,ads,password:saved.password,author:saved.author,rooms:saved.rooms,postCount:()=>activityPosts}) : undefined;
-  return {passed:true,...result,...(recovery?{recovery}:{}),artifact,artifactManifestSha256:createHash("sha256").update(await readFile(join(artifact,"artifact.json"))).digest("hex"),profile,fixture};
+  return {passed:true,...result,...policy,...(recovery?{recovery}:{}),artifact,artifactManifestSha256:createHash("sha256").update(await readFile(join(artifact,"artifact.json"))).digest("hex"),profile,fixture};
 }
 await runQualification({
   work: task, timeoutMs: 300000,

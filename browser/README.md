@@ -11,6 +11,10 @@ client. It is not an activated public network or a completed browser release.
   is not contacted until explicitly selected and used in a network action.
 - Exact draft reservation before signing, an immutable local outbox, signed
   public-page reading and separately retained proof-bound receipts per peer.
+  A draft stranded by a certified policy revocation keeps its unchanged
+  unsigned bytes; resume refuses it under the new current policy, and the
+  explicit recover action signs it only after the retained enabling revision
+  check — local continuity material, never a fresh posting grant.
 - Fixed-target continuity transfer to one explicitly selected v2 peer route:
   each request attempt is durably reserved before any network exchange, the
   authenticated reply is retained before the next step, and a target completes
@@ -148,7 +152,11 @@ continuity-mode peer, opens one receipt session bound to that peer's exact
 route, retains a fixed terminal, and verifies the peer's signed
 terminal-admission plus contiguous retention evidence — including ordered
 intermediate admissions under a narrowed qualification bound and a strictly
-later terminal replacing the target.
+later terminal replacing the target. It then reserves an exact unsigned draft
+in the lobby room, watches the fixture commit a certified policy revocation to
+the shared journal, syncs the new bundle, and verifies current-policy resume is
+refused twice with the draft preserved before explicit recovery signs the
+unchanged request under its retained enabling revision.
 The output contains a receipt, artifact hash, screenshot and synthetic fixture
 logs. Three local peer processes are not evidence of independent operators or a
 qualified public deployment.

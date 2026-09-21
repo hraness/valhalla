@@ -133,6 +133,76 @@ mod native {
         Ok((create_only, public_posting))
     }
 
+    // Waits for the journey's advance-policy trigger, then commits one owner
+    // update disabling the lobby's public-activity policy on the shared
+    // journal. A no-show trigger exits quietly; the room's earlier enabling
+    // revision stays retained, which is exactly what the held-draft recovery
+    // journey exercises.
+    fn advance_policy(
+        home: std::path::PathBuf,
+        mut scenario: fixture::Scenario,
+        mut client: CertifiedClient,
+        journal: Journal<FsStore>,
+        keys: Vec<SigningKey>,
+        genesis: vhalla_rooms::RoomGenesisId,
+        network: [u8; 32],
+    ) -> Result<(), String> {
+        let trigger = home.join("advance-policy");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        while !trigger.exists() {
+            if std::time::Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let _ = std::fs::remove_file(&trigger);
+        let room = scenario
+            .app
+            .registry()
+            .room_by_genesis(genesis)
+            .ok_or("watched lobby room missing")?;
+        let update = RoomUpdate {
+            directory: scenario.genesis.directory,
+            realm: scenario.genesis.realm,
+            genesis,
+            previous: room.head(),
+            owner: scenario.owners[0].id,
+            social_control: scenario.owners[0].head,
+            controller_key: scenario.owners[0].key.verifying_key().to_bytes(),
+            expires_at: 1_000_000,
+            nonce: [6; 32],
+            action: UpdateAction::SetPublicActivityPolicy {
+                network,
+                enabled: false,
+            },
+        }
+        .sign_with_key(&scenario.owners[0].key)
+        .map_err(debug_error)?;
+        let policy_record = update.id();
+        let checked = scenario
+            .app
+            .prepare(500, vec![], vec![update.encode()], None)
+            .map_err(debug_error)?;
+        let next = bundle(
+            checked.batch(),
+            checked.next(),
+            *scenario.genesis.policy.id().as_bytes(),
+            &keys[..3],
+        )?;
+        publish(&journal, &mut client, &next)?;
+        scenario.app.apply_locally(checked);
+        export(
+            &home.join("policy-advanced"),
+            format!(
+                "height {}\nfrontier {}\npolicy-record {}\n",
+                client.frontier().height,
+                hex(&client.frontier().commitment()),
+                hex(policy_record.as_bytes())
+            )
+            .as_bytes(),
+        )
+    }
+
     pub fn run(args: Vec<OsString>) -> Result<(), String> {
         let (create_only, public_posting) = options(&args)?;
         let home = vhalla_custody::absolute(Path::new(&args[0])).map_err(debug_error)?;
@@ -470,6 +540,28 @@ mod native {
         if create_only {
             println!("fixture-status generated-no-listeners");
             return Ok(());
+        }
+        // Posting journeys may revoke the lobby's public-activity policy
+        // mid-run: a NEW_HOME/advance-policy trigger file commits one more
+        // certified bundle on the shared journal, then policy-advanced marks
+        // completion. A failure writes policy-advance-failed instead. Peers
+        // re-read the journal per request, so the new revision propagates on
+        // the next browser sync without any fixture restart.
+        if public_posting {
+            let watch_home = home.clone();
+            std::thread::spawn(move || {
+                if let Err(failed) = advance_policy(
+                    watch_home.clone(),
+                    scenario,
+                    client,
+                    journal,
+                    keys,
+                    genesis,
+                    network,
+                ) {
+                    let _ = std::fs::write(watch_home.join("policy-advance-failed"), failed);
+                }
+            });
         }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)

@@ -2,10 +2,10 @@
 use super::*;
 use crate::ui;
 use vhalla_browser_storage::{
-    browser::outbox::IndexedOutbox,
+    browser::{history::IndexedHistory, outbox::IndexedOutbox},
     outbox::{AuthorHead, AuthorScope, ReservedDraft},
 };
-use vhalla_room_activity::{Content, EventClaims, RoomScope, UnsignedEvent};
+use vhalla_room_activity::{AdmissionContext, Content, EventClaims, RoomScope, UnsignedEvent};
 use web_sys::{HtmlSelectElement, HtmlTextAreaElement};
 #[path = "../composer_model.rs"]
 mod composer_model;
@@ -250,6 +250,125 @@ async fn sign_reserved(
     );
     Ok(())
 }
+/// Sign only the exact held draft against its retained enabling policy
+/// revision, after current policy no longer permits it. The unsigned request,
+/// author base and sequence never change; the result is local continuity
+/// material — not current posting permission, past admission or delivery.
+async fn recover_draft(app: &App, session: &Session) -> Result<(), String> {
+    let room = scope(app, session)?;
+    let author = AuthorScope::new(room, ui::activity_author()?);
+    let mut storage = outbox().await?;
+    // Recovery never initializes an author scope: a held draft implies its
+    // floor was already retained, and a missing floor is corruption.
+    let draft = storage
+        .load_pending(author)
+        .await
+        .map_err(|_| {
+            app.borrow_mut().failed = true;
+            "Could not read the pending draft. Reload before continuing."
+        })?
+        .ok_or("There is no pending draft in this room.")?;
+    let head = storage
+        .load_head(author)
+        .await
+        .map_err(|_| {
+            app.borrow_mut().failed = true;
+            "Could not read the saved author floor. Reload before continuing."
+        })?
+        .ok_or("The pending draft's author floor is missing; preserve storage and reload to reconcile.")?;
+    if head.sequence() > 0 {
+        // Tie the floor to its actual immutable signed bytes before signing.
+        let page = storage
+            .read_page(author, head.sequence(), 1, 8192)
+            .await
+            .map_err(|_| {
+                app.borrow_mut().failed = true;
+                "Saved author history is incomplete. Preserve storage and reload before recovery."
+            })?;
+        if page.head != head || page.events.len() != 1 || page.events[0].id() != head.event_id() {
+            app.borrow_mut().failed = true;
+            return Err(
+                "Saved author history changed or is corrupt. Reload before continuing.".into(),
+            );
+        }
+    }
+    if draft.base() != head
+        || head
+            .sequence()
+            .checked_add(1)
+            .is_none_or(|next| draft.request().claims().sequence != next)
+    {
+        return Err(
+            "The held draft does not match the actual author floor; preserve state and reload to reconcile."
+                .into(),
+        );
+    }
+    // The shared historical algorithm runs on the unchanged unsigned request
+    // before any signer is involved; a revoked policy never becomes current.
+    let checked = AdmissionContext::new(session.client.network_id(), session.client.registry())
+        .and_then(|context| context.check_historical_unsigned(draft.request().clone()))
+        .map_err(|_| {
+            "The held draft's exact policy is not a retained enabling revision; nothing was signed."
+        })?;
+    let basis = session.head;
+    let retained = draft
+        .rebase_historical(basis, &checked)
+        .map_err(|_| "The held draft cannot be rebound to this certified directory state.")?;
+    if retained.as_bytes() != draft.as_bytes() {
+        storage
+            .rebase_reservation(&draft, &retained)
+            .await
+            .map_err(|_| {
+                app.borrow_mut().failed = true;
+                "Could not confirm the exact saved draft at the newer directory state. Reload to reconcile; the draft must not be replaced."
+            })?;
+    }
+    storage.reserve(&retained).await.map_err(|_| {
+        app.borrow_mut().failed = true;
+        "The author or directory state changed, or storage failed. Reload to reconcile the exact pending draft."
+    })?;
+    // Before signing, the persisted reservation, author floor and certified
+    // basis must still match this exact draft.
+    let mut history = IndexedHistory::open(Namespace::new(PROFILE), session.head.scope())
+        .await
+        .map_err(|_| "Could not reopen saved network history.")?;
+    if history
+        .load_head()
+        .await
+        .map_err(|_| "Could not re-read the saved history head.")?
+        != Some(basis)
+        || storage.load_head(author).await.map_err(|_| {
+            app.borrow_mut().failed = true;
+            "Could not re-read the saved author floor."
+        })? != Some(head)
+        || storage.load_pending(author).await.map_err(|_| {
+            app.borrow_mut().failed = true;
+            "Could not re-read the pending draft."
+        })? != Some(retained.clone())
+    {
+        return Err(
+            "Saved state changed before signing; the exact pending draft is preserved.".into(),
+        );
+    }
+    message(app, "Draft saved. Signing with your unlocked identity…");
+    let signed = ui::sign_activity(retained.request().clone()).await?;
+    let verified = signed
+        .verify()
+        .map_err(|_| "The signing worker returned invalid evidence.")?;
+    storage.finalize(&retained, &verified).await.map_err(|_| {
+        app.borrow_mut().failed = true;
+        "Could not confirm local publication. Reload to reconcile; do not replace or discard the pending draft."
+    })?;
+    super::puzzles::observe(app, &verified);
+    message(
+        app,
+        &format!(
+            "Post {} recovered and signed under its retained enabling policy. This is local continuity material only: it grants no current posting permission, claims no past peer admission, and no delivery was attempted.",
+            verified.claims().sequence
+        ),
+    );
+    Ok(())
+}
 pub(super) fn selected_room_name(app: &App) -> String {
     let selected = selection(app).value();
     let document = app.borrow().document.clone();
@@ -455,6 +574,7 @@ pub(super) fn render(app: &App, session: Option<&Session>, available: bool) {
     for id in [
         "queue-activity",
         "resume-activity",
+        "recover-draft",
         "show-outbox",
         "send-activity",
         "read-activity",
@@ -585,6 +705,7 @@ pub(super) fn bind_actions(app: &App) {
         ("export-author-state", 6),
         ("import-author-state", 7),
         ("queue-puzzle", 8),
+        ("recover-draft", 9),
     ] {
         let app = app.clone();
         let document = app.borrow().document.clone();
@@ -616,6 +737,7 @@ pub(super) fn bind_actions(app: &App) {
                         Ok(preview) => queue(&app, &session, false, Some(preview)).await,
                         Err(error) => Err(error),
                     },
+                    9 => recover_draft(&app, &session).await,
                     _ => queue(&app, &session, operation == 1, None).await,
                 };
                 app.borrow_mut().session = Some(session);

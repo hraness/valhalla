@@ -199,6 +199,12 @@ through ordered intermediate terminal admissions of exact signed local events,
 each separately reserved, current-policy checked and never beyond the fixed
 selection. Native tests cover multi-phase admission to one fixed target; the
 local-Chromium journey exercises it under a narrowed qualification bound.
+The same journey now strands an unsigned pending draft behind a certified
+mid-run policy revocation, refuses current-policy resume twice without
+replacing it, then recovers the unchanged request under its retained enabling
+revision through the browser recover-draft action. Recovery produces local
+continuity material only — never current posting permission, past admission
+or delivery.
 Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;

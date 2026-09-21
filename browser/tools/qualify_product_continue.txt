@@ -56,5 +56,15 @@ window.qidle=()=>qwait(()=>!qid('show-outbox').disabled,'network idle');
   await qclick('continuity-step');await qidle();
   qassert(qid('continuity-report').textContent.includes('fixed target: sequence 3')&&qid('continuity-report').textContent.includes('complete: true'),'terminal 3 incomplete: '+qid('continuity-report').textContent);
   qa.facts.push('Fixed-target continuity replicated an exact signed prefix to a dedicated v2 peer through ordered intermediate admissions; terminal admission and contiguous retention receipts verified; strictly later terminal replaced the target; local status read without dialing');
+  const lobby=qa.rooms.find(room=>room.name==='public-lobby');
+  qassert(lobby,'public-lobby room missing from certified directory');
+  qset('activity-room',lobby.id,'change');qset('activity-text','SYNTHETIC_OLD_POLICY_DRAFT');
+  await qclick('use-composer-here');
+  window.qpolicy=false;const priorAdd=IDBObjectStore.prototype.add;
+  IDBObjectStore.prototype.add=function(value,key){if(!qpolicy&&String(key).includes('/outbox/')){qpolicy=true;throw new DOMException('synthetic finalization quota','QuotaExceededError');}return priorAdd.apply(this,arguments);};
+  await qclick('queue-activity');await qwait(()=>qpolicy&&qid('activity-status').textContent.includes('Reload'),'lobby draft reservation under the enabled policy');
+  const advance=await fetch('/__qualification/advance-policy',{method:'POST'});
+  qassert(advance.ok,'certified policy revocation was not committed: '+(await advance.text()));
+  qa.facts.push('Exact unsigned lobby draft reserved under the enabled policy, then the fixture committed a certified revocation bundle to the shared journal');
   return {facts:qa.facts,delivery:qa.delivery,author:qa.author,rooms:qa.rooms,userAgent:navigator.userAgent};
 })()
