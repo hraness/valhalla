@@ -293,21 +293,41 @@ async function task(abortSignal) {
   const freshText=await send(fresh,'SYNTHETIC_FRESH_DEVICE_TEXT');await receive(owner,freshText);
   await invoke(owner,`function(body){qassert(qid('private-inbox-content').textContent.includes(body),'fresh device text not received');return true;}`,['SYNTHETIC_FRESH_DEVICE_TEXT']);
   const ownerText=await send(owner,'SYNTHETIC_OWNER_TO_FRESH');await receive(fresh,ownerText);
+  // The fresh device joined at the second control floor; the member-addition
+  // proof predates its retained base and must not observe as applicable.
+  await invoke(owner,"async function(){await qclick('private-proofs');await qidle();const select=qid('private-proof-select');const i=Array.from(select.options).findIndex(o=>o.textContent==='Signed control 1');qassert(i>=0,'first signed proof missing');select.selectedIndex=i;return true;}");
+  await wait(()=>evaluate(owner,'qaURLs.size<8'),'owner download slot');
+  const baseProof=await download(owner,'private-download-proof','vhproof');
+  await setFile(fresh,'private-proof-file',baseProof.path);
+  await evaluate(fresh,"(async()=>{await qclick('private-observe');await qidle();qassert(qid('private-status').textContent.includes('below this device'),'pre-join proof not reported below retained base');return true;})()");
   await leave(fresh);
   facts.push('same-account fresh device restored from encrypted backup, admitted by self-targeted offer, no pre-join history, bidirectional exchange');
   // Owner removal: exclude the member device and rekey. The member must first
   // apply the skipped fresh-device addition — controls chain strictly in order.
   const memberFloor=await evaluate(member,`(async()=>{await qclick('private-refresh');await qidle();const m=qid('private-membership-details').textContent.match(/Control floor ([0-9]+)/);qassert(m,'member control floor absent');return m[1];})()`);
   await invoke(owner,`async function(next){await qclick('private-controls');await qidle();const select=qid('private-control-select');const i=Array.from(select.options).findIndex(o=>o.textContent==='Encrypted control '+next);qassert(i>=0,'next control missing: '+next);select.selectedIndex=i;return true;}`,[String(Number(memberFloor)+1)]);
+  // The panel caps live temporary download URLs; each expires on a 30s
+  // watchdog. Wait for a free slot rather than racing the bound.
+  await wait(()=>evaluate(owner,'qaURLs.size<8'),'owner download slot');
   const addition=await download(owner,'private-download-control','vhcontrol');
   await setFile(member,'private-control-file',addition.path);
   await evaluate(member,"(async()=>{await qclick('private-apply-control');await qidle();return true;})()");
   const memberDevice=await invoke(owner,`async function(account){await qclick('private-refresh');await qidle();const match=qid('private-membership-details').textContent.match(new RegExp('Account '+account+'\\\\nDevice ([0-9a-f]{64})'));qassert(match,'member device absent from owner roster');return match[1];}`,[member.publicKey]);
   await invoke(owner,`async function(device){qset('private-remove-device',device);await qclick('private-remove');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'owner roster did not shrink');return true;}`,[memberDevice]);
+  await wait(()=>evaluate(owner,'qaURLs.size<8'),'owner download slot');
   const removal=await download(owner,'private-download-output','vhcontrol');
+  // Signed-control inspection: the owner exports the removal's plaintext
+  // proof; the member observes it as unknown history before applying the
+  // encrypted envelope and as retained history after.
+  const removalSeq=String(Number(memberFloor)+2);
+  await invoke(owner,`async function(seq){await qclick('private-proofs');await qidle();const select=qid('private-proof-select');const i=Array.from(select.options).findIndex(o=>o.textContent==='Signed control '+seq);qassert(i>=0,'removal proof missing: '+seq);select.selectedIndex=i;return true;}`,[removalSeq]);
+  await wait(()=>evaluate(owner,'qaURLs.size<8'),'owner download slot');
+  const proof=await download(owner,'private-download-proof','vhproof');
+  await setFile(member,'private-proof-file',proof.path);
+  await evaluate(member,"(async()=>{await qclick('private-observe');await qidle();qassert(qid('private-status').textContent.includes('has not retained'),'unapplied proof not reported unknown');return true;})()");
   await setFile(member,'private-control-file',removal.path);
-  await evaluate(member,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'removed member roster stale');qassert(qid('private-prepare-message').disabled,'removed member can still prepare');qassert(!qid('private-outbox').disabled&&!qid('private-inbox').disabled,'removed member lost retained history reads');return true;})()");
-  facts.push('owner removal control excludes a device and rekeys; removed member retains read-only state but cannot send');
+  await evaluate(member,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'removed member roster stale');qassert(qid('private-prepare-message').disabled,'removed member can still prepare');qassert(!qid('private-outbox').disabled&&!qid('private-inbox').disabled,'removed member lost retained history reads');await qclick('private-observe');await qidle();qassert(qid('private-status').textContent.includes('already retained history'),'applied proof not reported retained');await qclick('private-fork-evidence');await qidle();qassert(qid('private-status').textContent.includes('No locally retained fork proof'),'clean member reported a fork proof');qassert(qid('private-evidence').textContent==='','phantom fork detail rendered');return true;})()");
+  facts.push('owner removal control excludes a device and rekeys; removed member retains read-only state but cannot send; signed proofs observe as unknown then retained with no fabricated fork evidence');
   for(const width of [1280,768,390])await screenshot(member,width);
   // The removal-control download seconds ago still holds a live temporary URL;
   // the lock hook must revoke it. No extra download: the panel caps live URLs.

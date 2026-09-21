@@ -10,7 +10,7 @@ use vhalla_identity::Identity;
 use vhalla_private_kernel::{
     protocol::{
         AnchorId, ControlFloor, ControlId, Key, PrivateRoomScope, RoomId, SignedDeviceEnrollment,
-        Validity,
+        SignedOwnerControl, Validity,
     },
     ContactBootstrap, Context, MembershipSnapshot, OperationId, OutboxKind, Status, MAX_BODY_BYTES,
     MAX_STORED_RECORD_BYTES,
@@ -534,6 +534,10 @@ async fn execute(args: Args) -> Result<(), String> {
         }
         "observe" => {
             let raw = args.input("control", MAX_STORED_RECORD_BYTES, false)?;
+            // Read the retained base before observing: a missing verdict still
+            // latches the session's reopen requirement even though nothing was
+            // committed.
+            let base = room.status().map_err(|_| REFUSED)?.history_base.sequence();
             let verdict = match room.observe_owner_control(&raw).await {
                 Ok(_) => "retained",
                 Err(vhalla_private_native::client::Error::Kernel(
@@ -541,7 +545,19 @@ async fn execute(args: Args) -> Result<(), String> {
                 )) => "conflicting-fork-quarantined",
                 Err(vhalla_private_native::client::Error::Kernel(
                     vhalla_private_kernel::Error::Missing,
-                )) => "unknown-history",
+                )) => {
+                    // Below-base and future floors both report missing; only a
+                    // future floor can ever be caught up by applying controls.
+                    let below = SignedOwnerControl::decode(&raw)
+                        .ok()
+                        .and_then(|c| c.claims().sequence().ok())
+                        .is_some_and(|sequence| sequence < base);
+                    if below {
+                        "below-retained-base"
+                    } else {
+                        "unknown-history"
+                    }
+                }
                 Err(_) => return Err(REFUSED.into()),
             };
             args.json(json!({"verdict":verdict,

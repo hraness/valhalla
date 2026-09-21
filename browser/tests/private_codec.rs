@@ -1,9 +1,13 @@
 //! Native tests for raw messages crossing the existing private worker boundary.
 #[path = "../src/private/wire.rs"]
 pub mod private_wire;
+use ed25519_dalek::SigningKey;
 use private_wire::*;
 use vhalla_private_kernel::{
-    protocol::{AnchorId, ControlFloor, ControlId, Key, PrivateRoomScope, RoomId, Validity},
+    protocol::{
+        AnchorId, CommitDigest, ControlChange, ControlFloor, ControlId, Key, OwnerControlClaims,
+        PrivateRoomScope, RoomId, UnsignedOwnerControl, Validity,
+    },
     recovery::MAX_ARCHIVE_PAGE_BYTES,
     Context, OperationId, OutboxKind, Phase, Status, MAX_BODY_BYTES,
 };
@@ -94,6 +98,12 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
             after: ControlFloor::new(0, None).unwrap(),
             limit: 16,
         },
+        Request::ControlProofs {
+            after: ControlFloor::new(0, None).unwrap(),
+            limit: 16,
+        },
+        Request::ObserveControl(bytes(MAX_ARTIFACT)),
+        Request::ForkEvidence,
         Request::Outbox {
             after: u64::MAX,
             limit: 1,
@@ -397,4 +407,185 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
     .encode()
     .unwrap();
     assert!(Response::decode(&raw).is_err());
+}
+
+fn owner() -> SigningKey {
+    SigningKey::from_bytes(&[7; 32])
+}
+fn control(scope: PrivateRoomScope, parent: ControlFloor, commit: u8) -> Bytes {
+    let claims = OwnerControlClaims {
+        scope,
+        owner_device: Key::from_bytes(owner().verifying_key().to_bytes()).unwrap(),
+        parent,
+        prior_epoch: parent.sequence(),
+        next_epoch: parent.sequence() + 1,
+        commit: CommitDigest::from_bytes([commit; 32]).unwrap(),
+        change: ControlChange::OwnerUpdate,
+    };
+    Zeroizing::new(
+        UnsignedOwnerControl::new(claims)
+            .unwrap()
+            .sign(&owner())
+            .unwrap()
+            .encode(),
+    )
+}
+fn record_floor(control: &Bytes) -> ControlFloor {
+    let verified = vhalla_private_kernel::protocol::SignedOwnerControl::decode(control)
+        .unwrap()
+        .verify()
+        .unwrap();
+    ControlFloor::new(verified.claims().sequence().unwrap(), Some(verified.id())).unwrap()
+}
+
+#[test]
+fn signed_proofs_and_fork_evidence_verify_at_the_local_boundary() {
+    let scope = context().scope;
+    let first = control(scope, floor(0), 1);
+    let second = control(scope, record_floor(&first), 2);
+    let forked = control(scope, record_floor(&first), 9);
+    let responses = vec![
+        Response::ControlProofs {
+            context: context(),
+            base: floor(0),
+            head: record_floor(&second),
+            next: None,
+            records: vec![
+                Control {
+                    floor: record_floor(&first),
+                    bytes: first.clone(),
+                },
+                Control {
+                    floor: record_floor(&second),
+                    bytes: second.clone(),
+                },
+            ],
+        },
+        Response::Observed {
+            context: context(),
+            verdict: ObserveVerdict::Retained,
+        },
+        Response::Observed {
+            context: context(),
+            verdict: ObserveVerdict::UnknownHistory,
+        },
+        Response::ForkEvidence {
+            context: context(),
+            proof: None,
+        },
+        Response::ForkEvidence {
+            context: context(),
+            proof: Some(ForkProof {
+                accepted: record_floor(&second),
+                conflicting: forked.clone(),
+                accepted_proof: second.clone(),
+                accepted_from_checkpoint: false,
+            }),
+        },
+        // A checkpoint-backed accepted floor carries the kernel-internal
+        // checkpoint encoding, which the wire cannot decode; only the
+        // conflicting side is signature-checked there.
+        Response::ForkEvidence {
+            context: context(),
+            proof: Some(ForkProof {
+                accepted: floor(1),
+                conflicting: control(scope, floor(0), 4),
+                accepted_proof: bytes(64),
+                accepted_from_checkpoint: true,
+            }),
+        },
+    ];
+    for response in responses {
+        let raw = response.encode().unwrap();
+        assert_eq!(Response::decode(&raw).unwrap().encode().unwrap(), raw);
+        for length in 0..raw.len() {
+            assert!(Response::decode(&raw[..length]).is_err());
+        }
+        let mut changed = raw.to_vec();
+        changed.push(0);
+        assert!(Response::decode(&changed).is_err());
+        let tag = b"VHBRPRIVATE\x01".len();
+        changed.truncate(raw.len());
+        changed[tag] = 20;
+        assert!(Response::decode(&changed).is_err());
+        assert!(Request::decode(&raw).is_err());
+    }
+    // An unknown verdict code or malformed signed record is refused on decode.
+    let mut raw = Response::Observed {
+        context: context(),
+        verdict: ObserveVerdict::Retained,
+    }
+    .encode()
+    .unwrap();
+    *raw.last_mut().unwrap() = 4;
+    assert!(Response::decode(&raw).is_err());
+    // A proof whose signature, room scope, or committed floor disagrees with
+    // the report cannot cross the local wire.
+    let foreign = control(
+        PrivateRoomScope {
+            room: RoomId::from_bytes([9; 32]).unwrap(),
+            ..scope
+        },
+        floor(0),
+        1,
+    );
+    for (at, bytes) in [
+        (record_floor(&first), bytes(64)),
+        (record_floor(&first), foreign.clone()),
+        (floor(2), first.clone()),
+    ] {
+        let raw = Response::ControlProofs {
+            context: context(),
+            base: floor(0),
+            head: at,
+            next: None,
+            records: vec![Control { floor: at, bytes }],
+        }
+        .encode()
+        .unwrap();
+        assert!(Response::decode(&raw).is_err());
+    }
+    // Reported fork evidence must be a real contradiction: same-sequence
+    // differing controls under this room's scope, with a matching retained
+    // accepted-side record unless it is the joining checkpoint.
+    for proof in [
+        ForkProof {
+            accepted: record_floor(&second),
+            conflicting: second.clone(),
+            accepted_proof: second.clone(),
+            accepted_from_checkpoint: false,
+        },
+        ForkProof {
+            accepted: record_floor(&first),
+            conflicting: forked.clone(),
+            accepted_proof: first.clone(),
+            accepted_from_checkpoint: false,
+        },
+        ForkProof {
+            accepted: record_floor(&second),
+            conflicting: foreign.clone(),
+            accepted_proof: second.clone(),
+            accepted_from_checkpoint: false,
+        },
+        ForkProof {
+            accepted: record_floor(&second),
+            conflicting: forked.clone(),
+            accepted_proof: first.clone(),
+            accepted_from_checkpoint: false,
+        },
+        ForkProof {
+            accepted: record_floor(&second),
+            conflicting: forked.clone(),
+            accepted_proof: bytes(64),
+            accepted_from_checkpoint: false,
+        },
+    ] {
+        let raw = Response::ForkEvidence {
+            context: context(),
+            proof: Some(proof),
+        }
+        .encode()
+        .unwrap();
+        assert!(Response::decode(&raw).is_err());
+    }
 }

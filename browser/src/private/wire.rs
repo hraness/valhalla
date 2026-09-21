@@ -5,7 +5,7 @@ pub use types::*;
 use vhalla_private_kernel::{
     protocol::{
         AnchorId, ControlFloor, ControlId, Key, PrivateRoomScope, RoomId, SignedDeviceEnrollment,
-        SignedRoomAnchor, Validity,
+        SignedOwnerControl, SignedRoomAnchor, Validity,
     },
     recovery::MAX_ARCHIVE_PAGE_BYTES,
     Context, OperationId, OutboxKind, Phase, Status, MAX_BODY_BYTES, MAX_MEMBERS, MAX_PAGE_RECORDS,
@@ -446,6 +446,9 @@ impl Request {
             Self::ArchiveInbox { .. } => 27,
             Self::ArchiveOutbox { .. } => 28,
             Self::ArchiveClose => 29,
+            Self::ControlProofs { .. } => 30,
+            Self::ObserveControl(_) => 31,
+            Self::ForkEvidence => 32,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -504,10 +507,12 @@ impl Request {
                 w.op(*operation)?;
                 w.validity(*validity)?;
             }
-            Self::Controls { after, limit } => {
+            Self::Controls { after, limit } | Self::ControlProofs { after, limit } => {
                 w.floor(*after)?;
                 w.limit(*limit)?;
             }
+            Self::ObserveControl(b) => w.blob(b, MAX_ARTIFACT)?,
+            Self::ForkEvidence => (),
             Self::Outbox { after, limit } | Self::Inbox { after, limit } => {
                 w.number(*after)?;
                 w.limit(*limit)?;
@@ -623,6 +628,12 @@ impl Request {
                 limit: r.limit()?,
             },
             29 => Self::ArchiveClose,
+            30 => Self::ControlProofs {
+                after: r.floor()?,
+                limit: r.limit()?,
+            },
+            31 => Self::ObserveControl(r.blob(MAX_ARTIFACT)?),
+            32 => Self::ForkEvidence,
             _ => return Err(CodecError::InvalidFrame),
         };
         r.end()?;
@@ -649,6 +660,9 @@ impl Response {
             Self::ArchiveProgress { .. } => 113,
             Self::ArchiveInspect { .. } => 114,
             Self::ArchiveClosed { .. } => 115,
+            Self::ControlProofs { .. } => 116,
+            Self::Observed { .. } => 117,
+            Self::ForkEvidence { .. } => 118,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -692,6 +706,13 @@ impl Response {
                 head,
                 next,
                 records,
+            }
+            | Self::ControlProofs {
+                context,
+                base,
+                head,
+                next,
+                records,
             } => {
                 w.context(*context)?;
                 w.floor(*base)?;
@@ -701,6 +722,24 @@ impl Response {
                 for c in records {
                     w.floor(c.floor)?;
                     w.blob(&c.bytes, MAX_ARTIFACT)?;
+                }
+            }
+            Self::Observed { context, verdict } => {
+                w.context(*context)?;
+                w.byte(match verdict {
+                    ObserveVerdict::Retained => 1,
+                    ObserveVerdict::UnknownHistory => 2,
+                    ObserveVerdict::BeforeBase => 3,
+                })?;
+            }
+            Self::ForkEvidence { context, proof } => {
+                w.context(*context)?;
+                w.byte(u8::from(proof.is_some()))?;
+                if let Some(proof) = proof {
+                    w.floor(proof.accepted)?;
+                    w.blob(&proof.conflicting, MAX_ARTIFACT)?;
+                    w.blob(&proof.accepted_proof, MAX_ARTIFACT)?;
+                    w.byte(u8::from(proof.accepted_from_checkpoint))?;
                 }
             }
             Self::Outbox {
@@ -932,6 +971,89 @@ impl Response {
             115 => Self::ArchiveClosed {
                 context: r.context()?,
             },
+            116 => {
+                let context = r.context()?;
+                let base = r.floor()?;
+                let head = r.floor()?;
+                let next = r.optional_floor()?;
+                let count = r.count()?;
+                let mut records = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let floor = r.floor()?;
+                    let bytes = r.blob(MAX_ARTIFACT)?;
+                    // Signed proofs decode and verify at the local wire
+                    // boundary; a malformed or foreign-room proof is a corrupt
+                    // worker report.
+                    let control = SignedOwnerControl::decode(&bytes)
+                        .and_then(|c| c.verify())
+                        .map_err(|_| CodecError::InvalidFrame)?;
+                    if control.claims().scope != context.scope
+                        || control.id() != floor.id().ok_or(CodecError::InvalidFrame)?
+                    {
+                        return Err(CodecError::InvalidFrame);
+                    }
+                    records.push(Control { floor, bytes });
+                }
+                Self::ControlProofs {
+                    context,
+                    base,
+                    head,
+                    next,
+                    records,
+                }
+            }
+            117 => Self::Observed {
+                context: r.context()?,
+                verdict: match r.byte()? {
+                    1 => ObserveVerdict::Retained,
+                    2 => ObserveVerdict::UnknownHistory,
+                    3 => ObserveVerdict::BeforeBase,
+                    _ => return Err(CodecError::InvalidFrame),
+                },
+            },
+            118 => {
+                let context = r.context()?;
+                let proof = if r.boolean()? {
+                    let accepted = r.floor()?;
+                    let conflicting = r.blob(MAX_ARTIFACT)?;
+                    let accepted_proof = r.blob(MAX_ARTIFACT)?;
+                    let accepted_from_checkpoint = r.boolean()?;
+                    let control = SignedOwnerControl::decode(&conflicting)
+                        .and_then(|c| c.verify())
+                        .map_err(|_| CodecError::InvalidFrame)?;
+                    // A real fork names a different valid control at the same
+                    // accepted floor of this exact room.
+                    if control.claims().scope != context.scope
+                        || control.claims().sequence().ok() != Some(accepted.sequence())
+                        || accepted.id() == Some(control.id())
+                    {
+                        return Err(CodecError::InvalidFrame);
+                    }
+                    // A retained-control accepted side must itself decode,
+                    // verify, and commit to the reported floor; the private
+                    // joining-checkpoint encoding is kernel-internal.
+                    if !accepted_from_checkpoint {
+                        let signed = SignedOwnerControl::decode(&accepted_proof)
+                            .and_then(|c| c.verify())
+                            .map_err(|_| CodecError::InvalidFrame)?;
+                        if signed.claims().scope != context.scope
+                            || signed.claims().sequence().ok() != Some(accepted.sequence())
+                            || accepted.id() != Some(signed.id())
+                        {
+                            return Err(CodecError::InvalidFrame);
+                        }
+                    }
+                    Some(ForkProof {
+                        accepted,
+                        conflicting,
+                        accepted_proof,
+                        accepted_from_checkpoint,
+                    })
+                } else {
+                    None
+                };
+                Self::ForkEvidence { context, proof }
+            }
             _ => return Err(CodecError::InvalidFrame),
         };
         r.end()?;

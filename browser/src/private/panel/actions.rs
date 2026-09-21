@@ -473,6 +473,66 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
         Action::Controls | Action::ControlsNext => {
             controls(app, ticket, matches!(action, Action::ControlsNext)).await?
         }
+        Action::Proofs | Action::ProofsNext => {
+            proofs(app, ticket, matches!(action, Action::ProofsNext)).await?
+        }
+        Action::Observe => {
+            let raw = file(app, ticket, "private-proof-file", MAX_ARTIFACT).await?;
+            let Response::Observed { verdict, .. } =
+                call(app, ticket, Request::ObserveControl(raw)).await?
+            else {
+                return Err("Unexpected observation report.".into());
+            };
+            status(app, match verdict {
+                ObserveVerdict::Retained => "That exact signed control is already retained history on this device.",
+                ObserveVerdict::UnknownHistory => "Valid owner signature at a floor this device has not retained. Apply the missing encrypted controls in order; an observed proof is never adopted as state.",
+                ObserveVerdict::BeforeBase => "Valid owner signature below this device's retained history base. This device joined later and cannot confirm or apply predecessor floors; the proof is never adopted as state.",
+            }, false);
+        }
+        Action::ForkEvidence => {
+            let Response::ForkEvidence { proof, .. } =
+                call(app, ticket, Request::ForkEvidence).await?
+            else {
+                return Err("Unexpected fork evidence report.".into());
+            };
+            match proof {
+                Some(proof) => {
+                    let conflicting = SignedOwnerControl::decode(&proof.conflicting)
+                        .and_then(|c| c.verify())
+                        .map(|c| hex(c.id().as_bytes()))
+                        .unwrap_or_else(|_| "unverifiable".into());
+                    text(app, "private-evidence", &format!(
+                        "Retained fork proof\nAccepted floor {} · control {}\nConflicting valid owner control {}\nAccepted-side proof: {} bytes{}\nThis device is durably quarantined: history stays readable, new sends are refused, and this evidence never grants succession.",
+                        proof.accepted.sequence(),
+                        proof.accepted.id().map(|id| hex(id.as_bytes())).unwrap_or_else(|| "joining checkpoint".into()),
+                        conflicting,
+                        proof.accepted_proof.len(),
+                        if proof.accepted_from_checkpoint { " (joining checkpoint)" } else { "" },
+                    ));
+                    status(app, "A conflicting owner signature was proven at a retained floor. Preserve this device and evidence; do not reset or recreate it.", false);
+                }
+                None => {
+                    text(app, "private-evidence", "");
+                    status(app, "No locally retained fork proof. Absence is not a freshness or fork-freedom claim.", false);
+                }
+            }
+        }
+        Action::DownloadProof => {
+            let index = selected(app, "private-proof-select")?;
+            let (name, bytes) = {
+                let s = app.borrow();
+                let c = s
+                    .proofs
+                    .get(index)
+                    .ok_or("Select a retained signed proof.")?;
+                (
+                    format!("private-proof-{}.vhproof", c.floor.sequence()),
+                    c.bytes.clone(),
+                )
+            };
+            download(app, &name, &bytes)?;
+            status(app, "Exact signed control proof downloaded. It is a plaintext inspection record, not the encrypted control members apply.", false);
+        }
         Action::Outbox | Action::OutboxNext => {
             outbox(app, ticket, matches!(action, Action::OutboxNext)).await?
         }
@@ -620,6 +680,60 @@ async fn controls(app: &App, ticket: u64, next: bool) -> Result<()> {
         s.controls_next = next;
     }
     status(app, &format!("Read {count} encrypted controls. This device's retained wire history begins after floor {}; observed head {}. Earlier plaintext bootstrap is not exported.", base.sequence(), head.sequence()), false);
+    Ok(())
+}
+async fn proofs(app: &App, ticket: u64, next: bool) -> Result<()> {
+    let after = if next {
+        app.borrow().proofs_next.ok_or("No next proof page.")?
+    } else {
+        let head = app
+            .borrow()
+            .room
+            .as_ref()
+            .ok_or("No selected room.")?
+            .status
+            .control_floor;
+        // Probe at the observed head to learn the retained base first, exactly
+        // like the encrypted-control path; late joiners lack earlier proofs.
+        let Response::ControlProofs { base, .. } = call(
+            app,
+            ticket,
+            Request::ControlProofs {
+                after: head,
+                limit: PAGE,
+            },
+        )
+        .await?
+        else {
+            return Err("Unexpected proof boundary report.".into());
+        };
+        base
+    };
+    let Response::ControlProofs {
+        records,
+        next,
+        base,
+        head,
+        ..
+    } = call(app, ticket, Request::ControlProofs { after, limit: PAGE }).await?
+    else {
+        return Err("Unexpected signed-proof page.".into());
+    };
+    options(
+        app,
+        "private-proof-select",
+        records
+            .iter()
+            .map(|c| format!("Signed control {}", c.floor.sequence()))
+            .collect(),
+    );
+    let count = records.len();
+    {
+        let mut s = app.borrow_mut();
+        s.proofs = records;
+        s.proofs_next = next;
+    }
+    status(app, &format!("Read {count} signed control proofs from floor {} through observed head {}. These plaintext proofs are for inspection; members still apply the encrypted envelopes in order.", base.sequence(), head.sequence()), false);
     Ok(())
 }
 async fn outbox(app: &App, ticket: u64, next: bool) -> Result<()> {

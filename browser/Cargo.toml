@@ -17,6 +17,7 @@ private-rooms = ["dep:vhalla-private-kernel", "vhalla-browser-vault/private-stor
 vhalla-private-kernel = { path = "../crates/vhalla-private-kernel", optional = true }
 
 [dev-dependencies]
+ed25519-dalek = "=2.2.0"
 zeroize = { version = "1.9", features = ["alloc"] }
 
 [[test]]

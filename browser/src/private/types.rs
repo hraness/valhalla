@@ -130,6 +130,22 @@ pub enum Request {
         /// Maximum page count; must be between one and the kernel's fixed page cap.
         limit: usize,
     },
+    /// Read one bounded page of plaintext signed owner-control proofs. These
+    /// are inspection records, not the encrypted envelopes members apply.
+    ControlProofs {
+        /// Exact retained control floor preceding the requested page.
+        after: ControlFloor,
+        /// Maximum page count; must be between one and the kernel's fixed page cap.
+        limit: usize,
+    },
+    /// Compare one signed owner control against retained history only. A
+    /// conflicting valid claim at a known floor writes durable quarantine in
+    /// the kernel before the worker reports its terminal failure.
+    ObserveControl(Bytes),
+    /// Read the first locally proven owner-fork proof, if one is retained.
+    /// Missing evidence means no locally retained proof only; it never clears
+    /// quarantine or grants owner succession.
+    ForkEvidence,
     /// Read a bounded local outbox page; confidential offers return metadata only.
     Outbox {
         /// Exclusive local outbox sequence cursor, with zero before the first entry.
@@ -239,12 +255,41 @@ pub struct Inbound {
     /// Committed plaintext for this private view only; never automatic public export.
     pub body: Bytes,
 }
-/// Immutable encrypted owner control with its exact full control floor.
+/// Immutable owner control with its exact full control floor. `Controls`
+/// records carry the encrypted wire envelope; `ControlProofs` records carry
+/// the plaintext signed proof for inspection only.
 pub struct Control {
     /// Sequence and control identifier committed by this record.
     pub floor: ControlFloor,
-    /// Exact retained confidential control bytes, not a plaintext membership export.
+    /// Exact retained control record bytes, not a plaintext membership export.
     pub bytes: Bytes,
+}
+/// Closed verdict from comparing one signed owner control with retained
+/// history; a proven conflict never reaches this report because the kernel
+/// writes durable quarantine first and the worker fails terminally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObserveVerdict {
+    /// The exact signed control is already accepted retained history.
+    Retained,
+    /// Valid owner signature at an unknown or future floor; members apply
+    /// encrypted controls in order rather than adopting observed proofs.
+    UnknownHistory,
+    /// Valid owner signature below this device's retained history base; a
+    /// late joiner cannot confirm or apply predecessor floors it never held.
+    BeforeBase,
+}
+/// First locally proven conflict under the fixed owner's valid signature.
+/// This is evidence for inspection; it never clears quarantine, chooses a
+/// winner, or grants owner succession.
+pub struct ForkProof {
+    /// Previously accepted exact floor, backed by retained control/checkpoint.
+    pub accepted: ControlFloor,
+    /// Different valid owner-signed control at that same accepted sequence.
+    pub conflicting: Bytes,
+    /// Exact accepted signed control, or the bounded joining checkpoint.
+    pub accepted_proof: Bytes,
+    /// Whether `accepted_proof` is the joining checkpoint encoding.
+    pub accepted_from_checkpoint: bool,
 }
 /// Closed local worker reports; decoding is not independent network admission.
 pub enum Response {
@@ -291,6 +336,33 @@ pub enum Response {
         next: Option<ControlFloor>,
         /// Ordered bounded immutable encrypted control records.
         records: Vec<Control>,
+    },
+    /// Bounded signed-control-proof page from one retained snapshot.
+    ControlProofs {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// Earliest independently retained control floor for this local history.
+        base: ControlFloor,
+        /// Observed complete retained control head.
+        head: ControlFloor,
+        /// Exclusive continuation floor when another retained page remains.
+        next: Option<ControlFloor>,
+        /// Ordered bounded immutable signed-proof records.
+        records: Vec<Control>,
+    },
+    /// Signed-control observation verdict against retained history only.
+    Observed {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// Closed local comparison result; never a freshness claim.
+        verdict: ObserveVerdict,
+    },
+    /// Retained owner-fork proof, when the kernel has durably recorded one.
+    ForkEvidence {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// First locally proven conflict; none on a clean or unknown store.
+        proof: Option<ForkProof>,
     },
     /// Bounded outbox page; secret issuance remains metadata-only.
     Outbox {
@@ -374,6 +446,9 @@ impl Response {
             | Self::Offer { context, .. }
             | Self::Received { context, .. }
             | Self::Controls { context, .. }
+            | Self::ControlProofs { context, .. }
+            | Self::Observed { context, .. }
+            | Self::ForkEvidence { context, .. }
             | Self::Outbox { context, .. }
             | Self::Inbox { context, .. }
             | Self::ArchiveBegin { context, .. }
@@ -404,6 +479,12 @@ pub enum ReplyKind {
     Received,
     /// Immutable encrypted-control page.
     Controls,
+    /// Immutable signed-control-proof page.
+    ControlProofs,
+    /// Signed-control observation verdict.
+    Observed,
+    /// Retained owner-fork proof report.
+    ForkEvidence,
     /// Bounded ordinary outbox page.
     Outbox,
     /// Bounded committed inbox page.
@@ -439,6 +520,9 @@ impl Request {
             Self::Offer { .. } => ReplyKind::Offer,
             Self::Receive(_) => ReplyKind::Received,
             Self::Controls { .. } => ReplyKind::Controls,
+            Self::ControlProofs { .. } => ReplyKind::ControlProofs,
+            Self::ObserveControl(_) => ReplyKind::Observed,
+            Self::ForkEvidence => ReplyKind::ForkEvidence,
             Self::Outbox { .. } | Self::ArchiveOutbox { .. } => ReplyKind::Outbox,
             Self::Inbox { .. } | Self::ArchiveInbox { .. } => ReplyKind::Inbox,
             Self::ArchiveExport | Self::ArchiveImportBegin { .. } => ReplyKind::ArchiveBegin,
@@ -463,6 +547,9 @@ impl Response {
             Self::Offer { .. } => ReplyKind::Offer,
             Self::Received { .. } => ReplyKind::Received,
             Self::Controls { .. } => ReplyKind::Controls,
+            Self::ControlProofs { .. } => ReplyKind::ControlProofs,
+            Self::Observed { .. } => ReplyKind::Observed,
+            Self::ForkEvidence { .. } => ReplyKind::ForkEvidence,
             Self::Outbox { .. } => ReplyKind::Outbox,
             Self::Inbox { .. } => ReplyKind::Inbox,
             Self::ArchiveBegin { .. } => ReplyKind::ArchiveBegin,

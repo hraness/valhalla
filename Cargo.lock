@@ -6234,6 +6234,7 @@ dependencies = [
 name = "vhalla-browser"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek 2.2.0",
  "futures-channel",
  "js-sys",
  "serde",

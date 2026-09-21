@@ -7,7 +7,7 @@ use crate::{private_rooms as broker, private_wire::*};
 use js_sys::{Array, Uint8Array};
 use std::{cell::RefCell, rc::Rc};
 use vhalla_private_kernel::{
-    protocol::{ControlFloor, Key, Validity},
+    protocol::{ControlFloor, Key, SignedOwnerControl, Validity},
     ContactBootstrap, Context, OperationId, Phase, Status, MAX_BODY_BYTES,
 };
 use wasm_bindgen::{prelude::*, JsCast};
@@ -42,6 +42,11 @@ const IDS: &[(&str, Action)] = &[
     ("private-controls", Action::Controls),
     ("private-controls-next", Action::ControlsNext),
     ("private-download-control", Action::DownloadControl),
+    ("private-proofs", Action::Proofs),
+    ("private-proofs-next", Action::ProofsNext),
+    ("private-download-proof", Action::DownloadProof),
+    ("private-observe", Action::Observe),
+    ("private-fork-evidence", Action::ForkEvidence),
     ("private-remove", Action::Remove),
     ("private-renew", Action::Renew),
     ("private-outbox", Action::Outbox),
@@ -85,6 +90,11 @@ enum Action {
     Controls,
     ControlsNext,
     DownloadControl,
+    Proofs,
+    ProofsNext,
+    DownloadProof,
+    Observe,
+    ForkEvidence,
     Remove,
     Renew,
     Outbox,
@@ -123,9 +133,11 @@ struct State {
     secret: Option<Secret>,
     outbox: Vec<Artifact>,
     controls: Vec<Control>,
+    proofs: Vec<Control>,
     outbox_next: Option<u64>,
     inbox_next: Option<u64>,
     controls_next: Option<ControlFloor>,
+    proofs_next: Option<ControlFloor>,
     archive: Option<ArchivePanel>,
     downloads: Vec<String>,
     handlers: Vec<Closure<dyn FnMut(Event)>>,
@@ -316,9 +328,11 @@ pub fn clear_sensitive_state() {
         s.secret = None;
         s.outbox.clear();
         s.controls.clear();
+        s.proofs.clear();
         s.outbox_next = None;
         s.inbox_next = None;
         s.controls_next = None;
+        s.proofs_next = None;
         s.archive = None;
         for url in s.downloads.drain(..) {
             let _ = Url::revoke_object_url(&url);
@@ -334,6 +348,7 @@ pub fn clear_sensitive_state() {
         "private-request-file",
         "private-join-file",
         "private-control-file",
+        "private-proof-file",
         "private-resume-offer-file",
         "private-archive-file",
     ] {
@@ -351,6 +366,8 @@ pub fn clear_sensitive_state() {
         "private-secret-label",
         "private-inbox-content",
         "private-control-select",
+        "private-proof-select",
+        "private-evidence",
         "private-outbox-select",
         "private-archive-title",
         "private-archive-summary",
@@ -422,6 +439,8 @@ fn render(app: &App) {
             Action::Offer | Action::Accept | Action::Remove | Action::Renew => active && is_owner,
             Action::Receive | Action::Apply => active && ready,
             Action::ControlsNext => active && s.controls_next.is_some(),
+            Action::ProofsNext => active && s.proofs_next.is_some(),
+            Action::DownloadProof => active && !s.proofs.is_empty(),
             Action::OutboxNext => active && s.outbox_next.is_some(),
             Action::InboxNext => active && s.inbox_next.is_some(),
             Action::DownloadControl => active && !s.controls.is_empty(),
@@ -461,6 +480,7 @@ fn render(app: &App) {
         "private-request-file",
         "private-join-file",
         "private-control-file",
+        "private-proof-file",
         "private-resume-offer-file",
         "private-archive-file",
         "private-locator-retained",
@@ -797,9 +817,11 @@ pub fn start() {
         secret: None,
         outbox: Vec::new(),
         controls: Vec::new(),
+        proofs: Vec::new(),
         outbox_next: None,
         inbox_next: None,
         controls_next: None,
+        proofs_next: None,
         archive: None,
         downloads: Vec::new(),
         handlers: Vec::new(),

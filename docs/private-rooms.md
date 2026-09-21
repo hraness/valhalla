@@ -45,7 +45,7 @@ files. Fresh send checks authenticated membership, validity and the exact select
 epoch/roster before reading text. Output failure preserves the state and partial
 file; retry exact inputs to a fresh output path or export retained ciphertext.
 The FORMAT locator is an unauthenticated hint; the selected account and complete
-private image authenticate before display or action. Five actual CLI process
+private image authenticate before display or action. Six actual CLI process
 journeys and the read-only locator regression pass; strict enabled-target CLI
 and full-feature native lints also pass.
 
@@ -140,6 +140,19 @@ starts at its joining floor and cannot supply older encrypted controls. `control
 returns local signed proof records, not catch-up packets safe for public sharing.
 An altered old ciphertext is refused, not treated as proof of an owner fork;
 quarantine requires authenticated signed evidence at a known retained floor.
+
+Both maintained clients expose the inspection half of that boundary. The CLI's
+`control-proof` exports the next signed owner-control proof at an exact floor
+cursor, `observe` compares one signed proof against retained history and reports
+`retained`, `unknown-history`, `below-retained-base` or
+`conflicting-fork-quarantined`, and `fork-evidence` exports the first durably
+retained contradiction. The browser panel reads the same bounded proof pages,
+downloads exact `.vhproof` files, and applies the same observation verdicts;
+a proven conflict still ends its worker after the durable quarantine write, and
+the reopened panel shows quarantine status plus the retained evidence. An
+observed proof is never adopted as state, never grants membership or owner
+succession, and proves nothing about floors the device has not retained —
+comparison is against local history only, not a global freshness claim.
 
 ## Confidential recipient bootstrap
 

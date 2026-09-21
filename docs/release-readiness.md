@@ -47,8 +47,11 @@ Storage keys derive from the account secret and the exact room/anchor/account/
 device context. Lock drops both custodians. Reopen requires the original context
 and current retained image; account restoration alone never recreates MLS state.
 The optional native private CLI now implements the complete local encrypted-file
-invitation and messaging path, recipient review, exact retry/export, removal and
-renewal. Four real process journeys and the read-only locator regression pass.
+invitation and messaging path, recipient review, exact retry/export, removal,
+renewal, signed control-proof export, owner-control observation and
+fork-evidence reporting. Five real process journeys and the read-only locator
+regression pass; a sixth fabricates an authentic owner fork from copied custody
+and verifies observation verdicts, durable quarantine and retained proof.
 The native CLI also supports complete encrypted archives, exact interrupted-import
 resume, and read-only membership/history inspection. Three native custody tests,
 three process journeys and one file-framing fault test passed locally. These
@@ -59,7 +62,10 @@ locator retention/reopen, cancellation after commit, stale replies and replaced
 account refusal. The optional private panel passed a real two-account DOM journey:
 confidential invitations, bidirectional file messages, exact ciphertext reopen,
 ordered renewal control, keyboard locator acknowledgment, consent invalidation,
-secret export refusal, and lock cleanup. Desktop/tablet/mobile layouts passed at
+secret export refusal, ordered owner removal with read-only retained history
+for the removed member, signed-proof export and download, observe verdicts
+(retained, unknown-history, below-retained-base), clean fork-evidence reads,
+and lock cleanup. Desktop/tablet/mobile layouts passed at
 1280/768/390 pixels. The browser panel now shares the canonical `.vharchive`
 workflow: bounded encrypted export from an open room, durable exact-resume import
 into a separate read-only IndexedDB namespace, and read-only archive inspection.
@@ -76,8 +82,14 @@ browser dependency graph.
 
 Before a private-room release, complete and qualify:
 
-- Extend browser coverage to every retained-control edge case (fork quarantine,
-  expired or conflicting envelopes). Owner removal is covered in the DOM
+- Extend browser coverage to every retained-control edge case (expired or
+  conflicting envelopes). The DOM journey now covers signed-proof paging and
+  `.vhproof` download, observation verdicts (retained, unknown future floor,
+  and below the joining device's retained base), and clean fork-evidence
+  reads; the CLI process journey covers a fabricated authentic owner fork,
+  durable quarantine and retained evidence. The DOM journey does not
+  fabricate a fork: a proven conflict still ends the worker terminally after
+  the kernel's durable quarantine write. Owner removal is covered in the DOM
   journey: ordered catch-up, rekey, removed-device send refusal and retained
   read-only history. Creation, confidential invitations, membership
   inspection, renewal/catch-up, read-only archive export/import/open and

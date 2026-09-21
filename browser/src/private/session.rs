@@ -10,7 +10,7 @@ use vhalla_browser_storage::{
 };
 use vhalla_browser_vault::{Envelope, UnlockedIdentity};
 use vhalla_private_kernel::{
-    protocol::{Key, SignedDeviceEnrollment, SignedRoomAnchor},
+    protocol::{Key, SignedDeviceEnrollment, SignedOwnerControl, SignedRoomAnchor},
     recovery::{ArchiveExport, ArchiveImport, ArchiveSeal, ArchiveSourceReader, ArchiveView},
     storage::ArchiveStore,
     CommittedOutbox, Context, Kernel, MemberDraft, MessageDraft, OutboxEntry, OwnerDraft, Phase,
@@ -175,6 +175,19 @@ impl Session {
             return Err(Failure::State);
         }
         Ok(kernel)
+    }
+    /// Reopen the exact same durable custody in place after a verdict-only
+    /// operation that provably committed nothing but still latches
+    /// needs_reopen. Equivalent to the fresh open every CLI invocation gets;
+    /// an indeterminate write still ends this worker instead of reaching here.
+    async fn reopen_kernel(&mut self, context: Context) -> Result<()> {
+        let store = self.kernel.take().ok_or(Failure::State)?.into_store();
+        let key = self
+            .identity
+            .private_storage_key(context)
+            .map_err(|_| Failure::IdentityChanged)?;
+        self.kernel = Some(Kernel::open(store, &key, context).await?);
+        Ok(())
     }
     fn empty(&self) -> Result<()> {
         if self.kernel.is_some() || self.creation.is_some() {
@@ -488,6 +501,65 @@ impl Session {
                     next: page.next,
                     records,
                 })
+            }
+            Request::ControlProofs { after, limit } => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let page = kernel.controls(after, limit).await?;
+                let records = page
+                    .records
+                    .into_iter()
+                    .map(|r| Control {
+                        floor: r.floor(),
+                        bytes: Zeroizing::new(r.bytes().to_vec()),
+                    })
+                    .collect();
+                Ok(Response::ControlProofs {
+                    context,
+                    base: page.base,
+                    head: page.head,
+                    next: page.next,
+                    records,
+                })
+            }
+            Request::ObserveControl(raw) => {
+                // A retained verdict clears the in-flight flag; a missing
+                // verdict commits nothing but leaves the kernel requiring
+                // reopen, so custody is reopened in place before replying.
+                // A proven conflict quarantines and ends this worker anyway.
+                let context = self.kernel()?.status().context;
+                let verdict = match self.kernel()?.observe_owner_control(&raw, time).await {
+                    Ok(_) => ObserveVerdict::Retained,
+                    Err(vhalla_private_kernel::Error::Missing) => {
+                        self.reopen_kernel(context).await?;
+                        // The kernel reports both future floors and floors below
+                        // this device's retained base as missing; only the first
+                        // can ever be caught up by applying controls.
+                        let base = self.kernel()?.status().history_base.sequence();
+                        let below = SignedOwnerControl::decode(&raw)
+                            .ok()
+                            .and_then(|c| c.claims().sequence().ok())
+                            .is_some_and(|sequence| sequence < base);
+                        if below {
+                            ObserveVerdict::BeforeBase
+                        } else {
+                            ObserveVerdict::UnknownHistory
+                        }
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                Ok(Response::Observed { context, verdict })
+            }
+            Request::ForkEvidence => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let proof = kernel.fork_evidence().await?.map(|p| ForkProof {
+                    accepted: p.accepted,
+                    conflicting: Zeroizing::new(p.conflicting.encode()),
+                    accepted_proof: Zeroizing::new(p.accepted_proof),
+                    accepted_from_checkpoint: p.accepted_from_checkpoint,
+                });
+                Ok(Response::ForkEvidence { context, proof })
             }
             Request::Outbox { after, limit } => {
                 let kernel = self.kernel()?;

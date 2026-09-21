@@ -233,5 +233,12 @@ browser context, admits it through a self-addressed confidential offer as a
 distinct same-account device, and verifies it starts with no pre-join history
 while exchanging post-join messages both ways. It also applies an ordered
 owner removal control: the excluded device keeps read-only retained state but
-cannot prepare new sends. Owner succession and safe
+cannot prepare new sends. The controls section additionally pages retained
+encrypted envelopes and signed owner-control proofs, downloads exact
+`.vhproof` files, and observes an imported proof against local history —
+reporting retained, unknown future floor, or below the joining device's
+retained base — while the fork-evidence read reports whether a durable
+contradiction exists (none in the clean journey). A real fork still quarantines
+the kernel and ends the worker; a reopened quarantined member can read status
+and retained evidence but never resumes sending. Owner succession and safe
 live-device transfer remain separate work.
