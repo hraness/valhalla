@@ -20,6 +20,48 @@ pub enum EvidenceRole {
     CurrentAdmission,
 }
 
+/// Exact unsigned historical-policy check, never a posting or signing grant.
+///
+/// The caller must independently establish the AdmissionContext's certified
+/// provenance and the exact existing durable reservation before using a signer.
+/// This non-serialized result proves neither persistence, signature time nor
+/// past admission, and cannot advance an admitted AuthorChain.
+#[derive(Debug)]
+pub struct HistoricalUnsigned {
+    request: UnsignedEvent,
+    registry: [u8; 32],
+}
+impl HistoricalUnsigned {
+    /// The exact canonical request checked before any signature was produced.
+    pub const fn request(&self) -> &UnsignedEvent {
+        &self.request
+    }
+    /// Immutable evaluation basis; not a certificate or current-policy grant.
+    pub const fn registry_digest(&self) -> &[u8; 32] {
+        &self.registry
+    }
+}
+impl AdmissionContext<'_> {
+    /// Check one typed unsigned request against its exact admitted enabled
+    /// historical revision, using the same rules as signed continuity evidence.
+    ///
+    /// At most one room's bounded retained revisions are searched. Revocation
+    /// or archival does not erase that history, but this result never authorizes
+    /// fresh publication. It does not prove that the request was reserved or
+    /// signed when the named policy was current. A custody controller must bind
+    /// it to the actual unchanged pending request and author base before signing.
+    pub fn check_historical_unsigned(
+        &self,
+        request: UnsignedEvent,
+    ) -> Result<HistoricalUnsigned, Error> {
+        check_historical(self, request.claims())?;
+        Ok(HistoricalUnsigned {
+            request,
+            registry: self.digest,
+        })
+    }
+}
+
 /// A hidden staging position. Advancing it never changes a published AuthorChain.
 /// A storage owner must bind it to its own exact durable staging catalogue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

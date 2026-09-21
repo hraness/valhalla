@@ -145,8 +145,13 @@ advance the retained prefix; the legacy delivery floor is unchanged. The native
 controller now explicitly initializes/selects an exact signed target, saves an
 attempt before dialing, and performs one advertisement refresh plus at most three
 continuity exchanges within a 90-second step. Fifteen real-store/typed-HTTP tests
-and strict native CLI lint passed. Browser orchestration, old-policy unsigned-draft
-recovery and incremental finalization beyond the bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
+and strict native CLI lint passed. Explicit native `recover-history` now checks
+one exact retained unsigned draft against certified historical policy before
+signing. Its sequence, content and chain fields stay unchanged; actual pending
+state and final journal HEAD are checked first. Three portable, six real-store
+refusal/order tests and three certified-journal CLI journeys passed. Recovery
+does not grant current posting permission or claim past admission. Browser
+orchestration/recovery and incremental finalization beyond the bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;
 never silently prune or reset a used sequence to recover capacity.

@@ -8,7 +8,7 @@ use vhalla_browser_storage::{
 use vhalla_public_protocol::continuity as wire;
 use vhalla_room_activity::{UnsignedEvent, VerifiedEvent};
 
-pub(in crate::public_network::activity) const HELP: &str = "vhalla public activity continuity-init|continuity-select BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES TERMINAL_SEQUENCE\nvhalla public activity continuity-status BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES\nvhalla public activity continuity-step BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES JOURNAL [--replay-profile PROFILE]\ninit exclusively creates receipt custody; select opens it and explicitly selects a retained signed terminal (same exact selection resumes, only later selections replace it). status is local. step refreshes the exact peer and performs at most 3 continuity exchanges inside the existing 90-second total supervisor; certified replay retains its 4096-bundle/30-second bound. Status/Stage are hints; terminal admission and verified peer-retained prefix are separate. No key use, draft recovery, author reset, v1 delivery conversion, peer failover or automatic migration. Preserve every existing directory after uncertainty. An unsigned old-policy pending draft may need separate explicit recovery, which this command does not implement.";
+pub(in crate::public_network::activity) const HELP: &str = "vhalla public activity continuity-init|continuity-select BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES TERMINAL_SEQUENCE\nvhalla public activity continuity-status BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES\nvhalla public activity continuity-step BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES JOURNAL [--replay-profile PROFILE]\ninit exclusively creates receipt custody; select opens it and explicitly selects a retained signed terminal (same exact selection resumes, only later selections replace it). status is local. step refreshes the exact peer and performs at most 3 continuity exchanges inside the existing 90-second total supervisor; certified replay retains its 4096-bundle/30-second bound. Status/Stage are hints; terminal admission and verified peer-retained prefix are separate. No key use, draft recovery, author reset, v1 delivery conversion, peer failover or automatic migration. Preserve every existing directory after uncertainty. An unsigned old-policy pending draft may need separate explicit recovery, use the separate recover-history command for its exact saved sequence/ID.";
 const EXCHANGES: usize = 3;
 const MAX_ANCESTORS: u64 = 4096 + 32;
 
@@ -93,7 +93,7 @@ fn event(source: &NativeOutbox, sequence: u64) -> Result<VerifiedEvent, String> 
     if sequence > source.head().map_err(preserved)?.sequence()
         && source.load_pending().map_err(preserved)?.is_some()
     {
-        return Err("selected position is an unsigned held draft: use ordinary resume only if its exact policy still permits; explicit old-policy draft recovery is unavailable here; nothing signed or replaced".into());
+        return Err("selected position is an unsigned held draft: use ordinary resume only if its exact policy still permits; use explicit recover-history for its exact saved sequence/ID; nothing signed or replaced here".into());
     }
     if sequence == 0 || sequence > source.head().map_err(preserved)?.sequence() {
         return Err("terminal/source position is not in the existing signed outbox; never infer or initialize an author".into());
@@ -416,7 +416,7 @@ impl Controller<'_> {
                     }
                     // No CLI historical verifier or signing fallback. The old
                     // unsigned reservation remains exactly where its author left it.
-                    self.policy.permit(&terminal).map_err(|e| format!("fixed terminal is not current-policy permitted; preserve it and any held draft; explicit old-draft recovery is unavailable: {e}"))?;
+                    self.policy.permit(&terminal).map_err(|e| format!("fixed terminal is not current-policy permitted; preserve it and any held draft; recover a held unsigned draft separately with recover-history, then create a current-policy terminal: {e}"))?;
                     bounded_span(remote.published.sequence(), job.terminal().sequence())?;
                     if remote.stage.is_some_and(|s| s.expires_at() <= at) {
                         return Err("temporary stage expired; preserve source and retry Status after peer maintenance; no lease extension inferred".into());

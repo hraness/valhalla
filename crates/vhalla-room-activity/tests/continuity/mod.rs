@@ -398,3 +398,5 @@ fn continuity_inline_projection_prepares_terminal_without_claiming_persistence()
     assert_eq!(receipt.event().claims().sequence, 2);
     assert_eq!(chain.position().unwrap().sequence(), 2);
 }
+
+mod unsigned;

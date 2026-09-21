@@ -595,3 +595,6 @@ fn replay_profile_fresh_cache_rebuild_binds_existing_outbox_before_any_replay() 
         old_cache
     );
 }
+
+#[path = "public_activity/recovery.rs"]
+mod recovery;

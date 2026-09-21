@@ -156,6 +156,13 @@ impl ReservedDraft {
         policy: HistoryHead,
         request: UnsignedEvent,
     ) -> Result<Self, Error> {
+        Self::from_parts(base, policy, request)
+    }
+    fn from_parts(
+        base: AuthorHead,
+        policy: HistoryHead,
+        request: UnsignedEvent,
+    ) -> Result<Self, Error> {
         let claims = request.claims();
         if AuthorScope::new(claims.scope, claims.author) != base.scope
             || claims.scope.network != policy.scope().network()
@@ -181,6 +188,39 @@ impl ReservedDraft {
             request,
             bytes,
         })
+    }
+    /// Derive only a new evaluation basis for this exact existing draft after
+    /// the shared unsigned historical check. This grants no current posting
+    /// permission and changes no request, author-base or content-ID bytes.
+    ///
+    /// The caller must certify `basis` by replay and retain actual author custody.
+    /// This is an unpublished candidate: use the existing exact pending/base/
+    /// current-policy CAS in `rebase_reservation`, then `reserve`, before signing.
+    /// An identical basis returns an identical frame for exact recovery retries.
+    pub fn rebase_historical(
+        &self,
+        basis: HistoryHead,
+        checked: &vhalla_room_activity::continuity::HistoricalUnsigned,
+    ) -> Result<Self, Error> {
+        if checked.request().id() != self.request.id()
+            || checked.request().encode() != self.request.encode()
+        {
+            return Err(Error::Stale);
+        }
+        if basis.scope() != self.policy.scope()
+            || basis.frontier().registry != *checked.registry_digest()
+        {
+            return Err(Error::WrongScope);
+        }
+        if basis == self.policy {
+            return Ok(self.clone());
+        }
+        if basis.frontier().height <= self.policy.frontier().height
+            || basis.frontier().time < self.policy.frontier().time
+        {
+            return Err(Error::Stale);
+        }
+        Self::from_parts(self.base, basis, self.request.clone())
     }
     /// Parse exact typed unsigned framing; this is not a completed reservation.
     pub fn decode(raw: &[u8]) -> Result<Self, Error> {

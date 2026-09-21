@@ -1754,9 +1754,10 @@ already beyond the selected target requires explicit selection of a later local
 terminal. Keep every source, peer and receipt directory after a refusal;
 `needsReopen` requires exact reopen/reconciliation before another attempt.
 
-A still-unsigned old-policy pending draft can block author continuity. This
-slice explicitly refuses that case: it does not discard, rebase, sign or recover
-the draft. Separate reviewed historical draft recovery remains a usability gap.
+An old-policy pending draft can block author continuity. The network controller
+refuses to sign or replace it. Use the explicit local `recover-history` operation
+below for the exact previously reserved sequence and event ID, then create a
+separate ordinary current-policy terminal before transferring new continuity.
 Full uploads also need an operator-sized lease: the minimum 60 seconds cannot
 reliably cover 4,096 staged ancestors under the existing per-IP credits. Refer to
 the serving resource contract above rather than assuming minimum TTL is adequate.
@@ -1863,3 +1864,55 @@ lock/drop. Retain both the encrypted archive file and the account's established
 custody; losing either is not repaired by creating a new identity or device.
 Active transfer/fencing, live backup restoration, automatic owner recovery and
 owner succession are not supplied by these commands.
+
+
+## Recover one exact held public draft
+
+`experimental-public` provides an explicit local recovery operation when a
+previously reserved draft's enabled policy has since been revoked, replaced or
+archived. The retained reservation may already have been signed before an
+interruption. Its sequence, event ID and complete unsigned bytes must remain
+fixed. Use the sequence and event ID printed by `activity reserve`:
+
+```console
+vhalla public activity recover-history BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 EXPECTED_SEQUENCE EXPECTED_EVENT64
+```
+
+Append `--replay-profile PROFILE` to reuse an existing authenticated replay
+profile. The usual 4,096-bundle/30-second replay bound applies. A partial replay
+cannot authorize signing; continue the same checked profile with the existing
+catch-up workflow and retry the exact selection.
+
+The command opens only an existing identity and outbox, verifies independently
+pinned certified history, and checks the unsigned request against its exact
+admitted enabled historical revision **before any signature**. The complete room
+scope, actual author base, exact pending frame, and evaluation checkpoint must
+match. Disabled or unknown revisions and foreign scope refuse. A historical
+revision proves neither the time a signature was made nor past admission.
+Current posting grants are checked separately and are never restored by recovery.
+
+If catch-up advanced the stored history checkpoint, recovery persists a checked
+metadata-only rebase through the existing exact compare-and-swap. This changes
+the reservation's evaluation checkpoint, while retaining the same policy ID,
+room, author, sequence, previous ID, timestamp, content ID and exact unsigned
+content. It then confirms the exact durable reservation and final journal HEAD,
+signs with the existing custody key, verifies the result and finalizes that
+same frame locally. It performs no network operation and produces no peer
+admission or delivery receipt.
+
+`status signed-and-retained-for-continuity` means the selected signature and
+local author floor were durably retained. To obtain new admission, ordinary
+`activity queue` must separately pass a currently enabled policy to produce a
+later terminal; use the continuity client for that terminal and its historical
+prefix. A still-closed or archived room cannot admit a new terminal. Sending an
+old historical frame through the v1 ordinary post path does not bypass the peer's
+current-policy checks.
+
+Retry the same sequence and event ID after an uncertain result. If already
+finalized, the command returns `already-signed-retained-locally` using an indexed
+read, leaves a newer pending draft intact, and makes no new policy-evaluation
+claim. It never selects the latest event automatically. A different event at
+that sequence, missing prior state, changed pending request or custody failure
+refuses. Preserve the identity, outbox, profile and all retained intent evidence;
+never delete or reset them to clear an error. Browser recovery UI is not added
+by this native command.

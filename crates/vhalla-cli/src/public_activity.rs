@@ -24,7 +24,10 @@ use vhalla_rooms::RoomGenesisId;
 #[path = "public_activity/network.rs"]
 mod network;
 
-pub const HELP: &str = "vhalla public activity init BOOTSTRAP PIN64 JOURNAL NEW_KEY_DIR NEW_OUTBOX ROOM64\nvhalla public activity reserve|queue BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE\nvhalla public activity resume|catch-up BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64\nvhalla public activity outbox BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 AFTER_SEQUENCE NEW_EXPORT_DIR\ninit couples a genuinely new identity with one new room-scoped outbox. reserve saves exact unsigned bytes; queue also signs; resume signs only the retained draft. All are local operations. Keep the key and complete outbox together; restored keys and absent author state cannot reset sequences. outbox exports at most 16 signed frames without publishing them. JOURNAL supplies certified policy, replayed with a 4096-bundle/30-second per-call budget; incomplete replay refuses authoring. Append --replay-profile PROFILE to local author commands for authenticated restart continuation. Create that profile at verified genesis with public activity replay-init BOOTSTRAP PIN64 JOURNAL NEW_PROFILE. Then use replay-step BOOTSTRAP PIN64 JOURNAL PROFILE for pre-author progress, or catch-up with the exact existing outbox before any replay. replay-init reports replay-profile-created; replay-step reports more or caught-up-local-journal. Profile commands never create an author or authorize a post. Use one profile per author workflow. Bare replay-step refuses once an author anchor is retained; activity catch-up with the exact outbox continues without signing. Keep journal and outbox evidence. No network delivery or global freshness is implied.";
+#[path = "public_activity/recovery.rs"]
+mod recovery;
+
+pub const HELP: &str = "vhalla public activity init BOOTSTRAP PIN64 JOURNAL NEW_KEY_DIR NEW_OUTBOX ROOM64\nvhalla public activity reserve|queue BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE\nvhalla public activity resume|catch-up BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64\nvhalla public activity recover-history BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 EXPECTED_SEQUENCE EXPECTED_EVENT64\nvhalla public activity outbox BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 AFTER_SEQUENCE NEW_EXPORT_DIR\ninit couples a genuinely new identity with one new room-scoped outbox. reserve saves exact unsigned bytes; queue also signs; resume signs only the retained draft. recover-history explicitly finalizes only the selected existing draft after unsigned historical-policy verification; it grants no current posting permission or past-admission claim. All are local operations. Keep the key and complete outbox together; restored keys and absent author state cannot reset sequences. outbox exports at most 16 signed frames without publishing them. JOURNAL supplies certified policy, replayed with a 4096-bundle/30-second per-call budget; incomplete replay refuses authoring. Append --replay-profile PROFILE to local author commands for authenticated restart continuation. Create that profile at verified genesis with public activity replay-init BOOTSTRAP PIN64 JOURNAL NEW_PROFILE. Then use replay-step BOOTSTRAP PIN64 JOURNAL PROFILE for pre-author progress, or catch-up with the exact existing outbox before any replay. replay-init reports replay-profile-created; replay-step reports more or caught-up-local-journal. Profile commands never create an author or authorize a post. Use one profile per author workflow. Bare replay-step refuses once an author anchor is retained; activity catch-up with the exact outbox continues without signing. Keep journal and outbox evidence. No network delivery or global freshness is implied.";
 
 const MAX_REPLAY_BUNDLES: usize = 4096;
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -479,6 +482,9 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         .get(2)
         .and_then(|arg| arg.to_str())
         .ok_or_else(|| format!("{HELP}\n{}\n{}", network::HELP, network::continuity::HELP))?;
+    if command == "recover-history" {
+        return recovery::run(args, profile);
+    }
     if network::continuity::recognizes(command) {
         return network::continuity::run(args, profile);
     }
