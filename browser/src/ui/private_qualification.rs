@@ -85,6 +85,61 @@ async fn image(context: Context) -> Result<Vec<u8>, String> {
         .ok_or("missing image")?;
     Ok(image.as_bytes().to_vec())
 }
+/// Independent re-parse of the canonical .vharchive container; deliberately not
+/// the panel's decoder, so qualification cross-checks the emitted bytes.
+fn archive_container(raw: &str) -> Result<(Context, [u8; 32], Vec<Bytes>), String> {
+    use vhalla_private_kernel::protocol::{AnchorId, PrivateRoomScope};
+    ensure(
+        raw.len().is_multiple_of(2) && raw.len() >= 2 * (168 + 4) && raw.len() <= 2 * 400_000_000,
+        "archive width",
+    )?;
+    let mut decoded = Vec::with_capacity(raw.len() / 2);
+    for pair in raw.as_bytes().as_chunks::<2>().0 {
+        let pair = std::str::from_utf8(pair).map_err(error)?;
+        decoded.push(u8::from_str_radix(pair, 16).map_err(error)?);
+    }
+    let raw = Zeroizing::new(decoded);
+    ensure(
+        raw.len() >= 168 + 4 && &raw[..8] == b"VHARCHF1",
+        "archive header",
+    )?;
+    let field = |offset: usize| -> Result<[u8; 32], String> {
+        raw[offset..offset + 32].try_into().map_err(error)
+    };
+    let context = Context {
+        scope: PrivateRoomScope {
+            room: RoomId::from_bytes(field(8)?).map_err(error)?,
+            anchor: AnchorId::from_bytes(field(40)?).map_err(error)?,
+        },
+        account: Key::from_bytes(field(72)?).map_err(error)?,
+        device: Key::from_bytes(field(104)?).map_err(error)?,
+    };
+    let archive_id = field(136)?;
+    ensure(archive_id != [0; 32], "archive id")?;
+    let mut pages = Vec::new();
+    let mut offset = 168usize;
+    loop {
+        ensure(offset + 4 <= raw.len(), "truncated page length")?;
+        let length =
+            u32::from_be_bytes(raw[offset..offset + 4].try_into().map_err(error)?) as usize;
+        offset += 4;
+        if length == 0 {
+            ensure(offset == raw.len(), "trailing archive bytes")?;
+            break;
+        }
+        ensure(
+            length <= vhalla_private_kernel::recovery::MAX_ARCHIVE_PAGE_BYTES
+                && offset + length <= raw.len()
+                && pages.len() < 100_020,
+            "archive page bound",
+        )?;
+        pages.push(Zeroizing::new(raw[offset..offset + length].to_vec()));
+        offset += length;
+    }
+    ensure(pages.len() >= 2, "archive needs content and final pages")?;
+    Ok((context, archive_id, pages))
+}
+
 async fn open(context: Context) -> Result<(), String> {
     private::enter().await?;
     let result = private::execute(Request::Open(context)).await?;
@@ -377,6 +432,276 @@ pub async fn qualify_private_session(phase: String, retained: String) -> Result<
                     "missing room was created",
                 )?;
                 Ok(json!({"missing_refused":true}))
+            }
+            "archive-export" => {
+                // The room is already open; export is a read-only stream of its
+                // exact retained state, framed here in the canonical container.
+                let context = selected(retained)?;
+                let Response::ArchiveBegin {
+                    context: bound,
+                    archive_id,
+                } = private::execute(Request::ArchiveExport).await?
+                else {
+                    return Err("archive begin variant".into());
+                };
+                ensure(
+                    bound == context && archive_id != [0; 32],
+                    "archive identity",
+                )?;
+                let mut raw = b"VHARCHF1".to_vec();
+                for field in [
+                    context.scope.room.as_bytes(),
+                    context.scope.anchor.as_bytes(),
+                    context.account.as_bytes(),
+                    context.device.as_bytes(),
+                    &archive_id,
+                ] {
+                    raw.extend_from_slice(field);
+                }
+                let mut pages = 0u64;
+                loop {
+                    let Response::ArchivePage {
+                        context: reported,
+                        page,
+                    } = private::execute(Request::ArchiveExportNext).await?
+                    else {
+                        return Err("archive page variant".into());
+                    };
+                    ensure(reported == context, "archive page scope")?;
+                    let Some(page) = page else { break };
+                    ensure(
+                        page.len() <= vhalla_private_kernel::recovery::MAX_ARCHIVE_PAGE_BYTES,
+                        "page bound",
+                    )?;
+                    raw.extend_from_slice(&(page.len() as u32).to_be_bytes());
+                    raw.extend_from_slice(&page);
+                    pages += 1;
+                    ensure(pages <= 100_020, "archive page count")?;
+                }
+                raw.extend_from_slice(&0u32.to_be_bytes());
+                ensure(pages >= 2, "archive missing content/final pages")?;
+                Ok(json!({"archive":hex(&raw),"pages":pages,"archive_id":hex(&archive_id)}))
+            }
+            "archive-foreign-account" => {
+                // Broker refuses a foreign-account header without reaching the
+                // worker; a correct begin must then succeed on the live session.
+                let (context, archive_id, pages) = archive_container(retained)?;
+                private::enter().await?;
+                let mut encoded = [0x66; 32];
+                encoded[0] = 0x58;
+                let other = Key::from_bytes(encoded).map_err(error)?;
+                ensure(other != context.account, "synthetic account collision")?;
+                ensure(
+                    private::execute(Request::ArchiveImportBegin {
+                        context: Context {
+                            account: other,
+                            ..context
+                        },
+                        archive_id,
+                    })
+                    .await
+                    .is_err(),
+                    "foreign archive accepted",
+                )?;
+                let Response::ArchiveBegin {
+                    context: bound,
+                    archive_id: bound_id,
+                } = private::execute(Request::ArchiveImportBegin {
+                    context,
+                    archive_id,
+                })
+                .await?
+                else {
+                    return Err("archive destination variant".into());
+                };
+                ensure(bound == context && bound_id == archive_id, "begin identity")?;
+                // Feed every source-image page plus exactly one records page,
+                // leaving a durable mid-import cursor for the resume case.
+                let mut ready = false;
+                let mut committed = false;
+                let mut next_page = 0u64;
+                let last = pages.len() - 1;
+                for (index, page) in pages.into_iter().enumerate() {
+                    if index == last || (ready && committed) {
+                        break;
+                    }
+                    if !ready || index as u64 + 1 >= next_page {
+                        let Response::ArchiveProgress {
+                            source_ready,
+                            next_page: advanced,
+                            records,
+                            ..
+                        } = private::execute(Request::ArchiveImportFeed(page)).await?
+                        else {
+                            return Err("archive progress variant".into());
+                        };
+                        ready = source_ready;
+                        next_page = advanced;
+                        if ready {
+                            committed = records > 0;
+                        }
+                    }
+                }
+                ensure(
+                    ready && committed,
+                    "partial import committed nothing durable",
+                )?;
+                Ok(json!({"foreign_refused":true,"partial_import":true}))
+            }
+            "archive-import" => {
+                // Resume the exact durable cursor left by the partial import;
+                // committed pages are re-fed for exact retry validation only.
+                let (context, archive_id, pages) = archive_container(retained)?;
+                private::enter().await?;
+                let Response::ArchiveBegin { .. } = private::execute(Request::ArchiveImportBegin {
+                    context,
+                    archive_id,
+                })
+                .await?
+                else {
+                    return Err("archive destination variant".into());
+                };
+                let mut ready = false;
+                let mut next_page = 0u64;
+                let mut resumed = (0u64, 0u64);
+                let mut held: Option<(u64, Bytes)> = None;
+                for (index, page) in pages.into_iter().enumerate() {
+                    let index = index as u64;
+                    if let Some((held_index, held_page)) = held.replace((index, page)) {
+                        if !ready || held_index + 1 >= next_page {
+                            let Response::ArchiveProgress {
+                                context: reported,
+                                source_ready,
+                                next_page: advanced,
+                                records,
+                                ..
+                            } = private::execute(Request::ArchiveImportFeed(held_page)).await?
+                            else {
+                                return Err("archive progress variant".into());
+                            };
+                            ensure(reported == context, "archive progress scope")?;
+                            if !ready && source_ready {
+                                resumed = (advanced, records);
+                            }
+                            ready = source_ready;
+                            next_page = advanced;
+                        }
+                    }
+                }
+                let Some((_, final_page)) = held.take() else {
+                    return Err("archive missing final page".into());
+                };
+                let Response::ArchiveInspect {
+                    context: viewed,
+                    archive_id: viewed_id,
+                    source_revision,
+                    status,
+                } = private::execute(Request::ArchiveImportFinish(final_page)).await?
+                else {
+                    return Err("archive inspect variant".into());
+                };
+                ensure(
+                    viewed == context && viewed_id == archive_id && status.context == context,
+                    "archive inspection identity",
+                )?;
+                Ok(json!({
+                    "source_revision":source_revision,
+                    "epoch":status.epoch,
+                    "members":status.members,
+                    "outbox_head":status.outbox_head,
+                    "inbox_head":status.inbox_head,
+                    "resumed_next_page":resumed.0,
+                    "resumed_records":resumed.1,
+                }))
+            }
+            "archive-open" => {
+                let (context, archive_id, pages) = archive_container(retained)?;
+                private::enter().await?;
+                let final_page = pages.last().expect("bounded pages").clone();
+                let Response::ArchiveInspect {
+                    context: viewed,
+                    source_revision,
+                    status,
+                    ..
+                } = private::execute(Request::ArchiveOpen {
+                    context,
+                    archive_id,
+                    final_page,
+                })
+                .await?
+                else {
+                    return Err("archive open variant".into());
+                };
+                ensure(viewed == context, "archive open scope")?;
+                let Response::Inbox {
+                    head: inbox_head,
+                    records: inbox,
+                    ..
+                } = private::execute(Request::ArchiveInbox {
+                    after: 0,
+                    limit: 16,
+                })
+                .await?
+                else {
+                    return Err("archive inbox variant".into());
+                };
+                let Response::Outbox {
+                    head: outbox_head,
+                    records: outbox,
+                    ..
+                } = private::execute(Request::ArchiveOutbox {
+                    after: 0,
+                    limit: 16,
+                })
+                .await?
+                else {
+                    return Err("archive outbox variant".into());
+                };
+                // A read-only archive view must not block reopening the live
+                // room; both remain strictly separate namespaces.
+                private::execute(Request::Open(context)).await?;
+                let Response::ArchiveClosed { context: closed } =
+                    private::execute(Request::ArchiveClose).await?
+                else {
+                    return Err("archive close variant".into());
+                };
+                ensure(closed == context, "archive close scope")?;
+                Ok(json!({
+                    "source_revision":source_revision,
+                    "epoch":status.epoch,
+                    "inbox_head":inbox_head,
+                    "inbox_records":inbox.len(),
+                    "outbox_head":outbox_head,
+                    "outbox_records":outbox.len(),
+                    "room_reopened":true,
+                }))
+            }
+            "archive-foreign-open" => {
+                // A foreign or absent archive destination fails terminally;
+                // it is never interpreted as a fresh or live device.
+                let (context, archive_id, pages) = archive_container(retained)?;
+                private::enter().await?;
+                let mut room = *context.scope.room.as_bytes();
+                room[0] ^= 0x40;
+                let foreign = Context {
+                    scope: vhalla_private_kernel::protocol::PrivateRoomScope {
+                        room: RoomId::from_bytes(room).map_err(error)?,
+                        ..context.scope
+                    },
+                    ..context
+                };
+                ensure(
+                    private::execute(Request::ArchiveOpen {
+                        context: foreign,
+                        archive_id,
+                        final_page: pages.last().expect("bounded pages").clone(),
+                    })
+                    .await
+                    .is_err(),
+                    "foreign archive opened",
+                )?;
+                ensure(app()?.borrow().failed, "foreign archive kept custody")?;
+                Ok(json!({"foreign_open_refused":true}))
             }
             "leave" => {
                 private::leave_and_lock()?;

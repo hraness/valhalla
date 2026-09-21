@@ -212,5 +212,21 @@ secret outbox entries, and clearing plaintext/file selections/blob URLs on lock.
 Responsive checks cover 1280, 768 and 390 CSS pixels. This journey uses local file
 exchange with no external relay or network publication. Production packaging still
 rejects qualification hooks; the optional private interface requires an explicit
-`private-rooms` build. Browser archives, fresh-device recovery, owner succession
-and safe live-device transfer remain separate work.
+`private-rooms` build.
+
+The panel also handles the canonical `.vharchive` container shared with the
+native CLI. An open room exports its complete retained state as one encrypted
+file through bounded `ArchiveExport`/`ArchiveExportNext` page requests; a
+selected file imports page-by-page into a separate read-only IndexedDB namespace
+(`ArchiveImportBegin`/`ArchiveImportFeed`/`ArchiveImportFinish`) whose durable
+receiving cursor resumes exactly after interruption, and `ArchiveOpen` reopens a
+finished archive for read-only membership, inbox and redacted-outbox inspection
+plus explicit ciphertext downloads. Header fields are unauthenticated hints;
+foreign accounts, malformed containers, oversized pages and trailing bytes are
+refused before any kernel call. An archive destination never becomes a live
+sender and never overwrites existing state. The emitted-worker journey now also
+exports a real archive, refuses a foreign-account header, interrupts and resumes
+an import at its durable cursor, reopens the finished archive read-only, verifies
+its recorded head against the live room, and refuses a foreign archive context
+terminally. Fresh-device admission, owner succession and safe live-device
+transfer remain separate work.

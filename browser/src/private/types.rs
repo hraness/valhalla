@@ -7,6 +7,9 @@ use zeroize::Zeroizing;
 
 /// Fixed application profile; never selected by a room, peer, or imported file.
 pub const PROFILE: [u8; 32] = *b"vhalla-browser-local-profile-v01";
+/// Separate fixed profile for read-only archive destinations. Keeping archives
+/// outside PROFILE means a live room prefix can never alias an archive view.
+pub const ARCHIVE: [u8; 32] = *b"vhalla-browser-local-archive-v01";
 /// Exact upper bound of a complete signed confidential contact offer.
 pub const MAX_OFFER: usize = 713;
 /// Maximum encoded encrypted artifact accepted by the local worker interface.
@@ -141,6 +144,57 @@ pub enum Request {
         /// Maximum page count within the fixed kernel limit.
         limit: usize,
     },
+    /// Begin a bounded encrypted archive export of the currently open room.
+    /// The stream is read-only evidence; exporting never mutates the room.
+    ArchiveExport,
+    /// Emit the next encrypted archive page. The final page is followed by one
+    /// `None` report; an interrupted stream is abandoned, never spliced.
+    ArchiveExportNext,
+    /// Begin or exactly resume archive reception for an independently selected
+    /// context and archive identity. The account must match this session's.
+    ArchiveImportBegin {
+        /// Complete room, anchor, account and device the archive claims.
+        context: Context,
+        /// Random archive correlation ID from the file header, checked by the
+        /// kernel against every authenticated page.
+        archive_id: [u8; 32],
+    },
+    /// Feed one exact encrypted archive page in file order. The worker consumes
+    /// source-image pages first, then appends record pages; the reply reports
+    /// the durable receiving cursor so an interrupted import can resume.
+    ArchiveImportFeed(Bytes),
+    /// Finish reception with the exact authenticated final page. A completed
+    /// archive becomes a read-only view; it never activates a live device.
+    ArchiveImportFinish(Bytes),
+    /// Open an already completed archive read-only from its exact retained
+    /// final page. Missing or foreign destination state is refused.
+    ArchiveOpen {
+        /// Complete room, anchor, account and device the archive claims.
+        context: Context,
+        /// Archive correlation ID, independently retained with the context.
+        archive_id: [u8; 32],
+        /// Exact final encrypted page; authenticates the destination image.
+        final_page: Bytes,
+    },
+    /// Re-read the open archive's last-observed membership snapshot.
+    ArchiveInspect,
+    /// Read one bounded page of committed archive inbox messages.
+    ArchiveInbox {
+        /// Exclusive archived inbox sequence cursor, with zero before the first entry.
+        after: u64,
+        /// Maximum page count within the fixed kernel limit.
+        limit: usize,
+    },
+    /// Read one bounded page of retained archive outbox entries.
+    ArchiveOutbox {
+        /// Exclusive archived outbox sequence cursor, with zero before the first entry.
+        after: u64,
+        /// Maximum page count within the fixed kernel limit.
+        limit: usize,
+    },
+    /// Drop any retained archive handle. Read-only state is never a custody
+    /// requirement; the durable destination is unchanged.
+    ArchiveClose,
 }
 
 /// Nonsecret creation locator and signed metadata, returned before any room commit.
@@ -260,6 +314,53 @@ pub enum Response {
         /// Ordered committed messages with bounded inert bodies.
         records: Vec<Inbound>,
     },
+    /// Archive stream or destination identity. The random archive_id binds one
+    /// exact exported stream; it is never a device, room or membership proof.
+    ArchiveBegin {
+        /// Complete context the export or import is bound to.
+        context: Context,
+        /// Archive correlation ID from the authenticated stream.
+        archive_id: [u8; 32],
+    },
+    /// One bounded encrypted archive page; `None` marks a complete stream.
+    ArchivePage {
+        /// Complete context of the exporting room.
+        context: Context,
+        /// Exact encrypted page bytes; absent only after the final page.
+        page: Option<Bytes>,
+    },
+    /// Durable archive-receiving cursor. Progress is not a completeness or
+    /// liveness claim; it permits only exact same-archive resumption.
+    ArchiveProgress {
+        /// Complete context of the archive destination.
+        context: Context,
+        /// Whether the authenticated source image is complete and the durable
+        /// destination now accepts record pages.
+        source_ready: bool,
+        /// Next expected file page index; earlier pages were already committed.
+        next_page: u64,
+        /// Immutable records durably copied so far.
+        records: u64,
+        /// Encrypted immutable payload bytes durably copied so far.
+        bytes: u64,
+    },
+    /// Read-only archive view opened or re-read. The retained snapshot is the
+    /// source's last local state; it grants no live-device or send authority.
+    ArchiveInspect {
+        /// Complete context of the imported archive.
+        context: Context,
+        /// Archive correlation ID of the exact completed stream.
+        archive_id: [u8; 32],
+        /// Exact source local revision at export time; not proof of newest state.
+        source_revision: u64,
+        /// Last-observed membership snapshot; never current authorization.
+        status: Status,
+    },
+    /// Archive handle dropped. Only carried context is reported.
+    ArchiveClosed {
+        /// Complete context whose archive handle was released.
+        context: Context,
+    },
 }
 impl Response {
     /// Return the complete selected context, absent only for account-only entry.
@@ -274,7 +375,12 @@ impl Response {
             | Self::Received { context, .. }
             | Self::Controls { context, .. }
             | Self::Outbox { context, .. }
-            | Self::Inbox { context, .. } => Some(*context),
+            | Self::Inbox { context, .. }
+            | Self::ArchiveBegin { context, .. }
+            | Self::ArchivePage { context, .. }
+            | Self::ArchiveProgress { context, .. }
+            | Self::ArchiveInspect { context, .. }
+            | Self::ArchiveClosed { context } => Some(*context),
         }
     }
 }
@@ -302,6 +408,16 @@ pub enum ReplyKind {
     Outbox,
     /// Bounded committed inbox page.
     Inbox,
+    /// Archive stream or destination identity.
+    ArchiveBegin,
+    /// One bounded encrypted archive page or stream end.
+    ArchivePage,
+    /// Durable archive receiving progress.
+    ArchiveProgress,
+    /// Read-only archive view summary.
+    ArchiveInspect,
+    /// Archive handle released.
+    ArchiveClosed,
 }
 impl Request {
     /// Expected closed response kind used by the generation-checked UI broker.
@@ -323,8 +439,15 @@ impl Request {
             Self::Offer { .. } => ReplyKind::Offer,
             Self::Receive(_) => ReplyKind::Received,
             Self::Controls { .. } => ReplyKind::Controls,
-            Self::Outbox { .. } => ReplyKind::Outbox,
-            Self::Inbox { .. } => ReplyKind::Inbox,
+            Self::Outbox { .. } | Self::ArchiveOutbox { .. } => ReplyKind::Outbox,
+            Self::Inbox { .. } | Self::ArchiveInbox { .. } => ReplyKind::Inbox,
+            Self::ArchiveExport | Self::ArchiveImportBegin { .. } => ReplyKind::ArchiveBegin,
+            Self::ArchiveExportNext => ReplyKind::ArchivePage,
+            Self::ArchiveImportFeed(_) => ReplyKind::ArchiveProgress,
+            Self::ArchiveOpen { .. } | Self::ArchiveImportFinish(_) | Self::ArchiveInspect => {
+                ReplyKind::ArchiveInspect
+            }
+            Self::ArchiveClose => ReplyKind::ArchiveClosed,
         }
     }
 }
@@ -342,6 +465,11 @@ impl Response {
             Self::Controls { .. } => ReplyKind::Controls,
             Self::Outbox { .. } => ReplyKind::Outbox,
             Self::Inbox { .. } => ReplyKind::Inbox,
+            Self::ArchiveBegin { .. } => ReplyKind::ArchiveBegin,
+            Self::ArchivePage { .. } => ReplyKind::ArchivePage,
+            Self::ArchiveProgress { .. } => ReplyKind::ArchiveProgress,
+            Self::ArchiveInspect { .. } => ReplyKind::ArchiveInspect,
+            Self::ArchiveClosed { .. } => ReplyKind::ArchiveClosed,
         }
     }
 }

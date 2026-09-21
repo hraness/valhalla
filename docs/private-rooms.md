@@ -5,8 +5,9 @@ private-room end-user release. An optional trusted native session now joins
 account and room custody under one lock lifetime. The optional Unix CLI supports
 explicit local file exchange. The optional browser worker now joins account and
 room custody. A bounded read-only archive core and native encrypted-file archive workflow are
-implemented. The optional browser interface has passed its two-account file-exchange journey; browser archive
-recovery, fresh-device recovery and automatic confidential delivery remain unfinished. Public discovery and public author
+implemented. The optional browser interface has passed its two-account file-exchange journey and now shares the
+same `.vharchive` export, interruption-safe import and read-only archive inspection as the native CLI; fresh-device
+admission, live custody transfer and automatic confidential delivery remain unfinished. Public discovery and public author
 backups must never carry private state or private invitations.
 
 ## Components and default dependencies
@@ -323,7 +324,19 @@ for private file permissions, immutable quotas and recovery after uncertainty.
 Archive inspection authenticates the completed destination and final file seal;
 it does not freshly verify every middle page of an already imported file.
 
-Browser archive workflows and fresh-device admission remain unfinished. Historical
+The optional browser interface supplies the same `.vharchive` container. An open
+room streams bounded authenticated pages into one file; a selected file decodes
+its unauthenticated header, refuses foreign accounts before any worker call, and
+imports pages one at a time into a separate read-only IndexedDB namespace with a
+durable receiving cursor that resumes exactly after interruption — committed
+pages are re-fed once so the worker validates the exact retry rather than
+re-importing them. A completed archive opens read-only membership, inbox and
+redacted-outbox views and explicit ciphertext re-export under the same secret-
+offer exclusion. Archive selection never coincides with a live room or prepared
+creation, an explicit close is required before another selection, and a foreign
+or absent archive destination fails the session rather than fabricating state.
+
+Fresh-device admission remains unfinished. Historical
 inspection never authorizes resuming the old device. Retain all encrypted parts
 and the full locator; never silently clone a ratchet. Owner-device succession and
 safe live-custody transfer remain unimplemented.

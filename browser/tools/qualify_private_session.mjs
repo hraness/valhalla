@@ -166,10 +166,27 @@ async function task(abortSignal){
   const replacement=await evaluate(`qphase('replace-vault',${JSON.stringify(locator)})`);
   await reload();
   const wrong=await evaluate(`qphase('wrong-account',${JSON.stringify(locator)})`);
+  // The room is open at this point; export streams its exact retained state.
+  const archive=await evaluate(`qphase('archive-export',${JSON.stringify(locator)})`);
+  if(typeof archive.archive!=='string'||archive.pages<2)throw Error('archive export malformed');
+  // Each archive phase runs after a real page reload: the durable import cursor
+  // and the completed archive must survive worker termination, not just a clean
+  // leave. Reloading also keeps retired-worker accumulation inside its bound.
+  await reload();
+  const foreign=await evaluate(`qphase('archive-foreign-account',${JSON.stringify(archive.archive)})`);
+  await reload();
+  const imported=await evaluate(`qphase('archive-import',${JSON.stringify(archive.archive)})`);
+  if(imported.resumed_records<1)throw Error('interrupted import did not resume its durable cursor');
+  if(imported.outbox_head!==2)throw Error('archived outbox head differs from live room');
+  await reload();
+  const opened=await evaluate(`qphase('archive-open',${JSON.stringify(archive.archive)})`);
+  if(opened.source_revision!==imported.source_revision||opened.outbox_head!==imported.outbox_head||!opened.room_reopened)throw Error('archive reopen/inspection mismatch');
   const left=await evaluate("qphase('leave')");
   await evaluate('qunlock()');
   const missing=await evaluate(`qphase('missing-state',${JSON.stringify(locator)})`);
-  return {passed:true,mode,commit,cancellation,exactCommittedReplyRetained:true,stale,renewal,replacement,wrong,left,missing,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),profile,locatorFile:join(output,'prepared-locator.json'),scope:'synthetic existing-worker private custody; no relay or live account'};
+  await reload();
+  const foreignOpen=await evaluate(`qphase('archive-foreign-open',${JSON.stringify(archive.archive)})`);
+  return {passed:true,mode,commit,cancellation,exactCommittedReplyRetained:true,stale,renewal,replacement,wrong,archive:{pages:archive.pages,archive_id:archive.archive_id},foreign,imported,opened,foreignOpen,left,missing,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),profile,locatorFile:join(output,'prepared-locator.json'),scope:'synthetic existing-worker private custody; no relay or live account'};
 }
 
 await runQualification({work:task,timeoutMs:300000,

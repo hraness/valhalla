@@ -62,6 +62,62 @@ pub fn decode_locator(raw: &[u8]) -> Result<Context, &'static str> {
         device: Key::from_bytes(field(104)).map_err(|_| "Invalid device key.")?,
     })
 }
+/// Canonical .vharchive container magic; byte-identical to the native CLI file
+/// format so archives move between the browser panel and `vhalla private`.
+pub const ARCHIVE_MAGIC: &[u8; 8] = b"VHARCHF1";
+/// Archive header width: magic plus full context plus archive correlation ID.
+pub const ARCHIVE_HEADER: usize = 8 + 128 + 32;
+/// Structural page cap for the browser's fixed store budgets. This is a
+/// container bound only; the kernel authenticates every page independently.
+pub const ARCHIVE_PAGES_MAX: u64 = 100_000
+    + (vhalla_private_kernel::MAX_IMAGE_BYTES as u64)
+        .div_ceil(vhalla_private_kernel::recovery::IMAGE_FRAGMENT_BYTES as u64)
+    + 1;
+/// Structural whole-file byte cap under the same fixed budgets.
+pub const ARCHIVE_FILE_MAX: u64 = ARCHIVE_HEADER as u64
+    + 4
+    + vhalla_private_kernel::MAX_IMAGE_BYTES as u64
+    + 256 * 1024 * 1024
+    + ARCHIVE_PAGES_MAX * 512
+    + 100_000 * 41;
+
+/// Write the unauthenticated container header; the kernel re-checks every field
+/// against authenticated pages before any destination write.
+pub fn archive_header(context: Context, archive_id: [u8; 32]) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(ARCHIVE_HEADER);
+    raw.extend_from_slice(ARCHIVE_MAGIC);
+    for field in [
+        context.scope.room.as_bytes(),
+        context.scope.anchor.as_bytes(),
+        context.account.as_bytes(),
+        context.device.as_bytes(),
+        &archive_id,
+    ] {
+        raw.extend_from_slice(field);
+    }
+    raw
+}
+/// Decode only the canonical header of a complete header-width prefix. Header
+/// claims are hints; page authentication decides everything downstream.
+pub fn decode_archive_header(raw: &[u8]) -> Result<(Context, [u8; 32]), &'static str> {
+    if raw.len() != ARCHIVE_HEADER || &raw[..8] != ARCHIVE_MAGIC {
+        return Err("Choose a complete .vharchive file; unknown versions are refused.");
+    }
+    let field = |offset| raw[offset..offset + 32].try_into().expect("bounded header");
+    let context = Context {
+        scope: PrivateRoomScope {
+            room: RoomId::from_bytes(field(8)).map_err(|_| "Invalid room identifier.")?,
+            anchor: AnchorId::from_bytes(field(40)).map_err(|_| "Invalid anchor identifier.")?,
+        },
+        account: Key::from_bytes(field(72)).map_err(|_| "Invalid account key.")?,
+        device: Key::from_bytes(field(104)).map_err(|_| "Invalid device key.")?,
+    };
+    let id: [u8; 32] = field(136);
+    if id == [0; 32] {
+        return Err("Invalid archive identity.");
+    }
+    Ok((context, id))
+}
 /// Explicit encrypted-artifact export allowlist; secret and legacy bootstrap forms refuse.
 pub fn encrypted_export(kind: OutboxKind) -> Option<(&'static str, &'static str)> {
     match kind {

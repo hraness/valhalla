@@ -3,8 +3,9 @@
 pub mod private_wire;
 use private_wire::*;
 use vhalla_private_kernel::{
-    protocol::{AnchorId, ControlFloor, Key, PrivateRoomScope, RoomId, Validity},
-    Context, OperationId, OutboxKind, MAX_BODY_BYTES,
+    protocol::{AnchorId, ControlFloor, ControlId, Key, PrivateRoomScope, RoomId, Validity},
+    recovery::MAX_ARCHIVE_PAGE_BYTES,
+    Context, OperationId, OutboxKind, Phase, Status, MAX_BODY_BYTES,
 };
 use zeroize::Zeroizing;
 
@@ -101,6 +102,26 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
             after: u64::MAX,
             limit: 16,
         },
+        Request::ArchiveExport,
+        Request::ArchiveExportNext,
+        Request::ArchiveImportBegin {
+            context: context(),
+            archive_id: [9; 32],
+        },
+        Request::ArchiveImportFeed(bytes(MAX_ARCHIVE_PAGE_BYTES)),
+        Request::ArchiveImportFinish(bytes(64)),
+        Request::ArchiveOpen {
+            context: context(),
+            archive_id: [9; 32],
+            final_page: bytes(64),
+        },
+        Request::ArchiveInspect,
+        Request::ArchiveInbox {
+            after: u64::MAX,
+            limit: 16,
+        },
+        Request::ArchiveOutbox { after: 0, limit: 1 },
+        Request::ArchiveClose,
     ];
     for request in requests {
         let raw = request.encode().unwrap();
@@ -135,8 +156,19 @@ fn untrusted_lengths_counts_boolean_and_floor_refuse_before_allocation() {
     .encode()
     .is_err());
     assert!(Request::Join(bytes(MAX_ARTIFACT + 1)).encode().is_err());
+    assert!(
+        Request::ArchiveImportFeed(bytes(MAX_ARCHIVE_PAGE_BYTES + 1))
+            .encode()
+            .is_err()
+    );
+    assert!(
+        Request::ArchiveImportFinish(bytes(MAX_ARCHIVE_PAGE_BYTES + 1))
+            .encode()
+            .is_err()
+    );
     for limit in [0, 17, usize::MAX] {
         assert!(Request::Outbox { after: 0, limit }.encode().is_err());
+        assert!(Request::ArchiveInbox { after: 0, limit }.encode().is_err());
     }
     let mut raw = Request::Outbox { after: 0, limit: 1 }.encode().unwrap();
     *raw.last_mut().unwrap() = 255;
@@ -258,4 +290,111 @@ fn response_collection_count_and_blob_budgets_are_checked_on_raw_input() {
     raw[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Response::decode(&raw).is_err());
     assert!(Response::decode(&vec![0; MAX_FRAME + 1]).is_err());
+}
+
+fn floor(sequence: u64) -> ControlFloor {
+    let id = (sequence != 0).then(|| ControlId::from_bytes([sequence as u8; 32]).unwrap());
+    ControlFloor::new(sequence, id).unwrap()
+}
+fn status() -> Status {
+    Status {
+        context: context(),
+        phase: Phase::MemberJoined,
+        epoch: 7,
+        control_sequence: 3,
+        control_floor: floor(3),
+        outbox_head: 4,
+        inbox_head: 2,
+        history_base: floor(1),
+        roster: [5; 32],
+        members: 1,
+        quarantined: false,
+    }
+}
+
+#[test]
+fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
+    let responses = vec![
+        Response::ArchiveBegin {
+            context: context(),
+            archive_id: [9; 32],
+        },
+        Response::ArchivePage {
+            context: context(),
+            page: Some(bytes(MAX_ARCHIVE_PAGE_BYTES)),
+        },
+        Response::ArchivePage {
+            context: context(),
+            page: None,
+        },
+        Response::ArchiveProgress {
+            context: context(),
+            source_ready: true,
+            next_page: u64::MAX,
+            records: 100_000,
+            bytes: u64::MAX,
+        },
+        Response::ArchiveInspect {
+            context: context(),
+            archive_id: [9; 32],
+            source_revision: u64::MAX,
+            status: status(),
+        },
+        Response::ArchiveClosed { context: context() },
+    ];
+    for response in responses {
+        let raw = response.encode().unwrap();
+        assert_eq!(Response::decode(&raw).unwrap().encode().unwrap(), raw);
+        for length in 0..raw.len() {
+            assert!(Response::decode(&raw[..length]).is_err());
+        }
+        let mut changed = raw.to_vec();
+        changed.push(0);
+        assert!(Response::decode(&changed).is_err());
+        let tag = b"VHBRPRIVATE\x01".len();
+        changed.truncate(raw.len());
+        changed[tag] = 20;
+        assert!(Response::decode(&changed).is_err());
+        assert!(Request::decode(&raw).is_err());
+    }
+    // An oversized page or malformed status can never cross the local wire.
+    assert!(Response::ArchivePage {
+        context: context(),
+        page: Some(bytes(MAX_ARCHIVE_PAGE_BYTES + 1)),
+    }
+    .encode()
+    .is_err());
+    let mut bad = status();
+    bad.members = 0;
+    assert!(Response::ArchiveInspect {
+        context: context(),
+        archive_id: [9; 32],
+        source_revision: 1,
+        status: bad,
+    }
+    .encode()
+    .is_err());
+    let mut bad = status();
+    bad.history_base = floor(9);
+    let raw = Response::ArchiveInspect {
+        context: context(),
+        archive_id: [9; 32],
+        source_revision: 1,
+        status: bad,
+    }
+    .encode()
+    .unwrap();
+    assert!(Response::decode(&raw).is_err());
+    // A status claiming a context other than the bound one is refused on decode.
+    let mut bad = status();
+    bad.context.scope.anchor = AnchorId::from_bytes([7; 32]).unwrap();
+    let raw = Response::ArchiveInspect {
+        context: context(),
+        archive_id: [9; 32],
+        source_revision: 1,
+        status: bad,
+    }
+    .encode()
+    .unwrap();
+    assert!(Response::decode(&raw).is_err());
 }

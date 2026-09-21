@@ -68,6 +68,54 @@ fn ordinary_export_never_labels_secret_or_legacy_bootstrap_as_ciphertext() {
 }
 
 #[test]
+fn archive_header_round_trips_and_refuses_foreign_or_damaged_claims() {
+    let context = context();
+    let archive_id = [9; 32];
+    let raw = model::archive_header(context, archive_id);
+    assert_eq!(raw.len(), model::ARCHIVE_HEADER);
+    assert_eq!(
+        model::decode_archive_header(&raw).unwrap(),
+        (context, archive_id)
+    );
+    for n in 0..raw.len() {
+        assert!(model::decode_archive_header(&raw[..n]).is_err());
+    }
+    let mut changed = raw.clone();
+    changed.push(0);
+    assert!(model::decode_archive_header(&changed).is_err());
+    for offset in 0..8 {
+        let mut changed = raw.clone();
+        changed[offset] ^= 1;
+        assert!(model::decode_archive_header(&changed).is_err());
+    }
+    // Every embedded identifier stays typed and nonzero.
+    for offset in [8, 40, 72, 104, 136] {
+        let mut changed = raw.clone();
+        changed[offset..offset + 32].fill(0);
+        assert!(model::decode_archive_header(&changed).is_err());
+    }
+    // A header mutating any field decodes to different unauthenticated hints.
+    for offset in [8, 40, 72, 104, 136] {
+        let mut changed = raw.clone();
+        changed[offset] ^= 1;
+        assert!(model::decode_archive_header(&changed).is_ok());
+        assert_ne!(
+            model::decode_archive_header(&changed).unwrap(),
+            (context, archive_id)
+        );
+    }
+}
+
+#[test]
+fn archive_container_bounds_are_fixed_and_nonzero() {
+    const {
+        assert!(model::ARCHIVE_PAGES_MAX > 1);
+        assert!(model::ARCHIVE_FILE_MAX > model::ARCHIVE_HEADER as u64 + 4);
+        assert!(model::ARCHIVE_FILE_MAX < u64::MAX / 2);
+    }
+}
+
+#[test]
 fn disclosure_refuses_every_scope_roster_epoch_or_text_switch() {
     let context = context();
     let original = model::Disclosure {

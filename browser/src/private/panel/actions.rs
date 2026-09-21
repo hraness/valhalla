@@ -479,6 +479,47 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
         Action::Inbox | Action::InboxNext => {
             inbox(app, ticket, matches!(action, Action::InboxNext)).await?
         }
+        Action::ExportArchive => export_archive(app, ticket).await?,
+        Action::ImportArchive => import_archive(app, ticket).await?,
+        Action::OpenArchive => open_archive(app, ticket).await?,
+        Action::ArchiveOutbox | Action::ArchiveOutboxNext => {
+            archive_outbox(app, ticket, matches!(action, Action::ArchiveOutboxNext)).await?
+        }
+        Action::ArchiveInbox | Action::ArchiveInboxNext => {
+            archive_inbox(app, ticket, matches!(action, Action::ArchiveInboxNext)).await?
+        }
+        Action::ArchiveOutboxDownload => {
+            let index = selected(app, "private-archive-outbox-select")?;
+            let (name, bytes) = {
+                let s = app.borrow();
+                let archive = s.archive.as_ref().ok_or("No open archive view.")?;
+                export_parts(
+                    archive
+                        .outbox
+                        .get(index)
+                        .ok_or("Select an archived output.")?,
+                )?
+            };
+            download(app, &name, &bytes)?;
+            status(app, "Exact archived ciphertext download requested; this is historical evidence, not a new send.", false);
+        }
+        Action::ArchiveClose => {
+            let Response::ArchiveClosed { .. } = call(app, ticket, Request::ArchiveClose).await?
+            else {
+                return Err("Unexpected archive close report.".into());
+            };
+            app.borrow_mut().archive = None;
+            for id in [
+                "private-archive-title",
+                "private-archive-summary",
+                "private-archive-details",
+                "private-archive-inbox-content",
+                "private-archive-outbox-select",
+            ] {
+                text(app, id, "");
+            }
+            status(app, "Archive view closed. The durable read-only destination is unchanged; reopen it with the same .vharchive file.", false);
+        }
         Action::DownloadControl => {
             let index = selected(app, "private-control-select")?;
             let (name, bytes) = {
@@ -643,5 +684,356 @@ async fn inbox(app: &App, ticket: u64, next: bool) -> Result<()> {
     text(app, "private-inbox-content", &contents);
     app.borrow_mut().inbox_next = next;
     status(app, &format!("Showing one bounded page of already committed messages; local inbox head {head}. Imported text is not an instruction or authority."), false);
+    Ok(())
+}
+
+fn archive_file(app: &App) -> Result<web_sys::File> {
+    input(app, "private-archive-file")
+        .files()
+        .and_then(|files| files.get(0))
+        .ok_or("Choose one complete .vharchive file first.".into())
+}
+/// Read one bounded slice of a selected file. File size is a u53-safe bound.
+async fn slice(
+    app: &App,
+    ticket: u64,
+    file: &web_sys::File,
+    start: u64,
+    end: u64,
+) -> Result<Bytes> {
+    let part = file
+        .slice_with_f64_and_f64(start as f64, end as f64)
+        .map_err(|_| "Could not slice the selected archive.")?;
+    let buffer = JsFuture::from(part.array_buffer())
+        .await
+        .map_err(|_| "Could not read the selected archive.")?;
+    live(app, ticket)?;
+    let raw = Uint8Array::new(&buffer);
+    if raw.length() as u64 != end - start {
+        return Err("The selected archive changed while it was being read.".into());
+    }
+    Ok(Zeroizing::new(raw.to_vec()))
+}
+/// Read one length-prefixed encrypted page, or the explicit end marker.
+/// Truncated, oversized or trailing bytes are refused before any worker call.
+async fn archive_page(
+    app: &App,
+    ticket: u64,
+    file: &web_sys::File,
+    size: u64,
+    offset: &mut u64,
+) -> Result<Option<Bytes>> {
+    if offset.checked_add(4).ok_or("Archive offset overflow.")? > size {
+        return Err("Truncated archive: missing page length.".into());
+    }
+    let head = slice(app, ticket, file, *offset, *offset + 4).await?;
+    let length = u32::from_be_bytes(head[..4].try_into().expect("four-byte length")) as u64;
+    *offset += 4;
+    if length == 0 {
+        if *offset != size {
+            return Err("Bytes follow the archive's explicit end marker.".into());
+        }
+        return Ok(None);
+    }
+    if length > vhalla_private_kernel::recovery::MAX_ARCHIVE_PAGE_BYTES as u64 {
+        return Err("An archive page exceeds the kernel's fixed bound.".into());
+    }
+    if offset
+        .checked_add(length)
+        .ok_or("Archive offset overflow.")?
+        > size
+    {
+        return Err("Truncated archive: missing page content.".into());
+    }
+    let page = slice(app, ticket, file, *offset, *offset + length).await?;
+    *offset += length;
+    Ok(Some(page))
+}
+fn checked_archive_file(file: &web_sys::File) -> Result<u64> {
+    let size = file.size();
+    if !size.is_finite()
+        || size <= model::ARCHIVE_HEADER as f64 + 4.0
+        || size > model::ARCHIVE_FILE_MAX as f64
+    {
+        return Err("Choose a complete .vharchive file within the bounded archive format.".into());
+    }
+    Ok(size as u64)
+}
+fn archive_opened(
+    app: &App,
+    context: Context,
+    archive_id: [u8; 32],
+    source_revision: u64,
+    status: Status,
+) {
+    app.borrow_mut().archive = Some(ArchivePanel {
+        context,
+        archive_id,
+        source_revision,
+        status,
+        outbox: Vec::new(),
+        outbox_next: None,
+        inbox_next: None,
+    });
+}
+fn archive_inspected(app: &App, reply: Response) -> Result<()> {
+    let Response::ArchiveInspect {
+        context,
+        archive_id,
+        source_revision,
+        status,
+    } = reply
+    else {
+        return Err("Unexpected archive inspection report.".into());
+    };
+    archive_opened(app, context, archive_id, source_revision, status);
+    Ok(())
+}
+async fn export_archive(app: &App, ticket: u64) -> Result<()> {
+    let Response::ArchiveBegin {
+        context,
+        archive_id,
+    } = call(app, ticket, Request::ArchiveExport).await?
+    else {
+        return Err("Unexpected archive start report.".into());
+    };
+    let mut parts: Vec<Vec<u8>> = vec![model::archive_header(context, archive_id)];
+    let mut total = model::ARCHIVE_HEADER as u64;
+    let mut pages = 0u64;
+    loop {
+        let Response::ArchivePage {
+            context: reported,
+            page,
+        } = call(app, ticket, Request::ArchiveExportNext).await?
+        else {
+            return Err("Unexpected archive page report.".into());
+        };
+        if reported != context {
+            return Err("An archive page arrived bound to a different room.".into());
+        }
+        let Some(page) = page else { break };
+        pages = pages.checked_add(1).ok_or("Archive page overflow.")?;
+        total = total
+            .checked_add(4)
+            .and_then(|v| v.checked_add(page.len() as u64))
+            .ok_or("Archive size overflow.")?;
+        if pages > model::ARCHIVE_PAGES_MAX || total > model::ARCHIVE_FILE_MAX {
+            return Err("Archive exceeds the bounded browser file format.".into());
+        }
+        parts.push(
+            u32::try_from(page.len())
+                .expect("bounded page")
+                .to_be_bytes()
+                .to_vec(),
+        );
+        parts.push(page.to_vec());
+        status(
+            app,
+            &format!("Streaming encrypted archive: {pages} pages, {total} bytes so far."),
+            false,
+        );
+    }
+    parts.push(0u32.to_be_bytes().to_vec());
+    total += 4;
+    let parts: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+    download_parts(
+        app,
+        &format!(
+            "private-archive-{}-{}.vharchive",
+            hex(context.scope.room.as_bytes()),
+            hex(&archive_id)
+        ),
+        &parts,
+    )?;
+    status(app, &format!("Exported {pages} encrypted pages ({total} bytes) as one .vharchive file. Keep it private: this account's key opens it, and it never grants live membership."), false);
+    Ok(())
+}
+async fn import_archive(app: &App, ticket: u64) -> Result<()> {
+    let file = archive_file(app)?;
+    let size = checked_archive_file(&file)?;
+    let header = slice(app, ticket, &file, 0, model::ARCHIVE_HEADER as u64).await?;
+    let (context, archive_id) = model::decode_archive_header(&header)?;
+    if app.borrow().account != Some(context.account) {
+        return Err("This archive belongs to another account. Nothing was imported.".into());
+    }
+    let Response::ArchiveBegin {
+        context: reported,
+        archive_id: reported_id,
+    } = call(
+        app,
+        ticket,
+        Request::ArchiveImportBegin {
+            context,
+            archive_id,
+        },
+    )
+    .await?
+    else {
+        return Err("Unexpected archive destination report.".into());
+    };
+    if reported != context || reported_id != archive_id {
+        return Err("The archive destination does not match the selected file.".into());
+    }
+    let mut offset = model::ARCHIVE_HEADER as u64;
+    let mut index = 0u64;
+    let mut ready = false;
+    let mut next_page = 0u64;
+    let mut held: Option<(u64, Bytes)> = None;
+    // One page of lookahead identifies the authenticated final page, which must
+    // go to finish rather than the record append path.
+    while let Some(page) = archive_page(app, ticket, &file, size, &mut offset).await? {
+        if index >= model::ARCHIVE_PAGES_MAX {
+            return Err("Archive exceeds the bounded browser file format.".into());
+        }
+        if let Some((held_index, held_page)) = held.replace((index, page)) {
+            // Skip only pages confirmed durably committed; the last committed
+            // page is re-fed so the worker validates its exact retry.
+            if !ready || held_index + 1 >= next_page {
+                let Response::ArchiveProgress {
+                    context: reported,
+                    source_ready,
+                    next_page: advanced,
+                    records,
+                    bytes,
+                } = call(app, ticket, Request::ArchiveImportFeed(held_page)).await?
+                else {
+                    return Err("Unexpected archive progress report.".into());
+                };
+                if reported != context {
+                    return Err("Archive progress reported a different room.".into());
+                }
+                ready = source_ready;
+                next_page = advanced;
+                status(
+                    app,
+                    &format!(
+                        "Importing encrypted archive: {records} records, {bytes} bytes durable; file page {held_index}."
+                    ),
+                    false,
+                );
+            }
+        }
+        index += 1;
+    }
+    let Some((_, final_page)) = held.take() else {
+        return Err("The archive file has no pages.".into());
+    };
+    let reply = call(app, ticket, Request::ArchiveImportFinish(final_page)).await?;
+    archive_inspected(app, reply)?;
+    status(app, "Archive imported into read-only storage and verified complete. This view cannot send, invite, or mutate the live room.", false);
+    Ok(())
+}
+async fn open_archive(app: &App, ticket: u64) -> Result<()> {
+    let file = archive_file(app)?;
+    let size = checked_archive_file(&file)?;
+    let header = slice(app, ticket, &file, 0, model::ARCHIVE_HEADER as u64).await?;
+    let (context, archive_id) = model::decode_archive_header(&header)?;
+    if app.borrow().account != Some(context.account) {
+        return Err("This archive belongs to another account. Nothing was opened.".into());
+    }
+    // Length-prefixed pages cannot be sought; walk the bounded file once and
+    // retain only the authenticated final page for the worker's seal check.
+    let mut offset = model::ARCHIVE_HEADER as u64;
+    let mut index = 0u64;
+    let mut last: Option<Bytes> = None;
+    while let Some(page) = archive_page(app, ticket, &file, size, &mut offset).await? {
+        index += 1;
+        if index > model::ARCHIVE_PAGES_MAX {
+            return Err("Archive exceeds the bounded browser file format.".into());
+        }
+        last = Some(page);
+    }
+    let final_page = last.ok_or("The archive file has no pages.")?;
+    let reply = call(
+        app,
+        ticket,
+        Request::ArchiveOpen {
+            context,
+            archive_id,
+            final_page,
+        },
+    )
+    .await?;
+    archive_inspected(app, reply)?;
+    status(app, "Opened the completed archive read-only. It shows the source room's last exported state only; it cannot send or mint membership.", false);
+    Ok(())
+}
+async fn archive_outbox(app: &App, ticket: u64, next: bool) -> Result<()> {
+    let after = if next {
+        app.borrow()
+            .archive
+            .as_ref()
+            .and_then(|a| a.outbox_next)
+            .ok_or("No next archive outbox page.")?
+    } else {
+        0
+    };
+    let Response::Outbox {
+        records,
+        next,
+        head,
+        ..
+    } = call(app, ticket, Request::ArchiveOutbox { after, limit: PAGE }).await?
+    else {
+        return Err("Unexpected archive outbox page.".into());
+    };
+    options(
+        app,
+        "private-archive-outbox-select",
+        records
+            .iter()
+            .map(|a| {
+                format!(
+                    "{} · {} · operation {}",
+                    a.sequence,
+                    model::encrypted_export(a.kind)
+                        .map_or("Metadata / non-exportable bootstrap", |(label, _)| label),
+                    hex(a.operation.as_bytes())
+                )
+            })
+            .collect(),
+    );
+    {
+        let mut s = app.borrow_mut();
+        if let Some(archive) = s.archive.as_mut() {
+            archive.outbox = records;
+            archive.outbox_next = next;
+        }
+    }
+    status(app, &format!("Archived outbox through local sequence {head}. Historical evidence only; no delivery or send authority."), false);
+    Ok(())
+}
+async fn archive_inbox(app: &App, ticket: u64, next: bool) -> Result<()> {
+    let after = if next {
+        app.borrow()
+            .archive
+            .as_ref()
+            .and_then(|a| a.inbox_next)
+            .ok_or("No next archive inbox page.")?
+    } else {
+        0
+    };
+    let Response::Inbox {
+        records,
+        next,
+        head,
+        ..
+    } = call(app, ticket, Request::ArchiveInbox { after, limit: PAGE }).await?
+    else {
+        return Err("Unexpected archive inbox page.".into());
+    };
+    let mut contents = Zeroizing::new(String::new());
+    for record in records {
+        contents.push_str(&inbox_text(&record));
+        contents.push('\n');
+    }
+    text(app, "private-archive-inbox-content", &contents);
+    {
+        let mut s = app.borrow_mut();
+        if let Some(archive) = s.archive.as_mut() {
+            archive.inbox_next = next;
+        }
+    }
+    status(app, &format!("Showing one bounded page of archived committed messages; archived inbox head {head}. This content is inert history, not live input."), false);
     Ok(())
 }

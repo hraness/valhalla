@@ -8,7 +8,7 @@ use js_sys::{Array, Uint8Array};
 use std::{cell::RefCell, rc::Rc};
 use vhalla_private_kernel::{
     protocol::{ControlFloor, Key, Validity},
-    ContactBootstrap, Context, OperationId, Phase, MAX_BODY_BYTES,
+    ContactBootstrap, Context, OperationId, Phase, Status, MAX_BODY_BYTES,
 };
 use wasm_bindgen::{prelude::*, JsCast};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
@@ -49,6 +49,18 @@ const IDS: &[(&str, Action)] = &[
     ("private-download-outbox", Action::DownloadOutbox),
     ("private-inbox", Action::Inbox),
     ("private-inbox-next", Action::InboxNext),
+    ("private-export-archive", Action::ExportArchive),
+    ("private-import-archive", Action::ImportArchive),
+    ("private-open-archive", Action::OpenArchive),
+    ("private-archive-outbox", Action::ArchiveOutbox),
+    ("private-archive-outbox-next", Action::ArchiveOutboxNext),
+    (
+        "private-archive-outbox-download",
+        Action::ArchiveOutboxDownload,
+    ),
+    ("private-archive-inbox", Action::ArchiveInbox),
+    ("private-archive-inbox-next", Action::ArchiveInboxNext),
+    ("private-archive-close", Action::ArchiveClose),
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -80,6 +92,15 @@ enum Action {
     DownloadOutbox,
     Inbox,
     InboxNext,
+    ExportArchive,
+    ImportArchive,
+    OpenArchive,
+    ArchiveOutbox,
+    ArchiveOutboxNext,
+    ArchiveOutboxDownload,
+    ArchiveInbox,
+    ArchiveInboxNext,
+    ArchiveClose,
 }
 struct Secret {
     operation: OperationId,
@@ -105,8 +126,19 @@ struct State {
     outbox_next: Option<u64>,
     inbox_next: Option<u64>,
     controls_next: Option<ControlFloor>,
+    archive: Option<ArchivePanel>,
     downloads: Vec<String>,
     handlers: Vec<Closure<dyn FnMut(Event)>>,
+}
+/// Read-only archive view state, mirroring the worker's authenticated report.
+struct ArchivePanel {
+    context: Context,
+    archive_id: [u8; 32],
+    source_revision: u64,
+    status: vhalla_private_kernel::Status,
+    outbox: Vec<Artifact>,
+    outbox_next: Option<u64>,
+    inbox_next: Option<u64>,
 }
 thread_local! {static PANEL:RefCell<Option<App>>=const{RefCell::new(None)};}
 fn element(app: &App, id: &str) -> Element {
@@ -287,6 +319,7 @@ pub fn clear_sensitive_state() {
         s.outbox_next = None;
         s.inbox_next = None;
         s.controls_next = None;
+        s.archive = None;
         for url in s.downloads.drain(..) {
             let _ = Url::revoke_object_url(&url);
         }
@@ -302,6 +335,7 @@ pub fn clear_sensitive_state() {
         "private-join-file",
         "private-control-file",
         "private-resume-offer-file",
+        "private-archive-file",
     ] {
         input(&app, id).set_value("");
     }
@@ -318,6 +352,11 @@ pub fn clear_sensitive_state() {
         "private-inbox-content",
         "private-control-select",
         "private-outbox-select",
+        "private-archive-title",
+        "private-archive-summary",
+        "private-archive-details",
+        "private-archive-inbox-content",
+        "private-archive-outbox-select",
     ] {
         text(&app, id, "");
     }
@@ -350,6 +389,7 @@ fn render(app: &App) {
     let active = s.entered && idle;
     let room = s.room.is_some();
     let prepared = s.prepared.is_some();
+    let archived = s.archive.is_some();
     let ready = joined(&s);
     let is_owner = owner(&s);
     let retained = input_unborrowed(&s.document, "private-locator-retained").checked();
@@ -357,7 +397,11 @@ fn render(app: &App) {
         let enabled = match action {
             Action::Enter => idle && !s.entered,
             Action::Leave => s.entered,
-            Action::Create | Action::ReviewOffer | Action::Open => active && !room && !prepared,
+            // An open archive view must be closed explicitly before any live
+            // room or another archive can be selected in this session.
+            Action::Create | Action::ReviewOffer | Action::Open => {
+                active && !room && !prepared && !archived
+            }
             Action::Locator => active && prepared,
             Action::Commit => active && prepared && s.locator_downloaded && retained,
             Action::Prepare => active && ready,
@@ -382,6 +426,22 @@ fn render(app: &App) {
             Action::InboxNext => active && s.inbox_next.is_some(),
             Action::DownloadControl => active && !s.controls.is_empty(),
             Action::DownloadOutbox => active && !s.outbox.is_empty(),
+            Action::ImportArchive | Action::OpenArchive => {
+                active && !room && !prepared && !archived
+            }
+            Action::ArchiveOutbox | Action::ArchiveInbox | Action::ArchiveClose => {
+                active && s.archive.is_some()
+            }
+            Action::ArchiveOutboxNext => {
+                active && s.archive.as_ref().is_some_and(|a| a.outbox_next.is_some())
+            }
+            Action::ArchiveInboxNext => {
+                active && s.archive.as_ref().is_some_and(|a| a.inbox_next.is_some())
+            }
+            Action::ArchiveOutboxDownload => {
+                active && s.archive.as_ref().is_some_and(|a| !a.outbox.is_empty())
+            }
+            // ExportArchive and remaining room actions require an open room.
             _ => active && room,
         };
         s.document
@@ -402,6 +462,7 @@ fn render(app: &App) {
         "private-join-file",
         "private-control-file",
         "private-resume-offer-file",
+        "private-archive-file",
         "private-locator-retained",
     ] {
         input_unborrowed(&s.document, id).set_disabled(s.busy);
@@ -412,11 +473,57 @@ fn render(app: &App) {
         .dyn_into::<HtmlTextAreaElement>()
         .unwrap()
         .set_disabled(!active || !ready);
+    let archive = s.archive.as_ref().map(|a| {
+        (
+            a.context,
+            a.archive_id,
+            a.source_revision,
+            a.status,
+            a.outbox
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{} · {} · operation {}",
+                        entry.sequence,
+                        model::encrypted_export(entry.kind)
+                            .map_or("Metadata / non-exportable bootstrap", |(label, _)| label),
+                        hex(entry.operation.as_bytes())
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
     drop(s);
     visible(app, "private-workspace", app.borrow().entered);
-    visible(app, "private-setup", !room && !prepared);
+    visible(app, "private-setup", !room && !prepared && !archived);
     visible(app, "private-prepared", prepared);
     visible(app, "private-room", room);
+    visible(app, "private-archive", archive.is_some());
+    if let Some((context, archive_id, revision, status, outbox_labels)) = archive {
+        text(app, "private-archive-title", "Read-only encrypted archive");
+        text(
+            app,
+            "private-archive-summary",
+            &format!(
+                "Source revision {revision} · epoch {} · {} admitted devices · {} archived inbox messages. Historical evidence only — this view cannot send, invite, or mutate the live room.",
+                status.epoch, status.members, status.inbox_head
+            ),
+        );
+        text(
+            app,
+            "private-archive-details",
+            &format!(
+                "{}\nArchive {}\nSource revision {}\nEpoch {}\nRoster {}\nControl floor {}",
+                metadata(context),
+                hex(&archive_id),
+                revision,
+                status.epoch,
+                hex(&status.roster),
+                status.control_sequence,
+            ),
+        );
+        options(app, "private-archive-outbox-select", outbox_labels);
+    }
     visible(app, "private-output", app.borrow().output.is_some());
     visible(app, "private-secret-output", app.borrow().secret.is_some());
 }
@@ -529,11 +636,16 @@ fn options(app: &App, id: &str, labels: Vec<String>) {
     }
 }
 fn download(app: &App, name: &str, raw: &[u8]) -> Result<()> {
+    download_parts(app, name, &[raw])
+}
+fn download_parts(app: &App, name: &str, contents: &[&[u8]]) -> Result<()> {
     if app.borrow().downloads.len() >= 8 {
         return Err("Wait for recent downloads to finish before exporting another file.".into());
     }
     let parts = Array::new();
-    parts.push(&Uint8Array::from(raw));
+    for raw in contents {
+        parts.push(&Uint8Array::from(*raw));
+    }
     let props = BlobPropertyBag::new();
     props.set_type("application/octet-stream");
     let blob = Blob::new_with_u8_array_sequence_and_options(&parts, &props)
@@ -688,6 +800,7 @@ pub fn start() {
         outbox_next: None,
         inbox_next: None,
         controls_next: None,
+        archive: None,
         downloads: Vec::new(),
         handlers: Vec::new(),
     }));

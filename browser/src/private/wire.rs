@@ -7,6 +7,7 @@ use vhalla_private_kernel::{
         AnchorId, ControlFloor, ControlId, Key, PrivateRoomScope, RoomId, SignedDeviceEnrollment,
         SignedRoomAnchor, Validity,
     },
+    recovery::MAX_ARCHIVE_PAGE_BYTES,
     Context, OperationId, OutboxKind, Phase, Status, MAX_BODY_BYTES, MAX_MEMBERS, MAX_PAGE_RECORDS,
 };
 use zeroize::{Zeroize, Zeroizing};
@@ -435,6 +436,16 @@ impl Request {
             Self::Controls { .. } => 17,
             Self::Outbox { .. } => 18,
             Self::Inbox { .. } => 19,
+            Self::ArchiveExport => 20,
+            Self::ArchiveExportNext => 21,
+            Self::ArchiveImportBegin { .. } => 22,
+            Self::ArchiveImportFeed(_) => 23,
+            Self::ArchiveImportFinish(_) => 24,
+            Self::ArchiveOpen { .. } => 25,
+            Self::ArchiveInspect => 26,
+            Self::ArchiveInbox { .. } => 27,
+            Self::ArchiveOutbox { .. } => 28,
+            Self::ArchiveClose => 29,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -501,6 +512,31 @@ impl Request {
                 w.number(*after)?;
                 w.limit(*limit)?;
             }
+            Self::ArchiveExport | Self::ArchiveExportNext | Self::ArchiveInspect => (),
+            Self::ArchiveImportBegin {
+                context,
+                archive_id,
+            } => {
+                w.context(*context)?;
+                w.put(archive_id)?;
+            }
+            Self::ArchiveImportFeed(page) | Self::ArchiveImportFinish(page) => {
+                w.blob(page, MAX_ARCHIVE_PAGE_BYTES)?;
+            }
+            Self::ArchiveOpen {
+                context,
+                archive_id,
+                final_page,
+            } => {
+                w.context(*context)?;
+                w.put(archive_id)?;
+                w.blob(final_page, MAX_ARCHIVE_PAGE_BYTES)?;
+            }
+            Self::ArchiveInbox { after, limit } | Self::ArchiveOutbox { after, limit } => {
+                w.number(*after)?;
+                w.limit(*limit)?;
+            }
+            Self::ArchiveClose => (),
         }
         Ok(w.finish())
     }
@@ -564,6 +600,29 @@ impl Request {
                 after: r.number()?,
                 limit: r.limit()?,
             },
+            20 => Self::ArchiveExport,
+            21 => Self::ArchiveExportNext,
+            22 => Self::ArchiveImportBegin {
+                context: r.context()?,
+                archive_id: r.array()?,
+            },
+            23 => Self::ArchiveImportFeed(r.blob(MAX_ARCHIVE_PAGE_BYTES)?),
+            24 => Self::ArchiveImportFinish(r.blob(MAX_ARCHIVE_PAGE_BYTES)?),
+            25 => Self::ArchiveOpen {
+                context: r.context()?,
+                archive_id: r.array()?,
+                final_page: r.blob(MAX_ARCHIVE_PAGE_BYTES)?,
+            },
+            26 => Self::ArchiveInspect,
+            27 => Self::ArchiveInbox {
+                after: r.number()?,
+                limit: r.limit()?,
+            },
+            28 => Self::ArchiveOutbox {
+                after: r.number()?,
+                limit: r.limit()?,
+            },
+            29 => Self::ArchiveClose,
             _ => return Err(CodecError::InvalidFrame),
         };
         r.end()?;
@@ -585,6 +644,11 @@ impl Response {
             Self::Controls { .. } => 108,
             Self::Outbox { .. } => 109,
             Self::Inbox { .. } => 110,
+            Self::ArchiveBegin { .. } => 111,
+            Self::ArchivePage { .. } => 112,
+            Self::ArchiveProgress { .. } => 113,
+            Self::ArchiveInspect { .. } => 114,
+            Self::ArchiveClosed { .. } => 115,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -667,6 +731,45 @@ impl Response {
                     w.inbound(m)?;
                 }
             }
+            Self::ArchiveBegin {
+                context,
+                archive_id,
+            } => {
+                w.context(*context)?;
+                w.put(archive_id)?;
+            }
+            Self::ArchivePage { context, page } => {
+                w.context(*context)?;
+                w.byte(u8::from(page.is_some()))?;
+                if let Some(page) = page {
+                    w.blob(page, MAX_ARCHIVE_PAGE_BYTES)?;
+                }
+            }
+            Self::ArchiveProgress {
+                context,
+                source_ready,
+                next_page,
+                records,
+                bytes,
+            } => {
+                w.context(*context)?;
+                w.byte(u8::from(*source_ready))?;
+                w.number(*next_page)?;
+                w.number(*records)?;
+                w.number(*bytes)?;
+            }
+            Self::ArchiveInspect {
+                context,
+                archive_id,
+                source_revision,
+                status,
+            } => {
+                w.context(*context)?;
+                w.put(archive_id)?;
+                w.number(*source_revision)?;
+                w.status(*status)?;
+            }
+            Self::ArchiveClosed { context } => w.context(*context)?,
         }
         Ok(w.finish())
     }
@@ -791,6 +894,44 @@ impl Response {
                     records,
                 }
             }
+            111 => Self::ArchiveBegin {
+                context: r.context()?,
+                archive_id: r.array()?,
+            },
+            112 => {
+                let context = r.context()?;
+                let page = if r.boolean()? {
+                    Some(r.blob(MAX_ARCHIVE_PAGE_BYTES)?)
+                } else {
+                    None
+                };
+                Self::ArchivePage { context, page }
+            }
+            113 => Self::ArchiveProgress {
+                context: r.context()?,
+                source_ready: r.boolean()?,
+                next_page: r.number()?,
+                records: r.number()?,
+                bytes: r.number()?,
+            },
+            114 => {
+                let context = r.context()?;
+                let archive_id = r.array()?;
+                let source_revision = r.number()?;
+                let status = r.status()?;
+                if status.context != context {
+                    return Err(CodecError::InvalidFrame);
+                }
+                Self::ArchiveInspect {
+                    context,
+                    archive_id,
+                    source_revision,
+                    status,
+                }
+            }
+            115 => Self::ArchiveClosed {
+                context: r.context()?,
+            },
             _ => return Err(CodecError::InvalidFrame),
         };
         r.end()?;

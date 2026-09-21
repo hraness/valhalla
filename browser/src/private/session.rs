@@ -11,6 +11,8 @@ use vhalla_browser_storage::{
 use vhalla_browser_vault::{Envelope, UnlockedIdentity};
 use vhalla_private_kernel::{
     protocol::{Key, SignedDeviceEnrollment, SignedRoomAnchor},
+    recovery::{ArchiveExport, ArchiveImport, ArchiveSeal, ArchiveSourceReader, ArchiveView},
+    storage::ArchiveStore,
     CommittedOutbox, Context, Kernel, MemberDraft, MessageDraft, OutboxEntry, OwnerDraft, Phase,
 };
 use zeroize::Zeroizing;
@@ -55,12 +57,48 @@ struct PendingMessage {
     draft: MessageDraft,
 }
 
+/// At most one archive operation per session. Source reading is memory-only and
+/// may be replaced; an active durable export or import must finish or fail out.
+enum Archive {
+    Exporting {
+        context: Context,
+        inner: Box<ArchiveExport<IndexedPrivateStore>>,
+    },
+    Source {
+        context: Context,
+        reader: Box<ArchiveSourceReader>,
+        pages: u64,
+    },
+    Importing {
+        context: Context,
+        inner: Box<ArchiveImport<IndexedPrivateStore>>,
+    },
+    View(Box<ArchiveView<IndexedPrivateStore>>),
+}
+impl Archive {
+    fn context(&self) -> Context {
+        match self {
+            Self::Exporting { context, .. }
+            | Self::Source { context, .. }
+            | Self::Importing { context, .. } => *context,
+            Self::View(view) => view.seal().context(),
+        }
+    }
+    /// Read-only or memory-only states are safe to replace with a new explicit
+    /// archive selection; a durable receiving cursor must not be abandoned by
+    /// switching to unrelated work inside this session.
+    fn replaceable(&self) -> bool {
+        !matches!(self, Self::Importing { .. })
+    }
+}
+
 pub struct Session {
-    // Kernel and drafts drop before account custody. No public accessor returns
-    // any of these fields or an alternate signing handle.
+    // Kernel, drafts and archive handles drop before account custody. No public
+    // accessor returns any of these fields or an alternate signing handle.
     kernel: Option<Kernel<IndexedPrivateStore>>,
     creation: Option<Creation>,
     message: Option<PendingMessage>,
+    archive: Option<Archive>,
     identity: UnlockedIdentity,
     saved: IdentitySnapshot,
     counter: u64,
@@ -112,6 +150,7 @@ impl Session {
             kernel: None,
             creation: None,
             message: None,
+            archive: None,
             identity,
             saved,
             counter: 0,
@@ -142,6 +181,29 @@ impl Session {
             return Err(Failure::State);
         }
         Ok(())
+    }
+    /// Archive begin-type selections refuse a live room or an active durable
+    /// receiving cursor; a memory-only source reader or inert view may be
+    /// replaced by the caller's new explicit archive selection.
+    fn archive_selectable(&self) -> Result<()> {
+        self.empty()?;
+        match &self.archive {
+            Some(current) if !current.replaceable() => Err(Failure::State),
+            _ => Ok(()),
+        }
+    }
+    async fn archive_inspect(&mut self) -> Result<Response> {
+        let Some(Archive::View(view)) = self.archive.as_mut() else {
+            return Err(Failure::State);
+        };
+        let seal = view.seal().clone();
+        let snapshot = view.membership().await?;
+        Ok(Response::ArchiveInspect {
+            context: seal.context(),
+            archive_id: seal.archive_id(),
+            source_revision: seal.source_revision(),
+            status: snapshot.status(),
+        })
     }
     fn prepared(&mut self, creation: Creation) -> Response {
         let preview = Preview {
@@ -472,6 +534,232 @@ impl Session {
                     head: page.head,
                     next: page.next,
                     records,
+                })
+            }
+            Request::ArchiveExport => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                match &self.archive {
+                    Some(current) if !current.replaceable() => return Err(Failure::State),
+                    _ => (),
+                }
+                let key = self.identity.private_storage_key(context)?;
+                // A second read handle on the exact open room prefix. Export
+                // revalidates accounting around every page; a concurrent write
+                // is a terminal conflict, never a spliced stream.
+                let store = IndexedPrivateStore::open(Namespace::new(PROFILE), context).await?;
+                let export = ArchiveExport::open(store, &key, context).await?;
+                let archive_id = export.archive_id();
+                self.archive = Some(Archive::Exporting {
+                    context,
+                    inner: Box::new(export),
+                });
+                Ok(Response::ArchiveBegin {
+                    context,
+                    archive_id,
+                })
+            }
+            Request::ArchiveExportNext => {
+                let Some(Archive::Exporting { context, inner }) = self.archive.as_mut() else {
+                    return Err(Failure::State);
+                };
+                let context = *context;
+                let page = inner.next_page().await?;
+                let response = Response::ArchivePage {
+                    context,
+                    page: page.map(|p| Zeroizing::new(p.encrypted_bytes().to_vec())),
+                };
+                if matches!(response, Response::ArchivePage { page: None, .. }) {
+                    self.archive = None;
+                }
+                Ok(response)
+            }
+            Request::ArchiveImportBegin {
+                context,
+                archive_id,
+            } => {
+                self.archive_selectable()?;
+                if context.account != self.account()? {
+                    return Err(Failure::Invalid);
+                }
+                let key = self.identity.private_storage_key(context)?;
+                let reader = ArchiveSourceReader::new(&key, context, archive_id)?;
+                self.archive = Some(Archive::Source {
+                    context,
+                    reader: Box::new(reader),
+                    pages: 0,
+                });
+                Ok(Response::ArchiveBegin {
+                    context,
+                    archive_id,
+                })
+            }
+            Request::ArchiveImportFeed(page) => {
+                let Some(archive) = self.archive.as_mut() else {
+                    return Err(Failure::State);
+                };
+                match archive {
+                    Archive::Source {
+                        context,
+                        reader,
+                        pages,
+                    } => {
+                        let context = *context;
+                        if !reader.push(&page)? {
+                            *pages = pages.checked_add(1).ok_or(Failure::State)?;
+                            return Ok(Response::ArchiveProgress {
+                                context,
+                                source_ready: false,
+                                next_page: *pages,
+                                records: 0,
+                                bytes: 0,
+                            });
+                        }
+                        let Some(Archive::Source { reader, .. }) = self.archive.take() else {
+                            return Err(Failure::State);
+                        };
+                        let source = reader.finish()?;
+                        let key = self.identity.private_storage_key(context)?;
+                        // The destination context decides create-vs-resume: a
+                        // missing prefix is created; an existing prefix must
+                        // hold this exact source's retained receiving image.
+                        let mut store =
+                            match IndexedPrivateStore::open(Namespace::new(ARCHIVE), context).await
+                            {
+                                Ok(store) => store,
+                                Err(_) => {
+                                    IndexedPrivateStore::create_new(
+                                        Namespace::new(ARCHIVE),
+                                        context,
+                                        Limits {
+                                            max_records: 100_000,
+                                            max_record_bytes: 256 * 1024 * 1024,
+                                        },
+                                    )
+                                    .await?
+                                }
+                            };
+                        let has_image = store
+                            .accounting(context)
+                            .await
+                            .map_err(|_| Failure::Storage)?
+                            .image
+                            .is_some();
+                        // A completed read-only image or another archive's
+                        // cursor fails resume; nothing is reset or overwritten.
+                        let import = if has_image {
+                            ArchiveImport::resume(store, &key, source).await?
+                        } else {
+                            ArchiveImport::begin(store, &key, source).await?
+                        };
+                        let progress = import.progress()?;
+                        self.archive = Some(Archive::Importing {
+                            context,
+                            inner: Box::new(import),
+                        });
+                        Ok(Response::ArchiveProgress {
+                            context,
+                            source_ready: true,
+                            next_page: progress.next_page,
+                            records: progress.records,
+                            bytes: progress.bytes,
+                        })
+                    }
+                    Archive::Importing { context, inner } => {
+                        let progress = inner.append(&page).await?;
+                        Ok(Response::ArchiveProgress {
+                            context: *context,
+                            source_ready: true,
+                            next_page: progress.next_page,
+                            records: progress.records,
+                            bytes: progress.bytes,
+                        })
+                    }
+                    _ => Err(Failure::State),
+                }
+            }
+            Request::ArchiveImportFinish(page) => {
+                let Some(Archive::Importing { inner, .. }) = self.archive.take() else {
+                    return Err(Failure::State);
+                };
+                let view = inner.finish(&page).await?;
+                self.archive = Some(Archive::View(Box::new(view)));
+                self.archive_inspect().await
+            }
+            Request::ArchiveOpen {
+                context,
+                archive_id,
+                final_page,
+            } => {
+                self.archive_selectable()?;
+                if context.account != self.account()? {
+                    return Err(Failure::Invalid);
+                }
+                let key = self.identity.private_storage_key(context)?;
+                let seal = ArchiveSeal::from_final_page(&key, context, archive_id, &final_page)?;
+                let store = IndexedPrivateStore::open(Namespace::new(ARCHIVE), context).await?;
+                let view = ArchiveView::open(store, &key, seal).await?;
+                self.archive = Some(Archive::View(Box::new(view)));
+                self.archive_inspect().await
+            }
+            Request::ArchiveInspect => self.archive_inspect().await,
+            Request::ArchiveInbox { after, limit } => {
+                let Some(Archive::View(view)) = self.archive.as_mut() else {
+                    return Err(Failure::State);
+                };
+                let context = view.seal().context();
+                let page = view.inbox(after, limit).await?;
+                let records = page
+                    .records
+                    .into_iter()
+                    .map(|r| Inbound {
+                        sequence: r.sequence(),
+                        sender: r.sender(),
+                        body: Zeroizing::new(r.body().to_vec()),
+                    })
+                    .collect();
+                Ok(Response::Inbox {
+                    context,
+                    head: page.head,
+                    next: page.next,
+                    records,
+                })
+            }
+            Request::ArchiveOutbox { after, limit } => {
+                let Some(Archive::View(view)) = self.archive.as_mut() else {
+                    return Err(Failure::State);
+                };
+                let context = view.seal().context();
+                let page = view.outbox(after, limit).await?;
+                let records = page
+                    .records
+                    .into_iter()
+                    .map(|r| match r {
+                        OutboxEntry::Artifact(a) => artifact(&a),
+                        OutboxEntry::ConfidentialOffer {
+                            sequence,
+                            operation,
+                        } => Artifact {
+                            sequence,
+                            operation,
+                            kind: vhalla_private_kernel::OutboxKind::ContactOffer,
+                            bytes: None,
+                        },
+                    })
+                    .collect();
+                Ok(Response::Outbox {
+                    context,
+                    head: page.head,
+                    next: page.next,
+                    records,
+                })
+            }
+            Request::ArchiveClose => {
+                let Some(archive) = self.archive.take() else {
+                    return Err(Failure::State);
+                };
+                Ok(Response::ArchiveClosed {
+                    context: archive.context(),
                 })
             }
         }

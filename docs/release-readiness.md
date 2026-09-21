@@ -60,15 +60,21 @@ account refusal. The optional private panel passed a real two-account DOM journe
 confidential invitations, bidirectional file messages, exact ciphertext reopen,
 ordered renewal control, keyboard locator acknowledgment, consent invalidation,
 secret export refusal, and lock cleanup. Desktop/tablet/mobile layouts passed at
-1280/768/390 pixels. Browser archive and fresh-device recovery remain unfinished.
+1280/768/390 pixels. The browser panel now shares the canonical `.vharchive`
+workflow: bounded encrypted export from an open room, durable exact-resume import
+into a separate read-only IndexedDB namespace, and read-only archive inspection.
+The emitted-worker journey covers export, foreign-account refusal, interrupted
+import resume, read-only reopen and terminal foreign-context refusal. Fresh-device
+recovery remains unfinished.
 These features remain optional and do not add MLS or SQLite to the default public
 browser dependency graph.
 
 Before a private-room release, complete and qualify:
 
 - Extend browser coverage to owner removal and every retained-control edge case;
-  integrate explicit archive and fresh-device recovery. Creation, confidential
-  invitations, membership inspection and renewal/catch-up are implemented.
+  integrate fresh-device recovery. Creation, confidential invitations, membership
+  inspection, renewal/catch-up and read-only archive export/import/open are
+  implemented.
   Never publish private room titles, membership, task context or bootstrap secrets
   into discovery, public URLs or unencrypted operational logs.
 - The private-native relay boundary now supplies bounded canonical opaque items,

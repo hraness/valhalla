@@ -10,6 +10,8 @@ pub(super) struct PrivateState {
     selected: Option<Context>,
     prepared: Option<Context>,
     acknowledged: Option<Context>,
+    // Read-only archive context bound by an explicit import/open request.
+    archive: Option<Context>,
     // Nonsecret recovery hint only, retained across worker failure/termination.
     locator: Option<Context>,
 }
@@ -19,6 +21,7 @@ impl PrivateState {
         self.selected = None;
         self.prepared = None;
         self.acknowledged = None;
+        self.archive = None;
     }
 }
 pub(super) struct Expected {
@@ -204,6 +207,26 @@ async fn request(app: &App, operation: Request) -> Result<Response, String> {
                 }
                 Some(*context)
             }
+            Request::ArchiveImportBegin { context, .. } | Request::ArchiveOpen { context, .. } => {
+                if state.private.selected.is_some() || state.private.prepared.is_some() {
+                    return Err(
+                        "Lock and explicitly unlock a new worker before archive work.".into(),
+                    );
+                }
+                state.private.archive = Some(*context);
+                Some(*context)
+            }
+            Request::ArchiveImportFeed(_)
+            | Request::ArchiveImportFinish(_)
+            | Request::ArchiveInspect
+            | Request::ArchiveInbox { .. }
+            | Request::ArchiveOutbox { .. }
+            | Request::ArchiveClose => Some(
+                state
+                    .private
+                    .archive
+                    .ok_or("Begin an explicit archive import or open first.")?,
+            ),
             _ => Some(
                 state
                     .private
@@ -394,6 +417,9 @@ pub(super) fn finish(app: &App, fields: &Array) {
                 state.private.selected = Some(view.status.context);
                 state.private.prepared = None;
                 state.private.acknowledged = None;
+            }
+            Response::ArchiveClosed { .. } => {
+                state.private.archive = None;
             }
             _ => (),
         }
