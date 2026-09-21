@@ -43,6 +43,9 @@ vhalla private relay-put MAILBOX --namespace NS64 --relay RELAY_ITEM --out RECEI
 vhalla private relay-get MAILBOX --namespace NS64 --sequence N --out RELAY_ITEM
 vhalla private relay-page MAILBOX --namespace NS64 --after N --limit N --out PAGE_JSON
 vhalla private control-export ID STORE --after N --parent CONTROL64|none --out CIPHERTEXT
+vhalla private control-proof ID STORE --after N --parent CONTROL64|none --out SIGNED
+vhalla private observe ID STORE --control SIGNED --out JSON
+vhalla private fork-evidence ID STORE --out PRIVATE_JSON
 vhalla private remove ID STORE --device KEY64 --operation OP32 --out CIPHERTEXT
 vhalla private apply ID STORE --control FILE
 vhalla private renew ID STORE --operation OP32 --not-before UNIX --expires UNIX --out CIPHERTEXT
@@ -52,6 +55,7 @@ vhalla private archive-resume ID ARCHIVE_STORE --archive FILE.vharchive [--max-r
 vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out PRIVATE_JSON [--max-records N --max-bytes N]
 vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
 Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
+control-proof exports signed owner controls for inspection; observe compares one signed control against retained history only and writes durable quarantine on a proven conflict; fork-evidence reports the retained proof. None claim global freshness or grant succession.
 Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. There is no listener, relay service, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
@@ -112,6 +116,9 @@ impl Args {
             "relay-get" => &["namespace", "sequence", "out"],
             "relay-page" => &["namespace", "after", "limit", "out"],
             "control-export" => &["after", "parent", "out"],
+            "control-proof" => &["after", "parent", "out"],
+            "observe" => &["control", "out"],
+            "fork-evidence" => &["out"],
             "remove" => &["device", "operation", "out"],
             "apply" => &["control"],
             "renew" => &["operation", "not-before", "expires", "out"],
@@ -498,6 +505,21 @@ async fn execute(args: Args) -> Result<(), String> {
                 .ok_or("no next encrypted control at this exact cursor")?;
             args.output(artifact.bytes())?;
         }
+        "control-proof" => {
+            let id = if args.text("parent")? == "none" {
+                None
+            } else {
+                Some(ControlId::from_bytes(unhex(args.text("parent")?)?).map_err(|_| REFUSED)?)
+            };
+            let floor = ControlFloor::new(args.number("after")?, id)
+                .map_err(|_| "invalid exact control cursor")?;
+            let page = room.controls(floor, 1).await.map_err(|_| REFUSED)?;
+            let artifact = page
+                .records
+                .first()
+                .ok_or("no next signed control at this exact cursor")?;
+            args.output(artifact.bytes())?;
+        }
         "remove" => {
             let result = room
                 .remove(args.operation()?, args.key("device")?)
@@ -509,6 +531,39 @@ async fn execute(args: Args) -> Result<(), String> {
             room.apply_control(&args.input("control", MAX_STORED_RECORD_BYTES, false)?)
                 .await
                 .map_err(|_| REFUSED)?;
+        }
+        "observe" => {
+            let raw = args.input("control", MAX_STORED_RECORD_BYTES, false)?;
+            let verdict = match room.observe_owner_control(&raw).await {
+                Ok(_) => "retained",
+                Err(vhalla_private_native::client::Error::Kernel(
+                    vhalla_private_kernel::Error::Quarantined,
+                )) => "conflicting-fork-quarantined",
+                Err(vhalla_private_native::client::Error::Kernel(
+                    vhalla_private_kernel::Error::Missing,
+                )) => "unknown-history",
+                Err(_) => return Err(REFUSED.into()),
+            };
+            args.json(json!({"verdict":verdict,
+                "coverage":"compared against retained history only; no global freshness or fork-freedom claim"}))?;
+        }
+        "fork-evidence" => {
+            let proof = room
+                .fork_evidence()
+                .await
+                .map_err(|_| REFUSED)?
+                .ok_or("no retained fork evidence")?;
+            let conflicting = proof
+                .conflicting
+                .verify()
+                .map_err(|_| "retained fork evidence fails verification")?;
+            args.json(json!({"accepted_sequence":proof.accepted.sequence(),
+                "accepted_control":proof.accepted.id().map(|id| hex(id.as_bytes())),
+                "conflicting_control":hex(conflicting.id().as_bytes()),
+                "conflicting_claims":hex(&proof.conflicting.encode()),
+                "accepted_proof":hex(&proof.accepted_proof),
+                "accepted_from_checkpoint":proof.accepted_from_checkpoint,
+                "coverage":"first locally proven conflict under the fixed owner key; not global freshness"}))?;
         }
         "renew" => {
             let result = room

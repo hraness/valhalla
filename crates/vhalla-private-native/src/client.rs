@@ -14,9 +14,9 @@ use vhalla_identity::Identity;
 use vhalla_private_kernel::{
     protocol::{Key, PrivateRoomScope, SignedDeviceEnrollment, SignedRoomAnchor, Validity},
     storage::StoreError,
-    CommittedOutbox, ConfidentialContactOffer, ContactBootstrap, Context, EncryptedControlPage,
-    InboxPage, Kernel, MemberDraft, MembershipSnapshot, MessageDraft, OperationId, OutboxPage,
-    OwnerDraft, ReceivedMessage, Status,
+    CommittedOutbox, ConfidentialContactOffer, ContactBootstrap, Context, ControlPage,
+    EncryptedControlPage, ForkEvidence, InboxPage, Kernel, MemberDraft, MembershipSnapshot,
+    MessageDraft, OperationId, OutboxPage, OwnerDraft, ReceivedMessage, Status,
 };
 
 #[cfg(feature = "client")]
@@ -403,6 +403,23 @@ impl RoomSession {
             .await?)
     }
 
+    /// Compare one signed owner control with retained history only. A
+    /// conflicting valid claim at a known floor writes durable quarantine
+    /// before reporting; persistence failure never fabricates acceptance.
+    pub async fn observe_owner_control(&mut self, signed: &[u8]) -> Result<Status> {
+        let time = now()?;
+        Ok(self
+            .live_mut()?
+            .kernel
+            .observe_owner_control(signed, time)
+            .await?)
+    }
+
+    /// Read the first locally proven owner-signed fork, if one was retained.
+    pub async fn fork_evidence(&mut self) -> Result<Option<ForkEvidence>> {
+        Ok(self.live_mut()?.kernel.fork_evidence().await?)
+    }
+
     /// Read committed encrypted controls, with the explicit late-join boundary.
     pub async fn encrypted_controls(
         &mut self,
@@ -414,6 +431,16 @@ impl RoomSession {
             .kernel
             .encrypted_controls(after, limit)
             .await?)
+    }
+
+    /// Export the plaintext signed-proof control suffix, never relay wire.
+    /// The exact floor cursor prevents an accidental gap or cross-fork cursor.
+    pub async fn controls(
+        &mut self,
+        after: vhalla_private_kernel::protocol::ControlFloor,
+        limit: usize,
+    ) -> Result<ControlPage> {
+        Ok(self.live_mut()?.kernel.controls(after, limit).await?)
     }
 
     /// Explicitly sign and commit renewal for the same anchored owner device.

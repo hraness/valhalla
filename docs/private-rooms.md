@@ -34,7 +34,8 @@ backups must never carry private state or private invitations.
 
 The CLI's optional `experimental-private` feature exposes create, signed offer
 inspection/import, encrypted contact request/response, message send/receive,
-exact retry/export, membership inspection, removal and owner renewal. Its
+exact retry/export, membership inspection, removal, owner renewal, signed
+control-proof export, owner-control observation and fork-evidence reporting. Its
 [command guide](../crates/vhalla-cli/README.md#local-encrypted-private-room-files-experimental-private)
 includes the full two-account file exchange. It opens existing identity custody,
 uses only explicit local stores, and has explicit canonical relay-item export and
@@ -44,7 +45,7 @@ files. Fresh send checks authenticated membership, validity and the exact select
 epoch/roster before reading text. Output failure preserves the state and partial
 file; retry exact inputs to a fresh output path or export retained ciphertext.
 The FORMAT locator is an unauthenticated hint; the selected account and complete
-private image authenticate before display or action. Four actual CLI process
+private image authenticate before display or action. Five actual CLI process
 journeys and the read-only locator regression pass; strict enabled-target CLI
 and full-feature native lints also pass.
 

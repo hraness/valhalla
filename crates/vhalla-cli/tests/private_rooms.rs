@@ -102,7 +102,7 @@ impl Fixture {
         let result = self.run(cmd, identity, store, options, None);
         assert!(
             result.status.success(),
-            "{}",
+            "{cmd} {identity} {store:?}: {}",
             String::from_utf8_lossy(&result.stderr)
         );
         assert_eq!(
@@ -884,6 +884,161 @@ fn private_cli_same_account_fresh_device_rejoins_under_new_enrollment() {
             0o600
         );
     }
+}
+
+#[test]
+fn private_cli_signed_control_observe_detects_fork_and_preserves_evidence() {
+    let f = Fixture::new();
+    f.join();
+    // Exact floor cursor for the proof exports that follow.
+    let head = f.inspect("owner-key", "owner-room", "head-inspect");
+    let sequence = head["status"]["control_sequence"].as_u64().unwrap();
+    let parent = head["status"]["control_id"].as_str().unwrap().to_string();
+    // Clone owner custody before renewal: two divergent signed continuations
+    // under one owner key are the definition of an owner fork.
+    let forked = f.root.join("owner-fork");
+    fs::DirBuilder::new().mode(0o700).create(&forked).unwrap();
+    for entry in fs::read_dir(f.root.join("owner-room")).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), forked.join(entry.file_name())).unwrap();
+    }
+    // The real owner renews; the member applies the encrypted envelope.
+    let mut flags = vec![
+        ("not-before", (f.now - 10).to_string()),
+        ("expires", (f.now + 7200).to_string()),
+    ];
+    flags.extend([("operation", op(4)), ("out", f.path("renewal"))]);
+    f.ok("renew", "owner-key", Some("owner-room"), &flags);
+    f.ok(
+        "control-proof",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("after", sequence.to_string()),
+            ("parent", parent.clone()),
+            ("out", f.path("renewal-proof")),
+        ],
+    );
+    // A valid control the member has not yet accepted is unknown history,
+    // never quarantine.
+    f.ok(
+        "observe",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("control", f.path("renewal-proof")),
+            ("out", f.path("unknown-verdict")),
+        ],
+    );
+    assert_eq!(f.json("unknown-verdict")["verdict"], "unknown-history");
+    f.ok(
+        "apply",
+        "member-key",
+        Some("member-room"),
+        &[("control", f.path("renewal"))],
+    );
+    // The already-accepted signed control is retained history.
+    f.ok(
+        "observe",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("control", f.path("renewal-proof")),
+            ("out", f.path("retained-verdict")),
+        ],
+    );
+    assert_eq!(f.json("retained-verdict")["verdict"], "retained");
+    // The copied custody renews differently at the same sequence: an authentic
+    // owner-signed conflict.
+    let mut flags = vec![
+        ("not-before", (f.now - 5).to_string()),
+        ("expires", (f.now + 9999).to_string()),
+    ];
+    flags.extend([("operation", op(5)), ("out", f.path("fork-renewal"))]);
+    f.ok("renew", "owner-key", Some("owner-fork"), &flags);
+    f.ok(
+        "control-proof",
+        "owner-key",
+        Some("owner-fork"),
+        &[
+            ("after", sequence.to_string()),
+            ("parent", parent),
+            ("out", f.path("fork-proof")),
+        ],
+    );
+    assert_ne!(
+        fs::read(f.root.join("renewal-proof")).unwrap(),
+        fs::read(f.root.join("fork-proof")).unwrap()
+    );
+    f.ok(
+        "observe",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("control", f.path("fork-proof")),
+            ("out", f.path("fork-verdict")),
+        ],
+    );
+    assert_eq!(
+        f.json("fork-verdict")["verdict"],
+        "conflicting-fork-quarantined"
+    );
+    // The retained proof pins both sides of the contradiction.
+    f.ok(
+        "fork-evidence",
+        "member-key",
+        Some("member-room"),
+        &[("out", f.path("evidence"))],
+    );
+    let evidence = f.json("evidence");
+    assert_eq!(
+        evidence["accepted_sequence"].as_u64().unwrap(),
+        sequence + 1
+    );
+    assert_ne!(
+        evidence["accepted_control"],
+        evidence["conflicting_control"]
+    );
+    assert_eq!(evidence["accepted_from_checkpoint"], false);
+    // Quarantine refuses new sends before text is read; retained history stays.
+    f.write("text", b"never after fork\n");
+    let refused = f.run(
+        "send",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("text", f.path("text")),
+            ("operation", op(6)),
+            ("epoch", "1".into()),
+            ("roster", "0".repeat(64)),
+            ("out", f.path("must-not-exist")),
+        ],
+        None,
+    );
+    assert!(!refused.status.success());
+    assert!(!f.root.join("must-not-exist").exists());
+    f.ok(
+        "inbox",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("after", "0".into()),
+            ("limit", "16".into()),
+            ("out", f.path("quarantined-inbox")),
+        ],
+    );
+    // A clean member reports no proof rather than fabricating any.
+    assert!(!f
+        .run(
+            "fork-evidence",
+            "owner-key",
+            Some("owner-room"),
+            &[("out", f.path("no-evidence"))],
+            None
+        )
+        .status
+        .success());
+    assert!(!f.root.join("no-evidence").exists());
 }
 
 #[path = "private_rooms/archive.rs"]

@@ -1622,6 +1622,21 @@ signed control ID. A fresh joiner's decryptable history begins after its joining
 checkpoint. There is no automatic polling, resend, membership update or remote
 receipt claim.
 
+Signed owner controls also have a plaintext proof form for inspection, distinct
+from the encrypted delivery envelope. `private control-proof ID STORE
+--after SEQUENCE --parent CONTROL_ID|none --out SIGNED` exports the next signed
+control at an exact cursor. `private observe ID STORE --control SIGNED --out
+JSON` compares one signed control against retained history only: `retained`
+means already accepted, `unknown-history` means a valid future or absent floor,
+and `conflicting-fork-quarantined` means a different valid owner signature at a
+known sequence — which durably quarantines the room before reporting. A
+quarantined member keeps read access to retained history but cannot send.
+`private fork-evidence ID STORE --out PRIVATE_JSON` emits the retained proof:
+the previously accepted floor, the conflicting signed control, and the accepted
+side's exact signed record (or joining checkpoint). Observation never accepts a
+future floor, admits a device, grants owner succession, or claims global
+freshness; a clean room simply reports no evidence.
+
 ### Opaque relay handoff
 
 The native client can package one retained ordinary artifact as a bounded,
