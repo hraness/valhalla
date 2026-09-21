@@ -109,8 +109,11 @@ provider idempotency or reconciliation are required before claiming restart-safe
 external actions. The native fixed-room grant interface now enforces exact context, epoch, roster,
 method, quota, expiry and host revocation checks around kernel operations. It
 returns no generic signer, raw ciphertext, membership capability or ambient
-network/filesystem tool. It still does not sandbox an independently privileged
-agent or provide a room-lifetime inference compartment.
+network/filesystem tool. The optional native client now consumes its trusted
+`RoomSession` into an account-owned fixed-room adapter, preserving room-state
+drop order and refusing locked or uncertain conversion. This remains a
+cooperating-host boundary: it does not sandbox an independently privileged agent
+or provide a room-lifetime inference compartment.
 
 ## Public history, capacity and operations
 

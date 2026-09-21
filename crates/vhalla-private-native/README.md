@@ -90,6 +90,14 @@ account custodian. Retain its exact operation ID and validity for retry. System
 wall time is checked internally; there is no peer-supplied clock or automatic
 renewal. Owner-device succession remains unimplemented.
 
+Trusted host code can consume a live `RoomSession` with `into_agent(LocalGrant)`
+when it intentionally delegates the same fixed room. Conversion refuses locked,
+uncertain or mismatched custody and moves the kernel into an
+`client::agent::OwnedAgentRoomSession` whose field order releases room state before
+the account lock. The adapter exposes only the five methods listed below and has
+no conversion back, signer, key, store, ciphertext or relay API. `lock()` drops
+both custodians; it does not retract plaintext already returned to the host.
+
 Existing-member catch-up uses `encrypted_controls` and `apply_control` with exact
 retained predecessor-epoch envelopes. Legacy manual KeyPackage and invitation
 outbox artifacts contain private bootstrap metadata and require an
