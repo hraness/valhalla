@@ -5,12 +5,13 @@
     "": {
       "name": "vhalla-site",
       "dependencies": {
-        "@hraness/design-kit": "github:hraness/design-kit#v0.8.0",
+        "@hraness/design-kit": "github:hraness/design-kit#v0.11.1",
         "@hraness/site-footer": "github:hraness/site-footer#v0.12.1",
       },
       "devDependencies": {
-        "@resvg/resvg-js": "2.6.2",
+        "@hraness/ui": "github:hraness/ui#v0.5.16",
         "@hraness/web-discovery": "github:hraness/web-discovery#v0.6.0",
+        "@resvg/resvg-js": "2.6.2",
         "react": "19.2.3",
         "satori": "0.33.4",
       },
@@ -19,13 +20,17 @@
   "packages": {
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
 
-    "@hraness/design-kit": ["@hraness/design-kit@github:hraness/design-kit#7813c9c", { "dependencies": { "@hugeicons/core-free-icons": "^4.2.2", "@stylexjs/stylex": "0.19.0", "motion": "12.42.0", "next-themes": "0.4.6", "react-aria-components": "1.19.0", "recharts": "3.8.0", "sugar-high": "^1.2.1", "web-haptics": "0.0.6" }, "peerDependencies": { "@hraness/ui": ">=0.5.12 <0.6.0", "react": ">=18 <20", "react-dom": ">=18 <20" }, "optionalPeers": ["@hraness/ui"] }, "hraness-design-kit-7813c9c", "sha512-erlyNqevsQJUqKbI1vSfJRkU6TDiIEHypuYopjkJotXjaatWd5ouDSBeB5vt4RVa5v8tpeIMb4tb4K3hX6D4CA=="],
+    "@hraness/design-kit": ["@hraness/design-kit@github:hraness/design-kit#03843b5", { "dependencies": { "@hugeicons/core-free-icons": "4.2.3", "@stylexjs/stylex": "0.19.0", "motion": "12.42.0", "next-themes": "0.4.6", "react-aria-components": "1.19.0", "recharts": "3.8.0", "sugar-high": "^1.2.1", "web-haptics": "0.0.6" }, "peerDependencies": { "@hraness/ui": ">=0.5.16 <0.6.0", "react": ">=18 <20", "react-dom": ">=18 <20" }, "optionalPeers": ["@hraness/ui"] }, "hraness-design-kit-03843b5", "sha512-KeHAVXgcZMqDehkH8+UNSfjB/x0h6oqWRk0800BwchViFC173gs+kbGvuv+Tvg92/Cjw7sPI//YYAMTbR15NUQ=="],
 
     "@hraness/site-footer": ["@hraness/site-footer@github:hraness/site-footer#5812fb6", { "peerDependencies": { "react": ">=18 <20" }, "optionalPeers": ["react"] }, "hraness-site-footer-5812fb6", "sha512-B4vD5aeUpIAnHbuNaDrQayrAQemLtEqvTyMQwZ/9P0XcJc9IKxxuyXwp20t4GXMg/Ow2Pdpnj7NroRof/Ot3xQ=="],
 
+    "@hraness/ui": ["@hraness/ui@github:hraness/ui#fa6df70", { "dependencies": { "@hugeicons/core-free-icons": "4.2.3", "@hugeicons/react": "^1.1.9", "@stylexjs/stylex": "0.19.0", "clsx": "^2.1.1", "parse5": "8.0.1", "react-aria": "3.50.0", "react-aria-components": "1.19.0" }, "peerDependencies": { "@babel/core": "7.29.7", "@stylexjs/babel-plugin": "0.19.0", "@types/babel__core": "7.20.5", "@types/bun": "1.3.14", "@types/node": "^20.19.0 || >=22.12.0", "lightningcss": "1.33.0", "next": "16.2.12 || 16.3.3", "react": ">=18 <20", "react-dom": ">=18 <20", "typescript": "6.0.3", "vite": "7.3.6 || 8.2.1" }, "optionalPeers": ["@babel/core", "@stylexjs/babel-plugin", "@types/babel__core", "@types/bun", "@types/node", "lightningcss", "next", "typescript", "vite"] }, "hraness-ui-fa6df70", "sha512-EW2h6MeyImS8ESP2eIaT/29WdnpY3I60XRTqObi/0bbSDW2TLbBCl3GmpdbpA72ob7InsJ54bwNZeFisQmjKqg=="],
+
     "@hraness/web-discovery": ["@hraness/web-discovery@github:hraness/web-discovery#306bb70", { "dependencies": { "@hraness/design-kit": "github:hraness/design-kit#v0.5.0" }, "peerDependencies": { "next": ">=16.2.0 <17.0.0", "react": ">=19.0.0 <20.0.0" } }, "hraness-web-discovery-306bb70", "sha512-ueV+yA5Wk0JOGAcg+6OF/JFVIOhwHYddGfTAitxLEgjb9AyCGitgAJ53dLTETNe2Qs+d4UHoQn/aruX0X8+wFA=="],
 
-    "@hugeicons/core-free-icons": ["@hugeicons/core-free-icons@4.3.2", "", {}, "sha512-31uDdIq71YcVxeltjcS/tsmYFt4VjmgyNTZfG1bY6mbeFmsYL6Nwz9PdDZetGtGPZOAEVg0bHoQFOoPWDC51bg=="],
+    "@hugeicons/core-free-icons": ["@hugeicons/core-free-icons@4.2.3", "", {}, "sha512-fpiU0qFZkv4ABi23xJ2m4qNr0BBfuIaYjPboN8WDA6aj9D+OzXa7eykxKOpACZRuGbDz1U9S5DsNx1d5KNnsgA=="],
+
+    "@hugeicons/react": ["@hugeicons/react@1.1.10", "", { "peerDependencies": { "react": ">=16.0.0" } }, "sha512-9tAsd92yMVVGP+E+d8cM+wc0VnXuYZHNbWQi7TOe8k2neawmhiaFmVFbzyruejhOMa197/LbgvSED32ayUo3ZA=="],
 
     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
 
@@ -221,6 +226,8 @@
 
     "emoji-regex-xs": ["emoji-regex-xs@2.0.1", "", {}, "sha512-1QFuh8l7LqUcKe24LsPUNzjrzJQ7pgRwp1QMcZ5MX6mFplk2zQ08NVCM84++1cveaUUYtcCYHmeFEuNg16sU4g=="],
 
+    "entities": ["entities@8.1.0", "", {}, "sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA=="],
+
     "es-toolkit": ["es-toolkit@1.52.0", "", {}, "sha512-XTNEJQh1tY1ZJVcf6ayP/2n4ZPyaHlW2FWs7xvw5ddPuhUVjLD3olQVQS7kf58JbAB48iL0uL/jerTrjtV3lDA=="],
 
     "escape-html": ["escape-html@1.0.3", "", {}, "sha512-NiSupZ4OeuGwr68lGIeym/ksIZMJodUGOSCZ/FSnTxcrekbvqrgdUxlJOMpijaKZVjAJrWrGs/6Jy8OMuyj9ow=="],
@@ -262,6 +269,8 @@
     "pako": ["pako@0.2.9", "", {}, "sha512-NUcwaKxUxWrZLpDG+z/xZaCgQITkA/Dv4V/T6bw7VON6l1Xz/VnrBqrYjZQ12TamKHzITTfOEIYUj48y2KXImA=="],
 
     "parse-css-color": ["parse-css-color@0.2.1", "", { "dependencies": { "color-name": "^1.1.4", "hex-rgb": "^4.1.0" } }, "sha512-bwS/GGIFV3b6KS4uwpzCFj4w297Yl3uqnSgIPsoQkx7GMLROXfMnWvxfNkL0oh8HVhZA4hvJoEoEIqonfJ3BWg=="],
+
+    "parse5": ["parse5@8.0.1", "", { "dependencies": { "entities": "^8.0.0" } }, "sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw=="],
 
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 
@@ -328,5 +337,7 @@
     "@hraness/web-discovery/@hraness/design-kit": ["@hraness/design-kit@github:hraness/design-kit#070cdd2", { "dependencies": { "@hugeicons/core-free-icons": "^4.2.2", "@stylexjs/stylex": "0.19.0", "motion": "12.42.0", "next-themes": "0.4.6", "react-aria-components": "1.19.0", "recharts": "3.8.0", "sugar-high": "^1.2.1", "web-haptics": "0.0.6" }, "peerDependencies": { "@hraness/ui": ">=0.5.4 <0.6.0", "react": ">=18 <20", "react-dom": ">=18 <20" }, "optionalPeers": ["@hraness/ui"] }, "hraness-design-kit-070cdd2", "sha512-kO4akqptuEsvbtpbdH2JaNZqOr/o9YH+Kj53sgN1EWfYq790lrH2kWySfhElbmS739ALAmivmYGyvqV4AtEZOg=="],
 
     "@reduxjs/toolkit/immer": ["immer@11.1.18", "", {}, "sha512-EQyQtLiYW029lyoczMl/Hh4Xu7cDecSc58JRYpHyL4tIAu3eqd1yJzQX04d2BZHDkzFFvm6qJEJWOtfDSWAXbQ=="],
+
+    "@hraness/web-discovery/@hraness/design-kit/@hugeicons/core-free-icons": ["@hugeicons/core-free-icons@4.3.2", "", {}, "sha512-31uDdIq71YcVxeltjcS/tsmYFt4VjmgyNTZfG1bY6mbeFmsYL6Nwz9PdDZetGtGPZOAEVg0bHoQFOoPWDC51bg=="],
   }
 }

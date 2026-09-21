@@ -9,7 +9,7 @@
     "generate:og": "bun site/generate-og.tsx"
   },
   "dependencies": {
-    "@hraness/design-kit": "github:hraness/design-kit#v0.11.0",
+    "@hraness/design-kit": "github:hraness/design-kit#v0.11.1",
     "@hraness/site-footer": "github:hraness/site-footer#v0.12.1"
   },
   "devDependencies": {
