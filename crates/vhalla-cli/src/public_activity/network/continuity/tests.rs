@@ -234,6 +234,8 @@ enum Fault {
 struct Server {
     events: Vec<VerifiedEvent>,
     published: usize,
+    cursor: u64,
+    admitted_by: Vec<u64>,
     stage: Option<wire::StageRef>,
     observed: wire::Observed,
     requests: Vec<wire::Request>,
@@ -247,8 +249,10 @@ struct Server {
 impl Server {
     fn new(home: &Home) -> Self {
         Self {
-            events: home.events.clone(),
             published: 0,
+            cursor: 0,
+            admitted_by: vec![0; home.events.len()],
+            events: home.events.clone(),
             stage: None,
             observed: floor(),
             requests: vec![],
@@ -377,6 +381,11 @@ impl ContinuityTransport for Server {
                 let reconciled = self.published >= terminal.sequence() as usize;
                 if !reconciled {
                     assert!(!self.closed, "closed peer admitted fresh terminal");
+                    self.cursor += 1;
+                    for slot in &mut self.admitted_by[self.published..terminal.sequence() as usize]
+                    {
+                        *slot = self.cursor;
+                    }
                     self.published = terminal.sequence() as usize;
                     self.stage = None;
                 }
@@ -387,7 +396,7 @@ impl ContinuityTransport for Server {
                 wire::Reply::Committed(Box::new(wire::TerminalReceipt {
                     observed: self.observed,
                     event: frame.clone(),
-                    cursor: 1,
+                    cursor: self.admitted_by[terminal.sequence() as usize - 1],
                     registry: [9; 32],
                     reconciled,
                 }))
@@ -405,7 +414,7 @@ impl ContinuityTransport for Server {
                         } else {
                             wire::EvidenceRole::HistoricalContinuity
                         },
-                        committed_by: 1,
+                        committed_by: self.admitted_by[e.claims().sequence as usize - 1],
                         registry: [9; 32],
                         event: e.clone(),
                     })
@@ -450,6 +459,15 @@ impl ContinuityTransport for Server {
     }
 }
 fn step(home: &Home, create: bool, server: &mut Server, gate: &Gate) -> (SendOutcome, Snapshot) {
+    step_bounded(home, create, server, gate, MAX_ANCESTORS)
+}
+fn step_bounded(
+    home: &Home,
+    create: bool,
+    server: &mut Server,
+    gate: &Gate,
+    bound: u64,
+) -> (SendOutcome, Snapshot) {
     let mut peer = home.peer(create);
     let source = home.source(create);
     let mut receipts = home.receipts(&source, create);
@@ -458,6 +476,7 @@ fn step(home: &Home, create: bool, server: &mut Server, gate: &Gate) -> (SendOut
         source: &source,
         receipts: &mut receipts,
         policy: gate,
+        bound,
     }
     .step(server, &|| Ok(1001), &AtomicBool::new(false))
     .unwrap();
@@ -505,10 +524,62 @@ fn continuity_controller_stages_then_commits_then_persists_exact_evidence_across
     assert_eq!(server.refreshes, 3);
 }
 #[test]
+fn continuity_controller_intermediate_admissions_reach_one_fixed_target() {
+    // Bound 5 mirrors a peer admitting at most 5 staged+inline ancestors per
+    // terminal: the fixed target 16 advances through ordered phases 6, 12, 16.
+    let h = Home::new(16);
+    let mut server = Server::new(&h);
+    let gate = Gate::open();
+    let (outcome, state) = step_bounded(&h, true, &mut server, &gate, 5);
+    assert!(outcome.error.is_none());
+    assert_eq!(server.requests.len(), 3);
+    assert!(matches!(
+        server.requests[1].kind(),
+        wire::Kind::Commit { terminal, .. } if terminal.sequence() == 6
+    ));
+    assert_eq!(state.retention().position().sequence(), 6);
+    assert!(!state.complete());
+    let (outcome, state) = step_bounded(&h, false, &mut server, &gate, 5);
+    assert!(outcome.error.is_none());
+    assert!(matches!(
+        server.requests[4].kind(),
+        wire::Kind::Commit { terminal, .. } if terminal.sequence() == 12
+    ));
+    assert_eq!(state.retention().position().sequence(), 12);
+    assert!(!state.complete());
+    let (outcome, state) = step_bounded(&h, false, &mut server, &gate, 5);
+    assert!(outcome.error.is_none());
+    assert!(matches!(
+        server.requests[7].kind(),
+        wire::Kind::Commit { terminal, .. } if terminal.sequence() == 16
+    ));
+    assert!(state.complete());
+    assert_eq!(state.terminal().unwrap().position().sequence(), 16);
+    assert_eq!(
+        server
+            .requests
+            .iter()
+            .filter_map(|r| match r.kind() {
+                wire::Kind::Commit { terminal, .. } => Some(terminal.sequence()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![6, 12, 16]
+    );
+    assert_eq!(server.published, 16);
+    assert_eq!(server.refreshes, 3);
+    let prior = server.requests.len();
+    let (_, again) = step_bounded(&h, false, &mut server, &gate, 5);
+    assert_eq!(again, state);
+    assert_eq!(server.requests.len(), prior);
+}
+#[test]
 fn continuity_controller_existing_terminal_reconciles_after_revocation_without_fresh_permission() {
     let h = Home::new(33);
     let mut server = Server::new(&h);
     server.published = 33;
+    server.cursor = 1;
+    server.admitted_by[..33].fill(1);
     server.closed = true;
     let gate = Gate::closed();
     let (_, state) = step(&h, true, &mut server, &gate);
@@ -640,6 +711,7 @@ fn continuity_controller_uncertain_receipt_write_has_no_success_or_v1_mutation()
         source: &source,
         receipts: &mut receipts,
         policy: &Gate::open(),
+        bound: MAX_ANCESTORS,
     }
     .step(&mut server, &|| Ok(1001), &AtomicBool::new(false))
     .unwrap();
@@ -720,6 +792,7 @@ fn continuity_controller_peer_past_fixed_target_requires_explicit_later_selectio
         source: &source,
         receipts: &mut receipts,
         policy: &Gate::closed(),
+        bound: MAX_ANCESTORS,
     }
     .step(&mut server, &|| Ok(1001), &AtomicBool::new(false))
     .unwrap();
@@ -741,11 +814,16 @@ fn continuity_controller_canonical_arguments_and_page_bounds_refuse_without_dial
         assert!(canonical(bad, "value").is_err());
     }
     assert_eq!(canonical("0", "value").unwrap(), 0);
-    assert!(bounded_span(0, 4129).is_ok());
-    assert!(bounded_span(0, 4130).is_err());
-    assert!(bounded_span(17, 17).is_err());
-    assert!(bounded_span(17, 16).is_err());
-    assert!(bounded_span(u64::MAX - 1, u64::MAX).is_ok());
+    assert_eq!(phase_terminal(0, 4129, MAX_ANCESTORS), 4129);
+    assert_eq!(phase_terminal(0, 4130, MAX_ANCESTORS), 4129);
+    assert_eq!(phase_terminal(4129, 4130, MAX_ANCESTORS), 4130);
+    assert_eq!(phase_terminal(0, 16, 5), 6);
+    assert_eq!(phase_terminal(6, 16, 5), 12);
+    assert_eq!(phase_terminal(12, 16, 5), 16);
+    assert_eq!(
+        phase_terminal(u64::MAX - 1, u64::MAX, MAX_ANCESTORS),
+        u64::MAX
+    );
     let h = Home::new(1);
     let source = h.source(true);
     assert!(range(&source, 0, 33).is_err());

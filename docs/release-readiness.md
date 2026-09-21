@@ -194,7 +194,12 @@ pinned peer's evidence, durably reserves every fresh-nonce request before the
 exchange, and retains each verified signed reply. The local-Chromium journey
 completes two targets against a dedicated continuity-mode fixture peer and
 reads local receipt status without dialing. Incremental finalization beyond
-the staged-ancestor bound remains unfinished. Public peer hints are bounded to 512 entries; signatures do not
+the staged-ancestor bound is implemented: a farther fixed target advances
+through ordered intermediate terminal admissions of exact signed local events,
+each separately reserved, current-policy checked and never beyond the fixed
+selection. Native tests cover multi-phase admission to one fixed target; the
+local-Chromium journey exercises it under a narrowed qualification bound.
+Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;
 never silently prune or reset a used sequence to recover capacity.

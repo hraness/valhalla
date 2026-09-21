@@ -106,6 +106,54 @@ impl Fixture {
             .check_sources(head, |n| Ok(self.events[n as usize - 1].encode()))
             .unwrap();
     }
+    /// Reserve a Commit attempt for the exact signed terminal (1-based
+    /// sequence) over the given verified base, then publish its signed reply.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit(
+        &self,
+        state: &Snapshot,
+        nonce: u8,
+        base: wire::Position,
+        stage: Option<wire::StageRef>,
+        terminal: usize,
+        cursor: u64,
+        reconciled: bool,
+    ) -> (Snapshot, Publication) {
+        let tail = stage.map_or(base, |s| s.tail());
+        let inline = terminal - tail.sequence() as usize - 1;
+        let body = wire::Body::commit(
+            self.events[tail.sequence() as usize..terminal - 1]
+                .iter()
+                .take(inline)
+                .cloned()
+                .collect(),
+            self.events[terminal - 1].clone(),
+        )
+        .unwrap();
+        let request = wire::Request::commit(
+            self.context(nonce),
+            self.scope.author.author,
+            base,
+            stage,
+            &body,
+        )
+        .unwrap();
+        let reserved = state
+            .prepare_attempt(request, &body.encode())
+            .unwrap()
+            .after;
+        let reply = wire::Reply::Committed(Box::new(wire::TerminalReceipt {
+            observed: self.context(nonce).floor,
+            event: self.events[terminal - 1].clone(),
+            cursor,
+            registry: [9; 32],
+            reconciled,
+        }));
+        let (proof, body) = self.proof(request, &reply);
+        let change = reserved.prepare_response(&proof, &body).unwrap();
+        self.check(&change);
+        (reserved, change)
+    }
     pub fn evidence(
         &self,
         state: &Snapshot,
@@ -460,4 +508,106 @@ fn continuity_impossible_available_lengths_are_preserved_not_incomplete_cleanup(
     let mut partial = short[..op + 1].to_vec();
     partial[op] = 255;
     assert!(!codec::incomplete_prefix(&partial, &state));
+}
+
+#[test]
+fn continuity_intermediate_admissions_stay_ordered_within_one_fixed_target() {
+    let f = Fixture::new(17);
+    // The fixed target is 16; 17 exists in the local source but is beyond it.
+    let mut state = f
+        .fresh()
+        .prepare_job(ContinuityJob::new([1; 16], &f.events[15]).unwrap())
+        .unwrap()
+        .after;
+    let mut records = BTreeMap::new();
+    let request = f.status(&state, 1);
+    state = state.prepare_attempt(request, &[]).unwrap().after;
+    let (proof, raw) = f.proof(
+        request,
+        &wire::Reply::Status(wire::Status {
+            observed: f.context(1).floor,
+            published: wire::Position::EMPTY,
+            stage: None,
+        }),
+    );
+    state = retain(&mut records, state.prepare_response(&proof, &raw).unwrap());
+    // Phase 1: admit intermediate terminal 6; retention still needs evidence.
+    let (_, change) = f.commit(&state, 2, wire::Position::EMPTY, None, 6, 1, false);
+    state = retain(&mut records, change);
+    assert_eq!(state.terminal().unwrap().position().sequence(), 6);
+    assert_eq!(state.retention.position, wire::Position::EMPTY);
+    assert!(!state.complete());
+    let (_, change) = f.evidence(&state, 3, 0, 6, 6, 1);
+    state = retain(&mut records, change);
+    assert_eq!(state.retention.position.sequence(), 6);
+    // A commit beyond the fixed target is refused at reservation.
+    let body = wire::Body::commit(f.events[6..16].to_vec(), f.events[16].clone()).unwrap();
+    let request = wire::Request::commit(
+        f.context(4),
+        f.scope.author.author,
+        wire::Position::of(&f.events[5]),
+        None,
+        &body,
+    )
+    .unwrap();
+    assert!(state.prepare_attempt(request, &body.encode()).is_err());
+    // A different admission claim for the same terminal is refused.
+    let body = wire::Body::commit(vec![], f.events[5].clone()).unwrap();
+    let request = wire::Request::commit(
+        f.context(5),
+        f.scope.author.author,
+        wire::Position::of(&f.events[4]),
+        None,
+        &body,
+    )
+    .unwrap();
+    let reserved = state
+        .prepare_attempt(request, &body.encode())
+        .unwrap()
+        .after;
+    let (proof, raw) = f.proof(
+        request,
+        &wire::Reply::Committed(Box::new(wire::TerminalReceipt {
+            observed: f.context(5).floor,
+            event: f.events[5].clone(),
+            cursor: 9,
+            registry: [9; 32],
+            reconciled: true,
+        })),
+    );
+    assert!(reserved.prepare_response(&proof, &raw).is_err());
+    // Phase 2: a later intermediate admission lands over the proven base.
+    let (_, change) = f.commit(
+        &state,
+        6,
+        wire::Position::of(&f.events[5]),
+        None,
+        12,
+        2,
+        false,
+    );
+    state = retain(&mut records, change);
+    assert_eq!(state.terminal().unwrap().position().sequence(), 12);
+    assert!(!state.complete());
+    // Phase 3: evidence through 12, then the fixed target itself.
+    let (_, change) = f.evidence(&state, 7, 6, 12, 12, 2);
+    state = retain(&mut records, change);
+    let (_, change) = f.commit(
+        &state,
+        8,
+        wire::Position::of(&f.events[11]),
+        None,
+        16,
+        3,
+        false,
+    );
+    state = retain(&mut records, change);
+    let (_, change) = f.evidence(&state, 9, 12, 16, 16, 3);
+    state = retain(&mut records, change);
+    assert!(state.complete());
+    assert_eq!(state.terminal().unwrap().position().sequence(), 16);
+    assert_eq!(Snapshot::decode(&state.encode()).unwrap(), state);
+    state
+        .validate_records(|i| records.get(&i).cloned().ok_or(Error::Corrupt))
+        .unwrap();
 }

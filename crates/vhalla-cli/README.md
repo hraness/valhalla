@@ -1831,6 +1831,16 @@ obtain certified journal catch-up before attempting fresh publication. Peer
 reports cannot replace certificates. Journal advancement concurrent with the
 final local check is resolved by the peer's own admission checks.
 
+A selected target farther than one bounded admission advances through ordered
+intermediate terminal admissions. Each phase commits an exact already-signed
+local event at most one staged-ancestor bound beyond the peer's current
+published position, checked against current room policy as its own terminal.
+The fixed selected terminal and its exact frame hash never change; the peer's
+published position advances monotonically and no admission may pass the target
+or substitute a different final event. Repeat `step` until `complete: true`.
+Each admission remains one peer's durable claim and never authorizes the next
+phase by itself; every fresh Commit is separately reserved before transport.
+
 After an uncertain prior Commit, exact Evidence can show the selected terminal
 already retained as admitted. Only then can the client request the same terminal's
 original admission after revocation, without treating an old signature as a new

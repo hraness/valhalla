@@ -18,8 +18,27 @@ use web_sys::HtmlSelectElement;
 
 /// Continuity exchanges per explicit step, matching the native supervisor.
 const EXCHANGES: usize = 3;
-/// 4,096 staged plus 32 inline ancestors; no implicit intermediate terminal.
+/// The serving peer's staged-ancestor budget: 4,096 staged plus 32 inline. A
+/// farther selected target advances through ordered intermediate admissions of
+/// exact signed local events, never beyond this bound per admission.
 const MAX_ANCESTORS: u64 = 4096 + 32;
+
+/// The per-admission ancestor bound. Local qualification may only narrow this
+/// bound through page storage so a real browser journey exercises ordered
+/// intermediate admissions without fabricating a 4,129-event history; it can
+/// never exceed the serving peer's staged-ancestor budget.
+fn admission_bound() -> u64 {
+    #[cfg(feature = "local-qualification")]
+    {
+        let stored = web_sys::window()
+            .and_then(|w| w.local_storage().ok().flatten())
+            .and_then(|s| s.get_item("vhalla-continuity-bound").ok().flatten());
+        if let Some(value) = stored.and_then(|raw| raw.parse::<u64>().ok()) {
+            return value.min(MAX_ANCESTORS);
+        }
+    }
+    MAX_ANCESTORS
+}
 /// Permanent receipt quotas for the browser surface; immutable once created.
 const RECEIPT_LIMITS: Limits = Limits {
     max_records: 4096,
@@ -390,37 +409,45 @@ impl Driver<'_> {
                     return Err("The peer's published base differs from the retained evidence.".into());
                 }
                 let reconcile = state.retention().position() == job.terminal();
-                let (base, stage) = if reconcile {
+                let (base, stage, phase) = if reconcile {
                     if !self.current_role(&state).await? {
                         return Err("The selected target is immutable historical-only evidence; select a later admitted terminal.".into());
                     }
-                    (self.position(job.terminal().sequence() - 1).await?, None)
+                    (
+                        self.position(job.terminal().sequence() - 1).await?,
+                        None,
+                        terminal.clone(),
+                    )
                 } else {
                     if remote.observed.height > self.floor().height {
                         return Err("The peer reports a newer checkpoint; sync certified history before fresh work.".into());
                     }
                     self.permit(&terminal).map_err(|e| format!("The fixed terminal is not current-policy permitted; preserve it and any held draft: {e}"))?;
-                    if job
+                    // One admission is bounded by the peer's staged-ancestor
+                    // budget; a farther selected target advances through ordered
+                    // intermediate admissions of exact signed local events.
+                    let phase_seq = job
                         .terminal()
                         .sequence()
-                        .checked_sub(remote.published.sequence())
-                        .and_then(|n| n.checked_sub(1))
-                        .ok_or("The fixed terminal does not follow the published base.")?
-                        > MAX_ANCESTORS
-                    {
-                        return Err("The fixed target exceeds 4,096 staged plus 32 inline ancestors; no automatic intermediate terminal.".into());
-                    }
+                        .min(remote.published.sequence().saturating_add(admission_bound() + 1));
+                    let phase = if phase_seq == job.terminal().sequence() {
+                        terminal.clone()
+                    } else {
+                        let phase = self.event(phase_seq).await?;
+                        self.permit(&phase).map_err(|e| format!("The intermediate terminal is not current-policy permitted; preserve evidence and any held draft: {e}"))?;
+                        phase
+                    };
                     if remote.stage.is_some_and(|s| s.expires_at() <= at) {
                         return Err("The temporary stage expired; preserve the source and retry Status after peer maintenance.".into());
                     }
-                    (remote.published, remote.stage)
+                    (remote.published, remote.stage, phase)
                 };
                 self.usable(true)?;
                 let tail = stage.map_or(base, |s| s.tail());
-                if tail.sequence() >= job.terminal().sequence() {
-                    return Err("The temporary stage reaches the fixed terminal; no implicit target substitution.".into());
+                if tail.sequence() >= wire::Position::of(&phase).sequence() {
+                    return Err("The temporary stage reaches the current admission terminal; no implicit target substitution.".into());
                 }
-                let remaining = job.terminal().sequence() - tail.sequence() - 1;
+                let remaining = wire::Position::of(&phase).sequence() - tail.sequence() - 1;
                 let (request, body) = if remaining > 32 {
                     let body = wire::Body::stage(self.range(tail.sequence(), 32).await?)
                         .map_err(|_| "Could not form a fixed stage body.")?;
@@ -436,7 +463,7 @@ impl Driver<'_> {
                 } else {
                     let body = wire::Body::commit(
                         self.range(tail.sequence(), remaining as usize).await?,
-                        terminal.clone(),
+                        phase.clone(),
                     )
                     .map_err(|_| "Could not form a commit body.")?;
                     let request = wire::Request::commit(
@@ -452,7 +479,7 @@ impl Driver<'_> {
                 // Recheck after local frame loading, immediately before the
                 // mutation reservation and network exchange.
                 if !reconcile {
-                    self.permit(&terminal)?;
+                    self.permit(&phase)?;
                 }
                 exchanges += 1;
                 match self.exchange(&mut state, request, &body, true).await? {

@@ -182,7 +182,9 @@ impl Snapshot {
             _ => {}
         }
         if let Some(t) = self.terminal {
-            if self.job.is_none_or(|j| j.terminal != t.position)
+            if self
+                .job
+                .is_none_or(|j| t.position.sequence() > j.terminal.sequence())
                 || t.cursor == 0
                 || t.registry == [0; 32]
                 || t.record.index > self.records

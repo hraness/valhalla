@@ -15,7 +15,9 @@ client. It is not an activated public network or a completed browser release.
   each request attempt is durably reserved before any network exchange, the
   authenticated reply is retained before the next step, and a target completes
   only on the peer's signed terminal-admission and contiguous-retention
-  evidence. Stage acknowledgements are never delivery.
+  evidence. Stage acknowledgements are never delivery. A target beyond the
+  peer's staged-ancestor bound advances through ordered intermediate terminal
+  admissions of exact signed local events without replacing the selection.
 - Bounded multipart encrypted author-state export/import, including sequence
   history, pending draft and receipts. Import activates only after complete
   verification into an absent scope; it never resets or merges existing state.
@@ -144,7 +146,8 @@ refuses changed artifact bytes/destinations, and verifies three posts through
 two peers' retained receipts and signed history. It then selects a third,
 continuity-mode peer, opens one receipt session bound to that peer's exact
 route, retains a fixed terminal, and verifies the peer's signed
-terminal-admission plus contiguous retention evidence — including a strictly
+terminal-admission plus contiguous retention evidence — including ordered
+intermediate admissions under a narrowed qualification bound and a strictly
 later terminal replacing the target.
 The output contains a receipt, artifact hash, screenshot and synthetic fixture
 logs. Three local peer processes are not evidence of independent operators or a

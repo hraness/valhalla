@@ -8,7 +8,7 @@ use vhalla_browser_storage::{
 use vhalla_public_protocol::continuity as wire;
 use vhalla_room_activity::{UnsignedEvent, VerifiedEvent};
 
-pub(in crate::public_network::activity) const HELP: &str = "vhalla public activity continuity-init|continuity-select BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES TERMINAL_SEQUENCE\nvhalla public activity continuity-status BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES\nvhalla public activity continuity-step BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES JOURNAL [--replay-profile PROFILE]\ninit exclusively creates receipt custody; select opens it and explicitly selects a retained signed terminal (same exact selection resumes, only later selections replace it). status is local. step refreshes the exact peer and performs at most 3 continuity exchanges inside the existing 90-second total supervisor; certified replay retains its 4096-bundle/30-second bound. Status/Stage are hints; terminal admission and verified peer-retained prefix are separate. No key use, draft recovery, author reset, v1 delivery conversion, peer failover or automatic migration. Preserve every existing directory after uncertainty. An unsigned old-policy pending draft may need separate explicit recovery, use the separate recover-history command for its exact saved sequence/ID.";
+pub(in crate::public_network::activity) const HELP: &str = "vhalla public activity continuity-init|continuity-select BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES TERMINAL_SEQUENCE\nvhalla public activity continuity-status BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES\nvhalla public activity continuity-step BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS MAX_RECORDS MAX_BYTES JOURNAL [--replay-profile PROFILE]\ninit exclusively creates receipt custody; select opens it and explicitly selects a retained signed terminal (same exact selection resumes, only later selections replace it). status is local. step refreshes the exact peer and performs at most 3 continuity exchanges inside the existing 90-second total supervisor; certified replay retains its 4096-bundle/30-second bound. A target beyond the peer's 4096-staged-ancestor admission bound advances through ordered intermediate terminal admissions, each an exact signed local event, without replacing the selected target; repeat step until complete. Status/Stage are hints; terminal admission and verified peer-retained prefix are separate. No key use, draft recovery, author reset, v1 delivery conversion, peer failover or automatic migration. Preserve every existing directory after uncertainty. An unsigned old-policy pending draft may need separate explicit recovery, use the separate recover-history command for its exact saved sequence/ID.";
 const EXCHANGES: usize = 3;
 const MAX_ANCESTORS: u64 = 4096 + 32;
 
@@ -61,15 +61,13 @@ impl Policy for Context {
     }
 }
 
-fn bounded_span(base: u64, terminal: u64) -> Result<(), String> {
-    let ancestors = terminal
-        .checked_sub(base)
-        .and_then(|n| n.checked_sub(1))
-        .ok_or("fixed terminal does not follow the published base")?;
-    if ancestors > MAX_ANCESTORS {
-        return Err("fixed target exceeds 4096 staged plus 32 inline ancestors; no automatic intermediate terminal".into());
-    }
-    Ok(())
+/// Furthest terminal one admission may commit over the peer's published base.
+/// The serving peer's fixed staged-ancestor budget bounds a single admission;
+/// a farther selected terminal advances through ordered intermediate
+/// admissions, each an exact already-signed local event, never beyond the
+/// fixed target.
+fn phase_terminal(base: u64, terminal: u64, bound: u64) -> u64 {
+    terminal.min(base.saturating_add(bound.saturating_add(1)))
 }
 
 fn canonical(raw: &str, label: &str) -> Result<u64, String> {
@@ -165,6 +163,8 @@ struct Controller<'a> {
     source: &'a NativeOutbox,
     receipts: &'a mut NativeContinuity,
     policy: &'a dyn Policy,
+    /// Staged-ancestor bound mirrored from the serving peer's fixed budget.
+    bound: u64,
 }
 impl Controller<'_> {
     fn context(&self, state: &Snapshot) -> Result<wire::RequestContext, String> {
@@ -227,15 +227,17 @@ impl Controller<'_> {
             .map_err(preserved)?;
         usable(selected, at, is_post)?;
         if fresh {
-            let terminal = event(
-                self.source,
-                state
+            let admitted = match request.kind() {
+                wire::Kind::Commit { terminal, .. } => terminal.sequence(),
+                _ => state
                     .job()
                     .ok_or("no selected terminal")?
                     .terminal()
                     .sequence(),
-            )?;
-            self.policy.permit(&terminal)?; // After durable reservation, before HTTP.
+            };
+            // After durable reservation, before HTTP: the event actually being
+            // admitted must be current-policy permitted.
+            self.policy.permit(&event(self.source, admitted)?)?;
         }
         cancelled(cancel)?;
         let (bytes, proof) = transport.continuity(
@@ -404,11 +406,15 @@ impl Controller<'_> {
                     return Err("peer published base differs from retained evidence".into());
                 }
                 let reconcile = state.retention().position() == job.terminal();
-                let (base, stage) = if reconcile {
+                let (base, stage, phase) = if reconcile {
                     if !self.current_role(&state)? {
                         return Err("selected target is immutable historical-only evidence; select a later admitted terminal".into());
                     }
-                    (position(self.source, job.terminal().sequence() - 1)?, None)
+                    (
+                        position(self.source, job.terminal().sequence() - 1)?,
+                        None,
+                        terminal.clone(),
+                    )
                 } else {
                     let floor = self.policy.floor();
                     if remote.observed.height > floor.height {
@@ -417,18 +423,29 @@ impl Controller<'_> {
                     // No CLI historical verifier or signing fallback. The old
                     // unsigned reservation remains exactly where its author left it.
                     self.policy.permit(&terminal).map_err(|e| format!("fixed terminal is not current-policy permitted; preserve it and any held draft; recover a held unsigned draft separately with recover-history, then create a current-policy terminal: {e}"))?;
-                    bounded_span(remote.published.sequence(), job.terminal().sequence())?;
+                    let phase_seq = phase_terminal(
+                        remote.published.sequence(),
+                        job.terminal().sequence(),
+                        self.bound,
+                    );
+                    let phase = if phase_seq == job.terminal().sequence() {
+                        terminal.clone()
+                    } else {
+                        let phase = event(self.source, phase_seq)?;
+                        self.policy.permit(&phase).map_err(|e| format!("intermediate terminal is not current-policy permitted; preserve evidence and any held draft: {e}"))?;
+                        phase
+                    };
                     if remote.stage.is_some_and(|s| s.expires_at() <= at) {
                         return Err("temporary stage expired; preserve source and retry Status after peer maintenance; no lease extension inferred".into());
                     }
-                    (remote.published, remote.stage)
+                    (remote.published, remote.stage, phase)
                 };
                 usable(&selected, at, true)?;
                 let tail = stage.map_or(base, |s| s.tail());
-                if tail.sequence() >= job.terminal().sequence() {
-                    return Err("temporary stage reaches/passes fixed terminal; no implicit target substitution".into());
+                if tail.sequence() >= wire::Position::of(&phase).sequence() {
+                    return Err("temporary stage reaches/passes the current admission terminal; no implicit target substitution".into());
                 }
-                let remaining = job.terminal().sequence() - tail.sequence() - 1;
+                let remaining = wire::Position::of(&phase).sequence() - tail.sequence() - 1;
                 let context = self.context(&state)?;
                 let (request, body) = if remaining > 32 {
                     let body = wire::Body::stage(range(self.source, tail.sequence(), 32)?)
@@ -445,7 +462,7 @@ impl Controller<'_> {
                 } else {
                     let body = wire::Body::commit(
                         range(self.source, tail.sequence(), remaining as usize)?,
-                        terminal.clone(),
+                        phase.clone(),
                     )
                     .map_err(preserved)?;
                     let request = wire::Request::commit(
@@ -461,7 +478,7 @@ impl Controller<'_> {
                 // Recheck after local frame loading/preparation, immediately
                 // before persisting the outbound attempt and entering transport.
                 if !reconcile {
-                    self.policy.permit(&terminal)?;
+                    self.policy.permit(&phase)?;
                 }
                 exchanges += 1;
                 match self.exchange(
@@ -610,6 +627,7 @@ fn run_inner(args: &[OsString], profile: Option<&Path>, cancel: &AtomicBool) -> 
             source: &source,
             receipts: &mut receipts,
             policy: context,
+            bound: MAX_ANCESTORS,
         }
         .step(&mut Curl, &now, cancel)?;
         println!("{}", outcome.report);

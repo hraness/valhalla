@@ -209,7 +209,8 @@ impl RetentionHead {
         self.record
     }
 }
-/// One terminal admission statement; deliberately no prefix-acknowledgment API.
+/// Latest terminal admission statement; deliberately no prefix-acknowledgment
+/// API. Intermediate admissions under one fixed target are strictly ordered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TerminalEvidence {
     position: wire::Position,
@@ -288,7 +289,9 @@ impl Snapshot {
     pub const fn retention(&self) -> RetentionHead {
         self.retention
     }
-    /// Separately authenticated terminal admission, never a prefix shortcut.
+    /// Latest authenticated terminal admission, never a prefix shortcut. A
+    /// fixed target may admit bounded intermediate terminals in order; each
+    /// admission remains in the immutable record chain.
     pub const fn terminal(&self) -> Option<TerminalEvidence> {
         self.terminal
     }
@@ -557,11 +560,16 @@ fn request_check(state: &Snapshot, attempt: &ContinuityAttempt) -> Result<(), Er
             terminal_frame,
             ..
         } => {
+            // A commit may target any exact signed terminal strictly after its
+            // base up to the selected job terminal; terminals between retention
+            // and the target are the bounded intermediate admissions of one
+            // fixed target, each still checked against the actual local source.
             if base.sequence() > state.retention.position.sequence()
                 || (base.sequence() == state.retention.position.sequence()
                     && base != state.retention.position)
-                || terminal != job.terminal
-                || terminal_frame != job.frame
+                || terminal.sequence() <= base.sequence()
+                || terminal.sequence() > job.terminal.sequence()
+                || (terminal == job.terminal && terminal_frame != job.frame)
             {
                 return Err(Error::Stale);
             }
@@ -651,10 +659,22 @@ fn prepare(before: Snapshot, operation: Operation) -> Result<Publication, Error>
                         registry: t.registry,
                         record: reference,
                     };
+                    // The admitted terminal must be exactly the one this exact
+                    // request committed, and never beyond the fixed job target.
+                    if !matches!(attempt.request.kind(), wire::Kind::Commit { terminal, .. } if terminal == value.position)
+                        || value.position.sequence() > record.job.terminal.sequence()
+                    {
+                        return Err(Error::Corrupt);
+                    }
+                    // Admissions are monotone: a later terminal extends the same
+                    // job, the same terminal must carry identical evidence, and
+                    // a different event at the same sequence is a fork.
                     if before.terminal.is_some_and(|prior| {
-                        prior.position != value.position
-                            || prior.cursor != value.cursor
-                            || prior.registry != value.registry
+                        value.position.sequence() < prior.position.sequence()
+                            || (value.position.sequence() == prior.position.sequence()
+                                && (value.position != prior.position
+                                    || prior.cursor != value.cursor
+                                    || prior.registry != value.registry))
                     }) {
                         return Err(Error::Corrupt);
                     }
@@ -665,9 +685,7 @@ fn prepare(before: Snapshot, operation: Operation) -> Result<Publication, Error>
                     {
                         return Err(Error::Corrupt);
                     }
-                    if after.terminal.is_none() {
-                        after.terminal = Some(value);
-                    }
+                    after.terminal = Some(value);
                 }
                 wire::Reply::Evidence(page) => {
                     if let Some(first) = page.entries.first() {

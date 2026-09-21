@@ -32,7 +32,7 @@ futures-channel = "0.3"
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 js-sys = "=0.3.85"
-web-sys = { version = "=0.3.85", features = ["Window", "Performance", "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlSelectElement", "HtmlTextAreaElement", "HtmlButtonElement", "HtmlAnchorElement", "HtmlFormElement", "Event", "EventTarget", "MessageEvent", "ErrorEvent", "Worker", "WorkerGlobalScope", "DedicatedWorkerGlobalScope", "Crypto", "Blob", "BlobPropertyBag", "File", "FileList", "Url", "Location", "AbortController", "AbortSignal", "RequestInit", "RequestCache", "RequestCredentials", "RequestMode", "RequestRedirect", "ReferrerPolicy", "Response", "Headers", "ReadableStream", "ReadableStreamDefaultReader"] }
+web-sys = { version = "=0.3.85", features = ["Window", "Performance", "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlSelectElement", "HtmlTextAreaElement", "HtmlButtonElement", "HtmlAnchorElement", "HtmlFormElement", "Event", "EventTarget", "MessageEvent", "ErrorEvent", "Worker", "WorkerGlobalScope", "DedicatedWorkerGlobalScope", "Crypto", "Blob", "BlobPropertyBag", "File", "FileList", "Url", "Location", "AbortController", "AbortSignal", "RequestInit", "RequestCache", "RequestCredentials", "RequestMode", "RequestRedirect", "ReferrerPolicy", "Response", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "Storage"] }
 zeroize = { version = "1.9", features = ["alloc"] }
 vhalla-browser-vault = { path = "../crates/vhalla-browser-vault" }
 vhalla-browser-storage = { path = "../crates/vhalla-browser-storage" }
