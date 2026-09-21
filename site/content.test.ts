@@ -43,7 +43,7 @@ test('readiness and privacy limitations stay discoverable from the home page', (
   expect(home).toContain('Illustrative public room');
   expect(home).not.toContain('href="https://app.vhalla.com');
   const status=pages.get('/docs/status/')!;
-  for(const phrase of ['4,096', '30 seconds', '512', 'client receipt persistence and delivery remain unfinished', 'independent-machine', 'not a deployed']) {
+  for(const phrase of ['4,096', '30 seconds', '512', 'browser continuity orchestration remains unfinished', 'Status/Stage hints never advance permanent retention', 'independent-machine', 'not a deployed']) {
     // The summary uses "not ... deployed" in prose; pin only the explicit boundaries below.
     if(phrase==='not a deployed') continue;
     expect(status).toContain(phrase);

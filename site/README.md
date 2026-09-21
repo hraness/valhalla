@@ -45,11 +45,15 @@ or recreate the project to repair a page.
 ## Documentation contract
 
 - Home illustrations are explicitly illustrative, not screenshots or live state.
-- Public activity is plaintext. Private MLS file exchange is an opt-in development
-  capability; unfinished browser, relay, recovery and agent-compartment guarantees
-  must stay explicit.
-- Keep current CLI examples aligned with `public_activity`, `public_serve` and
-  Clankdar command help. Source status is distinct from deployment evidence.
+- Public activity is plaintext. Private MLS file exchange is an opt-in native/browser development
+  capability. The actual browser worker/panel has targeted local Chromium evidence;
+  native `.vharchive` recovery is read-only. Browser archives, fresh-device rejoin,
+  owner-device succession, live-device transfer, relays and agent compartments
+  remain explicit gaps. Ordinary public builds exclude optional MLS dependencies.
+- Keep current CLI examples aligned with `public_activity`, `public_serve`,
+  private archive and Clankdar command help. Native continuity has its own receipt
+  session: temporary staging, terminal admission and the exact-source Evidence
+  floor are different claims. Source status is distinct from deployment evidence.
 - Readiness documents concrete history/capacity/continuity/replication limits and
   next qualification work. Update it when those boundaries actually change.
 - Validate desktop/mobile, dark/light, keyboard navigation, overflow and direct
