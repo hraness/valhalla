@@ -45,9 +45,9 @@ const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id
 async function work(){
  const ws=await new Promise((r,j)=>{chrome.once('error',j);chrome.once('exit',c=>j(Error('Chrome exit '+c)));chrome.stderr.on('data',c=>{log+=c;const m=log.match(/DevTools listening on (ws:\/\/\S+)/);if(m)r(m[1]);});});
  socket=new WebSocket(ws);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
- socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const pendingCall=pending.get(v.id);pending.delete(v.id);if(pendingCall){if(v.error)pendingCall.reject(Error(JSON.stringify(v.error)));else pendingCall.resolve(v.result);}}else{const key=(v.sessionId||'')+':'+v.method;const eventCall=events.get(key);if(eventCall){events.delete(key);eventCall(v.params);}}};
+ socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const pendingCall=pending.get(v.id);pending.delete(v.id);if(pendingCall){if(v.error)pendingCall.reject(Error(JSON.stringify(v.error)));else pendingCall.resolve(v.result);}}else{const key=(v.sessionId||'')+':'+v.method;const eventCall=events.get(key);if(eventCall){events.delete(key);eventCall.resolve(v.params);}}};
  const {targetId}=await call('Target.createTarget',{url:'about:blank'}),{sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
- await call('Page.enable',{},sessionId);const loaded=new Promise(r=>events.set(sessionId+':Page.loadEventFired',r));
+ await call('Page.enable',{},sessionId);const loaded=new Promise(resolve=>events.set(sessionId+':Page.loadEventFired',{resolve}));
  await call('Page.navigate',{url:'http://127.0.0.1:'+server.address().port+'/'},sessionId);await loaded;
  const result=await call('Runtime.evaluate',{expression:'globalThis.done',awaitPromise:true,returnByValue:true},sessionId);
  if(result.exceptionDetails)throw Error(JSON.stringify(result.exceptionDetails));
