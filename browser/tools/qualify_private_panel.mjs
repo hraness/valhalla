@@ -295,9 +295,22 @@ async function task(abortSignal) {
   const ownerText=await send(owner,'SYNTHETIC_OWNER_TO_FRESH');await receive(fresh,ownerText);
   await leave(fresh);
   facts.push('same-account fresh device restored from encrypted backup, admitted by self-targeted offer, no pre-join history, bidirectional exchange');
+  // Owner removal: exclude the member device and rekey. The member must first
+  // apply the skipped fresh-device addition — controls chain strictly in order.
+  const memberFloor=await evaluate(member,`(async()=>{await qclick('private-refresh');await qidle();const m=qid('private-membership-details').textContent.match(/Control floor ([0-9]+)/);qassert(m,'member control floor absent');return m[1];})()`);
+  await invoke(owner,`async function(next){await qclick('private-controls');await qidle();const select=qid('private-control-select');const i=Array.from(select.options).findIndex(o=>o.textContent==='Encrypted control '+next);qassert(i>=0,'next control missing: '+next);select.selectedIndex=i;return true;}`,[String(Number(memberFloor)+1)]);
+  const addition=await download(owner,'private-download-control','vhcontrol');
+  await setFile(member,'private-control-file',addition.path);
+  await evaluate(member,"(async()=>{await qclick('private-apply-control');await qidle();return true;})()");
+  const memberDevice=await invoke(owner,`async function(account){await qclick('private-refresh');await qidle();const match=qid('private-membership-details').textContent.match(new RegExp('Account '+account+'\\\\nDevice ([0-9a-f]{64})'));qassert(match,'member device absent from owner roster');return match[1];}`,[member.publicKey]);
+  await invoke(owner,`async function(device){qset('private-remove-device',device);await qclick('private-remove');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'owner roster did not shrink');return true;}`,[memberDevice]);
+  const removal=await download(owner,'private-download-output','vhcontrol');
+  await setFile(member,'private-control-file',removal.path);
+  await evaluate(member,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'removed member roster stale');qassert(qid('private-prepare-message').disabled,'removed member can still prepare');qassert(!qid('private-outbox').disabled&&!qid('private-inbox').disabled,'removed member lost retained history reads');return true;})()");
+  facts.push('owner removal control excludes a device and rekeys; removed member retains read-only state but cannot send');
   for(const width of [1280,768,390])await screenshot(member,width);
-  // Create a live temporary URL immediately before locking; the hook must revoke it.
-  await download(owner,'private-download-output','vhmsg');
+  // The removal-control download seconds ago still holds a live temporary URL;
+  // the lock hook must revoke it. No extra download: the panel caps live URLs.
   await evaluate(owner,"qassert(qaURLs.size>0,'temporary download URL not observed');qset('private-message','PRIVATE_TEXT_MUST_NOT_CROSS_MODES');true");
   await leave(owner);await leave(member);
   await reopen(member);

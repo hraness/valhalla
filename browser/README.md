@@ -231,5 +231,7 @@ its recorded head against the live room, and refuses a foreign archive context
 terminally. The DOM journey also restores a `.vhkey` backup into a third
 browser context, admits it through a self-addressed confidential offer as a
 distinct same-account device, and verifies it starts with no pre-join history
-while exchanging post-join messages both ways. Owner succession and safe
+while exchanging post-join messages both ways. It also applies an ordered
+owner removal control: the excluded device keeps read-only retained state but
+cannot prepare new sends. Owner succession and safe
 live-device transfer remain separate work.

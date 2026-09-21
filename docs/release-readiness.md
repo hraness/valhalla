@@ -76,8 +76,10 @@ browser dependency graph.
 
 Before a private-room release, complete and qualify:
 
-- Extend browser coverage to owner removal and every retained-control edge case.
-  Creation, confidential invitations, membership
+- Extend browser coverage to every retained-control edge case (fork quarantine,
+  expired or conflicting envelopes). Owner removal is covered in the DOM
+  journey: ordered catch-up, rekey, removed-device send refusal and retained
+  read-only history. Creation, confidential invitations, membership
   inspection, renewal/catch-up, read-only archive export/import/open and
   owner-authorized same-account fresh-device rejoin are
   implemented.
