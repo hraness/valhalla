@@ -65,6 +65,18 @@ async function evaluate(page, expression) {
   if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails));
   return result.result.value;
 }
+async function invoke(page, functionDeclaration, args = []) {
+  const global = await call('Runtime.evaluate', {expression: 'window', returnByValue: false}, page.sessionId);
+  const result = await call('Runtime.callFunctionOn', {
+    objectId: global.result.objectId,
+    functionDeclaration,
+    arguments: args.map(value => ({value})),
+    awaitPromise: true,
+    returnByValue: true,
+  }, page.sessionId);
+  if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails));
+  return result.result.value;
+}
 async function setFile(page,id,path) {
   await evaluate(page,`qshow(${JSON.stringify(id)});true`);
   const {root}=await call('DOM.getDocument',{},page.sessionId);
@@ -76,14 +88,14 @@ async function keypress(page,id,key,code,virtualKey) {
   // Select the actual context before focusing: the other account was created
   // last and can still be foreground. Do not substitute a synthetic click.
   await call('Page.bringToFront',{},page.sessionId);
-  const before=await evaluate(page,`(async()=>{const id=${JSON.stringify(id)};await qwait(()=>!qid(id).disabled,id+' keyboard enabled');qshow(id);qid(id).focus();qassert(document.hasFocus()&&document.activeElement===qid(id),'keyboard target lacks focus: '+id);return qaKeyboardClicks[id];})()`);
+  const before=await invoke(page,`async function(id){await qwait(()=>!qid(id).disabled,id+' keyboard enabled');qshow(id);qid(id).focus();qassert(document.hasFocus()&&document.activeElement===qid(id),'keyboard target lacks focus: '+id);return qaKeyboardClicks[id];}`,[id]);
   const args={key,code,windowsVirtualKeyCode:virtualKey,nativeVirtualKeyCode:virtualKey};
   // Chromium's keyDown needs the character payload to produce native Enter
   // button activation. Match ordinary automation for Enter and printable Space.
   const text=key==='Enter'?'\r':key;
   await call('Input.dispatchKeyEvent',{type:'keyDown',...args,text,unmodifiedText:text},page.sessionId);
   await call('Input.dispatchKeyEvent',{type:'keyUp',...args},page.sessionId);
-  await evaluate(page,`(async()=>{await qwait(()=>qaKeyboardClicks[${JSON.stringify(id)}]===${before+1},${JSON.stringify(id+' trusted keyboard activation')});return true;})()`);
+  await invoke(page,`async function(id,expected,label){await qwait(()=>qaKeyboardClicks[id]===expected,label);return true;}`,[id,before+1,id+' trusted keyboard activation']);
 }
 async function download(page,button,extension) {
   const previous=new Set(downloads.keys());
@@ -141,7 +153,7 @@ async function receive(page,message) {
   await evaluate(page,"(async()=>{await qclick('private-receive');await qidle();return true;})()");
 }
 async function send(page,body) {
-  await evaluate(page,`(async()=>{qset('private-message',${JSON.stringify(body)});await qclick('private-prepare-message');await qwait(()=>!qid('private-save-message').disabled,'exact consent');qassert(qid('private-consent').textContent.includes(${JSON.stringify(body)}),'exact body preview');await qclick('private-save-message');await qidle();qassert(qid('private-message').value==='','saved draft not cleared');return true;})()`);
+  await invoke(page,`async function(body){qset('private-message',body);await qclick('private-prepare-message');await qwait(()=>!qid('private-save-message').disabled,'exact consent');qassert(qid('private-consent').textContent.includes(body),'exact body preview');await qclick('private-save-message');await qidle();qassert(qid('private-message').value==='','saved draft not cleared');return true;}`,[body]);
   return download(page,'private-download-output','vhmsg');
 }
 async function leave(page) {
@@ -199,41 +211,41 @@ async function task(abortSignal) {
   await enter(owner,true);
   await evaluate(owner,"qclick('private-create')");await retainCreation(owner);
   facts.push('keyboard entry, fresh owner, real locator download and explicit retention gate');
-  await evaluate(owner,`(async()=>{qset('private-recipient',${JSON.stringify(member.publicKey)});await qclick('private-offer');await qidle();return true;})()`);
+  await invoke(owner,`async function(recipient){qset('private-recipient',recipient);await qclick('private-offer');await qidle();return true;}`,[member.publicKey]);
   const offer=await download(owner,'private-download-secret','vhoffer');
   if(offer.raw.length!==713)throw Error('exact signed confidential offer length');
   await enter(member);
   await setFile(member,'private-offer-file',offer.path);
-  await evaluate(member,`(async()=>{qset('private-owner',${JSON.stringify(member.publicKey)});await qclick('private-review-offer');await qwait(()=>!qid('private-review-offer').disabled,'wrong owner pin refusal');qassert(qid('private-prepared').hidden&&qid('private-status').dataset.error==='true','wrong owner pin prepared a device');qset('private-owner',${JSON.stringify(owner.publicKey)});await qclick('private-review-offer');return true;})()`);
+  await invoke(member,`async function(wrongOwner,ownerKey){qset('private-owner',wrongOwner);await qclick('private-review-offer');await qwait(()=>!qid('private-review-offer').disabled,'wrong owner pin refusal');qassert(qid('private-prepared').hidden&&qid('private-status').dataset.error==='true','wrong owner pin prepared a device');qset('private-owner',ownerKey);await qclick('private-review-offer');return true;}`,[member.publicKey,owner.publicKey]);
   await retainCreation(member);
   await evaluate(member,"(async()=>{await qclick('private-request');await qidle();return true;})()");
   const request=await download(member,'private-download-output','vhrequest');
   await setFile(owner,'private-request-file',request.path);
-  await evaluate(owner,`(async()=>{qset('private-recipient',${JSON.stringify(owner.publicKey)});await qclick('private-accept');await qwait(()=>!qid('private-refresh').disabled,'changed recipient refusal');qassert(qid('private-status').dataset.error==='true'&&qid('identity-state').textContent==='Private custody','changed recipient reached owner publication');return true;})()`);
+  await invoke(owner,`async function(recipient){qset('private-recipient',recipient);await qclick('private-accept');await qwait(()=>!qid('private-refresh').disabled,'changed recipient refusal');qassert(qid('private-status').dataset.error==='true'&&qid('identity-state').textContent==='Private custody','changed recipient reached owner publication');return true;}`,[owner.publicKey]);
   // Test actual restart custody and original-file expiry recovery, not only a
   // convenient in-memory offer. The request remains unconsumed after refusal.
   await leave(owner);await reopen(owner);
   await setFile(owner,'private-resume-offer-file',offer.path);
   await setFile(owner,'private-request-file',request.path);
-  await evaluate(owner,`(async()=>{qset('private-recipient',${JSON.stringify(member.publicKey)});await qclick('private-accept');await qidle();return true;})()`);
+  await invoke(owner,`async function(recipient){qset('private-recipient',recipient);await qclick('private-accept');await qidle();return true;}`,[member.publicKey]);
   const response=await download(owner,'private-download-output','vhjoin');
   await setFile(member,'private-join-file',response.path);
   await evaluate(member,"(async()=>{await qclick('private-join');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'two-device roster absent');return true;})()");
   facts.push('two independent accounts joined through actual confidential offer and encrypted request/response files');
   const inert='<img src="https://not-a-route.invalid/panel" onerror="window.qaInjected=true"><script>window.qaInjected=true</script>\nSYNTHETIC_PRIVATE_TEXT';
   const message=await send(member,inert);await receive(owner,message);
-  await evaluate(owner,`qassert(qid('private-inbox-content').textContent.includes(${JSON.stringify(inert)}),'received bytes changed');qassert(!qaInjected && !qid('private-inbox-content').querySelector('img,script'),'private text became executable markup');true`);
+  await invoke(owner,`function(body){qassert(qid('private-inbox-content').textContent.includes(body),'received bytes changed');qassert(!qaInjected && !qid('private-inbox-content').querySelector('img,script'),'private text became executable markup');return true;}`,[inert]);
   await evaluate(member,"(async()=>{await qclick('private-outbox');await qidle();const select=qid('private-outbox-select');const index=Array.from(select.options).findIndex(o=>o.textContent.includes('Encrypted message'));qassert(index>=0,'saved ciphertext missing');select.selectedIndex=index;return true;})()");
   const repeated=await download(member,'private-download-outbox','vhmsg');
   if(!message.raw.equals(repeated.raw))throw Error('ordinary retry changed ciphertext');
   const reply=await send(owner,'SYNTHETIC_PRIVATE_REPLY');await receive(member,reply);
   facts.push('bidirectional messages, inert imported markup and exact retained ciphertext retry');
   const draft='SYNTHETIC_DRAFT_BEFORE_OWNER_RENEWAL';
-  await evaluate(member,`(async()=>{qset('private-message',${JSON.stringify(draft)});await qclick('private-prepare-message');await qwait(()=>!qid('private-save-message').disabled,'prepared old-epoch consent');return true;})()`);
+  await invoke(member,`async function(body){qset('private-message',body);await qclick('private-prepare-message');await qwait(()=>!qid('private-save-message').disabled,'prepared old-epoch consent');return true;}`,[draft]);
   await evaluate(owner,"(async()=>{await qclick('private-offer');await qidle();qassert(!qid('private-secret-output').hidden,'renewal fixture has no live offer');qassert(qid('private-resume-offer-file').value==='','new offer inherited a stale selected file');await qclick('private-renew');await qidle();qassert(qid('private-secret-output').hidden&&qid('private-download-secret').disabled&&qid('private-secret-label').textContent==='','renewal retained stale confidential offer');return true;})()");
   const renewal=await download(owner,'private-download-output','vhcontrol');
   await setFile(member,'private-control-file',renewal.path);
-  await evaluate(member,`(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-consent').textContent===''&&qid('private-save-message').disabled,'old-roster consent survived');qassert(qid('private-message').value===${JSON.stringify(draft)},'unrelated draft was silently discarded');qid('private-save-message').disabled=false;qid('private-save-message').click();await qwait(()=>!qid('private-refresh').disabled,'stale consent refused');qassert(qid('private-status').dataset.error==='true','stale consent was queued');return true;})()`);
+  await invoke(member,`async function(body){await qclick('private-apply-control');await qidle();qassert(qid('private-consent').textContent===''&&qid('private-save-message').disabled,'old-roster consent survived');qassert(qid('private-message').value===body,'unrelated draft was silently discarded');qid('private-save-message').disabled=false;qid('private-save-message').click();await qwait(()=>!qid('private-refresh').disabled,'stale consent refused');qassert(qid('private-status').dataset.error==='true','stale consent was queued');return true;}`,[draft]);
   await evaluate(member,"(async()=>{qset('private-message','SYNTHETIC_REVIEWED_TEXT');await qclick('private-prepare-message');await qwait(()=>!qid('private-save-message').disabled,'new consent');qid('private-message').value='SYNTHETIC_UNANNOUNCED_EDIT';qid('private-save-message').click();await qwait(()=>!qid('private-refresh').disabled,'unannounced edit refusal');qassert(qid('private-status').dataset.error==='true','changed text queued');return true;})()");
   await evaluate(owner,"(async()=>{await qclick('private-controls');await qidle();qassert(qid('private-control-select').options.length===2,'bounded control history');await qclick('private-outbox');await qidle();qassert(Array.from(qid('private-outbox-select').options).some(o=>o.textContent.includes('Metadata / non-exportable bootstrap')),'secret issuance metadata missing');return true;})()");
   const beforeSecretExport=downloads.size;

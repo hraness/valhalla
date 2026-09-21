@@ -45,7 +45,7 @@ const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id
 async function work(){
  const ws=await new Promise((r,j)=>{chrome.once('error',j);chrome.once('exit',c=>j(Error('Chrome exit '+c)));chrome.stderr.on('data',c=>{log+=c;const m=log.match(/DevTools listening on (ws:\/\/\S+)/);if(m)r(m[1]);});});
  socket=new WebSocket(ws);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
- socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const p=pending.get(v.id);pending.delete(v.id);v.error?p?.reject(Error(JSON.stringify(v.error))):p?.resolve(v.result);}else{const key=(v.sessionId||'')+':'+v.method;const p=events.get(key);if(p){events.delete(key);p(v.params);}}};
+ socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const pendingCall=pending.get(v.id);pending.delete(v.id);if(pendingCall){if(v.error)pendingCall.reject(Error(JSON.stringify(v.error)));else pendingCall.resolve(v.result);}}else{const key=(v.sessionId||'')+':'+v.method;const eventCall=events.get(key);if(eventCall){events.delete(key);eventCall(v.params);}}};
  const {targetId}=await call('Target.createTarget',{url:'about:blank'}),{sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
  await call('Page.enable',{},sessionId);const loaded=new Promise(r=>events.set(sessionId+':Page.loadEventFired',r));
  await call('Page.navigate',{url:'http://127.0.0.1:'+server.address().port+'/'},sessionId);await loaded;
