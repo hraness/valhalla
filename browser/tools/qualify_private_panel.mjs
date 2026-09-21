@@ -116,7 +116,7 @@ async function download(page,button,extension) {
   files.push({account:page.name,kind:extension,bytes:raw.length,sha256:createHash('sha256').update(raw).digest('hex'),file:path});
   return {path,raw};
 }
-async function account(name) {
+async function context(name) {
   const directory=join(output,name+'-downloads');await mkdir(directory,{mode:0o700});
   const {browserContextId}=await call('Target.createBrowserContext');
   await call('Browser.setDownloadBehavior',{behavior:'allowAndName',browserContextId,downloadPath:directory,eventsEnabled:true});
@@ -127,9 +127,23 @@ async function account(name) {
   await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);
   await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
   await wait(()=>evaluate(page,"!!document.getElementById('private-panel') && !!document.getElementById('create') && !document.getElementById('create').disabled"),'private app '+name);
+  return page;
+}
+async function account(name) {
+  const page=await context(name);
   page.publicKey=await evaluate(page,`(async()=>{${helpers}
     qset('password',qpassword);await qclick('create');await qwait(()=>qid('identity-state').textContent==='Unlocked','normal account creation');
     qassert(/^[0-9a-f]{64}$/.test(qid('public-key').textContent),'complete account key');return qid('public-key').textContent;
+  })()`);
+  return page;
+}
+async function restored(name,backupPath) {
+  const page=await context(name);
+  await evaluate(page,`(async()=>{${helpers} qset('password',qpassword);return true;})()`);
+  await setFile(page,'restore-file',backupPath);
+  page.publicKey=await evaluate(page,`(async()=>{await qclick('restore');await qwait(()=>qid('identity-state').textContent==='Unlocked','restored backup unlock');
+    qassert(qid('identity-help').textContent.startsWith('Imported identity'),'restored identity not marked imported');
+    qassert(/^[0-9a-f]{64}$/.test(qid('public-key').textContent),'complete restored account key');return qid('public-key').textContent;
   })()`);
   return page;
 }
@@ -208,6 +222,12 @@ async function task(abortSignal) {
   };
   const owner=await account('owner'), member=await account('member');
   if(owner.publicKey===member.publicKey)throw Error('accounts were not independent');
+  // Keep the encrypted identity backup for the same-account fresh device below.
+  // It must be downloaded while this context is unlocked and outside private custody.
+  const ownerBackup=await download(owner,'backup','vhkey');
+  // The identity backup URL expires on its own 10s deadline; wait for the
+  // watchdog revocation so later lock assertions see no surviving URL.
+  await wait(()=>evaluate(owner,'qaURLs.size===0'),'owner backup URL expiry');
   await enter(owner,true);
   await evaluate(owner,"qclick('private-create')");await retainCreation(owner);
   facts.push('keyboard entry, fresh owner, real locator download and explicit retention gate');
@@ -252,9 +272,32 @@ async function task(abortSignal) {
   await evaluate(owner,"(async()=>{const select=qid('private-outbox-select');select.selectedIndex=Array.from(select.options).findIndex(o=>o.textContent.includes('Metadata / non-exportable bootstrap'));await qclick('private-download-outbox');await qwait(()=>!qid('private-refresh').disabled,'secret metadata export refusal');qassert(qid('private-status').dataset.error==='true','secret outbox became ciphertext export');return true;})()");
   if(downloads.size!==beforeSecretExport)throw Error('secret metadata caused a download');
   facts.push('ordered renewal control invalidates exact consent; unsignaled text edit and ordinary secret export refused before queue');
+  // Same-account fresh device: the owner backup restores into a third context,
+  // and the owner admits it through the ordinary confidential offer flow under
+  // a new device enrollment. The new device starts at the join checkpoint.
+  await invoke(owner,`async function(self){qset('private-recipient',self);await qclick('private-offer');await qidle();return true;}`,[owner.publicKey]);
+  const selfOffer=await download(owner,'private-download-secret','vhoffer');
+  const fresh=await restored('fresh',ownerBackup.path);
+  if(fresh.publicKey!==owner.publicKey)throw Error('restored backup produced a different account');
+  await enter(fresh);
+  await setFile(fresh,'private-offer-file',selfOffer.path);
+  await invoke(fresh,`async function(ownerKey){qset('private-owner',ownerKey);await qclick('private-review-offer');await qwait(()=>!qid('private-prepared').hidden,'self-offer review');return true;}`,[owner.publicKey]);
+  await retainCreation(fresh);
+  await evaluate(fresh,"(async()=>{await qclick('private-request');await qidle();return true;})()");
+  const selfRequest=await download(fresh,'private-download-output','vhrequest');
+  await setFile(owner,'private-request-file',selfRequest.path);
+  await invoke(owner,`async function(self){qset('private-recipient',self);await qclick('private-accept');await qidle();return true;}`,[owner.publicKey]);
+  const selfJoin=await download(owner,'private-download-output','vhjoin');
+  await setFile(fresh,'private-join-file',selfJoin.path);
+  await evaluate(fresh,"(async()=>{await qclick('private-join');await qidle();qassert(qid('private-membership-summary').textContent.includes('3 admitted devices'),'same-account device roster absent');await qclick('private-inbox');await qidle();qassert(qid('private-inbox-content').textContent==='','fresh device received pre-join history');return true;})()");
+  const freshText=await send(fresh,'SYNTHETIC_FRESH_DEVICE_TEXT');await receive(owner,freshText);
+  await invoke(owner,`function(body){qassert(qid('private-inbox-content').textContent.includes(body),'fresh device text not received');return true;}`,['SYNTHETIC_FRESH_DEVICE_TEXT']);
+  const ownerText=await send(owner,'SYNTHETIC_OWNER_TO_FRESH');await receive(fresh,ownerText);
+  await leave(fresh);
+  facts.push('same-account fresh device restored from encrypted backup, admitted by self-targeted offer, no pre-join history, bidirectional exchange');
   for(const width of [1280,768,390])await screenshot(member,width);
   // Create a live temporary URL immediately before locking; the hook must revoke it.
-  await download(owner,'private-download-output','vhcontrol');
+  await download(owner,'private-download-output','vhmsg');
   await evaluate(owner,"qassert(qaURLs.size>0,'temporary download URL not observed');qset('private-message','PRIVATE_TEXT_MUST_NOT_CROSS_MODES');true");
   await leave(owner);await leave(member);
   await reopen(member);
@@ -264,7 +307,7 @@ async function task(abortSignal) {
   await leave(member);
   facts.push('lock clears plaintext/files/views/URLs, requires new unlock, exact locator reopen retains ciphertext');
   if(unexpectedNetwork||networkWrites)throw Error('unexpected route, network write or unbounded download event');
-  return {passed:true,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,screenshots,files,networkWrites,contexts:2,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
+  return {passed:true,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,screenshots,files,networkWrites,contexts:3,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
 }
 
 await runQualification({work:task,timeoutMs:300000,

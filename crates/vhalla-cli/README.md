@@ -1566,6 +1566,19 @@ it. A pending device whose request expires cannot silently replace its
 KeyPackage; preserve that state and use an explicitly fresh device namespace
 for a new attempt.
 
+### Same-account fresh device
+
+A second device under one account is a distinct member, not a clone. Restore
+the account backup to the fresh custody (`identity backup` / `identity
+restore` reproduce the same account key), then run the identical
+offer/request/accept/join flow above with the owner addressing the offer to
+its **own** account key (`--recipient "$PRIVATE_OWNER_KEY"`) and the fresh
+custody pinning that same key as `--owner`. The new store joins under a new
+device enrollment, starts at its joining checkpoint and cannot read earlier
+history. Account backup alone does not move a live sender ratchet, and a
+copied store is never a safe second sender — this owner-authorized offer path
+is the only admission.
+
 ### Inert messages and recipient changes
 
 Inspect again after joining. Set `PRIVATE_EPOCH` and `PRIVATE_ROSTER` from the

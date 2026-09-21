@@ -64,16 +64,22 @@ secret export refusal, and lock cleanup. Desktop/tablet/mobile layouts passed at
 workflow: bounded encrypted export from an open room, durable exact-resume import
 into a separate read-only IndexedDB namespace, and read-only archive inspection.
 The emitted-worker journey covers export, foreign-account refusal, interrupted
-import resume, read-only reopen and terminal foreign-context refusal. Fresh-device
-recovery remains unfinished.
+import resume, read-only reopen and terminal foreign-context refusal. The DOM
+journey also restores an encrypted `.vhkey` account backup into a third browser
+context, admits it through a self-addressed confidential offer as a distinct
+same-account device, and verifies it receives no pre-join history while
+exchanging post-join messages in both directions. Kernel and CLI-process
+journeys cover the identical lifecycle. Owner-device succession and safe
+live-custody transfer remain unfinished.
 These features remain optional and do not add MLS or SQLite to the default public
 browser dependency graph.
 
 Before a private-room release, complete and qualify:
 
-- Extend browser coverage to owner removal and every retained-control edge case;
-  integrate fresh-device recovery. Creation, confidential invitations, membership
-  inspection, renewal/catch-up and read-only archive export/import/open are
+- Extend browser coverage to owner removal and every retained-control edge case.
+  Creation, confidential invitations, membership
+  inspection, renewal/catch-up, read-only archive export/import/open and
+  owner-authorized same-account fresh-device rejoin are
   implemented.
   Never publish private room titles, membership, task context or bootstrap secrets
   into discovery, public URLs or unencrypted operational logs.
@@ -86,8 +92,9 @@ Before a private-room release, complete and qualify:
   scheduling, congestion handling, relay authentication and independent
   acceptance status. An isolated sender cannot detect an unseen removal merely
   by asking an untrusted relay.
-- Complete-state backup and clean-device recovery, with explicit fresh-device
-  admission and retirement when current ratchet custody cannot safely move.
+- Explicit fresh-device admission now has qualified kernel, CLI and browser
+  coverage; device retirement and owner succession remain when current ratchet
+  custody cannot safely move.
   History recovery is a separate choice; a key-only restore cannot recover
   erased history keys or justify restarting old counters.
 - Browser custody locking, account and room recovery UX, and an explicit

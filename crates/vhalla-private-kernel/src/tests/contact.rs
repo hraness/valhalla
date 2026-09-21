@@ -1181,3 +1181,110 @@ fn contact_request_preview_refuses_expired_recipient_before_owner_mutation() {
         assert!(pair.owner_disk.snapshot() == before);
     });
 }
+
+#[test]
+fn same_account_fresh_device_rejoins_and_exchanges() {
+    block_on(async {
+        let mut pair = fresh().await;
+        let owner_account_key = key(&pair.owner_account);
+        let snapshot = pair.owner.membership().await.unwrap();
+        // A fresh device for the SAME account: new device material signed by
+        // the same account key, on its own store. No old ratchet is copied.
+        let draft = MemberDraft::new(
+            snapshot.status().context.scope,
+            snapshot.anchor().clone(),
+            snapshot.owner().clone(),
+            owner_account_key,
+            validity(pair.now),
+            pair.now,
+        )
+        .unwrap();
+        let enrollment = draft
+            .enrollment_request()
+            .sign(&pair.owner_account)
+            .unwrap();
+        let disk = Memory::default();
+        let storage = storage_key();
+        let mut device = draft
+            .initialize(disk.clone(), &storage, enrollment, pair.now)
+            .await
+            .unwrap();
+        assert_eq!(device.status().phase, Phase::AwaitingWelcome);
+        // The owner issues a confidential offer addressed to its own account.
+        let secret = pair
+            .owner
+            .create_contact_offer(op(110), owner_account_key, validity(pair.now), pair.now)
+            .await
+            .unwrap();
+        let request = device
+            .contact_request(op(1), secret.confidential_bytes(), pair.now)
+            .await
+            .unwrap();
+        let response = pair
+            .owner
+            .accept_contact(op(111), request.bytes(), validity(pair.now), pair.now)
+            .await
+            .unwrap();
+        let joined = device
+            .join_contact(response.bytes(), pair.now)
+            .await
+            .unwrap();
+        assert_eq!(joined.phase, Phase::MemberJoined);
+        let device_context = device.status().context;
+        assert_eq!(device_context.account, owner_account_key);
+        assert_ne!(device_context.device, snapshot.status().context.device);
+        // The roster now holds two distinct devices under one account.
+        let snapshot = pair.owner.membership().await.unwrap();
+        assert_eq!(snapshot.members().len(), 2);
+        assert!(snapshot
+            .members()
+            .iter()
+            .all(|m| m.claims().account == owner_account_key));
+        assert_ne!(
+            snapshot.members()[0].claims().device,
+            snapshot.members()[1].claims().device
+        );
+        // The fresh device has no history before its joining checkpoint.
+        assert_eq!(device.inbox(0, 4).await.unwrap().records.len(), 0);
+        // Bidirectional exchange between the two same-account devices.
+        let sent = pair
+            .owner
+            .test_send(op(2), b"owner to fresh device", pair.now)
+            .await
+            .unwrap();
+        let received = device.receive(sent.bytes(), pair.now).await.unwrap();
+        assert_eq!(received.sender(), snapshot.status().context.device);
+        assert_eq!(received.body(), b"owner to fresh device");
+        let reply = device
+            .test_send(op(2), b"fresh device to owner", pair.now)
+            .await
+            .unwrap();
+        let owner_received = pair.owner.receive(reply.bytes(), pair.now).await.unwrap();
+        assert_eq!(owner_received.sender(), device_context.device);
+        assert_eq!(owner_received.body(), b"fresh device to owner");
+        // Exact reopen and retained retry hold on the fresh device too.
+        let mut reopened = Kernel::open(disk, &storage, device_context).await.unwrap();
+        assert_eq!(reopened.status().phase, Phase::MemberJoined);
+        assert_eq!(
+            reopened
+                .receive(sent.bytes(), pair.now + 1)
+                .await
+                .unwrap()
+                .sequence(),
+            received.sequence()
+        );
+        assert_eq!(
+            reopened
+                .test_send(op(2), b"fresh device to owner", pair.now + 1)
+                .await
+                .unwrap()
+                .bytes(),
+            reply.bytes()
+        );
+        // A changed body under the same operation refuses; retries are exact.
+        assert!(reopened
+            .test_send(op(2), b"changed body", pair.now + 1)
+            .await
+            .is_err());
+    });
+}

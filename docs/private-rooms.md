@@ -6,8 +6,9 @@ account and room custody under one lock lifetime. The optional Unix CLI supports
 explicit local file exchange. The optional browser worker now joins account and
 room custody. A bounded read-only archive core and native encrypted-file archive workflow are
 implemented. The optional browser interface has passed its two-account file-exchange journey and now shares the
-same `.vharchive` export, interruption-safe import and read-only archive inspection as the native CLI; fresh-device
-admission, live custody transfer and automatic confidential delivery remain unfinished. Public discovery and public author
+same `.vharchive` export, interruption-safe import and read-only archive inspection as the native CLI. Owner-authorized
+same-account fresh-device rejoin is implemented and exercised end-to-end; live custody transfer, owner-device succession
+and automatic confidential delivery remain unfinished. Public discovery and public author
 backups must never carry private state or private invitations.
 
 ## Components and default dependencies
@@ -336,7 +337,15 @@ offer exclusion. Archive selection never coincides with a live room or prepared
 creation, an explicit close is required before another selection, and a foreign
 or absent archive destination fails the session rather than fabricating state.
 
-Fresh-device admission remains unfinished. Historical
-inspection never authorizes resuming the old device. Retain all encrypted parts
+Same-account fresh-device rejoin is implemented and exercised end-to-end: the
+account backup restores the same public key to fresh custody, the owner admits
+it through the ordinary confidential offer/request/response flow addressed to
+its own account, and the new device enrolls as a distinct member starting at its
+joining checkpoint with no access to earlier history. Kernel, CLI-process and
+real-browser DOM journeys all cover the path, including post-join bidirectional
+exchange and exact retained retries. It is a new enrollment, never a ratchet
+restore — account backup alone cannot reconstruct MLS state, and a copied store
+is never a safe second sender. Historical archive
+inspection never authorizes resuming an old device. Retain all encrypted parts
 and the full locator; never silently clone a ratchet. Owner-device succession and
 safe live-custody transfer remain unimplemented.

@@ -712,5 +712,179 @@ fn private_cli_relay_mailbox_is_opaque_durable_and_never_member_acceptance() {
     );
 }
 
+#[test]
+fn private_cli_same_account_fresh_device_rejoins_under_new_enrollment() {
+    let f = Fixture::new();
+    f.ok("create", "owner-key", Some("owner-room"), &f.validity());
+    // A message committed before the fresh device exists must not reach it.
+    let owner = f.inspect("owner-key", "owner-room", "owner-early");
+    f.write("text", b"committed before the fresh device joined\n");
+    f.ok(
+        "send",
+        "owner-key",
+        Some("owner-room"),
+        &send_options(&f, &owner, 3, "early-message"),
+    );
+    // Restore the SAME account onto fresh custody — a lost-device stand-in.
+    // The mnemonic stays in process memory; only the restored key directory
+    // persists. The public key must reproduce exactly.
+    let phrase = vhalla_identity::Identity::open(f.root.join("owner-key"))
+        .unwrap()
+        .backup();
+    let restored = vhalla_identity::Identity::restore(&phrase, f.root.join("fresh-key")).unwrap();
+    assert_eq!(
+        restored
+            .public_key()
+            .iter()
+            .map(|v| format!("{v:02x}"))
+            .collect::<String>(),
+        f.owner
+    );
+    drop(phrase);
+    drop(restored);
+    // The owner issues a confidential offer addressed to its own account. The
+    // offer still travels an independently confidential channel; the kernel
+    // binds it to the exact recipient account, never to the old device.
+    let mut flags = f.validity();
+    flags.extend([
+        ("recipient", f.owner.clone()),
+        ("operation", op(11)),
+        ("out", f.path("self-offer")),
+    ]);
+    f.ok("offer", "owner-key", Some("owner-room"), &flags);
+    f.ok(
+        "offer-inspect",
+        "fresh-key",
+        None,
+        &[
+            ("offer", f.path("self-offer")),
+            ("owner", f.owner.clone()),
+            ("out", f.path("self-meta")),
+        ],
+    );
+    let meta = f.json("self-meta");
+    assert_eq!(meta["recipient"].as_str().unwrap(), f.owner);
+    let mut flags = f.validity();
+    flags.extend([
+        ("offer", f.path("self-offer")),
+        ("owner", f.owner.clone()),
+        ("room", meta["room"].as_str().unwrap().into()),
+        ("anchor", meta["anchor"].as_str().unwrap().into()),
+    ]);
+    f.ok("import", "fresh-key", Some("fresh-room"), &flags);
+    f.ok(
+        "request",
+        "fresh-key",
+        Some("fresh-room"),
+        &[
+            ("offer", f.path("self-offer")),
+            ("operation", op(1)),
+            ("out", f.path("fresh-request")),
+        ],
+    );
+    let mut flags = f.validity();
+    flags.extend([
+        ("request", f.path("fresh-request")),
+        ("operation", op(12)),
+        ("out", f.path("fresh-response")),
+    ]);
+    f.ok("accept", "owner-key", Some("owner-room"), &flags);
+    f.ok(
+        "join",
+        "fresh-key",
+        Some("fresh-room"),
+        &[("response", f.path("fresh-response"))],
+    );
+    // Two distinct devices now share one account; the fresh device is a new
+    // member at its joining checkpoint, never a clone of the owner ratchet.
+    let owner = f.inspect("owner-key", "owner-room", "owner-after");
+    let fresh = f.inspect("fresh-key", "fresh-room", "fresh-inspect");
+    assert_eq!(owner["status"]["members"].as_u64().unwrap(), 2);
+    assert_eq!(fresh["status"]["members"].as_u64().unwrap(), 2);
+    assert_eq!(owner["status"]["account"], fresh["status"]["account"]);
+    assert_ne!(owner["status"]["device"], fresh["status"]["device"]);
+    assert_eq!(owner["recipients"], fresh["recipients"]);
+    assert!(owner["recipients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["account"].as_str().unwrap() == f.owner));
+    assert_eq!(fresh["status"]["inbox_head"].as_u64().unwrap(), 0);
+    assert!(!f
+        .run(
+            "receive",
+            "fresh-key",
+            Some("fresh-room"),
+            &[
+                ("message", f.path("early-message")),
+                ("out", f.path("must-not-exist")),
+            ],
+            None
+        )
+        .status
+        .success());
+    assert!(!f.root.join("must-not-exist").exists());
+    // Post-join traffic flows in both directions between the same account's
+    // two devices, and retained retries return identical ciphertext.
+    let owner = f.inspect("owner-key", "owner-room", "owner-send");
+    f.write("text", b"owner to fresh device\n");
+    f.ok(
+        "send",
+        "owner-key",
+        Some("owner-room"),
+        &send_options(&f, &owner, 13, "to-fresh"),
+    );
+    f.ok(
+        "receive",
+        "fresh-key",
+        Some("fresh-room"),
+        &[
+            ("message", f.path("to-fresh")),
+            ("out", f.path("fresh-received")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("fresh-received")).unwrap(),
+        b"owner to fresh device\n"
+    );
+    let fresh = f.inspect("fresh-key", "fresh-room", "fresh-send");
+    f.write("text", b"fresh device to owner\n");
+    f.ok(
+        "send",
+        "fresh-key",
+        Some("fresh-room"),
+        &send_options(&f, &fresh, 2, "to-owner"),
+    );
+    f.ok(
+        "send",
+        "fresh-key",
+        Some("fresh-room"),
+        &send_options(&f, &fresh, 2, "to-owner-copy"),
+    );
+    assert_eq!(
+        fs::read(f.root.join("to-owner")).unwrap(),
+        fs::read(f.root.join("to-owner-copy")).unwrap()
+    );
+    f.ok(
+        "receive",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("message", f.path("to-owner")),
+            ("out", f.path("owner-received")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("owner-received")).unwrap(),
+        b"fresh device to owner\n"
+    );
+    for name in ["self-offer", "fresh-request", "fresh-response", "to-fresh"] {
+        assert_eq!(
+            fs::metadata(f.root.join(name)).unwrap().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
 #[path = "private_rooms/archive.rs"]
 mod archive;

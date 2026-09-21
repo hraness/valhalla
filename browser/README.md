@@ -228,5 +228,8 @@ sender and never overwrites existing state. The emitted-worker journey now also
 exports a real archive, refuses a foreign-account header, interrupts and resumes
 an import at its durable cursor, reopens the finished archive read-only, verifies
 its recorded head against the live room, and refuses a foreign archive context
-terminally. Fresh-device admission, owner succession and safe live-device
-transfer remain separate work.
+terminally. The DOM journey also restores a `.vhkey` backup into a third
+browser context, admits it through a self-addressed confidential offer as a
+distinct same-account device, and verifies it starts with no pre-join history
+while exchanging post-join messages both ways. Owner succession and safe
+live-device transfer remain separate work.
