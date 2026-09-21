@@ -179,8 +179,9 @@ Contact encryption does not discover a relay, grant network authority or prove
 that a remote member received anything. The maintained native client now exposes
 an opaque `RelayItem` protocol for ordinary encrypted outbox artifacts: its
 canonical bytes bind an out-of-band namespace, sender sequence, operation, kind
-and ciphertext, while a bounded reference store provides idempotent retries and
-retention-only receipts. It refuses confidential offer metadata and never
+and ciphertext, while bounded in-process and durable file-backed mailboxes
+provide idempotent retries and retention-only receipts. It refuses confidential
+offer metadata and never
 exposes room, anchor, account, device or plaintext fields to the relay. This is
 the transport boundary, not a deployed relay or delivery acknowledgment; the CLI
 can export and explicitly apply the canonical envelope for local adapter

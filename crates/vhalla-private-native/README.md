@@ -62,6 +62,15 @@ payload to `RoomSession::receive`, which performs normal MLS scope, membership,
 replay and durable-inbox checks. No relay API receives room IDs, anchors,
 accounts, device keys, plaintext or secret offers.
 
+`relay::FileStore` is the same mailbox bound to a durable 0700 directory. It
+keeps one SQLite database in rollback-journal mode behind a lifetime exclusive
+lock, re-verifies every retained item and quota on open, syncs each accepted
+mutation before issuing a receipt, and never prunes or rewrites retained items.
+A directory is created once with an immutable namespace and quota; reopening
+requires the same namespace and fails while another handle holds the lock. It is
+still a local mailbox, not a delivery service: scheduling, authentication and
+recipient acceptance belong to a real adapter.
+
 ## Optional trusted native session
 
 Enable `client` to use `client::{RoomCreation, RoomSession}`. The feature is off

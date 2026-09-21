@@ -73,9 +73,11 @@ Before a private-room release, complete and qualify:
   into discovery, public URLs or unencrypted operational logs.
 - The private-native relay boundary now supplies bounded canonical opaque items,
   namespace binding, idempotent retries, quota refusal and retention-only
-  receipts. A real network adapter still needs offline scheduling, congestion
-  handling, relay authentication and independent acceptance status. An isolated
-  sender cannot detect an unseen removal merely by asking an untrusted relay.
+  receipts, plus a durable file-backed mailbox that re-verifies retained items
+  on open behind an exclusive lock. A real network adapter still needs offline
+  scheduling, congestion handling, relay authentication and independent
+  acceptance status. An isolated sender cannot detect an unseen removal merely
+  by asking an untrusted relay.
 - Complete-state backup and clean-device recovery, with explicit fresh-device
   admission and retirement when current ratchet custody cannot safely move.
   History recovery is a separate choice; a key-only restore cannot recover
