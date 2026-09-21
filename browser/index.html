@@ -94,6 +94,14 @@
         <button id="import-author-state" class="secondary" type="button" disabled>Import selected part</button>
         <p id="author-state-status" class="status" role="status" aria-live="polite">Choose a verified room or enter its full recovery room ID, then unlock the matching identity. Recovery preserves existing author state and never resets a used sequence.</p>
       </details>
+      <details><summary>Retain signed posts on one selected peer (continuity)</summary>
+        <p>A fixed-target receipt transfer: the selected peer only ever receives the exact signed history you choose here, attested under its own signed proofs. A temporary stage acknowledgement is not delivery. The target completes only when that peer's receipts prove terminal admission and contiguous retention through the exact terminal. Nothing here creates, resets or re-signs local author state, and an unsigned held draft is never sent. These receipts attest to this one peer's retention — not global delivery.</p>
+        <label for="continuity-peer">Serving peer for this receipt session</label><select id="continuity-peer" disabled></select>
+        <label for="continuity-terminal">Terminal sequence</label><input id="continuity-terminal" inputmode="numeric" pattern="[0-9]+" autocomplete="off" placeholder="exact author sequence to retain through" disabled>
+        <div class="actions"><button id="continuity-begin" class="secondary" type="button" disabled>Begin receipt session</button><button id="continuity-select" class="secondary" type="button" disabled>Select terminal</button><button id="continuity-step" type="button" disabled>Run one continuity step</button><button id="continuity-status-button" class="secondary" type="button" disabled>Local receipt status</button></div>
+        <pre id="continuity-report" class="artifact-preview" aria-label="Continuity receipt session report"></pre>
+        <p id="continuity-status" class="status" role="status" aria-live="polite">Continuity sessions are bound to the selected room, unlocked identity, one peer and its exact route. Begin a session, select a terminal, then run steps; a held attempt is retried byte-identically.</p>
+      </details>
     </section>
     <footer><span>vhalla (valhalla)</span><p>Development build: public posts are signed plaintext. A local save and a peer receipt are different states. Browser storage can be cleared or evicted; keep your encrypted key and complete room author-state backups.</p><a href="https://github.com/hraness/valhalla" target="_blank" rel="noopener noreferrer">Source ↗</a></footer>
   </main>

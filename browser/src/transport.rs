@@ -157,6 +157,39 @@ pub async fn activity(
     })
 }
 
+/// Typed continuity exchange: one already-persisted request plus its exact
+/// canonical body for mutations. The verified proof and raw reply are returned
+/// so the caller can durably retain the original signed evidence.
+pub async fn continuity(
+    route: &Endpoint,
+    peer: [u8; 32],
+    request: &vhalla_public_protocol::continuity::Request,
+    body: Option<&[u8]>,
+) -> Result<(Vec<u8>, vhalla_public_protocol::continuity::ResponseProof), Error> {
+    use vhalla_public_protocol::continuity::{Kind, MAX_REPLY_BYTES};
+    match (request.kind(), body) {
+        (Kind::Stage { .. } | Kind::Commit { .. }, Some(raw)) => {
+            request.check_body(raw).map_err(|_| Error::Bounds)?;
+        }
+        (Kind::Status { .. } | Kind::Evidence { .. }, None) => (),
+        _ => return Err(Error::Bounds),
+    }
+    let (proof, response) = exchange(
+        route,
+        request.method(),
+        &request.target(),
+        body,
+        MAX_REPLY_BYTES,
+    )
+    .await?;
+    let proof = vhalla_public_protocol::continuity::ResponseProof::from_hex(&proof)
+        .map_err(|_| Error::Proof)?;
+    proof
+        .verify(peer, request, &response)
+        .map_err(|_| Error::Proof)?;
+    Ok((response, proof))
+}
+
 async fn exchange(
     route: &Endpoint,
     method: &str,
@@ -260,6 +293,7 @@ fn request_url(origin: &str, target: &str) -> Result<String, Error> {
         let name = match origin {
             "https://peer-a.vhalla.dev:443" => "peer-a",
             "https://peer-b.vhalla.dev:443" => "peer-b",
+            "https://peer-c.vhalla.dev:443" => "peer-c",
             _ => return Err(Error::Route),
         };
         Ok(format!("/__qualification/{name}{target}"))

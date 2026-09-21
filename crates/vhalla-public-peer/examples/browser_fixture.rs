@@ -28,10 +28,12 @@ mod native {
     use vhalla_journal::{Bundle, BundleParts, FsStore, Journal};
     use vhalla_public_client::{Bootstrap, CertifiedClient, Validator, ValidatorActivation};
     use vhalla_public_peer::{
-        ActivityConfig, ActivityRoomConfig, Config, CorsOrigin, DiscoveryConfig, ManagedPeer,
+        ActivityConfig, ActivityRoomConfig, Config, ContinuityConfig, ContinuityRoomConfig,
+        CorsOrigin, DiscoveryConfig, ManagedPeer,
     };
     use vhalla_public_protocol::{response::hex, Endpoint};
     use vhalla_room_activity::RoomScope;
+    use vhalla_room_activity_store::continuity::{ContinuityLimits, ContinuityStore};
     use vhalla_room_activity_store::{Limits as ActivityLimits, Store as ActivityStore};
     use vhalla_rooms::{RoomUpdate, Slug, UpdateAction};
     use vhalla_rooms_consensus::{fixture, Batch, Frontier};
@@ -393,6 +395,74 @@ mod native {
             peer_directory.sync_all().map_err(error)?;
             peers.push(peer);
         }
+        // A third, explicitly continuity-mode peer: immutable v2 stores for the
+        // same two rooms, never mixing with the legacy activity services above.
+        if let Some((second_genesis, _)) = second_room {
+            let peer_home = home.join("peer-c");
+            let (peer_directory, _) =
+                vhalla_custody::create_private_directory(&peer_home).map_err(debug_error)?;
+            drop(Identity::create_new(peer_home.join("key")).map_err(debug_error)?);
+            let endpoint =
+                Endpoint::parse("https://peer-c.vhalla.dev:443/vhalla/v1").map_err(debug_error)?;
+            let state = peer_home.join("state");
+            let config = Config {
+                bootstrap_file: home.join("bootstrap.vhbootstrap"),
+                bootstrap_pin: pin,
+                identity_dir: peer_home.join("key"),
+                journal_dir: home.join("journal"),
+                advertisement_file: state.join("advertisement"),
+                public_endpoint: endpoint.clone(),
+                allowed_origin: CorsOrigin::loopback_development(
+                    "127.0.0.1:8789".parse().map_err(error)?,
+                )
+                .map_err(error)?,
+                listen: "127.0.0.1:9783".parse().map_err(error)?,
+            };
+            let limits = ContinuityLimits {
+                history: ActivityLimits {
+                    max_events: 10_000,
+                    max_history_bytes: 64 * 1024 * 1024,
+                },
+                max_stage_slots: 8,
+                max_stage_events: 4096,
+                max_stage_bytes: 4 * 1024 * 1024,
+                stage_ttl_seconds: 3600,
+            };
+            let mut rooms = Vec::new();
+            for room in [genesis, second_genesis] {
+                let store_dir = peer_home.join(format!("continuity-{}", hex(room.as_bytes())));
+                let scope = RoomScope {
+                    network,
+                    realm: scenario.genesis.realm,
+                    directory: scenario.genesis.directory,
+                    room,
+                };
+                drop(ContinuityStore::create(&store_dir, scope, limits).map_err(debug_error)?);
+                rooms.push(ContinuityRoomConfig {
+                    room,
+                    directory: store_dir,
+                    limits,
+                });
+            }
+            let peer =
+                ManagedPeer::create_with_continuity(config, &state, ContinuityConfig { rooms })
+                    .map_err(error)?;
+            let peer = Arc::new(peer);
+            peer.enable_discovery(DiscoveryConfig {
+                directory: peer_home.join("discovery"),
+                create_new: true,
+            })
+            .map_err(error)?;
+            let advertisement = std::fs::read(state.join("advertisement")).map_err(error)?;
+            export(&home.join("peer-c.vhad"), &advertisement)?;
+            export(
+                &home.join("peer-c.invitation.txt"),
+                format!("{}\n", hex(&advertisement)).as_bytes(),
+            )?;
+            metadata.push_str(&format!("peer-c-key {}\npeer-c-endpoint {}\npeer-c-listen 127.0.0.1:9783\npeer-c-advertisement {}\npeer-c-invitation {}\n",hex(&peer.application_key()),endpoint.as_str(),home.join("peer-c.vhad").display(),home.join("peer-c.invitation.txt").display()));
+            peer_directory.sync_all().map_err(error)?;
+            peers.push(peer);
+        }
         export(&home.join("metadata.txt"), metadata.as_bytes())?;
         directory.sync_all().map_err(error)?;
         print!("{metadata}");
@@ -415,8 +485,14 @@ mod native {
                     .map_err(error)?;
             let (stop_a, stopped_a) = tokio::sync::oneshot::channel();
             let (stop_b, stopped_b) = tokio::sync::oneshot::channel();
+            let (stop_c, stopped_c) = tokio::sync::oneshot::channel();
             let a = peers[0].clone().bind().await.map_err(error)?;
             let b = peers[1].clone().bind().await.map_err(error)?;
+            let bound_c = match peers.get(2) {
+                Some(peer) => Some(peer.clone().bind().await.map_err(error)?),
+                None => None,
+            };
+            let has_c = bound_c.is_some();
             println!("fixture-status serving-loopback-only");
             std::io::stdout().flush().map_err(error)?;
             let a = a.run(async {
@@ -425,7 +501,19 @@ mod native {
             let b = b.run(async {
                 let _ = stopped_b.await;
             });
-            tokio::pin!(a, b);
+            let c = async {
+                match bound_c {
+                    Some(bound) => {
+                        bound
+                            .run(async {
+                                let _ = stopped_c.await;
+                            })
+                            .await
+                    }
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(a, b, c);
             let seed_peers = peers.clone();
             let mut setup = tokio::task::spawn_blocking(move || {
                 crate::discovery::register(&seed_peers[0], &seed_peers[1], 1)?;
@@ -434,6 +522,7 @@ mod native {
             let mut setup_error = None;
             let early = tokio::select! {
                 result=&mut a=>Some((0,result)), result=&mut b=>Some((1,result)),
+                result=&mut c=>Some((2,result)),
                 _=terminate.recv()=>None, _=interrupt.recv()=>None,
                 result=&mut setup=> {
                     match result.map_err(error).and_then(|r| r) {
@@ -446,6 +535,7 @@ mod native {
                             std::io::stdout().flush().map_err(error)?;
                             tokio::select! {
                                 result=&mut a=>Some((0,result)), result=&mut b=>Some((1,result)),
+                                result=&mut c=>Some((2,result)),
                                 _=terminate.recv()=>None, _=interrupt.recv()=>None,
                             }
                         }
@@ -455,18 +545,33 @@ mod native {
             };
             let _ = stop_a.send(());
             let _ = stop_b.send(());
+            let _ = stop_c.send(());
             match early {
                 Some((0, result)) => {
                     let _ = b.await;
+                    if has_c {
+                        let _ = c.await;
+                    }
+                    result.map_err(error)?;
+                }
+                Some((1, result)) => {
+                    let _ = a.await;
+                    if has_c {
+                        let _ = c.await;
+                    }
                     result.map_err(error)?;
                 }
                 Some((_, result)) => {
                     let _ = a.await;
+                    let _ = b.await;
                     result.map_err(error)?;
                 }
                 None => {
                     a.await.map_err(error)?;
                     b.await.map_err(error)?;
+                    if has_c {
+                        c.await.map_err(error)?;
+                    }
                 }
             }
             println!("fixture-status stopped");

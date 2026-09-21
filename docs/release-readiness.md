@@ -186,8 +186,15 @@ one exact retained unsigned draft against certified historical policy before
 signing. Its sequence, content and chain fields stay unchanged; actual pending
 state and final journal HEAD are checked first. Three portable, six real-store
 refusal/order tests and three certified-journal CLI journeys passed. Recovery
-does not grant current posting permission or claim past admission. Browser
-orchestration/recovery and incremental finalization beyond the bound remain unfinished. Public peer hints are bounded to 512 entries; signatures do not
+does not grant current posting permission or claim past admission. The browser
+now drives the same receipt session: an explicit per-room, per-peer-route
+session is created without dialing, a fixed terminal is selected (only a
+strictly later retained terminal replaces it), and each step refreshes the
+pinned peer's evidence, durably reserves every fresh-nonce request before the
+exchange, and retains each verified signed reply. The local-Chromium journey
+completes two targets against a dedicated continuity-mode fixture peer and
+reads local receipt status without dialing. Incremental finalization beyond
+the staged-ancestor bound remains unfinished. Public peer hints are bounded to 512 entries; signatures do not
 prevent Sybil flooding. Admission, retention and overload behavior must be
 qualified under measured traffic. Preserve old evidence when a budget fills;
 never silently prune or reset a used sequence to recover capacity.

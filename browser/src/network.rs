@@ -2,6 +2,8 @@
 use crate::transport;
 #[path = "network/activity.rs"]
 mod activity;
+#[path = "network/continuity.rs"]
+mod continuity;
 #[path = "network/discovery.rs"]
 mod discovery;
 #[path = "network/puzzles.rs"]
@@ -742,6 +744,7 @@ pub fn start() {
         });
     });
     activity::bind_actions(&app);
+    continuity::bind_actions(&app);
     discovery::bind_actions(&app);
     puzzles::bind_actions(&app);
     render(&app);

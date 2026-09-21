@@ -11,6 +11,11 @@ client. It is not an activated public network or a completed browser release.
   is not contacted until explicitly selected and used in a network action.
 - Exact draft reservation before signing, an immutable local outbox, signed
   public-page reading and separately retained proof-bound receipts per peer.
+- Fixed-target continuity transfer to one explicitly selected v2 peer route:
+  each request attempt is durably reserved before any network exchange, the
+  authenticated reply is retained before the next step, and a target completes
+  only on the peer's signed terminal-admission and contiguous-retention
+  evidence. Stage acknowledgements are never delivery.
 - Bounded multipart encrypted author-state export/import, including sequence
   history, pending draft and receipts. Import activates only after complete
   verification into an absent scope; it never resets or merges existing state.
@@ -125,19 +130,25 @@ node browser/tools/qualify_product.mjs TEST_DIST FIXTURE_EXECUTABLE CHROMIUM_EXE
 ```
 
 Use absolute paths for the artifact, executables and new output directory. The
-harness binds only 127.0.0.1 ports 8790, 9781 and 9782, and refuses collisions.
-It creates a fresh profile and network, imports that network's public bootstrap
-and advertisements, creates a new synthetic identity through the real UI and
-stops its own children within 300 seconds. Existing test evidence is never
-replaced. Keep the local-qualification artifact out of production deployment.
+harness binds only 127.0.0.1 ports 8790, 9781, 9782 and 9783, and refuses
+collisions. It creates a fresh profile and network, imports that network's
+public bootstrap and advertisements, creates a new synthetic identity through
+the real UI and stops its own children within 300 seconds. Existing test
+evidence is never replaced. Keep the local-qualification artifact out of
+production deployment.
 
 The tested flow refuses cross-room drafts before storage mutation, explicitly
 moves a draft, injects a post-reservation finalization failure, reloads and
 resumes the exact draft without erasing unrelated text, previews all JSON fields,
 refuses changed artifact bytes/destinations, and verifies three posts through
-two peers' retained receipts and signed history. The output contains a receipt,
-artifact hash, screenshot and synthetic fixture logs. Two local peer processes
-are not evidence of independent operators or a qualified public deployment.
+two peers' retained receipts and signed history. It then selects a third,
+continuity-mode peer, opens one receipt session bound to that peer's exact
+route, retains a fixed terminal, and verifies the peer's signed
+terminal-admission plus contiguous retention evidence — including a strictly
+later terminal replacing the target.
+The output contains a receipt, artifact hash, screenshot and synthetic fixture
+logs. Three local peer processes are not evidence of independent operators or a
+qualified public deployment.
 
 
 The optional `--recovery` extension creates encrypted key and multipart author

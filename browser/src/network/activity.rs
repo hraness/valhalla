@@ -101,7 +101,7 @@ fn composer(app: &App) -> HtmlTextAreaElement {
         .unwrap()
         .unchecked_into()
 }
-fn scope(app: &App, session: &Session) -> Result<RoomScope, String> {
+pub(super) fn scope(app: &App, session: &Session) -> Result<RoomScope, String> {
     let selected = selection(app).value();
     let registry = session.client.registry();
     let found = registry
@@ -146,7 +146,7 @@ fn reset_recovery_status(app: &App) {
     let _ = status.set_attribute("data-complete", "false");
     status.set_text_content(Some("Recovery target changed. Choose a verified room or enter its full recovery room ID, then unlock the matching identity. Saved author state and backup progress are preserved."));
 }
-fn permit(session: &Session, request: &UnsignedEvent) -> Result<(), String> {
+pub(super) fn permit(session: &Session, request: &UnsignedEvent) -> Result<(), String> {
     let claims = request.claims();
     let registry = session.client.registry();
     if claims.scope.network != session.client.network_id()
@@ -475,6 +475,7 @@ pub(super) fn render(app: &App, session: Option<&Session>, available: bool) {
             .unchecked_into::<HtmlButtonElement>()
             .set_disabled(!available || !ready);
     }
+    super::continuity::render(app, session, available, room_selected);
 }
 pub(super) fn bind_actions(app: &App) {
     let draft_app = app.clone();

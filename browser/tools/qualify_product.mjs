@@ -33,17 +33,17 @@ async function task(abortSignal){
   if(childStopped(peers))throw Error('fixture exited: '+logs.peers);
   const bootstrap=(await readFile(join(fixture,'bootstrap.vhbootstrap'))).toString('base64');
   const pin=(await readFile(join(fixture,'bootstrap.pin'),'utf8')).trim();
-  const ads=await Promise.all(['peer-a.vhad','peer-b.vhad'].map(async p=>(await readFile(join(fixture,p))).toString('base64')));
+  const ads=await Promise.all(['peer-a.vhad','peer-b.vhad','peer-c.vhad'].map(async p=>(await readFile(join(fixture,p))).toString('base64')));
   const provider=JSON.parse(await readFile(join(artifact,'vercel.json'),'utf8')).headers[0].headers;
   signal.throwIfAborted();
   server=createServer(async(req,res)=>{
     try {
       signal.throwIfAborted();
       for(const h of provider) res.setHeader(h.key,h.value);
-      const match=req.url.match(/^\/__qualification\/(peer-[ab])\/(vhalla\/v1(?:\?|\/).*)$/);
+      const match=req.url.match(/^\/__qualification\/(peer-[abc])\/(vhalla\/v1(?:\?|\/).*)$/);
       if(match){
-        if(req.method==='POST')activityPosts++;
-        const key=match[1], upstream=httpRequest({hostname:'127.0.0.1',port:key==='peer-a'?9781:9782,path:'/'+match[2],method:req.method,headers:{host:key+'.vhalla.dev',origin:'http://127.0.0.1:8789','content-type':'application/octet-stream',...(req.headers['content-length']?{'content-length':req.headers['content-length']}:{})}},r=>{res.writeHead(r.statusCode,{'content-type':r.headers['content-type']||'application/octet-stream',...(r.headers['x-vhalla-proof']?{'x-vhalla-proof':r.headers['x-vhalla-proof']}:{})});r.pipe(res);});
+        if(req.method==='POST'&&match[2].startsWith('vhalla/v1/activity'))activityPosts++;
+        const key=match[1], upstream=httpRequest({hostname:'127.0.0.1',port:{ 'peer-a':9781,'peer-b':9782,'peer-c':9783 }[key],path:'/'+match[2],method:req.method,headers:{host:key+'.vhalla.dev',origin:'http://127.0.0.1:8789','content-type':'application/octet-stream',...(req.headers['content-length']?{'content-length':req.headers['content-length']}:{})}},r=>{res.writeHead(r.statusCode,{'content-type':r.headers['content-type']||'application/octet-stream',...(r.headers['x-vhalla-proof']?{'x-vhalla-proof':r.headers['x-vhalla-proof']}:{})});r.pipe(res);});
         upstream.on('error',()=>{res.writeHead(502);res.end();});upstream.setTimeout(15000,()=>upstream.destroy());req.pipe(upstream);return;
       }
       const name=new URL(req.url,'http://127.0.0.1').pathname;
