@@ -174,8 +174,15 @@ account, device or roster field in the clear header. It does not provide anonymi
 
 The earlier `key_package`/`invite` methods remain explicit local artifact APIs;
 their plaintext metadata must not be uploaded through a generic relay path.
-Contact encryption does not implement delivery, discover a relay, grant network
-authority or prove that a remote member received anything.
+Contact encryption does not discover a relay, grant network authority or prove
+that a remote member received anything. The maintained native client now exposes
+an opaque `RelayItem` protocol for ordinary encrypted outbox artifacts: its
+canonical bytes bind an out-of-band namespace, sender sequence, operation, kind
+and ciphertext, while a bounded reference store provides idempotent retries and
+retention-only receipts. It refuses confidential offer metadata and never
+exposes room, anchor, account, device or plaintext fields to the relay. This is
+the transport boundary, not a deployed relay or delivery acknowledgment; an
+HTTP/QUIC/file adapter and live failure-domain qualification remain required.
 
 ## Durable state and limits
 
@@ -282,8 +289,9 @@ Before a private-room release, finish and qualify:
 3. Usable delivery of the implemented confidential bootstrap and encrypted
    controls. Keep secret offers, legacy plaintext bootstrap and local proof
    artifacts out of public relay uploads.
-4. Bounded interchangeable encrypted relays, offline retry, congestion/quota
-   behavior and strict separation between relay retention and member acceptance.
+4. Integrate the maintained bounded opaque relay-item protocol with an actual
+   interchangeable transport, offline retry, congestion/quota behavior and
+   strict separation between relay retention and member acceptance.
 5. Enforced agent compartments and inference-provider grants, with fresh contexts
    across rooms and explicit intentional export.
 6. Owner-device succession policy, overload/storage-full behavior, full worker

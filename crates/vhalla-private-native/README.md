@@ -1,8 +1,8 @@
 # Native private-room storage
 
-This workspace crate provides native persistence, a fixed-room agent interface
-and an optional trusted private-room session. It does not enable private
-networking or install a CLI. See [release boundaries](../../docs/private-rooms.md).
+This workspace crate provides native persistence, a fixed-room agent interface,
+an opaque relay-item protocol, and an optional trusted private-room session. It
+does not install a network transport or a CLI. See [release boundaries](../../docs/private-rooms.md).
 The `private_rooms` backend accepts only opaque stored images and records, with
 no key or plaintext API. An opaque byte constructor is not proof of encryption.
 The kernel supplies MLS and authenticated encryption. The separate optional
@@ -42,6 +42,25 @@ optional trusted session below adds account custody and access to retained
 artifacts. Histories have explicit caps; no quota failure grants permission to
 reset a device. The browser adapter and every changed integration require their
 own qualification.
+
+## Opaque relay items
+
+The `relay` module is the transport boundary for private delivery. A caller
+selects a fresh nonzero `RelayNamespace` out of band, converts an ordinary
+`CommittedOutbox` artifact with `RelayItem::from_artifact`, and gives the item to
+an adapter implementing its own HTTP, QUIC or file transport. `RelayItem::encode`
+and `decode` provide a bounded canonical wire format; the digest binds the
+namespace, sender sequence, operation, artifact kind and exact ciphertext.
+
+`relay::Store` is a small in-process reference implementation for tests and local
+development. It enforces item and byte quotas, rejects cross-namespace writes,
+conflicting sequence or operation reuse, refuses confidential offer metadata,
+and makes retries idempotent. Its `RelayReceipt` means only that this relay kept
+the opaque bytes. It is never a member acknowledgment, a delivery guarantee or
+an authorization decision. The receiving session still passes only the item
+payload to `RoomSession::receive`, which performs normal MLS scope, membership,
+replay and durable-inbox checks. No relay API receives room IDs, anchors,
+accounts, device keys, plaintext or secret offers.
 
 ## Optional trusted native session
 

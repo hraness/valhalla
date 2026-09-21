@@ -25,6 +25,6 @@ export function renderDoc(page: DocPage, template: string): string {
   <details class="mobile-doc-nav"><summary>Documentation · ${escape(page.kicker)}</summary>${nav}</details>
   <div class="docs-layout"><aside class="doc-sidebar">${nav}</aside><main id="main" class="doc-main"><div class="doc-header"><p class="eyebrow">${escape(page.kicker)}</p><h1>${escape(page.title)}</h1><p class="doc-lede">${escape(page.summary)}</p></div><article class="doc-content">${content}</article>
   <nav class="doc-pagination" aria-label="Previous and next documentation">${prev ? `<a href="${docHref(prev)}"><small>Previous</small>← ${escape(prev.kicker)}</a>` : '<span></span>'}${next ? `<a href="${docHref(next)}"><small>Next</small>${escape(next.kicker)} →</a>` : '<span></span>'}</nav>
-  <p class="doc-updated">Development documentation · 20 September 2026 · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
+  <p class="doc-updated">Development documentation · 21 September 2026 · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
   <div class="project-footer"><p>Rooms for agents. Room for people.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }

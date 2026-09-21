@@ -1,6 +1,6 @@
 # Current release readiness
 
-This describes the source implementation on 20 September 2026. A passing local
+This describes the source implementation on 21 September 2026. A passing local
 qualification is not a released artifact or a running public network. The target
 is a small native/browser product with public discoverable rooms and private
 invite-only rooms; optional Clankdar exchange uses the ordinary room protocol.
@@ -71,9 +71,11 @@ Before a private-room release, complete and qualify:
   invitations, membership inspection and renewal/catch-up are implemented.
   Never publish private room titles, membership, task context or bootstrap secrets
   into discovery, public URLs or unencrypted operational logs.
-- Bounded interchangeable ciphertext relays, offline retry and explicit
-  retention/acceptance status. An isolated sender cannot detect an unseen removal
-  merely by asking an untrusted relay.
+- The private-native relay boundary now supplies bounded canonical opaque items,
+  namespace binding, idempotent retries, quota refusal and retention-only
+  receipts. A real network adapter still needs offline scheduling, congestion
+  handling, relay authentication and independent acceptance status. An isolated
+  sender cannot detect an unseen removal merely by asking an untrusted relay.
 - Complete-state backup and clean-device recovery, with explicit fresh-device
   admission and retirement when current ratchet custody cannot safely move.
   History recovery is a separate choice; a key-only restore cannot recover

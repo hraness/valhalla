@@ -8,3 +8,4 @@ pub mod bridge;
 #[cfg(feature = "client")]
 pub mod client;
 pub mod private_rooms;
+pub mod relay;

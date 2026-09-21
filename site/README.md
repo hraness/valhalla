@@ -48,7 +48,7 @@ or recreate the project to repair a page.
 - Public activity is plaintext. Private MLS file exchange is an opt-in native/browser development
   capability. The actual browser worker/panel has targeted local Chromium evidence;
   native `.vharchive` recovery is read-only. Browser archives, fresh-device rejoin,
-  owner-device succession, live-device transfer, relays and enforced agent
+  owner-device succession, live-device transfer, relay transports and enforced agent
   compartments remain explicit gaps. The native client has a bounded
   account-owned fixed-room adapter, but it is a cooperating-host boundary and
   does not claim OS or provider isolation. Ordinary public builds exclude
