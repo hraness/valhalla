@@ -13,6 +13,7 @@ use vhalla_private_kernel::{
     protocol::Validity, storage::Store, Error as KernelError, OperationId, Phase,
 };
 use vhalla_private_native::{
+    agent::{Budget, LocalGrant, Permissions},
     bridge::KernelStore,
     client::{Error, RoomCreation, RoomSession},
     private_rooms::Limits,
@@ -33,6 +34,43 @@ impl Temp {
         fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
         Self(path)
     }
+}
+
+#[test]
+fn agent_conversion_consumes_client_and_keeps_both_custodies_until_lock() {
+    block_on(async {
+        let temp = Temp::new();
+        let account = temp.0.join("account");
+        let room = temp.0.join("room");
+        let creation =
+            RoomCreation::owner(Identity::create_new(&account).unwrap(), validity()).unwrap();
+        let client = creation.commit(&room, limits()).await.unwrap();
+        let status = client.status().unwrap();
+        let (grant, _revoke) = LocalGrant::for_status(
+            status,
+            std::time::Duration::from_secs(60),
+            Permissions {
+                queue: true,
+                ..Permissions::default()
+            },
+            Budget {
+                preparations: 1,
+                messages: 1,
+                body_bytes: 64,
+                ..Budget::default()
+            },
+        )
+        .unwrap();
+        let mut agent = client.into_agent(grant).unwrap();
+        let draft = agent.prepare(b"fixed-room agent content").unwrap();
+        let queued = agent.queue(op(9), draft).await.unwrap();
+        assert_eq!(queued.sequence, 1);
+        agent.lock();
+        assert!(agent.is_locked());
+        assert!(matches!(agent.status(), Err(Error::Locked)));
+        assert!(Identity::open(&account).is_ok());
+        drop(agent);
+    });
 }
 impl Drop for Temp {
     fn drop(&mut self) {

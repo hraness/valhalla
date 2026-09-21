@@ -19,6 +19,9 @@ use vhalla_private_kernel::{
     OwnerDraft, ReceivedMessage, Status,
 };
 
+#[cfg(feature = "client")]
+pub mod agent;
+
 /// Closed local failures; errors contain no key, password, message or path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -32,6 +35,8 @@ pub enum Error {
     Storage(StoreError),
     /// Room verification or publication refused; uncertainty requires reopen.
     Kernel(vhalla_private_kernel::Error),
+    /// The fixed-room agent boundary refused the exact grant or operation.
+    Agent(crate::agent::Error),
 }
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -52,6 +57,11 @@ impl From<vhalla_private_kernel::protocol::Error> for Error {
 impl From<StoreError> for Error {
     fn from(value: StoreError) -> Self {
         Self::Storage(value)
+    }
+}
+impl From<crate::agent::Error> for Error {
+    fn from(value: crate::agent::Error) -> Self {
+        Self::Agent(value)
     }
 }
 type Result<T> = std::result::Result<T, Error>;
