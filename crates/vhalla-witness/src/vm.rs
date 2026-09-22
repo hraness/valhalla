@@ -6,7 +6,7 @@
 //! [`Observer`] borrowed view so the loop never clones a frame.
 //!
 //! Transactional activations use a second pre-allocated [`State`] instead of
-//! Platonik's `state.clone()`: the scratch copy receives the action, and it is
+//! cloning the live state: the scratch copy receives the action, and it is
 //! swapped in on success or action failure and discarded on a fuel or
 //! activation stop, exactly like `*state = next`.
 
@@ -1086,7 +1086,7 @@ impl<'a> Machine<'a> {
             events.push(event.event);
         }
         // Due signals in queue order; nothing is queued during delivery, so
-        // walking the queue equals Platonik's collected id list.
+        // walking the queue equals the engine's collected id list.
         let mut index = 0usize;
         while index < state.pending.len() {
             if state.pending[index].deliver_tick > tick {

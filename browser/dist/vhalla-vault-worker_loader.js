@@ -1,0 +1,1 @@
+importScripts("./vhalla-vault-worker.js");wasm_bindgen("./vhalla-vault-worker_bg.wasm");

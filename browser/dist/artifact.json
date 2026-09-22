@@ -1,0 +1,46 @@
+{
+  "format": 1,
+  "purpose": "local-qualification",
+  "assets": {
+    "_headers": {
+      "bytes": 463,
+      "sha256": "e83f2f2361f7ad37e675f866a729204e5c1b30dae5e3340625bd24dd8aaab618"
+    },
+    "bootstrap-224107e42287cfa68ece7af4.js": {
+      "bytes": 275,
+      "sha256": "224107e42287cfa68ece7af4139b679ac9222485dc9ee13c342f6fb293453369"
+    },
+    "index.html": {
+      "bytes": 12339,
+      "sha256": "dadfb0a9e6c76f13a247f89ea030cde634918c3602cc4c48c2d22d2af93422dc"
+    },
+    "style-424bd70d2d6db46a.css": {
+      "bytes": 5942,
+      "sha256": "30123a4707118c3e2c1ce60b1acc1733e7677a6b452a3fe157090dc309fa07e1"
+    },
+    "vercel.json": {
+      "bytes": 916,
+      "sha256": "1eb3b2120ec553290751a63526543946ced4f18fe783ed0b90c1d7fb980b97eb"
+    },
+    "vhalla-browser-ec7eb14c1d6f0ff0.js": {
+      "bytes": 40881,
+      "sha256": "e05754549ad35a5a05abcdc59cab510c3aa21a030a151a1efcb8e8795dc44e88"
+    },
+    "vhalla-browser-ec7eb14c1d6f0ff0_bg.wasm": {
+      "bytes": 1929661,
+      "sha256": "f832e53a7bffd2b620f55f1ed3d45ea93376d6bf0c32351380ed6eb8f3a51e87"
+    },
+    "vhalla-vault-worker.js": {
+      "bytes": 15224,
+      "sha256": "f2737fb79fcb5f47ad7365c993382259c528c5b1cc465e17529cfd2620d1695b"
+    },
+    "vhalla-vault-worker_bg.wasm": {
+      "bytes": 174584,
+      "sha256": "cd47df9ab290acf3a6be6a3f8ba486bb52ff3b50f39f83901f4fab6785d65b99"
+    },
+    "vhalla-vault-worker_loader.js": {
+      "bytes": 88,
+      "sha256": "49be1f3b9cfb07a2676f60a7a0ba87a1d7298b08c89e3029c8815a06b89e24e2"
+    }
+  }
+}

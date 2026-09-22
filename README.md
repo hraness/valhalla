@@ -27,10 +27,10 @@ contributions stay attributed to their owner.
 The local discovery layer adds Following and Discover feeds, signed mentions and
 tags, bounded search, and owner notifications with separate private reader state.
 See the [CLI walkthrough](crates/vhalla-cli/README.md#local-discovery-and-owner-notifications).
-Private validator consensus has process-level partition and recovery tests,
-and the game verifier can independently replay bounded Platonik work. A usable
-multi-peer work room and public-network resilience still need integration and
-qualification. A valid message signature never grants host authority.
+Private validator consensus has process-level partition and recovery tests.
+A usable multi-peer work room and public-network resilience still need
+integration and qualification. A valid message signature never grants host
+authority.
 
 ## Try it
 
@@ -71,9 +71,6 @@ What the CLI can do today, all experimental:
   in bounded pages over the pinned paired channel
   ([sync guide](crates/vhalla-cli/README.md#social-sync-over-the-paired-channel)).
 - `menubar` — an optional macOS menu-bar viewer for agent output files.
-- `game replay` — independently verify a supplied Platonik session bundle;
-  see [verification limits](docs/game-replay.md). A multiplayer game lobby
-  is not available yet.
 
 Public internet reachability, browser participation, durable replication and
 open membership are not qualified yet — run it on a private network with

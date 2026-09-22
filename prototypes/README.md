@@ -7,17 +7,9 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `botcaptcha` | Signed, context-bound SHA-256 challenge work and one-use replay; superseded by `crates/vhalla-botcaptcha` Hashcash mode |
 | `attestation` | Portable, hardware-key, and TEE/RATS evidence policy |
 | `witness` | Bounded deterministic program execution and work receipts |
-| `witness-restatement` | Stage 0 of the witness platform plan: the Platonik habitat-v1 engine restated as a `no_std` library, checked bit for bit against the pinned engine on the `bridge-v1` corpus and random experiments; `alloc-probe/` counts tick-loop allocations |
-| `witness-contract-spike` | Spike 4 of the witness platform plan: the delivered-sparks floor against working, activation-budget-bounded padded, and idle programs on every bridge-v1 fixture; shows why a transfers-plus-messages floor admits turn-only spinners |
-| `witness-wasm-parity` | Spike 3 of the witness platform plan: replays the committed witness vectors natively and under `wasm32-unknown-unknown` through wasm-bindgen and Node, and compares every rendering with the committed expectations (`verify.sh`) |
 | `witness-vectors` | Independent Python `struct`/`hashlib` oracle for the witness-v1 encodings: `generate.py` writes `/vectors/witness-v1.json`, `verify-vectors.py` re-derives every digest in CI, and the crates assert the hex verbatim |
-| `game-trace-cost` | Spike 1 of the Platonik session adapter plan: a hashing frame observer over `platform::run_observed` chaining per-frame digests into per-case trace heads over the 28 witness vectors, timed natively and under wasm32 (`verify.sh`) |
-| [`game-artifact-sizes`](game-artifact-sizes/README.md) | Spike 2 of the Platonik session adapter plan: measured `Experiment`, `RunResult`, and `Receipt` sizes over the six fixtures and the `bridge-v1` suite, one `(segment, case)` adapter frame trace from `platform::run_observed`, `ArtifactAssembly` driven natively and through the `browser-records` 4 KiB mapping with peak retained bytes against the 1.25 x ceiling, and the widest `GameManifest` and `SessionOpen` against `MAX_SIGNED_BODY_BYTES` |
-| `game-fuzz` | Stage 3 of the Platonik session adapter plan: stable-toolchain, corpus-seeded mutation harnesses over every `vhalla-game-platonik` decoder (`wire` plus `GameRecord::decode`), driven as ordinary `#[test]`s at a fixed seed and a fixed 20,000-iteration cap from committed corpora under `corpus/<decoder>/`; asserts that no input panics and that every accepted input re-encodes to itself |
-| `game-wasm-parity` | Stage 4 of the Platonik session adapter plan: rebuilds each frozen `game-v1-session-*` vector from its hex alone, replays every record through a fresh `Receiver<PlatonikV1>` on the default (no-`oracle`) feature set, and compares every reproduced event digest, checkpoint hash, verified field and final receipt with the committed values natively and under `wasm32-unknown-unknown` (`verify.sh`) |
+| `game-trace-cost` | Witness trace-cost spike: a hashing frame observer over `platform::run_observed` chaining per-frame digests into per-case trace heads over the 28 witness vectors, timed natively and under wasm32 (`verify.sh`) |
 | `ledger` | Signed content-addressed event DAG, equivocation, heads, retention |
-| `game-session` | Deleted at stage 3 of the Platonik session adapter plan; its single-host versus quorum question is answered by `crates/vhalla-game-platonik` (`Authority::Host`, `Quorum` reserved), and its integer approvers and toy hashes were never promoted |
-| `settlement` | Deleted at stage 3 of the Platonik session adapter plan; game settlement is `crates/vhalla-game-platonik::settlement`, quorum finality is `quorum::attest` behind the `quorum` feature (stage 5), and vouchers were never promoted |
 | `zk-profile` | Transparent/SNARK/Nova proof envelopes separated from authority |
 | `control-plane` | Protected policy authority versus hostile execution requests |
 | `membrane` | Realm admission, capability boundaries, queues, and revocation |
@@ -30,7 +22,7 @@ These standalone Rust crates are reference experiments for unresolved protocol f
 | `checkpoint-root` | Derived state roots, canonical history, and checkpoint ancestry |
 | [`checkpoint-proof`](checkpoint-proof/README.md) | Bounded Ed25519 checkpoint certificates, configuration binding, and local conflict observation |
 | [`checkpoint-ledger`](checkpoint-ledger/README.md) | Certificate/history checks, conditional bundle/pin persistence, crash recovery, and optional Unix storage |
-| `ecology` | Deterministic Platonik-style composition and lineage replay |
+| `ecology` | Deterministic composition and lineage replay |
 | `immune-cancer` | Quarantine, appeal, revocation, and runaway-lineage containment |
 | [`native-quic`](native-quic/README.md) | Actual bounded QUIC exchange between two native processes, loopback-only fixture identities |
 | [`browser-records`](browser-records/README.md) | Bounded acknowledged records and an actual loopback Rust/WASM-to-native WebRTC fixture |
