@@ -227,14 +227,16 @@ jobs:
         run: |
           cargo build --locked -p vhalla-browser-storage --example indexeddb_qualification --target wasm32-unknown-unknown
           wasm-bindgen target/wasm32-unknown-unknown/debug/examples/indexeddb_qualification.wasm --target web --out-dir "$RUNNER_TEMP/vhalla-storage-runtime"
-          cargo build --locked -p vhalla-browser-storage --example private_mls_indexeddb --features private-rooms,qualification --target wasm32-unknown-unknown
+          cargo build --locked -p vhalla-browser-storage --example private_mls_indexeddb --example private_indexeddb --features private-rooms,qualification --target wasm32-unknown-unknown
           wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_mls_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-group-runtime"
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-store-runtime"
           cargo build --locked --manifest-path prototypes/private-rooms-mls/Cargo.toml --target wasm32-unknown-unknown
           wasm-bindgen prototypes/private-rooms-mls/target/wasm32-unknown-unknown/debug/valhalla_private_rooms_mls_qualification.wasm --target web --out-name private_rooms_mls --out-dir "$RUNNER_TEMP/vhalla-mls-runtime"
       - name: Exercise real IndexedDB and MLS in dedicated workers
         run: |
           chrome=$(command -v google-chrome)
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-storage-runtime" "$chrome"
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-store-runtime" "$chrome"
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-group-runtime" "$chrome"
           node prototypes/private-rooms-mls/tools/qualify_browser.mjs "$RUNNER_TEMP/vhalla-mls-runtime" "$chrome" "$RUNNER_TEMP/vhalla-mls-results"
       - name: Build isolated public browser journey

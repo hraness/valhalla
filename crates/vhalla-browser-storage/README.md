@@ -374,11 +374,18 @@ IndexedDB or prove callback cleanup in a browser.
 After workspace/lock integration, run focused tests and Clippy, then compile
 `vhalla-browser-storage` for `wasm32-unknown-unknown` with the matching Rust
 1.98 standard library and locked wasm-bindgen 0.2.108/web-sys 0.3.85. That checks
-Rust/browser API compatibility only. The integration owner still needs a real
-browser fixture with isolated namespaces: competing tabs, abort after queued
-put, close/reopen, missing/corrupt/oversized values, blocked and canceled opens,
-late success buffered before polling, version changes, quota failure, and page
-interruption. Use fresh test-owned namespaces and preserve any existing data.
+Rust/browser API compatibility only.
+
+The `private_indexeddb` example exercises the private-room store against real
+IndexedDB through `qualify_storage.mjs` in an isolated Window and dedicated
+worker: exact CAS, strict completion, stale competing tabs, quota denial,
+ignored/throwing durability, abort after queued put, dropped-future
+cancellation, missing/corrupt/oversized records, orphan keys and bounded
+refusal, all in fresh test-owned namespaces. Build it with
+`--features private-rooms,qualification`, generate web bindings under the
+`indexeddb_qualification` name and run the same harness. Remaining browser
+gate items: blocked opens, late success buffered before polling, version
+changes, and page interruption.
 
 The browser adapter resolves a typed IndexedDB factory in its current global
 realm. A dedicated custody worker can own the same strict transactions without

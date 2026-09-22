@@ -123,6 +123,14 @@ throwing durability getters, transaction abort and competing identity snapshots
 against real IndexedDB in both the page and a dedicated worker. The latter has
 no Window object and owns its storage transaction in that realm.
 
+The same harness drives the `private_indexeddb` private-store fixture (built
+with `--features private-rooms,qualification`, bindings generated under the
+`indexeddb_qualification` name): exact CAS, stale competing tabs, quota denial,
+aborted/canceled writes, missing/corrupt/oversized records, orphan keys and
+bounded refusal. The `private_archive_indexeddb`, `private_custody_indexeddb`,
+`private_mls_indexeddb` and `continuity_indexeddb` fixtures use the same entry
+point and isolated profile; CI builds and runs all five.
+
 For the complete client, build and package a separate local-qualification
 artifact and the synthetic two-room fixture:
 
