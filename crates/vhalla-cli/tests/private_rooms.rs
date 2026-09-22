@@ -644,10 +644,12 @@ fn private_cli_relay_mailbox_is_opaque_durable_and_never_member_acceptance() {
         f.json(out)
     };
     let receipt = put("receipt");
-    assert_eq!(receipt["sequence"], 3);
+    assert_eq!(receipt["position"], 1);
     assert_eq!(receipt["duplicate"], false);
-    // An exact retry is idempotent; the receipt never claims member acceptance.
+    // An exact retry is idempotent at the same mailbox position; the receipt
+    // never claims member acceptance.
     assert_eq!(put("receipt-retry")["duplicate"], true);
+    assert_eq!(put("receipt-retry-2")["position"], 1);
     f.ok(
         "relay-page",
         &mailbox,
@@ -660,10 +662,12 @@ fn private_cli_relay_mailbox_is_opaque_durable_and_never_member_acceptance() {
         ],
     );
     let page = f.json("page");
-    assert_eq!(page["head"], 3);
+    assert_eq!(page["head"], 1);
     assert_eq!(page["next"], Value::Null);
     let records = page["records"].as_array().unwrap();
     assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["position"], 1);
+    // The item still carries its sender-local outbox sequence as metadata.
     assert_eq!(records[0]["sequence"], 3);
     assert_eq!(records[0]["kind"], "Application");
     assert!(records[0]["digest"].as_str().unwrap().len() == 64);
@@ -674,7 +678,7 @@ fn private_cli_relay_mailbox_is_opaque_durable_and_never_member_acceptance() {
         None,
         &[
             ("namespace", namespace.clone()),
-            ("sequence", "3".into()),
+            ("position", "1".into()),
             ("out", f.path("item-copy")),
         ],
     );
@@ -689,7 +693,7 @@ fn private_cli_relay_mailbox_is_opaque_durable_and_never_member_acceptance() {
             None,
             &[
                 ("namespace", namespace.clone()),
-                ("sequence", "4".into()),
+                ("position", "2".into()),
                 ("out", f.path("must-not-exist")),
             ],
             None
@@ -800,7 +804,8 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
         f.json(out)
     };
     let receipt = submit("receipt");
-    assert_eq!(receipt["sequence"], 3);
+    // The mailbox assigns its own position; the item's sender sequence is 3.
+    assert_eq!(receipt["position"], 1);
     assert_eq!(receipt["duplicate"], false);
     // An exact retry is idempotent over the socket.
     assert_eq!(submit("receipt-retry")["duplicate"], true);
@@ -833,9 +838,9 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
     );
     let scan = f.json("scan");
     assert_eq!(scan["scanned"], 1);
-    assert_eq!(scan["cursor"], 3);
-    assert_eq!(scan["head"], 3);
-    let delivered = f.root.join("catchup/items/0000000000000003.vhrelay");
+    assert_eq!(scan["cursor"], 1);
+    assert_eq!(scan["head"], 1);
+    let delivered = f.root.join("catchup/items/0000000000000001.vhrelay");
     assert_eq!(
         fs::read(&delivered).unwrap(),
         fs::read(f.root.join("item")).unwrap()
@@ -904,14 +909,14 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
         &f.path("catchup"),
         None,
         &[
-            ("addr", addr),
+            ("addr", addr.clone()),
             ("token", f.path("token")),
             ("out", f.path("scan-resumed")),
         ],
     );
     let resumed = f.json("scan-resumed");
     assert_eq!(resumed["scanned"], 1);
-    assert_eq!(resumed["cursor"], 4);
+    assert_eq!(resumed["cursor"], 2);
     // The delivered ciphertext applies into the member room unchanged.
     f.ok(
         "relay-apply",
@@ -927,13 +932,13 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
         fs::read(f.root.join("applied")).unwrap(),
         b"delivered over the socket adapter\n"
     );
-    let second = f.root.join("catchup/items/0000000000000004.vhrelay");
+    let second = f.root.join("catchup/items/0000000000000002.vhrelay");
     f.ok(
         "relay-apply",
         "member-key",
         Some("member-room"),
         &[
-            ("namespace", namespace),
+            ("namespace", namespace.clone()),
             ("relay", second.to_str().unwrap().into()),
             ("out", f.path("applied-2")),
         ],
@@ -941,6 +946,68 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
     assert_eq!(
         fs::read(f.root.join("applied-2")).unwrap(),
         b"second socket delivery\n"
+    );
+    // A member replies through the same mailbox: its sender-local sequence
+    // overlaps the owner's, so only mailbox-assigned positions keep the stream
+    // distinct. The owner scans and applies the reply unchanged.
+    let member = f.inspect("member-key", "member-room", "member-inspect");
+    // The member's contact request already committed an outbox artifact, so
+    // the reply's sender-local sequence is the next outbox head, not 1.
+    let member_sequence = member["status"]["outbox_head"].as_u64().unwrap() + 1;
+    f.write("text", b"member reply over the same mailbox\n");
+    f.ok(
+        "send",
+        "member-key",
+        Some("member-room"),
+        &send_options(&f, &member, 5, "member-item"),
+    );
+    f.ok(
+        "relay-export",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("sequence", member_sequence.to_string()),
+            ("out", f.path("member-relay-item")),
+        ],
+    );
+    f.ok(
+        "relay-submit",
+        &f.path("member-relay-item"),
+        None,
+        &[
+            ("addr", addr.clone()),
+            ("token", f.path("token")),
+            ("out", f.path("member-receipt")),
+        ],
+    );
+    // The member's first outbox item lands at mailbox position 3.
+    assert_eq!(f.json("member-receipt")["position"], 3);
+    f.ok(
+        "relay-scan",
+        &f.path("owner-catchup"),
+        None,
+        &[
+            ("addr", addr),
+            ("token", f.path("token")),
+            ("out", f.path("owner-scan")),
+        ],
+    );
+    assert_eq!(f.json("owner-scan")["scanned"], 3);
+    let reply = f.root.join("owner-catchup/items/0000000000000003.vhrelay");
+    f.ok(
+        "relay-apply",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace),
+            ("relay", reply.to_str().unwrap().into()),
+            ("out", f.path("applied-reply")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("applied-reply")).unwrap(),
+        b"member reply over the same mailbox\n"
     );
 }
 

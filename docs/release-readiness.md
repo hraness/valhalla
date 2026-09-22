@@ -111,12 +111,17 @@ Before a private-room release, complete and qualify:
 - The private-native relay boundary now supplies bounded canonical opaque items,
   namespace binding, idempotent retries, quota refusal and retention-only
   receipts, plus a durable file-backed mailbox that re-verifies retained items
-  on open behind an exclusive lock. The CLI exposes it as
+  on open behind an exclusive lock. One mailbox serves every sender in the
+  namespace: it assigns each retained item an increasing mailbox position used
+  for pages, cursors, fetches and scan filenames while each item keeps its
+  sender-local outbox sequence as committed metadata, so member and owner
+  streams share one mailbox without sequence collisions. The CLI exposes it as
   `relay-mailbox`/`relay-put`/`relay-get`/`relay-page`, which never open
   identity or room custody. A bounded token-authenticated TCP reference adapter
   (`relay-serve`/`relay-submit`/`relay-scan`, explicit numeric `IP:PORT`, token
   read only from a 0600 file or pipe) now carries those items between separate
-  processes with durable cursor catch-up; it is a local operator-controlled
+  processes with durable position-cursor catch-up, including member-to-owner
+  replies through the same mailbox; it is a local operator-controlled
   adapter, not a hardened Internet service. Production operation still needs
   offline scheduling, congestion handling, stronger relay authentication and
   independent acceptance status. An isolated sender cannot detect an unseen

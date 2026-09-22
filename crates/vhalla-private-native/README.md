@@ -53,9 +53,13 @@ and `decode` provide a bounded canonical wire format; the digest binds the
 namespace, sender sequence, operation, artifact kind and exact ciphertext.
 
 `relay::Store` is a small in-process reference implementation for tests and local
-development. It enforces item and byte quotas, rejects cross-namespace writes,
-conflicting sequence or operation reuse, refuses confidential offer metadata,
-and makes retries idempotent. Its `RelayReceipt` means only that this relay kept
+development. One mailbox serves every sender in its namespace: it assigns each
+retained item an increasing mailbox `position`, so pages, cursors and fetches
+order by that position while `RelayItem::sequence` stays committed sender-local
+metadata. It enforces item and byte quotas, rejects cross-namespace writes and
+conflicting operation reuse, refuses confidential offer metadata,
+and makes exact retries idempotent. Its `RelayReceipt` means only that this
+relay kept
 the opaque bytes. It is never a member acknowledgment, a delivery guarantee or
 an authorization decision. The receiving session still passes only the item
 payload to `RoomSession::receive`, which performs normal MLS scope, membership,

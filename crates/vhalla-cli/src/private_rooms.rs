@@ -40,7 +40,7 @@ vhalla private relay-export ID STORE --namespace NS64 --sequence N --out RELAY_I
 vhalla private relay-apply ID STORE --namespace NS64 --relay RELAY_ITEM --out PRIVATE_RESULT
 vhalla private relay-mailbox NEW_DIR --namespace NS64 [--max-items N --max-bytes N]
 vhalla private relay-put MAILBOX --namespace NS64 --relay RELAY_ITEM --out RECEIPT_JSON
-vhalla private relay-get MAILBOX --namespace NS64 --sequence N --out RELAY_ITEM
+vhalla private relay-get MAILBOX --namespace NS64 --position N --out RELAY_ITEM
 vhalla private relay-page MAILBOX --namespace NS64 --after N --limit N --out PAGE_JSON
 vhalla private relay-serve MAILBOX --namespace NS64 --token FILE|- --listen IP:PORT
 vhalla private relay-submit RELAY_ITEM --addr IP:PORT --token FILE|- --out RECEIPT_JSON
@@ -60,7 +60,7 @@ vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out P
 vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
 Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
 control-proof exports signed owner controls for inspection; observe compares one signed control against retained history only and writes durable quarantine on a proven conflict; fork-evidence reports the retained proof. None claim global freshness or grant succession.
-Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated bounded TCP socket — a local or operator-controlled reference adapter, not a hardened Internet service — while relay-submit retains one item and relay-scan pulls every retained item after a durable cursor into a private directory. There is no TLS, remote-host hardening, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
+Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated bounded TCP socket — a local or operator-controlled reference adapter, not a hardened Internet service — while relay-submit retains one item and relay-scan pulls every retained item after a durable cursor into a private directory. A mailbox assigns each retained item its own increasing position shared by every sender in the namespace, so pages, cursors and relay-get use positions while each item still carries its sender-local outbox sequence. There is no TLS, remote-host hardening, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
 const OFFER_LIMIT: usize = 1024;
@@ -118,7 +118,7 @@ impl Args {
             "relay-apply" => &["namespace", "relay", "out"],
             "relay-mailbox" => &["namespace", "max-items", "max-bytes"],
             "relay-put" => &["namespace", "relay", "out"],
-            "relay-get" => &["namespace", "sequence", "out"],
+            "relay-get" => &["namespace", "position", "out"],
             "relay-page" => &["namespace", "after", "limit", "out"],
             "relay-serve" => &["namespace", "token", "listen"],
             "relay-submit" => &["addr", "token", "out"],
@@ -641,18 +641,19 @@ fn relay_mailbox(args: &Args) -> Result<(), String> {
             let mut store = FileStore::open(mailbox, args.namespace()?).map_err(relay_error)?;
             let receipt = store.put(item).map_err(relay_error)?;
             args.json(json!({"coverage":"local mailbox retention only; not delivery or member acceptance",
-                "sequence":receipt.sequence,"digest":hex(&receipt.digest),"duplicate":receipt.duplicate}))?;
+                "position":receipt.position,"digest":hex(&receipt.digest),"duplicate":receipt.duplicate}))?;
         }
         "relay-get" => {
-            let sequence = args.number("sequence")?;
-            let after = sequence.checked_sub(1).ok_or("sequence must be positive")?;
+            let position = args.number("position")?;
+            let after = position.checked_sub(1).ok_or("position must be positive")?;
             let store = FileStore::open(mailbox, args.namespace()?).map_err(relay_error)?;
             let page = store.page(after, 1).map_err(relay_error)?;
-            let item = page
+            let item = &page
                 .records
                 .first()
-                .filter(|item| item.sequence() == sequence)
-                .ok_or("no retained relay item at this exact sequence")?;
+                .filter(|record| record.position == position)
+                .ok_or("no retained relay item at this exact position")?
+                .item;
             args.output(&item.encode().map_err(|_| "relay item encoding failed")?)?;
         }
         "relay-page" => {
@@ -664,8 +665,10 @@ fn relay_mailbox(args: &Args) -> Result<(), String> {
             let records: Vec<Value> = page
                 .records
                 .iter()
-                .map(|item| {
-                    json!({"sequence":item.sequence(),"operation":hex(item.operation().as_bytes()),
+                .map(|record| {
+                    let item = &record.item;
+                    json!({"position":record.position,"sequence":item.sequence(),
+                        "operation":hex(item.operation().as_bytes()),
                         "kind":format!("{:?}",item.kind()),"digest":hex(&item.digest()),
                         "bytes":item.payload().len()})
                 })
@@ -696,7 +699,7 @@ fn relay_mailbox(args: &Args) -> Result<(), String> {
             let relay = net::SocketRelay::new(relay_addr(args, "addr")?, relay_token(args)?);
             let receipt = relay.submit(&item).map_err(net_error)?;
             args.json(json!({"coverage":"relay retention only; not delivery or member acceptance",
-                "sequence":receipt.sequence,"digest":hex(&receipt.digest),"duplicate":receipt.duplicate}))?;
+                "position":receipt.position,"digest":hex(&receipt.digest),"duplicate":receipt.duplicate}))?;
         }
         "relay-scan" => {
             let relay = net::SocketRelay::new(relay_addr(args, "addr")?, relay_token(args)?);

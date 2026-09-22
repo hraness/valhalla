@@ -1691,19 +1691,22 @@ vhalla private relay-put mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
 vhalla private relay-page mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
   --after 0 --limit 8 --out private-files/page.json
 vhalla private relay-get mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
-  --sequence 3 --out private-files/item-copy.vhrelay
+  --position 1 --out private-files/item-copy.vhrelay
 ```
 
 `relay-mailbox` creates one 0700 directory bound permanently to its namespace
 and quota; an existing path refuses. `relay-put` retains a verified canonical
-item idempotently and reports only `sequence`, `digest` and `duplicate`.
-`relay-page` emits a metadata manifest (sequence, operation, kind, digest, byte
-count) with a `next` cursor; it never prints ciphertext. `relay-get` writes the
-exact canonical item for `relay-apply` or onward transport. The mailbox holds an
+item idempotently and reports only `position`, `digest` and `duplicate`.
+The mailbox assigns each retained item an increasing `position` shared by every
+sender in the namespace, so one mailbox can carry every member's stream;
+`relay-page` orders and cursors by position, and each manifest record reports
+that `position` alongside the item's sender-local outbox `sequence`, operation,
+kind, digest and byte count. `relay-get` writes the exact canonical item at one
+position for `relay-apply` or onward transport. The mailbox holds an
 exclusive lock while open, re-verifies every retained item on open, syncs each
 accepted mutation before its receipt, and never prunes or rewrites retained
-items. Quota exhaustion, foreign namespaces, conflicting sequence/operation
-reuse and a second live handle all refuse. Retention is still not delivery,
+items. Quota exhaustion, foreign namespaces, conflicting operation reuse and a
+second live handle all refuse. Retention is still not delivery,
 scheduling or authentication.
 
 A bounded token-authenticated TCP adapter carries the same canonical items
@@ -1725,11 +1728,12 @@ never argv. `--listen`/`--addr` accept only explicit numeric `IP:PORT` — there
 is no DNS resolution, TLS or remote-host hardening, so this is a local
 reference adapter for an operator-controlled segment or an outer tunnel, not a
 public Internet service. Frames are size-bounded with deadlines; wrong tokens,
-malformed input, foreign namespaces, sequence conflicts and quota exhaustion
+malformed input, foreign namespaces, operation conflicts and quota exhaustion
 all refuse without touching retained items. `relay-scan` pages the mailbox
 into a private cursor directory: each canonical item lands under
-`catchup-dir/items/`, the cursor persists after every item, and a killed scan
-or offline interval resumes exactly where it stopped. A pre-existing item file
+`catchup-dir/items/` named by its mailbox position, the position cursor
+persists after every item, and a killed scan or offline interval resumes
+exactly where it stopped across sender boundaries. A pre-existing item file
 with different bytes fails closed instead of being overwritten. A socket
 receipt remains retention only — never delivery, scheduling or member
 acceptance.

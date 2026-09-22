@@ -221,7 +221,11 @@ that a remote member received anything. The maintained native client now exposes
 an opaque `RelayItem` protocol for ordinary encrypted outbox artifacts: its
 canonical bytes bind an out-of-band namespace, sender sequence, operation, kind
 and ciphertext, while bounded in-process and durable file-backed mailboxes
-provide idempotent retries and retention-only receipts. It refuses confidential
+provide idempotent retries and retention-only receipts. One mailbox serves every
+sender in the namespace: the mailbox assigns each retained item an increasing
+position used for pages, cursors, fetches and scan filenames, while each item's
+sender-local outbox sequence remains committed metadata — so members' streams
+never collide when their sequences overlap. The mailbox refuses confidential
 offer metadata and never
 exposes room, anchor, account, device or plaintext fields to the relay. This is
 the transport boundary, not a deployed relay or delivery acknowledgment; the CLI
@@ -230,7 +234,8 @@ integration. A bounded token-authenticated TCP reference adapter now exists for
 operator-controlled deployments: `relay-serve` exposes an existing mailbox over
 an explicit numeric `IP:PORT` listener, `relay-submit` retains an item against
 a 64-digit lowercase hexadecimal token read from a 0600 file or bounded pipe,
-and `relay-scan` performs durable cursor catch-up into a private directory,
+and `relay-scan` performs durable position-cursor catch-up into a private
+directory,
 persisting the cursor after each item so a killed scan or offline interval
 resumes exactly. It is a local reference adapter — no DNS, TLS, remote-host
 hardening or public Internet service claim — and a retention receipt is never

@@ -8,8 +8,8 @@
 //! receipt is relay custody only and never proves delivery or acceptance.
 
 use super::{
-    Error, FileStore, RelayItem, RelayPage, RelayReceipt, Result, Store, MAGIC, MAX_RELAY_PAGE,
-    MAX_RELAY_PAYLOAD,
+    Error, FileStore, PositionedItem, RelayItem, RelayPage, RelayReceipt, Result, Store, MAGIC,
+    MAX_RELAY_PAGE, MAX_RELAY_PAYLOAD,
 };
 use std::{
     fs::{self, File},
@@ -204,7 +204,7 @@ fn handle(stream: &mut TcpStream, store: &mut dyn Mailbox, token: &RelayToken) -
             match result {
                 Ok(receipt) => {
                     let mut out = Vec::with_capacity(41);
-                    out.extend_from_slice(&receipt.sequence.to_be_bytes());
+                    out.extend_from_slice(&receipt.position.to_be_bytes());
                     out.extend_from_slice(&receipt.digest);
                     out.push(u8::from(receipt.duplicate));
                     write_frame(stream, STATUS_OK, &out)
@@ -226,11 +226,12 @@ fn handle(stream: &mut TcpStream, store: &mut dyn Mailbox, token: &RelayToken) -
                     let mut count = 0u16;
                     let mut items = Vec::new();
                     for record in &page.records {
-                        let encoded = record.encode().map_err(|_| NetError::Unavailable)?;
-                        if 11 + items.len() + 4 + encoded.len() > MAX_PAGE_BODY && count > 0 {
+                        let encoded = record.item.encode().map_err(|_| NetError::Unavailable)?;
+                        if 11 + items.len() + 12 + encoded.len() > MAX_PAGE_BODY && count > 0 {
                             more = true;
                             break;
                         }
+                        items.extend_from_slice(&record.position.to_be_bytes());
                         items.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
                         items.extend_from_slice(&encoded);
                         count += 1;
@@ -296,20 +297,21 @@ impl SocketRelay {
         decode_status(response[0], &response[1..])
     }
     /// Retain one canonical item and return the relay's retention receipt.
-    /// The receipt is never delivery or member acceptance.
+    /// The position is mailbox-assigned; the receipt is never delivery or
+    /// member acceptance.
     pub fn submit(&self, item: &RelayItem) -> NetResult<RelayReceipt> {
         let encoded = item.encode().map_err(|_| NetError::Bounds)?;
         let body = self.exchange(OP_PUT, &encoded)?;
         if body.len() != 41 {
             return Err(NetError::Malformed);
         }
-        let sequence = u64::from_be_bytes(body[..8].try_into().expect("bounded"));
+        let position = u64::from_be_bytes(body[..8].try_into().expect("bounded"));
         let digest: [u8; 32] = body[8..40].try_into().expect("bounded");
-        if sequence != item.sequence() || digest != item.digest() {
+        if position == 0 || digest != item.digest() {
             return Err(NetError::Malformed);
         }
         Ok(RelayReceipt {
-            sequence,
+            position,
             digest,
             duplicate: body[40] != 0,
         })
@@ -340,6 +342,15 @@ impl SocketRelay {
         let mut records = Vec::with_capacity(count);
         let mut cursor = 11usize;
         for _ in 0..count {
+            let end = cursor.checked_add(8).ok_or(NetError::Malformed)?;
+            if end > body.len() {
+                return Err(NetError::Malformed);
+            }
+            let position = u64::from_be_bytes(body[cursor..end].try_into().expect("bounded"));
+            if position == 0 {
+                return Err(NetError::Malformed);
+            }
+            cursor = end;
             let end = cursor.checked_add(4).ok_or(NetError::Malformed)?;
             if end > body.len() {
                 return Err(NetError::Malformed);
@@ -350,27 +361,34 @@ impl SocketRelay {
             if end > body.len() {
                 return Err(NetError::Malformed);
             }
-            records.push(RelayItem::decode(&body[cursor..end]).map_err(|_| NetError::Malformed)?);
+            let item = RelayItem::decode(&body[cursor..end]).map_err(|_| NetError::Malformed)?;
+            records.push(PositionedItem { position, item });
             cursor = end;
         }
-        if cursor != body.len() || (more && records.is_empty()) {
+        if cursor != body.len()
+            || (more && records.is_empty())
+            || !records
+                .iter()
+                .zip(records.iter().skip(1))
+                .all(|(a, b)| a.position < b.position)
+        {
             return Err(NetError::Malformed);
         }
-        let next = more.then(|| records.last().expect("nonempty").sequence());
+        let next = more.then(|| records.last().expect("nonempty").position);
         Ok(RelayPage {
             head,
             next,
             records,
         })
     }
-    /// Fetch one exact retained sequence, or report its absence.
-    pub fn fetch(&self, sequence: u64) -> NetResult<Option<RelayItem>> {
-        let after = sequence.checked_sub(1).ok_or(NetError::Bounds)?;
+    /// Fetch one exact retained relay position, or report its absence.
+    pub fn fetch(&self, position: u64) -> NetResult<Option<PositionedItem>> {
+        let after = position.checked_sub(1).ok_or(NetError::Bounds)?;
         let page = self.page(after, 1)?;
         Ok(page
             .records
             .into_iter()
-            .find(|item| item.sequence() == sequence))
+            .find(|record| record.position == position))
     }
 }
 
@@ -379,9 +397,9 @@ impl SocketRelay {
 /// the last durable cursor and return `ScanFailure` instead.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanReport {
-    /// Highest retained sequence the relay reported during the pass.
+    /// Highest retained relay position the relay reported during the pass.
     pub head: u64,
-    /// Durable cursor: the last sequence written into the items directory.
+    /// Durable cursor: the last position written into the items directory.
     pub cursor: u64,
     /// Items retained during this pass; an exact rescan counts zero.
     pub scanned: usize,
@@ -435,14 +453,15 @@ fn publish_cursor(
     fs::rename(&tmp, directory.join("cursor")).map_err(|_| ScanFailure::Storage)?;
     handle.sync_all().map_err(|_| ScanFailure::Storage)
 }
-fn item_path(items: &Path, sequence: u64) -> PathBuf {
-    items.join(format!("{sequence:016x}.vhrelay"))
+fn item_path(items: &Path, position: u64) -> PathBuf {
+    items.join(format!("{position:016x}.vhrelay"))
 }
 
 /// Pull every retained item after the durable cursor into a private directory.
 /// The directory is created 0700 on first use and reopened thereafter; items
-/// land as one canonical file each and the cursor advances only after the
-/// item's own bytes are durable. This is relay catch-up, not room acceptance.
+/// land as one canonical file each named by relay position and the cursor
+/// advances only after the item's own bytes are durable. This is relay
+/// catch-up, not room acceptance.
 pub fn scan(
     directory: &Path,
     relay: &SocketRelay,
@@ -467,9 +486,9 @@ pub fn scan(
             .page(cursor, limit.clamp(1, MAX_RELAY_PAGE))
             .map_err(ScanFailure::Net)?;
         let head = page.head;
-        for item in &page.records {
-            let encoded = item.encode().map_err(|_| ScanFailure::Corrupt)?;
-            let file = item_path(&items, item.sequence());
+        for record in &page.records {
+            let encoded = record.item.encode().map_err(|_| ScanFailure::Corrupt)?;
+            let file = item_path(&items, record.position);
             if file.exists() {
                 let retained = custody::read_private_file(
                     &file,
@@ -489,7 +508,7 @@ pub fn scan(
                     .map_err(|_| ScanFailure::Storage)?;
                 scanned += 1;
             }
-            cursor = item.sequence();
+            cursor = record.position;
             publish_cursor(&path, &dir, cursor)?;
         }
         if page.next.is_none() || page.records.is_empty() {
@@ -564,13 +583,27 @@ mod tests {
         let (addr, worker) = serve_store(store, 4);
         let client = relay(addr);
         let first = client.submit(&item(1)).unwrap();
-        assert_eq!(first.sequence, 1);
+        assert_eq!(first.position, 1);
         assert!(!first.duplicate);
-        assert!(client.submit(&item(1)).unwrap().duplicate);
+        let retry = client.submit(&item(1)).unwrap();
+        assert!(retry.duplicate);
+        assert_eq!(retry.position, 1);
         client.submit(&item(2)).unwrap();
         let page = client.page(0, 8).unwrap();
         assert_eq!(page.head, 2);
-        assert_eq!(page.records, vec![item(1), item(2)]);
+        assert_eq!(
+            page.records,
+            vec![
+                PositionedItem {
+                    position: 1,
+                    item: item(1)
+                },
+                PositionedItem {
+                    position: 2,
+                    item: item(2)
+                }
+            ]
+        );
         assert_eq!(page.next, None);
         worker.join().unwrap().unwrap();
     }
@@ -597,16 +630,27 @@ mod tests {
         let store = Store::new(
             namespace(),
             Limits {
-                max_items: 1,
+                max_items: 2,
                 max_bytes: 1024,
             },
         )
         .unwrap();
-        let (addr, worker) = serve_store(store, 3);
+        let (addr, worker) = serve_store(store, 4);
         let client = relay(addr);
         client.submit(&item(1)).unwrap();
-        // A different valid item at the same sequence is a hard conflict.
+        // The same operation identity with different bytes is a hard conflict.
         let changed = RelayItem::new(
+            namespace(),
+            2,
+            item(1).operation(),
+            OutboxKind::Application,
+            b"other",
+        )
+        .unwrap();
+        assert_eq!(client.submit(&changed), Err(NetError::Conflict));
+        // A different sender's item may reuse the same sender-local sequence;
+        // it lands at the next mailbox position, never in conflict.
+        let foreign_sender = RelayItem::new(
             namespace(),
             1,
             OperationId::from_bytes([77; 16]).unwrap(),
@@ -614,7 +658,7 @@ mod tests {
             b"other",
         )
         .unwrap();
-        assert_eq!(client.submit(&changed), Err(NetError::Conflict));
+        assert_eq!(client.submit(&foreign_sender).unwrap().position, 2);
         assert_eq!(client.submit(&item(2)), Err(NetError::Capacity));
         worker.join().unwrap().unwrap();
     }
@@ -737,7 +781,7 @@ mod tests {
         let client = relay(addr);
         let first = client.page(0, MAX_RELAY_PAGE).unwrap();
         assert!(first.records.len() < 20);
-        assert_eq!(first.next, Some(first.records.last().unwrap().sequence()));
+        assert_eq!(first.next, Some(first.records.last().unwrap().position));
         let dir = tempdir("truncated");
         let report = scan(&dir, &client, MAX_RELAY_PAGE).unwrap();
         assert_eq!((report.cursor, report.scanned, report.head), (20, 20, 20));

@@ -3,8 +3,11 @@
 //! A relay stores already-encrypted room artifacts. It never receives an MLS
 //! key, room/anchor/account identity, plaintext, or a recipient acceptance
 //! claim. The namespace is an out-of-band rendezvous token; callers must not
-//! derive it from private room metadata. This module is transport agnostic so
-//! an HTTP, QUIC, or file-backed adapter can implement the same contract.
+//! derive it from private room metadata. One mailbox serves every sender in
+//! the namespace: retained items are ordered by the mailbox's own assigned
+//! position, while each item keeps its sender-local outbox sequence only as
+//! committed metadata. This module is transport agnostic so an HTTP, QUIC, or
+//! file-backed adapter can implement the same contract.
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
@@ -30,7 +33,7 @@ pub enum Error {
     Bounds,
     /// The item belongs to another opaque relay namespace.
     Scope,
-    /// The same sequence or operation was presented with different bytes.
+    /// The same operation was presented with different bytes.
     Conflict,
     /// The selected artifact kind cannot be put on a generic relay.
     Confidential,
@@ -72,11 +75,12 @@ impl RelayNamespace {
 /// The only receipt a relay may issue: local retention of an opaque item.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RelayReceipt {
-    /// Sender-local outbox sequence; it is not a remote inbox sequence.
-    pub sequence: u64,
+    /// Mailbox-assigned retention position; never the sender-local sequence.
+    /// It acknowledges retention only, never delivery or member acceptance.
+    pub position: u64,
     /// Exact item commitment retained by the relay.
     pub digest: [u8; 32],
-    /// True when this was an idempotent retry of the same item.
+    /// True when identical bytes were already retained at this position.
     pub duplicate: bool,
 }
 
@@ -142,7 +146,8 @@ impl RelayItem {
         self.namespace
     }
 
-    /// Original sender-local outbox sequence.
+    /// Original sender-local outbox sequence. It is committed metadata only;
+    /// the mailbox never orders or deduplicates on it.
     pub fn sequence(&self) -> u64 {
         self.sequence
     }
@@ -243,6 +248,7 @@ pub struct Store {
     namespace: RelayNamespace,
     limits: Limits,
     bytes: usize,
+    /// Retained items keyed by mailbox-assigned position, not sender sequence.
     items: BTreeMap<u64, RelayItem>,
 }
 
@@ -263,21 +269,25 @@ impl Store {
         self.namespace
     }
 
-    /// Store an item idempotently. A duplicate has the same digest and is not
-    /// counted twice. The receipt says only that this relay retained bytes.
+    /// Store an item idempotently at the next mailbox-assigned position. An
+    /// identical item returns its existing position; the same operation with
+    /// different bytes conflicts. One mailbox serves every sender, so sender
+    /// sequences may overlap and never order or collide. The receipt says only
+    /// that this relay retained bytes.
     pub fn put(&mut self, item: RelayItem) -> Result<RelayReceipt> {
         if item.namespace != self.namespace {
             return Err(Error::Scope);
         }
-        if let Some(previous) = self.items.get(&item.sequence) {
-            if previous == &item {
-                return Ok(RelayReceipt {
-                    sequence: item.sequence,
-                    digest: item.digest,
-                    duplicate: true,
-                });
-            }
-            return Err(Error::Conflict);
+        if let Some((&position, _)) = self
+            .items
+            .iter()
+            .find(|(_, previous)| previous.digest == item.digest)
+        {
+            return Ok(RelayReceipt {
+                position,
+                digest: item.digest,
+                duplicate: true,
+            });
         }
         if self
             .items
@@ -295,38 +305,46 @@ impl Store {
         {
             return Err(Error::Capacity);
         }
+        let position = self
+            .items
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(Error::Bounds)?;
         self.bytes += item.payload.len();
-        let receipt = RelayReceipt {
-            sequence: item.sequence,
-            digest: item.digest,
+        let digest = item.digest;
+        self.items.insert(position, item);
+        Ok(RelayReceipt {
+            position,
+            digest,
             duplicate: false,
-        };
-        self.items.insert(item.sequence, item);
-        Ok(receipt)
+        })
     }
 
-    /// Read a bounded immutable page. This is a retention view, not a member
-    /// acknowledgment and not proof that any recipient processed the item.
+    /// Read a bounded immutable page in ascending relay position. This is a
+    /// retention view, not a member acknowledgment and not proof that any
+    /// recipient processed the item.
     pub fn page(&self, after: u64, limit: usize) -> Result<RelayPage> {
         if limit == 0 || limit > MAX_RELAY_PAGE {
             return Err(Error::Bounds);
         }
         let start = after.checked_add(1).ok_or(Error::Bounds)?;
+        let mut iter = self.items.range(start..);
         let mut records = Vec::new();
-        for (&sequence, item) in self.items.range(start..) {
-            if records.len() == limit {
-                break;
-            }
-            records.push(item.clone());
-            if sequence == u64::MAX {
-                break;
+        for _ in 0..limit {
+            match iter.next() {
+                Some((&position, item)) => records.push(PositionedItem {
+                    position,
+                    item: item.clone(),
+                }),
+                None => break,
             }
         }
-        let next = records.last().and_then(|last| {
-            last.sequence
-                .checked_add(1)
-                .and_then(|next| self.items.range(next..).next().map(|_| last.sequence))
-        });
+        let next = records
+            .last()
+            .and_then(|last| iter.next().map(|_| last.position));
         Ok(RelayPage {
             head: self.items.last_key_value().map_or(0, |(key, _)| *key),
             next,
@@ -371,12 +389,12 @@ impl FileStore {
         let conn = Connection::open(path.join("relay.db")).map_err(|_| Error::Storage)?;
         configure_database(&conn)?;
         conn.execute_batch(
-            "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), namespace BLOB NOT NULL, max_items INTEGER NOT NULL, max_bytes INTEGER NOT NULL);
-             CREATE TABLE items (sequence BLOB PRIMARY KEY, operation BLOB NOT NULL UNIQUE, kind INTEGER NOT NULL, payload BLOB NOT NULL, digest BLOB NOT NULL);",
+            "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), format INTEGER NOT NULL CHECK (format = 2), namespace BLOB NOT NULL, max_items INTEGER NOT NULL, max_bytes INTEGER NOT NULL);
+             CREATE TABLE items (position INTEGER PRIMARY KEY, sequence BLOB NOT NULL, operation BLOB NOT NULL UNIQUE, kind INTEGER NOT NULL, payload BLOB NOT NULL, digest BLOB NOT NULL UNIQUE);",
         )
         .map_err(|_| Error::Storage)?;
         conn.execute(
-            "INSERT INTO meta VALUES (1, ?1, ?2, ?3)",
+            "INSERT INTO meta VALUES (1, 2, ?1, ?2, ?3)",
             params![
                 namespace.as_bytes().as_slice(),
                 i64::try_from(limits.max_items).map_err(|_| Error::Bounds)?,
@@ -429,31 +447,31 @@ impl FileStore {
         self.namespace
     }
 
-    /// Store one item durably and idempotently. A receipt means only that this
-    /// mailbox committed the bytes locally; it is not recipient acceptance.
+    /// Store one item durably and idempotently at the next mailbox-assigned
+    /// position. Identical bytes return their existing position; the same
+    /// operation with different bytes conflicts. One mailbox serves every
+    /// sender in the namespace: sender sequences are metadata, never keys.
+    /// A receipt means only that this mailbox committed the bytes locally;
+    /// it is not recipient acceptance.
     pub fn put(&mut self, item: RelayItem) -> Result<RelayReceipt> {
         if item.namespace != self.namespace {
             return Err(Error::Scope);
         }
-        let sequence = item.sequence.to_be_bytes();
-        let existing = self
+        let existing: Option<i64> = self
             .conn
             .query_row(
-                "SELECT sequence, operation, kind, payload, digest FROM items WHERE sequence = ?1",
-                params![sequence.as_slice()],
-                |row| decode_row(row, self.namespace),
+                "SELECT position FROM items WHERE digest = ?1",
+                params![item.digest.as_slice()],
+                |row| row.get(0),
             )
             .optional()
             .map_err(|_| Error::Storage)?;
-        if let Some(previous) = existing {
-            if previous == item {
-                return Ok(RelayReceipt {
-                    sequence: item.sequence,
-                    digest: item.digest,
-                    duplicate: true,
-                });
-            }
-            return Err(Error::Conflict);
+        if let Some(position) = existing {
+            return Ok(RelayReceipt {
+                position: u64::try_from(position).map_err(|_| Error::Storage)?,
+                digest: item.digest,
+                duplicate: true,
+            });
         }
         let operation_exists: Option<Vec<u8>> = self
             .conn
@@ -483,11 +501,23 @@ impl FileStore {
         {
             return Err(Error::Capacity);
         }
+        let position: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM items",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| Error::Storage)?;
+        if position <= 0 {
+            return Err(Error::Bounds);
+        }
         self.conn
             .execute(
-                "INSERT INTO items(sequence, operation, kind, payload, digest) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO items(position, sequence, operation, kind, payload, digest) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    sequence.as_slice(),
+                    position,
+                    item.sequence.to_be_bytes().as_slice(),
                     item.operation.as_bytes().as_slice(),
                     i64::from(kind_byte(item.kind)),
                     item.payload.as_slice(),
@@ -497,30 +527,28 @@ impl FileStore {
             .map_err(|_| Error::Storage)?;
         self.sync()?;
         Ok(RelayReceipt {
-            sequence: item.sequence,
+            position: u64::try_from(position).map_err(|_| Error::Storage)?,
             digest: item.digest,
             duplicate: false,
         })
     }
 
-    /// Read a bounded immutable page from durable storage.
+    /// Read a bounded immutable page in ascending relay position.
     pub fn page(&self, after: u64, limit: usize) -> Result<RelayPage> {
         if limit == 0 || limit > MAX_RELAY_PAGE {
             return Err(Error::Bounds);
         }
-        let start = after.checked_add(1).ok_or(Error::Bounds)?.to_be_bytes();
+        let start =
+            i64::try_from(after.checked_add(1).ok_or(Error::Bounds)?).map_err(|_| Error::Bounds)?;
         let mut statement = self
             .conn
             .prepare(
-                "SELECT sequence, operation, kind, payload, digest FROM items WHERE sequence >= ?1 ORDER BY sequence LIMIT ?2",
+                "SELECT position, sequence, operation, kind, payload, digest FROM items WHERE position >= ?1 ORDER BY position LIMIT ?2",
             )
             .map_err(|_| Error::Storage)?;
         let rows = statement
             .query_map(
-                params![
-                    start.as_slice(),
-                    i64::try_from(limit + 1).map_err(|_| Error::Bounds)?
-                ],
+                params![start, i64::try_from(limit + 1).map_err(|_| Error::Bounds)?],
                 |row| decode_row(row, self.namespace),
             )
             .map_err(|_| Error::Storage)?;
@@ -530,25 +558,21 @@ impl FileStore {
         }
         let next = if records.len() > limit {
             records.pop();
-            records.last().map(|item| item.sequence)
+            records.last().map(|record| record.position)
         } else {
             None
         };
         let head = self
             .conn
             .query_row(
-                "SELECT sequence FROM items ORDER BY sequence DESC LIMIT 1",
+                "SELECT position FROM items ORDER BY position DESC LIMIT 1",
                 [],
-                |row| {
-                    let bytes: Vec<u8> = row.get(0)?;
-                    bytes
-                        .try_into()
-                        .map(u64::from_be_bytes)
-                        .map_err(|_| rusqlite::Error::InvalidQuery)
-                },
+                |row| row.get::<_, i64>(0),
             )
             .optional()
             .map_err(|_| Error::Storage)?
+            .map(|value| u64::try_from(value).map_err(|_| Error::Storage))
+            .transpose()?
             .unwrap_or(0);
         Ok(RelayPage {
             head,
@@ -581,7 +605,7 @@ impl FileStore {
         }
         let mut statement = self
             .conn
-            .prepare("SELECT sequence, operation, kind, payload, digest FROM items")
+            .prepare("SELECT position, sequence, operation, kind, payload, digest FROM items")
             .map_err(|_| Error::Storage)?;
         let rows = statement
             .query_map([], |row| decode_row(row, self.namespace))
@@ -601,13 +625,18 @@ fn configure_database(conn: &Connection) -> Result<()> {
 }
 
 fn read_meta(conn: &Connection, expected: RelayNamespace) -> Result<Limits> {
-    let (namespace, max_items, max_bytes): (Vec<u8>, i64, i64) = conn
+    // Format 2 orders items by mailbox-assigned position; a v1 sequence-keyed
+    // database lacks this column and refuses rather than migrating.
+    let (format, namespace, max_items, max_bytes): (i64, Vec<u8>, i64, i64) = conn
         .query_row(
-            "SELECT namespace, max_items, max_bytes FROM meta WHERE id = 1",
+            "SELECT format, namespace, max_items, max_bytes FROM meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|_| Error::Storage)?;
+    if format != 2 {
+        return Err(Error::Scope);
+    }
     if namespace.as_slice() != expected.as_bytes() || max_items <= 0 || max_bytes <= 0 {
         return Err(Error::Scope);
     }
@@ -619,12 +648,13 @@ fn read_meta(conn: &Connection, expected: RelayNamespace) -> Result<Limits> {
     Ok(limits)
 }
 
-fn decode_row(row: &Row<'_>, namespace: RelayNamespace) -> rusqlite::Result<RelayItem> {
-    let sequence: Vec<u8> = row.get(0)?;
-    let operation: Vec<u8> = row.get(1)?;
-    let kind: i64 = row.get(2)?;
-    let payload: Vec<u8> = row.get(3)?;
-    let digest: Vec<u8> = row.get(4)?;
+fn decode_row(row: &Row<'_>, namespace: RelayNamespace) -> rusqlite::Result<PositionedItem> {
+    let position: i64 = row.get(0)?;
+    let sequence: Vec<u8> = row.get(1)?;
+    let operation: Vec<u8> = row.get(2)?;
+    let kind: i64 = row.get(3)?;
+    let payload: Vec<u8> = row.get(4)?;
+    let digest: Vec<u8> = row.get(5)?;
     let sequence: [u8; 8] = sequence
         .try_into()
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
@@ -644,20 +674,34 @@ fn decode_row(row: &Row<'_>, namespace: RelayNamespace) -> rusqlite::Result<Rela
         &payload,
     )
     .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    if item.digest != digest {
+    if item.digest != digest || position <= 0 {
         return Err(rusqlite::Error::InvalidQuery);
     }
-    Ok(item)
+    Ok(PositionedItem {
+        position: u64::try_from(position).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        item,
+    })
+}
+
+/// One retained item at its relay-assigned position.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PositionedItem {
+    /// Mailbox-assigned position; it totally orders every sender's items in
+    /// one namespace and is the only paging/cursor unit the relay defines.
+    pub position: u64,
+    /// The retained canonical item; its `sequence` remains sender-local
+    /// metadata and does not order the mailbox.
+    pub item: RelayItem,
 }
 
 /// Immutable bounded relay page.
 pub struct RelayPage {
-    /// Highest retained sender sequence observed before the page read.
+    /// Highest retained relay position observed before the page read.
     pub head: u64,
-    /// Exclusive cursor for another page, if more items exist.
+    /// Exclusive position cursor for another page, if more items exist.
     pub next: Option<u64>,
-    /// Items in ascending sender sequence.
-    pub records: Vec<RelayItem>,
+    /// Items in ascending relay position.
+    pub records: Vec<PositionedItem>,
 }
 
 fn relay_kind(kind: OutboxKind) -> bool {
@@ -755,6 +799,10 @@ mod tests {
         .unwrap()
     }
 
+    fn positioned(position: u64, item: RelayItem) -> PositionedItem {
+        PositionedItem { position, item }
+    }
+
     #[test]
     fn canonical_roundtrip_binds_ciphertext_and_namespace() {
         let original = item(1, OutboxKind::Application);
@@ -840,6 +888,61 @@ mod tests {
         assert_eq!(store.put(moved), Err(Error::Conflict));
     }
 
+    #[test]
+    fn senders_share_one_mailbox_at_independent_positions() {
+        let mut store = Store::new(
+            namespace(),
+            Limits {
+                max_items: 8,
+                max_bytes: 4096,
+            },
+        )
+        .unwrap();
+        // Two senders each own outbox sequences 1 and 2; every submission lands
+        // at a distinct relay position and pages return insertion order.
+        let a1 = item(1, OutboxKind::Application);
+        let b1 = RelayItem::new(
+            namespace(),
+            1,
+            operation(200),
+            OutboxKind::Application,
+            b"member-ciphertext",
+        )
+        .unwrap();
+        let b2 = RelayItem::new(
+            namespace(),
+            2,
+            operation(201),
+            OutboxKind::Application,
+            b"member-ciphertext-2",
+        )
+        .unwrap();
+        let a2 = item(2, OutboxKind::Removal);
+        assert_eq!(store.put(a1.clone()).unwrap().position, 1);
+        assert_eq!(store.put(b1.clone()).unwrap().position, 2);
+        assert_eq!(store.put(b2.clone()).unwrap().position, 3);
+        assert_eq!(store.put(a2.clone()).unwrap().position, 4);
+        // Exact resubmission returns the retained position, not a new entry.
+        let retry = store.put(b1.clone()).unwrap();
+        assert!(retry.duplicate);
+        assert_eq!(retry.position, 2);
+        let page = store.page(0, MAX_RELAY_PAGE).unwrap();
+        assert_eq!(page.head, 4);
+        assert_eq!(
+            page.records,
+            vec![
+                positioned(1, a1),
+                positioned(2, b1),
+                positioned(3, b2),
+                positioned(4, a2)
+            ]
+        );
+        // Position cursors page mid-stream across sender boundaries.
+        let rest = store.page(2, MAX_RELAY_PAGE).unwrap();
+        assert_eq!(rest.records.len(), 2);
+        assert_eq!(rest.records[0].position, 3);
+    }
+
     fn home() -> std::path::PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let stamp = std::time::SystemTime::now()
@@ -886,12 +989,15 @@ mod tests {
         assert_eq!(
             page.records,
             vec![
-                item(1, OutboxKind::Application),
-                item(2, OutboxKind::KeyPackage)
+                positioned(1, item(1, OutboxKind::Application)),
+                positioned(2, item(2, OutboxKind::KeyPackage))
             ]
         );
         let page = store.page(1, 1).unwrap();
-        assert_eq!(page.records, vec![item(2, OutboxKind::KeyPackage)]);
+        assert_eq!(
+            page.records,
+            vec![positioned(2, item(2, OutboxKind::KeyPackage))]
+        );
         assert_eq!(page.next, None);
         std::fs::remove_dir_all(&path).unwrap();
     }
@@ -961,7 +1067,30 @@ mod tests {
         drop(store);
         let store = FileStore::open(&path, namespace()).unwrap();
         let page = store.page(0, MAX_RELAY_PAGE).unwrap();
-        assert_eq!(page.records, vec![first]);
+        assert_eq!(page.records, vec![positioned(1, first)]);
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn file_store_refuses_a_v1_sequence_keyed_database() {
+        // A v1 mailbox keyed items by sender sequence and has no format column;
+        // opening must refuse rather than reinterpret or migrate it.
+        let path = home();
+        custody::create_private_directory(&path).unwrap();
+        custody::create_private_file(&path.join("lock")).unwrap();
+        let conn = Connection::open(path.join("relay.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), namespace BLOB NOT NULL, max_items INTEGER NOT NULL, max_bytes INTEGER NOT NULL);
+             CREATE TABLE items (sequence BLOB PRIMARY KEY, operation BLOB NOT NULL UNIQUE, kind INTEGER NOT NULL, payload BLOB NOT NULL, digest BLOB NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO meta VALUES (1, ?1, 8, 4096)",
+            params![namespace().as_bytes().as_slice()],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(FileStore::open(&path, namespace()).is_err());
         std::fs::remove_dir_all(&path).unwrap();
     }
 }
