@@ -383,6 +383,10 @@ fn check_update(value: &RoomUpdate) -> Result<(), Error> {
     if value.expires_at == 0 || value.nonce == [0; 32] {
         return Err(Error::Bounds);
     }
+    if matches!(&value.action, UpdateAction::SetPublicActivityPolicy { network, .. } if *network == [0; 32])
+    {
+        return Err(Error::Bounds);
+    }
     Ok(())
 }
 fn check_body(body: &Body) -> Result<(), Error> {
@@ -565,6 +569,12 @@ fn body_bytes(body: &Body) -> (u8, Vec<u8>) {
                     put_text(&mut out, text);
                 }
                 UpdateAction::Archive => out.push(1),
+                UpdateAction::SetPublicActivityPolicy { network, enabled } => {
+                    out.push(2);
+                    out.push(PUBLIC_ACTIVITY_VERSION);
+                    out.extend_from_slice(network);
+                    out.push(u8::from(*enabled));
+                }
             }
             (UPDATE, out)
         }
@@ -717,6 +727,18 @@ fn read_update(r: &mut Reader<'_>) -> Result<RoomUpdate, Error> {
     let action = match r.u8()? {
         0 => UpdateAction::Describe(r.description()?),
         1 => UpdateAction::Archive,
+        2 => {
+            if r.u8()? != PUBLIC_ACTIVITY_VERSION {
+                return Err(Error::Encoding);
+            }
+            let network = r.array()?;
+            let enabled = match r.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::Encoding),
+            };
+            UpdateAction::SetPublicActivityPolicy { network, enabled }
+        }
         _ => return Err(Error::Encoding),
     };
     Ok(RoomUpdate {

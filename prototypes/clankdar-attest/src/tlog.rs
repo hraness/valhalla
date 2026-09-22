@@ -29,7 +29,7 @@
 
 use std::collections::HashSet;
 
-use ed25519_dalek::{Signature, Verifier};
+use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -436,7 +436,7 @@ pub fn check_log(log: &Value) -> LogCheck {
                 .ok()
                 .and_then(|bytes| Signature::from_slice(&bytes).ok())
                 .map(|signature| {
-                    key.verify(canonical_json(&head_body(head)).as_bytes(), &signature)
+                    key.verify_strict(canonical_json(&head_body(head)).as_bytes(), &signature)
                         .is_ok()
                 })
         })

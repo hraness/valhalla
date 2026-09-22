@@ -1,0 +1,72 @@
+[package]
+name = "vhalla-browser-storage"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Bounded opaque browser images with exact IndexedDB compare-and-swap."
+
+[features]
+default = []
+private-rooms = ["dep:vhalla-private-kernel"]
+qualification = []
+# Synthetic Window/worker receipt fixture only; excluded from the public client.
+continuity-qualification = ["qualification"]
+# Real archive recovery over isolated Window/worker IndexedDB only.
+private-archive-qualification = ["private-rooms", "qualification"]
+# Synthetic Window/worker fixture only; never enabled by the public client.
+private-custody-qualification = ["private-rooms", "qualification", "vhalla-browser-vault/private-storage"]
+
+[dependencies]
+vhalla-private-kernel = { path = "../vhalla-private-kernel", optional = true }
+vhalla-browser-vault = { path = "../vhalla-browser-vault" }
+vhalla-room-activity = { path = "../vhalla-room-activity" }
+vhalla-public-protocol = { path = "../vhalla-public-protocol" }
+sha2 = { version = "=0.10.9", default-features = false }
+
+[dev-dependencies]
+vhalla-private-protocol = { path = "../vhalla-private-protocol" }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures-channel = "0.3"
+js-sys = "=0.3.85"
+wasm-bindgen = "=0.2.108"
+web-sys = { version = "=0.3.85", features = ["Window", "IdbFactory", "IdbDatabase", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbObjectStore", "IdbKeyRange", "Event", "DomStringList"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+zeroize = "1.9"
+wasm-bindgen-futures = "=0.4.58"
+
+[target.'cfg(unix)'.dependencies]
+vhalla-custody = { path = "../vhalla-custody" }
+vhalla-public-client = { path = "../vhalla-public-client" }
+getrandom = "0.3"
+zeroize = "1.9"
+
+[lints]
+workspace = true
+
+[[example]]
+name = "private_indexeddb"
+required-features = ["private-rooms", "qualification"]
+
+[[example]]
+name = "private_mls_indexeddb"
+required-features = ["private-rooms", "qualification"]
+
+[[example]]
+name = "private_custody_indexeddb"
+required-features = ["private-custody-qualification"]
+
+[[example]]
+name = "private_archive_indexeddb"
+required-features = ["private-archive-qualification"]
+
+[[example]]
+name = "continuity_indexeddb"
+required-features = ["continuity-qualification"]
+
+[[example]]
+name = "private_archive_recovery"
+required-features = ["private-archive-qualification"]

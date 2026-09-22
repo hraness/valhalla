@@ -163,6 +163,8 @@ fn each_publication_boundary_recovers_exact_history_or_preserves_torn_intent() {
     let steps = [
         Step::IntentCreated,
         Step::IntentWritten,
+        Step::IntentSynced,
+        Step::IntentRenamed,
         Step::IntentDurable,
         Step::BundleWritten,
         Step::BundleSynced,
@@ -191,17 +193,17 @@ fn each_publication_boundary_recovers_exact_history_or_preserves_torn_intent() {
         );
         drop(store);
         if step == Step::IntentCreated {
-            assert!(matches!(
-                Store::open(temp.store(), REALM, Limits::default(), None),
-                Err(Error::Corrupt)
-            ));
+            assert!(!temp.store().join(INTENT).exists());
+            let mut recovered = Store::open(temp.store(), REALM, Limits::default(), None).unwrap();
+            assert_eq!(recovered.recover().unwrap().pin(), expected);
+            assert!(!temp.store().join(INTENT_TEMP).exists());
             assert_eq!(
-                fs::read(temp.store().join(INTENT)).unwrap(),
-                Vec::<u8>::new()
-            );
-            assert_eq!(
-                Pin::decode(&fs::read(temp.store().join(PIN)).unwrap()).unwrap(),
-                expected
+                recovered
+                    .commit(candidate, expected)
+                    .unwrap()
+                    .pin()
+                    .generation(),
+                expected.generation() + 1
             );
             continue;
         }
@@ -502,9 +504,11 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 /// Every publication-boundary step a case can inject, mirroring `Step`.
-const STEPS: [Step; 13] = [
+const STEPS: [Step; 15] = [
     Step::IntentCreated,
     Step::IntentWritten,
+    Step::IntentSynced,
+    Step::IntentRenamed,
     Step::IntentDurable,
     Step::BundleWritten,
     Step::BundleSynced,
@@ -863,8 +867,8 @@ impl Trace {
 
     /// Interrupt one fresh-extension commit at a drawn boundary step, then
     /// drive reopen/commit/recover until the exact retained intent lands.
-    /// Returns the reopened store, or `None` when the drawn step left a torn
-    /// intent that fails closed forever (`Step::IntentCreated`).
+    /// An interrupted unpublished preparation is discarded, then the exact
+    /// caller candidate is retried; authoritative intent always reconciles.
     fn faulted_commit(
         &mut self,
         tc: &TestCase,
@@ -877,7 +881,7 @@ impl Trace {
         let mut candidate = store.archive().clone();
         include(&mut candidate, &self.owners[i], usize::MAX);
         let prior = store.pin();
-        let step = STEPS[tc.draw(gs::integers::<usize>().max_value(STEPS.len() - 1))];
+        let mut step = STEPS[tc.draw(gs::integers::<usize>().max_value(STEPS.len() - 1))];
         let mut store = store;
         store.fault = Some(step);
         assert!(matches!(
@@ -887,25 +891,17 @@ impl Trace {
         store.fault = None;
         drop(store);
         if step == Step::IntentCreated {
-            // The torn intent is preserved and fails closed on every reopen.
-            assert!(matches!(
-                Store::open(temp.store(), REALM, Limits::default(), None),
-                Err(Error::Corrupt)
-            ));
-            assert_eq!(
-                fs::read(temp.store().join(INTENT)).unwrap(),
-                Vec::<u8>::new()
-            );
-            assert_eq!(
-                Pin::decode(&fs::read(temp.store().join(PIN)).unwrap()).unwrap(),
-                prior
-            );
-            // Even a shared reader fails closed on the retained torn intent.
             assert!(matches!(
                 read_archive(temp.store(), REALM, Limits::default()),
                 Err(Error::RecoveryRequired)
             ));
-            return None;
+            let mut reopened = Store::open(temp.store(), REALM, Limits::default(), None).unwrap();
+            assert_eq!(reopened.recover().unwrap().pin(), prior);
+            assert!(!temp.store().join(INTENT).exists());
+            reopened.commit(candidate.clone(), prior).unwrap();
+            drop(reopened);
+            // Continue the same model checks from the exact retried publication.
+            step = Step::IntentRemoved;
         }
         // A shared reader sees a retained intent as `RecoveryRequired`, never
         // torn bytes; once the pin already advanced it reads the new tip.
@@ -1050,10 +1046,201 @@ fn every_publication_boundary_recovers_the_exact_intent(tc: TestCase) {
             4..=5 => store = trace.restart(&tc, &temp, store),
             _ => match trace.faulted_commit(&tc, &mut pool, &temp, store) {
                 Some(reopened) => store = reopened,
-                // A torn intent fails closed: the store can never reopen.
+                // Reserved for a future terminal model outcome.
                 None => break 'trace,
             },
         }
     }
     let _ = temp;
+}
+
+#[test]
+fn unpublished_scratch_prefixes_recover_without_inventing_a_publication() {
+    for boundary in 0..9 {
+        let (temp, mut store, records) = setup();
+        let mut candidate = store.archive().clone();
+        add(&mut candidate, &records[2]);
+        let expected = store.pin();
+        let prior = store.archive().snapshot();
+        store.fault = Some(Step::IntentWritten);
+        assert!(matches!(
+            store.commit(candidate.clone(), expected),
+            Err(Error::Indeterminate(_))
+        ));
+        drop(store);
+        let raw = fs::read(temp.store().join(INTENT_TEMP)).unwrap();
+        let cuts = [
+            0,
+            1,
+            8,
+            8 + PIN_BYTES,
+            INTENT_HEADER - 1,
+            INTENT_HEADER,
+            raw.len() / 2,
+            raw.len() - 1,
+            raw.len(),
+        ];
+        let cut = cuts[boundary];
+        fs::write(temp.store().join(INTENT_TEMP), &raw[..cut]).unwrap();
+        assert!(!temp.store().join(INTENT).exists());
+        assert!(matches!(
+            read_archive(temp.store(), REALM, Limits::default()),
+            Err(Error::RecoveryRequired)
+        ));
+        assert_eq!(
+            fs::read(temp.store().join(INTENT_TEMP)).unwrap(),
+            raw[..cut]
+        );
+        let mut reopened = Store::open(temp.store(), REALM, Limits::default(), None).unwrap();
+        // Even writer open performs no cleanup or publication.
+        assert_eq!(
+            fs::read(temp.store().join(INTENT_TEMP)).unwrap(),
+            raw[..cut]
+        );
+        let publication = reopened.recover().unwrap();
+        if cut < raw.len() {
+            assert_eq!(publication.pin(), expected);
+            assert_eq!(publication.snapshot(), prior);
+        } else {
+            assert_eq!(publication.snapshot(), candidate.snapshot());
+            assert_eq!(publication.pin().generation(), expected.generation() + 1);
+        }
+        assert!(!temp.store().join(INTENT_TEMP).exists());
+        assert!(!temp.store().join(INTENT).exists());
+        // The caller still owns exact retry of an aborted preparation.
+        assert_eq!(
+            reopened
+                .commit(candidate.clone(), expected)
+                .unwrap()
+                .snapshot(),
+            candidate.snapshot()
+        );
+    }
+}
+
+#[test]
+fn scratch_cleanup_refuses_unsafe_or_post_intent_state_and_preserves_bytes() {
+    for damage in [
+        "checksum",
+        "magic",
+        "basis",
+        "pin",
+        "bundle-temp",
+        "pin-temp",
+        "authoritative",
+        "future-bundle",
+    ] {
+        let (temp, mut store, records) = setup();
+        let mut candidate = store.archive().clone();
+        add(&mut candidate, &records[2]);
+        let expected = store.pin();
+        store.fault = Some(Step::IntentWritten);
+        assert!(matches!(
+            store.commit(candidate.clone(), expected),
+            Err(Error::Indeterminate(_))
+        ));
+        drop(store);
+        let scratch = temp.store().join(INTENT_TEMP);
+        let mut raw = fs::read(&scratch).unwrap();
+        match damage {
+            "checksum" => {
+                let end = raw.len() - 1;
+                raw[end] ^= 1;
+            }
+            "magic" => {
+                raw = vec![b'X'];
+            }
+            "basis" => {
+                raw[8 + 16] ^= 1;
+            }
+            "pin" => {
+                fs::write(temp.store().join(PIN), [0]).unwrap();
+                raw.clear();
+            }
+            "bundle-temp" => {
+                create_private(&temp.store().join(BUNDLE_TEMP)).unwrap();
+                raw.clear();
+            }
+            "pin-temp" => {
+                create_private(&temp.store().join(PIN_TEMP)).unwrap();
+                raw.clear();
+            }
+            "authoritative" => {
+                create_private(&temp.store().join(INTENT)).unwrap();
+                raw.clear();
+            }
+            "future-bundle" => {
+                let bytes = candidate.snapshot();
+                let digest = candidate.physical_digest();
+                let mut file = create_private(&temp.store().join(bundle_name(digest))).unwrap();
+                file.write_all(&bytes).unwrap();
+                raw.clear();
+            }
+            _ => unreachable!(),
+        }
+        fs::write(&scratch, &raw).unwrap();
+        assert!(
+            Store::open(temp.store(), REALM, Limits::default(), None).is_err(),
+            "{damage}"
+        );
+        assert_eq!(fs::read(&scratch).unwrap(), raw, "{damage}");
+    }
+}
+
+#[test]
+fn scratch_recovery_requires_the_exact_external_pin_and_safe_path() {
+    let (temp, mut store, records) = setup();
+    let mut candidate = store.archive().clone();
+    add(&mut candidate, &records[2]);
+    let expected = store.pin();
+    store.fault = Some(Step::IntentCreated);
+    assert!(matches!(
+        store.commit(candidate, expected),
+        Err(Error::Indeterminate(_))
+    ));
+    drop(store);
+    let mut wrong = expected;
+    wrong.generation += 1;
+    assert!(matches!(
+        Store::open(temp.store(), REALM, Limits::default(), Some(wrong)),
+        Err(Error::Freshness)
+    ));
+    assert_eq!(
+        fs::read(temp.store().join(INTENT_TEMP)).unwrap(),
+        Vec::<u8>::new()
+    );
+    let scratch = temp.store().join(INTENT_TEMP);
+    fs::remove_file(&scratch).unwrap();
+    std::os::unix::fs::symlink(temp.store().join(PIN), &scratch).unwrap();
+    assert!(matches!(
+        Store::open(temp.store(), REALM, Limits::default(), None),
+        Err(Error::UnsafePath)
+    ));
+    assert!(fs::symlink_metadata(scratch)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+#[test]
+fn legacy_empty_authoritative_intent_still_fails_closed() {
+    let (temp, store, records) = setup();
+    let mut candidate = store.archive().clone();
+    add(&mut candidate, &records[2]);
+    let _ = candidate;
+    let expected = store.pin();
+    drop(store);
+    create_private(&temp.store().join(INTENT)).unwrap();
+    assert!(matches!(
+        Store::open(temp.store(), REALM, Limits::default(), None),
+        Err(Error::Corrupt)
+    ));
+    assert_eq!(
+        fs::read(temp.store().join(INTENT)).unwrap(),
+        Vec::<u8>::new()
+    );
+    assert_eq!(
+        Pin::decode(&fs::read(temp.store().join(PIN)).unwrap()).unwrap(),
+        expected
+    );
 }

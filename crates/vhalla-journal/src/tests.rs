@@ -531,11 +531,16 @@ fn fresh_bundle(seq: u64, predecessor: [u8; 32], height: u64) -> Bundle {
 fn simulate(pin: Pin, bundle: &Bundle, fstep: Step, fault: Fault) -> (Verdict, Vec<Step>, Effects) {
     let mut log = Vec::new();
     let mut fx = Effects::default();
-    // The lock maps every fault to `Busy`; even `CrashAfter` releases the
-    // handle it acquired, so nothing here is observable on disk.
+    // Lock setup failures preserve their actual cause. Even `CrashAfter`
+    // releases the handle, so no committed state changes here.
     log.push(Step::Lock);
     if fstep == Step::Lock && fault != Fault::Pass {
-        return (Verdict::Busy, log, fx);
+        let verdict = if fault == Fault::FailIo {
+            Verdict::Io
+        } else {
+            Verdict::Crashed
+        };
+        return (verdict, log, fx);
     }
     log.push(Step::ReadPin);
     if fstep == Step::ReadPin && fault != Fault::Pass {
@@ -751,4 +756,105 @@ fn interleaved_faults_preserve_commit_recovery_semantics(tc: TestCase) {
         assert_eq!(reader.at_height(pin.height + 1).unwrap(), None);
     }
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exact_committed_retry_revalidates_all_retained_evidence_without_repair() {
+    for corruption in 0..9 {
+        let dir = fixture();
+        let original = bundle(GENESIS_NEXT, [1; 32], 1, "accepted-tip");
+        fs_journal(&dir).commit(&original).unwrap();
+        let bundle_path = FsStore::bundle_path(&dir, original.id());
+        let marker_path = FsStore::height_path(&dir, original.height());
+        let mut pin = Pin::decode(&fs::read(dir.join(HEAD_FILE)).unwrap()).unwrap();
+        match corruption {
+            0 => fs::remove_file(&bundle_path).unwrap(),
+            1 => fs::write(&bundle_path, []).unwrap(),
+            2 => {
+                let substitute = bundle(GENESIS_NEXT, [1; 32], 1, "different-certificate");
+                fs::write(&bundle_path, substitute.bytes()).unwrap();
+            }
+            3 => fs::remove_file(&marker_path).unwrap(),
+            4 => fs::write(&marker_path, [0; 7]).unwrap(),
+            5 => fs::write(&marker_path, [9; 32]).unwrap(),
+            6 => pin.predecessor = [7; 32],
+            7 => pin.next = [8; 32],
+            8 => pin.height += 1,
+            _ => unreachable!(),
+        }
+        fs::write(dir.join(HEAD_FILE), pin.encode()).unwrap();
+        // Neither an old interrupted publication nor a scratch candidate may
+        // be removed to make this exact retry look successful.
+        let pin_tmp = dir.join(HEAD_TMP);
+        let scratch = dir.join(BUNDLES).join(".bundle.tmp");
+        fs::write(&pin_tmp, b"retained pin evidence").unwrap();
+        fs::write(&scratch, b"retained scratch evidence").unwrap();
+        let paths = [
+            dir.join(HEAD_FILE),
+            bundle_path,
+            marker_path,
+            pin_tmp,
+            scratch,
+        ];
+        let before: Vec<_> = paths
+            .iter()
+            .map(|path| read_opt(path, MAX_BUNDLE_BYTES).unwrap())
+            .collect();
+        let journal = fault_journal(&dir, &[]);
+        assert!(
+            matches!(journal.commit(&original), Err(JournalError::Corrupt)),
+            "corruption {corruption}"
+        );
+        assert_eq!(*journal.store.log.borrow(), [Step::Lock, Step::ReadPin]);
+        for (path, expected) in paths.iter().zip(before) {
+            assert_eq!(read_opt(path, MAX_BUNDLE_BYTES).unwrap(), expected);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn lock_contention_and_setup_failure_have_distinct_recovery_paths() {
+    let dir = fixture();
+    let first = bundle(GENESIS_NEXT, [42; 32], 1, "lock-result");
+    let held = FsStore.lock(&dir).unwrap();
+    assert!(matches!(
+        fs_journal(&dir).commit(&first),
+        Err(JournalError::Busy)
+    ));
+    assert!(!dir.join(HEAD_FILE).exists());
+    drop(held);
+    assert_eq!(fs_journal(&dir).commit(&first).unwrap(), Outcome::Committed);
+    assert_eq!(
+        fs_journal(&dir).commit(&first).unwrap(),
+        Outcome::AlreadyCommitted
+    );
+
+    let invalid = dir.join("not-a-directory");
+    fs::write(&invalid, b"retained unrelated bytes").unwrap();
+    assert!(matches!(
+        fs_journal(&invalid).commit(&first),
+        Err(JournalError::Io(_))
+    ));
+    assert_eq!(fs::read(&invalid).unwrap(), b"retained unrelated bytes");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn lock_faults_do_not_become_retryable_contention() {
+    for fault in [Fault::FailIo, Fault::CrashBefore, Fault::CrashAfter] {
+        let dir = fixture();
+        let first = bundle(GENESIS_NEXT, [43; 32], 1, "lock-fault");
+        let result = fault_journal(&dir, &[(Step::Lock, fault)]).commit(&first);
+        match fault {
+            Fault::FailIo => assert!(matches!(result, Err(JournalError::Io(_)))),
+            Fault::CrashBefore | Fault::CrashAfter => {
+                assert!(matches!(result, Err(JournalError::Crashed)))
+            }
+            Fault::Pass => unreachable!(),
+        }
+        assert!(!dir.join(HEAD_FILE).exists());
+        assert_eq!(fs_journal(&dir).commit(&first).unwrap(), Outcome::Committed);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

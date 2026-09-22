@@ -1,0 +1,14 @@
+[package]
+name = "vhalla-private-relay"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Portable canonical opaque private relay v1 items and framing."
+
+[dependencies]
+vhalla-private-kernel = { path = "../vhalla-private-kernel" }
+sha2 = { version = "=0.10.9", default-features = false }
+
+[lints]
+workspace = true

@@ -2,20 +2,24 @@
 //! `clankdar-attest-v1`.
 //!
 //! A verifier issues a challenge whose generator seed is committed but
-//! unrevealed: the puzzle instance has never existed publicly, so it cannot be
-//! pre-solved or looked up. On a response the verifier rescores
+//! unrevealed. This does not prove the instance is novel or prevent solving
+//! with code, precomputation, or delegation. On a response the verifier rescores
 //! deterministically and signs a receipt that reveals the seed — afterward
 //! anyone regenerates the instance through the canonical Clankdar generator
 //! oracle, rescores the response, and checks the signature without trusting
 //! the verifier beyond the episode it signed. The signature covers the
 //! payload bytes verbatim, so checkers never re-serialize JSON.
 //!
-//! Scope: a receipt attests that one signed response satisfied one challenge
-//! inside one time window; an optional `subjectProof` additionally binds the
-//! response to a respondent-held Ed25519 key. It is **not** a liveness
-//! credential, does not prove a model (or AI) produced the response, grants
-//! no authority, and provides no durable replay protection — consumers
-//! should issue fresh challenges.
+//! Scope: an issuer signs submitted-answer evidence under its recorded
+//! time window. A `subjectProof` proves key possession for a session/challenge
+//! transcript; it does not sign the answer, issuer, policy, context, or receipt.
+//! Exact-artifact endorsement is a separate signature. No layer proves who
+//! solved the puzzle, model identity, liveness, or authority. Consumers must
+//! pin their expected issuer, policy, scope and freshness and retain replay state.
+//!
+//! This verifier deliberately hardens the upstream-compatible signature subset:
+//! weak Ed25519 public keys are rejected and every signature uses strict
+//! verification. Ordinary key generation and signed transcript formats are unchanged.
 //!
 //! Instance generation stays with the canonical TypeScript suite; this crate
 //! calls `bench/instance.ts` (the generator oracle) for `issue`, `verify`,
@@ -83,9 +87,9 @@ pub use badge::{
 pub use gate::{
     check_admission, check_admission_with_pool, issue_session, submit_session, suite_version,
     Admission, AdmissionBody, AdmissionCheck, AdmissionVerdict, GatePolicy, GateSession,
-    IssueSessionOptions, SubmitSessionOptions, AGENT_SUITE_VERSION, FRONTIER_SUITE_VERSION,
-    GATE_PROTOCOL, MAX_POLICY_CELLS, MAX_POLICY_CHALLENGES, MAX_POLICY_TTL_SECONDS,
-    MIN_POLICY_TTL_SECONDS, V2_SUITE_VERSION,
+    IssueSessionOptions, SubmitSessionOptions, AGENT_SUITE_VERSION, ALGAL_SUITE_VERSION,
+    FRONTIER_SUITE_VERSION, GATE_PROTOCOL, MAX_POLICY_CELLS, MAX_POLICY_CHALLENGES,
+    MAX_POLICY_TTL_SECONDS, MIN_POLICY_TTL_SECONDS, V2_SUITE_VERSION,
 };
 pub use holdout::{
     holdout_cell, holdout_instance, instance_for, mix_seed, pool_key_of, HoldoutCell, HoldoutPool,
@@ -107,7 +111,7 @@ pub use tlog::{
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
@@ -197,8 +201,10 @@ pub struct Ticket {
 /// A respondent's optional key proof: `publicKey` is a base64url Ed25519 JWK
 /// `x` member (the same encoding as verifier keys) and `signature` is a
 /// base64url Ed25519 signature over the challenge's subject transcript. It
-/// binds the response to a key the respondent controls — never to a model,
-/// a person, or an authority.
+/// proves key possession for the session/challenge transcript only. It does
+/// not sign the exact response, issuer, policy, or receipt. Exact-artifact
+/// endorsement needs a separate subject-signed envelope. Neither establishes
+/// who solved the puzzle, a model identity, a person, or authority.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectProof {
@@ -424,8 +430,16 @@ fn verifying_key(public_key_b64: &str) -> Result<VerifyingKey, AttestError> {
     let bytes: [u8; 32] = bytes
         .try_into()
         .map_err(|_| AttestError::Malformed("Ed25519 public key must be 32 bytes".to_string()))?;
-    VerifyingKey::from_bytes(&bytes)
-        .map_err(|_| AttestError::Malformed("invalid Ed25519 public key".to_string()))
+    let key = VerifyingKey::from_bytes(&bytes)
+        .map_err(|_| AttestError::Malformed("invalid Ed25519 public key".to_string()))?;
+    // A small-order key can admit fabricated signatures without possession of
+    // a secret. This deliberately hardens the upstream compatibility subset.
+    if key.is_weak() {
+        return Err(AttestError::Malformed(
+            "weak Ed25519 public key".to_string(),
+        ));
+    }
+    Ok(key)
 }
 
 /// `subjectTranscript`: the domain-separated transcript a subject proof
@@ -479,7 +493,7 @@ fn subject_signature_verifies(transcript: &str, proof: &SubjectProof) -> bool {
     let Ok(signature) = Signature::from_slice(&bytes) else {
         return false;
     };
-    key.verify(transcript.as_bytes(), &signature).is_ok()
+    key.verify_strict(transcript.as_bytes(), &signature).is_ok()
 }
 
 /// `subjectProofFor`: mint a subject proof for a challenge with a respondent
@@ -900,7 +914,10 @@ fn check_receipt_impl(
         },
         Err(e) => return malformed(&e.to_string()),
     };
-    if key.verify(receipt.payload.as_bytes(), &signature).is_err() {
+    if key
+        .verify_strict(receipt.payload.as_bytes(), &signature)
+        .is_err()
+    {
         return malformed("signature does not verify");
     }
     if body.seed > u32::MAX as u64 {
@@ -1022,3 +1039,12 @@ fn check_receipt_impl(
         (instance.is_none() && heldout.is_some()).then_some(false),
     )
 }
+
+/// Bounded, explicitly partial views of voluntarily shared signed results.
+pub mod history;
+pub use history::{
+    check_history, HistoryBinding, HistoryChallenge, HistoryChallengeOutcome,
+    HistoryChallengeReplay, HistoryCoverage, HistoryCursor, HistoryError, HistoryExpectation,
+    HistoryOutcome, HistoryPage, HistoryRecord, HistoryRejection, HistoryReplay, HistorySnapshot,
+    MAX_HISTORY_ADMISSION_BYTES, MAX_HISTORY_BYTES, MAX_HISTORY_PAGE, MAX_HISTORY_RECORDS,
+};

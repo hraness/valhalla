@@ -61,16 +61,25 @@ launch is `VHALLA_MENUBAR_PATH`, the installed copy, a binary adjacent to
 
 Pushing a version tag such as `v0.1.7` runs the complete Rust, Kani,
 desktop, and site gates at that commit, then builds unbundled binaries:
-`vhalla` (`--all-features --release --locked`)
+`vhalla` (`--release --locked --no-default-features --features
+experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private`)
 for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`, plus
-`vhalla-menubar` for `aarch64-apple-darwin`, each as a tarball with a
+`vhalla-menubar` for `aarch64-apple-darwin` and the exact qualified production
+browser artifact, each as a tarball with a
 `.sha256` sidecar. A single publisher requires that the tag still names
-the current `main` commit and that all four default CodeQL analyses passed
-on that exact SHA. It uploads all six assets to a draft, verifies their
+the current `main` commit, that all four managed CodeQL analyses passed
+on that exact SHA, and that no CodeQL alerts remain open. It uploads all eight
+assets to a draft, verifies their
 downloaded bytes, then publishes the complete release. Failed uploads
 leave a draft; retries never overwrite an already published release.
 The workflow uses only the repository `GITHUB_TOKEN`. These are developer
 binaries without application signing or notarization.
+
+The release feature selection preserves paired networking, social sync, the
+room-directory CLI/TUI, public-peer commands and private-room tooling. The
+Platonik adapter and `game replay` command were removed from current source.
+Older archives keep the commands they were published with. The complete
+all-features checks and remaining protocol vectors still run before publication.
 
 Each archive has a different top-level directory. On Apple Silicon macOS,
 download both archives and their checksum sidecars from the same release,
@@ -1084,3 +1093,1100 @@ makes that choice explicit. Every revision replaces its facets, so a legacy edit
 clears them. Existing signed bytes and IDs stay unchanged. Older clients reject
 the new opcodes and can lose writer-chain closure; mixed-client networking needs
 explicit capability negotiation. Stripping annotations cannot repair signed history.
+
+## Native local public activity
+
+The native Unix author commands use the maintained room-activity protocol and
+custody identity. Build them with:
+
+```console
+cargo build --locked -p vhalla-cli --features experimental-public --bin vhalla
+```
+
+Supply a canonical `BOOTSTRAP`, its independently obtained full lowercase
+`PIN64`, the matching local certified `JOURNAL`, and the full lowercase room
+genesis `ROOM64`. The room must have a verified open public-activity policy for
+authoring. These commands do not grant owner control, validator membership or
+host execution permission.
+
+```console
+vhalla public activity init BOOTSTRAP PIN64 JOURNAL NEW_KEY_DIR NEW_OUTBOX ROOM64
+vhalla public activity queue BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE
+vhalla public activity outbox BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 0 NEW_EXPORT_DIR
+```
+
+`init` creates a genuinely new application key and one outbox bound to its full
+author, room scope, network and bootstrap pin. Both paths must be new. This
+initial command does not attach an existing or restored key to an absent outbox,
+or reuse a key to initialize another room. Creation spans two directories;
+an interrupted operation may leave partial paths. Preserve them instead of
+deleting state or treating an existing key as fresh.
+
+`queue` reads one bounded regular UTF-8 text file, at most 4,096 bytes, without
+silently trimming it. It reserves the exact unsigned event durably before using
+the typed signer, then retains the signed frame before reporting
+`status signed-and-retained-locally` and `delivery unconfirmed`. A CLI-prepared
+Clankdar puzzle part is ordinary text for this command; its signature attributes
+the shared bytes but does not independently verify a solve.
+
+To separate reservation and signing explicitly:
+
+```console
+vhalla public activity reserve BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE
+vhalla public activity resume BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64
+```
+
+An existing pending draft blocks `reserve` and `queue`. Only `resume` uses that
+retained draft; it takes no replacement text. An unrelated certified height
+advance can update the reservation's policy checkpoint only if the exact signed
+room policy still permits the unchanged event. Revoked or changed policy refuses
+the operation and preserves the pending sequence; there is no discard/reset path.
+
+Without a replay profile, each authoring invocation replays canonical certificates
+from the pinned genesis. It matches the retained history checkpoint and checks
+that the observed local journal head has not advanced before signing. The
+per-invocation budget remains **4,096 bundles and 30 seconds**. A replay profile
+saves verified progress across invocations, as described below; exhaustion never
+authorizes signing. An incomplete or invalid journal fails closed. A signed peer
+response cannot replace certified replay or prove global freshness. One exclusive
+writer owns the outbox during an operation. An uncertain publication requires
+reopening to reconcile exact retained state, never deleting files to make the
+next sequence available.
+
+### Restartable certified replay
+
+A replay profile caches one locally verified replica, independently of the
+application key and outbox. Its private storage-only key authenticates canonical
+snapshots, the full bootstrap/configuration pin, exact frontier and bundle ID.
+It does not create another public identity. Snapshot checksums, peer signatures
+and arbitrary imported snapshots cannot establish this local provenance.
+
+For a **new author**, create a new profile and advance it before initializing the
+new key/outbox:
+
+```console
+vhalla public activity replay-init BOOTSTRAP PIN64 JOURNAL NEW_PROFILE
+vhalla public activity replay-step BOOTSTRAP PIN64 JOURNAL PROFILE
+vhalla public activity init BOOTSTRAP PIN64 JOURNAL NEW_KEY_DIR NEW_OUTBOX ROOM64 --replay-profile PROFILE
+vhalla public activity queue BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 TEXT_FILE --replay-profile PROFILE
+```
+
+Here `PROFILE` is the path just created as `NEW_PROFILE`. `replay-init` only
+publishes independently verified genesis at height zero and prints
+`status replay-profile-created`; it consumes no journal bundles and makes no
+claim about the journal's current head. `replay-step` prints `replayed-from`,
+`durable-height`, `bundle-id`, `elapsed-ms` and one of:
+
+- `status more`: the bounded verified prefix is durably saved. Repeat
+  `replay-step` with the same profile.
+- `status caught-up-local-journal`: that invocation reached and rechecked the
+  exact observed local HEAD. It is not a global latest-state claim or posting
+  authorization; `init`/`queue` still perform their policy and current-head checks.
+
+For an **existing author**, supply the retained outbox before replaying any
+bundle. Create a new profile only if you do not already have its valid profile:
+
+```console
+vhalla public activity replay-init BOOTSTRAP PIN64 JOURNAL NEW_PROFILE
+vhalla public activity catch-up BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 --replay-profile PROFILE
+vhalla public activity resume BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 --replay-profile PROFILE
+```
+
+Do not run bare `replay-step` between `replay-init` and this first `catch-up`.
+`catch-up` binds the exact outbox policy head before replay, persists the verified
+cache first, then advances the outbox history head. It never signs, replaces a
+pending draft, resets an author sequence or grants room permission. If its
+nonzero result specifically reports **bounded replay progress saved**, repeat
+`catch-up` with the same outbox/profile; other integrity, custody or policy errors
+are not progress reports. `resume` remains an explicit request to sign only the
+unchanged retained draft under a still-permitted policy.
+
+Use **one profile per author workflow**. Once an author anchor is retained, bare
+`replay-step` refuses. An unrelated `init` cannot advance or replace that anchor;
+only an exact same-head retry is possible. Existing author commands may also
+carry the trailing `--replay-profile PROFILE` flag; `peer-add`, `send` and `read`
+do not use it. Author activity and its receipts remain in the outbox, never in
+the replay cache.
+
+The cache uses private exclusive custody and a bounded authenticated `STATE` plus
+one publication scratch. A crash before/after the cache-to-outbox handoff retains
+proof for either the old outbox head or the exact saved frontier. Uncertain
+publication requires reopening; preserve malformed state and scratch rather
+than deleting evidence. If a cache is unavailable or corrupt, preserve that
+entire path and create a **separate new profile**, then use the existing-author
+`catch-up` flow above with the original key/outbox and complete journal. No
+command silently resets or migrates a cache, author or journal. A different
+bootstrap/configuration pin cannot reuse the retained profile.
+
+The bundle/time budget includes snapshot work. It is cooperative: a single
+bounded snapshot decode, certificate validation or filesystem operation is not
+an interruptible hard deadline. Registry/archive state retains its existing size
+ceilings; cached replay removes the journal-length restart wall, not those
+application limits. Complete malicious rollback or theft of the local profile
+and its authentication key remains outside the cooperating OS-owner custody
+boundary. No history pruning, remote policy synchronization or peer snapshot
+trust is introduced.
+
+CLI creation fixes the default store limits at **65,536 retained events, 256 MiB
+of event plus receipt bytes, and eight peer receipt chains**. Bounded control,
+intent and temporary metadata add less than 64 KiB. No command prunes signed
+evidence to regain capacity, and this CLI currently exposes no limit-change
+option. Filesystem allocation/metadata overhead is additional; the byte budget
+does not reserve free disk space. Keep the private key directory and complete
+outbox together. Native key-only restore, author import/reset and device handoff
+are not implemented;
+a missing outbox is not evidence that the key has never signed.
+
+`outbox` exports at most 16 signed frames strictly after `AFTER_SEQUENCE` into a
+new directory, never overwriting an existing destination. Its manifest names
+the full network, realm, directory, room and author, plus the retained head and
+each frame's sequence/content ID. Use the printed `next-after` value and a new
+destination for the next page. Export remains available when a room stops
+allowing new posts; it does not authorize signing. This bounded local page is
+neither proof of peer delivery nor a complete author-state recovery backup.
+
+The explicit `peer-add`, `send` and `read` controller below adds destination-bound
+network delivery with durable peer advertisement floors and receipt publication.
+These local authoring/export commands still do not dial or activate serving;
+controller validation with synthetic peers does not qualify any public deployment.
+
+The focused CLI regression uses real certified room policy and process restarts:
+
+```console
+cargo test --locked -p vhalla-cli --features experimental-public --test public_activity
+```
+
+It covers new authoring/export, exact pending resume, compatible history advance,
+policy revocation, missing-state refusal and invalid bootstrap/certificate
+rejection. The `replay_profile` filter additionally exercises restart continuation
+past 4,096 real certified bundles, cache tampering, lost checkpoint markers,
+cache-to-outbox handoff, anchored-init refusal and fresh-cache adoption by an
+existing author. See the [participation contract](../../docs/public-participation.md)
+for the distinction between a signed artifact and independently checked evidence.
+
+## Public discovery peer
+
+Build the maintained native Unix operator command with its explicit feature:
+
+```console
+cargo build --locked -p vhalla-cli --features experimental-public --bin vhalla
+vhalla public discovery-serve BOOTSTRAP PIN64 KEY_DIR JOURNAL PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN DISCOVERY_DIR --new-state --new-discovery
+```
+
+`BOOTSTRAP` is a canonical exported bootstrap and `PIN64` is its independently
+obtained full pin. `KEY_DIR` must contain an existing custody identity. The
+command verifies these inputs before creating state; it never creates a key or
+changes the application journal. `HTTPS_ENDPOINT` is the exact advertised route
+ending in `/vhalla/v1`. Configure its TLS reverse proxy and the exact allowed
+browser HTTPS Origin separately. The listener defaults to loopback;
+`--listen LOOPBACK_IP:PORT` changes it without permitting public/wildcard binds.
+`--dev-origin` explicitly allows a loopback HTTP browser Origin for local tests.
+
+Use `--new-state` only for a genuinely new publisher directory and
+`--new-discovery` only for a genuinely new discovery directory. Retain both
+directories and omit both flags on restart. They contain durable sequence and
+replay evidence; never reset them to resolve a failure. Normal restart is:
+
+```console
+vhalla public discovery-serve BOOTSTRAP PIN64 KEY_DIR JOURNAL PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN DISCOVERY_DIR
+```
+
+With no `--seed`, the command serves READ and discovery without outgoing network
+requests. To register this peer with an operator-selected seed, append
+`--seed SIGNED_SEED_AD_FILE EXACT_HTTPS_ENDPOINT`; repeat for at most four
+distinct seed keys. Each file must contain a fresh canonical signed advertisement
+for this exact network, full seed key, READ capability, and chosen endpoint.
+It supplies the initial sequence floor. Each attempt first refreshes that same
+route with a fresh nonce-bound signed response, checks the full pinned key and
+monotone advertisement sequence, then obtains and solves the typed registration
+challenge. The command never follows discovered candidates or redirects.
+
+Outgoing registration requires system `/usr/bin/curl` version 7.59.0 or newer
+with HTTPS support, verified before state creation when seeds are configured.
+The subprocess uses system TLS validation, no inherited environment or curl
+configuration, no proxy, and no redirects. Requests and responses use bounded
+pipes; response headers and bodies remain independently bounded even for chunked
+input. No private key is exported or placed in process arguments.
+
+Every selected DNS route is resolved once in a supervised copy of the same
+executable. The lookup uses an absolute name, has a five-second deadline and
+at most 16 answers, and returns only a bounded canonical address frame. Timeout
+or cancellation kills and reaps the resolver child and joins its pipe workers;
+there are no detached DNS threads. Any non-public, scoped, mapped, transition,
+reserved, or malformed answer rejects the entire set, including a mixed
+public/private answer set. Literal addresses use the same conservative protocol
+address policy without DNS.
+
+The exact checked addresses are pinned with curl's `--resolve`, retaining the
+original HTTPS hostname for SNI and certificate validation. The checked list's
+starting priority rotates across requests; fallback can use only that list.
+There is no unguarded second lookup, expiring pin, proxy or redirect fallback.
+Connection setup is limited to five seconds, curl transfer to 15 seconds, and
+the whole lookup-plus-transfer has one 18-second supervision deadline. This
+prevents a selected name from rebinding to an unchecked address between lookup
+and connection. It does not attest DNS ownership, remote operator independence,
+global reachability, or the host's own routing configuration. Seed selection
+remains explicit, and the browser's separate Fetch limitations still apply.
+
+`--solve-attempts N` sets the per-attempt Hashcash budget: default `4194304`,
+maximum `16777216`, plus a ten-second work deadline. Work is checked in bounded
+chunks for shutdown and challenge expiry. Exhaustion sends no registration and
+the next minute's attempt can retry. A successful registration renews after
+the local advertisement sequence changes; failed attempts also retry on the
+minute cadence. SIGINT/SIGTERM stop the listener and cancel outstanding work.
+
+Remote sequence floors observed during the process are kept in memory only.
+On restart, the explicitly supplied signed seed files are the retained floors;
+keep those files current through a trusted operator workflow. This command does
+not promise durable highest-observed remote floors or global newest-state proof.
+
+The advertisements remain READ-only. A successful registration receipt binds
+this exact signed route to the receiving seed's local registry; it grants no room
+rights, validator authority, reachability guarantee, operator independence, or
+personhood. Activity PUBLISH startup is not available through this command. See
+the [peer adapter runbook](../vhalla-public-peer/README.md) for proxy rules,
+finite discovery capacity and replay retention, and durable recovery behavior.
+
+The focused CLI checks exercise bounded inputs and HTTP, public-address and
+mixed-answer refusal, exact TLS-host dial pins, DNS child deadline/cancellation,
+plus real CLI helper refusal and seedless startup, signed loopback challenge,
+shutdown, and retained-state restart:
+
+```console
+cargo test --locked -p vhalla-cli --features experimental-public --bin vhalla --test public_discovery discovery_ -- --nocapture
+```
+
+These tests do not qualify an external HTTPS seed, DNS deployment, or public
+multi-peer availability.
+
+
+### Explicit native activity delivery and page export
+
+With `--features experimental-public`, select a peer locally using an independently
+pinned bootstrap, its complete application key, exact HTTPS endpoint, and signed
+advertisement. Selection does not dial. The new private peer-state directory retains
+its immutable route and highest accepted advertisement/clock floors; preserve it.
+
+```sh
+vhalla public activity peer-add BOOTSTRAP PIN64 NEW_PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT AD_FILE
+vhalla public activity send BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT
+vhalla public activity read BOOTSTRAP PIN64 ROOM64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT AFTER_CURSOR NEW_EXPORT_DIR
+```
+
+`send` attempts at most three already finalized signed posts at that exact selected
+peer, starting after its durably retained receipt. It never opens an identity key,
+re-signs old content, changes the pending draft, or resets an author floor. Retry
+keeps exact signed bytes, including their original policy. These public activity
+frames are signed plaintext; this command adds no private-room encryption. Only use
+an outbox whose content you intend to disclose to the explicitly selected peer.
+
+Before posting, fresh nonce-bound same-key evidence is verified and durably retained.
+Newer withdrawals and route removals remain saved even when they prevent sending;
+older PUBLISH advertisements cannot replace them. An expired selected route may
+request its renewal, but cannot send/read activity until the refreshed exact route
+and required READ/PUBLISH capabilities verify. There is no automatic discovery,
+endpoint change, failover, proxy or redirect. System `/usr/bin/curl` and the existing
+bounded public-address DNS pinning preserve the selected TLS hostname.
+
+JSON reports only receipt sequences saved locally after full peer/network/request
+verification. A failure stops the call and leaves any confirmed prefix explicit;
+uncertain local writes require reopening preserved state before retry. A peer receipt
+claims that peer's local retention, not network-wide delivery or current room policy.
+
+`read` requests at most 16 events after an explicit peer-local cursor. It verifies
+peer proof and every author signature/full network/realm/directory/room scope before
+creating a new export directory. The export retains exact request target, response
+proof, page bytes, signed event frames and a manifest. No existing path is replaced;
+partial exports remain on I/O failure. It does not establish author continuity,
+current policy admission, a complete network feed, or a verified puzzle solve.
+It advances no implicit inbox cursor. Local authoring still uses its separately
+certified journal; remote policy synchronization is outside these commands.
+
+Network operations have a 90-second cancellation deadline. SIGINT/SIGTERM cancel
+and drain the owned transport, whose DNS/curl subprocesses are killed/reaped before
+return. This bounds supervised transport, not arbitrary stalled filesystem calls.
+Enabling these explicit client commands does not activate a serving peer's PUBLISH
+mode or provision any external service.
+
+
+### Explicit public activity publisher
+
+READ remains the default for `public serve` and `public discovery-serve`. To
+prepare public activity storage without starting a listener:
+
+```text
+vhalla public activity-store-init BOOTSTRAP PIN64 ROOM64 NEW_STORE 100000 268435456
+```
+
+This exclusively creates a new owner-private store bound to the pinned network,
+realm, directory and selected full room ID. It does not establish that the room
+exists or its posting policy is enabled. Store limits are immutable local budgets,
+not promised indefinite storage; additional filesystem/transaction overhead needs
+free disk. Existing paths are never reset or overwritten. Preserve incomplete
+creation for operator investigation.
+
+Start an explicitly opted-in public publisher using those existing stores:
+
+```text
+vhalla public serve BOOTSTRAP PIN64 KEY_DIR JOURNAL NEW_PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN --new-state --activity-store ROOM64 STORE 100000 268435456
+```
+
+Repeat `--activity-store ROOM64 STORE MAX_EVENTS MAX_HISTORY_BYTES` for at most32
+distinct rooms. Limits must be canonical positive decimal u64 values. This signs
+READ|PUBLISH only after all configured stores open. Each new post still requires
+independently verified current owner policy from the certified journal. Initial
+catch-up is bounded per request; retry unavailable responses without changing
+signed event bytes. This endpoint is public plaintext, never a private-room API.
+
+On restart omit `--new-state` and supply exactly the same room/store/limit entries.
+Their ordering may differ, but the immutable publisher mode binds their canonical
+values and the full network, peer and endpoint. Ordinary READ reopen refuses a
+PUBLISH publisher. Existing READ state cannot be upgraded; there is no automatic
+store creation, mode migration, counter reset or history deletion. Paths supplied
+on restart must resolve to the same absolute configuration. Keep identity,
+publisher state and activity stores together in an operator-managed backup plan.
+
+The listener remains loopback HTTP. Operate TLS for the exact advertised HTTPS
+endpoint and explicitly permit the bounded `/vhalla/v1/activity` GET/POST/OPTIONS
+route at the proxy with body/rate/connection limits and the selected browser
+origin. A local receipt is one peer's retention statement, not validator admission,
+global delivery or private membership. Source fixture tests do not qualify an
+external proxy/deployment. `discovery-serve` remains READ-only; this first CLI
+publisher does not implicitly register itself or change discovery policy.
+
+
+## Local encrypted private-room files (experimental-private)
+
+Build with `cargo build --locked -p vhalla-cli --features experimental-private --bin vhalla`. This optional Unix feature uses the maintained private-room
+controller, MLS kernel and encrypted SQLite store. It adds no network listener,
+relay client, public directory entry, agent tool registration or automatic
+background task. The default CLI dependency graph does not enable these tools.
+Use `vhalla private --help` for the complete command list.
+
+A private store belongs to one complete room/anchor/account/device context. The
+existing account identity and room store remain separate explicit paths. Create
+or import only into a never-used path. Reopen uses the existing bounded `FORMAT`
+record as an **unauthenticated locator**, checks the selected account, then opens
+and authenticates the complete encrypted image before exposing room data. A
+missing/partial marker, a missing image, a mismatched account or a failed
+publication never triggers creation, deletion, migration or a ratchet reset.
+Account backup alone does not restore a room device or its current MLS state.
+
+Every artifact or plaintext output is a new mode 0600 file in an existing mode 0700
+directory; existing files, links and stdout output are refused. Input files use
+the same custody checks and fixed size bounds. `--offer -` and `--text -` accept
+bounded pipes, not interactive terminal input. Text is at most 4096 UTF-8 bytes
+including any trailing newline; encrypted input is bounded by the kernel's
+stored-record limit. Secret offers and message text are never command-line
+values, success output or error contents. Treat membership JSON, inbox files and
+bootstrap offers as private data. Inert received text must not be executed or
+promoted into agent instructions.
+
+### Create and inspect
+
+The examples use existing `owner-key` and `member-key` identity directories.
+Create those separately with the ordinary explicit `identity init` command if
+needed; private-room commands never generate a replacement account. Use full
+lowercase public keys and a fresh 32-digit nonzero operation ID for each action.
+The illustrative IDs below are local examples, not globally assigned IDs.
+
+```sh
+umask 077
+mkdir -m 700 private-files
+PRIVATE_NOW=$(date +%s)
+PRIVATE_FROM=$((PRIVATE_NOW - 30))
+PRIVATE_UNTIL=$((PRIVATE_NOW + 7200))
+PRIVATE_OFFER_UNTIL=$((PRIVATE_NOW + 3600))
+
+vhalla private create owner-key owner-room \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_UNTIL"
+vhalla private inspect owner-key owner-room --out private-files/owner.json
+```
+
+`inspect` includes every accepted recipient's complete account/device keys and
+signed enrollment interval, the signed room anchor, phase, epoch, roster hash and
+control floor. This is the last authenticated local view, not global freshness
+or assurance that a removed member erased earlier plaintext. Default immutable
+retention limits are 100,000 records and 256 MiB of encrypted record payloads;
+database overhead is additional. `create` and `import` accept explicit
+`--max-records` and `--max-bytes` within the backend's limits. Reaching a limit
+refuses new writes; it does not prune history.
+
+### One confidential offer, encrypted request and response
+
+Set `PRIVATE_OWNER_KEY` and `PRIVATE_MEMBER_KEY` to the independently selected
+full account public keys. Obtain these through the existing identity interface
+and verify them with the intended person/account. They are public identifiers,
+not secret signing keys. Do not learn the expected owner solely from the offer
+being checked.
+
+```sh
+vhalla private offer owner-key owner-room \
+  --recipient "$PRIVATE_MEMBER_KEY" \
+  --operation 00000000000000000000000000000001 \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_OFFER_UNTIL" \
+  --out private-files/contact.secret
+
+vhalla private offer-inspect member-key \
+  --offer private-files/contact.secret --owner "$PRIVATE_OWNER_KEY" \
+  --out private-files/contact-review.json
+```
+
+Transfer `contact.secret` through an independently confidential channel. It is
+an owner-signed secret bootstrap file containing separate one-use direction
+keys, not a relay artifact. Its signature authenticates its full recipient,
+room, lifetime and keys but does not make public disclosure safe. Review
+`contact-review.json`, then set `PRIVATE_ROOM` and `PRIVATE_ANCHOR` to the full
+room and anchor shown there. Import explicitly pins both values before creating
+a fresh device; it does not join or send anything.
+
+```sh
+vhalla private import member-key member-room \
+  --offer private-files/contact.secret --owner "$PRIVATE_OWNER_KEY" \
+  --room "$PRIVATE_ROOM" --anchor "$PRIVATE_ANCHOR" \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_UNTIL"
+vhalla private request member-key member-room \
+  --offer private-files/contact.secret \
+  --operation 00000000000000000000000000000001 \
+  --out private-files/request.cipher
+vhalla private accept owner-key owner-room \
+  --request private-files/request.cipher \
+  --operation 00000000000000000000000000000002 \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_OFFER_UNTIL" \
+  --out private-files/response.cipher
+vhalla private join member-key member-room \
+  --response private-files/response.cipher
+```
+
+Transfer only the encrypted request/response files through an explicitly chosen
+file channel. This CLI performs no transport. Owner acceptance consumes the
+retained offer in the same transaction as membership, response and control
+publication. Offers are limited to 64 outstanding, at most 24 hours and the owner
+credential's lifetime. Expiration or owner renewal invalidates unused authority.
+Exact offer-creation retry can recover the original secret but never reactivate
+it. A pending device whose request expires cannot silently replace its
+KeyPackage; preserve that state and use an explicitly fresh device namespace
+for a new attempt.
+
+### Same-account fresh device
+
+A second device under one account is a distinct member, not a clone. Restore
+the account backup to the fresh custody (`identity backup` / `identity
+restore` reproduce the same account key), then run the identical
+offer/request/accept/join flow above with the owner addressing the offer to
+its **own** account key (`--recipient "$PRIVATE_OWNER_KEY"`) and the fresh
+custody pinning that same key as `--owner`. The new store joins under a new
+device enrollment, starts at its joining checkpoint and cannot read earlier
+history. Account backup alone does not move a live sender ratchet, and a
+copied store is never a safe second sender — this owner-authorized offer path
+is the only admission.
+
+### Inert messages and recipient changes
+
+Inspect again after joining. Set `PRIVATE_EPOCH` and `PRIVATE_ROSTER` from the
+owner's latest inspection. Place the intended text in a mode 0600 file using your
+chosen trusted local editor; do not pass its content as an argument.
+
+```sh
+vhalla private inspect owner-key owner-room --out private-files/current.json
+vhalla private send owner-key owner-room \
+  --text private-files/message.txt \
+  --epoch "$PRIVATE_EPOCH" --roster "$PRIVATE_ROSTER" \
+  --operation 00000000000000000000000000000003 \
+  --out private-files/message.cipher
+vhalla private receive member-key member-room \
+  --message private-files/message.cipher --out private-files/received.txt
+vhalla private inbox member-key member-room \
+  --after 0 --limit 16 --out private-files/inbox.json
+```
+
+The send command authenticates membership and checks the exact epoch and roster
+**before reading or preparing text**. A changed destination/roster refuses and
+requires an explicit new disclosure decision. The roster commitment includes
+the full private room scope. File paths alone are not long-lived send authority.
+Inbox JSON is bounded local accepted history; it includes exact body hex plus
+UTF-8 text when valid, not a complete remote conversation.
+
+Remove one exact device with `private remove ID STORE --device DEVICE64
+--operation OP32 --out CONTROL`. Deliver that encrypted control to remaining
+members, who use `private apply ID STORE --control CONTROL`. Same-account devices
+are distinct. Removal blocks future participation after the control is applied;
+it cannot revoke knowledge or prior plaintext. `private renew ID STORE
+--operation OP32 --not-before UNIX --expires UNIX --out CONTROL` explicitly
+renews the same anchored owner device; recipients apply its encrypted control.
+Retain both validity endpoints unchanged for exact retries.
+
+`private succeed ID STORE --device KEY64 --operation OP32 --not-before UNIX
+--expires UNIX --out CONTROL` hands owner authority to another device already
+enrolled under the same account. The account signs a bounded succession grant
+pinned to the room, both devices, the exact control sequence and validity
+interval; the current owner device signs the carrying control. Apply the
+exported encrypted control to every member in order like any other owner
+control. The handoff is final once committed: the predecessor keeps ordinary
+membership and its received history but loses all owner operations, and
+outstanding contact offers issued under the predecessor are cleared. The
+target must already be a rostered same-account device — succession never
+admits a device — and the predecessor must be live to commit it.
+
+Adding a later member also produces an encrypted control for existing members.
+Use `private control-export ID STORE --after SEQUENCE --parent CONTROL_ID|none
+--out FILE` to export exactly the next retained envelope, then apply it in order.
+The genesis cursor is `--after 0 --parent none`; later cursors require the exact
+signed control ID. A fresh joiner's decryptable history begins after its joining
+checkpoint. There is no automatic polling, resend, membership update or remote
+receipt claim.
+
+Signed owner controls also have a plaintext proof form for inspection, distinct
+from the encrypted delivery envelope. `private control-proof ID STORE
+--after SEQUENCE --parent CONTROL_ID|none --out SIGNED` exports the next signed
+control at an exact cursor. `private observe ID STORE --control SIGNED --out
+JSON` compares one signed control against retained history only: `retained`
+means already accepted, `unknown-history` means a valid future or absent floor,
+and `conflicting-fork-quarantined` means a different valid owner signature at a
+known sequence — which durably quarantines the room before reporting. A
+quarantined member keeps read access to retained history but cannot send.
+`private fork-evidence ID STORE --out PRIVATE_JSON` emits the retained proof:
+the previously accepted floor, the conflicting signed control, and the accepted
+side's exact signed record (or joining checkpoint). Observation never accepts a
+future floor, admits a device, grants owner succession, or claims global
+freshness; a clean room simply reports no evidence.
+
+### Opaque relay handoff
+
+The native client can package one retained ordinary artifact as a bounded,
+canonical `RelayItem` for an adapter or an explicit local handoff. The namespace
+is a nonzero 32-byte rendezvous token selected out of band; it is not a room ID,
+account key or authorization proof. The envelope binds that namespace, the
+sender-local sequence, operation ID, artifact kind and exact ciphertext. Secret
+contact offers and legacy plaintext bootstrap artifacts are refused before encoding.
+
+```sh
+PRIVATE_RELAY_NS=... # 64 lowercase hex bytes, shared out of band
+vhalla private relay-export owner-key owner-room \
+  --namespace "$PRIVATE_RELAY_NS" --sequence 3 \
+  --out private-files/item.vhrelay
+
+vhalla private relay-apply member-key member-room \
+  --namespace "$PRIVATE_RELAY_NS" --relay private-files/item.vhrelay \
+  --out private-files/result
+```
+
+`relay-apply` verifies the canonical commitment and namespace before dispatching
+an application message, ordered control or encrypted contact invitation to its
+dedicated authenticated kernel path. Encrypted contact requests require their
+explicit owner command; they are never silently admitted.
+`relay-unwrap RELAY_ITEM --out PAYLOAD` verifies one retained item and writes
+only its inner payload, so a staged encrypted contact request can feed `accept`,
+which authenticates the envelope itself. Raw KeyPackage and invitation artifacts
+remain confined to explicit confidential local handoff APIs.
+The output is either the locally accepted plaintext or a bounded status JSON.
+This is an adapter boundary and explicit local transport, not a listener, relay
+service, recipient acknowledgment or evidence that another member processed the
+item. Keep the namespace separate from room metadata and do not reuse it as a
+secret or membership credential.
+
+A durable opaque mailbox gives the same handoff a file-backed adapter. These
+commands take a mailbox directory in place of an identity and never open
+identity or room custody:
+
+```sh
+vhalla private relay-mailbox mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --max-items 4096 --max-bytes 268435456   # both optional; these are the defaults
+vhalla private relay-put mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --relay private-files/item.vhrelay --out private-files/receipt.json
+vhalla private relay-page mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --after 0 --limit 8 --out private-files/page.json
+vhalla private relay-get mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --position 1 --out private-files/item-copy.vhrelay
+```
+
+`relay-mailbox` creates one 0700 directory bound permanently to its namespace
+and quota; an existing path refuses. `relay-put` retains a verified canonical
+item idempotently and reports only `position`, `digest` and `duplicate`.
+The mailbox assigns each retained item an increasing `position` shared by every
+sender in the namespace, so one mailbox can carry every member's stream;
+`relay-page` orders and cursors by position, and each manifest record reports
+that `position` alongside the item's sender-local outbox `sequence`, operation,
+kind, digest and byte count. `relay-get` writes the exact canonical item at one
+position for `relay-apply` or onward transport. The mailbox holds an
+exclusive lock while open, re-verifies every retained item on open, syncs each
+accepted mutation before its receipt, and never prunes or rewrites retained
+items. Quota exhaustion, foreign namespaces, conflicting operation reuse and a
+second live handle all refuse. Retention is still not delivery,
+scheduling or authentication.
+
+A bounded token-authenticated TCP adapter carries the same canonical items
+between separate processes on an operator-controlled network:
+
+```sh
+vhalla private relay-serve mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --token token-file --listen 127.0.0.1:9400
+vhalla private relay-submit private-files/item.vhrelay \
+  --addr 127.0.0.1:9400 --token token-file --out private-files/receipt.json
+vhalla private relay-scan catchup-dir --namespace "$PRIVATE_RELAY_NS" \
+  --addr 127.0.0.1:9400 --token token-file --out private-files/scan.json
+
+# Composite room-side delivery: push the local outbox prefix, then let a
+# peer pull the mailbox into their room.
+vhalla private relay-push owner-key owner-room --namespace "$PRIVATE_RELAY_NS" \
+  --addr 127.0.0.1:9400 --token token-file --out private-files/push.json
+vhalla private relay-pull member-key member-room --namespace "$PRIVATE_RELAY_NS" \
+  --dir catchup-dir --addr 127.0.0.1:9400 --token token-file \
+  --out private-files/pull.json
+
+# The same composites run over the mailbox directory itself — an
+# interchangeable transport under filesystem custody for a synced or
+# explicitly copied directory, with no listener or token:
+vhalla private relay-push owner-key owner-room --namespace "$PRIVATE_RELAY_NS" \
+  --mailbox mailbox-dir --out private-files/push.json
+vhalla private relay-pull member-key member-room --namespace "$PRIVATE_RELAY_NS" \
+  --dir catchup-dir --mailbox mailbox-dir --out private-files/pull.json
+```
+
+`relay-serve` opens an existing mailbox and prints one `relay-serve IP:PORT`
+ready line before accepting connections. The admission token is a 64-digit
+lowercase hexadecimal secret read from a 0600 file or a bounded pipe (`-`),
+never argv. `--listen`/`--addr` accept only explicit numeric `IP:PORT` — there
+is no DNS resolution. This plaintext compatibility adapter accepts loopback
+addresses only; use the explicit TLS options below for remote connections. Frames have size bounds and one absolute deadline
+across partial reads and writes; wrong tokens,
+malformed input, foreign namespaces, operation conflicts and quota exhaustion
+all refuse without touching retained items. `relay-scan` pages the mailbox
+into a private cursor directory: each canonical item lands under
+`catchup-dir/items/` named by its mailbox position, the position cursor
+persists only after complete item publication and the item-directory sync.
+Interrupted scratch writes reconcile against the exact retry, and a pre-existing
+committed file with different bytes fails closed instead of being overwritten.
+The scan freezes the first observed head, bounds the directory to 4096 canonical
+items, and holds exclusive custody through pull application. Staged reads check
+regular-file type, ownership, private permissions and size before allocation.
+A shared 90-second scan/pull budget preserves progress for an explicit retry;
+synchronous filesystem barriers finish before the next deadline check. A socket
+receipt remains retention only — never delivery, scheduling or member
+acceptance.
+
+`relay-submit` derives its namespace from the canonical item. Its optional
+`--namespace` pins that choice and refuses a mismatch before opening transport
+or reading a socket credential.
+
+`relay-submit`, `relay-scan`, `relay-push` and `relay-pull` each accept
+exactly one transport: the socket (`--addr` with `--token`) or `--mailbox
+DIR`, which opens the durable mailbox directly. The directory transport
+replaces token authentication with filesystem custody — one process holds the
+mailbox at a time — and suits a synced folder or an explicitly copied mailbox;
+both forms now require explicit `--namespace`. This is an experimental CLI
+compatibility change. A versioned namespace marker binds each catch-up directory;
+a different namespace refuses before scanning. Nonempty older unbound directories
+must be preserved; use a new empty output directory. No cursor reset or automatic
+migration occurs.
+
+`relay-push` submits one bounded local outbox page (`--after`/`--limit`,
+default the first 16 records) as canonical items and reports each sender
+sequence beside its assigned mailbox position, plus the outbox `next` cursor for
+continuation. Secret offers are counted under `skipped_secret`; legacy plaintext
+KeyPackage/Invitation artifacts are counted under `skipped_bootstrap`. Neither
+leaves the room store. Generic relay export and decoding refuse those legacy
+bootstrap kinds as well. Preserve existing mailboxes containing them: reopen
+refuses rather than serving private metadata. Push has a 90-second deadline and
+exact retries reconcile any retention that preceded a timeout. `relay-pull`
+runs the same durable scan into `--dir`, then applies every retained item in
+position order: application frames, controls and invitations go through their
+authenticated kernel paths, and encrypted contact requests are reported
+as `skipped` for their dedicated explicit commands, and deterministic refusals
+(including the puller's own echo) reopen custody and are retried within the
+same pull — a bounded fixpoint of at most eight passes heals items whose
+predecessors landed at later positions, and whatever still refuses is listed
+under `refused` for a later pull. Neither composite prints plaintext nor
+claims another member accepted anything.
+
+### Output uncertainty and exact recovery
+
+Keep each operation ID and all exact arguments, including validity endpoints,
+epoch and roster. Kernel publication finishes before an artifact or plaintext is
+released. Output copying can fail afterward: the command reports a static
+recovery instruction, preserves every partial output and the original store,
+and never prints sensitive bytes. Retry the identical action into a **new output
+path**. An existing destination is never overwritten, even if its bytes match.
+Do not delete/reset a store because a command was interrupted.
+
+```sh
+vhalla private outbox owner-key owner-room \
+  --after 0 --limit 16 --out private-files/outbox.json
+vhalla private export owner-key owner-room \
+  --sequence 3 --out private-files/recovered-message.cipher
+```
+
+Outbox pages are contiguous and show secret issuance only as metadata with no
+artifact length. Generic export accepts only application ciphertext, encrypted
+controls and encrypted contact request/response artifacts. It refuses secret
+offers and legacy plaintext KeyPackage/invitation artifacts. Recover a secret
+only through exact dedicated `offer` retry with its original operation,
+recipient and validity. After membership changes, recovering retained ciphertext
+by index avoids rebinding old text to a new roster; it does not claim the
+original recipients are still authorized today.
+
+A complete FORMAT with no authenticated image can occur before a fresh device's
+first publication. The locator permits an honest missing-state diagnosis, not
+reconstruction of lost unpublished key material. Preserve that namespace and
+use a separately authorized never-used path when creation truly never finished.
+No command exports an encrypted state image, wrapping key, MLS ratchet clone or
+generic signing capability.
+
+Network endpoint/timing/size correlation, long-term local storage compromise,
+coherent rollback and forwarding by legitimate members remain outside the
+confidential file-exchange guarantee. Live multi-machine relay operation and
+agent process isolation are not implemented by this CLI slice.
+
+## Explicit public continuity serving
+
+The optional `experimental-public` CLI can create and serve the new continuity
+store format. This is an explicit alternative to v1 `--activity-store` publishing;
+never use it to reinterpret an existing publisher, reset counters or migrate a
+used v1 store. It does not activate discovery or start an external TLS service.
+
+```console
+vhalla public continuity-store-init BOOTSTRAP PIN64 ROOM64 NEW_STORE 100000 268435456 8 4096 33554432 600
+vhalla public serve BOOTSTRAP PIN64 KEY_DIR JOURNAL NEW_PEER_STATE HTTPS_ENDPOINT ALLOWED_ORIGIN --new-state --continuity-store ROOM64 NEW_STORE 100000 268435456 8 4096 33554432 600
+```
+
+Limits after the store path are permanent event count and history bytes, staged
+slots, staged event count, staged bytes and fixed lease seconds. Every value is
+explicit and immutable. Stage bounds are 1–64 slots, 32–4096 events, at most32MiB,
+and a60–86400-second lease. Permanent quotas grant no room or posting rights.
+The64-argument process bound still applies to repeated store selections.
+
+A full4096-event upload requires128 pages and at least six rate windows under
+the current per-IP verification budget. The example600-second lease is a
+qualification starting point, not a speed or availability guarantee; choose it
+from measured replay/upload/finalization and contention. Expiry never silently
+renews a lease. Stage acknowledgements are temporary; admitted terminal proof
+and peer-asserted retained historical evidence have different meanings.
+
+On restart retain the exact store and publisher paths, full room IDs and limits,
+and omit `--new-state`. Mode/version/configuration mismatches refuse before the
+selected store's recovery. Never combine `--activity-store` and
+`--continuity-store`. Source must be independently pinned; selecting storage
+cannot create room policy, validator authority or admission permission. The
+listener remains loopback HTTP with an explicitly operated HTTPS reverse proxy.
+
+The typed continuity route and legacy activity compatibility use one writer.
+Legacy activity cannot consume a staged prefix. Ordinary client receipt state
+cannot treat a jumped terminal as proof that every ancestor was delivered;
+use the separate continuity receipt session below. See the
+[peer resource and recovery contract](../vhalla-public-peer/README.md).
+
+
+## Native continuity receipt sessions
+
+The `experimental-public` native client can transfer **already finalized signed
+outbox frames** to one explicitly selected continuity peer. It never opens an
+identity, signs a draft, chooses another endpoint, rewrites v1 delivery receipts,
+or starts a listener. The selected peer must independently enable continuity
+serving. Its signed statements establish that peer's claims, not global delivery
+or current room permission.
+
+The following commands reuse the existing pinned bootstrap, author outbox and
+`peer-add` state. Every room, author, peer key, HTTPS endpoint and receipt limit is
+explicit. Replace the placeholders with the exact existing local configuration.
+The receipt ceilings below are examples, not automatically chosen capacity.
+
+```console
+vhalla public activity continuity-init BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT NEW_RECEIPTS 1000 67108864 TERMINAL_SEQUENCE
+vhalla public activity continuity-status BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS 1000 67108864
+vhalla public activity continuity-step BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS 1000 67108864 JOURNAL
+vhalla public activity continuity-select BOOTSTRAP PIN64 OUTBOX ROOM64 AUTHOR64 PEER_STATE PEER64 EXACT_HTTPS_ENDPOINT RECEIPTS 1000 67108864 LATER_TERMINAL_SEQUENCE
+```
+
+`init` exclusively creates a new receipt directory and saves the exact selected
+terminal and a random operation ID. `select` opens the existing directory with
+the same immutable quotas: the same exact terminal resumes its operation; only
+an explicitly selected later terminal begins another. It never follows a later
+local head automatically. If initialization stops after directory creation,
+reopen with `select`; preserve the directory rather than repeating `init` or
+resetting receipt state. `status` and selection do not dial. Explicit native
+open may reconcile a retained receipt intent; status never synthesizes missing
+author, peer or receipt state.
+
+Each `step` uses one advertisement refresh and at most three continuity
+exchanges inside the existing 90-second cancellation supervisor. Individual
+HTTP calls retain the 18-second bound, exact public DNS pinning, TLS identity,
+no proxy/redirect fallback, and bounded subprocess reaping. Certified replay
+retains its 4,096-bundle/30-second slice; append `--replay-profile PROFILE` to
+`step` to reuse an existing authenticated profile. `more-policy-replay-no-network`
+means this slice saved policy progress without publication. As with ordinary
+catch-up, the exact author policy checkpoint may advance while all signed frames
+and any pending draft remain unchanged.
+
+A fresh nonce-bound attempt is saved before each continuity request. Status and
+Stage replies never advance permanent retention. The JSON reports terminal
+admission separately from `peerAssertedRetainedThrough`; only `complete: true`
+means the saved admission agrees with a contiguous exact local-source Evidence
+prefix ending at that terminal with the current-admission role. It still means
+one peer's historical signed claim. `continuityAttempts` counts started attempts
+conservatively, including a local refusal before transport; it is never greater
+than three. `more` requests another bounded invocation using the same custody.
+HTTP errors, quota refusal, expiry, cancellation or uncertainty stop this call;
+there is no retry loop, sleep, fallback peer or automatic quota increase.
+
+The client uploads exactly 32 historical frames per Stage and at most 32 final
+inline ancestors with the fixed terminal, preserving the existing 4,096 staged
+ancestor ceiling. The terminal must match the independently replayed current
+room policy immediately before new work. If the peer reports a newer frontier,
+obtain certified journal catch-up before attempting fresh publication. Peer
+reports cannot replace certificates. Journal advancement concurrent with the
+final local check is resolved by the peer's own admission checks.
+
+A selected target farther than one bounded admission advances through ordered
+intermediate terminal admissions. Each phase commits an exact already-signed
+local event at most one staged-ancestor bound beyond the peer's current
+published position, checked against current room policy as its own terminal.
+The fixed selected terminal and its exact frame hash never change; the peer's
+published position advances monotonically and no admission may pass the target
+or substitute a different final event. Repeat `step` until `complete: true`.
+Each admission remains one peer's durable claim and never authorizes the next
+phase by itself; every fresh Commit is separately reserved before transport.
+
+After an uncertain prior Commit, exact Evidence can show the selected terminal
+already retained as admitted. Only then can the client request the same terminal's
+original admission after revocation, without treating an old signature as a new
+posting grant or converting historical-only evidence to admitted content. A peer
+already beyond the selected target requires explicit selection of a later local
+terminal. Keep every source, peer and receipt directory after a refusal;
+`needsReopen` requires exact reopen/reconciliation before another attempt.
+
+An old-policy pending draft can block author continuity. The network controller
+refuses to sign or replace it. Use the explicit local `recover-history` operation
+below for the exact previously reserved sequence and event ID, then create a
+separate ordinary current-policy terminal before transferring new continuity.
+Full uploads also need an operator-sized lease: the minimum 60 seconds cannot
+reliably cover 4,096 staged ancestors under the existing per-IP credits. Refer to
+the serving resource contract above rather than assuming minimum TTL is adequate.
+
+
+## Native private archives (experimental-private)
+
+The optional private CLI can export the complete encrypted state of one existing
+local private room/device, copy it into a separate **inert archive store**, and
+inspect its retained membership, inbox and redacted outbox. This is an archive,
+not a device transfer or a live restore. Ordinary room open, signing, MLS receive,
+and sending refuse the archive's distinct storage purpose. It does not reset a
+ratchet, recreate a lost device from its account key, or introduce owner succession.
+The same account's existing identity custody must be available for every operation.
+
+Use existing local account and room paths below. The selected output directory
+must already be owner-private `0700`; files are exclusively created as `0600`.
+The `.vharchive` extension identifies the binary container for people; filenames
+and the container's context/ID header confer no authority. No content is printed
+or sent over a network. Keep archive files private: they contain encrypted provider
+state, secret contact offers and complete retained evidence, and expose their
+private full-context/archive identifiers plus lengths in the outer header.
+
+```sh
+# Optional build; default CLI dependency graph is unchanged.
+cargo build --locked -p vhalla-cli --features experimental-private
+
+# Hold existing account + source store custody while streaming one exact snapshot.
+vhalla private archive-export ./owner-key ./owner-room \
+  --out ./private-files/owner-2026-09-20.vharchive
+
+# Create a never-used, explicitly separate inert destination.
+vhalla private archive-import ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive
+
+# Read authenticated destination metadata into a new private JSON file.
+vhalla private archive-inspect ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive \
+  --out ./private-files/archive-membership.json
+
+# Bounded pages, with after exclusive and limit between 1 and 16.
+vhalla private archive-inbox ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive --after 0 --limit 16 \
+  --out ./private-files/archive-inbox.json
+vhalla private archive-outbox ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive --after 0 --limit 16 \
+  --out ./private-files/archive-outbox.json
+```
+
+`archive-inbox` intentionally releases retained plaintext into the chosen private
+file. Treat it as inert data and review any later disclosure separately.
+`archive-outbox` exposes metadata and encrypted-artifact lengths, never secret
+offer bytes; `artifact_bytes: null` denotes confidential issuance metadata.
+None of these commands exports a storage key, raw provider map or live kernel.
+
+Files use a small versioned container with a full-context/ID selection, bounded
+length-prefixed encrypted pages, an explicit end marker and exact EOF. Import
+authenticates the complete initial image and exact selected account/context before
+creating the destination, then checks record/index completeness and the final
+archive claim through the maintained kernel codec. Extra/truncated framing and
+trailing bytes refuse. Inspection bounds/scans the file to locate its authenticated
+final seal and checks the existing completed destination. It is **not a fresh
+cryptographic verification of every middle page in that file**; import performs
+that verification. It also does not prove the archived device was newest or that
+no live clone exists. An older coherent copy cannot establish global freshness.
+
+All file scans and allocations are bounded. Each encrypted page is at most
+512 KiB; import retains at most two pages plus the bounded current image, not a
+whole lifetime history. Default import/input caps are 100,000 records and
+256 MiB of encrypted record payload. `--max-records N --max-bytes N` on import,
+resume and archive-view commands select explicit caps (maximum 1,000,000 records
+and 8 GiB payload, plus bounded container overhead). On import these become the
+destination's immutable native quotas. On resume/view they bound the input file;
+they do not resize an existing store. Export derives its stream cap from the
+source's existing immutable limits. Disk/database overhead is additional.
+
+On interruption, preserve the exact source file and every destination file:
+
+```sh
+# Only authenticated receiving progress can resume. Uses the SAME archive file.
+vhalla private archive-resume ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive
+
+# If final completion was uncertain, use archive-inspect with a new output path.
+# A completed archive intentionally refuses archive-resume and ordinary inspect.
+vhalla private archive-inspect ./owner-key ./owner-archive \
+  --archive ./private-files/owner-2026-09-20.vharchive \
+  --out ./private-files/reconciled-archive.json
+```
+
+Resume rereads the bounded source prefix, rechecks the last committed records page
+as an exact retry, and continues from authenticated durable progress. It cannot
+switch archives, discard records or restart an existing namespace. FORMAT-only,
+missing and malformed destination states remain preserved and refuse. A failed
+export may leave an incomplete private file; restart export to a **new** path,
+never append to the prefix or combine streams. Source state remains authoritative
+and usable. Output failures never authorize resetting a source or destination.
+
+Archive inspection is read-only at the authenticated application layer. The
+existing native custody open still takes its exclusive lock and may perform
+SQLite journal recovery and durability sync; no new storage repair/reset mode
+was added. Account custody and archive/store custody remain owned together until
+lock/drop. Retain both the encrypted archive file and the account's established
+custody; losing either is not repaired by creating a new identity or device.
+Active transfer/fencing, live backup restoration, automatic owner recovery and
+owner succession are not supplied by these commands.
+
+
+## Recover one exact held public draft
+
+`experimental-public` provides an explicit local recovery operation when a
+previously reserved draft's enabled policy has since been revoked, replaced or
+archived. The retained reservation may already have been signed before an
+interruption. Its sequence, event ID and complete unsigned bytes must remain
+fixed. Use the sequence and event ID printed by `activity reserve`:
+
+```console
+vhalla public activity recover-history BOOTSTRAP PIN64 JOURNAL KEY_DIR OUTBOX ROOM64 EXPECTED_SEQUENCE EXPECTED_EVENT64
+```
+
+Append `--replay-profile PROFILE` to reuse an existing authenticated replay
+profile. The usual 4,096-bundle/30-second replay bound applies. A partial replay
+cannot authorize signing; continue the same checked profile with the existing
+catch-up workflow and retry the exact selection.
+
+The command opens only an existing identity and outbox, verifies independently
+pinned certified history, and checks the unsigned request against its exact
+admitted enabled historical revision **before any signature**. The complete room
+scope, actual author base, exact pending frame, and evaluation checkpoint must
+match. Disabled or unknown revisions and foreign scope refuse. A historical
+revision proves neither the time a signature was made nor past admission.
+Current posting grants are checked separately and are never restored by recovery.
+
+If catch-up advanced the stored history checkpoint, recovery persists a checked
+metadata-only rebase through the existing exact compare-and-swap. This changes
+the reservation's evaluation checkpoint, while retaining the same policy ID,
+room, author, sequence, previous ID, timestamp, content ID and exact unsigned
+content. It then confirms the exact durable reservation and final journal HEAD,
+signs with the existing custody key, verifies the result and finalizes that
+same frame locally. It performs no network operation and produces no peer
+admission or delivery receipt.
+
+`status signed-and-retained-for-continuity` means the selected signature and
+local author floor were durably retained. To obtain new admission, ordinary
+`activity queue` must separately pass a currently enabled policy to produce a
+later terminal; use the continuity client for that terminal and its historical
+prefix. A still-closed or archived room cannot admit a new terminal. Sending an
+old historical frame through the v1 ordinary post path does not bypass the peer's
+current-policy checks.
+
+Retry the same sequence and event ID after an uncertain result. If already
+finalized, the command returns `already-signed-retained-locally` using an indexed
+read, leaves a newer pending draft intact, and makes no new policy-evaluation
+claim. It never selects the latest event automatically. A different event at
+that sequence, missing prior state, changed pending request or custody failure
+refuses. Preserve the identity, outbox, profile and all retained intent evidence;
+never delete or reset them to clear an error. Browser recovery UI is not added
+by this native command.
+
+## Explicit private relay TLS
+
+The optional `experimental-private` build includes server-authenticated TLS.
+Keep plain `relay-serve` and plain `--addr` clients on loopback. For TLS, select
+an explicit numeric address, independent CA certificate and exact DNS server
+name; the client never falls back to plaintext. CA/server certificates are DER,
+the server key is PKCS#8 DER, and all files use the existing private 0700/0600
+custody rules. Certificate provisioning remains an operator task. The current
+CLI accepts one DER leaf in `--cert`, so `--tls-ca` must pin its directly signing
+CA (a root CA or an explicitly chosen intermediate as trust anchor). It does
+not load or fetch an intermediate chain, consult ambient roots, or accept a PEM
+chain bundle. The native `server_config` API accepts an explicit ordered DER
+chain for hosts that need multi-certificate deployment. Never weaken name or
+certificate verification to work around a missing issuer.
+
+If a durable mailbox operation becomes uncertain, `relay-tls-serve` closes its
+listener, drains deadline-bound workers and exits with failure without needing
+another client to wake it. Preserve the mailbox and let the operator/supervisor
+reopen that exact custody; do not initialize or delete storage to restart.
+
+```sh
+vhalla private relay-mailbox tls-mailbox --namespace "$PRIVATE_RELAY_NS"
+vhalla private relay-tls-init tls-mailbox --namespace "$PRIVATE_RELAY_NS"
+vhalla private relay-tls-serve tls-mailbox --namespace "$PRIVATE_RELAY_NS" \
+  --config private-files/relay-config.json --cert private-files/relay-cert.der \
+  --key private-files/relay-key.pk8 --listen 127.0.0.1:9443
+vhalla private relay-submit private-files/item.vhrelay --namespace "$PRIVATE_RELAY_NS" \
+  --addr 127.0.0.1:9443 --token private-files/relay-token \
+  --tls-ca private-files/relay-ca.der --tls-name relay.example.test \
+  --out private-files/retained.json
+```
+
+The same `--tls-ca`/`--tls-name` pair works with socket `relay-scan`, `relay-push`
+and `relay-pull`. A namespace mismatch fails the TLS handshake even if the
+mailbox is empty. TLS ALPN exposes the opaque rendezvous namespace to connection
+observers; it must never encode private room or member metadata.
+
+The private JSON service configuration has this exact shape. Replace the
+synthetic hex IDs and namespace with independently selected random values, and
+use absolute token-file paths. Tokens themselves never appear in JSON or argv.
+
+```json
+{
+  "max_connections": 16,
+  "request_timeout_ms": 10000,
+  "window_ms": 1000,
+  "requests_per_window": 128,
+  "bytes_per_window": 67108864,
+  "credentials": [{
+    "id": "01010101010101010101010101010101",
+    "namespace": "0909090909090909090909090909090909090909090909090909090909090909",
+    "token_files": ["/absolute/private-files/relay-token"],
+    "put": true,
+    "page": true,
+    "max_items": 1024,
+    "max_bytes": 67108864,
+    "max_inflight": 4,
+    "requests_per_window": 64,
+    "bytes_per_window": 33554432
+  }]
+}
+```
+
+Each credential's quotas must be at most half the mailbox/global limits.
+Admission charges commit with the retained ciphertext and survive restart.
+Rotate by replacing `token_files` under the same stable credential ID, with at
+most two token files for an explicit overlap window. Stop the old service before
+restarting; omitting the old token revokes it for the replacement service.
+Credential removal does not erase retained items or reclaim its charged quota.
+Quotas for an existing ID are immutable. Initialization refuses used mailboxes;
+preserve legacy evidence and select a new empty mailbox. Work-window exhaustion
+returns capacity refusal; it never prunes existing data. These commands establish
+relay retention, not authenticated member acceptance or human reading.

@@ -8,10 +8,16 @@ description = "Explicit native custody for Valhalla application signing identiti
 
 [features]
 default = []
+private-rooms = ["dep:vhalla-private-protocol"]
+private-storage = ["private-rooms", "dep:vhalla-private-kernel"]
 social = ["dep:vhalla-social"]
 rooms = ["dep:vhalla-rooms"]
+room-activity = ["dep:vhalla-room-activity"]
+public-peer = ["dep:vhalla-public-protocol"]
 
 [dependencies]
+vhalla-private-protocol = { path = "../vhalla-private-protocol", optional = true }
+vhalla-private-kernel = { path = "../vhalla-private-kernel", optional = true }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "zeroize"] }
 getrandom = "0.3"
 zeroize = { version = "1.9", features = ["alloc"] }
@@ -23,11 +29,18 @@ vhalla-session = { path = "../vhalla-session" }
 vhalla-custody = { path = "../vhalla-custody" }
 vhalla-social = { path = "../vhalla-social", optional = true }
 vhalla-rooms = { path = "../vhalla-rooms", optional = true }
+vhalla-room-activity = { path = "../vhalla-room-activity", optional = true }
 bip39 = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+
+vhalla-public-protocol = { path = "../vhalla-public-protocol", optional = true }
 
 [dev-dependencies]
 hegeltest = "0.46.0"
 proptest = "1.6"
+
+[target.'cfg(unix)'.dev-dependencies]
+futures = "=0.3.34"
+vhalla-browser-vault = { path = "../vhalla-browser-vault", features = ["private-storage"] }
 
 [lints]
 workspace = true

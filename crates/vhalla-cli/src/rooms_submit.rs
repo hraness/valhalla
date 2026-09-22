@@ -65,7 +65,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     let (node_home, config) = service_target(args, "submit")?;
     let kind = args
         .value(1)
-        .ok_or("submit takes a kind: create | describe | archive")?;
+        .ok_or("submit takes a kind: create | describe | archive | public-policy")?;
     let mut service = connect(args, node_home, &config)?;
     let now = args.now();
 
@@ -111,6 +111,32 @@ pub fn run(args: &Args) -> Result<(), String> {
                 vec![sign::describe_body(slug, &f, now, &mut service)?],
             )
         }
+        "public-policy" => {
+            let key_dir = args.value(2).ok_or("public-policy takes OWNER_KEYDIR")?;
+            let slug = args.value(3).ok_or("public-policy takes SLUG")?;
+            let network = args.value(4).ok_or("public-policy takes NETWORK64")?;
+            let enabled = match args.value(5) {
+                Some("open") => true,
+                Some("closed") => false,
+                _ => return Err("public-policy state must be open or closed".into()),
+            };
+            if args.value(6).is_some() {
+                return Err(
+                    "public-policy takes exactly OWNER_KEYDIR SLUG NETWORK64 open|closed".into(),
+                );
+            }
+            (
+                Vec::new(),
+                vec![sign::public_activity_body(
+                    slug,
+                    key_dir,
+                    network,
+                    enabled,
+                    now,
+                    &mut service,
+                )?],
+            )
+        }
         "archive" => {
             // OWNER_KEYDIR SLUG
             let key_dir = args.value(2).ok_or("archive takes OWNER_KEYDIR")?;
@@ -123,7 +149,7 @@ pub fn run(args: &Args) -> Result<(), String> {
                 vec![sign::archive_body(slug, key_dir, now, &mut service)?],
             )
         }
-        _ => return Err("submit kind must be create, describe or archive".into()),
+        _ => return Err("submit kind must be create, describe, archive or public-policy".into()),
     };
 
     let marker = service

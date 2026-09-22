@@ -60,9 +60,8 @@ impl AnswerFormat {
 /// `answerFormat` in `ladder/family.ts`.
 pub fn answer_format(family: &str) -> AnswerFormat {
     match family {
-        "arithmetic" | "sequence" | "gridpath" | "registervm" | "cryptarithm" | "relayvm" => {
-            AnswerFormat::Integer
-        }
+        "arithmetic" | "sequence" | "gridpath" | "registervm" | "cryptarithm" | "relayvm"
+        | "algal" => AnswerFormat::Integer,
         "sudoku" | "gridxf" => AnswerFormat::Grid,
         "automata" | "sat" | "satcheck" | "bitmatrix" | "bitcircuit" | "autostep" => {
             AnswerFormat::Bits

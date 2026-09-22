@@ -1,0 +1,43 @@
+[package]
+name = "vhalla-private-kernel"
+version = "0.0.0"
+edition.workspace = true
+rust-version = "1.98"
+license.workspace = true
+publish.workspace = true
+description = "Private-room MLS custody and owner-authorized group lifecycle."
+
+[features]
+# Local browser acceptance harness only; never use this build for deployment.
+local-qualification = []
+
+[dependencies]
+vhalla-private-protocol = { path = "../vhalla-private-protocol" }
+openmls = { version = "=0.9.0", default-features = false }
+openmls_traits = { version = "=0.6.0", default-features = false }
+openmls_rust_crypto = { version = "=0.6.0", default-features = false }
+openmls_basic_credential = { version = "=0.6.0", default-features = false }
+openmls_memory_storage = { version = "=0.6.0", default-features = false }
+tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
+chacha20poly1305 = "=0.10.1"
+hkdf = { version = "=0.12.4", default-features = false }
+sha2 = "0.10"
+zeroize = "1"
+getrandom = "=0.2.17"
+web-time = "1.1"
+ed25519-dalek = "=2.2.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+openmls = { version = "=0.9.0", default-features = false, features = ["js"] }
+getrandom = { version = "=0.2.17", features = ["js"] }
+
+[dev-dependencies]
+futures = "=0.3.34"
+
+# Exact browser bindings shared with the maintained browser client.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen = "=0.2.108"
+js-sys = "=0.3.85"
+
+[lints]
+workspace = true

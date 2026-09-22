@@ -196,13 +196,39 @@ pub struct CreationIntent {
     pub nonce: [u8; 32],
 }
 
-/// Owner-only room edits; creation grants confer neither of these operations.
+/// The only public signed-activity protocol this room policy enables.
+pub const PUBLIC_ACTIVITY_VERSION: u8 = 1;
+
+/// The most recent admitted public-activity policy revision of a room.
+/// This derived view is not a certificate or a host capability. Callers must
+/// obtain the registry through certified replay and check the exact network,
+/// room genesis and current policy record before accepting activity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicActivityPolicy {
+    /// Exact owner-signed room revision that selected this policy.
+    pub record: RoomRecordId,
+    /// Full immutable public network identifier, independently pinned by clients.
+    pub network: [u8; 32],
+    /// Whether this signed policy enables version-1 public signed activity.
+    /// Archival overrides this switch; use Room::allows_public_activity.
+    pub enabled: bool,
+}
+
+/// Owner-only room edits; creation grants confer none of these operations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UpdateAction {
     /// Replace only the short description.
     Describe(Description),
     /// Request permanent archival; slug and creation debit remain reserved.
     Archive,
+    /// Select version-1 public signed activity for this exact room and network.
+    /// This grants no validator membership, host execution or private access.
+    SetPublicActivityPolicy {
+        /// Full immutable public network identifier; zero is rejected.
+        network: [u8; 32],
+        /// Open to public signed activity when true; close it when false.
+        enabled: bool,
+    },
 }
 
 /// Exact predecessor-bound owner edit; cannot change slug or genesis ownership.

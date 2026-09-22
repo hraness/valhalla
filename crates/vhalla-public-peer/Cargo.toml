@@ -1,0 +1,36 @@
+[package]
+name = "vhalla-public-peer"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Bounded read-only loopback HTTP adapter for certified public peer reads."
+
+[target.'cfg(unix)'.dependencies]
+vhalla-room-activity = { path = "../vhalla-room-activity" }
+vhalla-room-activity-store = { path = "../vhalla-room-activity-store" }
+vhalla-rooms = { path = "../vhalla-rooms" }
+vhalla-public-protocol = { path = "../vhalla-public-protocol" }
+vhalla-public-client = { path = "../vhalla-public-client" }
+vhalla-journal = { path = "../vhalla-journal" }
+vhalla-identity = { path = "../vhalla-identity", features = ["public-peer"] }
+vhalla-custody = { path = "../vhalla-custody" }
+sha2 = "0.10"
+bytes = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "time", "sync", "io-util"] }
+libc = "0.2"
+
+[target.'cfg(unix)'.dev-dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
+vhalla-core = { path = "../vhalla-core" }
+vhalla-social = { path = "../vhalla-social" }
+vhalla-rooms = { path = "../vhalla-rooms" }
+vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", features = ["fixture"] }
+vhalla-rooms-node = { path = "../vhalla-rooms-node" }
+tokio = { version = "1", features = ["signal"] }
+
+[lints]
+workspace = true

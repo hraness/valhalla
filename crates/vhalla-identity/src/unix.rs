@@ -127,6 +127,157 @@ impl Identity {
         self.key.verifying_key().to_bytes()
     }
 
+    /// Derive opaque private storage custody for this exact account and context.
+    /// No seed or derived bytes are exported. This does not initialize or restore
+    /// room state. Lock must drop every owned kernel as well as this identity;
+    /// a kernel retains its own secret. See `StorageKey::derive_for_account` for
+    /// the fixed derivation and account-compromise/recovery boundaries.
+    #[cfg(feature = "private-storage")]
+    pub fn private_storage_key(
+        &self,
+        context: vhalla_private_kernel::Context,
+    ) -> Result<vhalla_private_kernel::StorageKey, vhalla_private_kernel::Error> {
+        vhalla_private_kernel::StorageKey::derive_for_account(&self.key, context)
+    }
+
+    /// Sign the exact private-room anchor request with its owner account key.
+    /// The trusted controller must authorize room creation independently and
+    /// persist the corresponding device before releasing any MLS artifact.
+    /// This account signature never grants host execution or relay authority.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_anchor(
+        &self,
+        request: &vhalla_private_protocol::UnsignedRoomAnchor,
+    ) -> Result<vhalla_private_protocol::SignedRoomAnchor, vhalla_private_protocol::Error> {
+        request.sign(&self.key)
+    }
+
+    /// Sign one exact account/device/validity binding without exposing key bytes.
+    /// Enrollment alone is not room membership. Creation, renewal and recovery
+    /// require separately checked owner policy, current state and durable output.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_enrollment(
+        &self,
+        request: &vhalla_private_protocol::UnsignedDeviceEnrollment,
+    ) -> Result<vhalla_private_protocol::SignedDeviceEnrollment, vhalla_private_protocol::Error>
+    {
+        request.sign(&self.key)
+    }
+
+    /// Sign one exact owner-succession grant with the owner account key. The
+    /// grant alone authorizes nothing: the kernel still requires the retained
+    /// predecessor control floor, the rostered successor enrollment and the
+    /// predecessor-signed carrying commit before any device handoff occurs.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_succession(
+        &self,
+        request: &vhalla_private_protocol::UnsignedOwnerSuccession,
+    ) -> Result<vhalla_private_protocol::SignedOwnerSuccession, vhalla_private_protocol::Error>
+    {
+        request.sign(&self.key)
+    }
+
+    /// Sign a checked room activity with this exact application key, without
+    /// exporting its seed or accepting arbitrary signing bytes. The returned
+    /// event has a strictly verified signature; policy admission, durable author
+    /// sequence reservation and publication remain the caller's responsibility.
+    #[cfg(feature = "room-activity")]
+    pub fn sign_activity(
+        &self,
+        request: vhalla_room_activity::UnsignedEvent,
+    ) -> Result<vhalla_room_activity::SignedEvent, vhalla_room_activity::Error> {
+        if request.claims().author != self.public_key() {
+            return Err(vhalla_room_activity::Error::Signer);
+        }
+        request.sign_with_key(&self.key)
+    }
+
+    /// Sign only a checked public-peer advertisement with this application key.
+    /// Claims grant no validator, room, host or posting authority.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_public_advertisement(
+        &self,
+        advertisement: vhalla_public_protocol::UnsignedAdvertisement,
+    ) -> Result<vhalla_public_protocol::PeerAdvertisement, vhalla_public_protocol::Error> {
+        advertisement.sign_with_key(&self.key)
+    }
+
+    /// Sign only a typed successful read response, binding network, full key,
+    /// fresh nonce, exact request and body digest. No arbitrary bytes signing.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_public_response(
+        &self,
+        response: vhalla_public_protocol::response::UnsignedResponse,
+    ) -> Result<
+        vhalla_public_protocol::response::PeerResponseProof,
+        vhalla_public_protocol::response::ResponseError,
+    > {
+        response.sign_with_key(&self.key)
+    }
+
+    /// Sign only a typed nonce-bound activity response. Its receipt claims local
+    /// durable storage, never consensus or current-policy authority.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_activity_response(
+        &self,
+        response: vhalla_public_protocol::activity::UnsignedActivityResponse,
+    ) -> Result<
+        vhalla_public_protocol::activity::ActivityResponseProof,
+        vhalla_public_protocol::response::ResponseError,
+    > {
+        response.sign_with_key(&self.key)
+    }
+
+    /// Sign a checked continuity reply for this exact peer key, request and body.
+    /// Temporary stages, historical evidence and terminal durability retain their
+    /// distinct roles; this signs no generic bytes or global admission claim.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_continuity_response(
+        &self,
+        response: vhalla_public_protocol::continuity::UnsignedResponse,
+    ) -> Result<
+        vhalla_public_protocol::continuity::ResponseProof,
+        vhalla_public_protocol::continuity::Error,
+    > {
+        response.sign_with_key(&self.key)
+    }
+
+    /// Sign only the fixed discovery Hashcash issuer contract for this peer.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_discovery_challenge(
+        &self,
+        challenge: vhalla_public_protocol::discovery::UnsignedRegistrationChallenge,
+    ) -> Result<
+        vhalla_public_protocol::discovery::RegistrationChallenge,
+        vhalla_public_protocol::discovery::DiscoveryError,
+    > {
+        challenge.sign_with_key(&self.key)
+    }
+
+    /// Sign only a typed nonce-bound discovery response.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_discovery_response(
+        &self,
+        response: vhalla_public_protocol::discovery::UnsignedDiscoveryResponse,
+    ) -> Result<
+        vhalla_public_protocol::discovery::DiscoveryResponseProof,
+        vhalla_public_protocol::discovery::DiscoveryError,
+    > {
+        response.sign_with_key(&self.key)
+    }
+
+    /// Sign only this publisher's solved, exact-advertisement registration.
+    #[cfg(feature = "public-peer")]
+    pub fn sign_peer_registration(
+        &self,
+        registration: vhalla_public_protocol::discovery::UnsignedRegistration,
+    ) -> Result<
+        vhalla_public_protocol::discovery::Registration,
+        vhalla_public_protocol::discovery::DiscoveryError,
+    > {
+        registration.sign_with_key(&self.key)
+    }
+
     /// Encode the 256-bit seed as a 24-word BIP39 mnemonic. The phrase is
     /// returned in a `Zeroizing` string so the caller can avoid leaking it in
     /// their own heap; the seed bytes themselves are never exposed.
@@ -361,6 +512,66 @@ fn decode(raw: &[u8]) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[cfg(feature = "public-peer")]
+    #[test]
+    fn continuity_signer_binds_only_the_current_custody_key_and_exact_request() {
+        use vhalla_public_protocol::continuity as wire;
+        // Private unit fixture only; production uses its existing custody lock.
+        let identity = Identity {
+            key: SigningKey::from_bytes(&[17; 32]),
+            _lock: File::open("/dev/null").unwrap(),
+        };
+        let author = SigningKey::from_bytes(&[19; 32]).verifying_key().to_bytes();
+        let request = wire::Request::new(
+            wire::RequestContext {
+                scope: wire::Scope {
+                    network: [1; 32],
+                    realm: [2; 16],
+                    directory: [3; 32],
+                    room: [4; 32],
+                },
+                nonce: [5; 32],
+                operation: [6; 16],
+                floor: wire::Observed {
+                    height: 0,
+                    frontier: [7; 32],
+                },
+            },
+            wire::Selection::Author(author),
+            wire::Kind::Status {
+                minimum: wire::Position::EMPTY,
+            },
+        )
+        .unwrap();
+        let reply = wire::Reply::Status(wire::Status {
+            observed: request.context().floor,
+            published: wire::Position::EMPTY,
+            stage: None,
+        })
+        .encode(&request)
+        .unwrap();
+        let proof = identity
+            .sign_continuity_response(
+                wire::UnsignedResponse::new(identity.public_key(), request, &reply).unwrap(),
+            )
+            .unwrap();
+        proof
+            .verify(identity.public_key(), &request, &reply)
+            .unwrap();
+        let foreign = SigningKey::from_bytes(&[18; 32]).verifying_key().to_bytes();
+        assert!(identity
+            .sign_continuity_response(
+                wire::UnsignedResponse::new(foreign, request, &reply).unwrap()
+            )
+            .is_err());
+        let mut changed = request.context();
+        changed.nonce = [8; 32];
+        let changed = wire::Request::new(changed, request.selection(), request.kind()).unwrap();
+        assert!(proof
+            .verify(identity.public_key(), &changed, &reply)
+            .is_err());
+    }
 
     proptest! {
         #[test]

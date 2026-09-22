@@ -1297,3 +1297,86 @@ fn hex_literal(s: &str) -> [u8; 32] {
     }
     out
 }
+
+#[test]
+fn restart_replays_published_journal_after_unpublished_snapshot_preparation() {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    for (store_name, prefix) in [
+        ("social", b"".as_slice()),
+        ("social", b"VHSI".as_slice()),
+        ("rooms", b"".as_slice()),
+        ("rooms", b"VHRI".as_slice()),
+    ] {
+        let plan = fixture::plan(1, 4, 8);
+        let home = dir("snapshot-prepare-restart");
+        let mut adapter = Adapter::open(&home, &plan.genesis).unwrap();
+        let batch = plan.batches.get(&1).unwrap();
+        let checked = adapter.application().validate(batch).unwrap();
+        let next = checked.next();
+        let certificate = cert(batch, 1, "interrupted-materialization");
+        let bundle = Bundle::new(BundleParts {
+            certificate: certificate.bytes,
+            predecessor: adapter.frontier().commitment(),
+            next: next.commitment(),
+            batch: batch.encode(),
+            value: batch.value_id().to_vec(),
+            configuration: adapter
+                .application()
+                .registry()
+                .policy()
+                .id()
+                .as_bytes()
+                .to_vec(),
+            control_record: next.control.to_vec(),
+            debit_marker: next.value.to_vec(),
+            height: 1,
+        })
+        .unwrap();
+        assert_eq!(adapter.journal.commit(&bundle).unwrap(), Outcome::Committed);
+        // The journal marker is published before either snapshot. Interruption
+        // of rooms preparation comes after the social snapshot has committed.
+        if store_name == "rooms" {
+            adapter
+                .social
+                .commit(checked.social.clone(), adapter.social.pin())
+                .unwrap();
+        }
+        assert_eq!(adapter.recover().unwrap().pin.height, 1);
+        assert_eq!(adapter.frontier().height, 0);
+        drop(adapter);
+        let scratch = home.join(store_name).join("intent.tmp");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&scratch)
+            .unwrap();
+        file.write_all(prefix).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let reopened = Adapter::open(&home, &plan.genesis).unwrap();
+        assert_eq!(reopened.frontier(), next);
+        assert_eq!(
+            reopened.application().social().snapshot(),
+            checked.social.snapshot()
+        );
+        assert_eq!(
+            reopened.application().registry().snapshot(),
+            checked.registry.snapshot()
+        );
+        assert_eq!(
+            reopened.committed_at_height(1).unwrap().bytes(),
+            bundle.bytes()
+        );
+        assert!(!scratch.exists());
+        drop(reopened);
+        assert_eq!(
+            Adapter::open(&home, &plan.genesis).unwrap().frontier(),
+            next
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+}

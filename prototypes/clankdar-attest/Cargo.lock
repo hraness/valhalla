@@ -390,11 +390,13 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
+ "libc",
  "rand_core",
  "serde",
  "serde_json",
  "sha2",
  "time",
+ "vhalla-room-activity",
 ]
 
 [[package]]
@@ -402,6 +404,40 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vhalla-core"
+version = "0.0.0"
+
+[[package]]
+name = "vhalla-room-activity"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "sha2",
+ "vhalla-core",
+ "vhalla-rooms",
+]
+
+[[package]]
+name = "vhalla-rooms"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "sha2",
+ "vhalla-core",
+ "vhalla-social",
+]
+
+[[package]]
+name = "vhalla-social"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "sha2",
+ "vhalla-core",
+]
 
 [[package]]
 name = "wasi"

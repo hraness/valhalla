@@ -1,0 +1,27 @@
+window.qid=id=>document.getElementById(id);
+window.qassert=(v,m)=>{if(!v)throw Error(m)};
+window.qwait=async(f,m)=>{const t=Date.now()+45000;while(!f()){if(Date.now()>t)throw Error(m+' status='+qid('status').textContent+' network='+qid('network-status').textContent+' activity='+qid('activity-status').textContent);await new Promise(r=>setTimeout(r,20));}};
+window.qset=(id,v,event='input')=>{qid(id).value=v;qid(id).dispatchEvent(new Event(event,{bubbles:true}));};
+window.qclick=async id=>{await qwait(()=>!qid(id).disabled,id+' enabled');qid(id).click();};
+window.qidle=()=>qwait(()=>!qid('show-outbox').disabled,'network idle');
+(async()=>{
+  qset('password',qa.password);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','unlock after policy revocation');
+  await qwait(()=>qid('activity-room').options.length===2&&!qid('activity-room').disabled,'retained directory after revocation');
+  await qclick('sync-network');await qidle();
+  await qwait(()=>qid('network-summary').textContent.includes('certified height 5'),'revocation bundle not replayed: '+qid('network-summary').textContent);
+  await qwait(()=>[...qid('room-list').querySelectorAll('.room-card')].some(card=>card.textContent.includes('public-lobby')&&card.textContent.includes('Public activity closed')),'lobby revocation absent from the verified directory');
+  const lobby=qa.rooms.find(room=>room.name==='public-lobby');
+  qset('activity-room',lobby.id,'change');
+  await qclick('resume-activity');await qidle();
+  qassert(qid('activity-status').textContent.includes('does not permit this post'),'revoked-policy resume was not refused: '+qid('activity-status').textContent);
+  qassert(qid('activity-status').textContent.includes('pending draft is preserved'),'refusal did not preserve the exact draft');
+  await qclick('resume-activity');await qidle();
+  qassert(qid('activity-status').textContent.includes('does not permit this post'),'a second resume did not refuse the retained old-policy draft');
+  await qclick('recover-draft');await qidle();
+  qassert(qid('activity-status').textContent.includes('recovered and signed under its retained enabling policy'),'historical recovery did not sign the exact draft: '+qid('activity-status').textContent);
+  await qclick('show-outbox');await qidle();
+  qassert(qid('activity-list').textContent.includes('SYNTHETIC_OLD_POLICY_DRAFT'),'recovered post bytes changed or were lost');
+  qa.facts.push('Certified revocation stranded the unsigned lobby draft: current-policy resume refused twice with the exact draft preserved; explicit recovery then signed only the unchanged request under its retained enabling revision');
+  qset('activity-room',qa.rooms[1].id,'change');
+  return {facts:qa.facts,oldPolicyDraft:'refused-then-recovered',revocationHeight:5};
+})()

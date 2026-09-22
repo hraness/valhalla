@@ -941,6 +941,237 @@ mod enabled {
         assert!(!err.contains("panic"), "node stderr: {err}");
     }
 
+    /// Public posting is an explicit owner-signed proposal. Exercise the actual
+    /// CLI and intake bytes with consensus stopped after the room's creation.
+    #[test]
+    fn public_policy_queues_exact_typed_updates_without_committing() {
+        use vhalla_rooms::{Body, SignedRecord, Slug, UpdateAction};
+        use vhalla_rooms_app::{Service, ServiceConfig};
+        use vhalla_rooms_consensus::BatchBody;
+
+        fn files(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+            fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), fs::read(entry.path()).unwrap())
+                })
+                .collect()
+        }
+
+        let temp = Temp::new();
+        let world = world(&temp);
+        let config = config(&temp, &world.source_owner);
+        let home = temp.path("node-home");
+        let replica = temp.path("replica");
+        let mut node = spawn_node(&temp, &world.alice.store, &home, &config);
+        node.wait_listening();
+        let created = submit(
+            &world.alice.store,
+            &replica,
+            &home,
+            &config,
+            &[
+                "create",
+                path(&world.alice.key),
+                path(&world.agent_key_dir),
+                &world.alice.owner,
+                &world.agent,
+                "public-hall",
+                "100",
+                "an initially closed room",
+                path(&world.snapshot),
+            ],
+        );
+        wait_for(
+            Duration::from_secs(90),
+            "public-policy room creation",
+            || committed(&home, 1),
+        );
+        let report = pending(&world.alice.store, &replica, &home, &config);
+        assert_eq!(report["height"], 1);
+        assert_eq!(
+            marker_state(&report, &field(&created, "marker")),
+            "committed"
+        );
+
+        // Finish the sole validator before submitting policies. No background
+        // consensus can turn a queued proposal into a committed claim.
+        Command::new("kill")
+            .args(["-INT", &node.child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(node.child.wait().unwrap().success());
+        let service_config = ServiceConfig::parse(&fs::read(&config).unwrap()).unwrap();
+        let slug = Slug::new("public-hall").unwrap();
+        let owner_key = vhalla_identity::Identity::open(&world.alice.key)
+            .unwrap()
+            .public_key();
+        let (genesis, head, digest, social_root, control) = {
+            let service =
+                Service::open(&world.alice.store, &home, &replica, &service_config).unwrap();
+            assert_eq!(service.height(), 1);
+            let room = service.registry().room(&slug).unwrap();
+            assert_eq!(room.public_activity_policy(), None);
+            (
+                room.genesis(),
+                room.head(),
+                service.registry().digest(),
+                service.archive().root(),
+                service
+                    .update_context(slug.as_str(), owner_key, 10)
+                    .unwrap()
+                    .social_control,
+            )
+        };
+        let mut queued = Vec::new();
+        for (mode, enabled, network) in [("open", true, [0x5a; 32]), ("closed", false, [0xa5; 32])]
+        {
+            let result = submit(
+                &world.alice.store,
+                &replica,
+                &home,
+                &config,
+                &[
+                    "public-policy",
+                    path(&world.alice.key),
+                    slug.as_str(),
+                    &hex(&network),
+                    mode,
+                ],
+            );
+            assert_eq!(result["queued"], true);
+            assert_eq!(
+                result.as_object().unwrap().len(),
+                2,
+                "only queued and marker are reported"
+            );
+            let marker = field(&result, "marker");
+            let raw = fs::read(home.join("intake").join(format!("{marker}.body"))).unwrap();
+            let body = BatchBody::decode(&raw).unwrap();
+            assert_eq!(body.encode(), raw, "intake encoding is canonical");
+            assert_eq!(body.time, 10);
+            assert!(body.evidence.is_empty());
+            assert!(body.games.is_empty());
+            assert!(body.eligible.is_none());
+            assert_eq!(body.records.len(), 1);
+            let record = SignedRecord::decode(&body.records[0])
+                .unwrap()
+                .verify()
+                .unwrap();
+            assert_eq!(record.encode(), body.records[0]);
+            assert_eq!(hex(record.id().as_bytes()), marker);
+            let Body::Update(update) = record.body() else {
+                panic!("public-policy must emit a typed room update");
+            };
+            assert_eq!(
+                update.action,
+                UpdateAction::SetPublicActivityPolicy { network, enabled }
+            );
+            assert_eq!(hex(update.directory.as_bytes()), DIRECTORY);
+            assert_eq!(format!("{:032x}", update.realm.0), REALM);
+            assert_eq!(update.genesis, genesis);
+            assert_eq!(update.previous, head);
+            assert_eq!(hex(update.owner.as_bytes()), world.alice.owner);
+            assert_eq!(update.controller_key, owner_key);
+            assert_eq!(hex(update.social_control.as_bytes()), control);
+            assert_eq!(update.expires_at, 3610);
+            queued.push(marker);
+        }
+
+        let intake_before = files(&home.join("intake"));
+        let pending_before = files(&replica.join("pending"));
+        let foreign = Social::init(&temp, "foreign-owner");
+        let invalid_networks = [
+            ("short".to_owned(), "64 ASCII hex"),
+            ("g".repeat(64), "hex"),
+            ("00".repeat(32), "must not be zero"),
+            (format!("aé{}", "a".repeat(61)), "hex"),
+        ];
+        let mut invalid = invalid_networks
+            .iter()
+            .map(|(network, error)| (world.alice.key.as_path(), network.clone(), "open", *error))
+            .collect::<Vec<_>>();
+        invalid.push((
+            world.alice.key.as_path(),
+            hex(&[0x5a; 32]),
+            "enabled",
+            "open or closed",
+        ));
+        invalid.push((
+            foreign.key.as_path(),
+            hex(&[0x5a; 32]),
+            "open",
+            "does not control",
+        ));
+        for (key, network, mode, message) in invalid {
+            let error = fails(
+                "rooms",
+                &[
+                    "submit",
+                    path(&world.alice.store),
+                    path(&replica),
+                    REALM,
+                    path(&home),
+                    "public-policy",
+                    path(key),
+                    slug.as_str(),
+                    &network,
+                    mode,
+                    "--config",
+                    path(&config),
+                    "--now",
+                    NOW,
+                ],
+            );
+            assert!(error.contains(message), "expected {message:?}, got {error}");
+            assert!(
+                !error.contains("panicked"),
+                "malformed input must be rejected, not panic"
+            );
+            assert_eq!(files(&home.join("intake")), intake_before);
+            assert_eq!(files(&replica.join("pending")), pending_before);
+        }
+
+        let report = pending(&world.alice.store, &replica, &home, &config);
+        assert_eq!(report["height"], 1);
+        for marker in &queued {
+            assert_eq!(marker_state(&report, marker), "queued");
+        }
+        // Rehearse the node's rejection-file boundary without pretending a
+        // consensus decision happened. An unchanged room head must not hide it.
+        fs::rename(
+            home.join("intake").join(format!("{}.body", queued[0])),
+            home.join("intake").join(format!("{}.rejected", queued[0])),
+        )
+        .unwrap();
+        // Certified committed state remains authoritative over stray intake
+        // markers: an old rejection file cannot revoke the committed create.
+        fs::write(
+            home.join("intake")
+                .join(format!("{}.rejected", field(&created, "marker"))),
+            b"stale intake rejection",
+        )
+        .unwrap();
+        let report = pending(&world.alice.store, &replica, &home, &config);
+        assert_eq!(marker_state(&report, &queued[0]), "rejected");
+        assert_eq!(marker_state(&report, &queued[1]), "queued");
+        assert_eq!(
+            marker_state(&report, &field(&created, "marker")),
+            "committed"
+        );
+        let mut service =
+            Service::open(&world.alice.store, &home, &replica, &service_config).unwrap();
+        assert_eq!(service.sync().unwrap(), 1);
+        assert_eq!(service.registry().digest(), digest);
+        assert_eq!(service.archive().root(), social_root);
+        let room = service.registry().room(&slug).unwrap();
+        assert_eq!(room.head(), head);
+        assert_eq!(room.public_activity_policy(), None);
+        assert!(!room.allows_public_activity(&[0x5a; 32], head));
+        assert!(!home.join("app/journal/heights/0000000000000002").exists());
+    }
+
     /// Rejection paths that must fail before any intake write.
     #[test]
     fn submit_rejects_bad_evidence_foreign_updates_and_bad_args() {

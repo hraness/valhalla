@@ -90,3 +90,21 @@ is lost, the identity is gone.
 The command entry point and CLI lifecycle tests live in `vhalla-cli`; the identity
 library has no transport dependency. `cargo test -p vhalla-cli --locked` checks the
 default identity commands.
+
+## Optional private storage custody
+
+The `private-storage` feature adds
+`Identity::private_storage_key(Context) -> Result<StorageKey, vhalla_private_kernel::Error>`.
+It delegates to the kernel's single versioned account/context derivation and
+returns only opaque zeroizing custody. A different claimed account refuses.
+The existing `private-rooms` feature remains protocol-only signing; default
+production identity dependencies do not gain MLS.
+
+The existing account directory and lock remain the sole account custody store.
+No plaintext storage-key file, new secret registry or seed getter is added. A
+private client must retain its exact context before initialization and explicitly
+open that complete state after uncertainty. A mnemonic alone cannot recreate MLS
+ratchets, consumed KeyPackages or histories. Account compromise affects every
+retained derived context; account rotation is not transparent private-state
+migration. Lock must drop every live kernel as well as Identity, because kernels
+retain private storage-key copies. No reset, clone or backup workflow is added.

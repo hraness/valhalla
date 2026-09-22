@@ -242,28 +242,17 @@ fn decode_seen(name: &str, body: &[u8; 40]) -> Option<(u64, SeenProposal)> {
     ))
 }
 
-/// Load retained batches and proposal metadata. Invalid records are never
-/// resupplied. Legacy records cannot recover earlier metadata that an old
-/// binary overwrote; live-parent batches are conservatively retained below.
-fn load_store(
-    store: &Path,
-) -> (
-    BTreeMap<RoomValueId, Batch>,
-    BTreeMap<u64, Vec<SeenProposal>>,
-) {
-    let mut held = BTreeMap::new();
-    if let Ok(entries) = std::fs::read_dir(store.join("batches")) {
-        for entry in entries.flatten() {
-            let Ok(bytes) = std::fs::read(entry.path()) else {
-                continue;
-            };
-            let Ok(batch) = Batch::decode(&bytes) else {
-                continue;
-            };
-            held.insert(RoomValueId(batch.value_id()), batch);
-        }
-    }
+/// Scan immutable recovery evidence one bounded record at a time. Historical
+/// files remain on disk; only uncommitted references and exact live-parent
+/// batches enter memory. None means an unfiltered inspection in tests.
+struct StoreScan {
+    held: BTreeMap<RoomValueId, Batch>,
+    seen: BTreeMap<u64, Vec<SeenProposal>>,
+    scanned: (usize, usize),
+}
+fn load_store_at(store: &Path, frontier: Option<vhalla_rooms_consensus::Frontier>) -> StoreScan {
     let mut seen: BTreeMap<u64, Vec<SeenProposal>> = BTreeMap::new();
+    let mut scanned = (0usize, 0usize);
     if let Ok(entries) = std::fs::read_dir(store.join("seen")) {
         for entry in entries.flatten() {
             let Ok(body) = read_seen_body(&entry.path()) else {
@@ -273,6 +262,10 @@ fn load_store(
             else {
                 continue;
             };
+            scanned.1 = scanned.1.saturating_add(1);
+            if frontier.is_some_and(|f| height <= f.height) {
+                continue;
+            }
             let records = seen.entry(height).or_default();
             if let Some(existing) = records.iter().find(|seen| {
                 seen.round == record.round
@@ -288,7 +281,54 @@ fn load_store(
             }
         }
     }
-    (held, seen)
+    let referenced: BTreeSet<_> = seen
+        .values()
+        .flat_map(|records| records.iter().map(|record| record.value_id))
+        .collect();
+    let mut held = BTreeMap::new();
+    if let Ok(entries) = std::fs::read_dir(store.join("batches")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            if file
+                .take(vhalla_rooms_consensus::MAX_BATCH_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .is_err()
+            {
+                continue;
+            }
+            let Ok(batch) = Batch::decode(&bytes) else {
+                continue;
+            };
+            scanned.0 = scanned.0.saturating_add(1);
+            let id = RoomValueId(batch.value_id());
+            if frontier.is_none_or(|f| batch.parent == f || referenced.contains(&id)) {
+                held.insert(id, batch);
+            }
+        }
+    }
+    StoreScan {
+        held,
+        seen,
+        scanned,
+    }
+}
+
+#[cfg(test)]
+fn load_store(
+    store: &Path,
+) -> (
+    BTreeMap<RoomValueId, Batch>,
+    BTreeMap<u64, Vec<SeenProposal>>,
+) {
+    let scan = load_store_at(store, None);
+    (scan.held, scan.seen)
 }
 
 /// An older binary may have overwritten the only seen reference to an
@@ -329,7 +369,6 @@ struct App {
     streams: BTreeMap<(Vec<u8>, Vec<u8>), StreamState>,
     /// value commitment -> assembled parts, for restreams.
     parts_cache: BTreeMap<RoomValueId, Vec<RoomPart>>,
-    decided: BTreeMap<u64, RawDecidedValue<RoomContext>>,
     stream_seq: u64,
     boundary_latency: Arc<Mutex<Vec<(u64, u128)>>>,
     /// Application-owned durable store (`batches/` + `seen/`).
@@ -414,6 +453,11 @@ const PROPOSAL_CHUNK_BYTES: usize = 768;
 // payload globally and 1 MiB per peer, plus bounded map metadata. Expiry
 // is recovery for abandoned streams, not the primary resource fence.
 const MAX_PROPOSAL_STREAMS: usize = 128;
+// A stalled height must not let an authorized proposer consume unbounded disk.
+// These are admission budgets, never pruning limits: previously retained values
+// and exact header retries remain recoverable even from an older oversized store.
+const MAX_RETAINED_VALUES_PER_PARENT: usize = 256;
+const MAX_SEEN_RECORDS_PER_HEIGHT: usize = 4096;
 const MAX_PROPOSAL_STREAMS_PER_PEER: usize = 4;
 const MAX_PROPOSAL_CHUNKS: usize = crate::MAX_VALUE_BYTES.div_ceil(PROPOSAL_CHUNK_BYTES);
 
@@ -661,10 +705,17 @@ impl App {
         let mut answered = Vec::new();
         for req in held {
             let resolved = if req.height <= frontier {
-                self.decided
-                    .get(&req.height)
-                    .and_then(|raw| RoomCodec::decode_value(raw.value_bytes.clone()).ok())
-                    .map(|v| (v, true))
+                let adapter = self.adapter.lock().unwrap();
+                match read_decided_range(&adapter, req.height, req.height) {
+                    Ok(mut values) => values
+                        .pop()
+                        .and_then(|raw| RoomCodec::decode_value(raw.value_bytes).ok())
+                        .map(|value| (value, true)),
+                    Err(error) => {
+                        tracing::error!(height = req.height, %error, "cannot read committed held-reply value; preserving deadline resolution");
+                        None
+                    }
+                }
             } else {
                 if !self.proposals.contains_key(&req.height) {
                     if let Some(id) = self.next_pending() {
@@ -718,7 +769,26 @@ impl App {
     /// Dedup is on (round, proposer, value id): the same value re-proposed
     /// at a later round earns a second record, which the resupply path
     /// needs to report each round's proposal faithfully.
+    fn can_record_seen(&self, init: &ProposalInit, value_id: RoomValueId) -> bool {
+        let Some(records) = self.seen.get(&init.height.as_u64()) else {
+            return true;
+        };
+        if let Some(existing) = records.iter().find(|seen| {
+            seen.round == init.round && seen.proposer == init.proposer && seen.value_id == value_id
+        }) {
+            return existing.pol_round == init.pol_round;
+        }
+        records.len() < MAX_SEEN_RECORDS_PER_HEIGHT
+    }
+
     fn record_seen(&mut self, init: &ProposalInit, value_id: RoomValueId) -> bool {
+        if !self.can_record_seen(init, value_id) {
+            tracing::warn!(
+                height = init.height.as_u64(),
+                "proposal metadata admission refused; preserve retained values and WAL"
+            );
+            return false;
+        }
         let entry = self.seen.entry(init.height.as_u64()).or_default();
         let existing = entry.iter().find(|seen| {
             seen.round == init.round && seen.proposer == init.proposer && seen.value_id == value_id
@@ -805,6 +875,21 @@ impl App {
         };
         if batch.value_id() != value.id.0 {
             tracing::debug!(id = %hex(&value.id.0), "value rejected: batch/id mismatch");
+            return Validity::Invalid;
+        }
+        if !self.held_by_id.contains_key(&value.id)
+            && self
+                .held_by_id
+                .values()
+                .filter(|held| held.parent == batch.parent)
+                .take(MAX_RETAINED_VALUES_PER_PARENT)
+                .count()
+                >= MAX_RETAINED_VALUES_PER_PARENT
+        {
+            tracing::warn!(
+                height = batch.parent.height,
+                "retained proposal value admission budget exhausted; preserving existing recovery evidence"
+            );
             return Validity::Invalid;
         }
         if let Err(e) = self.adapter.lock().unwrap().application().validate(&batch) {
@@ -1073,6 +1158,11 @@ impl App {
                 batch.as_ref().map(|b| b.value_id()).unwrap_or([0; 32]),
                 assembled.data.clone().into(),
             );
+            // Refuse new headers before verdict_for can persist their batches.
+            // A conflicting duplicate also cannot consume an orphan batch file.
+            if matches_height && !self.can_record_seen(&assembled.init, value.id) {
+                return None;
+            }
             let validity = if matches_height {
                 self.verdict_for(&value)
             } else {
@@ -1190,15 +1280,14 @@ impl App {
         outcome
     }
 
-    /// Record a just-decided value into the sync-servable `decided` map,
-    /// then retire per-height state that can never be consulted again:
+    /// Retire per-height state that can never be consulted again:
     /// `seen` records at or below the decided height (resupply only ever
     /// serves the engine's CURRENT height), proposal streams and cached
     /// parts below it (the decided height's parts stay — a lagging peer
     /// may still request them), and `held_by_id` entries no longer
     /// referenced by any pending submission, live height assignment, or
     /// retained seen record. The committed value itself survives in
-    /// `decided` and the journal.
+    /// the complete durable journal, read on demand in bounded sync pages.
     fn sweep_decided(&mut self, height: u64) {
         self.seen.retain(|h, _| *h > height);
         self.streams
@@ -1229,31 +1318,6 @@ impl App {
         self.held_by_id.retain(|id, batch| {
             live.contains(id) || (batch.parent == frontier && batch.parent.height >= height)
         });
-    }
-
-    /// Insert the decided value into `decided` (the `GetDecidedValues`
-    /// source), then sweep dead per-height state. Both `Decided` and
-    /// `Finalized` take this path — the second call is an idempotent
-    /// overwrite with the possibly richer extended certificate.
-    fn record_decided(
-        &mut self,
-        certificate: &arc_malachitebft_app::types::core::CommitCertificate<RoomContext>,
-        extensions: arc_malachitebft_core_types::VoteExtensions<RoomContext>,
-    ) {
-        if let Some(batch) = self.held_by_id.get(&certificate.value_id) {
-            let value = RoomValue::new(batch.value_id(), batch.encode().into());
-            let value_bytes = RoomCodec::encode_value(&value);
-            self.decided.insert(
-                certificate.height.as_u64(),
-                RawDecidedValue::new(
-                    value_bytes,
-                    arc_malachitebft_app::types::core::ExtendedCommitCertificate::from_commit_certificate_and_extensions(
-                        certificate.clone(), extensions,
-                    ),
-                ),
-            );
-        }
-        self.sweep_decided(certificate.height.as_u64());
     }
 
     /// Drop proposal streams that never completed: a dead connection
@@ -1693,8 +1757,9 @@ pub struct RoomNode {
     /// Total `ProposedValue`s resupplied at `StartedRound` — non-zero
     /// proves the application store is feeding the engine.
     pub resupplied: Arc<Mutex<u64>>,
-    /// (batches, seen records) reloaded from `home/store/` at this
-    /// start — non-zero only on a restart over retained state.
+    /// (valid batch files, valid seen files) scanned from `home/store/`
+    /// at startup. Only live recovery evidence is retained in memory;
+    /// historical files and legacy duplicate names still count as scanned.
     pub loaded: (usize, usize),
     /// The runtime partition gate, when this node was started with one.
     pub gate: Option<NetGate>,
@@ -1894,13 +1959,12 @@ impl RoomNode {
         let seen_dir = store.join("seen");
         std::fs::create_dir_all(&batches_dir).unwrap();
         std::fs::create_dir_all(&seen_dir).unwrap();
-        let frontier = adapter.lock().unwrap().frontier().height;
-        let (mut held_by_id, mut seen) = load_store(&store);
-        let loaded = (held_by_id.len(), seen.values().map(Vec::len).sum());
-        // Seen records at or below the committed frontier can never be
-        // resupplied — `StartedRound` only ever asks for the engine's
-        // current height. The durable files stay; memory drops them.
-        seen.retain(|h, _| *h > frontier);
+        let frontier = adapter.lock().unwrap().frontier();
+        let StoreScan {
+            held: mut held_by_id,
+            seen,
+            scanned: loaded,
+        } = load_store_at(&store, Some(frontier));
 
         let pending_proposals = reload_pending(&store, &held_by_id, &adapter);
 
@@ -1933,10 +1997,8 @@ impl RoomNode {
         for batch in held_by_id.values() {
             adapter.lock().unwrap().hold(batch.clone());
         }
-        // Rebuild the sync-servable decided history from the journal — a
-        // restarted node must still answer `GetDecidedValues` for heights
-        // its peers may not have reached.
-        let decided = load_decided(&adapter.lock().unwrap());
+        // Complete decided history stays in the durable journal and is served
+        // in bounded pages; startup never materializes a lifetime value map.
         let resupplied = Arc::new(Mutex::new(0u64));
 
         let mut app = App {
@@ -1952,7 +2014,6 @@ impl RoomNode {
             held_by_id,
             streams: BTreeMap::new(),
             parts_cache: BTreeMap::new(),
-            decided,
             stream_seq: 0,
             boundary_latency: Arc::clone(&boundary_latency),
             store,
@@ -2160,47 +2221,103 @@ fn check_wal_format(wal_path: &Path) {
     }
 }
 
-/// Rebuild the sync-servable decided history from the durable journal:
-/// every height marker resolves to a bundle carrying the canonical `VC2`
-/// certificate and the committed batch, which together reconstruct the
-/// `RawDecidedValue` a `GetDecidedValues` answer needs. A restarted node
-/// must still serve heights its peers may not have reached — memory was
-/// empty, the journal was not.
-fn load_decided(
+/// Complete durable history, bounded per response. The pinned Malachite sync
+/// consumer accepts nonempty contiguous prefixes and re-requests their suffix.
+const MAX_HISTORY_VALUES: usize = 32;
+const MAX_HISTORY_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
+fn read_decided_range(
     adapter: &Adapter<vhalla_journal::FsStore>,
-) -> BTreeMap<u64, RawDecidedValue<RoomContext>> {
-    let mut decided = BTreeMap::new();
-    for h in 1..=adapter.frontier().height {
-        let Some(bundle) = adapter.committed_at_height(h) else {
-            continue;
-        };
-        let (Some(cert_raw), Some(batch_raw)) = (bundle.field(0), bundle.field(3)) else {
-            continue;
-        };
-        let (Some(cert), Ok(batch)) = (
-            ext_certificate_from_canonical(cert_raw),
-            Batch::decode(batch_raw),
-        ) else {
-            tracing::warn!(
-                height = h,
-                "journal bundle at committed height failed to decode — sync history gap"
-            );
-            continue;
-        };
-        let value = RoomValue::new(batch.value_id(), batch.encode().into());
-        decided.insert(
-            h,
-            RawDecidedValue::new(RoomCodec::encode_value(&value), cert),
-        );
+    start: u64,
+    end: u64,
+) -> Result<Vec<RawDecidedValue<RoomContext>>, String> {
+    let frontier = adapter.frontier();
+    if start == 0 || start > end || start > frontier.height {
+        return Ok(Vec::new());
     }
-    if !decided.is_empty() {
-        tracing::info!(
-            heights = decided.len(),
-            tip = adapter.frontier().height,
-            "rebuilt decided history from journal"
-        );
+    let end = end.min(frontier.height);
+    let count = end
+        .saturating_sub(start)
+        .saturating_add(1)
+        .min(MAX_HISTORY_VALUES as u64) as usize;
+    let page = adapter
+        .read_published_range(vhalla_journal::PublishedRange {
+            after_height: start - 1,
+            expected_predecessor: None,
+            max_bundles: count,
+            max_bytes: MAX_HISTORY_RESPONSE_BYTES,
+        })
+        .map_err(|error| format!("published journal read: {error}"))?;
+    if page.observed_head().height < frontier.height
+        || (page.observed_head().height == frontier.height
+            && page.observed_head().next != frontier.commitment())
+        || page.bundles().is_empty()
+    {
+        return Err("published journal disagrees with the applied frontier".into());
     }
-    decided
+    let mut values = Vec::with_capacity(page.bundles().len());
+    for bundle in page.bundles() {
+        let certificate = bundle
+            .field(0)
+            .and_then(ext_certificate_from_canonical)
+            .ok_or_else(|| {
+                format!(
+                    "invalid stored VC2 certificate at height {}",
+                    bundle.height()
+                )
+            })?;
+        let batch_raw = bundle
+            .field(3)
+            .ok_or_else(|| "missing stored batch".to_owned())?;
+        let batch = Batch::decode(batch_raw)
+            .map_err(|_| format!("invalid stored batch at height {}", bundle.height()))?;
+        let height = start
+            .checked_add(values.len() as u64)
+            .ok_or("history height overflow")?;
+        let next = vhalla_rooms_consensus::Frontier {
+            height,
+            value: batch.value_id(),
+            registry: batch.result_registry,
+            social: batch.result_social,
+            control: batch.result_control,
+            time: batch.time,
+        };
+        if bundle.height() != height
+            || certificate.height.as_u64() != height
+            || batch.parent.height.checked_add(1) != Some(height)
+            || batch.parent.commitment() != bundle.predecessor()
+            || certificate.value_id.0 != batch.value_id()
+            || next.commitment() != bundle.next()
+            || batch.encode() != batch_raw
+        {
+            return Err(format!(
+                "stored certificate/batch/frontier disagreement at height {height}"
+            ));
+        }
+        let value = RoomValue::new(batch.value_id(), Bytes::copy_from_slice(batch_raw));
+        values.push(RawDecidedValue::new(
+            RoomCodec::encode_value(&value),
+            certificate,
+        ));
+    }
+    // Journal and sync framing differ: enforce the actual encoded wire budget.
+    use arc_malachitebft_sync::{Response, ValueResponse};
+    let mut response = Response::ValueResponse(ValueResponse::new(Height::new(start), values));
+    loop {
+        let encoded = RoomCodec
+            .encode(&response)
+            .map_err(|_| "history response encoding failed")?;
+        let Response::ValueResponse(page) = &mut response;
+        if encoded.len() <= MAX_HISTORY_RESPONSE_BYTES {
+            return Ok(std::mem::take(&mut page.values));
+        }
+        page.values
+            .pop()
+            .ok_or("one stored value exceeds sync reply byte ceiling")?;
+        if page.values.is_empty() {
+            return Err("one stored value exceeds sync reply byte ceiling".into());
+        }
+    }
 }
 
 /// How often the intake dir is polled while a `GetValue` reply is held.
@@ -2278,17 +2395,16 @@ async fn send_part_stream(
 fn prepare_local_parts(
     app: &mut App,
     proposed: &LocallyProposedValue<RoomContext>,
-) -> Vec<RoomPart> {
+) -> Option<Vec<RoomPart>> {
     let value_id = proposed.value.id;
     let parts = app.build_parts(proposed);
     if let RoomPart::Init(init) = &parts[0] {
-        assert!(
-            app.record_seen(init, value_id),
-            "conflicting local proposal metadata"
-        );
+        if !app.record_seen(init, value_id) {
+            return None;
+        }
     }
     app.parts_cache.insert(value_id, parts.clone());
-    parts
+    Some(parts)
 }
 
 /// Answer every held `GetValue` whose value now exists, publishing the
@@ -2297,8 +2413,16 @@ fn prepare_local_parts(
 async fn flush_held(app: &mut App, channels: &mut Channels<RoomContext>) -> bool {
     for req in app.drain_answerable_held() {
         let height = Height::new(req.height);
-        let proposed = LocallyProposedValue::new(height, req.round, req.value);
-        let parts = req.live.then(|| prepare_local_parts(app, &proposed));
+        let mut proposed = LocallyProposedValue::new(height, req.round, req.value);
+        let parts = if req.live {
+            prepare_local_parts(app, &proposed)
+        } else {
+            None
+        };
+        if req.live && parts.is_none() {
+            proposed =
+                LocallyProposedValue::new(height, req.round, app.tombstone(req.height, req.round));
+        }
         if req.reply.send(proposed).is_err() {
             continue;
         }
@@ -2453,10 +2577,19 @@ async fn run(
                 }
                 let value = RoomValue::new(batch.value_id(), batch.encode().into());
                 let proposed = LocallyProposedValue::new(height, round, value);
-                let parts = prepare_local_parts(app, &proposed);
-                let _ = reply.send(proposed);
-                if !send_part_stream(app, channels, height, round, &parts).await {
-                    return;
+                if let Some(parts) = prepare_local_parts(app, &proposed) {
+                    let _ = reply.send(proposed);
+                    if !send_part_stream(app, channels, height, round, &parts).await {
+                        return;
+                    }
+                } else {
+                    // A full budget must not drop the sequential connector's
+                    // reply or publish a value missing its recovery metadata.
+                    let _ = reply.send(LocallyProposedValue::new(
+                        height,
+                        round,
+                        app.tombstone(height.as_u64(), round),
+                    ));
                 }
             }
 
@@ -2466,7 +2599,7 @@ async fn run(
 
             AppMsg::Decided {
                 certificate,
-                extensions,
+                extensions: _,
                 reply,
                 ..
             } => {
@@ -2485,7 +2618,7 @@ async fn run(
                     // Serve the decided value to syncing peers now — do
                     // not wait for `Finalized`, which may lag or never
                     // arrive when a target time is configured.
-                    app.record_decided(&certificate, extensions);
+                    app.sweep_decided(certificate.height.as_u64());
                     // The engine is acknowledged ONLY after the durable
                     // commit lands; any other outcome withholds the reply —
                     // the failed oneshot is the honest stall.
@@ -2495,7 +2628,7 @@ async fn run(
 
             AppMsg::Finalized {
                 certificate,
-                extensions,
+                extensions: _,
                 reply,
                 ..
             } => {
@@ -2515,9 +2648,9 @@ async fn run(
                 // this is the finalized configuration transition.
                 let params = height_params(app.set_for(height.as_u64() + 1));
                 if matches!(outcome, DecidedOutcome::Acked) {
-                    // Idempotent after the `Decided`-arm record — the
-                    // extended certificate may carry more signatures.
-                    app.record_decided(&certificate, extensions);
+                    // The saved canonical VC2 quorum remains authoritative;
+                    // vote extensions are disabled. Repeated sweeps are safe.
+                    app.sweep_decided(certificate.height.as_u64());
                     let _ = reply.send(Next::Start(height.increment(), params));
                 } else {
                     let _ = reply.send(Next::Restart(height, params));
@@ -2546,11 +2679,17 @@ async fn run(
             }
 
             AppMsg::GetDecidedValues { range, reply } => {
-                let values = app
-                    .decided
-                    .range(range.start().as_u64()..=range.end().as_u64())
-                    .map(|(_, v)| v.clone())
-                    .collect();
+                let values = match read_decided_range(
+                    &app.adapter.lock().unwrap(),
+                    range.start().as_u64(),
+                    range.end().as_u64(),
+                ) {
+                    Ok(values) => values,
+                    Err(error) => {
+                        tracing::error!(%error, "committed sync history unavailable or corrupt; returning no values");
+                        Vec::new()
+                    }
+                };
                 let _ = reply.send(values);
             }
 
@@ -2720,3 +2859,6 @@ mod ingress_tests;
 
 #[cfg(test)]
 mod seen_tests;
+
+#[cfg(test)]
+mod history_tests;

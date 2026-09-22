@@ -38,6 +38,9 @@
 //! to the room's own floor and key — printing `{"admit": bool, "reason"}`
 //! and exiting nonzero on deny.
 
+mod history_cli;
+mod room_exchange;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -57,7 +60,7 @@ use valhalla_clankdar_attest_prototype::{
     Ticket, VerifierJwk, GATE_PROTOCOL, HOLDOUT_PROTOCOL,
 };
 
-const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--pool POOL.json] [--clankdar DIR] | badge check BADGE.json [--pool POOL.json]... [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR] | holdout gen --suite v2|frontier|agent --cells f:t1,g:t2 [--out POOL.json] [--clankdar DIR] | holdout info POOL.json";
+const USAGE: &str = "usage: clankdar-attest keygen --out KEY.json | issue --key KEY.json (--suite v2|frontier|agent|algal | --suite-version VERSION) --family NAME --tier N [--seed N] [--ttl SEC] [--context TEXT] [--holdout POOL.json] [--out TICKET.json] [--clankdar DIR] | verify --key KEY.json --ticket TICKET.json --response-file FILE [--subject-key KEY.json] [--pool POOL.json] [--out RECEIPT.json] [--clankdar DIR] | check RECEIPT_OR_ADMISSION.json [--deep] [--pool POOL.json] [--clankdar DIR] | tlog check TLOG.json | tlog prove TLOG.json --session gs_x | tlog admit TLOG.json ADMISSION.json [--pool POOL.json] [--clankdar DIR] | badge check BADGE.json [--pool POOL.json]... [--clankdar DIR] | rooms issue --key KEY.json --policy POLICY.json [--subject TEXT] [--context TEXT] [--seed-base N] [--out SESSION.json] [--clankdar DIR] | rooms submit --key KEY.json --session SESSION.json --responses FILE [--subject-proof PROOF.json] [--out ADMISSION.json] [--clankdar DIR] | rooms prove --key KEY.json --challenge CHALLENGE.json | rooms decide ADMISSION.json --policy POLICY.json --key KEY.json [--clankdar DIR] | holdout gen --suite v2|frontier|agent|algal --cells f:t1,g:t2 [--out POOL.json] [--clankdar DIR] | holdout info POOL.json | history recent FILE... --issuer BASE64KEY --subject BASE64KEY (--context TEXT | --no-context) --policy POLICY.json --max-age SECONDS --clankdar DIR --bun ABS_PATH [--now RFC3339] [--clock-skew SECONDS] [--pool FILE] [--limit 16] [--cursor TOKEN] | exchange challenges|admission INPUT.json --out PARTS.json | exchange responses MAP.json [--challenges PUBLIC_ARTIFACT.json] --out PARTS.json | exchange response-map ARTIFACT.json (--challenges PUBLIC_ARTIFACT.json | --unbound-legacy) --out MAP.json | exchange collect FRAME... --network HEX64 --realm HEX32 --directory HEX64 --room HEX64 --author HEX64 --kind public-challenges|responses|admission --digest HEX64 --out ARTIFACT.json";
 
 struct Args {
     flags: std::collections::HashMap<String, String>,
@@ -80,7 +83,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     while i < argv.len() {
         let arg = &argv[i];
         if let Some(name) = arg.strip_prefix("--") {
-            if name == "deep" || name == "help" {
+            if name == "deep" || name == "help" || name == "no-context" || name == "unbound-legacy"
+            {
                 args.switches.insert(name.to_string());
             } else {
                 i += 1;
@@ -469,6 +473,16 @@ fn main() {
         return;
     }
     match command.as_str() {
+        "exchange" => {
+            if let Err(error) = room_exchange::run(&args) {
+                fail(AttestError::InvalidInput(error));
+            }
+        }
+        "history" => match history_cli::run(&args) {
+            Ok(true) => {}
+            Ok(false) => exit(2),
+            Err(error) => fail(AttestError::InvalidInput(error)),
+        },
         "keygen" => {
             let Some(out) = args.flags.get("out") else {
                 fail(AttestError::InvalidInput(
@@ -978,9 +992,9 @@ fn main() {
                             "holdout gen requires --suite and --cells".to_string(),
                         ));
                     };
-                    if !matches!(suite.as_str(), "v2" | "frontier" | "agent") {
+                    if !matches!(suite.as_str(), "v2" | "frontier" | "agent" | "algal") {
                         fail(AttestError::InvalidInput(
-                            "suite must be v2, frontier, or agent".to_string(),
+                            "suite must be v2, frontier, agent, or algal".to_string(),
                         ));
                     }
                     let dir = clankdar_dir(&args);

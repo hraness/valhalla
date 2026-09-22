@@ -153,6 +153,38 @@ impl Room {
     pub const fn archived(&self) -> bool {
         self.archived
     }
+    /// The last admitted public-activity policy, including a closed policy.
+    /// Absence means closed: initial_settings and room creation alone never
+    /// enable posting. This returns signed history even after archival; use
+    /// allows_public_activity for the current admission decision.
+    #[must_use]
+    pub fn public_activity_policy(&self) -> Option<PublicActivityPolicy> {
+        self.revisions.iter().rev().find_map(|record| {
+            let Body::Update(RoomUpdate {
+                action: UpdateAction::SetPublicActivityPolicy { network, enabled },
+                ..
+            }) = record.body()
+            else {
+                return None;
+            };
+            Some(PublicActivityPolicy {
+                record: record.id(),
+                network: *network,
+                enabled: *enabled,
+            })
+        })
+    }
+    /// Whether this room currently enables the exact network and policy
+    /// revision for version-1 public signed activity. The caller still must
+    /// verify each activity's full room scope, signature and writer chain.
+    /// This is a registry decision, never authority to execute host work.
+    #[must_use]
+    pub fn allows_public_activity(&self, network: &[u8; 32], policy: RoomRecordId) -> bool {
+        !self.archived
+            && self.public_activity_policy().is_some_and(|active| {
+                active.enabled && active.network == *network && active.record == policy
+            })
+    }
     /// The durable owner's immutable identity.
     #[must_use]
     pub fn owner(&self) -> OwnerId {
@@ -671,6 +703,7 @@ impl Registry {
         match &update.action {
             UpdateAction::Describe(text) => room.description = text.clone(),
             UpdateAction::Archive => room.archived = true,
+            UpdateAction::SetPublicActivityPolicy { .. } => {}
         }
         room.head = record.id();
         room.revisions.push(record.clone());
@@ -746,6 +779,18 @@ impl Registry {
         self.evidence.get(&id).map(|e| e.record.encode())
     }
 
+    fn snapshot_magic(&self) -> &'static [u8; 8] {
+        if self
+            .rooms
+            .values()
+            .any(|room| room.public_activity_policy().is_some())
+        {
+            SNAPSHOT_MAGIC_PUBLIC_ACTIVITY
+        } else {
+            SNAPSHOT_MAGIC
+        }
+    }
+
     /// Canonical snapshot of the complete registry state: every admitted
     /// record, derived ledger and retained bound. Snapshots are trusted
     /// local state — they carry integrity checks but no live authority
@@ -807,7 +852,7 @@ impl Registry {
             out.bytes_len(&evidence.record.encode());
         }
         let mut framed = Vec::with_capacity(out.0.len() + 40);
-        framed.extend_from_slice(SNAPSHOT_MAGIC);
+        framed.extend_from_slice(self.snapshot_magic());
         framed.extend_from_slice(&out.0);
         framed.extend_from_slice(&checksum(&out.0));
         framed
@@ -828,7 +873,8 @@ impl Registry {
     pub fn restore(raw: &[u8]) -> Result<Self, RegistryError> {
         if raw.len() < SNAPSHOT_MAGIC.len() + 32
             || raw.len() > MAX_SNAPSHOT_BYTES
-            || raw.get(..SNAPSHOT_MAGIC.len()) != Some(SNAPSHOT_MAGIC.as_slice())
+            || !matches!(raw.get(..SNAPSHOT_MAGIC.len()), Some(magic)
+                if magic == SNAPSHOT_MAGIC || magic == SNAPSHOT_MAGIC_PUBLIC_ACTIVITY)
         {
             return Err(RegistryError::Corrupt);
         }
@@ -914,6 +960,7 @@ impl Registry {
                 match &update.action {
                     UpdateAction::Describe(text) => room.description = text.clone(),
                     UpdateAction::Archive => room.archived = true,
+                    UpdateAction::SetPublicActivityPolicy { .. } => {}
                 }
                 room.head = revision_record.id();
                 room.revisions.push(revision_record);
@@ -961,7 +1008,7 @@ impl Registry {
                 .evidence
                 .insert(record.id(), Evidence { award, record });
         }
-        if !in_.done() {
+        if !in_.done() || raw[..SNAPSHOT_MAGIC.len()] != registry.snapshot_magic()[..] {
             return Err(RegistryError::Corrupt);
         }
         Ok(registry)
@@ -969,6 +1016,7 @@ impl Registry {
 }
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"VRSN\0\0\0\x01";
+const SNAPSHOT_MAGIC_PUBLIC_ACTIVITY: &[u8; 8] = b"VRSN\0\0\0\x02";
 /// Snapshot byte ceiling: the private-store payload bound.
 pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 /// Bound on distinct owners holding room-control chains in one snapshot.

@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+    outputs:
+      browser_manifest_sha256:
+        description: Manifest commitment from the successful production delivery journey
+        value: ${{ jobs.browser-artifact.outputs.manifest_sha256 }}
 
 permissions:
   contents: read
@@ -31,6 +35,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Delivery and security regression tests
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Dead-device recovery policy counterexample
+        run: python3 -m unittest discover -s prototypes/device-recovery-policy -p 'test_*.py'
+      - name: Fixed-room disclosure broker model
+        run: python3 -m unittest discover -s prototypes/agent-compartment -p 'test_*.py'
 
   workspace-tests:
     name: Workspace tests (${{ matrix.name }})
@@ -64,6 +72,10 @@ jobs:
             args: -- --skip enabled::live_mesh_soak_duplicate_churn_rotation_converges --skip enabled::live_mesh_full_restart_resumes_mid_flight --skip enabled::live_mesh_rotates_validator_set_mid_flight
           - name: stateful-storage
             packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
+          - name: public-network
+            packages: -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
+          - name: private-rooms
+            packages: -p vhalla-private-kernel -p vhalla-private-native -p vhalla-private-relay
           - name: remaining
             packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
     steps:
@@ -107,7 +119,8 @@ jobs:
           cargo test -p vhalla-cli --no-default-features --test social --locked
       - name: WASM pure crate checks
         run: |
-          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-private-kernel -p vhalla-private-relay -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/agent-portraits/Cargo.toml --lib --target wasm32-unknown-unknown --locked
@@ -145,9 +158,164 @@ jobs:
       - name: DNS compatibility backport tests
         run: cargo test --locked --manifest-path vendor/libp2p-dns/Cargo.toml --features tokio -- backport_
 
+  browser-artifact:
+    name: Browser production artifact
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      manifest_sha256: ${{ steps.qualified-browser.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: browser-artifact
+          cache-all-crates: true
+      - name: Browser and portable adapter lint
+        run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser/private-rooms,vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown -- -D warnings
+      - name: Install pinned Trunk
+        run: cargo install trunk --locked --version 0.21.14
+      - name: Build production without local qualification routes
+        working-directory: browser
+        run: |
+          trunk --skip-version-check build --release --locked --features private-rooms
+          python3 tools/package.py dist
+          python3 -m unittest discover -s tools -p 'test_*.py'
+        env:
+          NO_COLOR: "true"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Qualification process cleanup regressions
+        run: node --test browser/tools/qualification_lifecycle.test.mjs
+      - name: Build maintained local private host and browser gateway
+        run: cargo build --locked -p vhalla-cli --features experimental-private
+      - name: Exercise production browser delivery, outage and exact restart
+        run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-delivery-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)"
+      - name: Exercise production private panel and archive recovery
+        run: node browser/tools/qualify_private_panel.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-production-panel-results" --production
+      - name: Install exact browser bindings for runtime qualification
+        run: cargo install wasm-bindgen-cli --version 0.2.108 --locked
+      - name: Check archive and continuity receipt browser fixtures
+        run: cargo clippy --locked -p vhalla-browser-storage --example private_archive_indexeddb --example private_archive_recovery --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown -- -D warnings
+      - name: Build archive and continuity receipt browser fixtures
+        run: |
+          cargo build --locked -p vhalla-browser-storage --example private_archive_indexeddb --example private_archive_recovery --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_archive_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-archive-runtime"
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_archive_recovery.wasm --target web --out-name archive_recovery --out-dir "$RUNNER_TEMP/vhalla-archive-recovery-runtime"
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/continuity_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-continuity-runtime"
+      - name: Exercise archive and receipt recovery in Window and dedicated worker
+        run: |
+          chrome=$(command -v google-chrome)
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-archive-runtime" "$chrome"
+          node prototypes/browser-archive-recovery/qualify.mjs "$RUNNER_TEMP/vhalla-archive-recovery-runtime" "$chrome" "$RUNNER_TEMP/vhalla-archive-recovery-results"
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-continuity-runtime" "$chrome"
+      - name: Check optional private room worker and local qualification entry points
+        run: cargo clippy --locked -p vhalla-browser --features private-rooms,local-qualification --target wasm32-unknown-unknown -- -D warnings
+      - name: Build isolated private room worker journey
+        working-directory: browser
+        run: |
+          trunk --skip-version-check build --release --locked --features private-rooms,local-qualification --dist "$RUNNER_TEMP/vhalla-private-worker-runtime"
+          python3 tools/package.py "$RUNNER_TEMP/vhalla-private-worker-runtime" --allow-local-qualification
+        env:
+          NO_COLOR: "true"
+      - name: Exercise private worker custody, cancellation and exact reopen
+        run: node browser/tools/qualify_private_session.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-worker-results"
+      - name: Exercise private room invitations, consent and file exchange through the UI
+        run: node browser/tools/qualify_private_panel.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-panel-results"
+      - name: Check account-derived private browser custody fixture
+        run: cargo clippy --locked -p vhalla-browser-storage --example private_custody_indexeddb --features private-custody-qualification --target wasm32-unknown-unknown -- -D warnings
+      - name: Build account-derived private browser custody fixture
+        run: |
+          cargo build --locked -p vhalla-browser-storage --example private_custody_indexeddb --features private-custody-qualification --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_custody_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-custody-runtime"
+      - name: Exercise account-derived custody in Window and dedicated worker
+        run: |
+          chrome=$(command -v google-chrome)
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-custody-runtime" "$chrome"
+      - name: Build isolated storage and MLS worker fixtures
+        run: |
+          cargo build --locked -p vhalla-browser-storage --example indexeddb_qualification --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/indexeddb_qualification.wasm --target web --out-dir "$RUNNER_TEMP/vhalla-storage-runtime"
+          cargo build --locked -p vhalla-browser-storage --example private_mls_indexeddb --example private_indexeddb --features private-rooms,qualification --target wasm32-unknown-unknown
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_mls_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-group-runtime"
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-store-runtime"
+          cargo build --locked --manifest-path prototypes/private-rooms-mls/Cargo.toml --target wasm32-unknown-unknown
+          wasm-bindgen prototypes/private-rooms-mls/target/wasm32-unknown-unknown/debug/valhalla_private_rooms_mls_qualification.wasm --target web --out-name private_rooms_mls --out-dir "$RUNNER_TEMP/vhalla-mls-runtime"
+      - name: Exercise real IndexedDB and MLS in dedicated workers
+        run: |
+          chrome=$(command -v google-chrome)
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-storage-runtime" "$chrome"
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-store-runtime" "$chrome"
+          node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-group-runtime" "$chrome"
+          node prototypes/private-rooms-mls/tools/qualify_browser.mjs "$RUNNER_TEMP/vhalla-mls-runtime" "$chrome" "$RUNNER_TEMP/vhalla-mls-results"
+      - name: Build isolated public browser journey
+        run: |
+          # Real 20-bit discovery work keeps its fixed deadline; qualify the
+          # optimized fixture rather than debug SHA-256 throughput on CI hosts.
+          cargo build --release --locked -p vhalla-public-peer --example browser_fixture
+          cd browser
+          trunk --skip-version-check build --release --locked --features local-qualification --dist "$RUNNER_TEMP/vhalla-product-runtime"
+          python3 tools/package.py "$RUNNER_TEMP/vhalla-product-runtime" --allow-local-qualification
+        env:
+          NO_COLOR: "true"
+      - name: Exercise scope, interrupted signing, puzzle review and peer delivery
+        run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/release/examples/browser_fixture" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-product-results" --recovery
+      - name: Retain bounded browser runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vhalla-browser-runtime-evidence
+          path: |
+            ${{ runner.temp }}/vhalla-storage-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-storage-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-store-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-private-store-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-group-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-private-group-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-custody-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-private-custody-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-archive-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-private-archive-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-continuity-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-continuity-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-worker-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-worker-results/*.log
+            ${{ runner.temp }}/vhalla-private-panel-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-panel-results/*.log
+            ${{ runner.temp }}/vhalla-private-panel-results/*.png
+            ${{ runner.temp }}/vhalla-private-delivery-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-delivery-results/*.log
+            ${{ runner.temp }}/vhalla-private-delivery-results/*.png
+            ${{ runner.temp }}/vhalla-private-production-panel-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-production-panel-results/*.log
+            ${{ runner.temp }}/vhalla-private-production-panel-results/*.png
+            ${{ runner.temp }}/vhalla-mls-results/receipt.json
+            ${{ runner.temp }}/vhalla-mls-results/chrome.log
+            ${{ runner.temp }}/vhalla-product-results/receipt.json
+            ${{ runner.temp }}/vhalla-product-results/*.log
+            ${{ runner.temp }}/vhalla-product-results/*.png
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Bind the upload to the successful production delivery receipt
+        id: qualified-browser
+        run: |
+          digest="$(python3 .github/scripts/verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-delivery-results/receipt.json")"
+          printf 'manifest_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vhalla-browser
+          path: browser/dist
+          if-no-files-found: error
+          retention-days: 14
+
   check:
     if: always()
-    needs: [quality, workspace-tests, workspace-aux, prototype-checks, kani-spent, desktop, site, security]
+    needs: [quality, workspace-tests, workspace-aux, browser-artifact, prototype-checks, kani-spent, desktop, site, security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -156,6 +324,7 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           WORKSPACE_TESTS: ${{ needs.workspace-tests.result }}
           WORKSPACE_AUX: ${{ needs.workspace-aux.result }}
+          BROWSER: ${{ needs.browser-artifact.result }}
           PROTOTYPES: ${{ needs.prototype-checks.result }}
           KANI: ${{ needs.kani-spent.result }}
           DESKTOP: ${{ needs.desktop.result }}
@@ -165,6 +334,7 @@ jobs:
           test "$QUALITY" = success
           test "$WORKSPACE_TESTS" = success
           test "$WORKSPACE_AUX" = success
+          test "$BROWSER" = success
           test "$PROTOTYPES" = success
           test "$KANI" = success
           test "$DESKTOP" = success
@@ -233,6 +403,8 @@ jobs:
         run: cargo build --locked --manifest-path desktop/Cargo.toml
       - name: Menubar tests
         run: cargo test --locked --manifest-path desktop/Cargo.toml
+      - name: Synthetic macOS agent compartment denial probes
+        run: python3 prototypes/agent-compartment/qualify_macos.py
 
   site:
     runs-on: ubuntu-latest
@@ -246,6 +418,22 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Site tests and production build
         run: bun run check:site
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Static site responsive, keyboard and CSP qualification
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
+      - name: Retain site visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vhalla-site-visual-evidence
+          path: |
+            ${{ runner.temp }}/vhalla-site-results/receipt.json
+            ${{ runner.temp }}/vhalla-site-results/chrome.log
+            ${{ runner.temp }}/vhalla-site-results/*.png
+          if-no-files-found: warn
+          retention-days: 14
 
   security:
     runs-on: ubuntu-latest

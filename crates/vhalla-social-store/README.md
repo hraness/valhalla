@@ -9,12 +9,13 @@ filesystem activation in this crate.
 `Store::open(path, realm, limits, optional_exact_pin)` verifies existing evidence.
 `commit(candidate, expected_pin)` retains every prior event ID in the same
 archive context and returns a `Publication` only after durability succeeds.
-`recover()` resumes the exact complete retained intent; it cannot construct a
-different candidate. A lost acknowledgement can be reconciled by retrying the
+`recover()` resumes the exact complete retained intent or resolves unpublished
+preparation scratch as described below; it cannot construct a different candidate. A lost acknowledgement can be reconciled by retrying the
 same candidate or comparing its exact physical/logical pin with reopened disk.
 
-Publication writes a checksummed intent containing the previous pin, next pin,
-and complete signed candidate; syncs it and the directory; writes/syncs an
+Publication writes a checksummed `intent.tmp` containing the previous pin, next
+pin, and complete signed candidate; syncs the file; atomically renames it to
+`intent`; and syncs the directory before any successor effects. It writes/syncs an
 immutable content-addressed bundle; then writes/syncs and atomically renames the
 new pin and syncs the directory. It reads back that pin before removing the
 resolved intent. Old physical copies are reclaimed only after their signed
@@ -25,9 +26,21 @@ archive. This physical-copy reclamation is not semantic garbage collection.
 
 A complete pending intent blocks different publications. Known partial temporary
 files may be completed only when they are prefixes of that exact intent's bytes.
-Torn intents and unrelated/corrupt temporary bytes remain on disk and fail
-closed. They require explicit operator inspection; the adapter never silently
-resets state or reuses an uncertain writer sequence. I/O errors during a
+`Store::open` performs no repair, and shared `read_archive` calls return
+`RecoveryRequired` while preparation scratch remains. An explicit writer
+`recover()` validates the exact current pin/snapshot, private paths, inventory,
+and absence of any authoritative intent or successor effects before resolving
+`intent.tmp`. A complete canonical scratch frame must name that exact pin and an
+allowed extension; recovery syncs and promotes it. A structurally incomplete
+preparation is discarded and the current pin remains unchanged; its caller must
+retry the candidate. Complete malformed scratch and unrelated temporary bytes
+are preserved and rejected.
+
+Torn authoritative `intent` files, including empty files written by older
+versions, remain on disk and fail closed. Repairing such a legacy failure needs
+a separate explicit procedure with independently retained exact history; this
+change does not repair already-damaged stores or the captured CI artifact. The
+adapter never silently resets state or reuses an uncertain writer sequence. I/O errors during a
 publication are indeterminate. Reopen and reconcile before another attempt.
 
 The adapter requires owner-controlled path ancestors and a local filesystem

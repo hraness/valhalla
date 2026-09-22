@@ -21,6 +21,8 @@ const MAX_FILES: usize = 8;
 const LOCK: &str = "lock";
 const PIN: &str = "pin";
 const INTENT: &str = "intent";
+// Unpublished scratch: never an authority for post-intent effects.
+const INTENT_TEMP: &str = "intent.tmp";
 const BUNDLE_TEMP: &str = "bundle.tmp";
 const PIN_TEMP: &str = "pin.tmp";
 
@@ -257,7 +259,8 @@ impl Store {
         })
     }
     /// Open existing evidence without creating/repairing files. A valid pending
-    /// intent is retained for explicit `recover`; a torn intent fails closed.
+    /// intent or unpublished scratch is retained for explicit `recover`; a torn
+    /// authoritative intent and malformed complete scratch fail closed.
     /// The optional external anchor requires exact equality, including generation.
     pub fn open(
         path: impl AsRef<Path>,
@@ -296,6 +299,9 @@ impl Store {
             fault: None,
         };
         store.inventory()?;
+        if store.exists(INTENT_TEMP)? {
+            store.validate_staged_intent()?;
+        }
         let intent = if store.exists(INTENT)? {
             Some(store.validate_intent()?)
         } else {
@@ -325,7 +331,7 @@ impl Store {
     }
     /// Whether an exact retained publication intent needs reconciliation.
     pub fn recovery_required(&self) -> Result<bool, Error> {
-        self.exists(INTENT)
+        Ok(self.exists(INTENT)? || self.exists(INTENT_TEMP)?)
     }
     /// Publish a union-only candidate under an exact current basis. No record is
     /// returned for outbound delivery until all relevant file/directory syncs pass.
@@ -337,6 +343,15 @@ impl Store {
     fn commit_inner(&mut self, candidate: Archive, expected: Pin) -> Result<Publication, Error> {
         self.inventory()?;
         self.check_pin()?;
+        if self.exists(INTENT_TEMP)? {
+            if let Some(intent) = self.validate_staged_intent()? {
+                if expected != intent.expected || candidate.snapshot() != intent.archive.snapshot()
+                {
+                    return Err(Error::RecoveryRequired);
+                }
+            }
+            self.reconcile_staged_intent()?;
+        }
         if self.exists(INTENT)? {
             let intent = self.validate_intent()?;
             if expected != intent.expected
@@ -369,11 +384,14 @@ impl Store {
             next: Pin::for_archive(generation, &candidate),
             archive: candidate,
         };
-        let mut file = create_private(&self.path.join(INTENT))?;
+        let mut file = create_private(&self.path.join(INTENT_TEMP))?;
         self.step(Step::IntentCreated)?;
         file.write_all(&intent.encode())?;
         self.step(Step::IntentWritten)?;
         file.sync_all()?;
+        self.step(Step::IntentSynced)?;
+        fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
+        self.step(Step::IntentRenamed)?;
         self.directory.sync_all()?;
         self.step(Step::IntentDurable)?;
         self.finish_intent(intent, false)
@@ -387,6 +405,9 @@ impl Store {
     fn recover_inner(&mut self) -> Result<Publication, Error> {
         self.inventory()?;
         self.check_pin()?;
+        if self.exists(INTENT_TEMP)? {
+            self.reconcile_staged_intent()?;
+        }
         if self.exists(INTENT)? {
             let intent = self.validate_intent()?;
             self.finish_intent(intent, true)
@@ -397,6 +418,70 @@ impl Store {
             self.cleanup_obsolete()?;
             Ok(self.publication(true))
         }
+    }
+    // Called only after the pinned state and inventory have been validated.
+    // Scratch is discardable only before every post-intent effect. A complete
+    // frame still has to pass canonical validation and exact-basis checks.
+    fn validate_staged_intent(&self) -> Result<Option<Intent>, Error> {
+        self.check_pin()?;
+        if self.exists(INTENT)? || self.exists(BUNDLE_TEMP)? || self.exists(PIN_TEMP)? {
+            return Err(Error::Corrupt);
+        }
+        self.audit_copies(None)?;
+        let raw = read_bounded(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?;
+        let generation = self.pin.generation.checked_add(1).ok_or(Error::Capacity)?;
+        let mut prefix = Vec::new();
+        prefix.extend_from_slice(INTENT_MAGIC);
+        prefix.extend_from_slice(&self.pin.encode());
+        prefix.extend_from_slice(PIN_MAGIC);
+        prefix.extend_from_slice(&generation.to_be_bytes());
+        let checked = raw.len().min(prefix.len());
+        if raw[..checked] != prefix[..checked] {
+            return Err(Error::Corrupt);
+        }
+        if raw.len() >= 8 + 2 * PIN_BYTES {
+            let next = Pin::decode(&raw[8 + PIN_BYTES..8 + 2 * PIN_BYTES])?;
+            if next.generation != generation {
+                return Err(Error::Corrupt);
+            }
+        }
+        if raw.len() < INTENT_HEADER {
+            return Ok(None);
+        }
+        let len = u32::from_be_bytes(
+            raw[INTENT_HEADER - 4..INTENT_HEADER]
+                .try_into()
+                .map_err(|_| Error::Corrupt)?,
+        ) as usize;
+        if len > MAX_INTENT_BYTES - INTENT_HEADER - 32 {
+            return Err(Error::Corrupt);
+        }
+        if raw.len() < INTENT_HEADER + len + 32 {
+            return Ok(None);
+        }
+        let intent = Intent::decode(&raw, self.archive.realm(), self.archive.limits())?;
+        if intent.expected != self.pin || !intent.archive.is_extension_of(&self.archive) {
+            return Err(Error::Conflict);
+        }
+        Ok(Some(intent))
+    }
+    fn reconcile_staged_intent(&mut self) -> Result<(), Error> {
+        if self.validate_staged_intent()?.is_some() {
+            // Establish scratch durability again after an uncertain original
+            // write/sync before making it the authoritative intent.
+            open_private(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+            self.step(Step::IntentSynced)?;
+            fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
+            self.step(Step::IntentRenamed)?;
+            self.directory.sync_all()?;
+            self.step(Step::IntentDurable)?;
+        } else {
+            // No authoritative intent or successor effects exist. This is an
+            // interrupted preparation, not a published decision to invent.
+            fs::remove_file(self.path.join(INTENT_TEMP))?;
+            self.directory.sync_all()?;
+        }
+        Ok(())
     }
     fn validate_intent(&self) -> Result<Intent, Error> {
         let raw = read_bounded(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?;
@@ -562,12 +647,14 @@ impl Store {
                 .file_name()
                 .into_string()
                 .map_err(|_| Error::UnsafePath)?;
-            if !matches!(name.as_str(), LOCK | PIN | INTENT | BUNDLE_TEMP | PIN_TEMP)
-                && !is_bundle(&name)
+            if !matches!(
+                name.as_str(),
+                LOCK | PIN | INTENT | INTENT_TEMP | BUNDLE_TEMP | PIN_TEMP
+            ) && !is_bundle(&name)
             {
                 return Err(Error::UnsafePath);
             }
-            let bound = if name == INTENT {
+            let bound = if matches!(name.as_str(), INTENT | INTENT_TEMP) {
                 MAX_INTENT_BYTES
             } else if matches!(name.as_str(), LOCK | PIN | PIN_TEMP) {
                 PIN_BYTES
@@ -650,6 +737,8 @@ impl Store {
 enum Step {
     IntentCreated,
     IntentWritten,
+    IntentSynced,
+    IntentRenamed,
     IntentDurable,
     BundleWritten,
     BundleSynced,
@@ -739,6 +828,7 @@ pub fn read_archive(
         return Err(Error::Corrupt);
     }
     if present(&path, uid, INTENT, MAX_INTENT_BYTES)?
+        || present(&path, uid, INTENT_TEMP, MAX_INTENT_BYTES)?
         || present(&path, uid, BUNDLE_TEMP, MAX_SNAPSHOT_BYTES)?
         || present(&path, uid, PIN_TEMP, PIN_BYTES)?
     {

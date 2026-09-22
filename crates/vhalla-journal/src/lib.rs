@@ -4,8 +4,9 @@
 //! Durable commit journal: the acknowledgement boundary for consensus-driven
 //! application state.
 //!
-//! Commit protocol, in order: write the immutable bundle under its content
-//! name, fsync it and its containing directory, write `heights/<n>` binding
+//! Commit protocol, in order: write and fsync a bounded private scratch bundle,
+//! publish its immutable content name with an exclusive hard link, unlink the
+//! scratch name, fsync the bundle and its containing directory, write `heights/<n>` binding
 //! the bundle's height to its id and fsync it and its containing directory,
 //! write `pin.tmp` carrying predecessor/next/bundle/height,
 //! fsync it, rename `pin.tmp` over `HEAD` (the atomic publication point),
@@ -13,13 +14,26 @@
 //! actually on disk: a renamed pin is committed, a leftover `pin.tmp` is
 //! discarded, a height marker above the committed pin is unpublished
 //! residue, an orphan bundle carries no authority, and a corrupt pin fails
-//! closed.
+//! closed. The one `bundles/.bundle.tmp` scratch has no publication authority;
+//! a later locked commit may unlink and replace that exact private regular file.
+//! It never truncates its inode, which may still link a committed bundle. Unknown
+//! scratch path kinds/custody and existing corrupt final bundles are preserved.
 //!
 //! This crate is the order authority, not consensus: it qualifies
 //! filesystem ordering, retry reconciliation and restart behavior. It does
 //! not verify certificates, admit values, or decide anything — the caller
 //! binds verified certificate bytes and resulting state commitments into
 //! each bundle.
+
+#[cfg(unix)]
+mod atomic;
+#[cfg(unix)]
+mod read;
+#[cfg(unix)]
+pub use read::{
+    PublishedPage, PublishedRange, PublishedReadError, MAX_PUBLISHED_PAGE_BUNDLES,
+    MAX_PUBLISHED_PAGE_BYTES,
+};
 
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -35,6 +49,7 @@ use std::io::{Read, Write};
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
 const HEAD_MAGIC: &[u8; 4] = b"VHP1";
 const BUNDLE_MAGIC: &[u8; 4] = b"VJB1";
 #[cfg(unix)]
@@ -275,6 +290,7 @@ pub struct Pin {
     pub height: u64,
 }
 
+#[cfg(unix)]
 impl Pin {
     fn encode(self) -> Vec<u8> {
         let mut out = Vec::with_capacity(4 + 104);
@@ -394,7 +410,7 @@ pub enum Step {
     Lock,
     /// Read the current pin under the lock.
     ReadPin,
-    /// Create the immutable bundle file (exclusive create).
+    /// Stage, sync and publish the immutable bundle without replacing a name.
     CreateBundle,
     /// fsync the bundle file.
     SyncBundle,
@@ -444,7 +460,8 @@ pub trait Store {
     fn read_pin_tmp(&self, dir: &Path) -> Result<Option<Vec<u8>>, JournalError>;
     /// Discard a leftover `pin.tmp`.
     fn remove_pin_tmp(&self, dir: &Path) -> Result<(), JournalError>;
-    /// Create `bundles/<id>` exclusively. Returns `false` when it exists.
+    /// Atomically publish complete `bundles/<id>` bytes without replacing an
+    /// existing name. Returns `false` when it exists; the caller verifies it.
     fn create_bundle(&self, dir: &Path, id: [u8; 32], bytes: &[u8]) -> Result<bool, JournalError>;
     /// fsync the bundle file.
     fn sync_bundle(&self, dir: &Path, id: [u8; 32]) -> Result<(), JournalError>;
@@ -511,7 +528,13 @@ impl Store for FsStore {
             .write(true)
             .truncate(false)
             .open(dir.join(LOCK_FILE))?;
-        flock_exclusive(&file).map_err(|_| JournalError::Busy)?;
+        match flock_exclusive(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                return Err(JournalError::Busy);
+            }
+            Err(error) => return Err(error.into()),
+        }
         File::open(dir)?.sync_all()?;
         Ok(file)
     }
@@ -533,18 +556,7 @@ impl Store for FsStore {
     }
 
     fn create_bundle(&self, dir: &Path, id: [u8; 32], bytes: &[u8]) -> Result<bool, JournalError> {
-        match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(Self::bundle_path(dir, id))
-        {
-            Ok(mut file) => {
-                file.write_all(bytes)?;
-                Ok(true)
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(e.into()),
-        }
+        atomic::create_bundle(dir, id, bytes, |_| Ok(()))
     }
 
     fn sync_bundle(&self, dir: &Path, id: [u8; 32]) -> Result<(), JournalError> {
@@ -991,16 +1003,39 @@ impl<S: Store> Journal<S> {
 
     /// Attempts to commit `bundle`. The predecessor is re-read under the lock,
     /// so a crash that already published this exact bundle reconciles to
-    /// `AlreadyCommitted` instead of applying twice.
+    /// `AlreadyCommitted` instead of applying twice. Exact retries revalidate
+    /// the complete retained pin, bounded bundle bytes and height marker first;
+    /// missing or altered accepted evidence is never repaired or acknowledged.
     pub fn commit(&self, bundle: &Bundle) -> Result<Outcome, JournalError> {
-        let lock = self.store.lock(&self.dir).map_err(|_| JournalError::Busy)?;
+        let lock = self.store.lock(&self.dir)?;
         let current = match self.store.read_pin(&self.dir)? {
             None => self.genesis(),
             Some(bytes) => Pin::decode(&bytes)?,
         };
         if current.bundle == bundle.id() {
-            // Our earlier attempt already published; re-establish durability
-            // of the directory entries, then acknowledge.
+            // The id alone is not evidence that the accepted record remains
+            // intact. Revalidate the complete tip and its exact indexed bytes
+            // before resyncing directory entries or acknowledging this retry.
+            if current.predecessor != bundle.predecessor()
+                || current.next != bundle.next()
+                || current.height != bundle.height()
+            {
+                return Err(JournalError::Corrupt);
+            }
+            let stored =
+                self.store
+                    .read_bundle(&self.dir, bundle.id())
+                    .map_err(|error| match error {
+                        JournalError::Io(error) if error.kind() == io::ErrorKind::NotFound => {
+                            JournalError::Corrupt
+                        }
+                        other => other,
+                    })?;
+            if stored != bundle.bytes()
+                || self.store.read_height_marker(&self.dir, current.height)? != Some(bundle.id())
+            {
+                return Err(JournalError::Corrupt);
+            }
             self.store.sync_bundles_dir(&self.dir)?;
             self.store.sync_heights_dir(&self.dir)?;
             self.store.sync_dir(&self.dir)?;

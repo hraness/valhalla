@@ -179,6 +179,33 @@ pub fn archive_body(
     update_record(&ctx, &owner_key, now + 3600, UpdateAction::Archive)
 }
 
+/// Sign an explicit public posting policy against the committed room context.
+/// The returned record remains a proposal until consensus commits it.
+pub fn public_activity_body(
+    slug: &str,
+    key: &str,
+    network: &str,
+    enabled: bool,
+    now: u64,
+    src: &mut dyn Source,
+) -> Result<Vec<u8>, String> {
+    let network = hex32(network)?;
+    if network == [0; 32] {
+        return Err("public network identifier must not be zero".into());
+    }
+    let expires_at = now.checked_add(3600).ok_or("policy expiry overflow")?;
+    let owner_key = identity(key)?;
+    let ctx = src
+        .update_context(slug, owner_key.public_key(), now)
+        .map_err(|e| format!("update context: {e}"))?;
+    update_record(
+        &ctx,
+        &owner_key,
+        expires_at,
+        UpdateAction::SetPublicActivityPolicy { network, enabled },
+    )
+}
+
 fn update_record(
     ctx: &UpdateContext,
     owner_key: &Identity,

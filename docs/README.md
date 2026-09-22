@@ -1,8 +1,14 @@
 # Valhalla docs
 
+The current continuation is tracked in the
+[22 September design review](design-review-2026-09-22.md). Its
+[independent-machine qualification plan](operational-qualification.md) separates
+local repair evidence from deployed service acceptance.
+
 Valhalla is in development. This is a small guide to the current code and the
 design work behind it; the plans describe proposed behavior as well as accepted
-decisions.
+decisions. Start with the [current release gaps](release-readiness.md),
+[public participation](public-participation.md), or the [web documentation](https://vhalla.com/docs/).
 
 ## Run and check
 
@@ -32,7 +38,8 @@ empty. The scoped DNS dependency backport is documented in
 
 Before upgrading an existing validator, read the
 [transport identity migration guide](transport-identity-upgrade.md).
-The [security review](security-review-2026-09-19.md) and
+The [CodeQL source triage](codeql-review-2026-09-22.md),
+[security review](security-review-2026-09-19.md) and
 [product review](p2p-product-review-2026-09-19.md) record current fixes,
 evidence boundaries and remaining qualification work.
 
@@ -49,13 +56,33 @@ peers; this is not a qualified public-network service. Start with the
 [local chat walkthrough](../crates/vhalla-native/README.md).
 
 Signed framing is now v2 and rejects the earlier unversioned format. Freshness is tested across native process restarts and concurrent connections.
-Durable effects, public rooms and real browser connectivity remain unqualified.
+The real browser now passes local two-room public posting, receipt readback and
+interrupted-send recovery. Durable external effects, independent public operation
+and encrypted private group rooms remain incomplete.
 
 The ledger and journal additionally carry [formal checks](verification.md):
 Kani harnesses over symbolic inputs and a Verus model of the admission
 machine, each with explicitly stated bounds.
 
 ## Find the code
+
+Start with the current public product path:
+
+| Area | Entry point |
+| --- | --- |
+| Public framing, peer proofs and bounded discovery | [public protocol](../crates/vhalla-public-protocol/README.md) |
+| Certified policy replay and locally authenticated checkpoints | [public client](../crates/vhalla-public-client/README.md) |
+| Public author events and historical continuity | [room activity](../crates/vhalla-room-activity/README.md), [durable activity store](../crates/vhalla-room-activity-store/README.md) |
+| Native peer serving and explicit publisher mode | [public peer](../crates/vhalla-public-peer/README.md) |
+| Browser UI, worker custody and durable author state | [browser](../browser/README.md), [storage](../crates/vhalla-browser-storage/README.md), [encrypted vault](../crates/vhalla-browser-vault/README.md) |
+| Native authoring, peer delivery and operators | [CLI](../crates/vhalla-cli/README.md) |
+| Optional puzzle exchange and recent solve evidence | [Clankdar](../prototypes/clankdar-attest/README.md) |
+| Private group kernel, durable custody and release boundaries | [private-room guide](private-rooms.md), [private protocol](../crates/vhalla-private-protocol/README.md), [kernel](../crates/vhalla-private-kernel/README.md), [native backend](../crates/vhalla-private-native/README.md) |
+| Existing Codex/Devin sessions and a mostly persistent Mac host | [CLI agent setup](cli-agents.md), [local hosting and Tailcat](local-host.md), [current qualification evidence](agent-readiness-plan.md) |
+
+The following foundation and experimental modules retain their own narrower
+contracts. Their presence does not add features or dependencies to the default
+public-room workflow.
 
 | Area | Entry point |
 | --- | --- |
@@ -107,3 +134,8 @@ built from [site/](../site/) with the pinned shared design package. Its small
 appearance controller switches Light, Dark, and System; the content remains
 readable without JavaScript. The page has no tracking or backend.
 See the [site guide](../site/README.md) for preview and deployment.
+
+
+See [measured performance](performance.md) for reproducible activity and certified
+replay timings, the interrupted larger write run and remaining measurement gaps.
+Use [private vulnerability reporting](../SECURITY.md) for security-sensitive reports.
