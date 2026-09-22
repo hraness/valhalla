@@ -75,6 +75,13 @@ requires the same namespace and fails while another handle holds the lock. It is
 still a local mailbox, not a delivery service: scheduling, authentication and
 recipient acceptance belong to a real adapter.
 
+`relay::net` supplies two interchangeable page sources for durable catch-up:
+`SocketRelay` pages a token-authenticated TCP `serve` listener, and `FileStore`
+itself implements `PageSource` so `net::scan` drains a local mailbox directory
+directly — a synced or explicitly copied folder is a second transport under
+filesystem custody rather than the mailbox token, with one process holding the
+mailbox lock at a time.
+
 ## Optional trusted native session
 
 Enable `client` to use `client::{RoomCreation, RoomSession}`. The feature is off

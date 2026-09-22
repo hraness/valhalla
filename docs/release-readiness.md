@@ -125,10 +125,12 @@ Before a private-room release, complete and qualify:
   composites submit a bounded outbox page and apply every retained item in
   position order — refusing own-echo, skipping dedicated-command kinds, and
   healing out-of-order items through a bounded in-pull retry — without
-  emitting plaintext or claiming remote acceptance; it is a local
-  operator-controlled adapter, not a hardened Internet service. Production operation still needs
-  offline scheduling, congestion handling, stronger relay authentication and
-  independent acceptance status. An isolated sender cannot detect an unseen
+  emitting plaintext or claiming remote acceptance. Two interchangeable
+  transports are qualified: the token socket and `--mailbox DIR` direct
+  filesystem custody for a synced or copied directory. Both remain local
+  operator-controlled adapters, not a hardened Internet service. Production
+  operation still needs offline scheduling, congestion handling, stronger
+  relay authentication and independent acceptance status. An isolated sender cannot detect an unseen
   removal merely by asking an untrusted relay.
 - Explicit fresh-device admission now has qualified kernel, CLI and browser
   coverage. Account-authorized owner succession is implemented and qualified:

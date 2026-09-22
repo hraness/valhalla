@@ -1727,6 +1727,14 @@ vhalla private relay-push owner-key owner-room --namespace "$PRIVATE_RELAY_NS" \
 vhalla private relay-pull member-key member-room --namespace "$PRIVATE_RELAY_NS" \
   --dir catchup-dir --addr 127.0.0.1:9400 --token token-file \
   --out private-files/pull.json
+
+# The same composites run over the mailbox directory itself — an
+# interchangeable transport under filesystem custody for a synced or
+# explicitly copied directory, with no listener or token:
+vhalla private relay-push owner-key owner-room --namespace "$PRIVATE_RELAY_NS" \
+  --mailbox mailbox-dir --out private-files/push.json
+vhalla private relay-pull member-key member-room --namespace "$PRIVATE_RELAY_NS" \
+  --dir catchup-dir --mailbox mailbox-dir --out private-files/pull.json
 ```
 
 `relay-serve` opens an existing mailbox and prints one `relay-serve IP:PORT`
@@ -1745,6 +1753,14 @@ exactly where it stopped across sender boundaries. A pre-existing item file
 with different bytes fails closed instead of being overwritten. A socket
 receipt remains retention only — never delivery, scheduling or member
 acceptance.
+
+`relay-submit`, `relay-scan`, `relay-push` and `relay-pull` each accept
+exactly one transport: the socket (`--addr` with `--token`) or `--mailbox
+DIR`, which opens the durable mailbox directly. The directory transport
+replaces token authentication with filesystem custody — one process holds the
+mailbox at a time — and suits a synced folder or an explicitly copied mailbox;
+a socket scan needs no `--namespace` (the token identifies the mailbox) while
+the directory form does.
 
 `relay-push` submits one bounded local outbox page (`--after`/`--limit`,
 default the first 16 records) as canonical items and reports each sender

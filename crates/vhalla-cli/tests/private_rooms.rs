@@ -1142,6 +1142,172 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
 }
 
 #[test]
+fn private_cli_relay_directory_transport_delivers_bidirectionally() {
+    let f = Fixture::new();
+    f.join();
+    let namespace = "cd".repeat(32);
+    // A durable mailbox directory is an interchangeable transport: no
+    // listener, no token; filesystem custody gates the same positions.
+    f.ok(
+        "relay-mailbox",
+        &f.path("mailbox"),
+        None,
+        &[("namespace", namespace.clone())],
+    );
+    let owner = f.inspect("owner-key", "owner-room", "owner-inspect");
+    f.write("text", b"owner message through a directory\n");
+    f.ok(
+        "send",
+        "owner-key",
+        Some("owner-room"),
+        &send_options(&f, &owner, 3, "message"),
+    );
+    f.ok(
+        "relay-push",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("mailbox", f.path("mailbox")),
+            ("out", f.path("push")),
+        ],
+    );
+    let pushed = f.json("push");
+    // Offer issuance stays secret; the contact response and message retain.
+    assert_eq!(pushed["skipped_secret"], 1);
+    assert_eq!(pushed["submitted"], 2);
+    // The member pulls through the same directory without a listener.
+    f.ok(
+        "relay-pull",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("dir", f.path("member-catchup")),
+            ("mailbox", f.path("mailbox")),
+            ("out", f.path("member-pull")),
+        ],
+    );
+    let pull = f.json("member-pull");
+    assert_eq!(pull["scanned"], 2);
+    // The owner's message is durable in the member inbox.
+    f.ok(
+        "inbox",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("after", "0".into()),
+            ("limit", "8".into()),
+            ("out", f.path("member-inbox")),
+        ],
+    );
+    assert!(f.json("member-inbox")["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["body_utf8"] == "owner message through a directory\n"));
+    // Member replies through the same mailbox directory. The deterministic
+    // test operation IDs share one space across devices, so the reply uses an
+    // operation number no relayed item already claimed.
+    let member = f.inspect("member-key", "member-room", "member-inspect-2");
+    f.write("text", b"member reply through a directory\n");
+    f.ok(
+        "send",
+        "member-key",
+        Some("member-room"),
+        &send_options(&f, &member, 4, "member-message"),
+    );
+    f.ok(
+        "relay-push",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("mailbox", f.path("mailbox")),
+            ("out", f.path("member-push")),
+        ],
+    );
+    // The owner pull applies the member reply; its own items refuse.
+    f.ok(
+        "relay-pull",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("dir", f.path("owner-catchup")),
+            ("mailbox", f.path("mailbox")),
+            ("out", f.path("owner-pull")),
+        ],
+    );
+    let pulled = f.json("owner-pull");
+    assert_eq!(pulled["scanned"], 4);
+    let accepted: Vec<u64> = pulled["accepted"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    assert!(accepted.contains(&4));
+    let owner = f.inspect("owner-key", "owner-room", "owner-inbox");
+    f.ok(
+        "inbox",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("after", "0".into()),
+            ("limit", "8".into()),
+            ("out", f.path("owner-inbox-list")),
+        ],
+    );
+    assert!(f.json("owner-inbox-list")["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["body_utf8"] == "member reply through a directory\n"));
+    let _ = owner;
+}
+
+#[test]
+fn private_cli_relay_transport_flag_conflicts_refuse() {
+    let f = Fixture::new();
+    f.join();
+    let namespace = "cd".repeat(32);
+    f.ok(
+        "relay-mailbox",
+        &f.path("mailbox"),
+        None,
+        &[("namespace", namespace.clone())],
+    );
+    f.write("token", "11".repeat(32).as_bytes());
+    // Both transports at once, or a partial socket pair, must refuse before
+    // any custody or mailbox write.
+    for extra in [
+        vec![
+            ("addr", "127.0.0.1:9".into()),
+            ("token", f.path("token")),
+            ("mailbox", f.path("mailbox")),
+        ],
+        vec![("addr", "127.0.0.1:9".into())],
+        vec![("token", f.path("token"))],
+        vec![],
+    ] {
+        let mut flags = vec![
+            ("namespace", namespace.clone()),
+            ("dir", f.path("cursor")),
+            ("out", f.path("must-not-exist")),
+        ];
+        flags.extend(extra.iter().cloned());
+        assert!(
+            !f.run("relay-pull", "owner-key", Some("owner-room"), &flags, None)
+                .status
+                .success(),
+            "transport flags {extra:?} must refuse"
+        );
+        assert!(!f.root.join("must-not-exist").exists());
+    }
+}
+
+#[test]
 fn private_cli_same_account_fresh_device_rejoins_under_new_enrollment() {
     let f = Fixture::new();
     f.ok("create", "owner-key", Some("owner-room"), &f.validity());

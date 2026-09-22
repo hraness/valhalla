@@ -246,11 +246,14 @@ KeyPackage/contact-request envelopes that require dedicated commands, and
 reopening custody after each deterministic refusal. Refused items are retried
 in a bounded fixpoint (at most eight passes), so an item delivered before its
 parent heals inside the same pull once the parent lands at a later position;
-anything still refusing stays listed for a later pull. It is a local reference
+anything still refusing stays listed for a later pull. Both composites — and
+the low-level `relay-submit`/`relay-scan` — run over interchangeable
+transports: the token-authenticated socket, or `--mailbox DIR` opening the
+durable mailbox directory directly under filesystem custody (one process at a
+time) for synced-folder or explicitly copied carriage. It is a local reference
 adapter — no DNS, TLS, remote-host hardening or public Internet service claim
-— and a retention receipt is never member acceptance. Hardened interchangeable
-transports and independent-machine failure-domain qualification remain
-required.
+— and a retention receipt is never member acceptance. Hardened transports and
+independent-machine failure-domain qualification remain required.
 
 ## Durable state and limits
 

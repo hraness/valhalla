@@ -415,6 +415,9 @@ pub enum ScanFailure {
     Corrupt,
     /// Local cursor or item storage failed; the next run resumes unchanged.
     Storage,
+    /// The mailbox source itself failed; a durable `FileStore` is damaged,
+    /// foreign or busy rather than a socket refusal.
+    Source,
 }
 impl core::fmt::Display for ScanFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -457,6 +460,30 @@ fn item_path(items: &Path, position: u64) -> PathBuf {
     items.join(format!("{position:016x}.vhrelay"))
 }
 
+/// A position-ordered source of retained relay pages. `SocketRelay` reads them
+/// over the token-authenticated socket; a local `FileStore` reads its own
+/// durable mailbox directly, which makes a synced or shared directory an
+/// interchangeable transport under filesystem custody instead of the token.
+pub trait PageSource {
+    /// Read one bounded page after `after`, failing closed on any error.
+    fn source_page(&self, after: u64, limit: usize) -> std::result::Result<RelayPage, ScanFailure>;
+}
+impl PageSource for SocketRelay {
+    fn source_page(&self, after: u64, limit: usize) -> std::result::Result<RelayPage, ScanFailure> {
+        self.page(after, limit).map_err(ScanFailure::Net)
+    }
+}
+impl PageSource for FileStore {
+    fn source_page(&self, after: u64, limit: usize) -> std::result::Result<RelayPage, ScanFailure> {
+        FileStore::page(self, after, limit).map_err(|_| ScanFailure::Source)
+    }
+}
+impl PageSource for Store {
+    fn source_page(&self, after: u64, limit: usize) -> std::result::Result<RelayPage, ScanFailure> {
+        Store::page(self, after, limit).map_err(|_| ScanFailure::Source)
+    }
+}
+
 /// Pull every retained item after the durable cursor into a private directory.
 /// The directory is created 0700 on first use and reopened thereafter; items
 /// land as one canonical file each named by relay position and the cursor
@@ -464,7 +491,7 @@ fn item_path(items: &Path, position: u64) -> PathBuf {
 /// catch-up, not room acceptance.
 pub fn scan(
     directory: &Path,
-    relay: &SocketRelay,
+    source: &dyn PageSource,
     limit: usize,
 ) -> std::result::Result<ScanReport, ScanFailure> {
     let path = custody::absolute(directory).map_err(|_| ScanFailure::Storage)?;
@@ -482,9 +509,7 @@ pub fn scan(
     let mut cursor = read_cursor(&path, uid)?;
     let mut scanned = 0usize;
     let head = loop {
-        let page = relay
-            .page(cursor, limit.clamp(1, MAX_RELAY_PAGE))
-            .map_err(ScanFailure::Net)?;
+        let page = source.source_page(cursor, limit.clamp(1, MAX_RELAY_PAGE))?;
         let head = page.head;
         for record in &page.records {
             let encoded = record.item.encode().map_err(|_| ScanFailure::Corrupt)?;
