@@ -11,7 +11,10 @@ const [directory, executable] = process.argv.slice(2);
 if (!directory || !executable) throw new Error('requires generated WASM directory and Chromium executable');
 const root = resolve(directory);
 const profile = await mkdtemp(join(root, 'chromium-profile-'));
-const runner = `import init, { qualify } from './indexeddb_qualification.js';
+const runner = `import * as wasm from './indexeddb_qualification.js';
+const init = wasm.default;
+const qualify = wasm.qualify;
+export const hasInterruption = typeof wasm.interruptible === 'function' && typeof wasm.verify_interrupted === 'function';
 export async function run() {
 try {
   await init();
@@ -20,6 +23,7 @@ try {
   const put = IDBObjectStore.prototype.put;
   let mode = 'require-strict', writes = 0, mutations = 0;
   const metrics = {strictWrites: 0, readonly: 0, faults: []};
+  const foreign = {};
   IDBObjectStore.prototype.add = function(...args) { mutations++; return add.apply(this, args); };
   IDBObjectStore.prototype.put = function(...args) { mutations++; return put.apply(this, args); };
   IDBDatabase.prototype.transaction = function(names, access, options) {
@@ -34,9 +38,72 @@ try {
     if (mode === 'abort-write') queueMicrotask(() => tx.abort());
     return tx;
   };
-  const hook = (next) => {
+  const hook = (next, arg) => {
     if (next === 'assert-no-write') { if (writes) throw new Error('readonly unlock attempted write'); return; }
     if (next === 'assert-no-mutation') { if (mutations) throw new Error('durability refusal queued mutation'); return; }
+    if (next === 'tick') return new Promise(resolve => setTimeout(resolve, 0));
+    if (next === 'hold-create') {
+      let held;
+      foreign.held = new Promise(resolve => { held = resolve; });
+      foreign.createDone = new Promise((resolve, reject) => {
+        const request = indexedDB.open(arg, 1);
+        request.onupgradeneeded = () => {
+          const store = request.result.createObjectStore('images');
+          const chain = () => {
+            if (!foreign.hold) return;
+            const probe = store.get(0);
+            probe.onsuccess = () => { held(); chain(); };
+            probe.onerror = () => { foreign.hold = false; };
+          };
+          chain();
+        };
+        request.onsuccess = () => {
+          foreign.db = request.result;
+          foreign.db.onversionchange = () => foreign.db.close();
+          resolve();
+        };
+        request.onerror = () => reject(request.error);
+      });
+      foreign.hold = true;
+      return foreign.held;
+    }
+    if (next === 'release-create') {
+      foreign.hold = false;
+      return foreign.createDone.then(() => new Promise(resolve => setTimeout(resolve, 0)));
+    }
+    if (next === 'bump-version') {
+      return Promise.race([
+        new Promise((resolve, reject) => {
+          let blocked = false;
+          const request = indexedDB.open(arg, 2);
+          request.onblocked = () => { blocked = true; };
+          request.onsuccess = () => { request.result.close(); resolve(blocked ? 'blocked+upgraded' : 'upgraded'); };
+          request.onerror = () => reject(request.error);
+        }).then(value => new Promise(resolve => setTimeout(() => resolve(value), 0))),
+        new Promise(resolve => setTimeout(() => resolve('stuck'), 3000)),
+      ]);
+    }
+    if (next === 'hold-and-delete') {
+      return new Promise((resolve, reject) => {
+        const open = indexedDB.open(arg, 1);
+        open.onupgradeneeded = () => open.result.createObjectStore('images');
+        open.onsuccess = () => {
+          foreign.blocker = open.result;
+          const del = indexedDB.deleteDatabase(arg);
+          del.onblocked = () => resolve('delete-blocked');
+          del.onsuccess = () => { foreign.deleted = true; };
+          del.onerror = () => reject(del.error);
+        };
+        open.onerror = () => reject(open.error);
+      });
+    }
+    if (next === 'release-blocker') {
+      foreign.blocker.close();
+      return new Promise(resolve => {
+        const wait = () => foreign.deleted ? setTimeout(resolve, 0) : setTimeout(wait, 5);
+        wait();
+      }).then(() => new Promise(resolve => setTimeout(resolve, 0)));
+    }
     if (next === 'finish') {
       IDBDatabase.prototype.transaction = original;
       IDBObjectStore.prototype.add = add;
@@ -50,14 +117,23 @@ try {
   return {passed: true, message, metrics, userAgent: navigator.userAgent, realm: typeof window === "undefined" ? "worker" : "window"};
 } catch(error) { return {passed: false, error: String(error), stack: error?.stack}; }
 }
+export async function runInterruptible() {
+  await init();
+  const hex = new URLSearchParams(location.search).get('ns');
+  const namespace = new Uint8Array(hex.match(/../g).map(pair => parseInt(pair, 16)));
+  await wasm.interruptible(namespace, index => postMessage({committed: index}));
+}
+export async function verifyInterrupted(namespace, minimum) {
+  return wasm.verify_interrupted(namespace, minimum);
+}
 `;
-const worker = `import {run} from './qualification.js';
+const worker = `import {run, runInterruptible} from './qualification.js';
 if (typeof window !== 'undefined') throw Error('expected dedicated worker');
-postMessage(await run());`;
+if (new URLSearchParams(location.search).has('interrupt')) { await runInterruptible(); } else { postMessage(await run()); }`;
 const page = `<!doctype html><meta charset="utf-8"><title>Isolated storage regression</title>
 <script>window.done = new Promise(resolve => { window.finish = resolve; });</script>
 <script type="module">
-import {run} from './qualification.js';
+import {run, verifyInterrupted, hasInterruption} from './qualification.js';
 try {
   const main = await run();
   if (!main.passed || main.realm !== 'window') throw Error(JSON.stringify(main));
@@ -68,7 +144,26 @@ try {
     worker.onerror = () => { clearTimeout(timer); worker.terminate(); reject(Error('worker failed')); };
   });
   if (!background.passed || background.realm !== 'worker') throw Error(JSON.stringify(background));
-  window.finish({passed: true, main, worker: background});
+  // Terminate a writer mid-flight, then verify only committed states survive.
+  let interruption = 'fixture does not export interruption coverage';
+  if (hasInterruption) {
+    const interruptedNamespace = crypto.getRandomValues(new Uint8Array(32));
+    const hex = [...interruptedNamespace].map(b => b.toString(16).padStart(2, '0')).join('');
+    const writer = new Worker('./worker.js?interrupt&ns=' + hex, {type: 'module'});
+    const observed = await new Promise((resolve, reject) => {
+      let committed = -1;
+      const timer = setTimeout(() => { writer.terminate(); reject(Error('interruption progress deadline')); }, 15000);
+      writer.onmessage = ({data}) => {
+        if (typeof data.committed === 'number') committed = data.committed;
+        if (committed >= 3) { clearTimeout(timer); resolve(committed); }
+      };
+      writer.onerror = () => { clearTimeout(timer); writer.terminate(); reject(Error('interruptible writer failed')); };
+    });
+    writer.terminate();
+    const verification = await verifyInterrupted(interruptedNamespace, observed);
+    interruption = {observed, verification};
+  }
+  window.finish({passed: true, main, worker: background, interruption});
 } catch(error) { window.finish({passed: false, error: String(error), stack: error?.stack}); }
 </script>`;
 const server = createServer(async (request, response) => {

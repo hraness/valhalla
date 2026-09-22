@@ -121,7 +121,11 @@ run `node browser/tools/qualify_storage.mjs GENERATED_DIR CHROMIUM_EXECUTABLE`.
 It checks strict writes, read-only unlock under write denial, ignored durability,
 throwing durability getters, transaction abort and competing identity snapshots
 against real IndexedDB in both the page and a dedicated worker. The latter has
-no Window object and owns its storage transaction in that realm.
+no Window object and owns its storage transaction in that realm. The fixture
+also covers the open lifecycle: queued pending opens hold their bounded slots,
+a dropped mid-open future closes its late connection, a canceled queued open
+aborts its own upgrade, a foreign version bump closes live handles and refuses
+v1 reopen, and a terminated worker leaves exactly its last committed state.
 
 The same harness drives the `private_indexeddb` private-store fixture (built
 with `--features private-rooms,qualification`, bindings generated under the

@@ -383,9 +383,20 @@ ignored/throwing durability, abort after queued put, dropped-future
 cancellation, missing/corrupt/oversized records, orphan keys and bounded
 refusal, all in fresh test-owned namespaces. Build it with
 `--features private-rooms,qualification`, generate web bindings under the
-`indexeddb_qualification` name and run the same harness. Remaining browser
-gate items: blocked opens, late success buffered before polling, version
-changes, and page interruption.
+`indexeddb_qualification` name and run the same harness.
+
+The `indexeddb_qualification` fixture additionally covers the open machinery:
+queued pending opens hold their bounded slots (a fifth refuses `Bounds`), a
+future dropped mid-open closes its late-arriving connection (a subsequent
+foreign version upgrade would otherwise block forever), an open queued behind
+a pending delete aborts its own upgrade when canceled, a foreign version bump
+closes live handles and latches `needs_reopen`, and the bumped database
+refuses v1 opens. Terminating a dedicated writer mid-flight leaves exactly
+the last committed checkpoint. Note that Chromium never reports `blocked` on
+the adapter's own request at the pinned schema version — equal-version opens
+queue behind in-flight creates rather than firing `onblocked` — so the
+request-side `Error::Blocked` arm remains a defensive branch for engines
+whose open queueing differs.
 
 The browser adapter resolves a typed IndexedDB factory in its current global
 realm. A dedicated custody worker can own the same strict transactions without
