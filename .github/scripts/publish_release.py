@@ -11,11 +11,16 @@ import tempfile
 
 
 CODEQL_CHECKS = {
-    "Analyze (actions)",
-    "Analyze (python)",
-    "Analyze (javascript-typescript)",
-    "Analyze (rust)",
+    "Analyze (actions)": "github-actions",
+    "Analyze (python)": "github-actions",
+    "Analyze (javascript-typescript)": "github-actions",
+    "Analyze (rust)": "github-actions",
+    # When GitHub emits its PR verdict, a workflow cannot impersonate it.
+    "CodeQL": "github-advanced-security",
 }
+CODEQL_CATEGORIES = {f"/language:{language}" for language in
+                     ("actions", "python", "javascript-typescript", "rust")}
+CODEQL_ANALYSIS_KEY = "dynamic/github-code-scanning/codeql:analyze"
 
 
 def run_gh(*args):
@@ -31,6 +36,7 @@ def asset_names(tag):
         f"valhalla-{tag}-aarch64-apple-darwin.tar.gz",
         f"valhalla-{tag}-x86_64-unknown-linux-gnu.tar.gz",
         f"valhalla-menubar-{tag}-aarch64-apple-darwin.tar.gz",
+        f"valhalla-browser-{tag}.tar.gz",
     ]
     return sorted(archives + [name + ".sha256" for name in archives])
 
@@ -43,7 +49,7 @@ def file_hash(path):
 def validate_assets(directory, tag):
     expected = asset_names(tag)
     if sorted(path.name for path in directory.iterdir()) != expected:
-        raise ValueError("release requires exactly all three archives and checksum sidecars")
+        raise ValueError("release requires exactly all four archives and checksum sidecars")
     hashes = {}
     for name in expected:
         path = directory / name
@@ -82,14 +88,54 @@ def require_release_gates(gh, repo, tag, sha):
     for page in pages:
         for check in page["check_runs"]:
             name = check["name"]
-            if name in CODEQL_CHECKS and check.get("app", {}).get("slug") == "github-actions":
+            if (name in CODEQL_CHECKS
+                    and check.get("app", {}).get("slug") == CODEQL_CHECKS[name]):
                 if name not in latest or check["id"] > latest[name]["id"]:
                     latest[name] = check
     for name in sorted(CODEQL_CHECKS):
+        # GitHub's managed CodeQL emits the separate verdict on PR heads,
+        # but this repository's default-branch analysis has no such check.
+        # Never infer a clean release from analysis-job success: the exact
+        # main analysis + open-alert inventory below are always required.
+        if name == "CodeQL" and name not in latest:
+            if any(check.get("name") == "CodeQL" for page in pages for check in page["check_runs"]):
+                raise ValueError("foreign CodeQL verdict cannot establish release security")
+            continue
         check = latest.get(name, {})
         if (check.get("head_sha") != sha or check.get("status") != "completed"
                 or check.get("conclusion") != "success"):
             raise ValueError(f"exact release SHA requires a successful latest CodeQL {name}")
+    require_clean_main_analysis(gh, repo, sha)
+
+
+def require_clean_main_analysis(gh, repo, sha):
+    # These are the actual managed analysis categories on refs/heads/main.
+    # GitHub returns newest-created first. IDs identify analyses but are not the
+    # documented ordering contract. A bounded missing-category result refuses.
+    analyses = json.loads(gh("api", f"repos/{repo}/code-scanning/analyses"
+                            "?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&per_page=100"
+                            "&sort=created&direction=desc"))
+    latest = {}
+    for analysis in analyses:
+        category = analysis.get("category")
+        if (category in CODEQL_CATEGORIES
+                and analysis.get("tool", {}).get("name") == "CodeQL"
+                and analysis.get("ref") == "refs/heads/main"):
+            latest.setdefault(category, analysis)
+    for category in sorted(CODEQL_CATEGORIES):
+        analysis = latest.get(category, {})
+        if (analysis.get("commit_sha") != sha or analysis.get("error") != ""
+                or analysis.get("analysis_key") != CODEQL_ANALYSIS_KEY):
+            raise ValueError(f"exact release SHA requires a clean main analysis for {category}")
+    pages = json.loads(gh("api", f"repos/{repo}/code-scanning/alerts"
+                         "?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&state=open&per_page=100",
+                         "--paginate", "--slurp"))
+    # Every open CodeQL alert blocks release, including preexisting findings.
+    # Only actual fixes or separately authorized, individually reviewed GitHub
+    # dispositions clear this gate. No severity/path/fixture exemptions here.
+    if (not isinstance(pages, list) or not pages
+            or any(not isinstance(page, list) or page for page in pages)):
+        raise ValueError("release requires no open CodeQL alerts on the analyzed main branch")
 
 
 def publish(directory, tag, sha, repo, gh=run_gh):

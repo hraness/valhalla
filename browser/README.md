@@ -205,7 +205,7 @@ private commands to the existing identity worker. Entering private mode is
 irreversible for that worker: public signing, public author export and account
 replacement refuse while private custody is ready, busy or failed. Leaving ends
 both account and kernel custody and requires explicit unlock in a new worker.
-It adds no relay, automatic network operation or agent execution environment.
+It adds no automatic network operation or agent execution environment. The optional explicit local-gateway connection described below transfers only already-encrypted artifacts.
 
 Each operation rechecks the exact saved account image before and after kernel
 access. Interrupted, failed or canceled work terminates custody; reopen must use
@@ -249,16 +249,39 @@ rejects qualification hooks; the optional private interface requires an explicit
 `private-rooms` build.
 
 The panel also handles the canonical `.vharchive` container shared with the
-native CLI. An open room exports its complete retained state as one encrypted
-file through bounded `ArchiveExport`/`ArchiveExportNext` page requests, up to a
-16 MiB browser download limit. The buffer and aggregate live Blob downloads
-share that payload ceiling; Rust, JS and browser backing copies still have
-separate memory costs. Larger exports need a future streaming sink or multipart
-workflow. Reaching the limit closes the export's worker without changing the
-retained room. The larger archive import format remains supported. A
-selected file imports page-by-page into a separate read-only IndexedDB namespace
-(`ArchiveImportBegin`/`ArchiveImportFeed`/`ArchiveImportFinish`) whose durable
-receiving cursor resumes exactly after interruption, and `ArchiveOpen` reopens a
+native CLI. On browsers exposing
+[`showSaveFilePicker`](https://developer.chrome.com/docs/capabilities/web-apis/file-system-access),
+the original click requests a user-selected file before starting the export.
+The app writes one bounded encrypted page at a time and closes only a complete
+container. Picker cancellation starts no worker export. A write failure or Leave
+and lock aborts its temporary writer; no file handle is retained for later use.
+An interrupted close may have published the file, so inspect it before an explicit
+retry. Browser-managed completion is not a filesystem fsync guarantee.
+The picker is not supported uniformly across browsers or mobile platforms;
+availability is detected at runtime. Without it, the existing 16 MiB aggregate
+Blob download ceiling applies. Rust, JS and browser backing copies have separate
+memory costs. Reaching a limit preserves all retained room data.
+
+Imports authenticate the complete source image before choosing SHA-256 over a
+versioned domain, full context and archive ID. Independent snapshots of one device
+coexist. An origin-wide append-only catalog reserves at most four new snapshot
+destinations before creation, each capped at 256 MiB of encrypted record payload
+and 100,000 records. The global reserved payload cap is 1 GiB; bounded state/index
+metadata and browser-engine overhead are additional. Physical quota can refuse
+sooner. Reservations survive interruption and remain usable by their exact archive
+at capacity. There is no automatic deletion, reset, pruning or slot reclamation.
+The selected complete archive file identifies which snapshot to resume or open.
+Read-only opens require existing schema: a valid file for an absent destination
+refuses without creating even an empty database or consuming a catalog slot.
+
+The explicit legacy checkbox selects the former fixed namespace for open/resume
+only. New imports never create legacy state, and a failed new-route resume never
+falls back to it. Existing legacy state retains its prior limits, independently
+of the new catalog. Catalog integrity follows the existing trusted-origin storage
+model; coherent deletion or rollback is not externally fenced.
+`ArchiveImportBegin`/`ArchiveImportFeed`/`ArchiveImportFinish` retain an exact durable
+receiving cursor. Worker wire version 4 carries the explicit route and refuses
+older frames. `ArchiveOpen` reopens a
 finished archive for read-only membership, inbox and redacted-outbox inspection
 plus explicit ciphertext downloads. Header fields are unauthenticated hints;
 foreign accounts refuse before import begins; malformed containers, oversized
@@ -297,3 +320,84 @@ owner control, the predecessor keeps ordinary membership but loses owner
 actions, the promoted successor issues a renewal control, and the predecessor
 applies it in order without regaining owner actions. Safe live-device
 transfer remains separate work.
+
+
+## Explicit local-host private sync
+
+A production `private-rooms` build can run at a **fixed**
+`http://127.0.0.1:PORT` origin served by `vhalla private-gateway`. The gateway
+forwards opaque relay requests through the selected CA/name-pinned TLS endpoint.
+Run native Tailcat forwarding on that browser's machine when the relay host is
+elsewhere. A generic `tailcat browse` chooses a random local port and therefore a
+new IndexedDB origin; use a fixed explicit forward instead. Browser-only/mobile
+Tailcat, autonomous browser hosting and background persistence are not implemented.
+When forwarding the gateway itself, use the same `127.0.0.1` host and local port
+as its configured origin: its Host/Origin checks intentionally reject a different
+forwarded port. A local gateway may instead forward only its upstream TLS socket.
+Your Mac can sleep or disconnect: queued ciphertext remains durable locally and
+progress resumes when you explicitly reopen and select **Sync now**.
+
+After opening a room, choose a private JSON connection profile:
+
+```json
+{
+  "format": 1,
+  "origin": "http://127.0.0.1:8790",
+  "namespace": "<64 lowercase hexadecimal digits>",
+  "capability": "<distinct gateway capability, 64 lowercase hexadecimal digits>",
+  "initial_cursor": "0"
+}
+```
+
+The origin must exactly match this worker's fixed loopback origin. The gateway
+capability is distinct from the host-only relay token and is supplied again on
+each unlock. The worker holds it only in memory, and clears the selected file
+input immediately. Browser-managed temporary copies are outside a guarantee of
+complete memory erasure. Revocation is an explicit host configuration rotation;
+locking a worker does not revoke the shared host capability.
+
+**Configure new connection** requires wholly absent delivery progress.
+**Open retained connection** requires its exact retained profile, including full
+room/anchor/account/device, origin, namespace and initial cursor. Neither path
+resets budgets or rewrites a changed profile. A fresh admitted member must obtain
+its initial mailbox cursor from the trusted admission handoff, after older
+ciphertext has been published; it cannot decrypt pre-join history. A rejected MLS
+record is never an excuse to guess a later cursor or silently skip it.
+The canonical decimal initial cursor must be within the mailbox's 4,096-item
+lifetime limit; an oversized cursor refuses before any delivery state is created.
+
+Each **Sync now** reserves its finite attempt before networking, sends at most two
+local outbox entries, fetches at most four incoming records, and stops after a
+membership control. It clears any prepared message consent. The worker streams
+bounded Fetch replies with a ten-second request deadline, no cookies, redirects,
+referrer or background polling. IndexedDB retains exact pending ciphertext,
+charged attempts/backoff, a staged canonical page and its applied cursor. A new
+worker claims an exact CAS ownership token; stale tabs refuse further progress.
+Room publication has its own kernel CAS. These fences do not promise isolation
+from trusted same-origin code or browser storage rollback/eviction.
+
+An outage preserves an uncertain exact send. Reopening never re-encrypts it or
+replenishes the lifetime cap of 4,096 attempts / 1 GiB reserved relay-frame bytes
+(HTTP/TLS headers and browser-engine overhead are additional). Ten
+consecutive reserved unsuccessful attempts stop delivery; success clears only
+that consecutive count. Terminal room/storage errors end custody and preserve
+state for inspection. Bootstrap contact artifacts require their dedicated
+explicit admission UI, never automatic membership. The sender's status reports
+relay retention; incoming status reports local committed acceptance. Neither
+claims human reading. Normal incoming applications queue a device-signed
+acceptance artifact; receipt messages do not generate receipt loops.
+This browser panel does not yet match and verify peer acceptance artifacts against
+the sender's outbox; it does not present them as remote acceptance evidence.
+
+The production browser-to-gateway-to-TLS journey uses synthetic identities and
+actual native services, including durable outage/reload/retry and stale-tab
+checks:
+
+```sh
+node browser/tools/qualify_private_delivery.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE NEW_OUTPUT_DIR VHALLA_CLI OPENSSL_EXECUTABLE
+```
+
+The harness verifies a packaged **production** artifact and uses no qualification
+entry points. Run it through the repository's browser-auth scheduler lane. Its
+same-machine receipt does not substitute for independent-machine Tailcat or
+sleep/wake qualification.

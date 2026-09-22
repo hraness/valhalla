@@ -10,10 +10,12 @@ description = "Rust/WASM browser participation and local encrypted identity."
 default = []
 # Local browser acceptance harness only; never use this build for deployment.
 local-qualification = ["vhalla-private-kernel?/local-qualification"]
-# Trusted private custody API only; no relay or automatic network activation.
-private-rooms = ["dep:vhalla-private-kernel", "vhalla-browser-vault/private-storage", "vhalla-browser-storage/private-rooms"]
+# Trusted private custody with explicit, bounded local-gateway synchronization.
+private-rooms = ["dep:sha2", "dep:vhalla-private-relay", "dep:vhalla-private-kernel", "vhalla-browser-vault/private-storage", "vhalla-browser-storage/private-rooms"]
 
 [dependencies]
+sha2 = { version = "=0.10.9", default-features = false, optional = true }
+vhalla-private-relay = { path = "../crates/vhalla-private-relay", optional = true }
 vhalla-private-kernel = { path = "../crates/vhalla-private-kernel", optional = true }
 
 [dev-dependencies]

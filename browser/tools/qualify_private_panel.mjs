@@ -1,20 +1,23 @@
 // Actual private DOM, two isolated synthetic account contexts, file exchange only.
 // No account seeds, production signer calls, external routes or fixture KDF changes.
 import {trackChild, childStopped, cleanupOwned, runQualification} from './qualification_lifecycle.mjs';
+import {qualifyArchives} from './qualify_private_archives.mjs';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {readFile, writeFile, mkdir, mkdtemp, chmod, open} from 'node:fs/promises';
 import {resolve, join, sep} from 'node:path';
 
-const [artifactArg, chromeExecutable, outputArg] = process.argv.slice(2);
+const [artifactArg, chromeExecutable, outputArg, mode] = process.argv.slice(2);
+if (mode !== undefined && mode !== '--production') throw Error('unknown qualification mode');
+const production = mode === '--production';
 if (!artifactArg || !chromeExecutable || !outputArg) throw Error('requires qualification artifact, Chromium, new output directory');
 const artifact = resolve(artifactArg), output = resolve(outputArg);
 await mkdir(output, {recursive:false, mode:0o700});
 const profile = await mkdtemp(join(output,'profile-'));
 const manifestRaw = await readFile(join(artifact,'artifact.json'));
 const manifest = JSON.parse(manifestRaw);
-if (manifest.purpose !== 'local-qualification') throw Error('local-qualification artifact required');
+if (manifest.purpose !== (production ? 'production' : 'local-qualification')) throw Error('artifact purpose differs from selected mode');
 for (const [name, item] of Object.entries(manifest.assets)) {
   if (name.includes('/') || name.includes('..')) throw Error('nonlocal manifest asset');
   const bytes = await readFile(join(artifact,name));
@@ -48,6 +51,7 @@ async function wait(probe,label) {
 }
 const instrumentation=`
 window.qaURLs=new Set(); window.qaInjected=false;
+Object.defineProperty(window, "showSaveFilePicker", {configurable:true,writable:true,value:undefined});
 window.qaKeyboardClicks={'private-enter':0,'private-locator-retained':0};
 document.addEventListener('click',event=>{
   const id=event.target?.id;
@@ -207,6 +211,11 @@ async function reload(page) {
   await evaluate(page,`(async()=>{${helpers} qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','reload unlock');await qclick('private-enter');await qwait(()=>!qid('private-open').disabled,'private re-entry');return true;})()`);
   await setFile(page,'private-locator-file',page.locator);
   await evaluate(page,"(async()=>{await qclick('private-open');await qidle();return true;})()");
+}
+async function restartArchive(page) {
+  await call('Page.navigate',{url:'http://127.0.0.1:8790'},page.sessionId);
+  await wait(async()=>{try{return await evaluate(page,"!!document.getElementById('unlock')&&!document.getElementById('unlock').disabled");}catch{return false;}},'archive client reload');
+  await evaluate(page,`(async()=>{${helpers} qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','archive reload unlock');await qclick('private-enter');await qwait(()=>!qid('private-import-archive').disabled,'archive reload entry');return true;})()`);
 }
 async function screenshot(page,width) {
   // An occluded background target may never produce a compositor frame, which
@@ -376,10 +385,13 @@ async function task(abortSignal) {
   // Fabricate the equivocation durable quarantine exists for: the owner device
   // re-signs divergent claims at the retained removal floor with its own
   // custody. Evidence material only — the owner's retained state is unchanged.
-  const divergent=await invoke(owner,`async function(seq,path){const m=await import(path);const r=JSON.parse(await m.qualify_private_session('divergent-proof',seq));return r.control;}`,[removalSeq,'/'+modules[0]]);
-  const forkRaw=Buffer.from(divergent,'hex');
-  const forkProof=join(output,'divergent.vhproof');await writeFile(forkProof,forkRaw,{mode:0o600});
-  files.push({account:owner.name,kind:'vhproof',bytes:forkRaw.length,sha256:createHash('sha256').update(forkRaw).digest('hex'),file:forkProof});
+  let forkProof;
+  if(!production){
+    const divergent=await invoke(owner,`async function(seq,path){const m=await import(path);const r=JSON.parse(await m.qualify_private_session('divergent-proof',seq));return r.control;}`,[removalSeq,'/'+modules[0]]);
+    const forkRaw=Buffer.from(divergent,'hex');
+    forkProof=join(output,'divergent.vhproof');await writeFile(forkProof,forkRaw,{mode:0o600});
+    files.push({account:owner.name,kind:'vhproof',bytes:forkRaw.length,sha256:createHash('sha256').update(forkRaw).digest('hex'),file:forkProof});
+  }
   for(const width of [1280,768,390])await screenshot(member,width);
   // The removal-control download seconds ago still holds a live temporary URL;
   // the lock hook must revoke it. No extra download: the panel caps live URLs.
@@ -391,43 +403,48 @@ async function task(abortSignal) {
   if(!message.raw.equals(reopened.raw))throw Error('exact locator reopen changed retained ciphertext');
   await leave(member);
   facts.push('lock clears plaintext/files/views/URLs, requires new unlock, exact locator reopen retains ciphertext');
-  // A divergent control validly signed by the owner device at the retained
-  // removal floor is exactly the equivocation durable quarantine exists for.
-  // The member kernel writes its fault before the worker reports failure.
-  await reopen(member);
-  await setFile(member,'private-proof-file',forkProof);
-  await evaluate(member,"(async()=>{await qwait(()=>!qid('private-observe').disabled,'observe control enabled');qshow('private-observe');qid('private-observe').click();await qwait(()=>qid('identity-state').textContent==='Reload required','a proven conflict did not end the worker');return true;})()");
-  await reload(member);
-  await evaluate(member,`(async()=>{
-    qassert(qid('private-membership-summary').textContent.includes('Quarantined'),'quarantine not surfaced after reload');
-    qassert(qid('private-prepare-message').disabled,'quarantined device can still prepare');
-    qassert(qid('private-apply-control').disabled,'quarantined device can still apply controls');
-    await qclick('private-fork-evidence');await qidle();
-    const evidence=qid('private-evidence').textContent;
-    qassert(evidence.includes('Retained fork proof'),'retained fork proof missing');
-    qassert(evidence.includes('Accepted floor ${removalSeq}'),'fork proof names the wrong floor');
-    qassert(evidence.includes('durably quarantined'),'quarantine consequence text missing');
-    qassert(qid('private-status').textContent.includes('conflicting owner signature'),'fork status message missing');
-    await qclick('private-outbox');await qidle();
-    qassert(qid('private-outbox-select').options.length>0,'quarantine lost retained outbox');
-    await qclick('private-inbox');await qidle();
-    return true;
-  })()`);
-  await leave(member);
-  facts.push('a divergent owner-signed control at a retained floor durably quarantines the member: the worker ends terminally, reopen shows quarantine plus the retained fork proof, sends stay refused, and retained history stays readable');
+  if(!production){
+    // A divergent control validly signed by the owner device at the retained
+    // removal floor is exactly the equivocation durable quarantine exists for.
+    // The member kernel writes its fault before the worker reports failure.
+    await reopen(member);
+    await setFile(member,'private-proof-file',forkProof);
+    await evaluate(member,"(async()=>{await qwait(()=>!qid('private-observe').disabled,'observe control enabled');qshow('private-observe');qid('private-observe').click();await qwait(()=>qid('identity-state').textContent==='Reload required','a proven conflict did not end the worker');return true;})()");
+    await reload(member);
+    await evaluate(member,`(async()=>{
+      qassert(qid('private-membership-summary').textContent.includes('Quarantined'),'quarantine not surfaced after reload');
+      qassert(qid('private-prepare-message').disabled,'quarantined device can still prepare');
+      qassert(qid('private-apply-control').disabled,'quarantined device can still apply controls');
+      await qclick('private-fork-evidence');await qidle();
+      const evidence=qid('private-evidence').textContent;
+      qassert(evidence.includes('Retained fork proof'),'retained fork proof missing');
+      qassert(evidence.includes('Accepted floor ${removalSeq}'),'fork proof names the wrong floor');
+      qassert(evidence.includes('durably quarantined'),'quarantine consequence text missing');
+      qassert(qid('private-status').textContent.includes('conflicting owner signature'),'fork status message missing');
+      await qclick('private-outbox');await qidle();
+      qassert(qid('private-outbox-select').options.length>0,'quarantine lost retained outbox');
+      await qclick('private-inbox');await qidle();
+      return true;
+    })()`);
+    await leave(member);
+    facts.push('a divergent owner-signed control at a retained floor durably quarantines the member: the worker ends terminally, reopen shows quarantine plus the retained fork proof, sends stay refused, and retained history stays readable');
+  }
   // Expired-envelope edge: the fresh device's own retained next-floor control
   // (the member removal it never applied) under a caller clock past its
   // enrollment validity hits the kernel's ordinary time refusal — the worker
   // ends, nothing is published or quarantined, and the identical envelope
   // applies under the real clock after a document teardown.
   await reopen(fresh);
-  const expiredEnvelope=(await readFile(removal.path)).toString('hex');
-  await invoke(fresh,`async function(hex,path){const m=await import(path);const r=JSON.parse(await m.qualify_private_session('expire-apply',hex));qassert(r.expired_refusal===true,'expired apply not refused');await qwait(()=>qid('identity-state').textContent==='Reload required','expired apply did not end the worker');return true;}`,[expiredEnvelope,'/'+modules[0]]);
-  await reload(fresh);
+  if(!production){
+    const expiredEnvelope=(await readFile(removal.path)).toString('hex');
+    await invoke(fresh,`async function(hex,path){const m=await import(path);const r=JSON.parse(await m.qualify_private_session('expire-apply',hex));qassert(r.expired_refusal===true,'expired apply not refused');await qwait(()=>qid('identity-state').textContent==='Reload required','expired apply did not end the worker');return true;}`,[expiredEnvelope,'/'+modules[0]]);
+    await reload(fresh);
+  }
   await setFile(fresh,'private-control-file',removal.path);
   await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'fresh roster did not shrink');qassert(!qid('private-prepare-message').disabled,'expired refusal removed the member');await qclick('private-fork-evidence');await qidle();qassert(qid('private-status').textContent.includes('No locally retained fork proof'),'expired refusal fabricated fork evidence');return true;})()");
   await leave(fresh);
-  facts.push('a control applied under a caller clock past enrollment validity is refused without mutation or quarantine: the worker ends, reopen shows no fork evidence, and the identical envelope applies under the real clock');
+  if(!production)facts.push('a control applied under a caller clock past enrollment validity is refused without mutation or quarantine: the worker ends, reopen shows no fork evidence, and the identical envelope applies under the real clock');
+  else facts.push('production member applies the ordered removal envelope under the real clock before owner succession');
   // Account-authorized owner-device succession: the owner's account signs a
   // grant for its already-enrolled fresh device, carried by the predecessor's
   // next control. The predecessor stays an ordinary member; only the promoted
@@ -444,28 +461,11 @@ async function task(abortSignal) {
   const successorRenewal=await download(fresh,'private-download-output','vhcontrol');
   await setFile(owner,'private-control-file',successorRenewal.path);
   await evaluate(owner,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-remove').disabled,'demoted owner regained owner actions');return true;})()");
-  // A malformed tail is discovered after source and record pages have already
-  // committed. The UI must close the importer, retain its exact cursor and make
-  // a same-file retry possible in a new unlocked worker.
-  const archive=await download(owner,'private-export-archive','vharchive');
-  const malformedArchive=join(output,'archive-with-trailing-byte.vharchive');
-  await writeFile(malformedArchive,Buffer.concat([archive.raw,Buffer.from([1])]),{mode:0o600});
-  await leave(fresh);
-  const enterArchive=async()=>evaluate(fresh,"(async()=>{qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','archive account unlock');await qclick('private-enter');await qwait(()=>!qid('private-import-archive').disabled,'archive selection');return true;})()");
-  await enterArchive();
-  await setFile(fresh,'private-archive-file',malformedArchive);
-  await evaluate(fresh,"(async()=>{await qclick('private-import-archive');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'malformed archive closes custody');qassert(qid('private-status').dataset.error==='true','malformed archive lacks error');qassert(qid('private-status').textContent.includes('same complete file'),'missing archive resume guidance');qassert(qid('private-archive-file').value==='','failed import kept file selection');return true;})()");
-  const archiveDb='vhalla-browser-storage-v1-'+Buffer.from('vhalla-browser-local-archive-v01').toString('hex');
-  const retainedImportKeys=await invoke(fresh,`async function(name){return await new Promise((resolve,reject)=>{const request=indexedDB.open(name);request.onerror=()=>reject(Error('retained archive open'));request.onsuccess=()=>{const db=request.result,tx=db.transaction('images','readonly'),count=tx.objectStore('images').count();tx.oncomplete=()=>{db.close();resolve(count.result);};tx.onabort=()=>{db.close();reject(Error('retained archive read'));};};});}`,[archiveDb]);
-  if(retainedImportKeys<=2)throw Error('malformed archive did not exercise a durable partial import');
-  await enterArchive();
-  await setFile(fresh,'private-archive-file',archive.path);
-  await evaluate(fresh,"(async()=>{await qclick('private-import-archive');await qwait(()=>!qid('private-archive').hidden&&!qid('private-archive-close').disabled,'same archive resume completes');qassert(qid('private-status').dataset.error!=='true','archive resume refused');await qclick('private-archive-outbox');await qwait(()=>!qid('private-archive-close').disabled,'archive outbox');qassert(qid('private-archive-outbox-select').options.length>0,'resumed archive lost retained output');return true;})()");
-  facts.push('DOM archive import discovers malformed trailing bytes after durable progress, locks without discarding records, then resumes the complete original file after explicit unlock');
+  await qualifyArchives({owner,fresh,output,evaluate,invoke,setFile,download,send,leave,reopen,restartArchive,facts});
   await leave(owner);await leave(fresh);
   facts.push('account-authorized succession hands ownership to the enrolled same-account device through one distributed owner control: the predecessor keeps ordinary membership, and the promoted successor issues controls the predecessor applies in order');
   if(unexpectedNetwork||networkWrites)throw Error('unexpected route, network write or unbounded download event');
-  return {passed:true,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,screenshots,files,networkWrites,contexts:3,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
+  return {passed:true,artifact,purpose:manifest.purpose,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,screenshots,files,networkWrites,contexts:3,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
 }
 
 await runQualification({work:task,timeoutMs:300000,

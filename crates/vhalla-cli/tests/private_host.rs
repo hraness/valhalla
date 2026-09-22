@@ -1,0 +1,374 @@
+//! Local host initialization and real TLS subprocess lifecycle. Never installs a LaunchAgent.
+#![cfg(all(unix, feature = "experimental-private"))]
+use serde_json::Value;
+use std::{
+    fs,
+    io::{BufRead, BufReader},
+    net::{SocketAddr, TcpListener},
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    path::PathBuf,
+    process::{Child, Command, Output, Stdio},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+use vhalla_private_kernel::{OperationId, OutboxKind};
+use vhalla_private_native::relay::{
+    net::{NetError, RelayToken},
+    tls::TlsRelay,
+    RelayItem, RelayNamespace,
+};
+struct Fixture {
+    root: PathBuf,
+    addr: SocketAddr,
+}
+impl Fixture {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "vhalla-local-host-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        Self { root, addr }
+    }
+    fn home(&self) -> PathBuf {
+        self.root.join("host & retained")
+    }
+    fn command(&self, action: &str) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vhalla"));
+        command.args(["private-host", action]).arg(self.home());
+        command
+    }
+    fn init(&self) -> Output {
+        let mut command = self.command("init");
+        command.args([
+            "--listen",
+            &self.addr.to_string(),
+            "--tls-name",
+            "local-host.test.invalid",
+        ]);
+        run(command)
+    }
+    fn json(&self, name: &str) -> Value {
+        serde_json::from_slice(&fs::read(self.home().join(name)).unwrap()).unwrap()
+    }
+    fn token(&self, n: usize) -> [u8; 32] {
+        unhex(
+            std::str::from_utf8(&fs::read(self.home().join(format!("client-{n}.token"))).unwrap())
+                .unwrap(),
+        )
+    }
+    fn namespace(&self) -> RelayNamespace {
+        RelayNamespace::from_bytes(unhex(
+            self.json("connection.json")["namespace"].as_str().unwrap(),
+        ))
+        .unwrap()
+    }
+    fn client(&self, n: usize) -> TlsRelay {
+        TlsRelay::new(
+            self.addr,
+            "local-host.test.invalid",
+            fs::read(self.home().join("ca.der")).unwrap(),
+            RelayToken::from_bytes(self.token(n)).unwrap(),
+            self.namespace(),
+        )
+        .unwrap()
+    }
+    fn serve(&self) -> Server {
+        let mut child = self
+            .command("serve")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (send, receive) = mpsc::channel();
+        thread::spawn(move || {
+            let mut line = String::new();
+            let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+            let _ = send.send(result);
+        });
+        let line = receive
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        if line.is_empty() {
+            let output = child.wait_with_output().unwrap();
+            panic!("serve: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        let ready: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(ready["status"], "listening");
+        assert_eq!(ready["listen"], self.addr.to_string());
+        Server(child)
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+struct Server(Child);
+impl Server {
+    fn stop(&mut self) {
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(self.0.id().try_into().unwrap()).unwrap(),
+            rustix::process::Signal::TERM,
+        )
+        .unwrap();
+        wait(&mut self.0);
+        assert!(self.0.try_wait().unwrap().unwrap().success());
+    }
+}
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+fn wait(child: &mut Child) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child exceeded fixed deadline");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+fn run(mut command: Command) -> Output {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait(&mut child);
+    child.wait_with_output().unwrap()
+}
+fn ok(output: &Output) {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+fn unhex<const N: usize>(s: &str) -> [u8; N] {
+    assert_eq!(s.len(), N * 2);
+    let mut out = [0; N];
+    for (index, pair) in s.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        out[index] = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+    }
+    out
+}
+
+#[test]
+fn new_host_is_private_random_bounded_and_does_not_publish_credentials() {
+    let f = Fixture::new();
+    let initialized = f.init();
+    ok(&initialized);
+    assert_eq!(fs::metadata(f.home()).unwrap().mode() & 0o7777, 0o700);
+    for name in [
+        "config.json",
+        "complete",
+        "ca.der",
+        "ca-key.der",
+        "server.der",
+        "server-key.der",
+        "client-1.token",
+        "client-2.token",
+        "connection.json",
+        "launch-agent.plist",
+    ] {
+        let meta = fs::symlink_metadata(f.home().join(name)).unwrap();
+        assert!(meta.is_file());
+        assert_eq!(meta.mode() & 0o7777, 0o600);
+        assert_eq!(meta.nlink(), 1);
+    }
+    let config = f.json("config.json");
+    assert_eq!(
+        config["certificate_expires_at"].as_i64().unwrap() - config["created_at"].as_i64().unwrap(),
+        365 * 86400
+    );
+    assert_eq!(
+        config["authority_expires_at"].as_i64().unwrap() - config["created_at"].as_i64().unwrap(),
+        5 * 365 * 86400
+    );
+    assert_ne!(f.token(1), f.token(2));
+    let public = fs::read(f.home().join("connection.json")).unwrap();
+    for n in [1, 2] {
+        let token = fs::read(f.home().join(format!("client-{n}.token"))).unwrap();
+        assert!(!public.windows(token.len()).any(|v| v == token));
+        assert!(!initialized.stdout.windows(token.len()).any(|v| v == token));
+        assert!(!initialized.stderr.windows(token.len()).any(|v| v == token));
+    }
+    let plist = fs::read_to_string(f.home().join("launch-agent.plist")).unwrap();
+    assert!(plist.contains("host &amp; retained"));
+    assert!(!plist.contains("client-1.token"));
+    assert!(plist.contains("<key>ThrottleInterval</key><integer>30</integer>"));
+    let second = Fixture::new();
+    ok(&second.init());
+    assert_ne!(f.namespace(), second.namespace());
+    assert_ne!(f.token(1), second.token(1));
+    let status = run(f.command("status"));
+    ok(&status);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["status"], "configured");
+    assert_eq!(status["certificate_expired"], false);
+}
+
+#[test]
+fn tls_host_restarts_with_exact_retention_and_graceful_custody_release() {
+    let f = Fixture::new();
+    ok(&f.init());
+    let mut server = f.serve();
+    let item = RelayItem::new(
+        f.namespace(),
+        1,
+        OperationId::from_bytes([3; 16]).unwrap(),
+        OutboxKind::Application,
+        b"synthetic opaque committed ciphertext",
+    )
+    .unwrap();
+    let first = f.client(1).submit(&item).unwrap();
+    assert_eq!(first.position, 1);
+    assert!(!first.duplicate);
+    let page = f.client(2).page(0, 1).unwrap();
+    assert_eq!(page.head, 1);
+    assert_eq!(page.records[0].item, item);
+    // Status never opens the mailbox writer and remains usable while it is held.
+    ok(&run(f.command("status")));
+    let duplicate_process = run(f.command("serve"));
+    assert!(!duplicate_process.status.success());
+    let wrong = TlsRelay::new(
+        f.addr,
+        "local-host.test.invalid",
+        fs::read(f.home().join("ca.der")).unwrap(),
+        RelayToken::from_bytes([5; 32]).unwrap(),
+        f.namespace(),
+    )
+    .unwrap();
+    assert!(matches!(wrong.page(0, 1), Err(NetError::Denied)));
+    server.stop();
+    assert!(std::net::TcpStream::connect(f.addr).is_err());
+    let mut restarted = f.serve();
+    let duplicate = f.client(1).submit(&item).unwrap();
+    assert!(duplicate.duplicate);
+    assert_eq!(duplicate.position, first.position);
+    assert_eq!(duplicate.digest, first.digest);
+    assert_eq!(f.client(2).page(0, 1).unwrap().records[0].item, item);
+    restarted.stop();
+}
+
+#[test]
+fn partial_existing_foreign_and_mutated_homes_refuse_without_repair() {
+    let partial = Fixture::new();
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(partial.home())
+        .unwrap();
+    fs::write(partial.home().join("retained"), b"preserve partial setup").unwrap();
+    assert!(!partial.init().status.success());
+    assert_eq!(
+        fs::read(partial.home().join("retained")).unwrap(),
+        b"preserve partial setup"
+    );
+    assert!(!partial.home().join("config.json").exists());
+    let f = Fixture::new();
+    ok(&f.init());
+    let config = fs::read(f.home().join("config.json")).unwrap();
+    assert!(!f.init().status.success());
+    assert_eq!(fs::read(f.home().join("config.json")).unwrap(), config);
+    fs::set_permissions(
+        f.home().join("config.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    assert!(!run(f.command("status")).status.success());
+    fs::set_permissions(
+        f.home().join("config.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let mut changed = config.clone();
+    changed.push(b' ');
+    fs::write(f.home().join("config.json"), &changed).unwrap();
+    assert!(!run(f.command("serve")).status.success());
+    assert_eq!(fs::read(f.home().join("config.json")).unwrap(), changed);
+    fs::write(f.home().join("config.json"), config).unwrap();
+    let target = f.home().join("client-1.token");
+    let retained = fs::read(&target).unwrap();
+    fs::rename(&target, f.home().join("retained-token")).unwrap();
+    std::os::unix::fs::symlink(f.home().join("retained-token"), &target).unwrap();
+    assert!(!run(f.command("status")).status.success());
+    assert_eq!(fs::read(f.home().join("retained-token")).unwrap(), retained);
+    let invalid = Fixture::new();
+    let mut command = invalid.command("init");
+    command.args(["--listen", "0.0.0.0:9473"]);
+    assert!(!run(command).status.success());
+    assert!(!invalid.home().exists());
+}
+
+#[test]
+fn tailcat_template_uses_only_saved_private_key_and_exact_one_port_without_activation() {
+    let f = Fixture::new();
+    ok(&f.init());
+    let key = f.home().join("tailcat.private.json");
+    let secret = b"synthetic saved-key fixture; template generation never executes Tailcat";
+    fs::write(&key, secret).unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    let out = f.home().join("tailcat-agent.plist");
+    let command = || {
+        let mut command = f.command("tailcat-plist");
+        command
+            .arg("--binary")
+            .arg(env!("CARGO_BIN_EXE_vhalla"))
+            .arg("--key")
+            .arg(&key)
+            .arg("--out")
+            .arg(&out);
+        command
+    };
+    let generated = run(command());
+    ok(&generated);
+    let report: Value = serde_json::from_slice(&generated.stdout).unwrap();
+    assert_eq!(report["installed"], false);
+    let plist = fs::read(&out).unwrap();
+    let text = std::str::from_utf8(&plist).unwrap();
+    assert!(text.contains("--key="));
+    assert!(text.contains("tailcat.private.json"));
+    assert!(text.contains(&format!(
+        "<string>serve</string><string>{}</string>",
+        f.addr.port()
+    )));
+    assert!(!text.contains(&format!("{}:{}", f.addr.port(), f.addr)));
+    assert!(!text.contains("--key=new"));
+    assert!(!text.contains("exit-node"));
+    assert!(!plist.windows(secret.len()).any(|b| b == secret));
+    assert!(!generated.stdout.windows(secret.len()).any(|b| b == secret));
+    assert_eq!(fs::metadata(&out).unwrap().mode() & 0o7777, 0o600);
+    assert!(!run(command()).status.success());
+    assert_eq!(fs::read(&out).unwrap(), plist);
+    fs::remove_file(&out).unwrap();
+    std::os::unix::fs::symlink(&key, &out).unwrap();
+    assert!(!run(command()).status.success());
+    assert_eq!(fs::read(&key).unwrap(), secret);
+    fs::remove_file(&out).unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!run(command()).status.success());
+    assert!(!out.exists());
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::rename(&key, f.home().join("retained-overlay-key")).unwrap();
+    std::os::unix::fs::symlink(f.home().join("retained-overlay-key"), &key).unwrap();
+    assert!(!run(command()).status.success());
+    assert!(!out.exists());
+}

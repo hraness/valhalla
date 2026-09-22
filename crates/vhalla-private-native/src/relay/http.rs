@@ -1,0 +1,535 @@
+//! Loopback-only, same-origin browser gateway to one authenticated TLS relay.
+//! No mailbox is opened here. Admission precedes upstream network effects.
+use super::{codec::*, net::NetError, tls::TlsRelay, RelayItem, RelayNamespace};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+#[cfg(test)]
+mod tests;
+type Result<T> = std::result::Result<T, NetError>;
+const HEADER_MAX: usize = 8192;
+/// Fixed HTTP endpoint; callers cannot choose an upstream route.
+pub const ENDPOINT: &str = "/private-relay/v1";
+/// Public UI artifact memory cap, separate from relay ciphertext bounds.
+pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
+const CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self' https:; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
+
+/// Independent browser admission secret. Never reuse the upstream relay token.
+#[derive(Clone)]
+pub struct BrowserCapability([u8; 32]);
+impl std::fmt::Debug for BrowserCapability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BrowserCapability([REDACTED])")
+    }
+}
+impl BrowserCapability {
+    /// Admit a nonzero, independently generated capability.
+    pub fn from_bytes(value: [u8; 32]) -> Result<Self> {
+        if value == [0; 32] {
+            return Err(NetError::Bounds);
+        }
+        Ok(Self(value))
+    }
+    fn matches(&self, value: &str) -> bool {
+        let Some(value) = value.strip_prefix("Bearer ") else {
+            return false;
+        };
+        let Some(bytes) = hex32(value) else {
+            return false;
+        };
+        self.0
+            .iter()
+            .zip(bytes)
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
+    }
+}
+fn hex32(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    let mut out = [0; 32];
+    for (i, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        out[i] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
+}
+/// Finite concurrent work, admission rate, and complete HTTP request deadline.
+#[derive(Clone, Copy)]
+pub struct GatewayLimits {
+    /// At most this many accepted connections run concurrently (1..16).
+    pub max_connections: usize,
+    /// Includes request parsing, TLS upstream and response write (at most 25s).
+    pub timeout: Duration,
+    /// Local monotonic accounting window, at most one minute.
+    pub window: Duration,
+    /// Total accepted connections per window, including unauthenticated peers.
+    pub requests: u32,
+    /// Total request and response body bytes admitted per window.
+    pub bytes: usize,
+}
+impl Default for GatewayLimits {
+    fn default() -> Self {
+        Self {
+            max_connections: 8,
+            timeout: Duration::from_secs(10),
+            window: Duration::from_secs(10),
+            requests: 128,
+            bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+impl GatewayLimits {
+    fn check(self) -> Result<()> {
+        if !(1..=16).contains(&self.max_connections)
+            || self.timeout.is_zero()
+            || self.timeout > Duration::from_secs(25)
+            || self.window.is_zero()
+            || self.window > Duration::from_secs(60)
+            || self.requests == 0
+            || self.requests > 4096
+            || self.bytes == 0
+            || self.bytes > 64 * 1024 * 1024
+        {
+            return Err(NetError::Bounds);
+        }
+        Ok(())
+    }
+}
+/// Immutable preverified production assets. Serving never reads arbitrary paths.
+pub struct Assets(BTreeMap<String, Vec<u8>>);
+impl Assets {
+    /// Accept only a bounded flat manifest allowlist. The CLI verifies hashes and
+    /// production purpose before constructing this value; no credentials belong here.
+    pub fn new(values: BTreeMap<String, Vec<u8>>) -> Result<Self> {
+        if values.is_empty() || values.len() > 64 || !values.contains_key("index.html") {
+            return Err(NetError::Bounds);
+        }
+        let mut total = 0usize;
+        for (name, bytes) in &values {
+            if name.is_empty()
+                || name.len() > 128
+                || name.starts_with('.')
+                || name.contains("..")
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                || bytes.is_empty()
+                || bytes.len() > 32 * 1024 * 1024
+            {
+                return Err(NetError::Bounds);
+            }
+            total = total.checked_add(bytes.len()).ok_or(NetError::Bounds)?;
+        }
+        if total > MAX_ASSET_BYTES {
+            return Err(NetError::Bounds);
+        }
+        Ok(Self(values))
+    }
+}
+trait Upstream: Send + Sync {
+    fn exchange(&self, op: u8, body: &[u8], deadline: Instant) -> Result<Vec<u8>>;
+}
+impl Upstream for TlsRelay {
+    fn exchange(&self, op: u8, body: &[u8], deadline: Instant) -> Result<Vec<u8>> {
+        match op {
+            OP_PUT => self
+                .submit_until(
+                    &RelayItem::decode(body).map_err(|_| NetError::Malformed)?,
+                    deadline,
+                )
+                .map(encode_receipt),
+            OP_PAGE => {
+                let after = u64::from_be_bytes(body[..8].try_into().expect("validated"));
+                let limit = u16::from_be_bytes(body[8..].try_into().expect("validated")) as usize;
+                encode_page(&self.page_until(after, limit, deadline)?)
+            }
+            _ => Err(NetError::Bounds),
+        }
+    }
+}
+struct Budget {
+    start: Instant,
+    requests: u32,
+    bytes: usize,
+}
+struct State {
+    address: SocketAddr,
+    host: String,
+    origin: String,
+    namespace: RelayNamespace,
+    capability: BrowserCapability,
+    limits: GatewayLimits,
+    upstream: Arc<dyn Upstream>,
+    assets: Assets,
+    budget: Mutex<Budget>,
+}
+/// Bounded host-owned HTTP gateway, independent from room/identity custody.
+pub struct Gateway(Arc<State>);
+impl Gateway {
+    /// Bind configuration to one loopback address and one TLS namespace. The
+    /// caller must keep browser and upstream capabilities distinct.
+    pub fn new(
+        address: SocketAddr,
+        namespace: RelayNamespace,
+        capability: BrowserCapability,
+        upstream: TlsRelay,
+        assets: Assets,
+        limits: GatewayLimits,
+    ) -> Result<Self> {
+        if upstream.token_matches(&capability.0) {
+            return Err(NetError::Denied);
+        }
+        if upstream.namespace() != namespace {
+            return Err(NetError::Scope);
+        }
+        Self::configured(
+            address,
+            namespace,
+            capability,
+            Arc::new(upstream),
+            assets,
+            limits,
+        )
+    }
+    fn configured(
+        address: SocketAddr,
+        namespace: RelayNamespace,
+        capability: BrowserCapability,
+        upstream: Arc<dyn Upstream>,
+        assets: Assets,
+        limits: GatewayLimits,
+    ) -> Result<Self> {
+        limits.check()?;
+        if !address.ip().is_loopback() || address.port() == 0 {
+            return Err(NetError::Bounds);
+        }
+        let host = address.to_string();
+        Ok(Self(Arc::new(State {
+            address,
+            origin: format!("http://{host}"),
+            host,
+            namespace,
+            capability,
+            upstream,
+            assets,
+            limits,
+            budget: Mutex::new(Budget {
+                start: Instant::now(),
+                requests: 0,
+                bytes: 0,
+            }),
+        })))
+    }
+    /// Stable browser origin, always numeric loopback HTTP.
+    pub fn origin(&self) -> &str {
+        &self.0.origin
+    }
+    /// Stop admission on the host's flag, drain finite deadline-bound workers,
+    /// and close the listener. There are no detached gateway threads.
+    pub fn serve_until(self, listener: TcpListener, stop: Arc<AtomicBool>) -> Result<()> {
+        if listener.local_addr().map_err(|_| NetError::Unavailable)? != self.0.address {
+            return Err(NetError::Scope);
+        }
+        listener
+            .set_nonblocking(true)
+            .map_err(|_| NetError::Unavailable)?;
+        let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
+        let mut failed = false;
+        while !stop.load(Ordering::Acquire) {
+            let mut index = 0;
+            while index < workers.len() {
+                if workers[index].is_finished() {
+                    failed |= workers.swap_remove(index).join().is_err();
+                } else {
+                    index += 1;
+                }
+            }
+            if failed {
+                break;
+            }
+            match listener.accept() {
+                Ok((stream, peer)) => {
+                    let admitted = match admit(&self.0, 0, true) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            failed = true;
+                            break;
+                        }
+                    };
+                    if !peer.ip().is_loopback()
+                        || workers.len() >= self.0.limits.max_connections
+                        || !admitted
+                    {
+                        drop(stream);
+                        continue;
+                    }
+                    let state = self.0.clone();
+                    match thread::Builder::new()
+                        .name("private-gateway".into())
+                        .spawn(move || {
+                            let _ = handle(&state, stream);
+                        }) {
+                        Ok(worker) => workers.push(worker),
+                        Err(_) => {
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::park_timeout(Duration::from_millis(10))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => (),
+                Err(_) => {
+                    failed = true;
+                    break;
+                }
+            }
+        }
+        drop(listener);
+        for worker in workers {
+            failed |= worker.join().is_err();
+        }
+        if failed {
+            Err(NetError::Unavailable)
+        } else {
+            Ok(())
+        }
+    }
+}
+fn admit(state: &State, bytes: usize, request: bool) -> Result<bool> {
+    let mut budget = state.budget.lock().map_err(|_| NetError::Unavailable)?;
+    if budget.start.elapsed() >= state.limits.window {
+        *budget = Budget {
+            start: Instant::now(),
+            requests: 0,
+            bytes: 0,
+        };
+    }
+    if (request && budget.requests >= state.limits.requests)
+        || bytes > state.limits.bytes.saturating_sub(budget.bytes)
+    {
+        return Ok(false);
+    }
+    budget.requests += u32::from(request);
+    budget.bytes += bytes;
+    Ok(true)
+}
+struct Socket {
+    stream: TcpStream,
+    deadline: Instant,
+}
+impl Socket {
+    fn remaining(&self) -> std::io::Result<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "gateway deadline"))
+    }
+}
+impl Read for Socket {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        self.stream.read(bytes)
+    }
+}
+impl Write for Socket {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.remaining()?;
+        self.stream.flush()
+    }
+}
+struct Request {
+    method: String,
+    path: String,
+    headers: BTreeMap<String, String>,
+}
+fn headers(socket: &mut Socket) -> Result<Request> {
+    let mut raw = Vec::new();
+    while !raw.ends_with(b"\r\n\r\n") {
+        if raw.len() == HEADER_MAX {
+            return Err(NetError::Bounds);
+        }
+        let mut byte = [0];
+        socket
+            .read_exact(&mut byte)
+            .map_err(|_| NetError::Timeout)?;
+        raw.push(byte[0]);
+    }
+    let text = std::str::from_utf8(&raw).map_err(|_| NetError::Malformed)?;
+    if !text.is_ascii() || text.bytes().any(|b| b < 32 && b != b'\r' && b != b'\n') {
+        return Err(NetError::Malformed);
+    }
+    let mut lines = text.split("\r\n");
+    let parts: Vec<_> = lines
+        .next()
+        .ok_or(NetError::Malformed)?
+        .split(' ')
+        .collect();
+    if parts.len() != 3 || parts[2] != "HTTP/1.1" || !parts[1].starts_with('/') {
+        return Err(NetError::Malformed);
+    }
+    let mut headers = BTreeMap::new();
+    for line in lines.take_while(|line| !line.is_empty()) {
+        let (key, value) = line.split_once(':').ok_or(NetError::Malformed)?;
+        if key.is_empty()
+            || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || headers.len() == 64
+            || headers
+                .insert(key.to_ascii_lowercase(), value.trim_matches(' ').to_owned())
+                .is_some()
+        {
+            return Err(NetError::Malformed);
+        }
+    }
+    Ok(Request {
+        method: parts[0].to_owned(),
+        path: parts[1].to_owned(),
+        headers,
+    })
+}
+fn response(socket: &mut Socket, status: u16, mime: &str, body: &[u8]) -> Result<()> {
+    let header = format!(
+        "HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nContent-Type: {mime}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Opener-Policy: same-origin\r\nContent-Security-Policy: {CSP}\r\n\r\n",
+        body.len()
+    );
+    socket
+        .write_all(header.as_bytes())
+        .and_then(|_| socket.write_all(body))
+        .map_err(|_| NetError::Timeout)
+}
+fn handle(state: &State, stream: TcpStream) -> Result<()> {
+    let mut socket = Socket {
+        stream,
+        deadline: Instant::now() + state.limits.timeout,
+    };
+    let request = match headers(&mut socket) {
+        Ok(value) => value,
+        Err(_) => return response(&mut socket, 400, "text/plain", b"request refused"),
+    };
+    let get = |name: &str| request.headers.get(name).map(String::as_str);
+    if get("host") != Some(state.host.as_str()) || get("origin").is_some_and(|v| v != state.origin)
+    {
+        return response(
+            &mut socket,
+            403,
+            "text/plain",
+            b"gateway origin refused; use the configured loopback host and forward the same port",
+        );
+    }
+    if get("transfer-encoding").is_some() || get("content-encoding").is_some() {
+        return response(&mut socket, 403, "text/plain", b"request refused");
+    }
+    if request.method == "GET" {
+        if get("content-length").is_some_and(|v| v != "0") {
+            return response(&mut socket, 400, "text/plain", b"request refused");
+        }
+        let path = if request.path == "/" {
+            "index.html"
+        } else {
+            &request.path[1..]
+        };
+        let Some(body) = state.assets.0.get(path) else {
+            return response(&mut socket, 404, "text/plain", b"not found");
+        };
+        let mime = if path.ends_with(".html") {
+            "text/html; charset=utf-8"
+        } else if path.ends_with(".js") {
+            "text/javascript"
+        } else if path.ends_with(".wasm") {
+            "application/wasm"
+        } else if path.ends_with(".css") {
+            "text/css"
+        } else {
+            "application/octet-stream"
+        };
+        if !admit(state, body.len(), false)? {
+            return response(&mut socket, 429, "text/plain", b"temporarily unavailable");
+        }
+        return response(&mut socket, 200, mime, body);
+    }
+    if request.method != "POST"
+        || request.path != ENDPOINT
+        || get("origin") != Some(state.origin.as_str())
+        || get("content-type") != Some("application/octet-stream")
+        || !get("authorization").is_some_and(|v| state.capability.matches(v))
+        || get("x-vhalla-namespace").and_then(hex32).as_ref() != Some(state.namespace.as_bytes())
+    {
+        return response(&mut socket, 403, "text/plain", b"request refused");
+    }
+    let length =
+        get("content-length").and_then(|v| v.parse::<usize>().ok().filter(|n| n.to_string() == v));
+    let Some(length) = length.filter(|n| (5..=MAX_REQUEST + 4).contains(n)) else {
+        return response(&mut socket, 400, "text/plain", b"request refused");
+    };
+    if !admit(state, length, false)? {
+        return response(&mut socket, 429, "text/plain", b"temporarily unavailable");
+    }
+    let mut body = vec![0; length];
+    if socket.read_exact(&mut body).is_err() {
+        return response(&mut socket, 408, "text/plain", b"request timeout");
+    }
+    let (op, body) = match decode_frame(&body, MAX_REQUEST) {
+        Ok(frame) => frame,
+        Err(_) => return response(&mut socket, 400, "text/plain", b"request refused"),
+    };
+    match op {
+        OP_PUT => {
+            if !RelayItem::decode(body).is_ok_and(|i| i.namespace() == state.namespace) {
+                return response(&mut socket, 400, "text/plain", b"request refused");
+            }
+        }
+        OP_PAGE => {
+            if body.len() != 10
+                || page_request(
+                    u64::from_be_bytes(body[..8].try_into().expect("bounded")),
+                    u16::from_be_bytes(body[8..].try_into().expect("bounded")) as usize,
+                )
+                .is_err()
+            {
+                return response(&mut socket, 400, "text/plain", b"request refused");
+            }
+        }
+        _ => return response(&mut socket, 400, "text/plain", b"request refused"),
+    }
+    let (status, body) = match state.upstream.exchange(op, body, socket.deadline) {
+        Ok(body) => (STATUS_OK, body),
+        Err(error) => (
+            match error {
+                NetError::Conflict => STATUS_CONFLICT,
+                NetError::Capacity => STATUS_CAPACITY,
+                NetError::Bounds | NetError::Malformed => STATUS_BOUNDS,
+                NetError::Scope => STATUS_SCOPE,
+                NetError::Denied => STATUS_DENIED,
+                _ => STATUS_UNAVAILABLE,
+            },
+            Vec::new(),
+        ),
+    };
+    if !admit(state, body.len(), false)? {
+        return response(&mut socket, 429, "text/plain", b"temporarily unavailable");
+    }
+    response(
+        &mut socket,
+        200,
+        "application/octet-stream",
+        &frame(status, &body),
+    )
+}

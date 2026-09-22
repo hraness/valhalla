@@ -64,6 +64,15 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         Request::CommitCreation(context()),
         Request::Open(context()),
         Request::Membership,
+        Request::DeliveryConnect {
+            profile: bytes(4096),
+            create: true,
+        },
+        Request::DeliveryConnect {
+            profile: bytes(4096),
+            create: false,
+        },
+        Request::DeliverySync,
         Request::PrepareMessage(bytes(MAX_BODY_BYTES)),
         Request::Send {
             operation: op(),
@@ -122,6 +131,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         Request::ArchiveImportBegin {
             context: context(),
             archive_id: [9; 32],
+            legacy: false,
         },
         Request::ArchiveImportFeed(bytes(MAX_ARCHIVE_PAGE_BYTES)),
         Request::ArchiveImportFinish(bytes(64)),
@@ -129,6 +139,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
             context: context(),
             archive_id: [9; 32],
             final_page: bytes(64),
+            legacy: false,
         },
         Request::ArchiveInspect,
         Request::ArchiveInbox {
@@ -147,7 +158,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Request::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x02".len();
+        let tag = b"VHBRPRIVATE\x04".len();
         changed.truncate(raw.len());
         changed[tag] = 250;
         assert!(Request::decode(&changed).is_err());
@@ -156,8 +167,38 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
 }
 
 #[test]
+fn archive_route_is_explicit_canonical_and_versioned() {
+    for legacy in [false, true] {
+        for request in [
+            Request::ArchiveImportBegin {
+                context: context(),
+                archive_id: [9; 32],
+                legacy,
+            },
+            Request::ArchiveOpen {
+                context: context(),
+                archive_id: [9; 32],
+                final_page: bytes(64),
+                legacy,
+            },
+        ] {
+            let raw = request.encode().unwrap();
+            assert_eq!(*Request::decode(&raw).unwrap().encode().unwrap(), *raw);
+            let route = b"VHBRPRIVATE\x04".len() + 1 + 128 + 32;
+            assert_eq!(raw[route], u8::from(legacy));
+            let mut bad = raw.to_vec();
+            bad[route] = 2;
+            assert!(Request::decode(&bad).is_err());
+            let mut old = raw.to_vec();
+            old[b"VHBRPRIVATE".len()] = 2;
+            assert!(Request::decode(&old).is_err());
+        }
+    }
+}
+
+#[test]
 fn untrusted_lengths_counts_boolean_and_floor_refuse_before_allocation() {
-    let prefix = b"VHBRPRIVATE\x02".len();
+    let prefix = b"VHBRPRIVATE\x04".len();
     let mut raw = Request::PrepareMessage(bytes(1)).encode().unwrap();
     raw[prefix + 1..prefix + 5].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Request::decode(&raw).is_err());
@@ -301,7 +342,7 @@ fn response_collection_count_and_blob_budgets_are_checked_on_raw_input() {
     }
     .encode()
     .unwrap();
-    let at = b"VHBRPRIVATE\x02".len() + 1 + 128 + 8 + 32;
+    let at = b"VHBRPRIVATE\x04".len() + 1 + 128 + 8 + 32;
     raw[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Response::decode(&raw).is_err());
     assert!(Response::decode(&vec![0; MAX_FRAME + 1]).is_err());
@@ -330,6 +371,18 @@ fn status() -> Status {
 #[test]
 fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
     let responses = vec![
+        Response::Delivery(DeliveryReport {
+            context: context(),
+            sent: u64::MAX,
+            cursor: u64::MAX,
+            retained: 1,
+            received: 2,
+            attempts: 3,
+            retry_at: 4,
+            pending: true,
+            stopped: false,
+            review: true,
+        }),
         Response::ArchiveBegin {
             context: context(),
             archive_id: [9; 32],
@@ -366,7 +419,7 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x02".len();
+        let tag = b"VHBRPRIVATE\x04".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -509,7 +562,7 @@ fn signed_proofs_and_fork_evidence_verify_at_the_local_boundary() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x02".len();
+        let tag = b"VHBRPRIVATE\x04".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());

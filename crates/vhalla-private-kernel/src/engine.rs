@@ -8,6 +8,7 @@ use crate::{
     *,
 };
 
+pub mod acceptance;
 mod contact;
 mod controls;
 mod drafts;

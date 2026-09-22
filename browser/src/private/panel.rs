@@ -1,6 +1,8 @@
-//! Opt-in trusted private-room DOM. Files only; no route, relay or agent capability.
+//! Opt-in trusted private-room DOM with explicit local-gateway sync.
 #[path = "panel/actions.rs"]
 mod actions;
+#[path = "panel/archive_save.rs"]
+mod archive_save;
 #[path = "panel_model.rs"]
 mod model;
 use crate::{private_rooms as broker, private_wire::*};
@@ -29,6 +31,9 @@ const IDS: &[(&str, Action)] = &[
     ("private-download-locator", Action::Locator),
     ("private-commit", Action::Commit),
     ("private-refresh", Action::Refresh),
+    ("private-delivery-create", Action::DeliveryCreate),
+    ("private-delivery-open", Action::DeliveryOpen),
+    ("private-delivery-sync", Action::DeliverySync),
     ("private-prepare-message", Action::Prepare),
     ("private-save-message", Action::Send),
     ("private-download-output", Action::Download),
@@ -70,6 +75,9 @@ const IDS: &[(&str, Action)] = &[
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
+    DeliveryCreate,
+    DeliveryOpen,
+    DeliverySync,
     Enter,
     Leave,
     Create,
@@ -142,6 +150,8 @@ struct State {
     proofs_next: Option<ControlFloor>,
     archive: Option<ArchivePanel>,
     archive_in_flight: bool,
+    delivery_ready: bool,
+    archive_sink: Option<Rc<archive_save::Sink>>,
     downloads: Vec<(String, usize)>,
     handlers: Vec<Closure<dyn FnMut(Event)>>,
 }
@@ -338,6 +348,10 @@ pub fn clear_sensitive_state() {
         s.proofs_next = None;
         s.archive = None;
         s.archive_in_flight = false;
+        s.delivery_ready = false;
+        if let Some(sink) = s.archive_sink.take() {
+            sink.abort();
+        }
         for (url, _) in s.downloads.drain(..) {
             let _ = Url::revoke_object_url(&url);
         }
@@ -346,8 +360,10 @@ pub fn clear_sensitive_state() {
         input(&app, id).set_value("");
     }
     input(&app, "private-locator-retained").set_checked(false);
+    input(&app, "private-archive-legacy").set_checked(false);
     area(&app).set_value("");
     for id in [
+        "private-delivery-status",
         "private-prepared-details",
         "private-room-title",
         "private-membership-summary",
@@ -435,6 +451,8 @@ fn render(app: &App) {
                 active && is_owner
             }
             Action::Receive | Action::Apply => active && ready,
+            Action::DeliveryCreate | Action::DeliveryOpen => active && ready && !s.delivery_ready,
+            Action::DeliverySync => active && ready && s.delivery_ready,
             Action::ControlsNext => active && s.controls_next.is_some(),
             Action::ProofsNext => active && s.proofs_next.is_some(),
             Action::DownloadProof => active && !s.proofs.is_empty(),
@@ -470,7 +488,7 @@ fn render(app: &App) {
     for id in model::PRIVATE_INPUTS
         .iter()
         .copied()
-        .chain(["private-locator-retained"])
+        .chain(["private-locator-retained", "private-archive-legacy"])
     {
         input_unborrowed(&s.document, id).set_disabled(s.busy);
     }
@@ -632,7 +650,7 @@ fn output(app: &App, artifact: Artifact) {
         app,
         "private-output-label",
         &format!(
-            "{} · saved local output {} · operation {}. No network delivery has occurred.",
+            "{} · saved local output {} · operation {}. This view reports local retention only.",
             caption,
             artifact.sequence,
             hex(artifact.operation.as_bytes())
@@ -763,9 +781,30 @@ fn action(app: &App, selected: Action) {
         false,
     );
     render(app);
+    // File picker permission requires this original user activation. Its future
+    // is awaited before any archive worker operation begins.
+    let selected_file = if selected == Action::ExportArchive {
+        match archive_save::choose() {
+            Ok(selection) => selection,
+            Err(error) => {
+                app.borrow_mut().busy = false;
+                status(app, &error, true);
+                render(app);
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let app = app.clone();
     spawn_local(async move {
-        let result = actions::perform(&app, ticket, selected).await;
+        let result = actions::perform(&app, ticket, selected, selected_file).await;
+        // Abort on every error, including generation changes caused by lock.
+        if result.is_err() && live(&app, ticket).is_ok() {
+            if let Some(sink) = app.borrow_mut().archive_sink.take() {
+                sink.abort();
+            }
+        }
         if live(&app, ticket).is_err() {
             return;
         }
@@ -852,6 +891,8 @@ pub fn start() {
         proofs_next: None,
         archive: None,
         archive_in_flight: false,
+        delivery_ready: false,
+        archive_sink: None,
         downloads: Vec::new(),
         handlers: Vec::new(),
     }));

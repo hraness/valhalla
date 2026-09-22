@@ -1,4 +1,4 @@
-# Independent-machine qualification
+# Local hosting and operational qualification
 
 ## The current setup
 
@@ -7,12 +7,17 @@ fault tests. `vhalla.com` is the existing Vercel static marketing/documentation
 project: `vercel.json` builds `site/dist`. Neither the domain nor website
 publication establishes that a Valhalla application peer or relay is running.
 
-Keep that website in place. The smallest next experiment needs the Mac and one
-separately operated persistent host with an explicitly selected DNS name and
-TLS endpoint. The host is not yet selected or provisioned. A prospective relay
-subdomain is a configuration choice, not evidence that the service exists.
+The selected first workflow runs on the user's Mac as a mostly persistent local
+host. A dedicated service retains only opaque mailbox data; CLI agents and browser
+workers retain their own custody. Tailcat can expose exact loopback service ports
+using a saved key. Browser clients use a fixed forwarding port and stable origin.
+No paid host or public DNS endpoint is required. Sleep, network loss and browser
+suspension are expected outages, not authority to reset queues or custody.
+
 Use synthetic accounts and rooms for qualification. Do not transfer the user's
-real private stores, credentials, archives or browser profiles.
+real private stores, credentials, archives or browser profiles. Local process and
+restart evidence qualifies this local use; remote Tailcat and independent-device
+claims require separate measurements on that actual path.
 
 Two machines can establish behavior when one participant disconnects. They do
 not establish the four independent validator failure domains needed to qualify
@@ -20,23 +25,25 @@ a four-member Byzantine directory deployment. Record separately which machines
 run clients, relays, publishing peers and validators; co-locating roles does not
 create additional failure tolerance.
 
-## Contracts to settle before deployment
+## Transport and persistence contracts
 
 The public peer binds loopback behind an operator-owned TLS proxy and checks its
 exact advertised HTTPS route and browser Origin. Preserve those restrictions.
-The private relay currently offers an explicit token socket and a directly
-accessed mailbox directory; neither is a public TLS service. Do not expose the
-reference socket publicly to avoid implementing its missing secure transport.
+The private relay has a maintained TLS service with scoped credentials and
+durable quotas, plus a loopback-only reference socket and a directly accessed
+mailbox directory. Use the dedicated `private-host` lifecycle for local hosting or the explicit
+`relay-tls-serve` adapter for a separately operated listener. The TLS library
+and fault tests do not establish a running public endpoint.
 
-A promotable relay adapter must establish server identity before transmitting
-credentials, bind the chosen namespace independently of a server response,
-bound connection counts and total I/O time, and enforce per-credential and total
+The maintained relay adapter establishes server identity before transmitting
+credentials, binds the chosen namespace independently of a server response,
+and bounds connection counts and total I/O time, enforcing per-credential and total
 storage/work budgets. Credentials must have explicit scope and rotation rules.
 It returns retention evidence only. A recipient's durable processing requires
 separate authenticated acceptance evidence. Relay access never grants room
 membership, plaintext access or authority to sign owner controls.
 
-An offline delivery controller must retain exact ciphertext and a durable job
+The durable delivery controller retains exact ciphertext and a durable job
 identity before attempting transport. Retrying cannot invoke new encryption for
 the same logical job. Backoff has finite work/time limits and cannot busy-loop
 on malformed pages. A timeout leaves an uncertain delivery attempt, not proof
@@ -64,7 +71,7 @@ Publish a success result only after assertions and owned-process cleanup pass.
 Retain failed and interrupted results. Never repair a failed run by removing
 anti-replay state, journals, WAL, retained intents or a used cursor.
 
-## Required journeys
+## Qualification journeys
 
 1. **Clean client:** start a new native account and fresh browser origin, select
    the independent bootstrap pin, discover and explicitly select a peer, post,
@@ -108,7 +115,15 @@ capabilities disabled and describe the exact missing result. A design model,
 fake server, locally injected quota error, or verified website cannot substitute
 for the corresponding independent deployed observation.
 
+The selected first-use acceptance is existing CLI agents and browser sessions
+using the local Mac host, durable private-room delivery and explicit bounded
+synchronization. An independent machine is required for remote-path claims, not
+for local artifact admission or first local use. Four independent validators are required only for the separate public
+Byzantine-directory claim; a two-machine private workflow does not make that
+claim. Likewise, existing CLI agents retain their ambient tools and configured
+inference provider; their successful MCP use is not OS containment evidence.
+
 The [22 September review](design-review-2026-09-22.md) tracks code repairs and
 spikes. The [recovery policy experiment](../prototypes/device-recovery-policy/README.md)
-records the dead-device authority constraint. Target selection and real
-independent-host execution remain outstanding.
+records the dead-device authority constraint. The Mac is the selected first host.
+Independent-host execution remains separate from the selected local-first scope.

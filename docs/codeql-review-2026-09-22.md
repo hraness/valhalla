@@ -13,6 +13,22 @@ The execution-boundary split is 344 alerts in test-only modules/targets
 and six in production paths. No classification remains unresolved for the
 saved locations. This conclusion does not qualify examples for production use.
 
+## Approved disposition readback
+
+On 22 September, the user explicitly approved the 364 reviewed dismissals.
+The exact IDs, rules and source locations were rechecked against PR #85 at
+`8afd571098aa2057ee6e4f10692227642cdc6aef`, with unchanged reviewed source files.
+All 356 fixture alerts were dismissed as `used in tests`; the eight specific
+buffer/log findings were dismissed as `false positive`. API comments retain the
+specific rationale within GitHub's 280-character limit. Full original comments
+remain in `/private/tmp/valhalla-codeql-reviewed-dispositions-20260922.json`.
+
+A separate paginated readback verified every ID, reason and comment, and found
+zero open alerts on that PR ref. Receipt:
+`/private/tmp/valhalla-codeql-disposition-receipt-20260922.json`.
+No query, rule, path exclusion or security check was disabled. The later working
+tree still requires fresh CodeQL analysis and the complete integration gate.
+
 ## Scope and reproducibility
 
 - All alert instances identify `refs/pull/85/head`, commit
@@ -27,10 +43,9 @@ saved locations. This conclusion does not qualify examples for production use.
 - All 60 alerted files are byte-identical between that commit and the recovered
   working tree at review time. Numbers below refer to that immutable commit;
   other current-tree changes require their own current-head CodeQL analysis.
-- No builds/tests were run for this review. No source, query configuration,
-  suppression, alert state, or API metadata was changed. The CodeQL check remains
-  failed until the repository's supported triage/disposition process accepts the
-  evidence and the applicable current-head gate passes.
+- No builds/tests, source changes or API writes were performed during the
+  original source review. The later approved dispositions and readback are
+  recorded above; they do not replace the applicable current-head gate.
 
 ## Non-fixture data-flow findings
 

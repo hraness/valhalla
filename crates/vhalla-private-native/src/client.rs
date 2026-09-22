@@ -25,6 +25,10 @@ use vhalla_private_kernel::{
 #[cfg(feature = "client")]
 pub mod agent;
 
+/// Bounded, fixed-grant MCP adapter for cooperating native agent hosts.
+#[cfg(feature = "agent-rpc")]
+pub mod agent_rpc;
+
 /// Closed local failures; errors contain no key, password, message or path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -327,6 +331,23 @@ impl RoomSession {
     pub async fn receive(&mut self, raw: &[u8]) -> Result<ReceivedMessage> {
         let time = now()?;
         Ok(self.live_mut()?.kernel.receive(raw, time).await?)
+    }
+
+    /// Trusted host-only signed reception claim for an already committed inbox
+    /// ciphertext. Exact retries return the retained receipt under the same
+    /// operation; another receipt can never be acknowledged. This is a device
+    /// claim, not proof of disk honesty, human reading or network delivery.
+    pub async fn issue_acceptance(
+        &mut self,
+        operation: OperationId,
+        original_ciphertext: &[u8],
+    ) -> Result<CommittedOutbox> {
+        let time = now()?;
+        Ok(self
+            .live_mut()?
+            .kernel
+            .issue_acceptance(operation, original_ciphertext, time)
+            .await?)
     }
 
     /// Bounded retained plaintext history for the trusted client's selected room.

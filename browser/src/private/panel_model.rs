@@ -8,6 +8,7 @@ const LOCATOR: &[u8; 8] = b"VHPLOC1\0";
 pub const LOCATOR_BYTES: usize = 136;
 /// Every private text/file input shares lock cleanup and busy-state handling.
 pub const PRIVATE_INPUTS: &[&str] = &[
+    "private-delivery-profile",
     "private-owner",
     "private-recipient",
     "private-remove-device",

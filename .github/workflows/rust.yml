@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+    outputs:
+      browser_manifest_sha256:
+        description: Manifest commitment from the successful production delivery journey
+        value: ${{ jobs.browser-artifact.outputs.manifest_sha256 }}
 
 permissions:
   contents: read
@@ -71,7 +75,7 @@ jobs:
           - name: public-network
             packages: -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
           - name: private-rooms
-            packages: -p vhalla-private-kernel -p vhalla-private-native
+            packages: -p vhalla-private-kernel -p vhalla-private-native -p vhalla-private-relay
           - name: remaining
             packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-game-platonik -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
     steps:
@@ -117,7 +121,7 @@ jobs:
       - name: WASM pure crate checks
         run: |
           cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
-          cargo check -p vhalla-private-kernel -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-private-kernel -p vhalla-private-relay -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/agent-portraits/Cargo.toml --lib --target wasm32-unknown-unknown --locked
@@ -162,7 +166,9 @@ jobs:
     name: Browser production artifact
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    outputs:
+      manifest_sha256: ${{ steps.qualified-browser.outputs.manifest_sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -174,13 +180,13 @@ jobs:
           shared-key: browser-artifact
           cache-all-crates: true
       - name: Browser and portable adapter lint
-        run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser/private-rooms,vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown -- -D warnings
       - name: Install pinned Trunk
         run: cargo install trunk --locked --version 0.21.14
       - name: Build production without local qualification routes
         working-directory: browser
         run: |
-          trunk --skip-version-check build --release --locked
+          trunk --skip-version-check build --release --locked --features private-rooms
           python3 tools/package.py dist
           python3 -m unittest discover -s tools -p 'test_*.py'
         env:
@@ -190,6 +196,12 @@ jobs:
           node-version: '24'
       - name: Qualification process cleanup regressions
         run: node --test browser/tools/qualification_lifecycle.test.mjs
+      - name: Build maintained local private host and browser gateway
+        run: cargo build --locked -p vhalla-cli --features experimental-private
+      - name: Exercise production browser delivery, outage and exact restart
+        run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-delivery-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)"
+      - name: Exercise production private panel and archive recovery
+        run: node browser/tools/qualify_private_panel.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-production-panel-results" --production
       - name: Install exact browser bindings for runtime qualification
         run: cargo install wasm-bindgen-cli --version 0.2.108 --locked
       - name: Check archive and continuity receipt browser fixtures
@@ -278,6 +290,12 @@ jobs:
             ${{ runner.temp }}/vhalla-private-panel-results/receipt.json
             ${{ runner.temp }}/vhalla-private-panel-results/*.log
             ${{ runner.temp }}/vhalla-private-panel-results/*.png
+            ${{ runner.temp }}/vhalla-private-delivery-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-delivery-results/*.log
+            ${{ runner.temp }}/vhalla-private-delivery-results/*.png
+            ${{ runner.temp }}/vhalla-private-production-panel-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-production-panel-results/*.log
+            ${{ runner.temp }}/vhalla-private-production-panel-results/*.png
             ${{ runner.temp }}/vhalla-mls-results/receipt.json
             ${{ runner.temp }}/vhalla-mls-results/chrome.log
             ${{ runner.temp }}/vhalla-product-results/receipt.json
@@ -285,6 +303,11 @@ jobs:
             ${{ runner.temp }}/vhalla-product-results/*.png
           if-no-files-found: warn
           retention-days: 14
+      - name: Bind the upload to the successful production delivery receipt
+        id: qualified-browser
+        run: |
+          digest="$(python3 .github/scripts/verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-delivery-results/receipt.json")"
+          printf 'manifest_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: vhalla-browser

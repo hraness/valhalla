@@ -63,8 +63,9 @@ relay kept
 the opaque bytes. It is never a member acknowledgment, a delivery guarantee or
 an authorization decision. The receiving session still passes only the item
 payload to `RoomSession::receive`, which performs normal MLS scope, membership,
-replay and durable-inbox checks. No relay API receives room IDs, anchors,
-accounts, device keys, plaintext or secret offers.
+replay and durable-inbox checks. No relay item or transport request contains room IDs, anchors,
+accounts, device keys, plaintext or secret offers. The trusted local delivery
+controller described below keeps its full custody binding only on the host.
 
 `relay::FileStore` is the same mailbox bound to a durable 0700 directory. It
 keeps one SQLite database in rollback-journal mode behind a lifetime exclusive
@@ -98,7 +99,11 @@ a synced complete item and syncs `items/` before advancing the cursor. Interrupt
 scratch writes reconcile only against the exact retry; conflicting committed
 bytes are never replaced. `read` provides the same bounded descriptor checks to
 consumers. Each scan freezes its first observed head and shares a 90-second budget
-with its guarded consumption; later arrivals wait for another invocation. File
+with its guarded consumption; later arrivals wait for another invocation.
+`scan_page_until` instead admits one complete validated source page under a
+caller-selected tighter deadline retained through consumption. Its report may
+have `cursor < head`; the next scheduled invocation resumes that prefix without
+resetting publication evidence or doing a second network read in the same call. File
 barriers are synchronous, so deadlines prevent further work after a slow
 filesystem operation returns rather than forcibly interrupting a barrier.
 
@@ -238,3 +243,99 @@ covers bounded encrypted files and exact interrupted-import resume. Archives are
 read-only historical recovery, with secret offers redacted from ordinary outbox
 views. They do not establish freshness, absence of clones, owner succession or
 safe live-device transfer.
+
+## Authenticated TLS relay (`relay-tls`)
+
+`relay::tls::TlsRelay` verifies an explicitly supplied CA and exact server name
+before constructing a token-bearing request. The dial address remains numeric;
+there is no ambient trust store, DNS resolution, TLS early data or plaintext
+fallback. TLS ALPN binds the independently selected opaque namespace, including
+empty-page requests. The random namespace appears in the TLS ClientHello; never
+use a room identifier or private descriptive text as a namespace. Local TCP and
+TLS share the reviewed v1 PUT/PAGE codec and canonical item validation.
+
+`tls::Service::initialize` explicitly enrolls an empty existing mailbox. It
+preserves/refuses nonempty or already enrolled mailboxes. `Service::new` checks
+all retained items against the admission ledger before serving. Each opaque
+credential identity has namespace, PUT/PAGE permissions, immutable item/byte
+quotas and bounded in-flight/request/byte allowances. Quota charges and item
+publication share one SQLite transaction. Exact retries do not consume another
+storage charge. Removing or rotating a token never resets its identity's quota;
+a lifetime maximum of 64 credential identities bounds the ledger.
+
+A credential can have one token or two during explicit rotation overlap. Keep
+the same credential ID when replacing tokens; omit a revoked token in the next
+startup configuration. Stop the old service before reopening its mailbox; its
+lifetime lock excludes concurrent owners. Certificate replacement similarly
+requires an operator-controlled restart. Clients retain explicit CA/name pins.
+There is no automatic certificate issuance, trust-on-first-use or revocation
+inference from connectivity failures.
+
+The service caps concurrent connection threads and handshake starts per fixed
+work window. Each credential receives at most half the global storage,
+request/byte and concurrent allowances. A response reserves its maximum wire
+size before database work; slow response writes do not hold the mailbox mutex.
+Excess work receives canonical capacity refusal (or an immediate close before
+TLS authentication). Fixed-window work counters restart with the service;
+storage quotas are durable. A durable storage failure poisons the service,
+stops new admission, closes the listener and returns an error after its owned
+workers drain under their original deadlines. The supervisor wakes without a
+new client connection; it never reports a poisoned service as a successful run.
+Reopen the same preserved mailbox to reconcile before restarting. This qualifies
+bounded admission and progress under the tested finite contention, not availability against distributed connection
+floods or arbitrary operating-system/storage stalls. A synchronous database
+barrier cannot be forcibly interrupted; no further work starts after the
+absolute operation deadline has elapsed.
+
+Local focused qualification includes real TLS certificate/name/namespace
+rejection before credentials, wrong tokens/permissions, durable quota and token
+rotation, healthy progress alongside slow clients, malformed frames, lost
+receipts with exact reopened retries and atomic publication fault rollback:
+
+```sh
+cargo test --locked -p vhalla-private-native --features relay-tls,client relay::
+cargo clippy --locked -p vhalla-private-native --features relay-tls,client --all-targets -- -D warnings
+```
+
+Use Rust 1.98.1 for these commands. This transport has not yet qualified an
+independently operated public host. Relay receipts continue to mean retention
+only; offline job scheduling and authenticated member acceptance are distinct
+client features.
+
+## Trusted-host offline delivery
+
+`relay::delivery::DeliveryStore` retains canonical exact ciphertext jobs in a
+separate owner-private directory under lifetime exclusive custody. Creation
+binds the full room/anchor/account/device context, opaque relay namespace and
+`EndpointId` before use. This context stays local; it is never added to the
+relay item or operational output. For TLS, `TlsRelay::endpoint_id()` commits the
+numeric address, exact server name, selected CA and namespace. Tokens are
+excluded so explicit token rotation preserves jobs without allowing endpoint
+redirection. Changing trust/namespace/context refuses the existing queue.
+
+The trusted host enqueues an already committed `RelayItem`, then calls finite
+`tick(&mut transport, now, TickBudget)` operations. Enqueue commits exact bytes
+and the original operation/sequence; the stable job ID is their canonical item
+digest. Each attempt synchronizes its incremented count and uncertain intent
+before calling transport. A checked receipt must bind that digest and a positive
+mailbox position. Failed receipt publication leaves the earlier durable intent
+for reopen and an exact duplicate retry. Nothing calls encryption again.
+
+Status distinguishes `Pending`, `Uncertain`, `Retained` and `Stopped`.
+`Stopped` also retains an uncertainty bit: exhausting retries does not establish
+refusal. A permanent authentication/scope/conflict/protocol refusal stops the
+job. Capacity and transient transport failures use capped exponential backoff
+and a finite attempt budget. The host schedules the next tick; the library
+never sleeps, spins or starts a background worker. Each tick limits due jobs,
+canonical bytes and total time. Caller UNIX time cannot move behind retained
+time. Queue capacity includes completed/stopped jobs, and no API deletes or
+resets evidence or silently renews a stopped budget.
+
+A queue is a trusted host facility, not an agent tool. Its profile and full
+context must come from the host's independently selected session. The agent
+receives metadata through the grant-controlled adapter; ciphertext and network
+credentials remain outside its view. A local cooperating-owner queue cannot
+protect against a privileged host coherently rolling back all files, copying
+custody or providing a dishonest transport implementation. Database barriers
+are synchronous and cannot be forcibly cancelled. Relay retention remains
+separate from authenticated member acceptance and human reading.

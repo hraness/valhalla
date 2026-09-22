@@ -4,6 +4,12 @@
 mod support;
 
 #[cfg(all(unix, feature = "experimental-private"))]
+mod private_gateway;
+
+#[cfg(all(unix, feature = "experimental-private"))]
+mod private_host;
+
+#[cfg(all(unix, feature = "experimental-private"))]
 mod private_rooms;
 
 #[cfg(all(unix, feature = "experimental-public"))]
@@ -82,11 +88,27 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         println!("\n{}", rooms::HELP);
         #[cfg(feature = "experimental-private")]
         println!("\n{}", private_rooms::HELP);
+        #[cfg(feature = "experimental-private")]
+        println!("\n{}", private_host::HELP);
+        #[cfg(feature = "experimental-private")]
+        println!("\n{}", private_gateway::help());
         #[cfg(feature = "experimental-public")]
         println!("\n{}", public_network::HELP);
         #[cfg(feature = "experimental-game")]
         println!("\n{}", game::HELP);
         return Ok(());
+    }
+    if args.first().is_some_and(|s| s == "private-gateway") {
+        #[cfg(feature = "experimental-private")]
+        return private_gateway::execute(&args[1..]);
+        #[cfg(not(feature = "experimental-private"))]
+        return Err("private gateway tools require --features experimental-private".into());
+    }
+    if args.first().is_some_and(|s| s == "private-host") {
+        #[cfg(feature = "experimental-private")]
+        return private_host::run(&args);
+        #[cfg(not(feature = "experimental-private"))]
+        return Err("private host tools require --features experimental-private".into());
     }
     if args.first().is_some_and(|s| s == "private") {
         #[cfg(feature = "experimental-private")]

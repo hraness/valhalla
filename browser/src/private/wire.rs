@@ -23,7 +23,7 @@ pub enum CodecError {
     InvalidFrame,
 }
 type Result<T> = std::result::Result<T, CodecError>;
-const MAGIC: &[u8] = b"VHBRPRIVATE\x02";
+const MAGIC: &[u8] = b"VHBRPRIVATE\x04";
 struct Writer(Vec<u8>);
 impl Drop for Writer {
     fn drop(&mut self) {
@@ -457,6 +457,8 @@ impl Request {
             #[cfg(feature = "local-qualification")]
             Self::ApplyControlAt { .. } => 34,
             Self::Succeed { .. } => 35,
+            Self::DeliveryConnect { .. } => 36,
+            Self::DeliverySync => 37,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -545,9 +547,11 @@ impl Request {
             Self::ArchiveImportBegin {
                 context,
                 archive_id,
+                legacy,
             } => {
                 w.context(*context)?;
                 w.put(archive_id)?;
+                w.byte(u8::from(*legacy))?;
             }
             Self::ArchiveImportFeed(page) | Self::ArchiveImportFinish(page) => {
                 w.blob(page, MAX_ARCHIVE_PAGE_BYTES)?;
@@ -555,17 +559,23 @@ impl Request {
             Self::ArchiveOpen {
                 context,
                 archive_id,
+                legacy,
                 final_page,
             } => {
                 w.context(*context)?;
                 w.put(archive_id)?;
+                w.byte(u8::from(*legacy))?;
                 w.blob(final_page, MAX_ARCHIVE_PAGE_BYTES)?;
             }
             Self::ArchiveInbox { after, limit } | Self::ArchiveOutbox { after, limit } => {
                 w.number(*after)?;
                 w.limit(*limit)?;
             }
-            Self::ArchiveClose => (),
+            Self::ArchiveClose | Self::DeliverySync => (),
+            Self::DeliveryConnect { profile, create } => {
+                w.blob(profile, 4096)?;
+                w.byte(u8::from(*create))?;
+            }
         }
         Ok(w.finish())
     }
@@ -634,12 +644,14 @@ impl Request {
             22 => Self::ArchiveImportBegin {
                 context: r.context()?,
                 archive_id: r.array()?,
+                legacy: r.boolean()?,
             },
             23 => Self::ArchiveImportFeed(r.blob(MAX_ARCHIVE_PAGE_BYTES)?),
             24 => Self::ArchiveImportFinish(r.blob(MAX_ARCHIVE_PAGE_BYTES)?),
             25 => Self::ArchiveOpen {
                 context: r.context()?,
                 archive_id: r.array()?,
+                legacy: r.boolean()?,
                 final_page: r.blob(MAX_ARCHIVE_PAGE_BYTES)?,
             },
             26 => Self::ArchiveInspect,
@@ -667,6 +679,11 @@ impl Request {
                 envelope: r.blob(MAX_ARTIFACT)?,
                 at: r.number()?,
             },
+            36 => Self::DeliveryConnect {
+                profile: r.blob(4096)?,
+                create: r.boolean()?,
+            },
+            37 => Self::DeliverySync,
             35 => Self::Succeed {
                 operation: r.op()?,
                 successor: r.key()?,
@@ -684,6 +701,7 @@ impl Response {
     pub fn encode(&self) -> Result<Bytes> {
         let tag = match self {
             Self::Entered(_) => 101,
+            Self::Delivery(_) => 120,
             Self::Prepared(_) => 102,
             Self::Membership(_) => 103,
             Self::Draft(_) => 104,
@@ -707,6 +725,17 @@ impl Response {
         let mut w = Writer::new(tag);
         match self {
             Self::Entered(k) => w.key(*k)?,
+            Self::Delivery(v) => {
+                w.context(v.context)?;
+                for n in [
+                    v.sent, v.cursor, v.retained, v.received, v.attempts, v.retry_at,
+                ] {
+                    w.number(n)?;
+                }
+                for b in [v.pending, v.stopped, v.review] {
+                    w.byte(u8::from(b))?;
+                }
+            }
             Self::Prepared(p) => {
                 w.context(p.context)?;
                 w.blob(&p.anchor.encode(), 169)?;
@@ -867,6 +896,18 @@ impl Response {
         let mut r = Reader::new(raw)?;
         let out = match r.byte()? {
             101 => Self::Entered(r.key()?),
+            120 => Self::Delivery(DeliveryReport {
+                context: r.context()?,
+                sent: r.number()?,
+                cursor: r.number()?,
+                retained: r.number()?,
+                received: r.number()?,
+                attempts: r.number()?,
+                retry_at: r.number()?,
+                pending: r.boolean()?,
+                stopped: r.boolean()?,
+                review: r.boolean()?,
+            }),
             102 => {
                 let p = Preview {
                     context: r.context()?,

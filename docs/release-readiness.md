@@ -90,8 +90,10 @@ context, admits it through a self-addressed confidential offer as a distinct
 same-account device, and verifies it receives no pre-join history while
 exchanging post-join messages in both directions. Kernel and CLI-process
 journeys cover the identical lifecycle. Owner-device succession requires a
-live predecessor and an already-enrolled successor. Safe dead-device recovery
-and live-custody transfer remain unfinished.
+live predecessor and an already-enrolled successor. Loss of every current owner
+device requires explicit new-room migration; existing anchors do not grant
+unilateral replacement authority. Safe cloning or transfer of live ratchet
+custody is not a supported recovery path.
 These features remain optional and do not add MLS or SQLite to the default public
 browser dependency graph.
 
@@ -144,9 +146,16 @@ Before a private-room release, complete and qualify:
   emitting plaintext or claiming remote acceptance. Two interchangeable
   transports are qualified: the token socket and `--mailbox DIR` direct
   filesystem custody for a synced or copied directory. Both remain local
-  operator-controlled adapters, not a hardened Internet service. Production
-  operation still needs offline scheduling, congestion handling, stronger
-  relay authentication and independent acceptance status. An isolated sender cannot detect an unseen
+  operator-controlled adapters. The maintained TLS service now authenticates
+  the pinned CA/name/namespace before credentials, applies per-credential and
+  global storage/work limits, and terminates for supervised exact reopen after
+  uncertain storage. Durable finite retry jobs and device-signed acceptance
+  receipts are implemented and have focused local fault evidence. The CLI delivery
+  driver passed three real two-process TLS/stdio journeys. Installed Codex and
+  Devin clients each discovered the five fixed-room MCP tools and called status
+  under a synthetic one-use grant. The local Mac host and browser gateway are
+  undergoing operational qualification; final source/artifact gates and independent
+  deployment evidence remain separate. An isolated sender cannot detect an unseen
   removal merely by asking an untrusted relay.
 - Explicit fresh-device admission now has qualified kernel, CLI and browser
   coverage. Account-authorized owner succession is implemented and qualified:
@@ -162,7 +171,11 @@ Before a private-room release, complete and qualify:
   All private input fields now clear on lock and disable during work. A frontend
   archive parse failure locks the worker while preserving durable progress for
   an explicit retry of the complete original file. The contiguous download
-  fallback is capped at 16 MiB; larger streaming export remains unfinished.
+  fallback is capped at 16 MiB. Streaming export now awaits bounded writes and
+  aborts on lock/error. Production browser qualification covers multiple
+  authenticated snapshots, explicit legacy selection, interrupted resume,
+  origin-wide reservation limits, and writable-stream failure preserving the
+  previous file. The OS file picker itself remains user controlled.
 
 Owner availability currently gates membership and key updates. Loss of all
 current owner-device custody can strand administration. Relays can observe
@@ -170,14 +183,14 @@ traffic sizes, timing and endpoints; MLS and pseudonymous keys do not provide
 anonymity. The exact primitives, limits, evidence and remaining work are in the
 [private-room guide](private-rooms.md).
 
-## Agent disclosure: enforcement still required
+## Existing CLI agents: cooperating-host interface
 
 Room encryption does not contain a reader that can call arbitrary tools. A
-private agent must run in a room compartment for its entire lifetime, including
+contained private agent would need a room compartment for its entire lifetime, including
 its conversation, caches, memories and model-provider state. It cannot read room
 A and then gain a general public-posting tool by switching its current room.
 
-The trusted local broker must retain keys, enforce room/device/operation/expiry
+Such a compartment's trusted local broker must retain keys, enforce room/device/operation/expiry
 and usage grants at the actual effect boundary, and withhold general network and
 filesystem access. External inference is also disclosure: a private task needs
 an explicit provider/content processing grant; otherwise processing stays local.
@@ -195,7 +208,14 @@ network/filesystem tool. The optional native client now consumes its trusted
 `RoomSession` into an account-owned fixed-room adapter, preserving room-state
 drop order and refusing locked or uncertain conversion. This remains a
 cooperating-host boundary: it does not sandbox an independently privileged agent
-or provide a room-lifetime inference compartment.
+or provide a room-lifetime inference compartment. The user selected existing
+Codex/Devin CLI agents as the initial workflow. The maintained MCP adapter now
+binds five tools to a single fixed-room grant, durably consumes the entire finite
+allowance before launch, and refuses reused claims after clean exit, cancellation
+or uncertainty. Explicit bounded inbox following does not renew credits.
+Host-only delivery shares the same custodian and cannot be reconfigured by MCP
+arguments. Optional outbox metadata separates relay retention from verified
+recipient claims. See the [CLI agent runbook](cli-agents.md).
 
 The isolated [compartment experiment](../prototypes/agent-compartment/README.md)
 adds a synthetic fixed-room/provider/content broker and actual macOS denial

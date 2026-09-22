@@ -10,7 +10,9 @@ use crate::{
     bridge::KernelStore,
 };
 use vhalla_identity::Identity;
-use vhalla_private_kernel::{InboxPage, OperationId};
+use vhalla_private_kernel::{
+    CommittedOutbox, InboxPage, OperationId, OutboxPage, ReceivedMessage, Status,
+};
 
 struct AgentCustody {
     // Room state and keys are dropped before account custody is released.
@@ -29,6 +31,13 @@ pub struct OwnedAgentRoomSession {
 }
 
 impl RoomSession {
+    /// Construct the trusted host's delivery facet before narrowing agent access.
+    /// This is not an agent tool constructor and grants no network destination.
+    pub fn into_agent_host(self, grant: LocalGrant) -> Result<AgentHostSession> {
+        Ok(AgentHostSession {
+            agent: self.into_agent(grant)?,
+        })
+    }
     /// Consume this exact client and its account custody under an explicit grant.
     ///
     /// Locked, uncertain, expired, revoked or mismatched custody is refused.
@@ -44,6 +53,64 @@ impl RoomSession {
                 _identity: custody.identity,
             }),
         })
+    }
+}
+
+/// Trusted controller for delivery under the same exclusive account/room owner.
+///
+/// Register only [`Self::agent`]'s five methods with the agent. The separate host
+/// methods accept authenticated encrypted inputs and page retained artifacts for
+/// an independently authorized relay. They expose no key, signer or arbitrary
+/// membership mutation. A control changing epoch/roster revokes the agent grant;
+/// the host may still reconcile already committed delivery before dropping it.
+pub struct AgentHostSession {
+    agent: OwnedAgentRoomSession,
+}
+impl AgentHostSession {
+    /// Borrow only the fixed-room agent surface.
+    pub fn agent(&mut self) -> &mut OwnedAgentRoomSession {
+        &mut self.agent
+    }
+    /// Host-only retained output; eligibility/destination must be checked by the
+    /// separately authorized relay controller. Never expose this as an RPC tool.
+    pub async fn outbox(&mut self, after: u64, limit: usize) -> Result<OutboxPage> {
+        self.agent
+            .live()?
+            .host_outbox(after, limit)
+            .await
+            .map_err(Error::Agent)
+    }
+    /// Host-only encrypted application delivery. Content remains inert.
+    pub async fn receive(&mut self, raw: &[u8]) -> Result<ReceivedMessage> {
+        self.agent
+            .live()?
+            .host_receive(raw)
+            .await
+            .map_err(Error::Agent)
+    }
+    /// Host-only device-signed durable reception claim for one exact retained
+    /// application ciphertext. Never signs caller-selected plaintext or another
+    /// receipt. Retain the operation ID for exact reconciliation after uncertainty.
+    /// This does not assert physical disk honesty, human reading or delivery.
+    pub async fn issue_acceptance(
+        &mut self,
+        operation: OperationId,
+        original_ciphertext: &[u8],
+    ) -> Result<CommittedOutbox> {
+        self.agent
+            .live()?
+            .host_issue_acceptance(operation, original_ciphertext)
+            .await
+            .map_err(Error::Agent)
+    }
+    /// Host-only strict authenticated encrypted control delivery. An authority
+    /// change revokes the agent before any subsequent output is released.
+    pub async fn apply_control(&mut self, raw: &[u8]) -> Result<Status> {
+        self.agent
+            .live()?
+            .host_apply_control(raw)
+            .await
+            .map_err(Error::Agent)
     }
 }
 

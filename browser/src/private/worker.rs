@@ -54,6 +54,7 @@ impl Broker {
         }
     }
     fn dead(&self) {
+        session::abort_delivery();
         *self.state.borrow_mut() = State::Dead;
         self.identity.borrow_mut().take();
         self.authenticated.borrow_mut().take();

@@ -9,6 +9,10 @@ pub mod history;
 pub mod identity;
 pub mod outbox;
 #[cfg(feature = "private-rooms")]
+pub mod private_archives;
+#[cfg(feature = "private-rooms")]
+pub mod private_delivery;
+#[cfg(feature = "private-rooms")]
 pub mod private_rooms;
 use futures_channel::oneshot;
 use js_sys::Uint8Array;
@@ -131,7 +135,7 @@ impl Drop for OpenGuard {
     }
 }
 
-async fn open_database(name: &str) -> Result<IdbDatabase, Error> {
+async fn open_database(name: &str, create_schema: bool) -> Result<IdbDatabase, Error> {
     let slot = OpenSlot::acquire()?;
     // Resolve the current realm's factory, so the custody worker can own the
     // same transactions as the window. No database handle crosses a worker
@@ -172,7 +176,11 @@ async fn open_database(name: &str) -> Result<IdbDatabase, Error> {
             .result()
             .map_err(storage)
             .and_then(|value| value.dyn_into::<IdbDatabase>().map_err(|_| Error::Storage));
-        let valid = !current.canceled.get()
+        // Existing-only opens must not create even an empty database. Aborting
+        // the upgrade transaction also rolls back the browser's provisional
+        // database creation, without a racy enumerate-then-open check.
+        let valid = create_schema
+            && !current.canceled.get()
             && result.as_ref().is_ok_and(|database| {
                 database.object_store_names().contains(OBJECT_STORE)
                     || database.create_object_store(OBJECT_STORE).is_ok()
@@ -261,7 +269,19 @@ impl IndexedStorage {
     /// closes its database, and canceled upgrades abort. A permanently blocked
     /// request retains one slot instead of permitting unbounded orphan callbacks.
     pub async fn open(namespace: Namespace) -> Result<Self, Error> {
-        let database = open_database(&database_name(namespace)).await?;
+        Self::open_with_schema(namespace, true).await
+    }
+
+    /// Open existing schema only. An absent database or required upgrade refuses
+    /// without creating a destination, so read-only custody cannot bypass the
+    /// authenticated archive reservation budget with empty databases.
+    #[cfg(feature = "private-rooms")]
+    pub(crate) async fn open_existing(namespace: Namespace) -> Result<Self, Error> {
+        Self::open_with_schema(namespace, false).await
+    }
+
+    async fn open_with_schema(namespace: Namespace, create_schema: bool) -> Result<Self, Error> {
+        let database = open_database(&database_name(namespace), create_schema).await?;
         let access = Rc::new(RefCell::new(Access::Ready));
         let current = access.clone();
         let connection = database.clone();

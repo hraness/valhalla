@@ -1,15 +1,19 @@
 # Private rooms: implementation and release boundaries
 
-Valhalla's private room core is implemented in the workspace. It is not yet a
-private-room end-user release. An optional trusted native session now joins
-account and room custody under one lock lifetime. The optional Unix CLI supports
-explicit local file exchange. The optional browser worker now joins account and
-room custody. A bounded read-only archive core and native encrypted-file archive workflow are
-implemented. The optional browser interface has passed its two-account file-exchange journey and now shares the
-same `.vharchive` export, interruption-safe import and read-only archive inspection as the native CLI. Owner-authorized
-same-account fresh-device rejoin and owner-device succession are implemented and exercised end-to-end;
-live custody transfer and automatic confidential delivery remain unfinished. Public discovery and public author
-backups must never carry private state or private invitations.
+Valhalla's private-room implementation joins account and room custody in native
+sessions and a browser worker. The current candidate adds a local Mac host,
+authenticated TLS relay, bounded delivery for existing CLI agents, and explicit
+browser synchronization through a loopback gateway. It is undergoing final
+integration qualification; implemented code is not a claim of a deployed service.
+See the [readiness plan](agent-readiness-plan.md), [CLI-agent guide](cli-agents.md)
+and [local-host guide](local-host.md) for current evidence and setup.
+
+Both clients support encrypted read-only archives, interrupted import and separate
+snapshot inspection. Owner-authorized same-account fresh-device rejoin and
+owner-device succession are implemented and exercised end to end. Archives cannot
+become live devices, and loss of all owner custody does not create new recovery
+authority. Public discovery and public author backups must never carry private
+state or private invitations.
 
 ## Components and default dependencies
 
@@ -20,8 +24,12 @@ backups must never carry private state or private invitations.
   credentials and proposals, then commits encrypted state and output together.
 - `vhalla-private-native`: bounded SQLite persistence, exclusive private-file
   custody and a host-controlled fixed-room agent interface. Optional feature
-  `client` adds `RoomCreation` and `RoomSession` for a trusted native controller;
-  it is off by default and does not add a CLI or network transport.
+  `client` adds `RoomCreation` and `RoomSession` for a trusted native controller.
+  Explicit relay APIs provide authenticated TLS transport and finite durable
+  delivery; the default library does not start a listener or background process.
+- `vhalla-private-relay`: portable canonical relay envelopes and bounded page/
+  receipt codecs shared by native and browser transport. These opaque envelopes
+  contain encrypted room artifacts, not an authority to decrypt or join a room.
 - `vhalla-browser-storage`, feature `private-rooms`: the same kernel Store
   contract over strict IndexedDB transactions. This optional feature is off by
   default; the public browser does not acquire MLS dependencies by using storage.
@@ -38,9 +46,11 @@ exact retry/export, membership inspection, removal, owner renewal, owner-device
 succession, signed control-proof export, owner-control observation and
 fork-evidence reporting. Its
 [command guide](../crates/vhalla-cli/README.md#local-encrypted-private-room-files-experimental-private)
-includes the full two-account file exchange. It opens existing identity custody,
-uses only explicit local stores, and has explicit canonical relay-item export and
-apply commands but no listener or automatic transport. Input is a
+includes the full two-account file exchange. It opens existing identity custody
+and explicit local stores. In addition to canonical relay-item export/apply,
+`agent-rpc` can run a bounded TLS delivery driver under a fixed-room grant.
+`private-host` separately manages a local relay; `private-gateway` supplies the
+same-origin browser path. These require explicit configuration. Input is a
 bounded pipe or owner-private file; outputs are exclusive-create, synced private
 files. Fresh send checks authenticated membership, validity and the exact selected
 epoch/roster before reading text. Output failure preserves the state and partial
@@ -273,9 +283,29 @@ interchangeable
 transports: the token-authenticated socket, or `--mailbox DIR` opening the
 durable mailbox directory directly under filesystem custody (one process at a
 time) for synced-folder or explicitly copied carriage. It is a local reference
-adapter — no DNS, TLS, remote-host hardening or public Internet service claim
-— and a retention receipt is never member acceptance. Hardened transports and
-independent-machine failure-domain qualification remain required.
+adapter. The plaintext socket is restricted to loopback. The maintained TLS 1.3
+transport authenticates a pinned CA, DNS name and namespace before sending a
+scoped credential; remote CLI use requires all TLS parameters. It imposes finite
+global and per-credential storage/work budgets, bounded handshakes and deadlines,
+and stops admission on storage uncertainty. A supervisor reopens the exact state.
+
+The native agent driver persists attempt intent, exact ciphertext, finite retry
+credits and backoff before network work. Incoming pages are staged before kernel
+application. A nonzero initial scan position must come from the trusted admission
+checkpoint; neither a relay nor an application error can authorize skipping
+history. A device-signed acceptance receipt can authenticate that an exact member
+processed an exact ciphertext. It does not prove honest storage, human reading or
+current membership, and a relay retention receipt never implies member acceptance.
+
+The browser worker uses the same bounded envelope through an authenticated
+loopback HTTP gateway, which owns the upstream TLS credential. Its selected
+origin/namespace/checkpoint and retry state survive reload in IndexedDB; the
+browser capability is supplied explicitly and stays in worker memory. Browser
+status distinguishes relay retention from local inbox commitment. It emits signed
+acceptances but does not yet verify received acceptances against its sender outbox.
+The [browser guide](../browser/README.md) records that limit. Local hosting requires
+no paid server or public domain; independent-machine and public-service claims
+still require their own operational evidence.
 
 ## Durable state and limits
 
@@ -372,24 +402,25 @@ both browser fixture builds and a fresh 53-lock security audit also passed.
 The public continuity store's 39 tests and strict lint passed separately.
 These checks do not establish a complete private-room UI or live relay delivery.
 
-Before a private-room release, finish and qualify:
+The counts above are historical receipts for their named source checkpoints.
+The [current execution plan](agent-readiness-plan.md) records the subsequent MCP,
+TLS, delivery, archive and local-host work and its focused validation. Final
+converged-source checks, actual browser delivery, Mac lifecycle and exact-artifact
+release gates remain distinct from those focused results.
 
-1. Browser worker/session integration around the maintained custody and storage
-   primitives, plus complete-state backup and clean-device recovery in both
-   clients. Key-only restoration must not restart an old device or clone custody.
-2. Usable room creation, recipient-bound invitation, member/device inspection,
-   catch-up, removal, renewal and explicit recovery UX in both clients.
-3. Usable delivery of the implemented confidential bootstrap and encrypted
-   controls. Keep secret offers, legacy plaintext bootstrap and local proof
-   artifacts out of public relay uploads.
-4. Harden the bounded opaque relay path beyond the local token/TCP reference
-   adapter — interchangeable authenticated transports, offline scheduling,
-   congestion/backpressure behavior and independent-machine acceptance — while
-   keeping strict separation between relay retention and member acceptance.
-5. Enforced agent compartments and inference-provider grants, with fresh contexts
-   across rooms and explicit intentional export.
-6. Overload/storage-full behavior, full worker termination recovery,
-   independent-peer operation and relevant live acceptance.
+The first agent workflow uses existing Codex and Devin CLIs on a cooperating host.
+It does not promise OS containment of those independently privileged processes.
+The trusted setup explicitly grants inference disclosure, fixes the room and
+permissions, and requires a fresh grant after roster changes. Native delivery can
+run while that finite session is active; a suspended browser or sleeping Mac
+pauses delivery. Exhausted grants or retries require an explicit operator decision,
+never deletion of retained state to restore credits.
+
+Further product claims require additional work and qualification: install-free
+remote browser networking, verified incoming acceptance status in the browser,
+certificate renewal, live custody transfer, enforced agent compartments and
+independent-machine/public-relay operation. None permits key-only restoration of
+an old device, implicit dead-owner recovery, or public upload of secret offers.
 
 The public site's readiness page remains the end-user status. This document
 describes implemented foundations and does not advertise a live private network.

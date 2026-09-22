@@ -1745,9 +1745,8 @@ vhalla private relay-pull member-key member-room --namespace "$PRIVATE_RELAY_NS"
 ready line before accepting connections. The admission token is a 64-digit
 lowercase hexadecimal secret read from a 0600 file or a bounded pipe (`-`),
 never argv. `--listen`/`--addr` accept only explicit numeric `IP:PORT` — there
-is no DNS resolution, TLS or remote-host hardening, so this is a local
-reference adapter for an operator-controlled segment or an outer tunnel, not a
-public Internet service. Frames have size bounds and one absolute deadline
+is no DNS resolution. This plaintext compatibility adapter accepts loopback
+addresses only; use the explicit TLS options below for remote connections. Frames have size bounds and one absolute deadline
 across partial reads and writes; wrong tokens,
 malformed input, foreign namespaces, operation conflicts and quota exhaustion
 all refuse without touching retained items. `relay-scan` pages the mailbox
@@ -2115,3 +2114,77 @@ that sequence, missing prior state, changed pending request or custody failure
 refuses. Preserve the identity, outbox, profile and all retained intent evidence;
 never delete or reset them to clear an error. Browser recovery UI is not added
 by this native command.
+
+## Explicit private relay TLS
+
+The optional `experimental-private` build includes server-authenticated TLS.
+Keep plain `relay-serve` and plain `--addr` clients on loopback. For TLS, select
+an explicit numeric address, independent CA certificate and exact DNS server
+name; the client never falls back to plaintext. CA/server certificates are DER,
+the server key is PKCS#8 DER, and all files use the existing private 0700/0600
+custody rules. Certificate provisioning remains an operator task. The current
+CLI accepts one DER leaf in `--cert`, so `--tls-ca` must pin its directly signing
+CA (a root CA or an explicitly chosen intermediate as trust anchor). It does
+not load or fetch an intermediate chain, consult ambient roots, or accept a PEM
+chain bundle. The native `server_config` API accepts an explicit ordered DER
+chain for hosts that need multi-certificate deployment. Never weaken name or
+certificate verification to work around a missing issuer.
+
+If a durable mailbox operation becomes uncertain, `relay-tls-serve` closes its
+listener, drains deadline-bound workers and exits with failure without needing
+another client to wake it. Preserve the mailbox and let the operator/supervisor
+reopen that exact custody; do not initialize or delete storage to restart.
+
+```sh
+vhalla private relay-mailbox tls-mailbox --namespace "$PRIVATE_RELAY_NS"
+vhalla private relay-tls-init tls-mailbox --namespace "$PRIVATE_RELAY_NS"
+vhalla private relay-tls-serve tls-mailbox --namespace "$PRIVATE_RELAY_NS" \
+  --config private-files/relay-config.json --cert private-files/relay-cert.der \
+  --key private-files/relay-key.pk8 --listen 127.0.0.1:9443
+vhalla private relay-submit private-files/item.vhrelay --namespace "$PRIVATE_RELAY_NS" \
+  --addr 127.0.0.1:9443 --token private-files/relay-token \
+  --tls-ca private-files/relay-ca.der --tls-name relay.example.test \
+  --out private-files/retained.json
+```
+
+The same `--tls-ca`/`--tls-name` pair works with socket `relay-scan`, `relay-push`
+and `relay-pull`. A namespace mismatch fails the TLS handshake even if the
+mailbox is empty. TLS ALPN exposes the opaque rendezvous namespace to connection
+observers; it must never encode private room or member metadata.
+
+The private JSON service configuration has this exact shape. Replace the
+synthetic hex IDs and namespace with independently selected random values, and
+use absolute token-file paths. Tokens themselves never appear in JSON or argv.
+
+```json
+{
+  "max_connections": 16,
+  "request_timeout_ms": 10000,
+  "window_ms": 1000,
+  "requests_per_window": 128,
+  "bytes_per_window": 67108864,
+  "credentials": [{
+    "id": "01010101010101010101010101010101",
+    "namespace": "0909090909090909090909090909090909090909090909090909090909090909",
+    "token_files": ["/absolute/private-files/relay-token"],
+    "put": true,
+    "page": true,
+    "max_items": 1024,
+    "max_bytes": 67108864,
+    "max_inflight": 4,
+    "requests_per_window": 64,
+    "bytes_per_window": 33554432
+  }]
+}
+```
+
+Each credential's quotas must be at most half the mailbox/global limits.
+Admission charges commit with the retained ciphertext and survive restart.
+Rotate by replacing `token_files` under the same stable credential ID, with at
+most two token files for an explicit overlap window. Stop the old service before
+restarting; omitting the old token revokes it for the replacement service.
+Credential removal does not erase retained items or reclaim its charged quota.
+Quotas for an existing ID are immutable. Initialization refuses used mailboxes;
+preserve legacy evidence and select a new empty mailbox. Work-window exhaustion
+returns capacity refusal; it never prunes existing data. These commands establish
+relay retention, not authenticated member acceptance or human reading.

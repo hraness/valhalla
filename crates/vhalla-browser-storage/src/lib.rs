@@ -26,6 +26,9 @@ pub mod outbox;
 #[cfg(all(feature = "private-rooms", any(target_arch = "wasm32", test)))]
 pub mod private_rooms;
 
+#[cfg(all(feature = "private-rooms", any(target_arch = "wasm32", test)))]
+pub mod private_archives;
+
 #[cfg(unix)]
 pub mod native;
 

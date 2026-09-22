@@ -31,8 +31,70 @@ fn inbox_text(message: &Inbound) -> String {
         String::from_utf8_lossy(&message.body)
     )
 }
-pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()> {
+pub(super) async fn perform(
+    app: &App,
+    ticket: u64,
+    action: Action,
+    selected_file: Option<js_sys::Promise>,
+) -> Result<()> {
     match action {
+        Action::DeliveryCreate | Action::DeliveryOpen => {
+            let profile = file(app, ticket, "private-delivery-profile", 4096).await?;
+            // The capability-bearing selection is immediately cleared; the
+            // worker retains it only until lock/termination, never in IndexedDB.
+            input(app, "private-delivery-profile").set_value("");
+            let reply = call(
+                app,
+                ticket,
+                Request::DeliveryConnect {
+                    profile,
+                    create: action == Action::DeliveryCreate,
+                },
+            )
+            .await.map_err(|error| format!("{error} The profile must name the configured 127.0.0.1 host and the same forwarded local port."))?;
+            let Response::Delivery(report) = reply else {
+                return Err("Unexpected delivery report.".into());
+            };
+            app.borrow_mut().delivery_ready = !report.stopped;
+            delivery_status(app, &report);
+            status(
+                app,
+                "Local gateway selected. Sync now sends exact encrypted outputs and stages a bounded incoming page. No network runs until you choose it.",
+                false,
+            );
+        }
+        Action::DeliverySync => {
+            {
+                let mut s = app.borrow_mut();
+                s.consent = None;
+                s.intent = None;
+            }
+            text(app, "private-consent", "");
+            let Response::Delivery(report) = call(app, ticket, Request::DeliverySync).await? else {
+                return Err("Unexpected sync report.".into());
+            };
+            delivery_status(app, &report);
+            if report.stopped {
+                app.borrow_mut().delivery_ready = false;
+            }
+            let Response::Membership(view) = call(app, ticket, Request::Membership).await? else {
+                return Err("Unexpected membership report.".into());
+            };
+            membership(app, view);
+            status(
+                app,
+                if report.review {
+                    "An owner control changed membership. Review the current roster before preparing a message or syncing again."
+                } else if report.stopped {
+                    "Delivery stopped at a retained refusal or finite budget. Preserve its state for inspection; reopening does not reset it."
+                } else if report.retry_at != 0 {
+                    "The gateway is unavailable or deferred this attempt. Exact ciphertext and retry progress are retained; wait until the displayed time before Sync now."
+                } else {
+                    "This bounded sync finished. Relay retention and local inbox acceptance are separate; neither means another person read a message."
+                },
+                report.stopped,
+            );
+        }
         Action::Enter => {
             let account = Key::from_bytes(crate::ui::activity_author()?)
                 .map_err(|_| "The unlocked account key is invalid.")?;
@@ -47,7 +109,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             render(app);
             broker::enter().await?;
             live(app, ticket)?;
-            status(app, "Private account custody is ready. Create, join or open one exact room. Public signing stays unavailable until Leave and lock.", false);
+            status(
+                app,
+                "Private account custody is ready. Create, join or open one exact room. Public signing stays unavailable until Leave and lock.",
+                false,
+            );
         }
         Action::Create => {
             let Response::Prepared(preview) =
@@ -55,7 +121,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             else {
                 return Err("Unexpected creation preview.".into());
             };
-            prepared(app, *preview, "Fresh owner device · seven-day enrollment. No private room state has been committed yet.");
+            prepared(
+                app,
+                *preview,
+                "Fresh owner device · seven-day enrollment. No private room state has been committed yet.",
+            );
             status(
                 app,
                 "Review the full locator, download it, then acknowledge retention before creation.",
@@ -70,7 +140,12 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 "The offer failed its full signature, account pins or current-time checks."
             })?;
             let scope = info.scope();
-            let extra = format!("Trusted owner account {}\nRecipient account {}\nOffer expires at {} UTC seconds.\nFresh recipient device · seven-day enrollment. This does not yet join the room.", hex(owner.as_bytes()), hex(recipient.as_bytes()), info.validity().expires_at());
+            let extra = format!(
+                "Trusted owner account {}\nRecipient account {}\nOffer expires at {} UTC seconds.\nFresh recipient device · seven-day enrollment. This does not yet join the room.",
+                hex(owner.as_bytes()),
+                hex(recipient.as_bytes()),
+                info.validity().expires_at()
+            );
             let Response::Prepared(preview) = call(
                 app,
                 ticket,
@@ -89,7 +164,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             }
             prepared(app, *preview, &extra);
             app.borrow_mut().offer = Some(raw);
-            status(app, "The signed offer matches your independent owner pin. Review the room and save this fresh device's locator before creation.", false);
+            status(
+                app,
+                "The signed offer matches your independent owner pin. Review the room and save this fresh device's locator before creation.",
+                false,
+            );
         }
         Action::Open => {
             let raw = file(app, ticket, "private-locator-file", model::LOCATOR_BYTES).await?;
@@ -104,7 +183,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 return Err("Unexpected open report.".into());
             };
             membership(app, view);
-            status(app, "Opened the exact retained room. After an uncertain write, inspect retained outputs before starting a new intent.", false);
+            status(
+                app,
+                "Opened the exact retained room. After an uncertain write, inspect retained outputs before starting a new intent.",
+                false,
+            );
         }
         Action::Locator => {
             let c = app
@@ -121,7 +204,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 &model::locator(c),
             )?;
             app.borrow_mut().locator_downloaded = true;
-            status(app, "Locator download requested. Confirm that you saved the file before checking the retention box.", false);
+            status(
+                app,
+                "Locator download requested. Confirm that you saved the file before checking the retention box.",
+                false,
+            );
         }
         Action::Commit => {
             if !input(app, "private-locator-retained").checked() || !app.borrow().locator_downloaded
@@ -138,11 +225,19 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 return Err("Unexpected creation result.".into());
             };
             membership(app, view);
-            status(app, "This exact private device state was saved. A recipient must now create its encrypted request and obtain the owner's response.", false);
+            status(
+                app,
+                "This exact private device state was saved. A recipient must now create its encrypted request and obtain the owner's response.",
+                false,
+            );
         }
         Action::Refresh => {
             refresh(app, ticket).await?;
-            status(app, "Retained local membership rechecked. This does not prove no newer owner control exists elsewhere.", false);
+            status(
+                app,
+                "Retained local membership rechecked. This does not prove no newer owner control exists elsewhere.",
+                false,
+            );
         }
         Action::Prepare => {
             let body = Zeroizing::new(area(app).value().into_bytes());
@@ -176,7 +271,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             s.consent = Some(consent);
             s.intent = Some(op);
             drop(s);
-            status(app, "Review this exact text and displayed membership. Encrypting saves locally; it does not send to a network.", false);
+            status(
+                app,
+                "Review this exact text and displayed membership. Encrypting saves locally; it does not send to a network.",
+                false,
+            );
         }
         Action::Send => {
             let body = Zeroizing::new(area(app).value().into_bytes());
@@ -214,7 +313,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             }
             text(app, "private-consent", "");
             refresh(app, ticket).await?;
-            status(app, "Exact encrypted message saved in this room's outbox. Download it explicitly; downloading or saving is not delivery.", false);
+            status(
+                app,
+                "Exact encrypted message saved in this room's outbox. Download it explicitly; downloading or saving is not delivery.",
+                false,
+            );
         }
         Action::Download => {
             // Detach only a bounded encrypted output, not the State borrow, across DOM callbacks.
@@ -224,7 +327,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 export_parts(a)?
             };
             download(app, &name, &bytes)?;
-            status(app, "Requested a download of the exact retained ciphertext. No new encryption or network delivery occurred.", false);
+            status(
+                app,
+                "Requested a download of the exact retained ciphertext. No new encryption or network delivery occurred.",
+                false,
+            );
         }
         Action::Receive => {
             let raw = file(app, ticket, "private-message-file", MAX_ARTIFACT).await?;
@@ -235,7 +342,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             };
             text(app, "private-inbox-content", &inbox_text(&message));
             refresh(app, ticket).await?;
-            status(app, "Authenticated message saved before plaintext was shown. Its content is inert, untrusted text.", false);
+            status(
+                app,
+                "Authenticated message saved before plaintext was shown. Its content is inert, untrusted text.",
+                false,
+            );
         }
         Action::Offer => {
             let recipient = key(&input(app, "private-recipient").value())?;
@@ -271,7 +382,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             });
             // A newly selected offer must not inherit a stale imported file.
             input(app, "private-resume-offer-file").set_value("");
-            status(app, "A one-use offer was saved. Its download contains confidential bootstrap keys; ordinary outbox export never includes them.", false);
+            status(
+                app,
+                "A one-use offer was saved. Its download contains confidential bootstrap keys; ordinary outbox export never includes them.",
+                false,
+            );
         }
         Action::Secret => {
             let (name, bytes) = {
@@ -290,7 +405,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 )
             };
             download(app, &name, &bytes)?;
-            status(app, "Confidential offer download requested. Transfer only to the named account through a confidential channel.", false);
+            status(
+                app,
+                "Confidential offer download requested. Transfer only to the named account through a confidential channel.",
+                false,
+            );
         }
         Action::Request => {
             let retained = app.borrow().offer.clone();
@@ -322,7 +441,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 .await?,
             )?;
             app.borrow_mut().offer = None;
-            status(app, "Encrypted recipient request saved. Export it to the pinned owner; use the retained outbox for exact retries.", false);
+            status(
+                app,
+                "Encrypted recipient request saved. Export it to the pinned owner; use the retained outbox for exact retries.",
+                false,
+            );
         }
         Action::Accept => {
             let recipient = key(&input(app, "private-recipient").value())?;
@@ -374,7 +497,15 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             let validity = Validity::new(start, end).map_err(|_| {
                 "The offer or recipient enrollment has expired; no request was consumed."
             })?;
-            status(app, &format!("Accepting the authenticated request for account {} · device {}. Its invitation expires no later than the original signed offer and recipient enrollment.", hex(recipient.as_bytes()), hex(enrollment.claims().device.as_bytes())), false);
+            status(
+                app,
+                &format!(
+                    "Accepting the authenticated request for account {} · device {}. Its invitation expires no later than the original signed offer and recipient enrollment.",
+                    hex(recipient.as_bytes()),
+                    hex(enrollment.claims().device.as_bytes())
+                ),
+                false,
+            );
             artifact(
                 app,
                 call(
@@ -389,7 +520,14 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 .await?,
             )?;
             refresh(app, ticket).await?;
-            status(app, &format!("Request for account {} consumed and encrypted response saved. Transfer this response to that recipient and the next encrypted control to existing members.", hex(recipient.as_bytes())), false);
+            status(
+                app,
+                &format!(
+                    "Request for account {} consumed and encrypted response saved. Transfer this response to that recipient and the next encrypted control to existing members.",
+                    hex(recipient.as_bytes())
+                ),
+                false,
+            );
         }
         Action::Join | Action::Apply => {
             let id = if matches!(action, Action::Join) {
@@ -407,7 +545,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 return Err("Unexpected membership transition report.".into());
             };
             membership(app, view);
-            status(app, "The exact authenticated transition was saved. Review current membership before preparing any new message.", false);
+            status(
+                app,
+                "The exact authenticated transition was saved. Review current membership before preparing any new message.",
+                false,
+            );
         }
         Action::Remove => {
             let device = key(&input(app, "private-remove-device").value())?;
@@ -436,7 +578,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 .await?,
             )?;
             refresh(app, ticket).await?;
-            status(app, "Removal and rekey saved. Explicitly distribute this encrypted owner control; old received plaintext cannot be revoked.", false);
+            status(
+                app,
+                "Removal and rekey saved. Explicitly distribute this encrypted owner control; old received plaintext cannot be revoked.",
+                false,
+            );
         }
         Action::Renew => {
             let old = app
@@ -468,7 +614,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 .await?,
             )?;
             refresh(app, ticket).await?;
-            status(app, "Same owner device renewed and epoch advanced. Prior message consent is invalid; this does not recover a lost owner device.", false);
+            status(
+                app,
+                "Same owner device renewed and epoch advanced. Prior message consent is invalid; this does not recover a lost owner device.",
+                false,
+            );
         }
         Action::Succeed => {
             let successor = key(&input(app, "private-succeed-device").value())?;
@@ -506,7 +656,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 .await?,
             )?;
             refresh(app, ticket).await?;
-            status(app, "Ownership handed to the selected device and epoch advanced. This device keeps ordinary membership; only the new owner issues controls now.", false);
+            status(
+                app,
+                "Ownership handed to the selected device and epoch advanced. This device keeps ordinary membership; only the new owner issues controls now.",
+                false,
+            );
         }
         Action::Controls | Action::ControlsNext => {
             controls(app, ticket, matches!(action, Action::ControlsNext)).await?
@@ -521,11 +675,21 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             else {
                 return Err("Unexpected observation report.".into());
             };
-            status(app, match verdict {
-                ObserveVerdict::Retained => "That exact signed control is already retained history on this device.",
-                ObserveVerdict::UnknownHistory => "Valid owner signature at a floor this device has not retained. Apply the missing encrypted controls in order; an observed proof is never adopted as state.",
-                ObserveVerdict::BeforeBase => "Valid owner signature below this device's retained history base. This device joined later and cannot confirm or apply predecessor floors; the proof is never adopted as state.",
-            }, false);
+            status(
+                app,
+                match verdict {
+                    ObserveVerdict::Retained => {
+                        "That exact signed control is already retained history on this device."
+                    }
+                    ObserveVerdict::UnknownHistory => {
+                        "Valid owner signature at a floor this device has not retained. Apply the missing encrypted controls in order; an observed proof is never adopted as state."
+                    }
+                    ObserveVerdict::BeforeBase => {
+                        "Valid owner signature below this device's retained history base. This device joined later and cannot confirm or apply predecessor floors; the proof is never adopted as state."
+                    }
+                },
+                false,
+            );
         }
         Action::ForkEvidence => {
             let Response::ForkEvidence { proof, .. } =
@@ -539,19 +703,39 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                         .and_then(|c| c.verify())
                         .map(|c| hex(c.id().as_bytes()))
                         .unwrap_or_else(|_| "unverifiable".into());
-                    text(app, "private-evidence", &format!(
-                        "Retained fork proof\nAccepted floor {} · control {}\nConflicting valid owner control {}\nAccepted-side proof: {} bytes{}\nThis device is durably quarantined: history stays readable, new sends are refused, and this evidence never grants succession.",
-                        proof.accepted.sequence(),
-                        proof.accepted.id().map(|id| hex(id.as_bytes())).unwrap_or_else(|| "joining checkpoint".into()),
-                        conflicting,
-                        proof.accepted_proof.len(),
-                        if proof.accepted_from_checkpoint { " (joining checkpoint)" } else { "" },
-                    ));
-                    status(app, "A conflicting owner signature was proven at a retained floor. Preserve this device and evidence; do not reset or recreate it.", false);
+                    text(
+                        app,
+                        "private-evidence",
+                        &format!(
+                            "Retained fork proof\nAccepted floor {} · control {}\nConflicting valid owner control {}\nAccepted-side proof: {} bytes{}\nThis device is durably quarantined: history stays readable, new sends are refused, and this evidence never grants succession.",
+                            proof.accepted.sequence(),
+                            proof
+                                .accepted
+                                .id()
+                                .map(|id| hex(id.as_bytes()))
+                                .unwrap_or_else(|| "joining checkpoint".into()),
+                            conflicting,
+                            proof.accepted_proof.len(),
+                            if proof.accepted_from_checkpoint {
+                                " (joining checkpoint)"
+                            } else {
+                                ""
+                            },
+                        ),
+                    );
+                    status(
+                        app,
+                        "A conflicting owner signature was proven at a retained floor. Preserve this device and evidence; do not reset or recreate it.",
+                        false,
+                    );
                 }
                 None => {
                     text(app, "private-evidence", "");
-                    status(app, "No locally retained fork proof. Absence is not a freshness or fork-freedom claim.", false);
+                    status(
+                        app,
+                        "No locally retained fork proof. Absence is not a freshness or fork-freedom claim.",
+                        false,
+                    );
                 }
             }
         }
@@ -569,7 +753,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 )
             };
             download(app, &name, &bytes)?;
-            status(app, "Exact signed control proof downloaded. It is a plaintext inspection record, not the encrypted control members apply.", false);
+            status(
+                app,
+                "Exact signed control proof downloaded. It is a plaintext inspection record, not the encrypted control members apply.",
+                false,
+            );
         }
         Action::Outbox | Action::OutboxNext => {
             outbox(app, ticket, matches!(action, Action::OutboxNext)).await?
@@ -577,7 +765,7 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
         Action::Inbox | Action::InboxNext => {
             inbox(app, ticket, matches!(action, Action::InboxNext)).await?
         }
-        Action::ExportArchive => export_archive(app, ticket).await?,
+        Action::ExportArchive => export_archive(app, ticket, selected_file).await?,
         Action::ImportArchive => import_archive(app, ticket).await?,
         Action::OpenArchive => open_archive(app, ticket).await?,
         Action::ArchiveOutbox | Action::ArchiveOutboxNext => {
@@ -599,7 +787,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 )?
             };
             download(app, &name, &bytes)?;
-            status(app, "Exact archived ciphertext download requested; this is historical evidence, not a new send.", false);
+            status(
+                app,
+                "Exact archived ciphertext download requested; this is historical evidence, not a new send.",
+                false,
+            );
         }
         Action::ArchiveClose => {
             let Response::ArchiveClosed { .. } = call(app, ticket, Request::ArchiveClose).await?
@@ -616,7 +808,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             ] {
                 text(app, id, "");
             }
-            status(app, "Archive view closed. The durable read-only destination is unchanged; reopen it with the same .vharchive file.", false);
+            status(
+                app,
+                "Archive view closed. The durable read-only destination is unchanged; reopen it with the same .vharchive file.",
+                false,
+            );
         }
         Action::DownloadControl => {
             let index = selected(app, "private-control-select")?;
@@ -632,7 +828,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 )
             };
             download(app, &name, &bytes)?;
-            status(app, "Exact encrypted control download requested. Recipients must apply their next control in order.", false);
+            status(
+                app,
+                "Exact encrypted control download requested. Recipients must apply their next control in order.",
+                false,
+            );
         }
         Action::DownloadOutbox => {
             let index = selected(app, "private-outbox-select")?;
@@ -641,7 +841,11 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                 export_parts(s.outbox.get(index).ok_or("Select a retained output.")?)?
             };
             download(app, &name, &bytes)?;
-            status(app, "Exact retained ciphertext download requested; this did not create a new intent or delivery claim.", false);
+            status(
+                app,
+                "Exact retained ciphertext download requested; this did not create a new intent or delivery claim.",
+                false,
+            );
         }
         Action::Leave => return Err("Leave is handled synchronously before any await.".into()),
     }
@@ -717,7 +921,15 @@ async fn controls(app: &App, ticket: u64, next: bool) -> Result<()> {
         s.controls = records;
         s.controls_next = next;
     }
-    status(app, &format!("Read {count} encrypted controls. This device's retained wire history begins after floor {}; observed head {}. Earlier plaintext bootstrap is not exported.", base.sequence(), head.sequence()), false);
+    status(
+        app,
+        &format!(
+            "Read {count} encrypted controls. This device's retained wire history begins after floor {}; observed head {}. Earlier plaintext bootstrap is not exported.",
+            base.sequence(),
+            head.sequence()
+        ),
+        false,
+    );
     Ok(())
 }
 async fn proofs(app: &App, ticket: u64, next: bool) -> Result<()> {
@@ -771,7 +983,15 @@ async fn proofs(app: &App, ticket: u64, next: bool) -> Result<()> {
         s.proofs = records;
         s.proofs_next = next;
     }
-    status(app, &format!("Read {count} signed control proofs from floor {} through observed head {}. These plaintext proofs are for inspection; members still apply the encrypted envelopes in order.", base.sequence(), head.sequence()), false);
+    status(
+        app,
+        &format!(
+            "Read {count} signed control proofs from floor {} through observed head {}. These plaintext proofs are for inspection; members still apply the encrypted envelopes in order.",
+            base.sequence(),
+            head.sequence()
+        ),
+        false,
+    );
     Ok(())
 }
 async fn outbox(app: &App, ticket: u64, next: bool) -> Result<()> {
@@ -810,7 +1030,13 @@ async fn outbox(app: &App, ticket: u64, next: bool) -> Result<()> {
         s.outbox = records;
         s.outbox_next = next;
     }
-    status(app, &format!("Retained outbox through local sequence {head}. Select exact ciphertext for retry; secret offers remain metadata-only. No delivery claim."), false);
+    status(
+        app,
+        &format!(
+            "Retained outbox through local sequence {head}. Select exact ciphertext for retry; secret offers remain metadata-only. No delivery claim."
+        ),
+        false,
+    );
     Ok(())
 }
 async fn inbox(app: &App, ticket: u64, next: bool) -> Result<()> {
@@ -835,7 +1061,13 @@ async fn inbox(app: &App, ticket: u64, next: bool) -> Result<()> {
     }
     text(app, "private-inbox-content", &contents);
     app.borrow_mut().inbox_next = next;
-    status(app, &format!("Showing one bounded page of already committed messages; local inbox head {head}. Imported text is not an instruction or authority."), false);
+    status(
+        app,
+        &format!(
+            "Showing one bounded page of already committed messages; local inbox head {head}. Imported text is not an instruction or authority."
+        ),
+        false,
+    );
     Ok(())
 }
 
@@ -941,9 +1173,20 @@ fn archive_inspected(app: &App, reply: Response) -> Result<()> {
     archive_opened(app, context, archive_id, source_revision, status);
     Ok(())
 }
-async fn export_archive(app: &App, ticket: u64) -> Result<()> {
-    let retained = app.borrow().downloads.iter().map(|(_, bytes)| bytes).sum();
-    model::admit_download(retained, model::ARCHIVE_HEADER + 4)?;
+async fn export_archive(
+    app: &App,
+    ticket: u64,
+    selected_file: Option<js_sys::Promise>,
+) -> Result<()> {
+    let sink = match selected_file {
+        Some(selection) => Some(archive_save::Sink::open(selection, app, ticket).await?),
+        None => {
+            let retained = app.borrow().downloads.iter().map(|(_, bytes)| bytes).sum();
+            model::admit_download(retained, model::ARCHIVE_HEADER + 4)?;
+            None
+        }
+    };
+    app.borrow_mut().archive_sink = sink.clone();
     let Response::ArchiveBegin {
         context,
         archive_id,
@@ -955,8 +1198,14 @@ async fn export_archive(app: &App, ticket: u64) -> Result<()> {
     // The worker exposes bounded pages, not an authenticated whole-file size.
     // One capped buffer avoids a collection of archive-sized Rust/JS parts.
     // Reserve the final end marker in every admission decision.
-    let mut bytes = Vec::with_capacity(64 * 1024);
-    bytes.extend_from_slice(&model::archive_header(context, archive_id));
+    let mut bytes = Vec::new();
+    let header = model::archive_header(context, archive_id);
+    if let Some(sink) = &sink {
+        sink.write(&header).await?;
+        live(app, ticket)?;
+    } else {
+        bytes.extend_from_slice(&header);
+    }
     let mut total = model::ARCHIVE_HEADER + 4;
     let mut pages = 0u64;
     loop {
@@ -972,40 +1221,65 @@ async fn export_archive(app: &App, ticket: u64) -> Result<()> {
         }
         let Some(page) = page else { break };
         pages = pages.checked_add(1).ok_or("Archive page overflow.")?;
-        total = model::archive_download_size(total, page.len())?;
-        let retained = app.borrow().downloads.iter().map(|(_, bytes)| bytes).sum();
-        model::admit_download(retained, total)?;
+        total = if sink.is_some() {
+            total
+                .checked_add(4 + page.len())
+                .ok_or("Archive size overflow.")?
+        } else {
+            model::archive_download_size(total, page.len())?
+        };
+        if total as u64 > model::ARCHIVE_FILE_MAX {
+            return Err("Archive exceeds the bounded file format.".into());
+        }
         if pages > model::ARCHIVE_PAGES_MAX {
             return Err("Archive exceeds the bounded browser file format.".into());
         }
-        bytes
-            .try_reserve(4 + page.len())
-            .map_err(|_| "Not enough memory to prepare this archive download.")?;
-        bytes.extend_from_slice(
-            &u32::try_from(page.len())
-                .expect("bounded page")
-                .to_be_bytes(),
-        );
-        bytes.extend_from_slice(&page);
+        if let Some(sink) = &sink {
+            sink.write(&(page.len() as u32).to_be_bytes()).await?;
+            live(app, ticket)?;
+            sink.write(&page).await?;
+            live(app, ticket)?;
+        } else {
+            let retained = app.borrow().downloads.iter().map(|(_, bytes)| bytes).sum();
+            model::admit_download(retained, total)?;
+            bytes
+                .try_reserve(4 + page.len())
+                .map_err(|_| "Not enough memory to prepare this archive download.")?;
+            bytes.extend_from_slice(
+                &u32::try_from(page.len())
+                    .expect("bounded page")
+                    .to_be_bytes(),
+            );
+            bytes.extend_from_slice(&page);
+        }
         status(
             app,
             &format!(
-                "Preparing encrypted archive download: {pages} pages, {total} bytes of the 16 MiB browser limit."
+                "Saving encrypted archive: {pages} pages, {total} bytes. Leave and lock cancels this operation."
             ),
             false,
         );
     }
-    bytes.extend_from_slice(&0u32.to_be_bytes());
+    if let Some(sink) = &sink {
+        sink.write(&0u32.to_be_bytes()).await?;
+        live(app, ticket)?;
+        sink.close().await?;
+        live(app, ticket)?;
+        app.borrow_mut().archive_sink = None;
+    } else {
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        app.borrow_mut().archive_in_flight = false;
+        download(
+            app,
+            &format!(
+                "private-archive-{}-{}.vharchive",
+                hex(context.scope.room.as_bytes()),
+                hex(&archive_id)
+            ),
+            &bytes,
+        )?;
+    }
     app.borrow_mut().archive_in_flight = false;
-    download(
-        app,
-        &format!(
-            "private-archive-{}-{}.vharchive",
-            hex(context.scope.room.as_bytes()),
-            hex(&archive_id)
-        ),
-        &bytes,
-    )?;
     status(
         app,
         &format!(
@@ -1032,6 +1306,7 @@ async fn import_archive(app: &App, ticket: u64) -> Result<()> {
         Request::ArchiveImportBegin {
             context,
             archive_id,
+            legacy: input(app, "private-archive-legacy").checked(),
         },
     )
     .await?
@@ -1089,7 +1364,11 @@ async fn import_archive(app: &App, ticket: u64) -> Result<()> {
     let reply = call(app, ticket, Request::ArchiveImportFinish(final_page)).await?;
     archive_inspected(app, reply)?;
     app.borrow_mut().archive_in_flight = false;
-    status(app, "Archive imported into read-only storage and verified complete. This view cannot send, invite, or mutate the live room.", false);
+    status(
+        app,
+        "Archive imported into read-only storage and verified complete. This view cannot send, invite, or mutate the live room.",
+        false,
+    );
     Ok(())
 }
 async fn open_archive(app: &App, ticket: u64) -> Result<()> {
@@ -1119,12 +1398,17 @@ async fn open_archive(app: &App, ticket: u64) -> Result<()> {
         Request::ArchiveOpen {
             context,
             archive_id,
+            legacy: input(app, "private-archive-legacy").checked(),
             final_page,
         },
     )
     .await?;
     archive_inspected(app, reply)?;
-    status(app, "Opened the completed archive read-only. It shows the source room's last exported state only; it cannot send or mint membership.", false);
+    status(
+        app,
+        "Opened the completed archive read-only. It shows the source room's last exported state only; it cannot send or mint membership.",
+        false,
+    );
     Ok(())
 }
 async fn archive_outbox(app: &App, ticket: u64, next: bool) -> Result<()> {
@@ -1169,7 +1453,13 @@ async fn archive_outbox(app: &App, ticket: u64, next: bool) -> Result<()> {
             archive.outbox_next = next;
         }
     }
-    status(app, &format!("Archived outbox through local sequence {head}. Historical evidence only; no delivery or send authority."), false);
+    status(
+        app,
+        &format!(
+            "Archived outbox through local sequence {head}. Historical evidence only; no delivery or send authority."
+        ),
+        false,
+    );
     Ok(())
 }
 async fn archive_inbox(app: &App, ticket: u64, next: bool) -> Result<()> {
@@ -1203,6 +1493,23 @@ async fn archive_inbox(app: &App, ticket: u64, next: bool) -> Result<()> {
             archive.inbox_next = next;
         }
     }
-    status(app, &format!("Showing one bounded page of archived committed messages; archived inbox head {head}. This content is inert history, not live input."), false);
+    status(
+        app,
+        &format!(
+            "Showing one bounded page of archived committed messages; archived inbox head {head}. This content is inert history, not live input."
+        ),
+        false,
+    );
     Ok(())
+}
+
+fn delivery_status(app: &App, r: &DeliveryReport) {
+    text(
+        app,
+        "private-delivery-status",
+        &format!(
+            "Relay-retained outputs: {} · locally accepted incoming records: {}\nOutbox cursor {} · mailbox cursor {} · charged attempts {}\nPending: {} · stopped: {} · retry after Unix second {}",
+            r.retained, r.received, r.sent, r.cursor, r.attempts, r.pending, r.stopped, r.retry_at
+        ),
+    );
 }

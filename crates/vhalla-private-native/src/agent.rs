@@ -216,6 +216,99 @@ pub struct AgentRoomSession<S: Store> {
     test_tick: Option<std::rc::Rc<std::cell::Cell<Instant>>>,
 }
 impl<S: Store> AgentRoomSession<S> {
+    // Trusted host delivery operates the same kernel/custody owner. These are
+    // never registered as agent methods and never grant network or export rights.
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_outbox(
+        &mut self,
+        after: u64,
+        limit: usize,
+    ) -> Result<vhalla_private_kernel::OutboxPage> {
+        self.host_ready()?;
+        self.failed = true;
+        let page = self
+            .kernel
+            .outbox(after, limit)
+            .await
+            .map_err(Error::Kernel)?;
+        self.failed = false;
+        Ok(page)
+    }
+
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_receive(
+        &mut self,
+        raw: &[u8],
+    ) -> Result<vhalla_private_kernel::ReceivedMessage> {
+        self.host_ready()?;
+        let now = self.host_time()?;
+        self.failed = true;
+        let received = self.kernel.receive(raw, now).await.map_err(Error::Kernel)?;
+        self.failed = false;
+        Ok(received)
+    }
+
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_issue_acceptance(
+        &mut self,
+        operation: OperationId,
+        original_ciphertext: &[u8],
+    ) -> Result<CommittedOutbox> {
+        self.host_ready()?;
+        let now = self.host_time()?;
+        self.failed = true;
+        let receipt = self
+            .kernel
+            .issue_acceptance(operation, original_ciphertext, now)
+            .await
+            .map_err(Error::Kernel)?;
+        self.failed = false;
+        Ok(receipt)
+    }
+
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_apply_control(&mut self, raw: &[u8]) -> Result<Status> {
+        self.host_ready()?;
+        let now = self.host_time()?;
+        self.failed = true;
+        let status = self
+            .kernel
+            .apply_control(raw, now)
+            .await
+            .map_err(Error::Kernel)?;
+        if status.context != self.grant.context
+            || status.epoch != self.grant.epoch
+            || status.roster != self.grant.roster
+            || status.quarantined
+            || matches!(status.phase, Phase::AwaitingWelcome | Phase::Removed)
+        {
+            if let Some(authority) = self.grant.authority.upgrade() {
+                authority.store(true, Ordering::Release);
+            }
+            self.pending = None;
+        }
+        self.failed = false;
+        Ok(status)
+    }
+
+    #[cfg(feature = "client")]
+    fn host_ready(&self) -> Result<()> {
+        if self.failed || self.kernel.needs_reopen() {
+            return Err(Error::NeedsReopen);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "client")]
+    fn host_time(&mut self) -> Result<u64> {
+        let now = wall_time()?;
+        if now < self.last_wall {
+            return Err(Error::Clock);
+        }
+        self.last_wall = now;
+        Ok(now)
+    }
+
     /// Host-only installation. The host retains revocation authority separately
     /// and exposes only status/inbox/prepare/queue/outbox_status to its agent.
     pub fn new(kernel: Kernel<S>, grant: LocalGrant) -> Result<Self> {

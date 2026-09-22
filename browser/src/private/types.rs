@@ -9,9 +9,6 @@ use zeroize::Zeroizing;
 
 /// Fixed application profile; never selected by a room, peer, or imported file.
 pub const PROFILE: [u8; 32] = *b"vhalla-browser-local-profile-v01";
-/// Separate fixed profile for read-only archive destinations. Keeping archives
-/// outside PROFILE means a live room prefix can never alias an archive view.
-pub const ARCHIVE: [u8; 32] = *b"vhalla-browser-local-archive-v01";
 /// Exact upper bound of a complete signed confidential contact offer,
 /// including its bounded retained succession chain.
 pub const MAX_OFFER: usize = vhalla_private_kernel::MAX_OFFER_BYTES;
@@ -46,7 +43,7 @@ impl Consent {
     }
 }
 
-/// Caller-selected operations only. No URL, generic signature or storage key.
+/// Caller-selected operations only. No generic signature, arbitrary route or storage key.
 pub enum Request {
     /// Irreversibly select private mode and revalidate the saved account pair.
     Enter {
@@ -207,6 +204,8 @@ pub enum Request {
         /// Random archive correlation ID from the file header, checked by the
         /// kernel against every authenticated page.
         archive_id: [u8; 32],
+        /// Explicitly resume the former fixed destination; never create it.
+        legacy: bool,
     },
     /// Feed one exact encrypted archive page in file order. The worker consumes
     /// source-image pages first, then appends record pages; the reply reports
@@ -222,6 +221,8 @@ pub enum Request {
         context: Context,
         /// Archive correlation ID, independently retained with the context.
         archive_id: [u8; 32],
+        /// Explicitly select the former fixed destination, without fallback.
+        legacy: bool,
         /// Exact final encrypted page; authenticates the destination image.
         final_page: Bytes,
     },
@@ -241,6 +242,16 @@ pub enum Request {
         /// Maximum page count within the fixed kernel limit.
         limit: usize,
     },
+    /// Explicitly create or reopen an immutable relay profile. The capability
+    /// is held only in this worker and excluded from durable progress.
+    DeliveryConnect {
+        /// Bounded operator-selected JSON profile, including an in-memory capability.
+        profile: Bytes,
+        /// Create only absent delivery progress; false requires exact retained state.
+        create: bool,
+    },
+    /// Perform one finite sync gesture; no background or automatic reconnect.
+    DeliverySync,
     /// Drop any retained archive handle. Read-only state is never a custody
     /// requirement; the durable destination is unchanged.
     ArchiveClose,
@@ -328,8 +339,33 @@ pub struct ForkProof {
     /// Whether `accepted_proof` is the joining checkpoint encoding.
     pub accepted_from_checkpoint: bool,
 }
+/// Local durable delivery progress; relay retention is not member acceptance.
+pub struct DeliveryReport {
+    /// Full selected room/device context.
+    pub context: Context,
+    /// Local outbox enumeration cursor, including non-relay entries.
+    pub sent: u64,
+    /// Last applied or explicitly classified mailbox position.
+    pub cursor: u64,
+    /// Exact outgoing items acknowledged retained by the relay.
+    pub retained: u64,
+    /// Incoming application records committed locally (including receipt records).
+    pub received: u64,
+    /// Durably reserved lifetime network attempts.
+    pub attempts: u64,
+    /// Earliest permitted retry in Unix seconds, or zero after success.
+    pub retry_at: u64,
+    /// Exact outgoing or staged incoming work remains.
+    pub pending: bool,
+    /// Persistent finite-budget or protocol refusal; never reset on reload.
+    pub stopped: bool,
+    /// A control changed membership; review it before another sync.
+    pub review: bool,
+}
 /// Closed local worker reports; decoding is not independent network admission.
 pub enum Response {
+    /// Bounded local progress after explicit relay configuration or sync.
+    Delivery(DeliveryReport),
     /// Private entry completed for this authenticated account key.
     Entered(Key),
     /// Fresh preparation awaiting exact locator retention and explicit commit.
@@ -485,6 +521,7 @@ impl Response {
     pub fn context(&self) -> Option<Context> {
         match self {
             Self::Entered(_) => None,
+            Self::Delivery(report) => Some(report.context),
             Self::Prepared(p) => Some(p.context),
             Self::Membership(m) => Some(m.status.context),
             Self::Draft(d) => Some(d.context),
@@ -511,6 +548,8 @@ impl Response {
 #[derive(Clone, Copy, PartialEq, Eq)]
 /// Response correlation tag; never an authority or permission token.
 pub enum ReplyKind {
+    /// Local relay progress only.
+    Delivery,
     /// Account-only private entry.
     Entered,
     /// Uncommitted creation preparation.
@@ -556,6 +595,7 @@ impl Request {
     pub fn reply_kind(&self) -> ReplyKind {
         match self {
             Self::Enter { .. } => ReplyKind::Entered,
+            Self::DeliveryConnect { .. } | Self::DeliverySync => ReplyKind::Delivery,
             Self::PrepareOwner(_) | Self::PrepareContact { .. } => ReplyKind::Prepared,
             Self::CommitCreation(_)
             | Self::Open(_)
@@ -596,6 +636,7 @@ impl Response {
     pub fn kind(&self) -> ReplyKind {
         match self {
             Self::Entered(_) => ReplyKind::Entered,
+            Self::Delivery(_) => ReplyKind::Delivery,
             Self::Prepared(_) => ReplyKind::Prepared,
             Self::Membership(_) => ReplyKind::Membership,
             Self::Draft(_) => ReplyKind::Draft,

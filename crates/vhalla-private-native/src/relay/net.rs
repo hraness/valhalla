@@ -7,6 +7,7 @@
 //! operator-controlled relay, not a hardened Internet service. A retention
 //! receipt is relay custody only and never proves delivery or acceptance.
 
+use super::codec::*;
 use super::{
     Error, FileStore, PositionedItem, RelayItem, RelayNamespace, RelayPage, RelayReceipt, Result,
     Store, MAGIC, MAX_RELAY_ITEMS, MAX_RELAY_PAGE, MAX_RELAY_PAYLOAD,
@@ -20,15 +21,6 @@ use std::{
 };
 use vhalla_custody as custody;
 
-/// Maximum request body: token plus one canonical item frame.
-const MAX_PUT_BODY: usize = 32 + MAGIC.len() + 32 + 8 + 16 + 1 + 4 + MAX_RELAY_PAYLOAD + 32;
-/// Request length field bound; GET-style operations are far below this.
-const MAX_REQUEST: usize = 1 + MAX_PUT_BODY;
-/// Response budget for one page: metadata plus whole item frames. A page that
-/// cannot fit returns `more` so the caller resumes at its retained cursor.
-const MAX_PAGE_BODY: usize = 4 * 1024 * 1024;
-/// Largest response frame: status byte plus a full page body.
-const MAX_RESPONSE: usize = 1 + MAX_PAGE_BODY;
 /// Bounded per-socket IO deadlines; a stalled peer cannot hold the server.
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -38,44 +30,7 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_ITEM_BYTES: usize = MAGIC.len() + 32 + 8 + 16 + 1 + 4 + MAX_RELAY_PAYLOAD + 32;
 const MAX_SCAN_BYTES: usize = MAX_RELAY_ITEMS * MAX_ITEM_BYTES;
 const SCAN_MAGIC: &[u8] = b"VHSCAN\x01";
-const OP_PUT: u8 = 1;
-const OP_PAGE: u8 = 2;
-const STATUS_OK: u8 = 0;
-const STATUS_CONFLICT: u8 = 2;
-const STATUS_CAPACITY: u8 = 3;
-const STATUS_BOUNDS: u8 = 4;
-const STATUS_SCOPE: u8 = 5;
-const STATUS_DENIED: u8 = 6;
-const STATUS_UNAVAILABLE: u8 = 7;
-
-/// Closed adapter failures. None carries ciphertext, tokens or addresses.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NetError {
-    /// The listener was unreachable or the connection failed.
-    Connect,
-    /// A bounded read, write or connect deadline elapsed.
-    Timeout,
-    /// The mailbox refused the presented token.
-    Denied,
-    /// The same sequence or operation arrived with different bytes.
-    Conflict,
-    /// The relay quota is full; retained items are never pruned.
-    Capacity,
-    /// Input or wire data was malformed, noncanonical or over a bound.
-    Bounds,
-    /// The item belongs to another opaque namespace.
-    Scope,
-    /// The peer answered with a noncanonical frame or status.
-    Malformed,
-    /// A durable or socket operation failed without a finer claim.
-    Unavailable,
-}
-impl core::fmt::Display for NetError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-impl std::error::Error for NetError {}
+pub use vhalla_private_relay::codec::NetError;
 type NetResult<T> = std::result::Result<T, NetError>;
 
 /// A 32-byte mailbox admission secret shared out of band. It is a transport
@@ -112,38 +67,6 @@ fn authorized(token: &RelayToken, presented: &[u8]) -> bool {
     diff == 0
 }
 
-fn status(error: Error) -> u8 {
-    match error {
-        Error::Conflict => STATUS_CONFLICT,
-        Error::Capacity => STATUS_CAPACITY,
-        Error::Scope => STATUS_SCOPE,
-        Error::Storage => STATUS_UNAVAILABLE,
-        Error::Bounds | Error::Confidential => STATUS_BOUNDS,
-    }
-}
-fn decode_status(code: u8, body: &[u8]) -> NetResult<Vec<u8>> {
-    if code != STATUS_OK && !body.is_empty() {
-        return Err(NetError::Malformed);
-    }
-    match code {
-        STATUS_OK => Ok(body.to_vec()),
-        STATUS_CONFLICT => Err(NetError::Conflict),
-        STATUS_CAPACITY => Err(NetError::Capacity),
-        STATUS_BOUNDS => Err(NetError::Bounds),
-        STATUS_SCOPE => Err(NetError::Scope),
-        STATUS_DENIED => Err(NetError::Denied),
-        STATUS_UNAVAILABLE => Err(NetError::Unavailable),
-        _ => Err(NetError::Malformed),
-    }
-}
-fn frame(op: u8, body: &[u8]) -> Vec<u8> {
-    let len = u32::try_from(1 + body.len()).expect("bounded relay frame");
-    let mut out = Vec::with_capacity(4 + len as usize);
-    out.extend_from_slice(&len.to_be_bytes());
-    out.push(op);
-    out.extend_from_slice(body);
-    out
-}
 fn io(error: std::io::Error) -> NetError {
     match error.kind() {
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => NetError::Timeout,
@@ -252,54 +175,8 @@ fn handle(
         return write_frame(stream, STATUS_DENIED, &[], deadline);
     }
     let body = &body[32..];
-    match op {
-        OP_PUT => {
-            let result = RelayItem::decode(body).and_then(|item| store.put(item));
-            match result {
-                Ok(receipt) => {
-                    let mut out = Vec::with_capacity(41);
-                    out.extend_from_slice(&receipt.position.to_be_bytes());
-                    out.extend_from_slice(&receipt.digest);
-                    out.push(u8::from(receipt.duplicate));
-                    write_frame(stream, STATUS_OK, &out, deadline)
-                }
-                Err(error) => write_frame(stream, status(error), &[], deadline),
-            }
-        }
-        OP_PAGE => {
-            if body.len() != 10 {
-                return write_frame(stream, STATUS_BOUNDS, &[], deadline);
-            }
-            let after = u64::from_be_bytes(body[..8].try_into().expect("bounded"));
-            let limit = u16::from_be_bytes(body[8..10].try_into().expect("bounded")) as usize;
-            match store.page(after, limit) {
-                Ok(page) => {
-                    let mut out = Vec::new();
-                    out.extend_from_slice(&page.head.to_be_bytes());
-                    let mut more = page.next.is_some();
-                    let mut count = 0u16;
-                    let mut items = Vec::new();
-                    for record in &page.records {
-                        let encoded = record.item.encode().map_err(|_| NetError::Unavailable)?;
-                        if 11 + items.len() + 12 + encoded.len() > MAX_PAGE_BODY && count > 0 {
-                            more = true;
-                            break;
-                        }
-                        items.extend_from_slice(&record.position.to_be_bytes());
-                        items.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
-                        items.extend_from_slice(&encoded);
-                        count += 1;
-                    }
-                    out.push(u8::from(more));
-                    out.extend_from_slice(&count.to_be_bytes());
-                    out.extend_from_slice(&items);
-                    write_frame(stream, STATUS_OK, &out, deadline)
-                }
-                Err(error) => write_frame(stream, status(error), &[], deadline),
-            }
-        }
-        _ => write_frame(stream, STATUS_BOUNDS, &[], deadline),
-    }
+    let (code, out) = dispatch(store, op, body)?;
+    write_frame(stream, code, &out, deadline)
 }
 
 /// Serve one mailbox on an already bound listener until the optional accepted
@@ -365,19 +242,7 @@ impl SocketRelay {
         let deadline = deadline.min(Instant::now() + CONNECT_TIMEOUT + IO_TIMEOUT);
         let encoded = item.encode().map_err(|_| NetError::Bounds)?;
         let body = self.exchange(OP_PUT, &encoded, deadline)?;
-        if body.len() != 41 {
-            return Err(NetError::Malformed);
-        }
-        let position = u64::from_be_bytes(body[..8].try_into().expect("bounded"));
-        let digest: [u8; 32] = body[8..40].try_into().expect("bounded");
-        if position == 0 || digest != item.digest() || body[40] > 1 {
-            return Err(NetError::Malformed);
-        }
-        Ok(RelayReceipt {
-            position,
-            digest,
-            duplicate: body[40] != 0,
-        })
+        decode_receipt(&body, item)
     }
     /// Read one authenticated page. A large retained page is truncated to the
     /// wire budget with `next` set, so catch-up can always resume.
@@ -385,69 +250,9 @@ impl SocketRelay {
         self.page_until(after, limit, Instant::now() + CONNECT_TIMEOUT + IO_TIMEOUT)
     }
     fn page_until(&self, after: u64, limit: usize, deadline: Instant) -> NetResult<RelayPage> {
-        if limit == 0 || limit > MAX_RELAY_PAGE {
-            return Err(NetError::Bounds);
-        }
-        let mut request = Vec::with_capacity(10);
-        request.extend_from_slice(&after.to_be_bytes());
-        request.extend_from_slice(&(limit as u16).to_be_bytes());
+        let request = page_request(after, limit)?;
         let body = self.exchange(OP_PAGE, &request, deadline)?;
-        if body.len() < 11 {
-            return Err(NetError::Malformed);
-        }
-        let head = u64::from_be_bytes(body[..8].try_into().expect("bounded"));
-        let more = match body[8] {
-            0 => false,
-            1 => true,
-            _ => return Err(NetError::Malformed),
-        };
-        let count = u16::from_be_bytes(body[9..11].try_into().expect("bounded")) as usize;
-        if count > limit {
-            return Err(NetError::Malformed);
-        }
-        let mut records = Vec::with_capacity(count);
-        let mut cursor = 11usize;
-        for _ in 0..count {
-            let end = cursor.checked_add(8).ok_or(NetError::Malformed)?;
-            if end > body.len() {
-                return Err(NetError::Malformed);
-            }
-            let position = u64::from_be_bytes(body[cursor..end].try_into().expect("bounded"));
-            if position == 0 {
-                return Err(NetError::Malformed);
-            }
-            cursor = end;
-            let end = cursor.checked_add(4).ok_or(NetError::Malformed)?;
-            if end > body.len() {
-                return Err(NetError::Malformed);
-            }
-            let len = u32::from_be_bytes(body[cursor..end].try_into().expect("bounded")) as usize;
-            cursor = end;
-            let end = cursor.checked_add(len).ok_or(NetError::Malformed)?;
-            if end > body.len() {
-                return Err(NetError::Malformed);
-            }
-            let item = RelayItem::decode(&body[cursor..end]).map_err(|_| NetError::Malformed)?;
-            records.push(PositionedItem { position, item });
-            cursor = end;
-        }
-        if cursor != body.len()
-            || (more && records.is_empty())
-            || !records
-                .iter()
-                .zip(records.iter().skip(1))
-                .all(|(a, b)| a.position < b.position)
-        {
-            return Err(NetError::Malformed);
-        }
-        let next = more.then(|| records.last().expect("nonempty").position);
-        let page = RelayPage {
-            head,
-            next,
-            records,
-        };
-        validate_page(&page, after, limit)?;
-        Ok(page)
+        decode_page(&body, after, limit)
     }
     /// Fetch one exact retained relay position, or report its absence.
     pub fn fetch(&self, position: u64) -> NetResult<Option<PositionedItem>> {
@@ -460,40 +265,12 @@ impl SocketRelay {
     }
 }
 
-/// Validate the immutable, contiguous mailbox page contract before any effects.
-fn validate_page(page: &RelayPage, after: u64, limit: usize) -> NetResult<()> {
-    if limit == 0 || limit > MAX_RELAY_PAGE || page.records.len() > limit {
-        return Err(NetError::Malformed);
-    }
-    // A standalone fetch beyond the retained head is a valid absence. A scan
-    // separately refuses this as a rollback of its already retained cursor.
-    if page.head < after {
-        return if page.records.is_empty() && page.next.is_none() {
-            Ok(())
-        } else {
-            Err(NetError::Malformed)
-        };
-    }
-    let mut previous = after;
-    for record in &page.records {
-        if Some(record.position) != previous.checked_add(1) || record.position > page.head {
-            return Err(NetError::Malformed);
-        }
-        previous = record.position;
-    }
-    if (previous < page.head && (page.records.is_empty() || page.next != Some(previous)))
-        || (previous == page.head && page.next.is_some())
-    {
-        return Err(NetError::Malformed);
-    }
-    Ok(())
-}
-
-/// A completed catch-up pass through the first observed mailbox head. Items
-/// appended during the pass wait for the next explicit scan.
+/// A bounded catch-up pass toward the first observed mailbox head. Items
+/// appended during the pass wait for the next explicit scan. A page-limited
+/// pass may return cursor < head and requires another scheduled invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanReport {
-    /// First observed head, fully staged by this completed pass.
+    /// First observed head; cursor < head means the pass deliberately stopped early.
     pub head: u64,
     /// Durable cursor: the last position published in the items directory.
     pub cursor: u64,
@@ -531,18 +308,49 @@ impl core::fmt::Display for ScanFailure {
 }
 impl std::error::Error for ScanFailure {}
 
-fn read_cursor(directory: &Path, uid: u32) -> std::result::Result<u64, ScanFailure> {
+fn read_cursor(
+    directory: &Path,
+    uid: u32,
+    initial_cursor: u64,
+) -> std::result::Result<u64, ScanFailure> {
     let path = directory.join("cursor");
     if !custody::private_file_present(&path, uid, 8).map_err(|_| ScanFailure::Storage)? {
-        return Ok(0);
+        return Ok(initial_cursor);
     }
     let raw = custody::read_private_file(&path, uid, 8).map_err(|_| ScanFailure::Storage)?;
     let bytes = raw.try_into().map_err(|_| ScanFailure::Corrupt)?;
     let cursor = u64::from_be_bytes(bytes);
-    if cursor > MAX_RELAY_ITEMS as u64 {
+    if cursor < initial_cursor || cursor > MAX_RELAY_ITEMS as u64 {
         return Err(ScanFailure::Capacity);
     }
     Ok(cursor)
+}
+// A cursor scratch file is publication evidence for exactly the next already
+// published item. Neither a foreign value nor an orphan may be silently erased.
+fn validate_cursor_pending(
+    directory: &Path,
+    uid: u32,
+    cursor: u64,
+) -> std::result::Result<(), ScanFailure> {
+    let pending = directory.join("cursor.tmp");
+    if custody::private_file_present(&pending, uid, 8).map_err(|_| ScanFailure::Storage)? {
+        let next = cursor
+            .checked_add(1)
+            .filter(|n| *n <= MAX_RELAY_ITEMS as u64)
+            .ok_or(ScanFailure::Corrupt)?;
+        let raw = custody::read_private_file(&pending, uid, 8).map_err(|_| ScanFailure::Storage)?;
+        if !next.to_be_bytes().starts_with(&raw)
+            || !custody::private_file_present(
+                &item_path(&directory.join("items"), next),
+                uid,
+                MAX_ITEM_BYTES,
+            )
+            .map_err(|_| ScanFailure::Storage)?
+        {
+            return Err(ScanFailure::Corrupt);
+        }
+    }
+    Ok(())
 }
 fn publish_cursor(
     directory: &Path,
@@ -551,7 +359,13 @@ fn publish_cursor(
     uid: u32,
 ) -> std::result::Result<(), ScanFailure> {
     let tmp = directory.join("cursor.tmp");
-    // Only this guard owns the scratch file. Never unlink an arbitrary path.
+    // Reconcile only the exact next-position scratch prefix. A conflicting
+    // bounded private file is evidence, not permission to overwrite it.
+    validate_cursor_pending(
+        directory,
+        uid,
+        cursor.checked_sub(1).ok_or(ScanFailure::Corrupt)?,
+    )?;
     if custody::private_file_present(&tmp, uid, 8).map_err(|_| ScanFailure::Storage)? {
         fs::remove_file(&tmp).map_err(|_| ScanFailure::Storage)?;
     }
@@ -630,6 +444,7 @@ pub struct ScanDirectory {
     _lock: File,
     uid: u32,
     namespace: RelayNamespace,
+    initial_cursor: u64,
     cursor: u64,
     deadline: Instant,
     #[cfg(test)]
@@ -653,6 +468,31 @@ impl ScanDirectory {
         directory: &Path,
         namespace: RelayNamespace,
     ) -> std::result::Result<Self, ScanFailure> {
+        Self::open_from(directory, namespace, 0)
+    }
+
+    /// Open a scan bound to an explicit trusted admission checkpoint. The caller
+    /// must obtain this position with the joining room checkpoint, independently
+    /// of the relay. Earlier traffic is intentionally outside this scan; a
+    /// retained scan never accepts a changed starting position. Zero retains the
+    /// original wire/storage binding for existing full-history scans.
+    pub fn open_from(
+        directory: &Path,
+        namespace: RelayNamespace,
+        initial_cursor: u64,
+    ) -> std::result::Result<Self, ScanFailure> {
+        if initial_cursor > MAX_RELAY_ITEMS as u64 {
+            return Err(ScanFailure::Capacity);
+        }
+        let mut expected = if initial_cursor == 0 {
+            SCAN_MAGIC.to_vec()
+        } else {
+            b"VHSCAN\x02".to_vec()
+        };
+        expected.extend_from_slice(namespace.as_bytes());
+        if initial_cursor != 0 {
+            expected.extend_from_slice(&initial_cursor.to_be_bytes());
+        }
         let deadline = Instant::now() + SCAN_TIMEOUT;
         let path = custody::absolute(directory).map_err(|_| ScanFailure::Storage)?;
         let created = match fs::symlink_metadata(&path) {
@@ -663,7 +503,7 @@ impl ScanDirectory {
         let (dir, uid) =
             custody::ensure_private_directory(&path).map_err(|_| ScanFailure::Storage)?;
         let binding = path.join("namespace");
-        let bound = custody::private_file_present(&binding, uid, SCAN_MAGIC.len() + 32)
+        let bound = custody::private_file_present(&binding, uid, SCAN_MAGIC.len() + 40)
             .map_err(|_| ScanFailure::Storage)?;
         if !bound {
             // A lock-only interrupted initialization has no mailbox data. All
@@ -693,15 +533,12 @@ impl ScanDirectory {
         })?;
         // Recheck under the lock: another initializer may have finished while
         // this caller was acquiring custody.
-        if custody::private_file_present(&binding, uid, SCAN_MAGIC.len() + 32)
+        if custody::private_file_present(&binding, uid, SCAN_MAGIC.len() + 40)
             .map_err(|_| ScanFailure::Storage)?
         {
-            let raw = custody::read_private_file(&binding, uid, SCAN_MAGIC.len() + 32)
+            let raw = custody::read_private_file(&binding, uid, SCAN_MAGIC.len() + 40)
                 .map_err(|_| ScanFailure::Storage)?;
-            if raw.len() != SCAN_MAGIC.len() + 32 || !raw.starts_with(SCAN_MAGIC) {
-                return Err(ScanFailure::Corrupt);
-            }
-            if &raw[SCAN_MAGIC.len()..] != namespace.as_bytes() {
+            if raw != expected {
                 return Err(ScanFailure::Scope);
             }
         } else {
@@ -712,8 +549,7 @@ impl ScanDirectory {
             }
             let tmp = path.join("namespace.tmp");
             let mut file = custody::create_private_file(&tmp).map_err(|_| ScanFailure::Storage)?;
-            file.write_all(SCAN_MAGIC)
-                .and_then(|()| file.write_all(namespace.as_bytes()))
+            file.write_all(&expected)
                 .map_err(|_| ScanFailure::Storage)?;
             file.sync_all().map_err(|_| ScanFailure::Storage)?;
             fs::rename(&tmp, &binding).map_err(|_| ScanFailure::Storage)?;
@@ -730,7 +566,7 @@ impl ScanDirectory {
                 .and_then(|parent| parent.sync_all())
                 .map_err(|_| ScanFailure::Storage)?;
         }
-        let cursor = read_cursor(&path, uid)?;
+        let cursor = read_cursor(&path, uid, initial_cursor)?;
         let out = Self {
             path,
             directory: dir,
@@ -738,6 +574,7 @@ impl ScanDirectory {
             _lock: lock,
             uid,
             namespace,
+            initial_cursor,
             cursor,
             deadline,
             #[cfg(test)]
@@ -759,6 +596,7 @@ impl ScanDirectory {
     /// interruption evidence; only the next scan can reconcile it.
     pub fn positions(&self) -> std::result::Result<Vec<u64>, ScanFailure> {
         self.check_deadline()?;
+        validate_cursor_pending(&self.path, self.uid, self.cursor)?;
         let mut positions = Vec::new();
         let mut bytes = 0usize;
         let mut entries = 0usize;
@@ -786,7 +624,10 @@ impl ScanDirectory {
                 .and_then(|raw| u64::from_str_radix(raw, 16).ok())
                 .filter(|position| *position > 0 && name == format!("{position:016x}.vhrelay"))
                 .ok_or(ScanFailure::Corrupt)?;
-            if position > MAX_RELAY_ITEMS as u64 || position > self.cursor + 1 {
+            if position <= self.initial_cursor
+                || position > MAX_RELAY_ITEMS as u64
+                || position > self.cursor + 1
+            {
                 return Err(ScanFailure::Corrupt);
             }
             bytes = bytes
@@ -799,8 +640,8 @@ impl ScanDirectory {
         if positions
             .iter()
             .enumerate()
-            .any(|(index, position)| *position != index as u64 + 1)
-            || positions.len() < self.cursor as usize
+            .any(|(index, position)| *position != self.initial_cursor + index as u64 + 1)
+            || positions.len() < (self.cursor - self.initial_cursor) as usize
         {
             return Err(ScanFailure::Corrupt);
         }
@@ -812,7 +653,7 @@ impl ScanDirectory {
     /// canonical-envelope and namespace checks. No unbounded filesystem read.
     pub fn read(&self, position: u64) -> std::result::Result<RelayItem, ScanFailure> {
         self.check_deadline()?;
-        if position == 0 || position > self.cursor {
+        if position <= self.initial_cursor || position > self.cursor {
             return Err(ScanFailure::Corrupt);
         }
         let raw = custody::read_private_file(
@@ -897,14 +738,40 @@ impl ScanDirectory {
         source: &dyn PageSource,
         limit: usize,
     ) -> std::result::Result<ScanReport, ScanFailure> {
+        self.scan_pages(source, limit, MAX_RELAY_ITEMS + 1)
+    }
+
+    /// Stage at most one complete validated source page under the caller's
+    /// tighter absolute budget. The guard retains that deadline for consumption.
+    /// A successful report may have cursor < head; the next invocation resumes
+    /// exactly from its durable cursor. Time or publication failure preserves
+    /// all committed cursor/item evidence for exact-store reopen.
+    pub fn scan_page_until(
+        &mut self,
+        source: &dyn PageSource,
+        limit: usize,
+        deadline: Instant,
+    ) -> std::result::Result<ScanReport, ScanFailure> {
+        self.deadline = self.deadline.min(deadline);
+        self.scan_pages(source, limit, 1)
+    }
+
+    fn scan_pages(
+        &mut self,
+        source: &dyn PageSource,
+        limit: usize,
+        max_pages: usize,
+    ) -> std::result::Result<ScanReport, ScanFailure> {
         if limit == 0 || limit > MAX_RELAY_PAGE {
             return Err(ScanFailure::Net(NetError::Bounds));
         }
+        let mut pages = 0usize;
         let mut target = None;
         let mut scanned = 0usize;
         loop {
             self.check_deadline()?;
             let page = source.source_page(self.cursor, limit, self.deadline)?;
+            pages += 1;
             self.check_deadline()?;
             validate_page(&page, self.cursor, limit).map_err(ScanFailure::Net)?;
             if page.head < self.cursor {
@@ -930,6 +797,7 @@ impl ScanDirectory {
                 .take_while(|record| record.position <= head)
             {
                 scanned += usize::from(self.publish_item(record)?);
+                self.check_deadline()?;
                 publish_cursor(&self.path, &self.directory, record.position, self.uid)?;
                 self.cursor = record.position;
                 #[cfg(test)]
@@ -953,6 +821,8 @@ impl ScanDirectory {
                 {
                     return Err(ScanFailure::Corrupt);
                 }
+            }
+            if self.cursor == head || pages >= max_pages {
                 self.check_deadline()?;
                 return Ok(ScanReport {
                     head,

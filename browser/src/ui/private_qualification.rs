@@ -514,6 +514,7 @@ pub async fn qualify_private_session(phase: String, retained: String) -> Result<
                             ..context
                         },
                         archive_id,
+                        legacy: false,
                     })
                     .await
                     .is_err(),
@@ -525,6 +526,7 @@ pub async fn qualify_private_session(phase: String, retained: String) -> Result<
                 } = private::execute(Request::ArchiveImportBegin {
                     context,
                     archive_id,
+                    legacy: false,
                 })
                 .await?
                 else {
@@ -572,6 +574,7 @@ pub async fn qualify_private_session(phase: String, retained: String) -> Result<
                 let Response::ArchiveBegin { .. } = private::execute(Request::ArchiveImportBegin {
                     context,
                     archive_id,
+                    legacy: false,
                 })
                 .await?
                 else {
@@ -642,6 +645,7 @@ pub async fn qualify_private_session(phase: String, retained: String) -> Result<
                 } = private::execute(Request::ArchiveOpen {
                     context,
                     archive_id,
+                    legacy: false,
                     final_page,
                 })
                 .await?
@@ -710,6 +714,7 @@ pub async fn qualify_private_session(phase: String, retained: String) -> Result<
                     private::execute(Request::ArchiveOpen {
                         context: foreign,
                         archive_id,
+                        legacy: false,
                         final_page: pages.last().expect("bounded pages").clone(),
                     })
                     .await

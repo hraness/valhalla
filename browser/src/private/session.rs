@@ -1,4 +1,9 @@
 //! One account plus one selected private room, owned only by the existing worker.
+#[path = "delivery.rs"]
+mod delivery;
+pub(super) fn abort_delivery() {
+    delivery::abort();
+}
 use crate::private_wire::types::*;
 use vhalla_browser_storage::{
     browser::{
@@ -66,6 +71,7 @@ enum Archive {
     },
     Source {
         context: Context,
+        legacy: bool,
         reader: Box<ArchiveSourceReader>,
         pages: u64,
     },
@@ -96,6 +102,7 @@ pub struct Session {
     // Kernel, drafts and archive handles drop before account custody. No public
     // accessor returns any of these fields or an alternate signing handle.
     kernel: Option<Kernel<IndexedPrivateStore>>,
+    delivery: Option<delivery::Delivery>,
     creation: Option<Creation>,
     message: Option<PendingMessage>,
     archive: Option<Archive>,
@@ -148,6 +155,7 @@ impl Session {
         }
         Ok(Self {
             kernel: None,
+            delivery: None,
             creation: None,
             message: None,
             archive: None,
@@ -170,6 +178,9 @@ impl Session {
         Ok(Key::from_bytes(self.identity.public_key())?)
     }
     fn kernel(&mut self) -> Result<&mut Kernel<IndexedPrivateStore>> {
+        if delivery::canceled() {
+            return Err(Failure::State);
+        }
         let kernel = self.kernel.as_mut().ok_or(Failure::State)?;
         if kernel.needs_reopen() {
             return Err(Failure::State);
@@ -348,6 +359,26 @@ impl Session {
                 self.membership().await
             }
             Request::Membership => self.membership().await,
+            Request::DeliveryConnect { profile, create } => {
+                if self.delivery.is_some() {
+                    return Err(Failure::State);
+                }
+                let context = self.kernel()?.membership().await?.status().context;
+                let delivery = delivery::Delivery::connect(context, &profile, create).await?;
+                let report = delivery.report(context, false);
+                self.delivery = Some(delivery);
+                Ok(Response::Delivery(report))
+            }
+            Request::DeliverySync => {
+                // Sync is a new disclosure boundary even when its page is
+                // empty or the roster stays unchanged. Reject any old preview
+                // at worker custody, independently of the panel clearing it.
+                self.message = None;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let report = delivery.sync(self).await?;
+                self.delivery = Some(delivery);
+                Ok(Response::Delivery(report))
+            }
             Request::PrepareMessage(body) => {
                 self.kernel()?.membership().await?;
                 let draft = self.kernel()?.prepare_message(&body)?;
@@ -685,6 +716,7 @@ impl Session {
             Request::ArchiveImportBegin {
                 context,
                 archive_id,
+                legacy,
             } => {
                 self.archive_selectable()?;
                 if context.account != self.account()? {
@@ -694,6 +726,7 @@ impl Session {
                 let reader = ArchiveSourceReader::new(&key, context, archive_id)?;
                 self.archive = Some(Archive::Source {
                     context,
+                    legacy,
                     reader: Box::new(reader),
                     pages: 0,
                 });
@@ -711,6 +744,7 @@ impl Session {
                         context,
                         reader,
                         pages,
+                        ..
                     } => {
                         let context = *context;
                         if !reader.push(&page)? {
@@ -723,30 +757,28 @@ impl Session {
                                 bytes: 0,
                             });
                         }
-                        let Some(Archive::Source { reader, .. }) = self.archive.take() else {
+                        let Some(Archive::Source { reader, legacy, .. }) = self.archive.take()
+                        else {
                             return Err(Failure::State);
                         };
                         let source = reader.finish()?;
                         let key = self.identity.private_storage_key(context)?;
-                        // The destination context decides create-vs-resume: a
-                        // missing prefix is created; an existing prefix must
-                        // hold this exact source's retained receiving image.
-                        let mut store =
-                            match IndexedPrivateStore::open(Namespace::new(ARCHIVE), context).await
-                            {
-                                Ok(store) => store,
-                                Err(_) => {
-                                    IndexedPrivateStore::create_new(
-                                        Namespace::new(ARCHIVE),
-                                        context,
-                                        Limits {
-                                            max_records: 100_000,
-                                            max_record_bytes: 256 * 1024 * 1024,
-                                        },
-                                    )
-                                    .await?
-                                }
-                            };
+                        // No destination or catalog access precedes source
+                        // authentication. Legacy routing is an explicit choice,
+                        // never a fallback after another destination refuses.
+                        let mut store = if legacy {
+                            IndexedPrivateStore::open(
+                                vhalla_browser_storage::private_archives::LEGACY,
+                                context,
+                            )
+                            .await?
+                        } else {
+                            let reservation =
+                                vhalla_browser_storage::browser::private_archives::reserve(&source)
+                                    .await
+                                    .map_err(|_| Failure::Storage)?;
+                            IndexedPrivateStore::open_or_create_archive(reservation).await?
+                        };
                         let has_image = store
                             .accounting(context)
                             .await
@@ -758,6 +790,9 @@ impl Session {
                         let import = if has_image {
                             ArchiveImport::resume(store, &key, source).await?
                         } else {
+                            if legacy {
+                                return Err(Failure::State);
+                            }
                             ArchiveImport::begin(store, &key, source).await?
                         };
                         let progress = import.progress()?;
@@ -797,6 +832,7 @@ impl Session {
             Request::ArchiveOpen {
                 context,
                 archive_id,
+                legacy,
                 final_page,
             } => {
                 self.archive_selectable()?;
@@ -805,7 +841,12 @@ impl Session {
                 }
                 let key = self.identity.private_storage_key(context)?;
                 let seal = ArchiveSeal::from_final_page(&key, context, archive_id, &final_page)?;
-                let store = IndexedPrivateStore::open(Namespace::new(ARCHIVE), context).await?;
+                let namespace = if legacy {
+                    vhalla_browser_storage::private_archives::LEGACY
+                } else {
+                    vhalla_browser_storage::private_archives::sealed_namespace(&seal)
+                };
+                let store = IndexedPrivateStore::open(namespace, context).await?;
                 let view = ArchiveView::open(store, &key, seal).await?;
                 self.archive = Some(Archive::View(Box::new(view)));
                 self.archive_inspect().await

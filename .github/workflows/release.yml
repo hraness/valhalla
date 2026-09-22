@@ -39,7 +39,13 @@ jobs:
       - name: Build vhalla
         # Preserve the maintained non-game commands. Legacy Platonik replay is
         # opt-in; the complete all-features verification gate still runs above.
-        run: cargo build --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public --target "${{ matrix.target }}"
+        run: cargo build --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "${{ matrix.target }}"
+      - name: macOS host custody and lifecycle regressions
+        if: runner.os == 'macOS'
+        # Tests inject launchctl replies and use temporary custody only. They
+        # never install or activate a LaunchAgent or require a GUI login.
+        run: |
+          cargo test --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "${{ matrix.target }}" --bin vhalla private_host::
       - name: Smoke check
         shell: bash
         env:
@@ -53,6 +59,9 @@ jobs:
           [[ "$help" == *"vhalla social "* ]]
           [[ "$help" == *"vhalla rooms "* ]]
           [[ "$help" == *"vhalla public "* ]]
+          [[ "$help" == *"vhalla private "* ]]
+          [[ "$help" == *"vhalla private-host "* ]]
+          [[ "$help" == *"vhalla private-gateway "* ]]
           [[ "$help" != *"vhalla game replay "* ]]
           if "$cli" game --help > game-disabled.txt 2>&1; then
             cat game-disabled.txt
@@ -115,13 +124,45 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  browser:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: vhalla-browser
+          path: valhalla-browser-${{ github.ref_name }}
+      - name: Package the exact production artifact exercised by validation
+        shell: bash
+        env:
+          QUALIFIED_MANIFEST_SHA256: ${{ needs.validate.outputs.browser_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          out="valhalla-browser-${GITHUB_REF_NAME}"
+          python3 .github/scripts/verify_browser_artifact.py "$out" --manifest-sha256 "$QUALIFIED_MANIFEST_SHA256"
+          tar -czf "${out}.tar.gz" "$out"
+          shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-browser
+          path: |
+            valhalla-browser-*.tar.gz
+            valhalla-browser-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
-    needs: [validate, cli, menubar]
+    needs: [validate, cli, menubar, browser]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
       checks: read
+      security-events: read
     steps:
       - uses: actions/checkout@v4
         with:

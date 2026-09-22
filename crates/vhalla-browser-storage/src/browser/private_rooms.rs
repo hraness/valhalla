@@ -36,6 +36,43 @@ pub struct IndexedPrivateStore {
     limits: Limits,
 }
 impl IndexedPrivateStore {
+    /// Open an exact reserved archive destination or initialize a wholly absent
+    /// prefix atomically. Errors are never interpreted as absence; orphan or
+    /// conflicting evidence is preserved. Call only after archive reservation.
+    pub async fn open_or_create_archive(
+        reservation: super::private_archives::ReservedArchive,
+    ) -> Result<Self, StoreError> {
+        let namespace = reservation.namespace;
+        let context = reservation.context;
+        let limits = Limits {
+            max_records: crate::private_archives::SNAPSHOT_RECORDS,
+            max_record_bytes: crate::private_archives::SNAPSHOT_BYTES,
+        };
+        let frame = model::format_frame(context, limits).map_err(error)?;
+        let mut out = Self {
+            inner: IndexedStorage::open(namespace).await.map_err(error)?,
+            context,
+            limits,
+        };
+        out.run(true, move |tx| {
+            tx.read(
+                &format!("{}format", model::prefix(context)).into(),
+                move |tx, value| match bounded(value, model::FORMAT_BYTES)? {
+                    Some(_) => read_meta(tx, context, Some(limits), |tx, _, _| {
+                        *tx.result.borrow_mut() = Some(Ok(()));
+                        Ok(())
+                    }),
+                    None => pristine(tx, context, false, move |tx| {
+                        tx.add(&format!("{}format", model::prefix(context)), &frame)?;
+                        *tx.result.borrow_mut() = Some(Ok(()));
+                        Ok(())
+                    }),
+                },
+            )
+        })
+        .await?;
+        Ok(out)
+    }
     /// Create only a wholly absent full-context prefix. This is local custody
     /// setup, never authorization to start a new MLS device after lost history.
     pub async fn create_new(
@@ -62,7 +99,9 @@ impl IndexedPrivateStore {
     /// Open existing custody only. A missing FORMAT/image half, malformed data,
     /// or orphan key refuses; open never repairs or initializes the scope.
     pub async fn open(namespace: Namespace, context: Context) -> Result<Self, StoreError> {
-        let mut inner = IndexedStorage::open(namespace).await.map_err(error)?;
+        let mut inner = IndexedStorage::open_existing(namespace)
+            .await
+            .map_err(error)?;
         let limits = run(&mut inner, false, move |tx| {
             read_meta(tx, context, None, |tx, limits, _| {
                 *tx.result.borrow_mut() = Some(Ok(limits));

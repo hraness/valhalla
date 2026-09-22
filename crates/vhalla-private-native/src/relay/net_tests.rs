@@ -52,6 +52,70 @@ fn directory(name: &str) -> PathBuf {
 }
 
 #[test]
+fn trusted_admission_cursor_excludes_only_bound_prejoin_history_and_resumes() {
+    let path = directory("admission-checkpoint");
+    let source = store(6);
+    {
+        let mut scan = ScanDirectory::open_from(&path, namespace(), 4).unwrap();
+        assert!(scan.positions().unwrap().is_empty());
+        assert_eq!(scan.read(4), Err(ScanFailure::Corrupt));
+        let report = scan
+            .scan_page_until(&source, 1, Instant::now() + IO_TIMEOUT)
+            .unwrap();
+        assert_eq!((report.head, report.cursor, report.scanned), (6, 5, 1));
+        assert_eq!(scan.positions().unwrap(), vec![5]);
+        assert_eq!(scan.read(5).unwrap(), item(5));
+    }
+    let binding = fs::read(path.join("namespace")).unwrap();
+    assert!(ScanDirectory::open(&path, namespace()).is_err());
+    assert!(ScanDirectory::open_from(&path, namespace(), 5).is_err());
+    assert_eq!(fs::read(path.join("namespace")).unwrap(), binding);
+    {
+        let mut scan = ScanDirectory::open_from(&path, namespace(), 4).unwrap();
+        let report = scan
+            .scan_page_until(&source, 8, Instant::now() + IO_TIMEOUT)
+            .unwrap();
+        assert_eq!((report.head, report.cursor, report.scanned), (6, 6, 1));
+        assert_eq!(scan.positions().unwrap(), vec![5, 6]);
+    }
+    // A removed accepted suffix is corruption, not permission to restart at
+    // the trusted floor and refetch with a fresh interpretation.
+    fs::remove_file(path.join("items/0000000000000006.vhrelay")).unwrap();
+    assert!(matches!(
+        ScanDirectory::open_from(&path, namespace(), 4),
+        Err(ScanFailure::Corrupt)
+    ));
+}
+
+#[test]
+fn admission_cursor_refuses_relay_rollback_and_recovers_exact_pending_suffix() {
+    let path = directory("admission-interruption");
+    {
+        let mut scan = ScanDirectory::open_from(&path, namespace(), 4).unwrap();
+        assert!(scan
+            .scan_page_until(&store(3), 8, Instant::now() + IO_TIMEOUT)
+            .is_err());
+        scan.fault = Some(PublicationFault::ItemPublished);
+        assert_eq!(
+            scan.scan_page_until(&store(5), 8, Instant::now() + IO_TIMEOUT),
+            Err(ScanFailure::Storage)
+        );
+    }
+    let retained = fs::read(path.join("items/0000000000000005.vhrelay")).unwrap();
+    let mut scan = ScanDirectory::open_from(&path, namespace(), 4).unwrap();
+    assert!(scan.positions().unwrap().is_empty());
+    let report = scan
+        .scan_page_until(&store(5), 8, Instant::now() + IO_TIMEOUT)
+        .unwrap();
+    assert_eq!((report.cursor, report.scanned), (5, 0));
+    assert_eq!(scan.positions().unwrap(), vec![5]);
+    assert_eq!(
+        fs::read(path.join("items/0000000000000005.vhrelay")).unwrap(),
+        retained
+    );
+}
+
+#[test]
 fn page_contract_rejects_gaps_regression_oversized_and_false_completion() {
     for (page, after, limit) in [
         (page(2, &[2], None), 0, 2),
@@ -367,4 +431,137 @@ fn bound_directory_never_recreates_a_removed_live_lock() {
     assert!(!dir.join("lock").exists());
     drop(guard);
     fs::remove_dir_all(dir).unwrap();
+}
+
+struct CountedPage {
+    store: Store,
+    calls: Cell<usize>,
+    expected_deadline: Instant,
+}
+impl PageSource for CountedPage {
+    fn source_page(
+        &self,
+        after: u64,
+        limit: usize,
+        deadline: Instant,
+    ) -> std::result::Result<RelayPage, ScanFailure> {
+        self.calls.set(self.calls.get() + 1);
+        assert_eq!(deadline, self.expected_deadline);
+        self.store
+            .page(after, limit)
+            .map_err(|_| ScanFailure::Source)
+    }
+}
+#[test]
+fn single_page_tick_resumes_once_and_preserves_interrupted_publication() {
+    let dir = directory("one-page-tick");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let source = CountedPage {
+        store: store(5),
+        calls: Cell::new(0),
+        expected_deadline: deadline,
+    };
+    let mut scan = ScanDirectory::open(&dir, namespace()).unwrap();
+    let first = scan.scan_page_until(&source, 2, deadline).unwrap();
+    assert_eq!((first.head, first.cursor, first.scanned), (5, 2, 2));
+    assert_eq!(source.calls.get(), 1);
+    drop(scan);
+    let mut scan = ScanDirectory::open(&dir, namespace()).unwrap();
+    scan.fault = Some(PublicationFault::ItemPublished);
+    assert_eq!(
+        scan.scan_page_until(&source, 2, deadline),
+        Err(ScanFailure::Storage)
+    );
+    assert_eq!(source.calls.get(), 2);
+    drop(scan);
+    let mut scan = ScanDirectory::open(&dir, namespace()).unwrap();
+    assert_eq!(scan.cursor, 2);
+    assert!(item_path(&dir.join("items"), 3).exists());
+    let resumed = scan.scan_page_until(&source, 2, deadline).unwrap();
+    assert_eq!((resumed.head, resumed.cursor, resumed.scanned), (5, 4, 1));
+    assert_eq!(source.calls.get(), 3);
+    let last = scan.scan_page_until(&source, 2, deadline).unwrap();
+    assert_eq!((last.head, last.cursor, last.scanned), (5, 5, 1));
+    assert_eq!(source.calls.get(), 4);
+    drop(scan);
+    fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn single_page_tick_rejects_expired_budget_and_whole_hostile_page_before_effects() {
+    let dir = directory("one-page-expired");
+    let deadline = Instant::now();
+    let source = CountedPage {
+        store: store(2),
+        calls: Cell::new(0),
+        expected_deadline: deadline,
+    };
+    let mut scan = ScanDirectory::open(&dir, namespace()).unwrap();
+    assert_eq!(
+        scan.scan_page_until(&source, 2, deadline),
+        Err(ScanFailure::Timeout)
+    );
+    assert_eq!(source.calls.get(), 0);
+    drop(scan);
+    let mut scan = ScanDirectory::open(&dir, namespace()).unwrap();
+    let source = Hostile {
+        calls: Cell::new(0),
+        wrong_namespace: true,
+    };
+    assert_eq!(
+        scan.scan_page_until(&source, 2, Instant::now() + Duration::from_secs(5)),
+        Err(ScanFailure::Scope)
+    );
+    assert!(!dir.join("cursor").exists());
+    assert!(scan.positions().unwrap().is_empty());
+    drop(scan);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn admission_cursor_preserves_foreign_or_orphan_pending_cursor_evidence() {
+    for foreign in [false, true] {
+        let path = directory("admission-pending-cursor-refuse");
+        {
+            let mut scan = ScanDirectory::open_from(&path, namespace(), 4).unwrap();
+            if foreign {
+                scan.fault = Some(PublicationFault::ItemPublished);
+                assert!(scan.scan(&store(5), 8).is_err());
+            }
+        }
+        let pending = if foreign { 6u64 } else { 5u64 }.to_be_bytes();
+        let mut file = custody::create_private_file(&path.join("cursor.tmp")).unwrap();
+        file.write_all(&pending).unwrap();
+        file.sync_all().unwrap();
+        assert!(matches!(
+            ScanDirectory::open_from(&path, namespace(), 4),
+            Err(ScanFailure::Corrupt)
+        ));
+        assert_eq!(fs::read(path.join("cursor.tmp")).unwrap(), pending);
+        assert!(!path.join("cursor").exists());
+        fs::remove_dir_all(path).unwrap();
+    }
+}
+#[test]
+fn admission_cursor_reconciles_every_exact_pending_cursor_prefix() {
+    for length in 0..=8 {
+        let path = directory("admission-pending-cursor-exact");
+        {
+            let mut scan = ScanDirectory::open_from(&path, namespace(), 4).unwrap();
+            scan.fault = Some(PublicationFault::ItemPublished);
+            assert!(scan.scan(&store(5), 8).is_err());
+        }
+        let bytes = 5u64.to_be_bytes();
+        let mut file = custody::create_private_file(&path.join("cursor.tmp")).unwrap();
+        file.write_all(&bytes[..length]).unwrap();
+        file.sync_all().unwrap();
+        let mut scan = ScanDirectory::open_from(&path, namespace(), 4).unwrap();
+        let report = scan.scan(&store(5), 8).unwrap();
+        assert_eq!(report.cursor, 5);
+        assert_eq!(report.scanned, 0);
+        assert_eq!(scan.positions().unwrap(), vec![5]);
+        assert_eq!(fs::read(path.join("cursor")).unwrap(), bytes);
+        assert!(!path.join("cursor.tmp").exists());
+        drop(scan);
+        fs::remove_dir_all(path).unwrap();
+    }
 }

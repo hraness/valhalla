@@ -107,7 +107,7 @@ impl Fixture {
         );
         assert_eq!(
             String::from_utf8_lossy(&result.stdout),
-            "private local operation completed; no network delivery performed\n"
+            "private operation completed; consult the retained result for delivery status\n"
         );
     }
     fn json(&self, name: &str) -> Value {
@@ -194,6 +194,113 @@ impl Drop for Fixture {
 }
 fn op(n: u64) -> String {
     format!("{n:032x}")
+}
+
+#[test]
+fn private_cli_agent_grants_bind_current_custody_and_never_renew_claims() {
+    let f = Fixture::new();
+    f.join();
+    let before = f.snapshot("owner-room");
+    let disclosure = serde_json::json!({"host":"synthetic CLI", "provider":"local qualification",
+        "model":"synthetic", "processing_policy":"no external processing", "allow_cooperating_host":true});
+    f.write("disclosure", &serde_json::to_vec(&disclosure).unwrap());
+    let options = vec![
+        ("mode", "read-only".into()),
+        ("disclosure", f.path("disclosure")),
+        ("receipt", f.path("grant-claim")),
+        ("out", f.path("grant")),
+    ];
+    f.ok("agent-grant", "owner-key", Some("owner-room"), &options);
+    let grant = f.json("grant");
+    assert_eq!(grant["permissions"]["queue"], false);
+    assert_eq!(grant["budget"]["messages"], 0);
+    assert_eq!(grant["inbox"]["follow"], false);
+    assert_eq!(grant["context"]["account"], f.owner);
+    assert!(
+        !f.root.join("grant-claim").exists(),
+        "preparation is not consumption"
+    );
+    assert_eq!(f.snapshot("owner-room"), before);
+    assert!(!f
+        .run(
+            "agent-grant",
+            "owner-key",
+            Some("owner-room"),
+            &options,
+            None
+        )
+        .status
+        .success());
+    assert_eq!(
+        f.json("grant"),
+        grant,
+        "existing authorization is never overwritten"
+    );
+
+    f.write("grant-claim", b"retained consumed authority");
+    let mut refused = options.clone();
+    refused[3].1 = f.path("refused-grant");
+    assert!(!f
+        .run(
+            "agent-grant",
+            "owner-key",
+            Some("owner-room"),
+            &refused,
+            None
+        )
+        .status
+        .success());
+    assert!(!f.root.join("refused-grant").exists());
+    assert_eq!(
+        fs::read(f.root.join("grant-claim")).unwrap(),
+        b"retained consumed authority"
+    );
+    assert_eq!(f.snapshot("owner-room"), before);
+
+    let mut follow = options;
+    follow[0].1 = "read-write".into();
+    follow[2].1 = f.path("follow-claim");
+    follow[3].1 = f.path("follow-grant");
+    follow.extend([
+        ("follow-inbox", "true".into()),
+        ("max-read-records", "32".into()),
+    ]);
+    f.ok("agent-grant", "owner-key", Some("owner-room"), &follow);
+    let grant = f.json("follow-grant");
+    assert_eq!(grant["inbox"]["follow"], true);
+    assert_eq!(grant["inbox"]["through"].as_u64().unwrap(), 32);
+    assert_eq!(grant["permissions"]["queue"], true);
+    assert_eq!(f.snapshot("owner-room"), before);
+}
+
+#[test]
+fn private_cli_remote_plaintext_and_incomplete_tls_refuse_before_credentials() {
+    let f = Fixture::new();
+    let namespace = "13".repeat(32);
+    for (addr, extra) in [
+        ("192.0.2.1:443", None),
+        ("127.0.0.1:443", Some(("tls-ca", f.path("missing-ca")))),
+        ("127.0.0.1:443", Some(("tls-name", "relay.invalid".into()))),
+    ] {
+        let mut flags = vec![
+            ("namespace", namespace.clone()),
+            ("addr", addr.into()),
+            ("token", f.path("missing-token")),
+            ("out", f.path("unused-result")),
+        ];
+        if let Some(extra) = extra {
+            flags.push(extra);
+        }
+        let result = f.run("relay-scan", "unused-cursor", None, &flags, None);
+        assert!(!result.status.success());
+        let error = String::from_utf8(result.stderr).unwrap();
+        assert!(
+            error.contains("TLS") || error.contains("--tls-ca"),
+            "{error}"
+        );
+        assert!(!f.root.join("unused-cursor").exists());
+        assert!(!f.root.join("unused-result").exists());
+    }
 }
 fn send_options(
     f: &Fixture,
