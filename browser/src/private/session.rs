@@ -571,6 +571,12 @@ impl Session {
                     control: Zeroizing::new(control),
                 })
             }
+            #[cfg(feature = "local-qualification")]
+            Request::ApplyControlAt { envelope, at } => {
+                self.message = None;
+                self.kernel()?.apply_control(&envelope, at).await?;
+                self.membership().await
+            }
             Request::Outbox { after, limit } => {
                 let kernel = self.kernel()?;
                 let context = kernel.status().context;

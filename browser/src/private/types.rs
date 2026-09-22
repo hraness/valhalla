@@ -155,6 +155,17 @@ pub enum Request {
         /// Retained control-floor sequence to diverge.
         sequence: u64,
     },
+    /// Local qualification only: apply a real control envelope under an
+    /// explicit caller clock. Validity checks already treat the clock as an
+    /// untrusted caller input; this supplies the past-expiry timestamp a real
+    /// wall clock would eventually report.
+    #[cfg(feature = "local-qualification")]
+    ApplyControlAt {
+        /// Encrypted control envelope, as produced by `download .vhcontrol`.
+        envelope: Bytes,
+        /// Caller-clock second supplied to the ordinary validity check.
+        at: u64,
+    },
     /// Read a bounded local outbox page; confidential offers return metadata only.
     Outbox {
         /// Exclusive local outbox sequence cursor, with zero before the first entry.
@@ -557,6 +568,8 @@ impl Request {
             Self::ArchiveClose => ReplyKind::ArchiveClosed,
             #[cfg(feature = "local-qualification")]
             Self::Divergent { .. } => ReplyKind::Divergent,
+            #[cfg(feature = "local-qualification")]
+            Self::ApplyControlAt { .. } => ReplyKind::Membership,
         }
     }
 }

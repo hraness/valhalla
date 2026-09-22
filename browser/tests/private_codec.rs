@@ -646,3 +646,34 @@ fn divergent_qualification_frames_round_trip_and_verify_the_signed_control() {
     .encode()
     .is_err());
 }
+
+// The expired-envelope qualification request is a bounded blob plus a caller
+// clock; it replies with the ordinary membership view.
+#[cfg(feature = "local-qualification")]
+#[test]
+fn apply_control_at_frames_round_trip_and_answer_membership() {
+    let raw = Request::ApplyControlAt {
+        envelope: bytes(400),
+        at: u64::MAX,
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(Request::decode(&raw).unwrap().encode().unwrap(), raw);
+    assert!(matches!(
+        Request::decode(&raw).unwrap().reply_kind(),
+        ReplyKind::Membership
+    ));
+    for length in 0..raw.len() {
+        assert!(Request::decode(&raw[..length]).is_err());
+    }
+    let mut changed = raw.to_vec();
+    changed.push(0);
+    assert!(Request::decode(&changed).is_err());
+    assert!(Response::decode(&raw).is_err());
+    assert!(Request::ApplyControlAt {
+        envelope: bytes(MAX_ARTIFACT + 1),
+        at: 1,
+    }
+    .encode()
+    .is_err());
+}

@@ -415,6 +415,19 @@ async function task(abortSignal) {
   })()`);
   await leave(member);
   facts.push('a divergent owner-signed control at a retained floor durably quarantines the member: the worker ends terminally, reopen shows quarantine plus the retained fork proof, sends stay refused, and retained history stays readable');
+  // Expired-envelope edge: the fresh device's own retained next-floor control
+  // (the member removal it never applied) under a caller clock past its
+  // enrollment validity hits the kernel's ordinary time refusal — the worker
+  // ends, nothing is published or quarantined, and the identical envelope
+  // applies under the real clock after a document teardown.
+  await reopen(fresh);
+  const expiredEnvelope=(await readFile(removal.path)).toString('hex');
+  await invoke(fresh,`async function(hex,path){const m=await import(path);const r=JSON.parse(await m.qualify_private_session('expire-apply',hex));qassert(r.expired_refusal===true,'expired apply not refused');await qwait(()=>qid('identity-state').textContent==='Reload required','expired apply did not end the worker');return true;}`,[expiredEnvelope,'/'+modules[0]]);
+  await reload(fresh);
+  await setFile(fresh,'private-control-file',removal.path);
+  await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'fresh roster did not shrink');qassert(!qid('private-prepare-message').disabled,'expired refusal removed the member');await qclick('private-fork-evidence');await qidle();qassert(qid('private-status').textContent.includes('No locally retained fork proof'),'expired refusal fabricated fork evidence');return true;})()");
+  await leave(fresh);
+  facts.push('a control applied under a caller clock past enrollment validity is refused without mutation or quarantine: the worker ends, reopen shows no fork evidence, and the identical envelope applies under the real clock');
   if(unexpectedNetwork||networkWrites)throw Error('unexpected route, network write or unbounded download event');
   return {passed:true,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,screenshots,files,networkWrites,contexts:3,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
 }

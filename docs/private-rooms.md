@@ -152,9 +152,13 @@ a proven conflict still ends its worker after the durable quarantine write, and
 the reopened panel shows quarantine status plus the retained evidence — the DOM
 journey exercises this by observing a divergent control that a
 local-qualification-only phase has the owner device re-sign at a retained floor.
-An observed proof is never adopted as state, never grants membership or owner
-succession, and proves nothing about floors the device has not retained —
-comparison is against local history only, not a global freshness claim.
+The same journey covers the expired-envelope edge: a real next-floor control
+applied under a caller clock past the local enrollment validity is refused by
+the ordinary time check — nothing is published or quarantined — and the
+identical envelope applies under a valid clock after reopen. An observed proof
+is never adopted as state, never grants membership or owner succession, and
+proves nothing about floors the device has not retained — comparison is
+against local history only, not a global freshness claim.
 
 ## Confidential recipient bootstrap
 

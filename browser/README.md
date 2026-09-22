@@ -266,5 +266,9 @@ observes the resulting `.vhproof` through the real observation path, the
 kernel quarantines durably and the worker ends terminally, and a fresh
 document in the same browser context reopens the exact locator to show
 quarantine status plus the retained accepted/conflicting proof while sends
-stay refused and retained history stays readable. Owner succession and safe
-live-device transfer remain separate work.
+stay refused and retained history stays readable. A second
+qualification-only phase applies a real next-floor control under a caller
+clock past the enrollment validity: the ordinary time refusal ends the
+worker without publishing or quarantining anything, and after another
+document teardown the identical envelope applies under the real clock.
+Owner succession and safe live-device transfer remain separate work.

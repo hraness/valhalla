@@ -41,6 +41,22 @@ fn ensure(condition: bool, message: &str) -> Result<(), String> {
 fn bytes(raw: &[u8]) -> Bytes {
     Zeroizing::new(raw.to_vec())
 }
+fn unhex(raw: &str) -> Result<Vec<u8>, String> {
+    ensure(
+        !raw.is_empty()
+            && raw.len().is_multiple_of(2)
+            && raw
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        "hex envelope",
+    )?;
+    let mut out = Vec::with_capacity(raw.len() / 2);
+    for pair in raw.as_bytes().as_chunks::<2>().0 {
+        let pair = std::str::from_utf8(pair).map_err(error)?;
+        out.push(u8::from_str_radix(pair, 16).map_err(error)?);
+    }
+    Ok(out)
+}
 fn op(n: u8) -> OperationId {
     OperationId::from_bytes([n; 16]).expect("fixed nonzero test operation")
 }
@@ -719,6 +735,24 @@ pub async fn qualify_private_session(phase: String, retained: String) -> Result<
                     "divergent proof scope",
                 )?;
                 Ok(json!({"control":hex(&control)}))
+            }
+            "expire-apply" => {
+                // Apply a real next-floor control under a caller clock past
+                // every enrollment validity used in this journey — the same
+                // refusal a wall clock produces once the interval lapses. The
+                // failed attempt publishes nothing; the worker ends like any
+                // kernel refusal and the same envelope applies after reopen.
+                let envelope = unhex(retained)?;
+                let now = (js_sys::Date::now() / 1000.0) as u64;
+                let at = now.checked_add(63_072_000).ok_or("clock overflow")?;
+                let outcome = private::execute(Request::ApplyControlAt {
+                    envelope: bytes(&envelope),
+                    at,
+                })
+                .await;
+                ensure(outcome.is_err(), "expired control applied")?;
+                ensure(app()?.borrow().failed, "expired apply kept custody")?;
+                Ok(json!({"expired_refusal":true}))
             }
             "leave" => {
                 private::leave_and_lock()?;

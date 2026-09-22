@@ -451,6 +451,8 @@ impl Request {
             Self::ForkEvidence => 32,
             #[cfg(feature = "local-qualification")]
             Self::Divergent { .. } => 33,
+            #[cfg(feature = "local-qualification")]
+            Self::ApplyControlAt { .. } => 34,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -517,6 +519,11 @@ impl Request {
             Self::ForkEvidence => (),
             #[cfg(feature = "local-qualification")]
             Self::Divergent { sequence } => w.number(*sequence)?,
+            #[cfg(feature = "local-qualification")]
+            Self::ApplyControlAt { envelope, at } => {
+                w.blob(envelope, MAX_ARTIFACT)?;
+                w.number(*at)?;
+            }
             Self::Outbox { after, limit } | Self::Inbox { after, limit } => {
                 w.number(*after)?;
                 w.limit(*limit)?;
@@ -641,6 +648,11 @@ impl Request {
             #[cfg(feature = "local-qualification")]
             33 => Self::Divergent {
                 sequence: r.number()?,
+            },
+            #[cfg(feature = "local-qualification")]
+            34 => Self::ApplyControlAt {
+                envelope: r.blob(MAX_ARTIFACT)?,
+                at: r.number()?,
             },
             _ => return Err(CodecError::InvalidFrame),
         };
