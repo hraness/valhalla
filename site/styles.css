@@ -169,7 +169,7 @@ main {
   gap:64px;
   align-items:center;
   padding:78px 32px 72px;
-  margin:8px -32px 0;
+  margin-top:8px;
   border-radius:20px;
 }
 
@@ -1005,7 +1005,6 @@ table a {
   }
   .introduction {
     gap:34px;
-    margin-inline:-18px;
     padding-inline:22px;
   }
   h1 {
@@ -1121,7 +1120,6 @@ table a {
   .introduction {
     grid-template-columns:1fr;
     padding:43px 18px 33px;
-    margin-inline:-18px;
     gap:37px;
     border-radius:12px;
   }
@@ -1400,6 +1398,43 @@ table a {
   line-height:1.85;
 }
 
+.hero-requires {
+  margin-top:21px;
+  font-size:13px;
+  line-height:1.8;
+  color:var(--muted);
+}
+
+.model-section {
+  padding:76px 0 34px;
+}
+
+.model-grid {
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:34px;
+  margin:44px 0 0;
+}
+
+.model-grid>div {
+  padding-top:25px;
+  border-top:1px solid var(--line);
+  min-width:0;
+}
+
+.model-grid dt {
+  font-size:19px;
+  font-weight:550;
+  letter-spacing:-.02em;
+}
+
+.model-grid dd {
+  margin:11px 0 0;
+  font-size:13px;
+  line-height:1.8;
+  color:var(--muted);
+}
+
 .start-section {
   padding:96px 0;
 }
@@ -1504,6 +1539,12 @@ table a {
   padding-bottom:21px;
 }
 
+@media(max-width:900px) {
+  .model-grid {
+    grid-template-columns:1fr 1fr;
+  }
+}
+
 @media(max-width:850px) {
   .start-flow {
     gap:27px;
@@ -1513,6 +1554,9 @@ table a {
   }
   .start-section,.compare-section,.agents-section {
     padding:72px 0;
+  }
+  .model-section {
+    padding:57px 0 24px;
   }
 }
 
@@ -1531,6 +1575,11 @@ table a {
   .agents-section {
     grid-template-columns:1fr;
     gap:29px;
+  }
+  .model-grid {
+    grid-template-columns:1fr;
+    gap:24px;
+    margin-top:29px;
   }
   .start-section,.compare-section,.agents-section {
     padding:57px 0;
