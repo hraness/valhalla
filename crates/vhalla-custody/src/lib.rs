@@ -156,13 +156,24 @@ pub fn check_regular_file(meta: &Metadata, uid: u32, max_bytes: usize) -> Result
     Ok(())
 }
 
-/// Acquire an exclusive advisory lock, failing `Busy` instead of blocking.
+/// Acquire an exclusive advisory lock, retrying briefly before failing `Busy`.
+///
+/// A flock-style lock belongs to the open file description: a process spawning
+/// a child transiently shares every inherited descriptor, so a peer's `close`
+/// can appear to lag while a concurrent spawn is between fork and exec. The
+/// retry bound (20 attempts × 25 ms ≈ 500 ms) absorbs that transient release
+/// window; a genuinely held lock still refuses within the bound, never blocks.
 pub fn acquire_exclusive(file: &File) -> Result<(), Error> {
-    match file.try_lock() {
-        Ok(()) => Ok(()),
-        Err(fs::TryLockError::WouldBlock) => Err(Error::Busy),
-        Err(fs::TryLockError::Error(e)) => Err(Error::Io(e)),
+    for _ in 0..20 {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(fs::TryLockError::WouldBlock) => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
+        }
     }
+    Err(Error::Busy)
 }
 
 /// Acquire a shared advisory lock, retrying briefly before failing `Busy`.
