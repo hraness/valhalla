@@ -180,7 +180,8 @@ struct State {
 pub struct Gateway(Arc<State>);
 impl Gateway {
     /// Bind configuration to one loopback address and one TLS namespace. The
-    /// caller must keep browser and upstream capabilities distinct.
+    /// caller must keep browser and upstream capabilities distinct. HTTP's
+    /// default port 80 is refused because browser origins omit that port.
     pub fn new(
         address: SocketAddr,
         namespace: RelayNamespace,
@@ -213,7 +214,7 @@ impl Gateway {
         limits: GatewayLimits,
     ) -> Result<Self> {
         limits.check()?;
-        if !address.ip().is_loopback() || address.port() == 0 {
+        if !address.ip().is_loopback() || matches!(address.port(), 0 | 80) {
             return Err(NetError::Bounds);
         }
         let host = address.to_string();
@@ -416,6 +417,12 @@ fn response(socket: &mut Socket, status: u16, mime: &str, body: &[u8]) -> Result
         .map_err(|_| NetError::Timeout)
 }
 fn handle(state: &State, stream: TcpStream) -> Result<()> {
+    // BSD/macOS accept inherits the listener's nonblocking mode. Our deadline
+    // adapter uses blocking I/O with a freshly bounded timeout per operation;
+    // otherwise write_all can stop at a full send buffer and truncate assets.
+    stream
+        .set_nonblocking(false)
+        .map_err(|_| NetError::Unavailable)?;
     let mut socket = Socket {
         stream,
         deadline: Instant::now() + state.limits.timeout,

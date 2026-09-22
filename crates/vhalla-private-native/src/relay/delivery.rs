@@ -491,6 +491,9 @@ impl DeliveryStore {
     }
     /// Run finite due work without sleeping or re-encrypting. The host schedules
     /// another tick after next_due; an expired deadline never starts a new attempt.
+    /// Credential denial ends this tick with its charged attempt and backoff
+    /// retained. The host must end the current grant before explicitly replacing
+    /// credentials; a replacement never renews the original retry budget.
     pub fn tick(
         &mut self,
         transport: &mut impl Transport,
@@ -612,8 +615,7 @@ impl DeliveryStore {
                     let uncertain = prior.uncertain || !known_refusal;
                     let permanent = matches!(
                         error,
-                        NetError::Denied
-                            | NetError::Conflict
+                        NetError::Conflict
                             | NetError::Bounds
                             | NetError::Scope
                             | NetError::Malformed
@@ -641,6 +643,11 @@ impl DeliveryStore {
                 .map_err(|_| Error::Storage)?;
             self.commit(clock)?;
             report.jobs.push(self.find(id)?.ok_or(Error::Corrupt)?);
+            if error == error_code(NetError::Denied) {
+                // Do not spend other jobs' attempts on the same denied
+                // credential. Trusted orchestration must end this launch.
+                break;
+            }
         }
         Ok(report)
     }

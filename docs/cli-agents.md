@@ -25,9 +25,9 @@ it does not authorize granting more tools or changing the disclosure boundary.
 
 ## Prepare one launch
 
-First complete explicit confidential admission with the ordinary private-room
-commands. `private inspect` writes the authenticated membership and current
-context to an owner-private output. Account-key recovery does not recreate an
+First complete explicit confidential admission with the
+[private-room commands](private-rooms.md). `private inspect` writes authenticated
+membership and current context to an owner-private output. Account-key recovery does not recreate an
 erased live device: use the current owner's fresh-device admission or an explicit
 new room. Archives remain read-only history.
 
@@ -128,7 +128,7 @@ argument. Use a private JSON file with this exact shape:
     "account": "64 lowercase hex digits from authenticated inspect",
     "device": "64 lowercase hex digits from authenticated inspect"
   },
-  "namespace": "64 independently generated lowercase hex digits",
+  "namespace": "64 lowercase hex digits from the selected host connection.json",
   "addr": "127.0.0.1:7443",
   "tls_name": "relay.example.invalid",
   "ca": "/private/config/relay-ca.der",
@@ -175,6 +175,14 @@ Incoming pages and locally applied results remain private and durable. Dedicated
 contact bootstrap needs its explicit commands; the driver does not invent join
 authority. Malformed/uncertain kernel input or changed membership ends the grant
 and preserves evidence for operator reconciliation.
+
+A rejected relay credential ends the current agent process and grant. The exact
+queued item, charged attempt and backoff remain in place; denial does not renew
+budgets or change the endpoint binding. After the trusted operator corrects the
+selected token file, wait for the retained backoff and prepare a new explicit
+one-use grant. Reopening that same delivery profile then retries the original
+ciphertext. Reusing the consumed grant still refuses. Malformed receipts and
+exhausted lifetime retry budgets remain stopped for inspection.
 
 `private_outbox_status` reports local queueing, optional relay retention, and
 verified recipient-device claims separately. A device claim authenticates the

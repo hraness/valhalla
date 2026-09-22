@@ -197,6 +197,77 @@ fn uncertain_retry_waits_for_backoff_reopens_exact_bytes_and_rejects_clock_rollb
     assert_eq!(transport.calls[0], transport.calls[1]);
 }
 #[test]
+fn denied_credential_preserves_exact_retry_and_does_not_spend_other_jobs() {
+    let f = Fixture::new();
+    let mut store = f.create();
+    store.enqueue(&item(1), 100).unwrap();
+    store.enqueue(&item(2), 100).unwrap();
+    let mut denied = Fake::new(&f, vec![Err(NetError::Denied)]);
+    let first = store.tick(&mut denied, 100, budget()).unwrap();
+    assert_eq!(first.jobs.len(), 1);
+    let status = &first.jobs[0];
+    assert_eq!(status.state, JobState::Pending);
+    assert_eq!(status.attempts, 1);
+    assert_eq!(status.next_due, 102);
+    assert_eq!(status.last_error, Some(NetError::Denied));
+    assert!(!status.uncertain);
+    assert_eq!(store.statuses(1, 1).unwrap()[0].attempts, 0);
+    drop(store);
+    let mut store = f.open();
+    let mut replacement = Fake::new(&f, vec![receipt(2, false), receipt(1, false)]);
+    let before_due = store.tick(&mut replacement, 101, budget()).unwrap();
+    assert_eq!(before_due.jobs.len(), 1);
+    assert_eq!(before_due.jobs[0].sequence, 2);
+    assert_eq!(store.statuses(0, 1).unwrap()[0], *status);
+    let retained = store.tick(&mut replacement, 102, budget()).unwrap();
+    assert_eq!(retained.jobs[0].state, JobState::Retained);
+    assert_eq!(retained.jobs[0].attempts, 2);
+    assert_eq!(denied.calls[0], replacement.calls[1]);
+}
+
+#[test]
+fn denial_preserves_prior_uncertainty_and_original_failure_budget_across_reopen() {
+    let f = Fixture::new();
+    let mut store = f.create();
+    store.enqueue(&item(1), 100).unwrap();
+    let mut transport = Fake::new(
+        &f,
+        vec![
+            Err(NetError::Timeout),
+            Err(NetError::Denied),
+            Err(NetError::Denied),
+        ],
+    );
+    store.tick(&mut transport, 100, budget()).unwrap();
+    drop(store);
+    let mut store = f.open();
+    let denied = store.tick(&mut transport, 102, budget()).unwrap();
+    assert_eq!(denied.jobs[0].state, JobState::Uncertain);
+    assert!(denied.jobs[0].uncertain);
+    assert_eq!(denied.jobs[0].attempts, 2);
+    assert_eq!(denied.jobs[0].next_due, 106);
+    drop(store);
+    let mut store = f.open();
+    let stopped = store.tick(&mut transport, 106, budget()).unwrap();
+    assert_eq!(stopped.jobs[0].state, JobState::Stopped);
+    assert!(stopped.jobs[0].uncertain);
+    assert_eq!(stopped.jobs[0].attempts, 3);
+    assert_eq!(stopped.jobs[0].next_due, 111);
+    drop(store);
+    let mut store = f.open();
+    assert!(store
+        .tick(&mut transport, 200, budget())
+        .unwrap()
+        .jobs
+        .is_empty());
+    assert_eq!(transport.calls.len(), 3);
+    assert!(transport
+        .calls
+        .iter()
+        .all(|raw| *raw == item(1).encode().unwrap()));
+}
+
+#[test]
 fn finite_failure_budget_preserves_uncertainty_and_known_capacity_refusal() {
     let f = Fixture::new();
     let mut store = f.create();

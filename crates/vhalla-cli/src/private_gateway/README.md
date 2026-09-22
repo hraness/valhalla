@@ -13,8 +13,8 @@ directories. All paths are absolute. Unknown fields refuse. Example structure
 ```json
 {
   "format": 1,
-  "listen": "127.0.0.1:8787",
-  "namespace": "<64 lowercase hex characters>",
+  "listen": "127.0.0.1:8790",
+  "namespace": "<64 lowercase hex characters from the selected relay host>",
   "browser_token_file": "/private/host/browser-token",
   "upstream": {
     "addr": "127.0.0.1:8788",
@@ -33,7 +33,9 @@ there is no ambient trust or plaintext fallback. Asset manifest purpose must be
 `production`, every allowed file's size/hash must match, and the complete in-memory
 allowlist is bounded to 64 files/64 MiB. Unlisted files cannot be served.
 
-For a remote client, forward the configured gateway port to the same local
+The current browser requires the exact numeric host `127.0.0.1`. Choose a fixed
+non-default HTTP port; port 80 refuses because browser origins omit its explicit
+port. For a remote client, forward the configured gateway port to the same local
 loopback host and port; different client-local ports are refused by exact
 Host/Origin checks. Keep this stable before retaining browser profiles.
 

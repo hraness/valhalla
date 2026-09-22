@@ -578,6 +578,64 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
 }
 
 #[test]
+fn denied_tls_token_ends_grant_then_explicit_replacement_retries_exact_ciphertext() {
+    use vhalla_private_native::relay::{delivery::JobState, net::NetError};
+
+    let f = Fixture::new();
+    let artifact = runtime().block_on(async {
+        let mut room = RoomSession::open(
+            Identity::open(f.p("0-id")).unwrap(),
+            f.p("0-room"),
+            f.contexts[OWNER],
+        )
+        .await
+        .unwrap();
+        let draft = room
+            .prepare_message(b"synthetic credential replacement")
+            .unwrap();
+        room.send(op(13), &draft).await.unwrap()
+    });
+    let sequence = artifact.sequence();
+    let exact_item = RelayItem::from_artifact(ns(), &artifact).unwrap();
+    let _relay = f.relay();
+    f.write("wrong-token", hex(&[6; 32]).as_bytes());
+    let mut wrong_profile = f.profile(OWNER);
+    wrong_profile["token"] = json!(f.p("wrong-token"));
+    f.write_json("0-delivery.json", &wrong_profile);
+    f.grant(OWNER, "denied", 4);
+    let mut denied = f.host(OWNER, "denied", OWNER);
+    denied.refused();
+    assert!(f.p("denied-claim.json").exists());
+    let before = f.job(OWNER, sequence);
+    assert_eq!(before.id, exact_item.digest());
+    assert_eq!(before.state, JobState::Pending);
+    assert_eq!(before.attempts, 1);
+    assert_eq!(before.last_error, Some(NetError::Denied));
+    assert!(!before.uncertain);
+    assert_eq!(f.client().page(0, 8).unwrap().head, 0);
+    assert_eq!(f.ciphertext(OWNER, sequence), artifact.bytes());
+
+    // Correcting the credential alone cannot reuse the consumed launch grant.
+    f.write_json("0-delivery.json", &f.profile(OWNER));
+    let mut reused = f.host(OWNER, "denied", OWNER);
+    reused.refused();
+    assert_eq!(f.job(OWNER, sequence), before);
+    let replacement = f.grant(OWNER, "replacement", 4);
+    let mut owner = f.host(OWNER, "replacement", OWNER);
+    let retained = owner.await_outbox(&replacement, sequence, |v| {
+        v["relay"]["state"] == "retained"
+    });
+    assert_eq!(retained["relay"]["attempts"], 2);
+    owner.close();
+    assert_eq!(f.job(OWNER, sequence).id, before.id);
+    assert_eq!(f.ciphertext(OWNER, sequence), artifact.bytes());
+    let page = f.client().page(0, 8).unwrap();
+    assert_eq!(page.head, 1);
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0].item, exact_item);
+}
+
+#[test]
 fn foreign_delivery_profile_refuses_before_consuming_grant_or_mutating_queue() {
     let f = Fixture::new();
     let grant = f.grant(OWNER, "selected", 4);

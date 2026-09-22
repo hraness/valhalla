@@ -78,6 +78,7 @@ Start with the current public product path:
 | Native authoring, peer delivery and operators | [CLI](../crates/vhalla-cli/README.md) |
 | Optional puzzle exchange and recent solve evidence | [Clankdar](../prototypes/clankdar-attest/README.md) |
 | Private group kernel, durable custody and release boundaries | [private-room guide](private-rooms.md), [private protocol](../crates/vhalla-private-protocol/README.md), [kernel](../crates/vhalla-private-kernel/README.md), [native backend](../crates/vhalla-private-native/README.md) |
+| Existing Codex/Devin sessions and a mostly persistent Mac host | [CLI agent setup](cli-agents.md), [local hosting and Tailcat](local-host.md), [current qualification evidence](agent-readiness-plan.md) |
 
 The following foundation and experimental modules retain their own narrower
 contracts. Their presence does not add features or dependencies to the default

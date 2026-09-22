@@ -302,15 +302,23 @@ mod mac {
         {
             return Err("refusing to install an expired TLS host".into());
         }
-        if !command(&["print".into(), domain().into()])?.success {
-            return Err("the selected user's GUI launchd domain is unavailable".into());
-        }
-        if loaded(loaded_home)?.success {
+        install_selected(loaded_home, || destination(loaded_home, true), command)
+    }
+    fn install_selected(
+        loaded_home: &Loaded,
+        destination: impl FnOnce() -> Result<PathBuf, String>,
+        mut run: impl FnMut(&[OsString]) -> Result<Reply, String>,
+    ) -> Result<(), String> {
+        // The exact service probe also proves that this GUI domain exists.
+        // Never list the entire domain: a user's unrelated services can exceed
+        // the bounded output and are outside this command's selection.
+        let probe = ["print".into(), target(loaded_home).into()];
+        if classify_service(loaded_home, run(&probe)?)?.success {
             return Err(
                 "this exact host label is already loaded; inspect status before changing it".into(),
             );
         }
-        let path = destination(loaded_home, true)?;
+        let path = destination()?;
         if !expected(loaded_home, &path)? {
             use std::io::Write;
             let mut file = custody::create_private_file(&path).map_err(|_| REFUSED)?;
@@ -328,7 +336,7 @@ mod mac {
         if !expected(loaded_home, &path)? {
             return Err(REFUSED.into());
         }
-        if !command(&[
+        if !run(&[
             "bootstrap".into(),
             domain().into(),
             path.as_os_str().to_owned(),
@@ -340,7 +348,7 @@ mod mac {
                     .into(),
             );
         }
-        if !loaded(loaded_home)?.success {
+        if !classify_service(loaded_home, run(&probe)?)?.success {
             return Err("bootstrap returned without a verifiable loaded service; preserve exact home and plist".into());
         }
         println!(
@@ -401,6 +409,103 @@ mod mac {
     mod tests {
         use super::*;
         use std::os::unix::fs::PermissionsExt;
+        #[test]
+        fn install_probes_only_exact_service_and_never_lists_the_gui_domain() {
+            let home = std::env::temp_dir().join(format!(
+                "valhalla-launch-agent-install-{}",
+                std::process::id()
+            ));
+            fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
+            let loaded = Loaded {
+                home: home.clone(),
+                config: Config {
+                    version: 1,
+                    label: "me.vhalla.private-host.install-test".into(),
+                    listen: "127.0.0.1:9473".parse().unwrap(),
+                    tls_name: "relay.invalid".into(),
+                    executable: "/private/binary".into(),
+                    namespace: "a".repeat(64),
+                    credential_ids: ["b".repeat(32), "c".repeat(32)],
+                    created_at: 1,
+                    certificate_expires_at: 2,
+                    authority_expires_at: 3,
+                    files: Default::default(),
+                },
+            };
+            let path = home.join("selected.plist");
+            let absent = format!(
+                "Bad request.\nCould not find service \"{}\" in domain for user gui: {}\n",
+                loaded.config.label,
+                rustix::process::geteuid().as_raw()
+            );
+            for success in [true, false] {
+                let result = install_selected(
+                    &loaded,
+                    || panic!("probe refusal must precede destination creation"),
+                    |args| {
+                        assert_eq!(args, [OsString::from("print"), target(&loaded).into()]);
+                        Ok(Reply {
+                            success,
+                            code: Some(if success { 0 } else { 5 }),
+                            stdout: String::new(),
+                            stderr: String::new(),
+                        })
+                    },
+                );
+                assert!(result.is_err());
+                assert!(!path.exists());
+            }
+            let mut calls = 0;
+            install_selected(
+                &loaded,
+                || Ok(path.clone()),
+                |args| {
+                    calls += 1;
+                    match calls {
+                        1 => {
+                            assert_eq!(args, [OsString::from("print"), target(&loaded).into()]);
+                            Ok(Reply {
+                                success: false,
+                                code: Some(113),
+                                stdout: String::new(),
+                                stderr: absent.clone(),
+                            })
+                        }
+                        2 => {
+                            assert_eq!(
+                                args,
+                                [
+                                    OsString::from("bootstrap"),
+                                    domain().into(),
+                                    path.as_os_str().to_owned()
+                                ]
+                            );
+                            assert!(expected(&loaded, &path).unwrap());
+                            Ok(Reply {
+                                success: true,
+                                code: Some(0),
+                                stdout: String::new(),
+                                stderr: String::new(),
+                            })
+                        }
+                        3 => {
+                            assert_eq!(args, [OsString::from("print"), target(&loaded).into()]);
+                            Ok(Reply {
+                                success: true,
+                                code: Some(0),
+                                stdout: format!("path = {}\n", path.display()),
+                                stderr: String::new(),
+                            })
+                        }
+                        _ => panic!("unexpected launchctl call"),
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(calls, 3);
+            assert!(expected(&loaded, &path).unwrap());
+            fs::remove_dir_all(home).unwrap();
+        }
         #[test]
         fn uninstall_requires_exact_absence_and_preserves_plist_after_probe_failures() {
             let home = std::env::temp_dir().join(format!(

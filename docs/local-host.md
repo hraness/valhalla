@@ -63,8 +63,9 @@ are not forcibly interruptible; the service does not claim a hard deadline for
 an unhealthy disk. Storage uncertainty exits with failure and requires an exact
 reopen. Starting a second owner of the same mailbox refuses.
 
-On macOS, the following commands manage only the per-user LaunchAgent whose
-label is derived from this canonical home:
+Stop the foreground process with Ctrl-C before installing the LaunchAgent so it
+can acquire the same mailbox. On macOS, the following commands manage only the
+per-user LaunchAgent whose label is derived from this canonical home:
 
 ```sh
 /absolute/vhalla private-host install /private/operator/valhalla-host
@@ -172,9 +173,11 @@ explicit one-use host grant; waking the relay never renews agent authority.
 
 ## Browser sessions
 
-Use the released production browser archive with the
+Use a qualified production browser archive built with `private-rooms`. Follow the
 [gateway configuration](../crates/vhalla-cli/src/private_gateway/README.md) and
 the [browser connection guide](../browser/README.md#explicit-local-host-private-sync).
+Select a release only after its feature set and browser archive are published;
+the source instructions do not imply that an older release contains them.
 Start `vhalla private-gateway serve /absolute/private/gateway.json` alongside
 the relay. The gateway receives one relay credential and a separate random
 browser capability; the browser receives only its own connection profile and
@@ -203,12 +206,20 @@ CA/name/address and retained state.
 Local tests cover generated custody, distinct credentials, finite certificates,
 TLS retention, wrong credentials, concurrent-owner refusal, read-only status,
 SIGTERM drain, exact retry after restart, and malformed/partial-home refusal.
+The actual macOS LaunchAgent journey passed initialization, installation, loaded
+status, pinned TLS retention, exact retry, a second credential's scan, wrong-token
+refusal and uninstall. Readback verified the selected service and installed plist
+absent, listener closed, private files unchanged and retained mailbox item intact.
+Receipt: `/private/tmp/valhalla-launchagent-qualification-20260922-r2/receipt.json`.
+This tests activation in the current GUI login; it does not simulate reboot or
+sleep/wake, and the synthetic host was uninstalled afterward.
+
 An actual pinned v0.7.0 Tailcat server/forward on this Mac also passed TLS
 retention, exact scan, host outage refusal and explicit client-forward restart
 recovery. The receipt is
 `/private/tmp/valhalla-tailcat-live-20260922-r3/receipt.json`; all task processes
 were stopped afterward. This used synthetic opaque transport data, not two
-physical machines. Login activation, sleep/wake and browser delivery have
+physical machines. Reboot/login persistence, sleep/wake and browser delivery have
 separate evidence requirements. A browser cannot call this custom TLS protocol
 directly; its [gateway/worker integration](../browser/README.md) supplies that
 path. No paid host or public DNS is required for the local workflow.

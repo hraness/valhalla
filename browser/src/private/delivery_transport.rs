@@ -28,6 +28,7 @@ pub(super) fn abort() {
 #[derive(Clone, Copy)]
 pub(super) enum Error {
     Retry,
+    Authorization,
     Refused,
 }
 struct Attempt {
@@ -138,7 +139,12 @@ pub(super) async fn exchange(
     if response.redirected() {
         return Err(Error::Refused);
     }
-    if response.status() == 429 || response.status() >= 500 {
+    if response.status() == 403 {
+        // A changed host capability ends this worker. The caller must unlock
+        // and explicitly supply current authority; retained budgets stay spent.
+        return Err(Error::Authorization);
+    }
+    if matches!(response.status(), 408 | 429) || response.status() >= 500 {
         return Err(Error::Retry);
     }
     if response.status() != 200

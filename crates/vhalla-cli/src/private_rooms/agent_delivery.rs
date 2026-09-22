@@ -315,6 +315,12 @@ impl Driver {
             rpc.update_delivery(self.namespace, status)
                 .await
                 .map_err(|_| REFUSED)?;
+            if status.last_error == Some(NetError::Denied) {
+                // The exact job and charged backoff survive for a new explicit
+                // grant with corrected credentials. End this grant before any
+                // further scan or agent output; do not renew its authority.
+                return Err(REFUSED.into());
+            }
         }
         // Complete the local commitment index before interpreting any own echo.
         if self.outgoing < page.head || Instant::now() >= deadline {

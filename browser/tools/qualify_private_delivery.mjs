@@ -1,7 +1,8 @@
 // Production private DOM through the actual loopback HTTP gateway and TLS relay.
 // No account seeds, production signer calls, external routes or fixture KDF changes.
 import {trackChild, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
-import {stopChild} from './qualification_lifecycle.mjs';
+import {stopChild, stopServer} from './qualification_lifecycle.mjs';
+import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {createServer as createTcpServer} from 'node:net';
 import {createHash} from 'node:crypto';
@@ -24,7 +25,7 @@ for (const [name, item] of Object.entries(manifest.assets)) {
 const modules=Object.keys(manifest.assets).filter(n=>/^vhalla-browser-[a-z0-9]+\.js$/.test(n));
 if(modules.length!==1)throw Error('expected one main application module');
 const children=[], pending=new Map(), downloads=new Map(), pages=[];
-let socket, signal, sequence=0, chromeLog='', unexpectedNetwork=false;
+let socket, signal, sequence=0, chromeLog='', unexpectedNetwork=false, fatalNetwork='';
 const facts=[], files=[];
 const deadline=Date.now()+360000;
 const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
@@ -41,6 +42,7 @@ const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
 async function wait(probe,label) {
   for (;;) {
     signal.throwIfAborted();
+    if(fatalNetwork)throw Error(fatalNetwork);
     if (await probe()) { signal.throwIfAborted(); return; }
     if (Date.now() >= deadline) throw Error('qualification timeout: '+label);
     await new Promise(r=>setTimeout(r,30));
@@ -214,7 +216,7 @@ async function reload(page) {
 const cli=resolve(cliArg), openssl=resolve(opensslArg);
 const namespace='31'.repeat(32), relayToken='42'.repeat(32), browserCapability='53'.repeat(32);
 const tlsAddress='127.0.0.1:19473';
-let relay, gateway, blackhole, fixtureSerial=0;
+let relay, gateway, blackhole, hostile, fixtureSerial=0;
 const blackholeSockets=new Set();
 const serviceLogs=[];
 async function privateFile(name,content) {const path=join(output,name);await writeFile(path,content,{mode:0o600,flag:'wx'});return path;}
@@ -230,6 +232,7 @@ async function child(args,ready) {
   process.stdout.on('data',v=>record.stdout=(record.stdout+v).slice(-65536));process.stderr.on('data',v=>record.stderr=(record.stderr+v).slice(-65536));
   await wait(()=>{if(childStopped(process))throw Error('fixture service exited: '+record.stderr);return record.stdout.includes(ready);},ready);return process;
 }
+async function gatewayStart() {gateway=await child(['private-gateway','serve',join(output,'gateway.json')],'private-gateway');}
 async function relayStart() {relay=await child(['private','relay-tls-serve',join(output,'mailbox'),'--namespace',namespace,'--config',join(output,'tls.json'),'--cert',join(output,'server.der'),'--key',join(output,'server-key.der'),'--listen',tlsAddress],'relay-tls-serve');}
 async function fixture() {
   const caKey=join(output,'ca-key.pem'),caPem=join(output,'ca.pem'),serverKey=join(output,'server-key.pem'),csr=join(output,'server.csr'),serverPem=join(output,'server.pem');
@@ -241,12 +244,12 @@ async function fixture() {
   await command(openssl,['x509','-in',serverPem,'-outform','DER','-out',join(output,'server.der')]);
   await command(openssl,['pkcs8','-topk8','-nocrypt','-in',serverKey,'-outform','DER','-out',join(output,'server-key.der')]);
   for(const name of ['ca-key.pem','ca.pem','server-key.pem','server.csr','server.pem','ca.der','server.der','server-key.der'])await chmod(join(output,name),0o600);
-  await privateFile('relay-token',relayToken);await privateFile('browser-token',browserCapability);
+  await privateFile('relay-token',relayToken);await privateFile('gateway-upstream-token',relayToken);await privateFile('browser-token',browserCapability);
   await command(cli,['private','relay-mailbox',join(output,'mailbox'),'--namespace',namespace,'--max-items','4096','--max-bytes',String(128*1024*1024)]);
   await command(cli,['private','relay-tls-init',join(output,'mailbox'),'--namespace',namespace]);
   await privateFile('tls.json',JSON.stringify({max_connections:16,request_timeout_ms:10000,window_ms:1000,requests_per_window:128,bytes_per_window:64*1024*1024,credentials:[{id:'64'.repeat(16),namespace,token_files:[join(output,'relay-token')],put:true,page:true,max_items:2048,max_bytes:64*1024*1024,max_inflight:8,requests_per_window:64,bytes_per_window:32*1024*1024}]}));
-  await privateFile('gateway.json',JSON.stringify({format:1,listen:'127.0.0.1:8790',namespace,browser_token_file:join(output,'browser-token'),upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'relay-token')},assets_dir:artifact,initial_cursor:'0'}));
-  await relayStart();gateway=await child(['private-gateway','serve',join(output,'gateway.json')],'private-gateway');
+  await privateFile('gateway.json',JSON.stringify({format:1,listen:'127.0.0.1:8790',namespace,browser_token_file:join(output,'browser-token'),upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')},assets_dir:artifact,initial_cursor:'0'}));
+  await relayStart();await gatewayStart();
 }
 async function profileFile(initial,overrides={}) {return privateFile('profile-'+(++fixtureSerial)+'.json',JSON.stringify({format:1,origin:'http://127.0.0.1:8790',namespace,capability:browserCapability,initial_cursor:String(initial),...overrides}));}
 async function connect(page,path,create=false) {
@@ -270,6 +273,14 @@ async function head() {
   await command(cli,['private','relay-scan',join(output,'scan-'+n),'--namespace',namespace,'--addr',tlsAddress,'--token',join(output,'relay-token'),'--tls-ca',join(output,'ca.der'),'--tls-name','relay.test','--limit','64','--out',path]);
   return JSON.parse(await readFile(path,'utf8')).head;
 }
+function chargedPending(before,after,committed,stopped=0) {
+  // Versioned delivery image: immutable binding/owner, twelve u64 counters,
+  // stopped byte and canonical pending RelayItem. These assertions inspect the
+  // exact persisted effect independently of the UI report (the worker is dead).
+  if(after[152]!==stopped||after.readBigUInt64BE(80)!==before.readBigUInt64BE(80)+1n||after.readBigUInt64BE(88)<=before.readBigUInt64BE(88)||after.readBigUInt64BE(112)!==before.readBigUInt64BE(112)+1n||after.readBigUInt64BE(104)<=after.readBigUInt64BE(96))throw Error('credential refusal reset or stopped finite progress');
+  const length=after.readUInt32BE(153),item=after.subarray(157,157+length);
+  if(length<102||item.subarray(0,9).toString()!=='VHPRELAY'+String.fromCharCode(1)||!item.subarray(70,70+item.readUInt32BE(66)).equals(committed))throw Error('credential refusal lost exact committed ciphertext');
+}
 async function snapshot(page, expected=1) {
   return evaluate(page,`(async()=>{const names=await indexedDB.databases();let found=[];for(const info of names){const db=await new Promise((r,j)=>{const q=indexedDB.open(info.name);q.onsuccess=()=>r(q.result);q.onerror=()=>j(Error('read database'));});try{if(!db.objectStoreNames.contains('images'))continue;const rows=await new Promise((r,j)=>{const tx=db.transaction('images','readonly'),s=tx.objectStore('images'),q=s.openCursor(),rows=[];q.onsuccess=()=>{const c=q.result;if(c){if(String(c.key).endsWith('delivery-v1'))rows.push([...c.value]);c.continue();}else r(rows);};q.onerror=()=>j(Error('read delivery'));});found.push(...rows);}finally{db.close();}}qassert(found.length===${expected},'expected delivery image count');return found[0]??[];})()`);
 }
@@ -279,7 +290,7 @@ async function task(abortSignal) {
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
-  socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith('http://127.0.0.1:8790/')&&!url.startsWith('blob:http://127.0.0.1:8790/')&&url!=='about:blank')unexpectedNetwork=true;}};
+  socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith('http://127.0.0.1:8790/')&&!url.startsWith('blob:http://127.0.0.1:8790/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
   const owner=await account('owner'),member=await account('member');
   await enter(owner,true);await evaluate(owner,"qclick('private-create')");await retainCreation(owner);
   await send(owner,'SYNTHETIC_PREJOIN_HISTORY');
@@ -318,6 +329,37 @@ async function task(abortSignal) {
   if(!before.subarray(56).equals(reopened.subarray(56)))throw Error('reload changed pending progress/budget');
   await relayStart();await new Promise(r=>setTimeout(r,2200));await sync(owner);const afterOutage=await head();if(afterOutage!==beforeOutage+1)throw Error('outage retry duplicated or lost committed ciphertext');
   await sync(member);facts.push('relay outage, real document teardown, same-profile reopen and exact retry preserve ciphertext and counters and retain the output once');
+  // Authentication refusal ends custody, but a newly supplied host capability
+  // may resume the exact charged job. Neither unlock nor corrected authority
+  // resets the retained attempt or backoff, and wrong credentials never retain.
+  const beforeCapabilityHead=await head();const capabilityMessage=await send(owner,'SYNTHETIC_CAPABILITY_RETRY');
+  await reload(owner);const wrongCapability=await profileFile(0,{capability:'54'.repeat(32)});await connect(owner,wrongCapability);
+  const beforeDenied=Buffer.from(await snapshot(owner));
+  await evaluate(owner,"(async()=>{await qclick('private-delivery-sync');await qwait(()=>qid('identity-state').textContent==='Reload required','wrong capability ends worker');return true;})()");
+  const denied=Buffer.from(await snapshot(owner));
+  chargedPending(beforeDenied,denied,capabilityMessage.raw);
+  if(await head()!==beforeCapabilityHead)throw Error('wrong capability retained an item');
+  await reload(owner);await connect(owner,owner.deliveryProfile);
+  if(!denied.subarray(56).equals(Buffer.from(await snapshot(owner)).subarray(56)))throw Error('corrected capability renewed retained budgets or pending work');
+  await new Promise(r=>setTimeout(r,2200));await sync(owner);
+  if(await head()!==beforeCapabilityHead+1)throw Error('corrected capability did not resume exact item once');
+  await sync(member);
+  facts.push('wrong gateway capability locks the worker without discarding exact pending ciphertext or charged attempts/backoff; explicit reopen with corrected authority resumes once and does not renew lifetime budgets');
+  // The same recovery boundary applies when the gateway's selected upstream
+  // relay token becomes invalid: its HTTP200 contains canonical STATUS_DENIED.
+  const beforeUpstreamHead=await head();const upstreamMessage=await send(owner,'SYNTHETIC_UPSTREAM_AUTH_RETRY');
+  await stopChild(gateway);await writeFile(join(output,'gateway-upstream-token'),'55'.repeat(32));await gatewayStart();
+  const beforeUpstream=Buffer.from(await snapshot(owner));
+  await evaluate(owner,"(async()=>{await qclick('private-delivery-sync');await qwait(()=>qid('identity-state').textContent==='Reload required','upstream denied ends worker');return true;})()");
+  const upstreamDenied=Buffer.from(await snapshot(owner));chargedPending(beforeUpstream,upstreamDenied,upstreamMessage.raw);
+  if(await head()!==beforeUpstreamHead)throw Error('invalid upstream token retained an item');
+  await stopChild(gateway);await writeFile(join(output,'gateway-upstream-token'),relayToken);await gatewayStart();
+  await reload(owner);await connect(owner,owner.deliveryProfile);
+  if(!upstreamDenied.subarray(56).equals(Buffer.from(await snapshot(owner)).subarray(56)))throw Error('upstream repair renewed retained budgets or pending work');
+  await new Promise(r=>setTimeout(r,2200));await sync(owner);
+  if(await head()!==beforeUpstreamHead+1)throw Error('upstream repair did not resume exact item once');
+  await sync(member);
+  facts.push('canonical upstream authorization denial locks custody with exact charged progress retained; operator repairs host token and explicit browser reopen resumes once without resetting credits');
   // Profile rebind refuses before any network mutation and leaves durable bytes.
   await reload(owner);const unchanged=Buffer.from(await snapshot(owner));const wrong=await profileFile(1);await setFile(owner,'private-delivery-profile',wrong);
   await evaluate(owner,"(async()=>{await qclick('private-delivery-open');await qwait(()=>qid('identity-state').textContent==='Reload required','changed cursor refusal');return true;})()");
@@ -342,8 +384,24 @@ async function task(abortSignal) {
   if(!canceled.equals(Buffer.from(await snapshot(twin))))throw Error('late canceled response changed durable progress');
   await reopen(twin);await connect(twin,owner.deliveryProfile);await sync(twin);
   facts.push('lock during a real gateway TLS handshake terminates worker Fetch; delayed failure cannot restore UI or alter charged progress, and explicit reopen resumes exact queued ciphertext');
+  // A hostile HTTP200 receipt with the wrong commitment is not a transient
+  // outage or an authorization renewal. Persist the stop before ending custody.
+  const hostileHead=await head();const hostileMessage=await send(twin,'SYNTHETIC_CORRUPT_RECEIPT');
+  const beforeHostile=Buffer.from(await snapshot(twin));await stopChild(gateway);
+  hostile=createServer((request,response)=>{
+    if(request.method!=='POST'||request.url!=='/private-relay/v1'||request.headers.origin!=='http://127.0.0.1:8790'||request.headers.authorization!=='Bearer '+browserCapability){response.writeHead(403);response.end();return;}
+    const chunks=[];let size=0;request.on('data',chunk=>{size+=chunk.length;if(size>300000){request.destroy();return;}chunks.push(chunk);});
+    request.on('end',()=>{const body=Buffer.concat(chunks);if(body.length<40||body[4]!==1){response.writeHead(400);response.end();return;}const receipt=Buffer.alloc(46);receipt.writeUInt32BE(42,0);receipt.writeBigUInt64BE(1n,5);body.subarray(-32).copy(receipt,13);receipt[13]^=1;response.writeHead(200,{'content-type':'application/octet-stream','content-length':receipt.length,'cache-control':'no-store'});response.end(receipt);});
+  });await new Promise((r,j)=>{hostile.once('error',j);hostile.listen(8790,'127.0.0.1',r);});
+  await evaluate(twin,"(async()=>{await qclick('private-delivery-sync');await qwait(()=>qid('identity-state').textContent==='Reload required','corrupt receipt ends worker');return true;})()");
+  const halted=Buffer.from(await snapshot(twin));chargedPending(beforeHostile,halted,hostileMessage.raw,1);
+  await stopServer(hostile);hostile=undefined;await gatewayStart();
+  await reload(twin);await setFile(twin,'private-delivery-profile',owner.deliveryProfile);
+  await evaluate(twin,"(async()=>{await qclick('private-delivery-open');await qidle();qassert(qid('private-delivery-sync').disabled&&qid('private-delivery-status').textContent.includes('stopped: true'),'durable refusal lost on reopen');qid('private-delivery-sync').disabled=false;qid('private-delivery-sync').click();await qwait(()=>!qid('private-refresh').disabled,'forced stopped sync finished');return true;})()");
+  if(!halted.subarray(56).equals(Buffer.from(await snapshot(twin)).subarray(56))||await head()!==hostileHead)throw Error('reopen or forced Sync reset durable hostile-response stop');
+  facts.push('a well-framed HTTP200 receipt with a corrupt commitment durably stops before worker termination; exact pending bytes and charged credits survive, and reopen or forced Sync cannot resume network work');
   await leave(twin);await leave(member);
   if(unexpectedNetwork)throw Error('unexpected non-loopback page route');
   return {passed:true,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,files,profile,scope:'production browser private custody → maintained local HTTP gateway → real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim'};
 }
-await runQualification({work:task,timeoutMs:360000,cleanup:async()=>{try{for(const socket of blackholeSockets)socket.destroy();if(blackhole){await new Promise(r=>blackhole.close(r));blackhole=undefined;}await cleanupOwned({children,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));}},publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));}});
+await runQualification({work:task,timeoutMs:360000,cleanup:async()=>{try{for(const socket of blackholeSockets)socket.destroy();if(blackhole){await new Promise(r=>blackhole.close(r));blackhole=undefined;}await cleanupOwned({children,server:hostile,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));await writeFile(join(output,'network-failure.txt'),fatalNetwork);}},publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));}});

@@ -48,7 +48,7 @@ fork-evidence reporting. Its
 [command guide](../crates/vhalla-cli/README.md#local-encrypted-private-room-files-experimental-private)
 includes the full two-account file exchange. It opens existing identity custody
 and explicit local stores. In addition to canonical relay-item export/apply,
-`agent-rpc` can run a bounded TLS delivery driver under a fixed-room grant.
+`agent-serve` can run a bounded TLS delivery driver under a fixed-room grant.
 `private-host` separately manages a local relay; `private-gateway` supplies the
 same-origin browser path. These require explicit configuration. Input is a
 bounded pipe or owner-private file; outputs are exclusive-create, synced private

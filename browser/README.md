@@ -324,6 +324,18 @@ transfer remains separate work.
 
 ## Explicit local-host private sync
 
+Build the production private UI from the `browser/` directory into a separate
+output path, then generate its checked asset manifest:
+
+```sh
+trunk --skip-version-check build --release --locked --features private-rooms --dist /absolute/new-private-browser
+python3 tools/package.py /absolute/new-private-browser
+```
+
+Use that directory as the gateway's `assets_dir`. The default public build does
+not include private-room controls, and a `local-qualification` build is refused
+by the gateway.
+
 A production `private-rooms` build can run at a **fixed**
 `http://127.0.0.1:PORT` origin served by `vhalla private-gateway`. The gateway
 forwards opaque relay requests through the selected CA/name-pinned TLS endpoint.
@@ -343,7 +355,7 @@ After opening a room, choose a private JSON connection profile:
 {
   "format": 1,
   "origin": "http://127.0.0.1:8790",
-  "namespace": "<64 lowercase hexadecimal digits>",
+  "namespace": "<64 lowercase hexadecimal digits from the selected relay host>",
   "capability": "<distinct gateway capability, 64 lowercase hexadecimal digits>",
   "initial_cursor": "0"
 }
@@ -355,6 +367,12 @@ each unlock. The worker holds it only in memory, and clears the selected file
 input immediately. Browser-managed temporary copies are outside a guarantee of
 complete memory erasure. Revocation is an explicit host configuration rotation;
 locking a worker does not revoke the shared host capability.
+An authorization refusal locks that worker and retains its exact pending job,
+charged attempt and backoff. Explicitly unlock and select a profile carrying the
+current capability to resume; correcting authority never resets finite budgets.
+The same explicit recovery applies after the operator repairs a rejected upstream
+relay credential. Malformed frames, pages or receipt commitments instead persist
+a permanent stop before custody closes; reopening preserves that refusal.
 
 **Configure new connection** requires wholly absent delivery progress.
 **Open retained connection** requires its exact retained profile, including full
@@ -395,9 +413,14 @@ checks:
 
 ```sh
 node browser/tools/qualify_private_delivery.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE NEW_OUTPUT_DIR VHALLA_CLI OPENSSL_EXECUTABLE
+node browser/tools/qualify_private_panel.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE ANOTHER_NEW_OUTPUT_DIR --production
 ```
 
 The harness verifies a packaged **production** artifact and uses no qualification
 entry points. Run it through the repository's browser-auth scheduler lane. Its
 same-machine receipt does not substitute for independent-machine Tailcat or
 sleep/wake qualification.
+The second command covers ordinary private UI, archive routes and streaming
+export on the same production artifact. Without `--production`, that driver
+requires a local-qualification artifact and additionally exercises injected
+fork and expired-clock cases; those entry points never enter the production build.

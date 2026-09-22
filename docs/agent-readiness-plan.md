@@ -156,3 +156,61 @@ without changing stored state. Automatic overlay reconnection is not claimed.
 Receipt: `/private/tmp/valhalla-tailcat-live-20260922-r3/receipt.json`. All synthetic
 test processes were stopped. This is one-Mac overlay evidence, not independent
 machine qualification.
+
+The continuation was checkpointed as `6aa3f76`, then merged with current main
+`caaf180` (PR #87's Platonik removal) in `4d1f438`. The merge preserves the
+private/browser work and all intentional game removals. Only the two removed
+game packages left the expanded lockfile; no unrelated versions changed. The
+incoming tracked browser bundle remains historical main content, not the new
+qualified production artifact used by packaging.
+
+The final review found recovery defects before delivery: Sync cleared only UI
+consent, authorization denial could permanently strand exact queued ciphertext,
+and HTTP port 80 had a noncanonical browser origin. Repairs invalidate consent
+in the worker, end the current unauthorized session while retaining attempt/
+backoff budgets for explicit credential replacement, and refuse the unsupported
+port. Malformed receipts and exhausted lifetime budgets still stop permanently.
+The first actual LaunchAgent attempt also exposed an oversized whole-domain
+`launchctl` preflight. The scoped service probe replaces that broad dump; fresh
+live qualification is required before claiming installation success.
+
+The final merged dependency gate passed with pinned `cargo-audit 0.22.2` across
+47 retained graphs. No active vulnerability findings; two inactive lockfile
+advisories, one archived advisory and 15 warnings remain recorded without
+suppression. Reports: `/private/tmp/valhalla-final-security-reports-20260922`;
+gate log: `/private/tmp/valhalla-final-security-20260922.log`.
+
+The repaired real macOS LaunchAgent journey passed: init/install/status, pinned
+TLS submit and exact retry, second-credential scan, wrong-credential refusal,
+uninstall and exact absence/closed-listener readback. Private files and the
+retained mailbox item remained intact. Receipt:
+`/private/tmp/valhalla-launchagent-qualification-20260922-r2/receipt.json`;
+binary SHA-256 `a106888ef98898c5440d2ba90b93cf50978ce13c7afc76bc1a8509eed0763f77`.
+The synthetic host is stopped and uninstalled. Reboot and sleep/wake were not
+performed on the user's active Mac.
+
+The merged integration gate passed 325 protocol/kernel/native/browser-storage/
+browser tests, 95 CLI unit/process tests (including four real TLS agent-delivery
+journeys), 43 workspace doctests, 49 workflow/security script tests, five recovery
+policy tests and 16 disclosure-broker tests. Commands and durations:
+`/private/tmp/valhalla-final-integration-results-20260922.json`. No test was ignored.
+
+The exact production private-browser panel/archive journey also passed with
+manifest `e8b9b347cc00498cbe3177da42044b67a82a5a30490b6c040e3da87bd84c12ef`.
+It covered three contexts, fresh-device admission, removal/succession, snapshot
+coexistence/resume/global quota and 44-chunk OPFS streaming with cancellation and
+write-failure checks. Receipt:
+`/private/tmp/valhalla-browser-private-production-archives-20260922/receipt.json`.
+Desktop and narrow-layout screenshots were inspected. The OS picker is still
+represented by an injected handle to a real browser writable file.
+
+The first browser/gateway journey exposed macOS inheriting a nonblocking listener
+flag on accepted sockets, truncating large WASM assets. The gateway now restores
+blocking connection I/O while its wrapper recomputes the original remaining
+deadline for every read/write. Three real TCP regressions cover complete 8 MiB
+responses, forced inherited mode and stalled-reader shutdown; they passed in the
+integrated suite. The macOS release lane repeats gateway socket tests.
+
+Final workspace formatting and strict all-target/all-feature Clippy passed again
+after the socket repair; log:
+`/private/tmp/valhalla-final-workspace-quality-after-http-20260922.log`.

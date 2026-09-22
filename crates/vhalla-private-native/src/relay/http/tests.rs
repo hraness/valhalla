@@ -234,10 +234,143 @@ fn constructor_refuses_shared_browser_and_upstream_capability_before_dial() {
 }
 
 #[test]
+fn constructor_refuses_default_http_port_before_dial() {
+    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let namespace = RelayNamespace::from_bytes([9; 32]).unwrap();
+    let upstream = TlsRelay::new(
+        "127.0.0.1:1".parse().unwrap(),
+        "localhost",
+        certificate.cert.der().to_vec(),
+        super::super::net::RelayToken::from_bytes([7; 32]).unwrap(),
+        namespace,
+    )
+    .unwrap();
+    let assets = Assets::new(BTreeMap::from([("index.html".into(), vec![1])])).unwrap();
+    assert!(matches!(
+        Gateway::new(
+            "127.0.0.1:80".parse().unwrap(),
+            namespace,
+            BrowserCapability::from_bytes([8; 32]).unwrap(),
+            upstream,
+            assets,
+            GatewayLimits::default()
+        ),
+        Err(NetError::Bounds)
+    ));
+}
+
+#[test]
 fn default_budget_admits_two_maximum_assets_then_refuses_more_work() {
     let (gateway, _, fake) = fixture(Duration::from_secs(1), false);
     assert!(admit(&gateway.0, 32 * 1024 * 1024, false).unwrap());
     assert!(admit(&gateway.0, 32 * 1024 * 1024, false).unwrap());
     assert!(!admit(&gateway.0, 1, false).unwrap());
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+}
+
+fn large_asset_fixture(timeout: Duration) -> (Gateway, TcpListener, Arc<Fake>, Vec<u8>) {
+    let (mut gateway, listener, fake) = fixture(timeout, false);
+    // Larger than the observed macOS send buffer, while inside the real asset
+    // and window bounds. This must cross multiple TCP writes without truncation.
+    let body = vec![0x5a; 8 * 1024 * 1024];
+    Arc::get_mut(&mut gateway.0).unwrap().assets = Assets::new(BTreeMap::from([
+        ("index.html".into(), b"verified UI".to_vec()),
+        ("module.wasm".into(), body.clone()),
+    ]))
+    .unwrap();
+    (gateway, listener, fake, body)
+}
+
+#[test]
+fn actual_nonblocking_accept_serves_complete_large_asset_to_slow_reader() {
+    let (gateway, listener, fake, body) = large_asset_fixture(Duration::from_secs(2));
+    let address = listener.local_addr().unwrap();
+    let request = format!("GET /module.wasm HTTP/1.1\r\nHost: {address}\r\n\r\n");
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || gateway.serve_until(listener, server_stop));
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    socket.write_all(request.as_bytes()).unwrap();
+    // Let the initial send buffer fill before draining the body, as happens
+    // while the browser is loading and compiling its other assets.
+    thread::sleep(Duration::from_millis(100));
+    let mut response = Vec::new();
+    let read = socket.read_to_end(&mut response);
+    drop(socket);
+    stop.store(true, Ordering::Release);
+    let served = server.join().unwrap();
+    read.unwrap();
+    served.unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let split = response.windows(4).position(|v| v == b"\r\n\r\n").unwrap() + 4;
+    let header = std::str::from_utf8(&response[..split]).unwrap();
+    assert!(header.contains(&format!("Content-Length: {}\r\n", body.len())));
+    assert_eq!(&response[split..], body.as_slice());
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn inherited_nonblocking_mode_is_cleared_before_large_response_on_every_platform() {
+    let (gateway, listener, fake, body) = large_asset_fixture(Duration::from_secs(2));
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        // Linux does not inherit this mode from accept. Set it explicitly so
+        // the production Mac failure also has a portable regression.
+        stream.set_nonblocking(true).unwrap();
+        handle(&gateway.0, stream)
+    });
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    socket
+        .write_all(format!("GET /module.wasm HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+        .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let mut response = Vec::new();
+    let read = socket.read_to_end(&mut response);
+    let served = server.join().unwrap();
+    read.unwrap();
+    served.unwrap();
+    let split = response.windows(4).position(|v| v == b"\r\n\r\n").unwrap() + 4;
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    assert_eq!(&response[split..], body.as_slice());
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn stalled_large_asset_write_keeps_original_deadline_during_shutdown() {
+    let (gateway, listener, fake, body) = large_asset_fixture(Duration::from_millis(100));
+    let address = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || gateway.serve_until(listener, server_stop));
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    socket
+        .write_all(format!("GET /module.wasm HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+        .unwrap();
+    // Confirm that the request was admitted, then leave the receive buffer
+    // undrained. Shutdown must wait only for this request's existing deadline.
+    let mut first = [0; 1];
+    socket.read_exact(&mut first).unwrap();
+    let started = Instant::now();
+    stop.store(true, Ordering::Release);
+    let served = server.join().unwrap();
+    let elapsed = started.elapsed();
+    let mut response = first.to_vec();
+    socket.read_to_end(&mut response).unwrap();
+    served.unwrap();
+    assert!(elapsed < Duration::from_secs(1));
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let split = response.windows(4).position(|v| v == b"\r\n\r\n").unwrap() + 4;
+    assert!(response.len() - split < body.len());
+    assert_eq!(&response[split..], &body[..response.len() - split]);
     assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
 }

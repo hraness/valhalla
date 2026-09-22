@@ -323,8 +323,11 @@ for reopen and an exact duplicate retry. Nothing calls encryption again.
 
 Status distinguishes `Pending`, `Uncertain`, `Retained` and `Stopped`.
 `Stopped` also retains an uncertainty bit: exhausting retries does not establish
-refusal. A permanent authentication/scope/conflict/protocol refusal stops the
-job. Capacity and transient transport failures use capped exponential backoff
+refusal. A scope/conflict/protocol refusal stops the job. Credential denial ends
+the tick and current host grant while preserving exact bytes, charged attempts
+and backoff. An explicit new grant with a replacement credential can retry under
+the original lifetime budget; exhausted jobs remain stopped. Capacity and
+transient transport failures use capped exponential backoff
 and a finite attempt budget. The host schedules the next tick; the library
 never sleeps, spins or starts a background worker. Each tick limits due jobs,
 canonical bytes and total time. Caller UNIX time cannot move behind retained

@@ -46,6 +46,12 @@ jobs:
         # never install or activate a LaunchAgent or require a GUI login.
         run: |
           cargo test --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "${{ matrix.target }}" --bin vhalla private_host::
+      - name: macOS browser gateway socket regressions
+        if: runner.os == 'macOS'
+        # macOS inherits listener descriptor flags on accepted sockets. Exercise
+        # real server acceptance and complete large-asset writes on this platform.
+        run: |
+          cargo test --release --locked -p vhalla-private-native --features agent-rpc,relay-tls --target "${{ matrix.target }}" --lib relay::http::tests::
       - name: Smoke check
         shell: bash
         env:

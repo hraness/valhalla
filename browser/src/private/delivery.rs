@@ -166,6 +166,11 @@ impl Delivery {
         }
         Ok(())
     }
+    async fn halt<T>(&mut self) -> Result<T> {
+        self.state.stopped = true;
+        self.save().await?;
+        Err(Failure::Invalid)
+    }
     pub fn report(&self, context: Context, review: bool) -> DeliveryReport {
         DeliveryReport {
             context,
@@ -210,27 +215,23 @@ impl Delivery {
         let raw = match raw {
             Ok(raw) => raw,
             Err(transport::Error::Retry) => return Ok(None),
-            Err(transport::Error::Refused) => {
-                self.state.stopped = true;
-                self.save().await?;
-                return Ok(None);
-            }
+            Err(transport::Error::Authorization) => return Err(Failure::State),
+            Err(transport::Error::Refused) => return self.halt().await,
         };
-        let (status, body) =
-            codec::decode_frame(&raw, maximum.saturating_sub(4)).map_err(|_| Failure::Invalid)?;
+        let (status, body) = match codec::decode_frame(&raw, maximum.saturating_sub(4)) {
+            Ok(frame) => frame,
+            Err(_) => return self.halt().await,
+        };
         match codec::decode_status(status, body) {
             Ok(body) => Ok(Some(body)),
+            Err(codec::NetError::Denied) => Err(Failure::State),
             Err(
                 codec::NetError::Capacity
                 | codec::NetError::Unavailable
                 | codec::NetError::Connect
                 | codec::NetError::Timeout,
             ) => Ok(None),
-            Err(_) => {
-                self.state.stopped = true;
-                self.save().await?;
-                Ok(None)
-            }
+            Err(_) => self.halt().await,
         }
     }
     async fn own_item(session: &mut Session, item: &RelayItem) -> Result<bool> {
@@ -305,7 +306,9 @@ impl Delivery {
             let Some(reply) = self.exchange(session, codec::OP_PUT, &raw, 46).await? else {
                 return Ok(self.report(context, false));
             };
-            codec::decode_receipt(&reply, &item).map_err(|_| Failure::Invalid)?;
+            if codec::decode_receipt(&reply, &item).is_err() {
+                return self.halt().await;
+            }
             self.state.sent = item.sequence();
             self.state.retained = self.state.retained.checked_add(1).ok_or(Failure::State)?;
             self.state.pending.clear();
@@ -321,15 +324,17 @@ impl Delivery {
             else {
                 return Ok(self.report(context, false));
             };
-            let page = codec::decode_page(&raw, self.state.cursor, model::PAGE)
-                .map_err(|_| Failure::Invalid)?;
+            let page = match codec::decode_page(&raw, self.state.cursor, model::PAGE) {
+                Ok(page) => page,
+                Err(_) => return self.halt().await,
+            };
             if page.head < self.state.cursor
                 || page
                     .records
                     .iter()
                     .any(|r| r.item.namespace() != self.namespace)
             {
-                return Err(Failure::Invalid);
+                return self.halt().await;
             }
             self.state.success();
             self.state.staged_after = self.state.cursor;
