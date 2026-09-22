@@ -419,7 +419,7 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
                     || !m.members.iter().any(|e| e.claims().device == device)
                 {
                     return Err(
-                        "Select an admitted device other than this fixed owner device.".into(),
+                        "Select an admitted device other than the current owner device.".into(),
                     );
                 }
             }
@@ -469,6 +469,44 @@ pub(super) async fn perform(app: &App, ticket: u64, action: Action) -> Result<()
             )?;
             refresh(app, ticket).await?;
             status(app, "Same owner device renewed and epoch advanced. Prior message consent is invalid; this does not recover a lost owner device.", false);
+        }
+        Action::Succeed => {
+            let successor = key(&input(app, "private-succeed-device").value())?;
+            let validity = {
+                let s = app.borrow();
+                let m = s.room.as_ref().ok_or("No selected room.")?;
+                let owner = m.owner.claims();
+                let target = m
+                    .members
+                    .iter()
+                    .find(|e| e.claims().device == successor)
+                    .ok_or("Select an already-admitted member device; an unknown key cannot take ownership.")?;
+                if successor == owner.device {
+                    return Err("That device already holds owner authority.".into());
+                }
+                if target.claims().account != owner.account {
+                    return Err(
+                        "Succession stays inside this account; select a device with the same account key."
+                            .into(),
+                    );
+                }
+                target.claims().validity
+            };
+            artifact(
+                app,
+                call(
+                    app,
+                    ticket,
+                    Request::Succeed {
+                        operation: operation()?,
+                        successor,
+                        validity,
+                    },
+                )
+                .await?,
+            )?;
+            refresh(app, ticket).await?;
+            status(app, "Ownership handed to the selected device and epoch advanced. This device keeps ordinary membership; only the new owner issues controls now.", false);
         }
         Action::Controls | Action::ControlsNext => {
             controls(app, ticket, matches!(action, Action::ControlsNext)).await?

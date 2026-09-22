@@ -7,8 +7,8 @@ explicit local file exchange. The optional browser worker now joins account and
 room custody. A bounded read-only archive core and native encrypted-file archive workflow are
 implemented. The optional browser interface has passed its two-account file-exchange journey and now shares the
 same `.vharchive` export, interruption-safe import and read-only archive inspection as the native CLI. Owner-authorized
-same-account fresh-device rejoin is implemented and exercised end-to-end; live custody transfer, owner-device succession
-and automatic confidential delivery remain unfinished. Public discovery and public author
+same-account fresh-device rejoin and owner-device succession are implemented and exercised end-to-end;
+live custody transfer and automatic confidential delivery remain unfinished. Public discovery and public author
 backups must never carry private state or private invitations.
 
 ## Components and default dependencies
@@ -34,8 +34,9 @@ backups must never carry private state or private invitations.
 
 The CLI's optional `experimental-private` feature exposes create, signed offer
 inspection/import, encrypted contact request/response, message send/receive,
-exact retry/export, membership inspection, removal, owner renewal, signed
-control-proof export, owner-control observation and fork-evidence reporting. Its
+exact retry/export, membership inspection, removal, owner renewal, owner-device
+succession, signed control-proof export, owner-control observation and
+fork-evidence reporting. Its
 [command guide](../crates/vhalla-cli/README.md#local-encrypted-private-room-files-experimental-private)
 includes the full two-account file exchange. It opens existing identity custody,
 uses only explicit local stores, and has explicit canonical relay-item export and
@@ -96,12 +97,27 @@ self-update is checked to contain only the intended credential update, with no
 hidden membership, PSK or extension proposals. It advances the epoch, control
 floor and roster digest atomically and supports exact retained retries.
 
-Owner-device succession is not implemented. Losing every copy of that device's
-current custody can leave a room unable to administer membership. An account key
-alone cannot recover MLS state. A future succession policy must be explicitly
-authorized by the original anchor and retain a common accepted control floor;
-no current anchor is implicitly upgraded. Member renewal currently means an
-owner-authorized fresh-device rejoin, not a reset or clone of existing state.
+Owner-device succession is implemented through `succession_request` and
+`succeed`, which hand owner authority to another device already enrolled under
+the same account. The account signs a bounded `OwnerSuccessionClaims` grant
+pinned to the room, account, predecessor device, exact successor enrollment,
+control sequence and validity interval; the predecessor device signs the
+carrying `ControlChange::Succession` owner control, which rides the ordinary
+floor ordering, encrypted envelope and fork-quarantine machinery. Applying it
+atomically installs the successor as owner with no roster churn, demotes the
+predecessor to an ordinary member, clears outstanding owner-scoped offers and
+retains the grant as bounded historical evidence — at most 16 recorded
+successions. Owner-dependent validation pins the owner device at the relevant
+control sequence rather than assuming one device for the room's lifetime, so
+history signed by earlier generations stays verifiable and controls signed by
+the current owner verify after the handoff. Exact retries return the retained
+ciphertext. Membership inspection, contact offers and join packets carry the
+retained chain so every device authenticates the current owner through each
+recorded handoff. The predecessor must still be live to commit the handoff:
+losing every copy of the current owner device's custody before a succession
+leaves the room unable to administer membership, and an account key alone
+cannot recover MLS state. Member renewal otherwise remains an owner-authorized
+fresh-device rejoin, not a reset or clone of existing state.
 
 ## Custody and confidential artifacts
 
@@ -162,12 +178,15 @@ against local history only, not a global freshness claim.
 
 ## Confidential recipient bootstrap
 
-`create_contact_offer` produces one 713-byte secret file bound to a full recipient
-account. It contains the signed anchor and current owner enrollment, a separate
-random offer ID, expiry, and two independently random direction keys. The anchored
-owner device signs the entire canonical file, including those keys. An attacker
-cannot copy legitimate bootstrap records and substitute its own encryption keys.
-The file still requires confidential transfer; signing does not make it public.
+`create_contact_offer` produces one bounded secret file (714 bytes before any
+succession, at most 6794 bytes) bound to a full recipient account. It contains
+the signed anchor and current owner enrollment, the exact retained succession
+chain proving how the current owner holds authority, a separate random offer
+ID, expiry, and two independently random direction keys. The current owner
+device signs the entire canonical file, including those keys. An attacker
+cannot copy legitimate bootstrap records and substitute its own encryption
+keys. The file still requires confidential transfer; signing does not make it
+public.
 
 `ContactBootstrap::inspect` checks the complete offer against independently
 selected owner and recipient account keys and current time. Its metadata getters
@@ -329,8 +348,8 @@ Before a private-room release, finish and qualify:
    keeping strict separation between relay retention and member acceptance.
 5. Enforced agent compartments and inference-provider grants, with fresh contexts
    across rooms and explicit intentional export.
-6. Owner-device succession policy, overload/storage-full behavior, full worker
-   termination recovery, independent-peer operation and relevant live acceptance.
+6. Overload/storage-full behavior, full worker termination recovery,
+   independent-peer operation and relevant live acceptance.
 
 The public site's readiness page remains the end-user status. This document
 describes implemented foundations and does not advertise a live private network.
@@ -376,5 +395,6 @@ exchange and exact retained retries. It is a new enrollment, never a ratchet
 restore — account backup alone cannot reconstruct MLS state, and a copied store
 is never a safe second sender. Historical archive
 inspection never authorizes resuming an old device. Retain all encrypted parts
-and the full locator; never silently clone a ratchet. Owner-device succession and
-safe live-custody transfer remain unimplemented.
+and the full locator; never silently clone a ratchet. Owner-device succession
+hands authority to an already-enrolled same-account device while the predecessor
+is live; safe live-custody transfer of an active sender remains unimplemented.

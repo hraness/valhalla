@@ -282,5 +282,10 @@ stay refused and retained history stays readable. A second
 qualification-only phase applies a real next-floor control under a caller
 clock past the enrollment validity: the ordinary time refusal ends the
 worker without publishing or quarantining anything, and after another
-document teardown the identical envelope applies under the real clock.
-Owner succession and safe live-device transfer remain separate work.
+document teardown the identical envelope applies under the real clock. The
+journey then exercises owner succession end-to-end: the owner hands authority
+to its already-admitted same-account fresh device through one distributed
+owner control, the predecessor keeps ordinary membership but loses owner
+actions, the promoted successor issues a renewal control, and the predecessor
+applies it in order without regaining owner actions. Safe live-device
+transfer remains separate work.

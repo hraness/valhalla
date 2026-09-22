@@ -252,6 +252,7 @@ impl<S: Store> Kernel<S> {
             invitation,
             control: control.clone(),
             owner: work.state.owner.clone(),
+            successions: work.state.successions.clone(),
             member: join.enrollment,
             commit,
             welcome,
@@ -313,6 +314,7 @@ impl<S: Store> Kernel<S> {
         work.state.check_time(now)?;
         if packet.owner.signed() != work.state.owner.signed()
             || packet.member.signed() != work.state.local.signed()
+            || packet.successions != work.state.successions
         {
             return Err(Error::Scope);
         }
@@ -355,6 +357,15 @@ impl<S: Store> Kernel<S> {
                 .roster
                 .iter()
                 .any(|e| e.signed() == work.state.local.signed())
+            || match transition.sequence() {
+                // The admission control must follow every accepted handoff; a
+                // packet claiming an earlier floor cannot carry this roster.
+                Ok(sequence) => packet
+                    .successions
+                    .last()
+                    .is_some_and(|grant| grant.claims().sequence >= sequence),
+                Err(_) => true,
+            }
         {
             return Err(Error::Policy);
         }
@@ -380,8 +391,12 @@ impl<S: Store> Kernel<S> {
         else {
             return Err(Error::Encoding);
         };
+        // The joiner config must match the creator's local flags: a member
+        // promoted to owner issues welcomes, and only this local option puts
+        // the ratchet tree extension into them.
         let config = MlsGroupJoinConfig::builder()
             .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
+            .use_ratchet_tree_extension(true)
             .sender_ratchet_configuration(SenderRatchetConfiguration::new(4, 32))
             .build();
         // OpenMLS consumes KeyPackage material here, exclusively in the isolated
@@ -553,6 +568,12 @@ impl<S: Store> Kernel<S> {
         }
         if packet.control.claims().change == ControlChange::OwnerUpdate {
             return self.apply_owner_renewal(work, packet, envelope, now).await;
+        }
+        if matches!(
+            packet.control.claims().change,
+            ControlChange::Succession { .. }
+        ) {
+            return self.apply_succession(work, packet, envelope, now).await;
         }
         work.state.check_time(now)?;
         check_control(&work, &packet.control, &packet.commit)?;

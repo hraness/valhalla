@@ -122,13 +122,15 @@ Before a private-room release, complete and qualify:
   independent acceptance status. An isolated sender cannot detect an unseen
   removal merely by asking an untrusted relay.
 - Explicit fresh-device admission now has qualified kernel, CLI and browser
-  coverage; device retirement and owner succession remain when current ratchet
-  custody cannot safely move.
+  coverage. Account-authorized owner succession is implemented and qualified:
+  a live predecessor hands authority to an already-enrolled same-account
+  device through one retained account-signed grant. Safe live-custody transfer
+  and device retirement remain when current ratchet custody cannot safely move.
   History recovery is a separate choice; a key-only restore cannot recover
   erased history keys or justify restarting old counters.
-- Browser custody locking, account and room recovery UX, and an explicit
-  owner-device succession policy for newly created rooms. Existing anchors
-  cannot acquire new recovery authority implicitly.
+- Browser custody locking plus account and room recovery UX remain. Existing
+  anchors cannot acquire new recovery authority implicitly; succession still
+  requires a live predecessor to commit its handoff control.
 
 Owner availability currently gates membership and key updates. Loss of all
 current owner-device custody can strand administration. Relays can observe

@@ -810,11 +810,11 @@ fn contact_single_secret_file_initializes_fresh_recipient_after_pinned_inspectio
             .create_contact_offer(op(400), recipient_key, validity(pair.now), pair.now)
             .await
             .unwrap();
-        assert_eq!(
-            secret.confidential_bytes().len(),
-            crate::contact::MAX_OFFER_BYTES
-        );
-        assert_eq!(crate::contact::MAX_OFFER_BYTES, 713);
+        // v2 offers append a bounded succession section; an empty chain costs
+        // one count byte over the v1 fixed size and the bound covers 16 grants.
+        assert_eq!(secret.confidential_bytes().len(), 714);
+        assert!(secret.confidential_bytes().len() <= crate::contact::MAX_OFFER_BYTES);
+        assert_eq!(crate::contact::MAX_OFFER_BYTES, 6794);
         assert!(matches!(
             ContactBootstrap::inspect(
                 secret.confidential_bytes(),

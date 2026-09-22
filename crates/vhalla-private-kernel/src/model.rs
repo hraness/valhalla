@@ -11,6 +11,8 @@ use crate::{
 
 pub(crate) const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 const MAX_PROVIDER_RECORDS: usize = 256;
+/// Bounded account-authorized owner handoffs ever accepted for this room.
+pub(crate) const MAX_SUCCESSIONS: usize = 16;
 // No automatic migration from preserved plaintext-control qualification images.
 const MAGIC: &[u8] = b"VHPKSTATE\x04";
 const FAULT_RESERVE: usize = MAX_RECORD_BYTES + 64;
@@ -26,6 +28,9 @@ pub(crate) struct State {
     pub(crate) anchor: VerifiedRoomAnchor,
     pub(crate) local: VerifiedDeviceEnrollment,
     pub(crate) owner: VerifiedDeviceEnrollment,
+    /// Accepted account-authorized owner handoffs in ascending control order.
+    /// The control at each grant's exact sequence remains predecessor-signed.
+    pub(crate) successions: Vec<VerifiedOwnerSuccession>,
     pub(crate) roster: Vec<VerifiedDeviceEnrollment>,
     pub(crate) base: ControlFloor,
     pub(crate) checkpoint: Option<crate::checkpoint::Checkpoint>,
@@ -59,10 +64,55 @@ impl State {
             quarantined: self.fault.is_some(),
         }
     }
+    /// The owner device expected to have signed the control at `sequence`:
+    /// the anchor device before the first grant's control, then the device of
+    /// the latest grant whose carrying control precedes `sequence`.
+    pub(crate) fn owner_device_at(&self, sequence: u64) -> Result<Key> {
+        let mut owner = self.anchor.claims().owner_device;
+        for grant in &self.successions {
+            if sequence <= grant.claims().sequence {
+                return Ok(owner);
+            }
+            owner = grant.claims().successor.claims().device;
+        }
+        Ok(owner)
+    }
+    /// Whether `device` held owner authority before its accepted handoff. A
+    /// demoted device keeps ordinary member history without a join checkpoint.
+    pub(crate) fn was_owner(&self, device: Key) -> bool {
+        self.successions
+            .iter()
+            .any(|grant| grant.claims().predecessor == device)
+    }
+    /// Verify the full retained handoff chain against the anchor and return the
+    /// device it authorizes as current owner. Grants describe accepted controls;
+    /// a phase that has accepted controls must not retain grants past its floor.
+    fn succession_owner(&self) -> Result<Key> {
+        let mut expected = self.anchor.claims().owner_device;
+        let mut prior_sequence = 0u64;
+        let can_trail = !matches!(self.phase, Phase::AwaitingWelcome);
+        for grant in &self.successions {
+            let claims = grant.claims();
+            if claims.scope != self.anchor.scope()
+                || claims.account != self.anchor.claims().owner_account
+                || claims.predecessor != expected
+                || claims.sequence <= prior_sequence
+                || (can_trail && claims.sequence > self.floor.sequence())
+            {
+                return Err(Error::Policy);
+            }
+            prior_sequence = claims.sequence;
+            expected = claims.successor.claims().device;
+        }
+        Ok(expected)
+    }
     pub(crate) fn validate(&self, context: Context) -> Result<()> {
+        if self.successions.len() > MAX_SUCCESSIONS {
+            return Err(Error::Bounds);
+        }
         if self.context() != context
             || self.anchor.claims().owner_account != self.owner.claims().account
-            || self.anchor.claims().owner_device != self.owner.claims().device
+            || self.succession_owner()? != self.owner.claims().device
         {
             return Err(Error::Scope);
         }
@@ -127,26 +177,42 @@ impl State {
                 }
             }
         }
-        if is_owner && (self.base.sequence() != 0 || self.checkpoint.is_some()) {
+        // A promoted successor keeps its honest member artifacts and history
+        // base; a never-joined owner must still be the original writer.
+        let promoted = self.joined.is_some();
+        if is_owner
+            && ((!promoted
+                && (self.checkpoint.is_some()
+                    || self.key_package.is_some()
+                    || self.base.sequence() != 0))
+                || (promoted && (self.checkpoint.is_none() || self.key_package.is_none())))
+        {
             return Err(Error::Policy);
         }
+        let demoted = self.was_owner(self.local.claims().device);
         if let Some(checkpoint) = &self.checkpoint {
             let c = checkpoint.claims();
             if c.scope != context.scope
-                || c.owner != self.owner.claims().device
+                || c.owner != self.owner_device_at(c.accepted.sequence())?
                 || c.parent != self.base
                 || c.accepted.sequence() > self.floor.sequence()
-                || !c.roster.iter().any(|e| e.signed() == self.local.signed())
+                // The checkpoint attests that the local device was rostered
+                // then; a later owner renewal rotates the enrollment bytes,
+                // so the pin is the device, not the stale record.
+                || !c
+                    .roster
+                    .iter()
+                    .any(|e| e.claims().device == self.local.claims().device)
             {
                 return Err(Error::Policy);
             }
-        } else if matches!(self.phase, Phase::MemberJoined | Phase::Removed) {
+        } else if matches!(self.phase, Phase::MemberJoined | Phase::Removed) && !demoted {
             return Err(Error::Policy);
         }
         if let Some(fault) = &self.fault {
             let c = fault.conflicting.claims();
             if c.scope != context.scope
-                || c.owner_device != self.owner.claims().device
+                || c.owner_device != self.owner_device_at(fault.accepted.sequence())?
                 || c.sequence()? != fault.accepted.sequence()
                 || fault.accepted.sequence() > self.floor.sequence()
                 || fault.accepted.id() == Some(fault.conflicting.id())
@@ -154,10 +220,8 @@ impl State {
                 return Err(Error::Policy);
             }
         }
-        if is_owner && (self.key_package.is_some() || self.joined.is_some()) {
-            return Err(Error::Policy);
-        }
         if matches!(self.phase, Phase::MemberJoined | Phase::Removed)
+            && !demoted
             && (self.key_package.is_none() || self.joined.is_none())
         {
             return Err(Error::Policy);
@@ -321,6 +385,15 @@ impl State {
             w.blob(key, 4096)?;
             w.blob(value, MAX_STATE_BYTES)?;
         }
+        // Trailing extension: rooms that never accepted a handoff keep the exact
+        // v4 image so an older binary can still open them. Strict trailing rules
+        // make a pre-succession binary refuse a post-succession image entirely.
+        if !self.successions.is_empty() {
+            w.byte(u8::try_from(self.successions.len()).map_err(|_| Error::Bounds)?)?;
+            for grant in &self.successions {
+                w.blob(&grant.signed().encode(), MAX_RECORD_BYTES)?;
+            }
+        }
         Ok(w.finish())
     }
     pub(crate) fn decode(raw: &[u8], context: Context) -> Result<Self> {
@@ -414,6 +487,19 @@ impl State {
             }
             records.push((key.to_vec(), value.to_vec()));
         }
+        let successions = if r.rest.is_empty() {
+            Vec::new()
+        } else {
+            let count = usize::from(r.byte()?);
+            if count == 0 || count > MAX_SUCCESSIONS {
+                return Err(Error::Bounds);
+            }
+            let mut grants = Vec::with_capacity(count);
+            for _ in 0..count {
+                grants.push(SignedOwnerSuccession::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?);
+            }
+            grants
+        };
         r.end()?;
         let state = Self {
             revision,
@@ -426,6 +512,7 @@ impl State {
             anchor,
             local,
             owner,
+            successions,
             roster,
             base,
             checkpoint,
@@ -548,6 +635,32 @@ impl Working {
     }
 }
 
+/// Verify a complete account-authorized owner handoff chain against an anchor
+/// and return the device it authorizes as current owner. The chain is empty
+/// exactly when the anchor's own owner device still holds authority.
+pub(crate) fn check_succession_chain(
+    anchor: &VerifiedRoomAnchor,
+    grants: &[VerifiedOwnerSuccession],
+) -> Result<Key> {
+    if grants.len() > MAX_SUCCESSIONS {
+        return Err(Error::Bounds);
+    }
+    let mut expected = anchor.claims().owner_device;
+    let mut prior_sequence = 0u64;
+    for grant in grants {
+        let claims = grant.claims();
+        if claims.scope != anchor.scope()
+            || claims.account != anchor.claims().owner_account
+            || claims.predecessor != expected
+            || claims.sequence <= prior_sequence
+        {
+            return Err(Error::Policy);
+        }
+        prior_sequence = claims.sequence;
+        expected = claims.successor.claims().device;
+    }
+    Ok(expected)
+}
 pub(crate) fn check_credential(
     credential: &Credential,
     signature_key: &[u8],

@@ -39,12 +39,13 @@ impl<S: Store> Kernel<S> {
         let mut total = 0usize;
         while cursor.sequence() < head.sequence() && records.len() < limit {
             let retained = self.control_at(cursor.next_sequence()?).await?;
-            if retained.control.claims().owner_device != work.state.owner.claims().device
+            let floor = retained.floor()?;
+            if retained.control.claims().owner_device
+                != work.state.owner_device_at(floor.sequence())?
                 || retained.control.claims().parent != cursor
             {
                 return Err(Error::Policy);
             }
-            let floor = retained.floor()?;
             let bytes = retained.envelope.ok_or(Error::Missing)?;
             let size = total.checked_add(bytes.len()).ok_or(Error::Bounds)?;
             if size > MAX_PAGE_BYTES {
@@ -139,7 +140,8 @@ impl<S: Store> Kernel<S> {
         } else {
             let packet = self.control_at(floor.sequence()).await?;
             if packet.floor()? != floor
-                || packet.control.claims().owner_device != work.state.owner.claims().device
+                || packet.control.claims().owner_device
+                    != work.state.owner_device_at(floor.sequence())?
             {
                 return Err(Error::Policy);
             }
@@ -175,7 +177,8 @@ impl<S: Store> Kernel<S> {
         let mut total = 0usize;
         while cursor.sequence() < head.sequence() && records.len() < limit {
             let packet = self.control_at(cursor.next_sequence()?).await?;
-            if packet.control.claims().owner_device != work.state.owner.claims().device
+            if packet.control.claims().owner_device
+                != work.state.owner_device_at(cursor.next_sequence()?)?
                 || packet.control.claims().parent != cursor
             {
                 return Err(Error::Policy);
@@ -216,7 +219,9 @@ impl<S: Store> Kernel<S> {
         now: u64,
     ) -> Result<Option<Working>> {
         let c = control.claims();
-        if c.scope != self.context.scope || c.owner_device != work.state.owner.claims().device {
+        if c.scope != self.context.scope
+            || c.owner_device != work.state.owner_device_at(c.sequence()?)?
+        {
             return Err(Error::Policy);
         }
         if now < work.state.clock {

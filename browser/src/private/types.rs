@@ -1,6 +1,9 @@
 //! Closed local UI/worker vocabulary. None of these reports is network authority.
 use vhalla_private_kernel::{
-    protocol::{ControlFloor, Key, SignedDeviceEnrollment, SignedRoomAnchor, Validity},
+    protocol::{
+        ControlFloor, Key, SignedDeviceEnrollment, SignedOwnerSuccession, SignedRoomAnchor,
+        Validity,
+    },
     Context, OperationId, OutboxKind, Status,
 };
 use zeroize::Zeroizing;
@@ -10,8 +13,9 @@ pub const PROFILE: [u8; 32] = *b"vhalla-browser-local-profile-v01";
 /// Separate fixed profile for read-only archive destinations. Keeping archives
 /// outside PROFILE means a live room prefix can never alias an archive view.
 pub const ARCHIVE: [u8; 32] = *b"vhalla-browser-local-archive-v01";
-/// Exact upper bound of a complete signed confidential contact offer.
-pub const MAX_OFFER: usize = 713;
+/// Exact upper bound of a complete signed confidential contact offer,
+/// including its bounded retained succession chain.
+pub const MAX_OFFER: usize = vhalla_private_kernel::MAX_OFFER_BYTES;
 /// Maximum encoded encrypted artifact accepted by the local worker interface.
 pub const MAX_ARTIFACT: usize = vhalla_private_kernel::MAX_STORED_RECORD_BYTES;
 /// Bounded local message size, including page payload and framing overhead.
@@ -119,6 +123,16 @@ pub enum Request {
         /// Stable identifier for the renewal transition.
         operation: OperationId,
         /// Explicit monotonically extended enrollment validity interval.
+        validity: Validity,
+    },
+    /// Hand owner authority to an already-enrolled device of the same account
+    /// through an account-signed grant carried by this owner's next control.
+    Succeed {
+        /// Stable identifier for the handoff transition.
+        operation: OperationId,
+        /// Complete enrolled successor device key, never a display label.
+        successor: Key,
+        /// Explicit grant validity interval for the handoff.
         validity: Validity,
     },
     /// Authenticate and apply one encrypted owner control at the current floor.
@@ -254,6 +268,10 @@ pub struct Membership {
     pub local: SignedDeviceEnrollment,
     /// Bounded current admitted roster, including the owner.
     pub members: Vec<SignedDeviceEnrollment>,
+    /// Accepted account-signed handoff chain from the anchor owner to the
+    /// current owner, in ascending control order. Empty while the anchor
+    /// device still leads.
+    pub successions: Vec<SignedOwnerSuccession>,
 }
 /// Local outbox report, not evidence that any peer received the artifact.
 pub struct Artifact {
@@ -550,7 +568,8 @@ impl Request {
             | Self::ContactRequest { .. }
             | Self::Accept { .. }
             | Self::Remove { .. }
-            | Self::Renew { .. } => ReplyKind::Artifact,
+            | Self::Renew { .. }
+            | Self::Succeed { .. } => ReplyKind::Artifact,
             Self::Offer { .. } => ReplyKind::Offer,
             Self::Receive(_) => ReplyKind::Received,
             Self::Controls { .. } => ReplyKind::Controls,

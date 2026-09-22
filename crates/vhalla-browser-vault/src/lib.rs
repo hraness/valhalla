@@ -161,6 +161,18 @@ impl UnlockedIdentity {
         request.sign(&self.key)
     }
 
+    /// Sign one exact owner-succession grant bound to a retained floor and an
+    /// already-enrolled successor device. The account signature alone transfers
+    /// nothing; only the predecessor device's carrying control commits it.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_succession(
+        &self,
+        request: &vhalla_private_protocol::UnsignedOwnerSuccession,
+    ) -> Result<vhalla_private_protocol::SignedOwnerSuccession, vhalla_private_protocol::Error>
+    {
+        request.sign(&self.key)
+    }
+
     /// Sign a typed public-room event with this exact author key.
     ///
     /// The host must durably reserve these exact unsigned bytes before calling,

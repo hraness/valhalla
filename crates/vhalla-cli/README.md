@@ -1614,6 +1614,18 @@ it cannot revoke knowledge or prior plaintext. `private renew ID STORE
 renews the same anchored owner device; recipients apply its encrypted control.
 Retain both validity endpoints unchanged for exact retries.
 
+`private succeed ID STORE --device KEY64 --operation OP32 --not-before UNIX
+--expires UNIX --out CONTROL` hands owner authority to another device already
+enrolled under the same account. The account signs a bounded succession grant
+pinned to the room, both devices, the exact control sequence and validity
+interval; the current owner device signs the carrying control. Apply the
+exported encrypted control to every member in order like any other owner
+control. The handoff is final once committed: the predecessor keeps ordinary
+membership and its received history but loses all owner operations, and
+outstanding contact offers issued under the predecessor are cleared. The
+target must already be a rostered same-account device — succession never
+admits a device — and the predecessor must be live to commit it.
+
 Adding a later member also produces an encrypted control for existing members.
 Use `private control-export ID STORE --after SEQUENCE --parent CONTROL_ID|none
 --out FILE` to export exactly the next retained envelope, then apply it in order.

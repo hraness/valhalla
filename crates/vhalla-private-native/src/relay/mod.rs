@@ -670,6 +670,7 @@ fn relay_kind(kind: OutboxKind) -> bool {
             | OutboxKind::Application
             | OutboxKind::Removal
             | OutboxKind::OwnerUpdate
+            | OutboxKind::Succession
     )
 }
 
@@ -683,6 +684,7 @@ fn kind_byte(kind: OutboxKind) -> u8 {
         OutboxKind::Application => 5,
         OutboxKind::Removal => 6,
         OutboxKind::OwnerUpdate => 7,
+        OutboxKind::Succession => 8,
     }
 }
 
@@ -695,6 +697,7 @@ fn kind_from_byte(byte: u8) -> Result<OutboxKind> {
         5 => Ok(OutboxKind::Application),
         6 => Ok(OutboxKind::Removal),
         7 => Ok(OutboxKind::OwnerUpdate),
+        8 => Ok(OutboxKind::Succession),
         _ => Err(Error::Confidential),
     }
 }

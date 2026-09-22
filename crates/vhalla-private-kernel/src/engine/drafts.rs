@@ -91,6 +91,7 @@ impl OwnerDraft {
             anchor.verify()?,
             local.clone(),
             local,
+            Vec::new(),
             now,
         )?;
         let work = Working {
@@ -122,6 +123,7 @@ pub struct MemberDraft {
     enrollment: UnsignedDeviceEnrollment,
     anchor: VerifiedRoomAnchor,
     owner: VerifiedDeviceEnrollment,
+    successions: Vec<VerifiedOwnerSuccession>,
     clock: u64,
 }
 impl MemberDraft {
@@ -135,11 +137,41 @@ impl MemberDraft {
         validity: Validity,
         now: u64,
     ) -> Result<Self> {
+        Self::checked(scope, anchor, owner, Vec::new(), account, validity, now)
+    }
+    /// Fresh device for a room whose owner authority already moved: the exact
+    /// retained grant chain must prove the selected owner against the anchor.
+    /// Supplying an empty or unrelated chain refuses; it never downgrades to
+    /// the anchor's original device.
+    pub fn new_succeeded(
+        scope: PrivateRoomScope,
+        anchor: SignedRoomAnchor,
+        owner: SignedDeviceEnrollment,
+        successions: Vec<SignedOwnerSuccession>,
+        account: Key,
+        validity: Validity,
+        now: u64,
+    ) -> Result<Self> {
+        let grants = successions
+            .iter()
+            .map(|grant| grant.verify().map_err(Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        Self::checked(scope, anchor, owner, grants, account, validity, now)
+    }
+    fn checked(
+        scope: PrivateRoomScope,
+        anchor: SignedRoomAnchor,
+        owner: SignedDeviceEnrollment,
+        successions: Vec<VerifiedOwnerSuccession>,
+        account: Key,
+        validity: Validity,
+        now: u64,
+    ) -> Result<Self> {
         let anchor = anchor.verify()?;
         let owner = owner.verify()?;
         if anchor.scope() != scope
             || anchor.claims().owner_account != owner.claims().account
-            || anchor.claims().owner_device != owner.claims().device
+            || crate::model::check_succession_chain(&anchor, &successions)? != owner.claims().device
         {
             return Err(Error::Scope);
         }
@@ -159,6 +191,7 @@ impl MemberDraft {
             enrollment,
             anchor,
             owner,
+            successions,
             clock: now,
         })
     }
@@ -192,7 +225,14 @@ impl MemberDraft {
         let local = enrollment.verify()?;
         local.claims().validity.check_at(now)?;
         self.owner.claims().validity.check_at(now)?;
-        let state = initial(Phase::AwaitingWelcome, self.anchor, local, self.owner, now)?;
+        let state = initial(
+            Phase::AwaitingWelcome,
+            self.anchor,
+            local,
+            self.owner,
+            self.successions,
+            now,
+        )?;
         initialize(
             store,
             key,
@@ -204,11 +244,13 @@ impl MemberDraft {
         .await
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn initial(
     phase: Phase,
     anchor: VerifiedRoomAnchor,
     local: VerifiedDeviceEnrollment,
     owner: VerifiedDeviceEnrollment,
+    successions: Vec<VerifiedOwnerSuccession>,
     now: u64,
 ) -> Result<State> {
     Ok(State {
@@ -222,6 +264,7 @@ fn initial(
         anchor,
         local,
         roster: vec![owner.clone()],
+        successions,
         owner,
         base: ControlFloor::new(0, None)?,
         checkpoint: None,

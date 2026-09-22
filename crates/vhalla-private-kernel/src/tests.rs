@@ -926,15 +926,34 @@ async fn pending_device(pair: &Pair, account: &SigningKey) -> (Kernel<Memory>, M
         &pair.owner_key,
         pair.owner.status().context,
     );
-    let draft = MemberDraft::new(
-        pair.owner.status().context.scope,
-        owner.state.anchor.signed().clone(),
-        owner.state.owner.signed().clone(),
-        key(account),
-        validity(pair.now),
-        pair.now,
-    )
-    .unwrap();
+    let chain: Vec<SignedOwnerSuccession> = owner
+        .state
+        .successions
+        .iter()
+        .map(|grant| grant.signed().clone())
+        .collect();
+    let draft = if chain.is_empty() {
+        MemberDraft::new(
+            pair.owner.status().context.scope,
+            owner.state.anchor.signed().clone(),
+            owner.state.owner.signed().clone(),
+            key(account),
+            validity(pair.now),
+            pair.now,
+        )
+        .unwrap()
+    } else {
+        MemberDraft::new_succeeded(
+            pair.owner.status().context.scope,
+            owner.state.anchor.signed().clone(),
+            owner.state.owner.signed().clone(),
+            chain,
+            key(account),
+            validity(pair.now),
+            pair.now,
+        )
+        .unwrap()
+    };
     let enrollment = draft.enrollment_request().sign(account).unwrap();
     let disk = Memory::default();
     let secret = storage_key();
@@ -1893,3 +1912,5 @@ mod confidential;
 mod contact;
 
 mod recovery;
+
+mod succession;

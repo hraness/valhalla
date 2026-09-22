@@ -93,6 +93,11 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
             operation: op(),
             validity: validity(),
         },
+        Request::Succeed {
+            operation: op(),
+            successor: key(),
+            validity: validity(),
+        },
         Request::ApplyControl(bytes(23)),
         Request::Controls {
             after: ControlFloor::new(0, None).unwrap(),
@@ -676,4 +681,136 @@ fn apply_control_at_frames_round_trip_and_answer_membership() {
     }
     .encode()
     .is_err());
+}
+#[test]
+fn succession_artifact_round_trip_carries_the_owner_control_kind() {
+    for kind in [
+        OutboxKind::Succession,
+        OutboxKind::OwnerUpdate,
+        OutboxKind::Removal,
+    ] {
+        let response = Response::Artifact {
+            context: context(),
+            artifact: Artifact {
+                sequence: 7,
+                operation: op(),
+                kind,
+                bytes: Some(bytes(23)),
+            },
+        };
+        let raw = response.encode().unwrap();
+        let restored = Response::decode(&raw).unwrap();
+        assert_eq!(restored.encode().unwrap(), raw);
+    }
+}
+
+#[test]
+fn membership_view_round_trips_and_verifies_the_succession_chain() {
+    use vhalla_private_kernel::protocol::{
+        DeviceEnrollmentClaims, OwnerSuccessionClaims, RoomAnchorClaims, UnsignedDeviceEnrollment,
+        UnsignedOwnerSuccession, UnsignedRoomAnchor,
+    };
+    let account = SigningKey::from_bytes(&[7; 32]);
+    let account_key = Key::from_bytes(account.verifying_key().to_bytes()).unwrap();
+    let owner_key = SigningKey::from_bytes(&[8; 32]);
+    let owner_device = Key::from_bytes(owner_key.verifying_key().to_bytes()).unwrap();
+    let fresh_key = SigningKey::from_bytes(&[9; 32]);
+    let fresh_device = Key::from_bytes(fresh_key.verifying_key().to_bytes()).unwrap();
+    let scope = context().scope;
+    let anchor = UnsignedRoomAnchor::new(RoomAnchorClaims {
+        room: scope.room,
+        owner_account: account_key,
+        owner_device,
+    })
+    .unwrap()
+    .sign(&account)
+    .unwrap();
+    let enrollment = |device| {
+        UnsignedDeviceEnrollment::new(DeviceEnrollmentClaims {
+            account: account_key,
+            device,
+            validity: validity(),
+        })
+        .unwrap()
+        .sign(&account)
+        .unwrap()
+    };
+    let owner_enrollment = enrollment(owner_device);
+    let fresh_enrollment = enrollment(fresh_device);
+    let scope = anchor.verify().unwrap().scope();
+    let grant = UnsignedOwnerSuccession::new(OwnerSuccessionClaims {
+        scope,
+        account: account_key,
+        predecessor: owner_device,
+        successor: fresh_enrollment.clone(),
+        sequence: 4,
+        validity: validity(),
+    })
+    .unwrap()
+    .sign(&account)
+    .unwrap();
+    let mut status = status();
+    status.context = Context {
+        scope: anchor.verify().unwrap().scope(),
+        account: account_key,
+        device: fresh_device,
+    };
+    status.members = 2;
+    // The roster may hold a renewed successor enrollment; the retained grant
+    // still pins the exact enrollment it authorized. Both forms decode.
+    for renewed in [fresh_enrollment.clone(), {
+        UnsignedDeviceEnrollment::new(DeviceEnrollmentClaims {
+            account: account_key,
+            device: fresh_device,
+            validity: Validity::new(2, 3).unwrap(),
+        })
+        .unwrap()
+        .sign(&account)
+        .unwrap()
+    }] {
+        let owner = renewed.clone();
+        let view = Membership {
+            status,
+            anchor: anchor.clone(),
+            owner,
+            local: renewed.clone(),
+            members: vec![owner_enrollment.clone(), renewed],
+            successions: vec![grant.clone()],
+        };
+        let raw = Response::Membership(Box::new(view)).encode().unwrap();
+        let restored = Response::decode(&raw).unwrap();
+        assert_eq!(restored.encode().unwrap(), raw);
+    }
+    // A chain that does not walk from the anchor device to the reported owner
+    // is refused, and an empty chain cannot name a different owner device.
+    for (mut grants, owner) in [
+        (
+            vec![UnsignedOwnerSuccession::new(OwnerSuccessionClaims {
+                scope,
+                account: account_key,
+                predecessor: fresh_device,
+                successor: owner_enrollment.clone(),
+                sequence: 5,
+                validity: validity(),
+            })
+            .unwrap()
+            .sign(&account)
+            .unwrap()],
+            owner_enrollment.clone(),
+        ),
+        (vec![grant.clone()], owner_enrollment.clone()),
+        (Vec::new(), fresh_enrollment.clone()),
+    ] {
+        let view = Membership {
+            status,
+            anchor: anchor.clone(),
+            owner,
+            local: fresh_enrollment.clone(),
+            members: vec![owner_enrollment.clone(), fresh_enrollment.clone()],
+            successions: grants.drain(..).collect(),
+        };
+        assert!(Response::Membership(Box::new(view))
+            .encode()
+            .map_or(true, |raw| { Response::decode(&raw).is_err() }));
+    }
 }

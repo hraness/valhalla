@@ -202,11 +202,19 @@ pub enum ControlChange {
     /// Explicit owner leaf update with no membership changes. Does not authorize
     /// an owner/device handoff; the adapter must inspect the staged MLS update.
     OwnerUpdate,
+    /// Anchor-authorized owner-device handoff. The carrying control is still
+    /// predecessor-signed; the grant is verified on decode but authorizes
+    /// nothing until the kernel pins it to the retained floor and roster.
+    Succession {
+        /// Complete account-signed grant bound to this exact control sequence.
+        grant: Box<SignedOwnerSuccession>,
+    },
 }
 impl ControlChange {
     fn validate(&self) -> Result<(), Error> {
         match self {
             Self::OwnerUpdate => Ok(()),
+            Self::Succession { grant } => grant.verify().map(|_| ()),
             Self::Membership {
                 additions,
                 removals,
@@ -242,6 +250,12 @@ impl ControlChange {
     fn write(&self, out: &mut Vec<u8>) {
         match self {
             Self::OwnerUpdate => out.extend([1, 0, 0]),
+            Self::Succession { grant } => {
+                out.extend([2, 0, 0]);
+                let raw = grant.encode();
+                out.extend((raw.len() as u32).to_be_bytes());
+                out.extend(raw);
+            }
             Self::Membership {
                 additions,
                 removals,
@@ -266,6 +280,9 @@ impl ControlChange {
         }
         match kind {
             1 if additions == 0 && removals == 0 => Ok(Self::OwnerUpdate),
+            2 if additions == 0 && removals == 0 => Ok(Self::Succession {
+                grant: Box::new(SignedOwnerSuccession::decode(r.blob(MAX_RECORD_BYTES)?)?),
+            }),
             0 => {
                 if r.0.len() < additions * 160 + removals * 32 + 64 {
                     return Err(Error::Encoding);
@@ -283,7 +300,7 @@ impl ControlChange {
                     removals: removed,
                 })
             }
-            1 => Err(Error::Membership),
+            1 | 2 => Err(Error::Membership),
             _ => Err(Error::Protocol),
         }
     }
@@ -354,4 +371,76 @@ signed_record!(
     VerifiedOwnerControl,
     ControlId,
     b"vhalla/private-room/control-id/v1\0"
+);
+
+/// Account-signed owner authority handoff to a second enrolled owner device.
+///
+/// The grant alone authorizes nothing and changes no MLS state: a member applies
+/// it only inside the exact next predecessor-signed control, after the kernel
+/// pins the scope, claimed account, predecessor, retained floor, rostered
+/// successor enrollment and caller clock. It never upgrades the anchor and can
+/// never add a member, remove a device or rewrite an earlier control.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnerSuccessionClaims {
+    /// Exact private room and signed anchor.
+    pub scope: PrivateRoomScope,
+    /// Claimed owner account and signature key; must equal the anchored account.
+    pub account: Key,
+    /// Owner device whose sole control authority ends at this grant's control.
+    pub predecessor: Key,
+    /// Complete enrolled successor already admitted as an ordinary member.
+    pub successor: SignedDeviceEnrollment,
+    /// Exact sequence of the control carrying this grant. Later controls must
+    /// be signed by the successor; the grant cannot replay at another floor.
+    pub sequence: u64,
+    /// Signed apply window; the caller checks it against a trustworthy clock.
+    pub validity: Validity,
+}
+impl Record for OwnerSuccessionClaims {
+    const KIND: u8 = 5;
+    fn signer(&self) -> Key {
+        self.account
+    }
+    fn validate(&self) -> Result<(), Error> {
+        // The embedded account/device grant must be authentic on its own; an
+        // outer account signature can never hide an invalid nested enrollment.
+        let successor = self.successor.verify()?;
+        if self.sequence == 0 {
+            return Err(Error::Sequence);
+        }
+        if successor.claims().account != self.account
+            || successor.claims().device == self.predecessor
+        {
+            return Err(Error::Membership);
+        }
+        Ok(())
+    }
+    fn write(&self, out: &mut Vec<u8>) {
+        put_scope(out, self.scope);
+        out.extend(self.account.0);
+        out.extend(self.predecessor.0);
+        let enrollment = self.successor.encode();
+        out.extend((enrollment.len() as u32).to_be_bytes());
+        out.extend(enrollment);
+        out.extend(self.sequence.to_be_bytes());
+        put_validity(out, self.validity);
+    }
+    fn read(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            scope: r.scope()?,
+            account: r.key()?,
+            predecessor: r.key()?,
+            successor: SignedDeviceEnrollment::decode(r.blob(MAX_RECORD_BYTES)?)?,
+            sequence: r.u64()?,
+            validity: r.validity()?,
+        })
+    }
+}
+signed_record!(
+    OwnerSuccessionClaims,
+    UnsignedOwnerSuccession,
+    SignedOwnerSuccession,
+    VerifiedOwnerSuccession,
+    SuccessionId,
+    b"vhalla/private-room/succession-id/v1\0"
 );

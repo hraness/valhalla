@@ -21,10 +21,28 @@ pub const MAX_CONTACT_TTL: u64 = 24 * 60 * 60;
 // Protocol v1 fixed records: prefix5+kind1+claims+signature64.
 const ANCHOR_BYTES: usize = 6 + 96 + 3 + 64;
 const ENROLLMENT_BYTES: usize = 6 + 64 + 16 + 64;
-pub(crate) const MAX_OFFER_BYTES: usize =
-    10 + 32 + 64 + 128 + 24 + 64 + 4 + ANCHOR_BYTES + 4 + ENROLLMENT_BYTES + 64;
+// v1 succession record: prefix6 + scope64 + account32 + predecessor32 +
+// enrollment blob4+150 + sequence8 + validity16 + signature64 = 376.
+const SUCCESSION_BYTES: usize = 6 + 64 + 32 + 32 + 4 + ENROLLMENT_BYTES + 8 + 16 + 64;
+/// Maximum encoded confidential contact offer, including the bounded retained
+/// succession chain a post-handoff room must disclose to a contact joiner.
+pub const MAX_OFFER_BYTES: usize = 10
+    + 32
+    + 64
+    + 128
+    + 24
+    + 64
+    + 4
+    + ANCHOR_BYTES
+    + 4
+    + ENROLLMENT_BYTES
+    + 1
+    + crate::model::MAX_SUCCESSIONS * (4 + SUCCESSION_BYTES)
+    + 64;
 const SIGN_DOMAIN: &[u8] = b"vhalla/private/contact/owner-offer/v1\0";
-const OFFER: &[u8] = b"VHPKOFFER\x01";
+// v2 inserts the bounded handoff chain after the owner enrollment; a v1 offer
+// decodes as a different layout, so it is refused by magic rather than parsed.
+const OFFER: &[u8] = b"VHPKOFFER\x02";
 const FRAME: &[u8] = b"VHPKCONTACT\x01";
 const HEADER: usize = FRAME.len() + 1 + 32 + 32 + 24 + 4;
 
@@ -53,6 +71,7 @@ impl ConfidentialContactOffer {
 pub struct ContactBootstrap {
     anchor: VerifiedRoomAnchor,
     owner: VerifiedDeviceEnrollment,
+    successions: Vec<VerifiedOwnerSuccession>,
     recipient: Key,
     validity: Validity,
 }
@@ -113,6 +132,7 @@ impl ContactBootstrap {
         Ok(Self {
             anchor: offer.anchor.clone(),
             owner: offer.owner.clone(),
+            successions: offer.successions.clone(),
             recipient: offer.recipient,
             validity: offer.validity,
         })
@@ -128,6 +148,14 @@ impl ContactBootstrap {
     /// Exact account-signed owner enrollment for MemberDraft initialization.
     pub fn owner(&self) -> &SignedDeviceEnrollment {
         self.owner.signed()
+    }
+    /// Complete handoff chain proving `owner` against `anchor`; empty while the
+    /// anchor device leads. Required by `MemberDraft::new_succeeded`.
+    pub fn successions(&self) -> Vec<SignedOwnerSuccession> {
+        self.successions
+            .iter()
+            .map(|grant| grant.signed().clone())
+            .collect()
     }
     /// Account the offer can admit; this does not select or invent a device.
     pub fn recipient(&self) -> Key {
@@ -150,6 +178,9 @@ pub(crate) struct Offer {
     pub(crate) validity: Validity,
     anchor: VerifiedRoomAnchor,
     owner: VerifiedDeviceEnrollment,
+    /// Exact retained handoff chain proving `owner` under `anchor`; never a
+    /// substitute for the kernel's retained floor/roster checks.
+    successions: Vec<VerifiedOwnerSuccession>,
     request_key: Zeroizing<[u8; 32]>,
     response_key: Zeroizing<[u8; 32]>,
     signature: [u8; 64],
@@ -176,6 +207,7 @@ impl Offer {
             validity,
             anchor: state.anchor.clone(),
             owner: state.owner.clone(),
+            successions: state.successions.clone(),
             request_key: Zeroizing::new(codec::random()?),
             response_key: Zeroizing::new(codec::random()?),
             signature: [0; 64],
@@ -197,7 +229,8 @@ impl Offer {
         self.owner.claims().validity.check_at(self.issued)?;
         if self.anchor.scope() != self.scope
             || self.anchor.claims().owner_account != self.owner_account
-            || self.anchor.claims().owner_device != self.owner_device
+            || crate::model::check_succession_chain(&self.anchor, &self.successions)?
+                != self.owner_device
             || self.owner.claims().account != self.owner_account
             || self.owner.claims().device != self.owner_device
             || self.owner_basis != owner_record_basis(&self.owner)
@@ -275,9 +308,18 @@ impl Offer {
         raw.extend(anchor);
         raw.extend((ENROLLMENT_BYTES as u32).to_be_bytes());
         raw.extend(owner);
+        raw.push(u8::try_from(self.successions.len()).map_err(|_| Error::Bounds)?);
+        for grant in &self.successions {
+            let signed = grant.signed().encode();
+            if signed.len() > SUCCESSION_BYTES {
+                return Err(Error::Encoding);
+            }
+            raw.extend((signed.len() as u32).to_be_bytes());
+            raw.extend(signed);
+        }
         raw.extend_from_slice(&*self.request_key);
         raw.extend_from_slice(&*self.response_key);
-        if raw.len() != MAX_OFFER_BYTES - 64 {
+        if raw.len() > MAX_OFFER_BYTES - 64 {
             return Err(Error::Encoding);
         }
         Ok(raw)
@@ -324,6 +366,18 @@ impl Offer {
             validity: Validity::new(r.u64()?, r.u64()?)?,
             anchor: SignedRoomAnchor::decode(r.blob(ANCHOR_BYTES)?)?.verify()?,
             owner: SignedDeviceEnrollment::decode(r.blob(ENROLLMENT_BYTES)?)?.verify()?,
+            successions: {
+                let count = usize::from(r.byte()?);
+                if count > crate::model::MAX_SUCCESSIONS {
+                    return Err(Error::Bounds);
+                }
+                let mut grants = Vec::with_capacity(count);
+                for _ in 0..count {
+                    grants
+                        .push(SignedOwnerSuccession::decode(r.blob(SUCCESSION_BYTES)?)?.verify()?);
+                }
+                grants
+            },
             request_key: Zeroizing::new(r.array()?),
             response_key: Zeroizing::new(r.array()?),
             signature: r.array()?,

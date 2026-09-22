@@ -193,6 +193,7 @@ impl<S: ArchiveStore> ArchiveExport<S> {
         if id == [0; 32] {
             return Err(Error::Entropy);
         }
+        let base = snapshot.base;
         Ok(Self {
             store,
             key: key.duplicate(),
@@ -205,7 +206,7 @@ impl<S: ArchiveStore> ArchiveExport<S> {
             unit: 0,
             records: 0,
             bytes: 0,
-            floor: snapshot.base,
+            floor: base,
             next: 0,
             previous: [0; 32],
             done: false,
@@ -254,7 +255,7 @@ impl<S: ArchiveStore> ArchiveExport<S> {
                 &mut self.store,
                 &self.key,
                 self.context,
-                self.snapshot,
+                &self.snapshot,
                 self.unit,
                 self.floor,
             )

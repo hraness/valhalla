@@ -5,7 +5,7 @@ pub use types::*;
 use vhalla_private_kernel::{
     protocol::{
         AnchorId, ControlFloor, ControlId, Key, PrivateRoomScope, RoomId, SignedDeviceEnrollment,
-        SignedOwnerControl, SignedRoomAnchor, Validity,
+        SignedOwnerControl, SignedOwnerSuccession, SignedRoomAnchor, Validity, MAX_RECORD_BYTES,
     },
     recovery::MAX_ARCHIVE_PAGE_BYTES,
     Context, OperationId, OutboxKind, Phase, Status, MAX_BODY_BYTES, MAX_MEMBERS, MAX_PAGE_RECORDS,
@@ -397,6 +397,7 @@ fn kind_tag(v: OutboxKind) -> u8 {
         OutboxKind::Application => 6,
         OutboxKind::Removal => 7,
         OutboxKind::OwnerUpdate => 8,
+        OutboxKind::Succession => 9,
     }
 }
 fn kind(v: u8) -> Result<OutboxKind> {
@@ -409,6 +410,7 @@ fn kind(v: u8) -> Result<OutboxKind> {
         6 => Ok(OutboxKind::Application),
         7 => Ok(OutboxKind::Removal),
         8 => Ok(OutboxKind::OwnerUpdate),
+        9 => Ok(OutboxKind::Succession),
         _ => Err(CodecError::InvalidFrame),
     }
 }
@@ -453,6 +455,7 @@ impl Request {
             Self::Divergent { .. } => 33,
             #[cfg(feature = "local-qualification")]
             Self::ApplyControlAt { .. } => 34,
+            Self::Succeed { .. } => 35,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -509,6 +512,15 @@ impl Request {
                 validity,
             } => {
                 w.op(*operation)?;
+                w.validity(*validity)?;
+            }
+            Self::Succeed {
+                operation,
+                successor,
+                validity,
+            } => {
+                w.op(*operation)?;
+                w.key(*successor)?;
                 w.validity(*validity)?;
             }
             Self::Controls { after, limit } | Self::ControlProofs { after, limit } => {
@@ -654,6 +666,11 @@ impl Request {
                 envelope: r.blob(MAX_ARTIFACT)?,
                 at: r.number()?,
             },
+            35 => Self::Succeed {
+                operation: r.op()?,
+                successor: r.key()?,
+                validity: r.validity()?,
+            },
             _ => return Err(CodecError::InvalidFrame),
         };
         r.end()?;
@@ -702,6 +719,10 @@ impl Response {
                 w.count(m.members.len())?;
                 for e in &m.members {
                     w.enrollment(e)?;
+                }
+                w.count(m.successions.len())?;
+                for grant in &m.successions {
+                    w.blob(&grant.encode(), MAX_RECORD_BYTES)?;
                 }
             }
             Self::Draft(c) => w.consent(c)?,
@@ -876,13 +897,44 @@ impl Response {
                 for _ in 0..count {
                     members.push(r.enrollment()?);
                 }
+                let count = r.count()?;
+                let mut successions = Vec::with_capacity(count);
+                for _ in 0..count {
+                    successions.push(
+                        SignedOwnerSuccession::decode(&r.blob(MAX_RECORD_BYTES)?[..])
+                            .map_err(|_| CodecError::InvalidFrame)?,
+                    );
+                }
                 let verified = anchor.verify().map_err(|_| CodecError::InvalidFrame)?;
                 if verified.scope() != status.context.scope
                     || local.claims().account != status.context.account
                     || local.claims().device != status.context.device
                     || owner.claims().account != verified.claims().owner_account
-                    || owner.claims().device != verified.claims().owner_device
                 {
+                    return Err(CodecError::InvalidFrame);
+                }
+                // The reported owner is the anchor device only before any
+                // handoff; afterwards the verified grant chain must walk from
+                // the anchor device to the reported owner without a gap. This
+                // mirrors the kernel's retained-chain check: a grant is
+                // historical evidence, so its successor need not still be
+                // rostered (a promoted owner may later renew or be removed).
+                let mut expected = verified.claims().owner_device;
+                let mut prior_sequence = 0u64;
+                for grant in &successions {
+                    let grant = grant.verify().map_err(|_| CodecError::InvalidFrame)?;
+                    let claims = grant.claims();
+                    if claims.scope != status.context.scope
+                        || claims.account != verified.claims().owner_account
+                        || claims.predecessor != expected
+                        || claims.sequence <= prior_sequence
+                    {
+                        return Err(CodecError::InvalidFrame);
+                    }
+                    prior_sequence = claims.sequence;
+                    expected = claims.successor.claims().device;
+                }
+                if owner.claims().device != expected {
                     return Err(CodecError::InvalidFrame);
                 }
                 Self::Membership(Box::new(Membership {
@@ -891,6 +943,7 @@ impl Response {
                     owner,
                     local,
                     members,
+                    successions,
                 }))
             }
             104 => Self::Draft(Box::new(r.consent()?)),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::protocol::{SignedDeviceEnrollment, SignedRoomAnchor};
+use crate::protocol::{SignedDeviceEnrollment, SignedOwnerSuccession, SignedRoomAnchor};
 
 /// Authenticated, bounded local membership view for a trusted room controller.
 /// This is the last accepted state, not a claim of global freshness. In pending,
@@ -10,6 +10,7 @@ pub struct MembershipSnapshot {
     anchor: SignedRoomAnchor,
     local: SignedDeviceEnrollment,
     owner: SignedDeviceEnrollment,
+    successions: Vec<SignedOwnerSuccession>,
     members: Vec<SignedDeviceEnrollment>,
 }
 impl MembershipSnapshot {
@@ -19,6 +20,11 @@ impl MembershipSnapshot {
             anchor: state.anchor.signed().clone(),
             local: state.local.signed().clone(),
             owner: state.owner.signed().clone(),
+            successions: state
+                .successions
+                .iter()
+                .map(|grant| grant.signed().clone())
+                .collect(),
             members: state.roster.iter().map(|e| e.signed().clone()).collect(),
         }
     }
@@ -37,6 +43,12 @@ impl MembershipSnapshot {
     /// Exact anchored owner's latest locally accepted enrollment.
     pub fn owner(&self) -> &SignedDeviceEnrollment {
         &self.owner
+    }
+    /// Complete accepted account-authorized handoff chain, in ascending control
+    /// order. Together with `anchor` it proves `owner`; supply it unchanged to
+    /// `MemberDraft::new_succeeded`. Empty while the anchor device leads.
+    pub fn successions(&self) -> &[SignedOwnerSuccession] {
+        &self.successions
     }
     /// At most sixteen enrolled devices in the last locally accepted roster.
     /// Display complete account/device keys and validity before authorizing a
@@ -57,6 +69,12 @@ impl<S: Store> Kernel<S> {
             anchor: work.state.anchor.signed().clone(),
             local: work.state.local.signed().clone(),
             owner: work.state.owner.signed().clone(),
+            successions: work
+                .state
+                .successions
+                .iter()
+                .map(|grant| grant.signed().clone())
+                .collect(),
             members: work
                 .state
                 .roster

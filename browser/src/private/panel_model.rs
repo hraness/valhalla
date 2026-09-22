@@ -124,7 +124,7 @@ pub fn encrypted_export(kind: OutboxKind) -> Option<(&'static str, &'static str)
         OutboxKind::Application => Some(("Encrypted message", "vhmsg")),
         OutboxKind::ContactRequest => Some(("Encrypted join request", "vhrequest")),
         OutboxKind::ContactInvitation => Some(("Encrypted join response", "vhjoin")),
-        OutboxKind::Removal | OutboxKind::OwnerUpdate => {
+        OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
             Some(("Encrypted owner control", "vhcontrol"))
         }
         OutboxKind::ContactOffer | OutboxKind::KeyPackage | OutboxKind::Invitation => None,

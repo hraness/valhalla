@@ -116,7 +116,12 @@ invite/join, targeted removal, encrypted control acceptance/catch-up and same-de
 owner renewal. Renewal signs only the typed replacement through its retained
 account custodian. Retain its exact operation ID and validity for retry. System
 wall time is checked internally; there is no peer-supplied clock or automatic
-renewal. Owner-device succession remains unimplemented.
+renewal. `succeed` composes the same account custodian into an account-signed
+succession grant: it hands owner authority to an already-enrolled same-account
+device through one predecessor-signed control, demotes the predecessor to
+ordinary membership, and retains the grant as bounded evidence. The predecessor
+must be live to commit the handoff; safe live-custody transfer remains
+unimplemented.
 
 Trusted host code can consume a live `RoomSession` with `into_agent(LocalGrant)`
 when it intentionally delegates the same fixed room. Conversion refuses locked,

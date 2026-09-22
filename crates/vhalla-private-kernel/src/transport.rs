@@ -72,6 +72,7 @@ pub(crate) fn kind(control: &VerifiedOwnerControl) -> Result<u8> {
             removals,
         } if additions.is_empty() && removals.len() == 1 => Ok(2),
         ControlChange::OwnerUpdate => Ok(3),
+        ControlChange::Succession { .. } => Ok(4),
         _ => Err(Error::Unsupported),
     }
 }
@@ -88,7 +89,7 @@ impl<'a> Envelope<'a> {
     pub(crate) fn decode(raw: &'a [u8]) -> Result<Self> {
         let mut r = Reader::new(raw, MAGIC, MAX_PACKET)?;
         let kind = r.byte()?;
-        if !(1..=3).contains(&kind) {
+        if !(1..=4).contains(&kind) {
             return Err(Error::Encoding);
         }
         let prior = r.u64()?;

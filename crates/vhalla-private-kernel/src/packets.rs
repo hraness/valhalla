@@ -39,6 +39,9 @@ pub(crate) struct InvitePacket {
     pub(crate) invitation: VerifiedInvitation,
     pub(crate) control: VerifiedOwnerControl,
     pub(crate) owner: VerifiedDeviceEnrollment,
+    /// Complete account-authorized handoff chain proving `owner` against the
+    /// independently selected anchor; empty only while the anchor device leads.
+    pub(crate) successions: Vec<VerifiedOwnerSuccession>,
     pub(crate) member: VerifiedDeviceEnrollment,
     pub(crate) commit: Vec<u8>,
     pub(crate) welcome: Vec<u8>,
@@ -46,10 +49,14 @@ pub(crate) struct InvitePacket {
 }
 impl InvitePacket {
     pub(crate) fn encode(&self) -> Result<Vec<u8>> {
-        let mut w = Writer::new(b"VHPKINVITE\x02", MAX_PACKET)?;
+        let mut w = Writer::new(b"VHPKINVITE\x03", MAX_PACKET)?;
         w.blob(&self.invitation.signed().encode(), MAX_RECORD_BYTES)?;
         w.blob(&self.control.signed().encode(), MAX_RECORD_BYTES)?;
         w.blob(&self.owner.signed().encode(), MAX_RECORD_BYTES)?;
+        w.byte(u8::try_from(self.successions.len()).map_err(|_| Error::Bounds)?)?;
+        for grant in &self.successions {
+            w.blob(&grant.signed().encode(), MAX_RECORD_BYTES)?;
+        }
         w.blob(&self.member.signed().encode(), MAX_RECORD_BYTES)?;
         w.blob(&self.commit, MAX_WIRE_BYTES)?;
         w.blob(&self.welcome, MAX_WIRE_BYTES)?;
@@ -57,10 +64,18 @@ impl InvitePacket {
         Ok(w.finish())
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
-        let mut r = Reader::new(bytes, b"VHPKINVITE\x02", MAX_PACKET)?;
+        let mut r = Reader::new(bytes, b"VHPKINVITE\x03", MAX_PACKET)?;
         let invitation = SignedInvitation::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?;
         let control = SignedOwnerControl::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?;
         let owner = SignedDeviceEnrollment::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?;
+        let count = usize::from(r.byte()?);
+        if count > crate::model::MAX_SUCCESSIONS {
+            return Err(Error::Bounds);
+        }
+        let mut successions = Vec::with_capacity(count);
+        for _ in 0..count {
+            successions.push(SignedOwnerSuccession::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?);
+        }
         let member = SignedDeviceEnrollment::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?;
         let commit = nonempty(r.blob(MAX_WIRE_BYTES)?)?.to_vec();
         let welcome = nonempty(r.blob(MAX_WIRE_BYTES)?)?.to_vec();
@@ -70,6 +85,7 @@ impl InvitePacket {
             invitation,
             control,
             owner,
+            successions,
             member,
             commit,
             welcome,
@@ -126,6 +142,15 @@ impl ControlPacket {
             ControlChange::OwnerUpdate => {
                 let enrollment = self.enrollment.as_ref().ok_or(Error::Policy)?;
                 if self.invitation.is_some() || enrollment.claims().device != c.owner_device {
+                    return Err(Error::Policy);
+                }
+            }
+            ControlChange::Succession { grant } => {
+                if self.invitation.is_some()
+                    || self.enrollment.is_some()
+                    || grant.claims().sequence != c.sequence()?
+                    || grant.claims().scope != c.scope
+                {
                     return Err(Error::Policy);
                 }
             }
@@ -343,6 +368,7 @@ fn kind_byte(kind: OutboxKind) -> u8 {
         OutboxKind::ContactOffer => 5,
         OutboxKind::ContactRequest => 6,
         OutboxKind::ContactInvitation => 7,
+        OutboxKind::Succession => 8,
     }
 }
 fn decode_kind(value: u8) -> Result<OutboxKind> {
@@ -355,6 +381,7 @@ fn decode_kind(value: u8) -> Result<OutboxKind> {
         5 => Ok(OutboxKind::ContactOffer),
         6 => Ok(OutboxKind::ContactRequest),
         7 => Ok(OutboxKind::ContactInvitation),
+        8 => Ok(OutboxKind::Succession),
         _ => Err(Error::Encoding),
     }
 }

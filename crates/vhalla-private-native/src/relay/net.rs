@@ -282,8 +282,7 @@ impl SocketRelay {
         Self { addr, token }
     }
     fn exchange(&self, op: u8, body: &[u8]) -> NetResult<Vec<u8>> {
-        let mut stream =
-            TcpStream::connect_timeout(&self.addr, CONNECT_TIMEOUT).map_err(io)?;
+        let mut stream = TcpStream::connect_timeout(&self.addr, CONNECT_TIMEOUT).map_err(io)?;
         stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(io)?;
         stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(io)?;
         let mut request = Vec::with_capacity(32 + body.len());

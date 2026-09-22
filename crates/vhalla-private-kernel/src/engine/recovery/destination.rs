@@ -132,9 +132,9 @@ impl Progress {
             || p.records > source.header.records
             || p.bytes > source.header.bytes
             || (p.unit == 0) != (magic == b"VHPRDEST1")
-            || p.records != count_before(source.snapshot, p.unit)?
-            || p.floor.sequence() != floor_before(source.snapshot, p.unit)?
-            || p.last_floor.sequence() != floor_before(source.snapshot, p.unit.saturating_sub(1))?
+            || p.records != count_before(&source.snapshot, p.unit)?
+            || p.floor.sequence() != floor_before(&source.snapshot, p.unit)?
+            || p.last_floor.sequence() != floor_before(&source.snapshot, p.unit.saturating_sub(1))?
             || (p.unit == 0
                 && (p.previous != source.previous
                     || p.bytes != 0
@@ -146,14 +146,14 @@ impl Progress {
         Ok(p)
     }
 }
-fn count_before(s: Snapshot, unit: u64) -> Result<u64> {
+fn count_before(s: &Snapshot, unit: u64) -> Result<u64> {
     let pairs = s.outbox.checked_add(s.inbox).ok_or(Error::Bounds)?;
     unit.min(pairs)
         .checked_mul(2)
         .and_then(|v| v.checked_add(unit.saturating_sub(pairs)))
         .ok_or(Error::Bounds)
 }
-fn floor_before(s: Snapshot, unit: u64) -> Result<u64> {
+fn floor_before(s: &Snapshot, unit: u64) -> Result<u64> {
     let pairs = s.outbox.checked_add(s.inbox).ok_or(Error::Bounds)?;
     s.base
         .sequence()
@@ -307,7 +307,7 @@ impl<S: ArchiveStore> ArchiveImport<S> {
             let floor = records::check(
                 &self.key,
                 self.source.context,
-                self.source.snapshot,
+                &self.source.snapshot,
                 unit,
                 self.progress.last_floor,
                 &records,
@@ -339,7 +339,7 @@ impl<S: ArchiveStore> ArchiveImport<S> {
         let floor = records::check(
             &self.key,
             self.source.context,
-            self.source.snapshot,
+            &self.source.snapshot,
             unit,
             self.progress.floor,
             &records,
@@ -541,7 +541,7 @@ impl<S: ArchiveStore> ArchiveView<S> {
                 &mut self.store,
                 &self.key,
                 self.seal.context,
-                snapshot,
+                &snapshot,
                 unit,
                 state.base,
             )
@@ -588,7 +588,7 @@ impl<S: ArchiveStore> ArchiveView<S> {
                 &mut self.store,
                 &self.key,
                 self.seal.context,
-                snapshot,
+                &snapshot,
                 cursor,
                 state.base,
             )

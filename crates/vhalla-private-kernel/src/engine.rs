@@ -18,6 +18,7 @@ mod qualification;
 pub mod recovery;
 mod renewal;
 mod snapshot;
+mod succession;
 pub use drafts::{MemberDraft, OwnerDraft};
 pub use snapshot::MembershipSnapshot;
 

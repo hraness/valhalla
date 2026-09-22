@@ -164,6 +164,19 @@ impl Identity {
         request.sign(&self.key)
     }
 
+    /// Sign one exact owner-succession grant with the owner account key. The
+    /// grant alone authorizes nothing: the kernel still requires the retained
+    /// predecessor control floor, the rostered successor enrollment and the
+    /// predecessor-signed carrying commit before any device handoff occurs.
+    #[cfg(feature = "private-rooms")]
+    pub fn sign_private_succession(
+        &self,
+        request: &vhalla_private_protocol::UnsignedOwnerSuccession,
+    ) -> Result<vhalla_private_protocol::SignedOwnerSuccession, vhalla_private_protocol::Error>
+    {
+        request.sign(&self.key)
+    }
+
     /// Sign a checked room activity with this exact application key, without
     /// exporting its seed or accepting arbitrary signing bytes. The returned
     /// event has a strictly verified signature; policy admission, durable author

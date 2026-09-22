@@ -12,7 +12,10 @@ use std::{
 };
 use vhalla_identity::Identity;
 use vhalla_private_kernel::{
-    protocol::{Key, PrivateRoomScope, SignedDeviceEnrollment, SignedRoomAnchor, Validity},
+    protocol::{
+        Key, PrivateRoomScope, SignedDeviceEnrollment, SignedOwnerSuccession, SignedRoomAnchor,
+        Validity,
+    },
     storage::StoreError,
     CommittedOutbox, ConfidentialContactOffer, ContactBootstrap, Context, ControlPage,
     EncryptedControlPage, ForkEvidence, InboxPage, Kernel, MemberDraft, MembershipSnapshot,
@@ -122,6 +125,37 @@ impl RoomCreation {
             validity,
             now()?,
         )?;
+        Self::member_checked(identity, anchor, draft)
+    }
+
+    /// Prepare an explicitly invited fresh member after owner handoffs: the
+    /// exact retained grant chain must prove `owner` against `anchor`. An empty
+    /// or stale chain is refused; it never downgrades to the anchor device.
+    pub fn member_succeeded(
+        identity: Identity,
+        scope: PrivateRoomScope,
+        anchor: SignedRoomAnchor,
+        owner: SignedDeviceEnrollment,
+        successions: Vec<SignedOwnerSuccession>,
+        validity: Validity,
+    ) -> Result<Self> {
+        let draft = MemberDraft::new_succeeded(
+            scope,
+            anchor.clone(),
+            owner,
+            successions,
+            Key::from_bytes(identity.public_key())?,
+            validity,
+            now()?,
+        )?;
+        Self::member_checked(identity, anchor, draft)
+    }
+
+    fn member_checked(
+        identity: Identity,
+        anchor: SignedRoomAnchor,
+        draft: MemberDraft,
+    ) -> Result<Self> {
         let enrollment = identity.sign_private_enrollment(draft.enrollment_request())?;
         let context = draft.context();
         Ok(Self {
@@ -148,13 +182,25 @@ impl RoomCreation {
             Key::from_bytes(identity.public_key())?,
             now()?,
         )?;
-        Self::member(
-            identity,
-            bootstrap.scope(),
-            bootstrap.anchor().clone(),
-            bootstrap.owner().clone(),
-            validity,
-        )
+        let successions = bootstrap.successions();
+        if successions.is_empty() {
+            Self::member(
+                identity,
+                bootstrap.scope(),
+                bootstrap.anchor().clone(),
+                bootstrap.owner().clone(),
+                validity,
+            )
+        } else {
+            Self::member_succeeded(
+                identity,
+                bootstrap.scope(),
+                bootstrap.anchor().clone(),
+                bootstrap.owner().clone(),
+                successions,
+                validity,
+            )
+        }
     }
 
     /// Retain this exact nonsecret locator before consuming commit. It does not
@@ -455,5 +501,28 @@ impl RoomSession {
         let request = custody.kernel.owner_renewal_request(validity)?;
         let signed = custody.identity.sign_private_enrollment(&request)?;
         Ok(custody.kernel.renew_owner(operation, signed, time).await?)
+    }
+
+    /// Explicitly sign and commit an owner handoff to an already-enrolled
+    /// successor device of the same account. The predecessor keeps ordinary
+    /// membership; the exact retained envelope is the only transferable proof.
+    /// Retain operation, successor key and validity for retry after uncertain
+    /// completion. A committed handoff refuses re-issue — the grant pinned the
+    /// pre-handoff floor — so recover the committed envelope through the
+    /// retained control export instead of repeating this call.
+    pub async fn succeed(
+        &mut self,
+        operation: OperationId,
+        successor: Key,
+        validity: Validity,
+    ) -> Result<CommittedOutbox> {
+        let time = now()?;
+        let custody = self.live_mut()?;
+        let request = custody
+            .kernel
+            .succession_request(successor, validity)
+            .await?;
+        let signed = custody.identity.sign_private_succession(&request)?;
+        Ok(custody.kernel.succeed(operation, signed, time).await?)
     }
 }

@@ -62,6 +62,7 @@ fn ordinary_export_never_labels_secret_or_legacy_bootstrap_as_ciphertext() {
         OutboxKind::ContactInvitation,
         OutboxKind::Removal,
         OutboxKind::OwnerUpdate,
+        OutboxKind::Succession,
     ] {
         assert!(model::encrypted_export(kind).is_some());
     }

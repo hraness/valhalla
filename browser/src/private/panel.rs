@@ -49,6 +49,7 @@ const IDS: &[(&str, Action)] = &[
     ("private-fork-evidence", Action::ForkEvidence),
     ("private-remove", Action::Remove),
     ("private-renew", Action::Renew),
+    ("private-succeed", Action::Succeed),
     ("private-outbox", Action::Outbox),
     ("private-outbox-next", Action::OutboxNext),
     ("private-download-outbox", Action::DownloadOutbox),
@@ -97,6 +98,7 @@ enum Action {
     ForkEvidence,
     Remove,
     Renew,
+    Succeed,
     Outbox,
     OutboxNext,
     DownloadOutbox,
@@ -436,7 +438,9 @@ fn render(app: &App) {
                         .as_ref()
                         .is_some_and(|m| m.status.phase == Phase::AwaitingWelcome)
             }
-            Action::Offer | Action::Accept | Action::Remove | Action::Renew => active && is_owner,
+            Action::Offer | Action::Accept | Action::Remove | Action::Renew | Action::Succeed => {
+                active && is_owner
+            }
             Action::Receive | Action::Apply => active && ready,
             Action::ControlsNext => active && s.controls_next.is_some(),
             Action::ProofsNext => active && s.proofs_next.is_some(),
@@ -571,6 +575,15 @@ fn membership(app: &App, view: Box<Membership>) {
             hex(c.account.as_bytes()),
             hex(c.device.as_bytes()),
             c.validity.expires_at()
+        ));
+    }
+    for grant in &view.successions {
+        let c = grant.claims();
+        details.push_str(&format!(
+            "\nSuccession at control {}\nFrom device {}\nTo device {}\n",
+            c.sequence,
+            hex(c.predecessor.as_bytes()),
+            hex(c.successor.claims().device.as_bytes()),
         ));
     }
     {

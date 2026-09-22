@@ -52,6 +52,7 @@ vhalla private fork-evidence ID STORE --out PRIVATE_JSON
 vhalla private remove ID STORE --device KEY64 --operation OP32 --out CIPHERTEXT
 vhalla private apply ID STORE --control FILE
 vhalla private renew ID STORE --operation OP32 --not-before UNIX --expires UNIX --out CIPHERTEXT
+vhalla private succeed ID STORE --device KEY64 --operation OP32 --not-before UNIX --expires UNIX --out CIPHERTEXT
 vhalla private archive-export ID STORE --out NEW_FILE.vharchive
 vhalla private archive-import ID NEW_ARCHIVE_STORE --archive FILE.vharchive [--max-records N --max-bytes N]
 vhalla private archive-resume ID ARCHIVE_STORE --archive FILE.vharchive [--max-records N --max-bytes N]
@@ -129,6 +130,7 @@ impl Args {
             "remove" => &["device", "operation", "out"],
             "apply" => &["control"],
             "renew" => &["operation", "not-before", "expires", "out"],
+            "succeed" => &["device", "operation", "not-before", "expires", "out"],
             _ => return Err(HELP.into()),
         };
         let start = if matches!(
@@ -481,7 +483,7 @@ async fn execute(args: Args) -> Result<(), String> {
                     let result = room.receive(item.payload()).await.map_err(|_| REFUSED)?;
                     args.output(result.body())?;
                 }
-                OutboxKind::Removal | OutboxKind::OwnerUpdate => {
+                OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
                     let result = room
                         .apply_control(item.payload())
                         .await
@@ -604,6 +606,13 @@ async fn execute(args: Args) -> Result<(), String> {
         "renew" => {
             let result = room
                 .renew_owner(args.operation()?, args.validity()?)
+                .await
+                .map_err(|_| REFUSED)?;
+            args.output(result.bytes())?;
+        }
+        "succeed" => {
+            let result = room
+                .succeed(args.operation()?, args.key("device")?, args.validity()?)
                 .await
                 .map_err(|_| REFUSED)?;
             args.output(result.bytes())?;
@@ -810,6 +819,7 @@ fn relay_kind(kind: OutboxKind) -> bool {
         OutboxKind::Application
             | OutboxKind::Removal
             | OutboxKind::OwnerUpdate
+            | OutboxKind::Succession
             | OutboxKind::ContactRequest
             | OutboxKind::ContactInvitation
     )
@@ -877,7 +887,19 @@ fn status(status: Status) -> Value {
         "control_id":status.control_floor.id().map(|id|hex(id.as_bytes())),"outbox_head":status.outbox_head,"inbox_head":status.inbox_head})
 }
 fn membership(snapshot: &MembershipSnapshot) -> Value {
+    let anchor_owner = snapshot.anchor().claims().owner_device;
+    let successions: Vec<Value> = snapshot
+        .successions()
+        .iter()
+        .map(|grant| {
+            let claims = grant.claims();
+            json!({"sequence":claims.sequence,"predecessor":hex(claims.predecessor.as_bytes()),
+                "successor":hex(claims.successor.claims().device.as_bytes()),
+                "signed_record":hex(&grant.encode())})
+        })
+        .collect();
     json!({"coverage":"last authenticated local membership; not global freshness", "status":status(snapshot.status()),
-        "anchor_record":hex(&snapshot.anchor().encode()),"local":enrollment(snapshot.local()),"owner":enrollment(snapshot.owner()),
+        "anchor_record":hex(&snapshot.anchor().encode()),"anchor_owner_device":hex(anchor_owner.as_bytes()),
+        "local":enrollment(snapshot.local()),"owner":enrollment(snapshot.owner()),"successions":successions,
         "recipients":snapshot.members().iter().map(enrollment).collect::<Vec<_>>()})
 }

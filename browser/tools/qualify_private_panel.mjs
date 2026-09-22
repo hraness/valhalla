@@ -278,7 +278,7 @@ async function task(abortSignal) {
   facts.push('keyboard entry, fresh owner, real locator download and explicit retention gate');
   await invoke(owner,`async function(recipient){qset('private-recipient',recipient);await qclick('private-offer');await qidle();return true;}`,[member.publicKey]);
   const offer=await download(owner,'private-download-secret','vhoffer');
-  if(offer.raw.length!==713)throw Error('exact signed confidential offer length');
+  if(offer.raw.length!==714)throw Error('exact signed confidential offer length');
   await enter(member);
   await setFile(member,'private-offer-file',offer.path);
   await invoke(member,`async function(wrongOwner,ownerKey){qset('private-owner',wrongOwner);await qclick('private-review-offer');await qwait(()=>!qid('private-review-offer').disabled,'wrong owner pin refusal');qassert(qid('private-prepared').hidden&&qid('private-status').dataset.error==='true','wrong owner pin prepared a device');qset('private-owner',ownerKey);await qclick('private-review-offer');return true;}`,[member.publicKey,owner.publicKey]);
@@ -428,6 +428,24 @@ async function task(abortSignal) {
   await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'fresh roster did not shrink');qassert(!qid('private-prepare-message').disabled,'expired refusal removed the member');await qclick('private-fork-evidence');await qidle();qassert(qid('private-status').textContent.includes('No locally retained fork proof'),'expired refusal fabricated fork evidence');return true;})()");
   await leave(fresh);
   facts.push('a control applied under a caller clock past enrollment validity is refused without mutation or quarantine: the worker ends, reopen shows no fork evidence, and the identical envelope applies under the real clock');
+  // Account-authorized owner-device succession: the owner's account signs a
+  // grant for its already-enrolled fresh device, carried by the predecessor's
+  // next control. The predecessor stays an ordinary member; only the promoted
+  // successor issues controls after the handoff floor.
+  await reopen(owner);await reopen(fresh);
+  const freshDevice=await evaluate(fresh,`(async()=>{await qclick('private-refresh');await qidle();const m=qid('private-membership-details').textContent.match(/Device ([0-9a-f]{64})/);qassert(m,'fresh device key absent');return m[1];})()`);
+  await invoke(owner,`async function(device){qset('private-succeed-device',device);await qclick('private-succeed');await qidle();qassert(qid('private-secret-output').hidden&&qid('private-download-secret').disabled,'succession retained a stale offer');qassert(qid('private-remove').disabled&&qid('private-renew').disabled&&qid('private-succeed').disabled&&qid('private-offer').disabled,'predecessor kept owner actions');qassert(!qid('private-prepare-message').disabled,'predecessor lost ordinary membership');return true;}`,[freshDevice]);
+  const handoff=await download(owner,'private-download-output','vhcontrol');
+  await setFile(fresh,'private-control-file',handoff.path);
+  await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'succession churned the roster');qassert(!qid('private-remove').disabled&&!qid('private-renew').disabled&&!qid('private-succeed').disabled&&!qid('private-offer').disabled,'successor lacks owner actions');return true;})()");
+  // The promoted successor issues the next owner control; the demoted
+  // predecessor applies it in floor order like any member.
+  await evaluate(fresh,"(async()=>{await qclick('private-renew');await qidle();return true;})()");
+  const successorRenewal=await download(fresh,'private-download-output','vhcontrol');
+  await setFile(owner,'private-control-file',successorRenewal.path);
+  await evaluate(owner,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-remove').disabled,'demoted owner regained owner actions');return true;})()");
+  await leave(owner);await leave(fresh);
+  facts.push('account-authorized succession hands ownership to the enrolled same-account device through one distributed owner control: the predecessor keeps ordinary membership, and the promoted successor issues controls the predecessor applies in order');
   if(unexpectedNetwork||networkWrites)throw Error('unexpected route, network write or unbounded download event');
   return {passed:true,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,screenshots,files,networkWrites,contexts:3,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
 }

@@ -180,10 +180,11 @@ fn check_replacement(
     if now < state.clock {
         return Err(Error::Time);
     }
+    // The account pin stays anchored; the device pin is generational so a
+    // succeeded owner can still renew its own credential later.
     if next.account != old.account
         || next.device != old.device
         || next.account != state.anchor.claims().owner_account
-        || next.device != state.anchor.claims().owner_device
     {
         return Err(Error::Scope);
     }
@@ -195,7 +196,7 @@ fn check_replacement(
     }
     Ok(())
 }
-fn check_stage(
+pub(super) fn check_stage(
     staged: &StagedCommit,
     work: &Working,
     replacement: &VerifiedDeviceEnrollment,

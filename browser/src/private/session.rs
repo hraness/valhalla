@@ -235,6 +235,7 @@ impl Session {
             owner: value.owner().clone(),
             local: value.local().clone(),
             members: value.members().to_vec(),
+            successions: value.successions().to_vec(),
         })))
     }
 
@@ -472,6 +473,25 @@ impl Session {
                 let kernel = self.kernel()?;
                 let context = kernel.status().context;
                 let output = kernel.renew_owner(operation, enrollment, time).await?;
+                Ok(Response::Artifact {
+                    context,
+                    artifact: artifact(&output),
+                })
+            }
+            Request::Succeed {
+                operation,
+                successor,
+                validity,
+            } => {
+                self.message = None;
+                let request = self
+                    .kernel()?
+                    .succession_request(successor, validity)
+                    .await?;
+                let grant = self.identity.sign_private_succession(&request)?;
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let output = kernel.succeed(operation, grant, time).await?;
                 Ok(Response::Artifact {
                     context,
                     artifact: artifact(&output),

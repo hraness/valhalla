@@ -2,10 +2,12 @@
 
 //! Private MLS custody with typed owner authorization and encrypted transactions.
 //!
-//! This kernel implements a fixed owner and up to sixteen active devices.
-//! Fresh joins use an explicit owner-endorsed roster checkpoint; existing members
-//! must accept every control in order. Owner credential renewal is supported;
-//! owner-device succession remains separate recovery work. There is no public directory, network,
+//! This kernel implements an account-anchored owner device and up to sixteen
+//! active devices. Fresh joins use an explicit owner-endorsed roster checkpoint;
+//! existing members must accept every control in order. Owner credential renewal
+//! is supported, and owner-device succession hands authority to an
+//! already-enrolled same-account device through a retained account-signed grant.
+//! There is no public directory, network,
 //! host execution, raw signer export, ratchet backup/clone, or shipping activation.
 //!
 //! The injected backend receives encrypted bytes only and must atomically persist
@@ -26,6 +28,7 @@ pub mod storage;
 mod transport;
 pub use contact::{
     ConfidentialContactOffer, ContactBootstrap, MAX_CONTACT_OFFERS, MAX_CONTACT_TTL,
+    MAX_OFFER_BYTES,
 };
 pub use transport::{CommittedEncryptedControl, EncryptedControlPage};
 
@@ -208,6 +211,8 @@ pub enum OutboxKind {
     Removal,
     /// Same-device owner enrollment renewal plus exact MLS Commit.
     OwnerUpdate,
+    /// Predecessor-signed account-authorized owner handoff plus exact MLS Commit.
+    Succession,
 }
 
 /// Output reloaded only after the encrypted transaction was confirmed complete.

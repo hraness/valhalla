@@ -1110,7 +1110,99 @@ fn private_cli_same_account_fresh_device_rejoins_under_new_enrollment() {
         fs::read(f.root.join("owner-received")).unwrap(),
         b"fresh device to owner\n"
     );
-    for name in ["self-offer", "fresh-request", "fresh-response", "to-fresh"] {
+    // Account-authorized succession: the owner hands authority to the
+    // already-enrolled fresh device through one predecessor-signed control.
+    // The account-signed grant pins the exact roster enrollment, sequence and
+    // validity window.
+    let fresh = f.inspect("fresh-key", "fresh-room", "fresh-pre-succeed");
+    let owner = f.inspect("owner-key", "owner-room", "owner-pre-succeed");
+    let head_sequence = owner["status"]["control_sequence"].as_u64().unwrap();
+    let head_id = owner["status"]["control_id"].as_str().unwrap().to_string();
+    let mut flags = f.validity();
+    flags.extend([
+        ("device", fresh["status"]["device"].as_str().unwrap().into()),
+        ("operation", op(14)),
+        ("out", f.path("succession")),
+    ]);
+    f.ok("succeed", "owner-key", Some("owner-room"), &flags);
+    // The predecessor demotes locally at commit. A re-run cannot rebuild the
+    // signed grant — it pinned the pre-handoff floor — so the command refuses
+    // rather than minting a second handoff; the committed envelope stays
+    // recoverable through the retained-control export cursor.
+    let demoted = f.inspect("owner-key", "owner-room", "owner-demoted");
+    assert_eq!(demoted["status"]["phase"], "MemberJoined");
+    assert_eq!(demoted["status"]["members"].as_u64().unwrap(), 2);
+    assert_eq!(demoted["successions"].as_array().unwrap().len(), 1);
+    f.ok(
+        "control-export",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("after", head_sequence.to_string()),
+            ("parent", head_id.clone()),
+            ("out", f.path("succession-exported")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("succession")).unwrap(),
+        fs::read(f.root.join("succession-exported")).unwrap()
+    );
+    assert!(!f
+        .run("succeed", "owner-key", Some("owner-room"), &flags, None)
+        .status
+        .success());
+    f.ok(
+        "apply",
+        "fresh-key",
+        Some("fresh-room"),
+        &[("control", f.path("succession"))],
+    );
+    let promoted = f.inspect("fresh-key", "fresh-room", "fresh-promoted");
+    assert_eq!(promoted["status"]["phase"], "OwnerJoined");
+    assert_eq!(promoted["status"]["members"].as_u64().unwrap(), 2);
+    assert_eq!(promoted["successions"].as_array().unwrap().len(), 1);
+    // The new owner issues controls the demoted predecessor applies in order;
+    // the predecessor cannot regain owner operations.
+    f.ok(
+        "renew",
+        "fresh-key",
+        Some("fresh-room"),
+        &[
+            ("operation", op(3)),
+            ("not-before", (f.now - 10).to_string()),
+            ("expires", (f.now + 7200).to_string()),
+            ("out", f.path("successor-renewal")),
+        ],
+    );
+    f.ok(
+        "apply",
+        "owner-key",
+        Some("owner-room"),
+        &[("control", f.path("successor-renewal"))],
+    );
+    assert!(!f
+        .run(
+            "renew",
+            "owner-key",
+            Some("owner-room"),
+            &[
+                ("operation", op(15)),
+                ("not-before", (f.now - 10).to_string()),
+                ("expires", (f.now + 7200).to_string()),
+                ("out", f.path("must-not-exist")),
+            ],
+            None
+        )
+        .status
+        .success());
+    assert!(!f.root.join("must-not-exist").exists());
+    for name in [
+        "self-offer",
+        "fresh-request",
+        "fresh-response",
+        "to-fresh",
+        "succession",
+    ] {
         assert_eq!(
             fs::metadata(f.root.join(name)).unwrap().mode() & 0o777,
             0o600

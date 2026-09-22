@@ -52,12 +52,15 @@ an expanded roster. Membership changes cannot retract plaintext already received
 
 ## Confidential recipient bootstrap
 
-`create_contact_offer` produces one 713-byte secret file bound to a full recipient
-account. It contains the signed anchor and current owner enrollment, a separate
-random offer ID, expiry, and two independently random direction keys. The anchored
-owner device signs the entire canonical file, including those keys. An attacker
-cannot copy legitimate bootstrap records and substitute its own encryption keys.
-The file still requires confidential transfer; signing does not make it public.
+`create_contact_offer` produces one bounded secret file (714 bytes before any
+succession, at most 6794 bytes) bound to a full recipient account. It contains
+the signed anchor and current owner enrollment, the exact retained succession
+chain proving how the current owner holds authority, a separate random offer
+ID, expiry, and two independently random direction keys. The current owner
+device signs the entire canonical file, including those keys. An attacker
+cannot copy legitimate bootstrap records and substitute its own encryption
+keys. The file still requires confidential transfer; signing does not make it
+public.
 
 `ContactBootstrap::inspect` checks the complete offer against independently
 selected owner and recipient account keys and current time. Its metadata getters
@@ -169,11 +172,12 @@ credentials or KeyPackages have expired. Exact history retries do not advance th
 clock or renew authorization. The hosting controller must supply trustworthy time.
 
 Owner renewal updates the MLS credential for the exact same anchored device under
-an explicit current account signature. Owner-device loss remains a separate
-unimplemented succession boundary. An account signature alone cannot recover MLS
-secrets. Succession would require an original authorized policy, surviving current
-MLS state and an exact common unconflicted floor. No surviving state means a new
-explicit room, not fabricated ratchet recovery.
+an explicit current account signature. Owner-device succession is a separate
+implemented mechanism (see below): the account signs a grant authorizing an
+already-enrolled successor device, carried by a predecessor-signed control. An
+account signature alone still cannot recover MLS secrets — a lost owner that
+never committed a succession means a new explicit room, not fabricated ratchet
+recovery.
 
 ## Atomic encrypted storage and limits
 
@@ -242,7 +246,30 @@ UX and enforced agent compartments remain gates before private-client claims. Th
 
 ## Owner renewal
 
-The exact anchored device can renew through a current account-signed enrollment using `owner_renewal_request` and `renew_owner`. This narrowly permits an expired prior owner enrollment while ordinary operations and the accepting member retain their validity checks. The checked MLS self-update advances the epoch and invalidates old roster consent. Its control, outbox, operation and current state commit together; exact retries preserve the original artifact. Owner-device succession remains unimplemented.
+The exact anchored device can renew through a current account-signed enrollment using `owner_renewal_request` and `renew_owner`. This narrowly permits an expired prior owner enrollment while ordinary operations and the accepting member retain their validity checks. The checked MLS self-update advances the epoch and invalidates old roster consent. Its control, outbox, operation and current state commit together; exact retries preserve the original artifact.
+
+## Owner succession
+
+`succession_request` and `succeed` transfer owner authority to another device
+already enrolled under the same account. The account signs an
+`OwnerSuccessionClaims` grant pinning the room, account, predecessor device,
+successor enrollment bytes, exact control sequence and validity interval; the
+predecessor device signs the carrying `ControlChange::Succession` owner control,
+which rides the ordinary floor ordering, encrypted envelope and fork-quarantine
+machinery. Applying it atomically installs the successor enrollment as
+`state.owner` without roster churn, demotes the predecessor to an ordinary
+member, clears outstanding owner-scoped offers and retains the grant as bounded
+historical evidence — at most 16 recorded successions per room.
+
+Owner-dependent checks — control signer, checkpoint, fault, recovery and join
+pins — resolve the owner device at the relevant control sequence rather than
+assuming one anchored device for the room's lifetime, so history signed by
+earlier generations stays verifiable and controls signed by the current owner
+verify after the handoff. Exact retries return the retained ciphertext. The
+predecessor keeps its membership and received history but loses all owner
+operations. Membership snapshots, contact offers and join packets carry the
+retained chain so every device authenticates the current owner through each
+recorded handoff.
 
 ## Optional account-derived storage custody
 
@@ -300,7 +327,8 @@ Canceled or uncertain writes require exact reopen; source and destination eviden
 is preserved. Native and strict IndexedDB adapters implement the accounting
 contract without changing ordinary version-four room images.
 
-This does not prove rollback protection, safe concurrent live clones, owner
-succession, or complete device handoff. An account-key backup alone still cannot
+This does not prove rollback protection, safe concurrent live clones, or
+complete device handoff: an archive cannot send or participate in succession.
+An account-key backup alone still cannot
 reconstruct lost MLS state. Trusted native/browser backup and import workflows
 must additionally retain all source pages and their exact recovery locator.

@@ -27,6 +27,7 @@ extern crate alloc;
 mod records;
 pub use records::*;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -130,6 +131,10 @@ identifier!(
     "Commitment to an exact signed owner-device invitation."
 );
 identifier!(ControlId, "Commitment to an exact signed owner control.");
+identifier!(
+    SuccessionId,
+    "Commitment to an exact signed account-authorized owner succession grant."
+);
 identifier!(
     Nonce,
     "Full nonzero invitation nonce; the caller supplies CSPRNG entropy."
@@ -399,6 +404,13 @@ impl<'a> Reader<'a> {
     }
     fn byte(&mut self) -> Result<u8, Error> {
         Ok(self.array::<1>()?[0])
+    }
+    fn blob(&mut self, limit: usize) -> Result<&'a [u8], Error> {
+        let len = u32::from_be_bytes(self.array::<4>()?) as usize;
+        if len > limit {
+            return Err(Error::Bounds);
+        }
+        self.take(len)
     }
     fn u64(&mut self) -> Result<u64, Error> {
         Ok(u64::from_be_bytes(self.array()?))

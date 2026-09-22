@@ -30,14 +30,16 @@ impl ArchivePage {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 struct Snapshot {
     revision: u64,
     outbox: u64,
     inbox: u64,
     base: ControlFloor,
     floor: ControlFloor,
-    owner: protocol::Key,
+    anchor_owner: protocol::Key,
+    /// (carrying control sequence, successor device) per accepted handoff.
+    successions: Vec<(u64, protocol::Key)>,
 }
 impl Snapshot {
     fn of(state: &State) -> Self {
@@ -47,10 +49,31 @@ impl Snapshot {
             inbox: state.inbox,
             base: state.base,
             floor: state.floor,
-            owner: state.owner.claims().device,
+            anchor_owner: state.anchor.claims().owner_device,
+            successions: state
+                .successions
+                .iter()
+                .map(|grant| {
+                    (
+                        grant.claims().sequence,
+                        grant.claims().successor.claims().device,
+                    )
+                })
+                .collect(),
         }
     }
-    fn units(self) -> Result<u64> {
+    /// Owner generation authorized to sign the control at `sequence`.
+    fn owner_at(&self, sequence: u64) -> protocol::Key {
+        let mut owner = self.anchor_owner;
+        for &(grant_sequence, successor) in &self.successions {
+            if sequence <= grant_sequence {
+                return owner;
+            }
+            owner = successor;
+        }
+        owner
+    }
+    fn units(&self) -> Result<u64> {
         self.outbox
             .checked_add(self.inbox)
             .and_then(|n| {
@@ -61,7 +84,7 @@ impl Snapshot {
             })
             .ok_or(Error::Bounds)
     }
-    fn records(self) -> Result<u64> {
+    fn records(&self) -> Result<u64> {
         self.outbox
             .checked_add(self.inbox)
             .and_then(|n| n.checked_mul(2))

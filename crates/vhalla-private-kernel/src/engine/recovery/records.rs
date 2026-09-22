@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn first(snapshot: Snapshot, unit: u64) -> Result<RecordKey> {
+pub(super) fn first(snapshot: &Snapshot, unit: u64) -> Result<RecordKey> {
     if unit < snapshot.outbox {
         return Ok(RecordKey::Outbox(unit + 1));
     }
@@ -47,7 +47,7 @@ pub(super) async fn load<S: Store>(
     store: &mut S,
     key: &StorageKey,
     context: Context,
-    snapshot: Snapshot,
+    snapshot: &Snapshot,
     unit: u64,
     prior: ControlFloor,
 ) -> Result<(Vec<StoredRecord>, ControlFloor)> {
@@ -78,7 +78,7 @@ pub(super) async fn load<S: Store>(
 pub(super) fn check(
     key: &StorageKey,
     context: Context,
-    snapshot: Snapshot,
+    snapshot: &Snapshot,
     unit: u64,
     prior: ControlFloor,
     records: &[StoredRecord],
@@ -113,7 +113,7 @@ pub(super) fn check(
             let floor = retained.floor()?;
             if first_key != RecordKey::Control(floor.sequence())
                 || claims.scope != context.scope
-                || claims.owner_device != snapshot.owner
+                || claims.owner_device != snapshot.owner_at(floor.sequence())
                 || claims.parent != prior
             {
                 return Err(Error::Policy);
