@@ -12,6 +12,7 @@ import tempfile
 
 CODEQL_CHECKS = {
     "Analyze (actions)": "github-actions",
+    "Analyze (c-cpp)": "github-actions",
     "Analyze (python)": "github-actions",
     "Analyze (javascript-typescript)": "github-actions",
     "Analyze (rust)": "github-actions",
@@ -19,8 +20,15 @@ CODEQL_CHECKS = {
     "CodeQL": "github-advanced-security",
 }
 CODEQL_CATEGORIES = {f"/language:{language}" for language in
-                     ("actions", "python", "javascript-typescript", "rust")}
+                     ("actions", "c-cpp", "python", "javascript-typescript", "rust")}
 CODEQL_ANALYSIS_KEY = "dynamic/github-code-scanning/codeql:analyze"
+# Regular managed runs analyze directly; successful default-setup configuration
+# tests admit their results through the managed promotion upload job.
+CODEQL_ANALYSIS_KEYS = {
+    CODEQL_ANALYSIS_KEY,
+    "dynamic/github-code-scanning/codeql:upload",
+}
+MAX_ANALYSIS_PAGES = 100
 
 
 def run_gh(*args):
@@ -88,6 +96,14 @@ def require_release_gates(gh, repo, tag, sha):
     for page in pages:
         for check in page["check_runs"]:
             name = check["name"]
+            # A newly detected language can have a pending configuration test
+            # before any analysis is admitted. Stop conservatively for policy
+            # review; this job name never establishes successful coverage.
+            if (check.get("head_sha") == sha
+                    and check.get("app", {}).get("slug") == "github-actions"
+                    and re.fullmatch(r"Analyze \([^)]+\)", name)
+                    and name not in CODEQL_CHECKS):
+                raise ValueError("release policy does not cover an analysis job at this SHA")
             if (name in CODEQL_CHECKS
                     and check.get("app", {}).get("slug") == CODEQL_CHECKS[name]):
                 if name not in latest or check["id"] > latest[name]["id"]:
@@ -111,13 +127,35 @@ def require_release_gates(gh, repo, tag, sha):
 def require_clean_main_analysis(gh, repo, sha):
     # These are the actual managed analysis categories on refs/heads/main.
     # GitHub returns newest-created first. IDs identify analyses but are not the
-    # documented ordering contract. A bounded missing-category result refuses.
-    analyses = json.loads(gh("api", f"repos/{repo}/code-scanning/analyses"
+    # documented ordering contract. Inspect the complete inventory, including
+    # later pages with new current-head categories. Incomplete coverage refuses.
+    analyses = []
+    for number in range(1, MAX_ANALYSIS_PAGES + 1):
+        page = json.loads(gh("api", f"repos/{repo}/code-scanning/analyses"
                             "?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&per_page=100"
-                            "&sort=created&direction=desc"))
+                            f"&sort=created&direction=desc&page={number}"))
+        if (not isinstance(page, list) or len(page) > 100
+                or any(not isinstance(row, dict) for row in page)):
+            raise ValueError("main CodeQL analysis inventory is malformed")
+        analyses.extend(page)
+        if len(page) < 100:
+            break
+    else:
+        raise ValueError("main CodeQL analysis inventory exceeds the complete-review bound")
     latest = {}
     for analysis in analyses:
         category = analysis.get("category")
+        # Default setup can discover languages after a merge. An admitted new
+        # category at this SHA requires an explicit release-policy update; never
+        # silently treat successful coverage of the old set as complete.
+        # Pending configuration tests are also checked by their exact-head job
+        # names above; this is a second guard for admitted managed coverage.
+        if (analysis.get("tool", {}).get("name") == "CodeQL"
+                and analysis.get("ref") == "refs/heads/main"
+                and analysis.get("commit_sha") == sha
+                and analysis.get("analysis_key") in CODEQL_ANALYSIS_KEYS
+                and category not in CODEQL_CATEGORIES):
+            raise ValueError("release policy does not cover a managed CodeQL category")
         if (category in CODEQL_CATEGORIES
                 and analysis.get("tool", {}).get("name") == "CodeQL"
                 and analysis.get("ref") == "refs/heads/main"):
@@ -125,7 +163,7 @@ def require_clean_main_analysis(gh, repo, sha):
     for category in sorted(CODEQL_CATEGORIES):
         analysis = latest.get(category, {})
         if (analysis.get("commit_sha") != sha or analysis.get("error") != ""
-                or analysis.get("analysis_key") != CODEQL_ANALYSIS_KEY):
+                or analysis.get("analysis_key") not in CODEQL_ANALYSIS_KEYS):
             raise ValueError(f"exact release SHA requires a clean main analysis for {category}")
     pages = json.loads(gh("api", f"repos/{repo}/code-scanning/alerts"
                          "?ref=refs%2Fheads%2Fmain&tool_name=CodeQL&state=open&per_page=100",
