@@ -561,6 +561,16 @@ impl Session {
                 });
                 Ok(Response::ForkEvidence { context, proof })
             }
+            #[cfg(feature = "local-qualification")]
+            Request::Divergent { sequence } => {
+                let kernel = self.kernel()?;
+                let context = kernel.status().context;
+                let control = kernel.qualification_divergent_control(sequence).await?;
+                Ok(Response::Divergent {
+                    context,
+                    control: Zeroizing::new(control),
+                })
+            }
             Request::Outbox { after, limit } => {
                 let kernel = self.kernel()?;
                 let context = kernel.status().context;

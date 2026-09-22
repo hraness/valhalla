@@ -13,6 +13,8 @@ mod controls;
 mod drafts;
 mod membership;
 mod messages;
+#[cfg(feature = "local-qualification")]
+mod qualification;
 pub mod recovery;
 mod renewal;
 mod snapshot;

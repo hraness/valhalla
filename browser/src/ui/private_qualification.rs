@@ -703,6 +703,23 @@ pub async fn qualify_private_session(phase: String, retained: String) -> Result<
                 ensure(app()?.borrow().failed, "foreign archive kept custody")?;
                 Ok(json!({"foreign_open_refused":true}))
             }
+            "divergent-proof" => {
+                // Have the open owner device sign a divergent control at one
+                // already retained floor — exactly the equivocation evidence an
+                // observer's durable quarantine is designed to catch. The room
+                // stays open and unchanged on this device.
+                let sequence: u64 = retained.parse().map_err(|_| "floor sequence")?;
+                let Response::Divergent { context, control } =
+                    private::execute(Request::Divergent { sequence }).await?
+                else {
+                    return Err("divergent variant".into());
+                };
+                ensure(
+                    private::retained_locator() == Some(context),
+                    "divergent proof scope",
+                )?;
+                Ok(json!({"control":hex(&control)}))
+            }
             "leave" => {
                 private::leave_and_lock()?;
                 let app = app()?;

@@ -260,7 +260,11 @@ encrypted envelopes and signed owner-control proofs, downloads exact
 `.vhproof` files, and observes an imported proof against local history —
 reporting retained, unknown future floor, or below the joining device's
 retained base — while the fork-evidence read reports whether a durable
-contradiction exists (none in the clean journey). A real fork still quarantines
-the kernel and ends the worker; a reopened quarantined member can read status
-and retained evidence but never resumes sending. Owner succession and safe
+contradiction exists. A local-qualification-only phase then has the owner
+device re-sign divergent claims at a retained removal floor; the member
+observes the resulting `.vhproof` through the real observation path, the
+kernel quarantines durably and the worker ends terminally, and a fresh
+document in the same browser context reopens the exact locator to show
+quarantine status plus the retained accepted/conflicting proof while sends
+stay refused and retained history stays readable. Owner succession and safe
 live-device transfer remain separate work.

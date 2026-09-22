@@ -449,6 +449,8 @@ impl Request {
             Self::ControlProofs { .. } => 30,
             Self::ObserveControl(_) => 31,
             Self::ForkEvidence => 32,
+            #[cfg(feature = "local-qualification")]
+            Self::Divergent { .. } => 33,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -513,6 +515,8 @@ impl Request {
             }
             Self::ObserveControl(b) => w.blob(b, MAX_ARTIFACT)?,
             Self::ForkEvidence => (),
+            #[cfg(feature = "local-qualification")]
+            Self::Divergent { sequence } => w.number(*sequence)?,
             Self::Outbox { after, limit } | Self::Inbox { after, limit } => {
                 w.number(*after)?;
                 w.limit(*limit)?;
@@ -634,6 +638,10 @@ impl Request {
             },
             31 => Self::ObserveControl(r.blob(MAX_ARTIFACT)?),
             32 => Self::ForkEvidence,
+            #[cfg(feature = "local-qualification")]
+            33 => Self::Divergent {
+                sequence: r.number()?,
+            },
             _ => return Err(CodecError::InvalidFrame),
         };
         r.end()?;
@@ -663,6 +671,8 @@ impl Response {
             Self::ControlProofs { .. } => 116,
             Self::Observed { .. } => 117,
             Self::ForkEvidence { .. } => 118,
+            #[cfg(feature = "local-qualification")]
+            Self::Divergent { .. } => 119,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -809,6 +819,11 @@ impl Response {
                 w.status(*status)?;
             }
             Self::ArchiveClosed { context } => w.context(*context)?,
+            #[cfg(feature = "local-qualification")]
+            Self::Divergent { context, control } => {
+                w.context(*context)?;
+                w.blob(control, MAX_ARTIFACT)?;
+            }
         }
         Ok(w.finish())
     }
@@ -1053,6 +1068,20 @@ impl Response {
                     None
                 };
                 Self::ForkEvidence { context, proof }
+            }
+            #[cfg(feature = "local-qualification")]
+            119 => {
+                let context = r.context()?;
+                let control = r.blob(MAX_ARTIFACT)?;
+                // The qualification divergent proof is still a real signed
+                // owner control of this exact room at the wire boundary.
+                let signed = SignedOwnerControl::decode(&control)
+                    .and_then(|c| c.verify())
+                    .map_err(|_| CodecError::InvalidFrame)?;
+                if signed.claims().scope != context.scope {
+                    return Err(CodecError::InvalidFrame);
+                }
+                Self::Divergent { context, control }
             }
             _ => return Err(CodecError::InvalidFrame),
         };

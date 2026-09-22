@@ -7,6 +7,9 @@ license.workspace = true
 publish.workspace = true
 description = "Private-room MLS custody and owner-authorized group lifecycle."
 
+[features]
+# Local browser acceptance harness only; never use this build for deployment.
+local-qualification = []
 
 [dependencies]
 vhalla-private-protocol = { path = "../vhalla-private-protocol" }

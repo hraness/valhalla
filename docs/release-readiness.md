@@ -64,8 +64,9 @@ confidential invitations, bidirectional file messages, exact ciphertext reopen,
 ordered renewal control, keyboard locator acknowledgment, consent invalidation,
 secret export refusal, ordered owner removal with read-only retained history
 for the removed member, signed-proof export and download, observe verdicts
-(retained, unknown-history, below-retained-base), clean fork-evidence reads,
-and lock cleanup. Desktop/tablet/mobile layouts passed at
+(retained, unknown-history, below-retained-base), fork-evidence reads, a
+fabricated owner fork durably quarantining the observing member across a
+document teardown, and lock cleanup. Desktop/tablet/mobile layouts passed at
 1280/768/390 pixels. The browser panel now shares the canonical `.vharchive`
 workflow: bounded encrypted export from an open room, durable exact-resume import
 into a separate read-only IndexedDB namespace, and read-only archive inspection.
@@ -85,16 +86,21 @@ Before a private-room release, complete and qualify:
 - Extend browser coverage to every retained-control edge case (expired or
   conflicting envelopes). The DOM journey now covers signed-proof paging and
   `.vhproof` download, observation verdicts (retained, unknown future floor,
-  and below the joining device's retained base), and clean fork-evidence
-  reads; the CLI process journey covers a fabricated authentic owner fork,
-  durable quarantine and retained evidence. The DOM journey does not
-  fabricate a fork: a proven conflict still ends the worker terminally after
-  the kernel's durable quarantine write. Owner removal is covered in the DOM
-  journey: ordered catch-up, rekey, removed-device send refusal and retained
-  read-only history. Creation, confidential invitations, membership
-  inspection, renewal/catch-up, read-only archive export/import/open and
-  owner-authorized same-account fresh-device rejoin are
-  implemented.
+  and below the joining device's retained base), clean fork-evidence reads,
+  and a fabricated authentic owner fork: a local-qualification-only phase has
+  the owner device re-sign divergent claims at a retained removal floor, the
+  member observes the resulting `.vhproof` through the real observation path,
+  the kernel writes its durable fault before the worker ends terminally, and
+  a fresh document in the same browser context reopens the exact locator to
+  show quarantine plus the retained accepted/conflicting proof while sends
+  stay refused and retained history stays readable. The CLI process journey
+  covers the same fork, durable quarantine and retained evidence. Expired
+  envelopes are the remaining retained-control edge case. Owner removal is
+  covered in the DOM journey: ordered catch-up, rekey, removed-device send
+  refusal and retained read-only history. Creation, confidential invitations,
+  membership inspection, renewal/catch-up, read-only archive
+  export/import/open and owner-authorized same-account fresh-device rejoin
+  are implemented.
   Never publish private room titles, membership, task context or bootstrap secrets
   into discovery, public URLs or unencrypted operational logs.
 - The private-native relay boundary now supplies bounded canonical opaque items,

@@ -21,13 +21,21 @@ for (const [name, item] of Object.entries(manifest.assets)) {
   if (bytes.length !== item.bytes || createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw Error('artifact changed: '+name);
 }
 const headers = JSON.parse(await readFile(join(artifact,'vercel.json'),'utf8')).headers[0].headers;
+const modules=Object.keys(manifest.assets).filter(n=>/^vhalla-browser-[a-z0-9]+\.js$/.test(n));
+if(modules.length!==1)throw Error('expected one main application module');
 const children=[], pending=new Map(), downloads=new Map(), pages=[];
 let server, socket, signal, sequence=0, chromeLog='', unexpectedNetwork=false, networkWrites=0;
 const facts=[], screenshots=[], files=[];
 const deadline=Date.now()+300000;
 const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
   signal.throwIfAborted();
-  const id=++sequence;pending.set(id,{resolve,reject});
+  const id=++sequence;
+  // A CDP reply can be dropped silently (renderer teardown, a crashed service
+  // restarting). Bound every call so a drop fails fast and names the method
+  // instead of stalling until the outer qualification deadline.
+  const timer=setTimeout(()=>{pending.delete(id);reject(Error('CDP call dropped: '+method));},120000);
+  const done=f=>v=>{clearTimeout(timer);f(v);};
+  pending.set(id,{resolve:done(resolve),reject:done(reject)});
   socket.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));
 });
 async function wait(probe,label) {
@@ -178,10 +186,43 @@ async function reopen(page) {
   await setFile(page,'private-locator-file',page.locator);
   await evaluate(page,"(async()=>{await qclick('private-open');await qidle();return true;})()");
 }
+async function reload(page) {
+  // A real document teardown: a fresh target in the same browser context gets
+  // a new renderer and new worker, while this context's durable IndexedDB
+  // custody must survive intact. Page.reload is not used: a CDP call bound to
+  // the dying execution context can be dropped silently and stall forever.
+  await call('Target.closeTarget',{targetId:page.targetId});
+  const {targetId}=await call('Target.createTarget',{url:'about:blank',browserContextId:page.browserContextId});
+  const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
+  page.targetId=targetId;page.sessionId=sessionId;
+  for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
+  await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);
+  await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
+  // A Runtime.evaluate bound to a context dying mid-navigation is dropped
+  // without any response; bound each probe so a dropped call retries. On an
+  // existing account the app boots to Locked with `create` disabled — `unlock`
+  // enabled is the correct readiness signal.
+  const timed=async()=>{try{return await Promise.race([evaluate(page,"!!document.getElementById('unlock')&&!document.getElementById('unlock').disabled"),new Promise(r=>setTimeout(()=>r(false),1500))]);}catch{return false;}};
+  await wait(timed,'private app reload '+page.name);
+  await evaluate(page,`(async()=>{${helpers} qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','reload unlock');await qclick('private-enter');await qwait(()=>!qid('private-open').disabled,'private re-entry');return true;})()`);
+  await setFile(page,'private-locator-file',page.locator);
+  await evaluate(page,"(async()=>{await qclick('private-open');await qidle();return true;})()");
+}
 async function screenshot(page,width) {
+  // An occluded background target may never produce a compositor frame, which
+  // leaves captureScreenshot unanswered; foreground the target first, and if a
+  // capture is still dropped retry once on a fresh overlay. A detached session
+  // surfaces through the Runtime.evaluate probe instead of hanging silently.
+  await call('Page.bringToFront',{},page.sessionId);
   await call('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false},page.sessionId);
   const bounds=await evaluate(page,"(()=>{qshow('private-room-title');const panel=qid('private-panel');qassert(document.documentElement.scrollWidth<=innerWidth+1,'horizontal document overflow');for(const e of panel.querySelectorAll('button,input,textarea,select,pre')){if(!e.getClientRects().length)continue;const r=e.getBoundingClientRect();qassert(r.left>=-1&&r.right<=innerWidth+1,'private control overflow: '+e.id);}return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth};})()");
-  const {data}=await call('Page.captureScreenshot',{format:'png'},page.sessionId);
+  let data;
+  try{({data}=await Promise.race([call('Page.captureScreenshot',{format:'png'},page.sessionId),new Promise((_,j)=>setTimeout(()=>j(Error('capture stall')),15000))]));}
+  catch(e){if(e.message!=='capture stall')throw e;
+    await call('Emulation.clearDeviceMetricsOverride',{},page.sessionId).catch(()=>{});
+    await call('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false},page.sessionId);
+    await evaluate(page,'1');
+    ({data}=await call('Page.captureScreenshot',{format:'png'},page.sessionId));}
   const path=join(output,'private-panel-'+width+'.png');await writeFile(path,Buffer.from(data,'base64'));screenshots.push({...bounds,file:path});
 }
 async function task(abortSignal) {
@@ -201,7 +242,11 @@ async function task(abortSignal) {
   });
   await new Promise((r,j)=>{server.once('error',j);server.listen(8790,'127.0.0.1',r);});
   signal.throwIfAborted();
-  const chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
+  // Backgrounding throttles keep an occluded non-foreground target from
+  // producing compositor frames on demand, which leaves Page.captureScreenshot
+  // unanswered. These flags disable only scheduling throttles, never a
+  // behavior under test.
+  const chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-background-timer-throttling','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
   children.push(chrome);chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
@@ -328,6 +373,13 @@ async function task(abortSignal) {
   await setFile(member,'private-control-file',removal.path);
   await evaluate(member,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'removed member roster stale');qassert(qid('private-prepare-message').disabled,'removed member can still prepare');qassert(!qid('private-outbox').disabled&&!qid('private-inbox').disabled,'removed member lost retained history reads');await qclick('private-observe');await qidle();qassert(qid('private-status').textContent.includes('already retained history'),'applied proof not reported retained');await qclick('private-fork-evidence');await qidle();qassert(qid('private-status').textContent.includes('No locally retained fork proof'),'clean member reported a fork proof');qassert(qid('private-evidence').textContent==='','phantom fork detail rendered');return true;})()");
   facts.push('owner removal control excludes a device and rekeys; removed member retains read-only state but cannot send; signed proofs observe as unknown then retained with no fabricated fork evidence');
+  // Fabricate the equivocation durable quarantine exists for: the owner device
+  // re-signs divergent claims at the retained removal floor with its own
+  // custody. Evidence material only — the owner's retained state is unchanged.
+  const divergent=await invoke(owner,`async function(seq,path){const m=await import(path);const r=JSON.parse(await m.qualify_private_session('divergent-proof',seq));return r.control;}`,[removalSeq,'/'+modules[0]]);
+  const forkRaw=Buffer.from(divergent,'hex');
+  const forkProof=join(output,'divergent.vhproof');await writeFile(forkProof,forkRaw,{mode:0o600});
+  files.push({account:owner.name,kind:'vhproof',bytes:forkRaw.length,sha256:createHash('sha256').update(forkRaw).digest('hex'),file:forkProof});
   for(const width of [1280,768,390])await screenshot(member,width);
   // The removal-control download seconds ago still holds a live temporary URL;
   // the lock hook must revoke it. No extra download: the panel caps live URLs.
@@ -339,6 +391,30 @@ async function task(abortSignal) {
   if(!message.raw.equals(reopened.raw))throw Error('exact locator reopen changed retained ciphertext');
   await leave(member);
   facts.push('lock clears plaintext/files/views/URLs, requires new unlock, exact locator reopen retains ciphertext');
+  // A divergent control validly signed by the owner device at the retained
+  // removal floor is exactly the equivocation durable quarantine exists for.
+  // The member kernel writes its fault before the worker reports failure.
+  await reopen(member);
+  await setFile(member,'private-proof-file',forkProof);
+  await evaluate(member,"(async()=>{await qwait(()=>!qid('private-observe').disabled,'observe control enabled');qshow('private-observe');qid('private-observe').click();await qwait(()=>qid('identity-state').textContent==='Reload required','a proven conflict did not end the worker');return true;})()");
+  await reload(member);
+  await evaluate(member,`(async()=>{
+    qassert(qid('private-membership-summary').textContent.includes('Quarantined'),'quarantine not surfaced after reload');
+    qassert(qid('private-prepare-message').disabled,'quarantined device can still prepare');
+    qassert(qid('private-apply-control').disabled,'quarantined device can still apply controls');
+    await qclick('private-fork-evidence');await qidle();
+    const evidence=qid('private-evidence').textContent;
+    qassert(evidence.includes('Retained fork proof'),'retained fork proof missing');
+    qassert(evidence.includes('Accepted floor ${removalSeq}'),'fork proof names the wrong floor');
+    qassert(evidence.includes('durably quarantined'),'quarantine consequence text missing');
+    qassert(qid('private-status').textContent.includes('conflicting owner signature'),'fork status message missing');
+    await qclick('private-outbox');await qidle();
+    qassert(qid('private-outbox-select').options.length>0,'quarantine lost retained outbox');
+    await qclick('private-inbox');await qidle();
+    return true;
+  })()`);
+  await leave(member);
+  facts.push('a divergent owner-signed control at a retained floor durably quarantines the member: the worker ends terminally, reopen shows quarantine plus the retained fork proof, sends stay refused, and retained history stays readable');
   if(unexpectedNetwork||networkWrites)throw Error('unexpected route, network write or unbounded download event');
   return {passed:true,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,screenshots,files,networkWrites,contexts:3,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
 }

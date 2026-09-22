@@ -589,3 +589,60 @@ fn signed_proofs_and_fork_evidence_verify_at_the_local_boundary() {
         assert!(Response::decode(&raw).is_err());
     }
 }
+
+// Local qualification can ask the owner worker to re-sign divergent claims at
+// a retained floor; the fabricated control is still real signature-bearing
+// evidence at this boundary, so the wire verifies it like any other proof.
+#[cfg(feature = "local-qualification")]
+#[test]
+fn divergent_qualification_frames_round_trip_and_verify_the_signed_control() {
+    let scope = context().scope;
+    let raw = Request::Divergent { sequence: u64::MAX }.encode().unwrap();
+    assert_eq!(Request::decode(&raw).unwrap().encode().unwrap(), raw);
+    for length in 0..raw.len() {
+        assert!(Request::decode(&raw[..length]).is_err());
+    }
+    let mut changed = raw.to_vec();
+    changed.push(0);
+    assert!(Request::decode(&changed).is_err());
+    assert!(Response::decode(&raw).is_err());
+    let raw = Response::Divergent {
+        context: context(),
+        control: control(scope, floor(0), 1),
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(Response::decode(&raw).unwrap().encode().unwrap(), raw);
+    for length in 0..raw.len() {
+        assert!(Response::decode(&raw[..length]).is_err());
+    }
+    let mut changed = raw.to_vec();
+    changed.push(0);
+    assert!(Response::decode(&changed).is_err());
+    assert!(Request::decode(&raw).is_err());
+    // A foreign scope or unsigned payload is refused on decode; oversized
+    // controls are refused on encode.
+    let foreign = control(
+        PrivateRoomScope {
+            room: RoomId::from_bytes([9; 32]).unwrap(),
+            ..scope
+        },
+        floor(0),
+        1,
+    );
+    for control in [foreign, bytes(64)] {
+        let raw = Response::Divergent {
+            context: context(),
+            control,
+        }
+        .encode()
+        .unwrap();
+        assert!(Response::decode(&raw).is_err());
+    }
+    assert!(Response::Divergent {
+        context: context(),
+        control: bytes(MAX_ARTIFACT + 1),
+    }
+    .encode()
+    .is_err());
+}

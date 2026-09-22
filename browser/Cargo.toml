@@ -9,7 +9,7 @@ description = "Rust/WASM browser participation and local encrypted identity."
 [features]
 default = []
 # Local browser acceptance harness only; never use this build for deployment.
-local-qualification = []
+local-qualification = ["vhalla-private-kernel?/local-qualification"]
 # Trusted private custody API only; no relay or automatic network activation.
 private-rooms = ["dep:vhalla-private-kernel", "vhalla-browser-vault/private-storage", "vhalla-browser-storage/private-rooms"]
 

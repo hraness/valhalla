@@ -149,8 +149,10 @@ cursor, `observe` compares one signed proof against retained history and reports
 retained contradiction. The browser panel reads the same bounded proof pages,
 downloads exact `.vhproof` files, and applies the same observation verdicts;
 a proven conflict still ends its worker after the durable quarantine write, and
-the reopened panel shows quarantine status plus the retained evidence. An
-observed proof is never adopted as state, never grants membership or owner
+the reopened panel shows quarantine status plus the retained evidence — the DOM
+journey exercises this by observing a divergent control that a
+local-qualification-only phase has the owner device re-sign at a retained floor.
+An observed proof is never adopted as state, never grants membership or owner
 succession, and proves nothing about floors the device has not retained —
 comparison is against local history only, not a global freshness claim.
 

@@ -146,6 +146,15 @@ pub enum Request {
     /// Missing evidence means no locally retained proof only; it never clears
     /// quarantine or grants owner succession.
     ForkEvidence,
+    /// Local qualification only: have the owner device sign a divergent control
+    /// at an already retained floor, fabricating exactly the equivocation an
+    /// observer quarantines on. Never a network artifact, state change or
+    /// authority grant.
+    #[cfg(feature = "local-qualification")]
+    Divergent {
+        /// Retained control-floor sequence to diverge.
+        sequence: u64,
+    },
     /// Read a bounded local outbox page; confidential offers return metadata only.
     Outbox {
         /// Exclusive local outbox sequence cursor, with zero before the first entry.
@@ -433,6 +442,15 @@ pub enum Response {
         /// Complete context whose archive handle was released.
         context: Context,
     },
+    /// Divergent signed owner control produced only by a local-qualification
+    /// build; fork evidence material, never a committed outbox artifact.
+    #[cfg(feature = "local-qualification")]
+    Divergent {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// Divergent signed control at the requested retained floor.
+        control: Bytes,
+    },
 }
 impl Response {
     /// Return the complete selected context, absent only for account-only entry.
@@ -456,6 +474,8 @@ impl Response {
             | Self::ArchiveProgress { context, .. }
             | Self::ArchiveInspect { context, .. }
             | Self::ArchiveClosed { context } => Some(*context),
+            #[cfg(feature = "local-qualification")]
+            Self::Divergent { context, .. } => Some(*context),
         }
     }
 }
@@ -499,6 +519,9 @@ pub enum ReplyKind {
     ArchiveInspect,
     /// Archive handle released.
     ArchiveClosed,
+    /// Local-qualification divergent owner control.
+    #[cfg(feature = "local-qualification")]
+    Divergent,
 }
 impl Request {
     /// Expected closed response kind used by the generation-checked UI broker.
@@ -532,6 +555,8 @@ impl Request {
                 ReplyKind::ArchiveInspect
             }
             Self::ArchiveClose => ReplyKind::ArchiveClosed,
+            #[cfg(feature = "local-qualification")]
+            Self::Divergent { .. } => ReplyKind::Divergent,
         }
     }
 }
@@ -557,6 +582,8 @@ impl Response {
             Self::ArchiveProgress { .. } => ReplyKind::ArchiveProgress,
             Self::ArchiveInspect { .. } => ReplyKind::ArchiveInspect,
             Self::ArchiveClosed { .. } => ReplyKind::ArchiveClosed,
+            #[cfg(feature = "local-qualification")]
+            Self::Divergent { .. } => ReplyKind::Divergent,
         }
     }
 }
