@@ -107,7 +107,7 @@ exclude a rule, path tree, language or security gate to get a green result.
 - Release publication: 26 publisher regression tests and all 49 workflow-script tests passed. Live readback
   established that managed CodeQL emits the separate security verdict on PR
   heads but not on this repository's main branch. Publication now requires all
-  four exact-main successful analyses and an empty fully paginated open-alert
+  five exact-main successful analyses and an empty fully paginated open-alert
   inventory, plus a successful authentic CodeQL verdict whenever present. Both
   pre-upload and pre-publication checks remain; all severities block release.
 
@@ -241,3 +241,35 @@ The strengthened fixture passed strict WASM Clippy/build and real Chrome in both
 Window and dedicated Worker. Receipt:
 `/private/tmp/valhalla-private-store-ci-repair-runtime-20260922/indexeddb-receipt.json`.
 The workflow now retains this fixture's receipt and browser log on failure.
+
+PR #85 merged as `32a19464a8e80415283cd57f67e20dd2f45f7765` after all
+65 exact-head checks passed at `b0cc434`: 60 source jobs, four CodeQL analyses
+and the authentic security verdict, with zero open alerts and no unresolved
+review threads. The merged tree exactly matches that candidate. Hosted production
+browser receipts and all ten packaged assets were independently checked:
+`/private/tmp/valhalla-ci-browser-b0cc434-20260922/review-summary.json`.
+
+On main, GitHub detected the new C compartment probe and began its automatic
+five-language default-setup qualification. The C/C++ job succeeded, but its
+candidate result was not yet an admitted main analysis. This exposed a release
+policy gap: the publisher still required only the original four languages.
+The `v0.2.0` release run was cancelled before publication; no release was created,
+and its tag remains intact. Publication of the successor requires the corrected
+five-language check and analysis gate, including actual exact-main C/C++ coverage.
+
+GitHub subsequently admitted all five categories on that exact main SHA and
+promoted its configuration at `2026-09-22T21:05:38Z`. Promoted results use the
+observed managed key `dynamic/github-code-scanning/codeql:upload`; ordinary runs
+use `dynamic/github-code-scanning/codeql:analyze`. The corrected publisher accepts
+only those two exact keys together with authentic successful checks and matching
+main/ref/commit/tool. Unknown current managed categories or pending unknown
+analysis checks require policy review; a bounded incomplete inventory refuses.
+The C probe was actually extracted successfully and produced zero findings;
+evidence: `/private/tmp/valhalla-codeql-cpp-32a1946-20260922/review-summary.json`.
+
+The corrected publisher passed 42 focused tests and all 65 workflow/security
+script tests. Independent review approved the exact implementation and test
+files without repeating those checks. A read-only live preflight against
+`32a1946` passed all repaired gates using 11 API reads and no mutation; receipt:
+`/private/tmp/valhalla-five-language-publisher-live-preflight-20260922.json`.
+The successor release remains subject to fresh PR, main and release gates.
