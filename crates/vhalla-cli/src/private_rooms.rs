@@ -45,6 +45,8 @@ vhalla private relay-page MAILBOX --namespace NS64 --after N --limit N --out PAG
 vhalla private relay-serve MAILBOX --namespace NS64 --token FILE|- --listen IP:PORT
 vhalla private relay-submit RELAY_ITEM --addr IP:PORT --token FILE|- --out RECEIPT_JSON
 vhalla private relay-scan CURSOR_DIR --addr IP:PORT --token FILE|- [--limit N] --out SCAN_JSON
+vhalla private relay-push ID STORE --namespace NS64 --addr IP:PORT --token FILE|- [--after N] [--limit N] --out PUSH_JSON
+vhalla private relay-pull ID STORE --namespace NS64 --dir CURSOR_DIR --addr IP:PORT --token FILE|- [--limit N] --out PULL_JSON
 vhalla private control-export ID STORE --after N --parent CONTROL64|none --out CIPHERTEXT
 vhalla private control-proof ID STORE --after N --parent CONTROL64|none --out SIGNED
 vhalla private observe ID STORE --control SIGNED --out JSON
@@ -60,7 +62,7 @@ vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out P
 vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
 Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
 control-proof exports signed owner controls for inspection; observe compares one signed control against retained history only and writes durable quarantine on a proven conflict; fork-evidence reports the retained proof. None claim global freshness or grant succession.
-Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated bounded TCP socket — a local or operator-controlled reference adapter, not a hardened Internet service — while relay-submit retains one item and relay-scan pulls every retained item after a durable cursor into a private directory. A mailbox assigns each retained item its own increasing position shared by every sender in the namespace, so pages, cursors and relay-get use positions while each item still carries its sender-local outbox sequence. There is no TLS, remote-host hardening, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
+Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated bounded TCP socket — a local or operator-controlled reference adapter, not a hardened Internet service — while relay-submit retains one item and relay-scan pulls every retained item after a durable cursor into a private directory. relay-push submits a bounded local outbox prefix and relay-pull scans then applies each applicable item, reopening custody after each deterministic refusal so a later pull can still heal out-of-order delivery; neither emits plaintext or claims acceptance by another member. A mailbox assigns each retained item its own increasing position shared by every sender in the namespace, so pages, cursors and relay-get use positions while each item still carries its sender-local outbox sequence. There is no TLS, remote-host hardening, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
 const OFFER_LIMIT: usize = 1024;
@@ -123,6 +125,8 @@ impl Args {
             "relay-serve" => &["namespace", "token", "listen"],
             "relay-submit" => &["addr", "token", "out"],
             "relay-scan" => &["addr", "token", "limit", "out"],
+            "relay-push" => &["namespace", "addr", "token", "after", "limit", "out"],
+            "relay-pull" => &["namespace", "dir", "addr", "token", "limit", "out"],
             "control-export" => &["after", "parent", "out"],
             "control-proof" => &["after", "parent", "out"],
             "observe" => &["control", "out"],
@@ -167,6 +171,8 @@ impl Args {
         for required in allowed.iter().filter(|name| {
             !matches!(**name, "max-records" | "max-items" | "max-bytes")
                 && !(command == "relay-scan" && **name == "limit")
+                && !(command == "relay-push" && matches!(**name, "after" | "limit"))
+                && !(command == "relay-pull" && **name == "limit")
         }) {
             if !flags.contains_key(*required) {
                 return Err("missing required private option; see private --help".into());
@@ -508,6 +514,141 @@ async fn execute(args: Args) -> Result<(), String> {
                     return Err("confidential contact offers cannot be relayed".into());
                 }
             }
+        }
+        "relay-push" => {
+            let namespace = args.namespace()?;
+            let relay = vhalla_private_native::relay::net::SocketRelay::new(
+                relay_addr(&args, "addr")?,
+                relay_token(&args)?,
+            );
+            let after = if args.flags.contains_key("after") {
+                args.number("after")?
+            } else {
+                0
+            };
+            let limit = if args.flags.contains_key("limit") {
+                usize::try_from(args.number("limit")?)
+                    .map_err(|_| "outbox page limit out of range")?
+                    .clamp(1, vhalla_private_kernel::MAX_PAGE_RECORDS)
+            } else {
+                vhalla_private_kernel::MAX_PAGE_RECORDS
+            };
+            let page = room.outbox(after, limit).await.map_err(|_| REFUSED)?;
+            let mut submitted = 0u64;
+            let mut duplicates = 0u64;
+            let mut skipped = 0u64;
+            let mut records = Vec::new();
+            for entry in &page.records {
+                let Some(artifact) = entry.artifact() else {
+                    skipped += 1;
+                    continue;
+                };
+                let item =
+                    vhalla_private_native::relay::RelayItem::from_artifact(namespace, artifact)
+                        .map_err(relay_error)?;
+                let receipt = relay.submit(&item).map_err(net_error)?;
+                if receipt.duplicate {
+                    duplicates += 1;
+                } else {
+                    submitted += 1;
+                }
+                records.push(
+                    json!({"sequence":entry.sequence(),"position":receipt.position,
+                    "digest":hex(&receipt.digest),"duplicate":receipt.duplicate}),
+                );
+            }
+            args.json(json!({"coverage":"local outbox prefix retained on an opaque relay; not delivery or member acceptance",
+                "head":page.head,"submitted":submitted,"duplicates":duplicates,
+                "skipped_secret":skipped,"records":records}))?;
+        }
+        "relay-pull" => {
+            let namespace = args.namespace()?;
+            let directory = PathBuf::from(args.text("dir")?);
+            let relay = vhalla_private_native::relay::net::SocketRelay::new(
+                relay_addr(&args, "addr")?,
+                relay_token(&args)?,
+            );
+            let limit = if args.flags.contains_key("limit") {
+                usize::try_from(args.number("limit")?)
+                    .map_err(|_| "scan page limit out of range")?
+                    .clamp(1, vhalla_private_native::relay::MAX_RELAY_PAGE)
+            } else {
+                vhalla_private_native::relay::MAX_RELAY_PAGE
+            };
+            let report = vhalla_private_native::relay::net::scan(&directory, &relay, limit)
+                .map_err(scan_error)?;
+            let items = directory.join("items");
+            let mut positions = Vec::new();
+            for entry in std::fs::read_dir(&items).map_err(|_| "catchup directory unreadable")? {
+                let name = entry
+                    .map_err(|_| "catchup directory unreadable")?
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| "catchup directory contains a non-UTF-8 name")?;
+                if let Some(position) = name
+                    .strip_suffix(".vhrelay")
+                    .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                {
+                    positions.push(position);
+                }
+            }
+            positions.sort_unstable();
+            let mut accepted = Vec::new();
+            let mut refused = Vec::new();
+            let mut skipped = Vec::new();
+            for position in positions {
+                let raw = std::fs::read(items.join(format!("{position:016x}.vhrelay")))
+                    .map_err(|_| "catchup item vanished or is unreadable; rerun the scan")?;
+                let item = vhalla_private_native::relay::RelayItem::decode(&raw)
+                    .map_err(|_| "a retained catchup item is malformed; preserve the directory")?;
+                if item.namespace() != namespace {
+                    return Err(
+                        "a catchup item belongs to another namespace; preserve the directory"
+                            .into(),
+                    );
+                }
+                // KeyPackage and contact requests always need their dedicated
+                // explicit commands; a confidential offer can never be relayed.
+                let outcome = match item.kind() {
+                    OutboxKind::Application => room.receive(item.payload()).await.map(|_| ()),
+                    OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
+                        room.apply_control(item.payload()).await.map(|_| ())
+                    }
+                    OutboxKind::Invitation => room.join(item.payload()).await.map(|_| ()),
+                    OutboxKind::ContactInvitation => {
+                        room.join_contact(item.payload()).await.map(|_| ())
+                    }
+                    OutboxKind::KeyPackage
+                    | OutboxKind::ContactRequest
+                    | OutboxKind::ContactOffer => {
+                        skipped.push(position);
+                        continue;
+                    }
+                };
+                match outcome {
+                    Ok(()) => accepted.push(position),
+                    // A deterministic refusal is recoverable on a later pull once
+                    // missing predecessors arrive; reopen clears the uncertainty
+                    // latch before the next item.
+                    Err(_) => {
+                        refused.push(position);
+                        // The live session still holds the identity custody
+                        // lock; drop it before reopening.
+                        room.lock();
+                        room = RoomSession::open(
+                            Identity::open(&args.identity)
+                                .map_err(|_| "existing identity custody unavailable")?,
+                            args.store()?,
+                            context,
+                        )
+                        .await
+                        .map_err(|_| REFUSED)?;
+                    }
+                }
+            }
+            args.json(json!({"coverage":"opaque relay catch-up applied locally; a refused item may succeed after its predecessors arrive",
+                "scanned":report.scanned,"head":report.head,"cursor":report.cursor,
+                "accepted":accepted,"refused":refused,"skipped":skipped}))?;
         }
         "control-export" => {
             let id = if args.text("parent")? == "none" {

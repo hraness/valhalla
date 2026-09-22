@@ -121,7 +121,11 @@ Before a private-room release, complete and qualify:
   (`relay-serve`/`relay-submit`/`relay-scan`, explicit numeric `IP:PORT`, token
   read only from a 0600 file or pipe) now carries those items between separate
   processes with durable position-cursor catch-up, including member-to-owner
-  replies through the same mailbox; it is a local operator-controlled
+  replies through the same mailbox. Explicit `relay-push`/`relay-pull`
+  composites submit a bounded outbox page and apply every retained item in
+  position order — refusing own-echo, skipping dedicated-command kinds, and
+  healing out-of-order items on a later pull — without emitting plaintext or
+  claiming remote acceptance; it is a local operator-controlled
   adapter, not a hardened Internet service. Production operation still needs
   offline scheduling, congestion handling, stronger relay authentication and
   independent acceptance status. An isolated sender cannot detect an unseen

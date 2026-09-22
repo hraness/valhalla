@@ -949,11 +949,10 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
     );
     // A member replies through the same mailbox: its sender-local sequence
     // overlaps the owner's, so only mailbox-assigned positions keep the stream
-    // distinct. The owner scans and applies the reply unchanged.
+    // distinct. relay-push submits the member's whole outbox prefix; relay-pull
+    // scans and applies every applicable item for the owner — including the
+    // member's reply at position 3 — while own-echo items refuse cleanly.
     let member = f.inspect("member-key", "member-room", "member-inspect");
-    // The member's contact request already committed an outbox artifact, so
-    // the reply's sender-local sequence is the next outbox head, not 1.
-    let member_sequence = member["status"]["outbox_head"].as_u64().unwrap() + 1;
     f.write("text", b"member reply over the same mailbox\n");
     f.ok(
         "send",
@@ -962,53 +961,81 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
         &send_options(&f, &member, 5, "member-item"),
     );
     f.ok(
-        "relay-export",
+        "relay-push",
         "member-key",
         Some("member-room"),
         &[
             ("namespace", namespace.clone()),
-            ("sequence", member_sequence.to_string()),
-            ("out", f.path("member-relay-item")),
-        ],
-    );
-    f.ok(
-        "relay-submit",
-        &f.path("member-relay-item"),
-        None,
-        &[
             ("addr", addr.clone()),
             ("token", f.path("token")),
-            ("out", f.path("member-receipt")),
+            ("out", f.path("member-push")),
         ],
     );
-    // The member's first outbox item lands at mailbox position 3.
-    assert_eq!(f.json("member-receipt")["position"], 3);
+    // The member's whole outbox prefix — its earlier contact request plus the
+    // reply — submits in sender order at positions 3 and 4, sharing the mailbox
+    // with the owner's overlapping sender-local sequences without collision.
+    let pushed = f.json("member-push");
+    assert_eq!(pushed["submitted"], 2);
+    let positions: Vec<u64> = pushed["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["position"].as_u64().unwrap())
+        .collect();
+    assert_eq!(positions, vec![3, 4]);
     f.ok(
-        "relay-scan",
-        &f.path("owner-catchup"),
-        None,
-        &[
-            ("addr", addr),
-            ("token", f.path("token")),
-            ("out", f.path("owner-scan")),
-        ],
-    );
-    assert_eq!(f.json("owner-scan")["scanned"], 3);
-    let reply = f.root.join("owner-catchup/items/0000000000000003.vhrelay");
-    f.ok(
-        "relay-apply",
+        "relay-pull",
         "owner-key",
         Some("owner-room"),
         &[
-            ("namespace", namespace),
-            ("relay", reply.to_str().unwrap().into()),
-            ("out", f.path("applied-reply")),
+            ("namespace", namespace.clone()),
+            ("dir", f.path("owner-catchup")),
+            ("addr", addr.clone()),
+            ("token", f.path("token")),
+            ("out", f.path("owner-pull")),
         ],
     );
+    let pulled = f.json("owner-pull");
+    assert_eq!(pulled["scanned"], 4);
+    // The owner's own two items echo back and refuse deterministically; the
+    // member's contact request waits for its dedicated explicit command; the
+    // reply is the only newly accepted item.
     assert_eq!(
-        fs::read(f.root.join("applied-reply")).unwrap(),
-        b"member reply over the same mailbox\n"
+        pulled["accepted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![4]
     );
+    assert_eq!(pulled["refused"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        pulled["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    // The accepted reply is durable in the owner's inbox.
+    f.ok(
+        "inbox",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("after", "0".into()),
+            ("limit", "8".into()),
+            ("out", f.path("owner-inbox")),
+        ],
+    );
+    let inbox = f.json("owner-inbox");
+    assert!(inbox["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["body_utf8"] == "member reply over the same mailbox\n"));
 }
 
 #[test]

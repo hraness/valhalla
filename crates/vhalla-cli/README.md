@@ -1719,6 +1719,14 @@ vhalla private relay-submit private-files/item.vhrelay \
   --addr 127.0.0.1:9400 --token token-file --out private-files/receipt.json
 vhalla private relay-scan catchup-dir --addr 127.0.0.1:9400 \
   --token token-file --out private-files/scan.json
+
+# Composite room-side delivery: push the local outbox prefix, then let a
+# peer pull the mailbox into their room.
+vhalla private relay-push owner-key owner-room --namespace "$PRIVATE_RELAY_NS" \
+  --addr 127.0.0.1:9400 --token token-file --out private-files/push.json
+vhalla private relay-pull member-key member-room --namespace "$PRIVATE_RELAY_NS" \
+  --dir catchup-dir --addr 127.0.0.1:9400 --token token-file \
+  --out private-files/pull.json
 ```
 
 `relay-serve` opens an existing mailbox and prints one `relay-serve IP:PORT`
@@ -1737,6 +1745,19 @@ exactly where it stopped across sender boundaries. A pre-existing item file
 with different bytes fails closed instead of being overwritten. A socket
 receipt remains retention only — never delivery, scheduling or member
 acceptance.
+
+`relay-push` submits one bounded local outbox page (`--after`/`--limit`,
+default the first 16 records) as canonical items and reports each sender
+sequence beside its assigned mailbox position; secret offer issuance is
+counted under `skipped_secret` and never leaves the room store. `relay-pull`
+runs the same durable scan into `--dir`, then applies every retained item in
+position order: application frames, controls and invitations go through their
+authenticated kernel paths, KeyPackage/contact-request envelopes are reported
+as `skipped` for their dedicated explicit commands, and deterministic refusals
+(including the puller's own echo) are listed under `refused` after reopening
+custody, so a later pull still heals an item whose predecessors arrived out of
+order. Neither composite prints plaintext nor claims another member accepted
+anything.
 
 ### Output uncertainty and exact recovery
 

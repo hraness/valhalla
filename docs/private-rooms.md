@@ -237,7 +237,15 @@ a 64-digit lowercase hexadecimal token read from a 0600 file or bounded pipe,
 and `relay-scan` performs durable position-cursor catch-up into a private
 directory,
 persisting the cursor after each item so a killed scan or offline interval
-resumes exactly. It is a local reference adapter — no DNS, TLS, remote-host
+resumes exactly. Two explicit room-side composites close the delivery loop:
+`relay-push` submits a bounded local outbox page and reports each sender
+sequence beside its assigned mailbox position (secret offer issuance is
+skipped, never relayed), while `relay-pull` scans the mailbox then applies
+every retained item in position order — refusing its own echo, skipping
+KeyPackage/contact-request envelopes that require dedicated commands, and
+reopening custody after each deterministic refusal so out-of-order items can
+still heal on a later pull. It is a local reference adapter — no DNS, TLS,
+remote-host
 hardening or public Internet service claim — and a retention receipt is never
 member acceptance. Hardened interchangeable transports and independent-machine
 failure-domain qualification remain required.
