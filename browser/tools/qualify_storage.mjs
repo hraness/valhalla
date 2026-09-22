@@ -39,6 +39,11 @@ try {
     return tx;
   };
   const hook = (next, arg) => {
+    if (next === 'assert-database-absent') {
+      return indexedDB.databases().then(databases => {
+        if (databases.some(database => database.name === arg)) throw new Error('existing-only open created missing database');
+      });
+    }
     if (next === 'assert-no-write') { if (writes) throw new Error('readonly unlock attempted write'); return; }
     if (next === 'assert-no-mutation') { if (mutations) throw new Error('durability refusal queued mutation'); return; }
     if (next === 'tick') return new Promise(resolve => setTimeout(resolve, 0));

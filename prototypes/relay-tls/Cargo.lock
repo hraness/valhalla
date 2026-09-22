@@ -2012,6 +2012,7 @@ dependencies = [
  "sha2 0.10.9",
  "vhalla-custody",
  "vhalla-private-kernel",
+ "vhalla-private-relay",
 ]
 
 [[package]]
@@ -2020,6 +2021,14 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "vhalla-private-relay"
+version = "0.0.0"
+dependencies = [
+ "sha2 0.10.9",
+ "vhalla-private-kernel",
 ]
 
 [[package]]

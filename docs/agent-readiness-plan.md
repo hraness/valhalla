@@ -39,17 +39,18 @@ alone does not meet it.
    paths, focused tests and owners before writes. Root owns shared manifests,
    release workflow, this plan and integration. The release publisher's missing
    separate CodeQL gate is owned by `recover_session` with its focused tests.
-3. **Integration — in progress.** Test real agent/room/delivery composition, browser
-   recovery, restart/uncertainty boundaries and supported containment where used.
-4. **Independent review and final gates — pending.** Focused cross-lane reviews
+3. **Integration — complete.** Real agent/room/delivery composition, browser
+   recovery and restart/uncertainty boundaries passed the local gates below.
+4. **Independent review and final gates — in progress.** Focused cross-lane reviews
    repaired launchctl failure classification, staged-cursor corruption, browser
    Origin handling and release artifact provenance. Review the complete changes,
    repair concrete findings, run final repository gates and exact-head CI. One
    owner per expensive validation and external wait.
-5. **Operational acceptance and delivery — pending.** Use identified owned
-   targets and synthetic state. Qualify clean installation, independent delivery,
-   outage/restart, storage-full and recovery. Record exact artifacts and results;
-   no unrun capability receives a readiness claim.
+5. **Operational acceptance and delivery — pending external gates.** Local Mac
+   installation, installed CLI agents, browser delivery and outage/restart passed
+   with synthetic state. Record final CI, publication and installation evidence;
+   independent-machine delivery remains outside the qualified local scope.
+   No unrun capability receives a readiness claim.
 
 ## Decisions and evidence to retain
 
@@ -171,8 +172,8 @@ in the worker, end the current unauthorized session while retaining attempt/
 backoff budgets for explicit credential replacement, and refuse the unsupported
 port. Malformed receipts and exhausted lifetime budgets still stop permanently.
 The first actual LaunchAgent attempt also exposed an oversized whole-domain
-`launchctl` preflight. The scoped service probe replaces that broad dump; fresh
-live qualification is required before claiming installation success.
+`launchctl` preflight. The scoped service probe replaces that broad dump; the fresh
+live qualification below establishes installation success.
 
 The final merged dependency gate passed with pinned `cargo-audit 0.22.2` across
 47 retained graphs. No active vulnerability findings; two inactive lockfile
@@ -214,3 +215,29 @@ integrated suite. The macOS release lane repeats gateway socket tests.
 Final workspace formatting and strict all-target/all-feature Clippy passed again
 after the socket repair; log:
 `/private/tmp/valhalla-final-workspace-quality-after-http-20260922.log`.
+
+The repaired production browser→HTTP gateway→TLS delivery journey passed all
+11 checks against the same manifest as the panel/archive journey. It exercised
+trusted admission cursors, worker-side consent invalidation, outage/reload/exact
+retry, explicit capability and TLS-token replacement without budget reset,
+stale-tab fencing, lock cancellation and a durable stop on malformed receipts.
+Receipt:
+`/private/tmp/valhalla-browser-private-delivery-dom-fixed-http-20260922/receipt.json`.
+All owned browser, gateway and relay processes were stopped after qualification.
+
+The final independent release/native review approved `c03b032` with no new
+blocker. Hosted CI then exposed a stale retained TLS prototype lockfile; its
+minimal repair adds only the new local relay package and edge, preserving all
+225 existing package identities and registry checksums. Its nine tests,
+formatting and strict Clippy passed. Receipt:
+`/private/tmp/valhalla-relay-prototype-lock-repair-receipt-20260922.json`.
+
+Hosted CI also found an obsolete error-category assertion in the private-store
+browser fixture after existing-only open was introduced. The repair distinguishes
+an absent database (refused without creating it) from an existing schema missing
+FORMAT (corrupt), and checks lost-FORMAT open/create refusals preserve exact
+committed image, records and proofs. Production storage code is unchanged.
+The strengthened fixture passed strict WASM Clippy/build and real Chrome in both
+Window and dedicated Worker. Receipt:
+`/private/tmp/valhalla-private-store-ci-repair-runtime-20260922/indexeddb-receipt.json`.
+The workflow now retains this fixture's receipt and browser log on failure.

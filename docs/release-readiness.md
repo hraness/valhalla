@@ -154,9 +154,10 @@ Before a private-room release, complete and qualify:
   receipts are implemented and have focused local fault evidence. The CLI delivery
   driver passed three real two-process TLS/stdio journeys. Installed Codex and
   Devin clients each discovered the five fixed-room MCP tools and called status
-  under a synthetic one-use grant. The local Mac host and browser gateway are
-  undergoing operational qualification; final source/artifact gates and independent
-  deployment evidence remain separate. An isolated sender cannot detect an unseen
+  under a synthetic one-use grant. The actual Mac service lifecycle and production
+  browser gateway/TLS delivery and archive journeys passed local qualification;
+  current-head CI, artifact publication and independent-machine deployment evidence
+  remain separate. An isolated sender cannot detect an unseen
   removal merely by asking an untrusted relay.
 - Explicit fresh-device admission now has qualified kernel, CLI and browser
   coverage. Account-authorized owner succession is implemented and qualified:

@@ -57,6 +57,28 @@ async fn tamper(
         .map_err(fail)
 }
 
+async fn raw_values(
+    inner: &mut IndexedStorage,
+    keys: &[String],
+) -> Result<Vec<Option<Vec<u8>>>, JsValue> {
+    let mut values = Vec::new();
+    for key in keys {
+        let key = key.clone();
+        values.push(
+            super::run(inner, false, move |tx| {
+                tx.read(&key.into(), |tx, value| {
+                    *tx.result.borrow_mut() =
+                        Some(bounded(value, MAX_IMAGE_BYTES + model::STATE_OVERHEAD));
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(fail)?,
+        );
+    }
+    Ok(values)
+}
+
 /// Exercise only fresh synthetic namespaces. The hook injects browser storage
 /// failures, never a domain callback during a publication transaction.
 pub async fn run(
@@ -70,13 +92,30 @@ pub async fn run(
         max_records: 6,
         max_record_bytes: 480,
     };
+    // Missing schema aborts before FORMAT can be read. Separately exercise a
+    // missing FORMAT in an explicitly created schema, without creating custody.
+    let mut schema = IndexedStorage::open(namespace).await.map_err(fail)?;
+    let initial_keys = [
+        format!("{}format", model::prefix(ctx)),
+        format!("{}state", model::prefix(ctx)),
+    ];
+    let before = raw_values(&mut schema, &initial_keys).await?;
+    ensure(
+        before == [None, None],
+        "new schema retained private custody",
+    )?;
     ensure(
         matches!(
             IndexedPrivateStore::open(namespace, ctx).await,
             Err(StoreError::Corrupt)
         ),
-        "missing FORMAT opened as fresh",
+        "existing schema without FORMAT did not refuse as corrupt",
     )?;
+    ensure(
+        raw_values(&mut schema, &initial_keys).await? == before,
+        "missing FORMAT refusal initialized custody",
+    )?;
+    drop(schema);
     let mut store = IndexedPrivateStore::create_new(namespace, ctx, limits)
         .await
         .map_err(fail)?;
@@ -307,6 +346,47 @@ pub async fn run(
     )?;
     drop(check);
 
+    // Losing FORMAT cannot make a committed scope fresh or permit replacement.
+    // Compare exact retained image and immutable record/proof bytes after both
+    // refusal paths, rather than relying only on an error classification.
+    let mut keys = vec![format!("{}state", model::prefix(ctx))];
+    for key in [control_record.key(), event.key(), index.key()] {
+        let (data, proof) = model::record_keys(ctx, key).map_err(fail)?;
+        keys.extend([data, proof]);
+    }
+    let mut schema = IndexedStorage::open_existing(namespace)
+        .await
+        .map_err(fail)?;
+    let retained = raw_values(&mut schema, &keys).await?;
+    ensure(
+        retained.iter().all(Option::is_some),
+        "missing retained evidence",
+    )?;
+    let mut store = IndexedPrivateStore::open(namespace, ctx)
+        .await
+        .map_err(fail)?;
+    tamper(&mut store, initial_keys[0].clone(), None).await?;
+    drop(store);
+    ensure(
+        matches!(
+            IndexedPrivateStore::open(namespace, ctx).await,
+            Err(StoreError::Corrupt)
+        ),
+        "lost FORMAT opened committed custody",
+    )?;
+    ensure(
+        IndexedPrivateStore::create_new(namespace, ctx, limits)
+            .await
+            .is_err(),
+        "lost FORMAT allowed committed custody replacement",
+    )?;
+    ensure(
+        raw_values(&mut schema, &keys).await? == retained
+            && raw_values(&mut schema, &initial_keys[..1]).await? == [None],
+        "lost FORMAT refusal repaired or replaced retained evidence",
+    )?;
+    drop(schema);
+
     // Each corruption case has a separate preserved scope; never reset evidence.
     for (ctx, missing_data) in [(contexts[1], true), (contexts[2], false)] {
         let mut store = IndexedPrivateStore::create_new(namespace, ctx, limits)
@@ -426,7 +506,7 @@ pub async fn run(
         "oversized stored blob accepted",
     )?;
     control(&hook, "finish")?;
-    Ok("private IndexedDB exact CAS, strict completion, stale tabs, cancellation, markers, orphan keys and bounded refusal passed".into())
+    Ok("private IndexedDB absent database remains absent; missing and lost FORMAT refuse without replacing retained evidence; exact CAS, strict completion, stale tabs, cancellation, markers, orphan keys and bounded refusal passed".into())
 }
 
 #[cfg(feature = "private-archive-qualification")]

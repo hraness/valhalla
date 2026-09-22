@@ -273,6 +273,8 @@ jobs:
           path: |
             ${{ runner.temp }}/vhalla-storage-runtime/indexeddb-receipt.json
             ${{ runner.temp }}/vhalla-storage-runtime/chromium.stderr.log
+            ${{ runner.temp }}/vhalla-private-store-runtime/indexeddb-receipt.json
+            ${{ runner.temp }}/vhalla-private-store-runtime/chromium.stderr.log
             ${{ runner.temp }}/vhalla-private-group-runtime/indexeddb-receipt.json
             ${{ runner.temp }}/vhalla-private-group-runtime/chromium.stderr.log
             ${{ runner.temp }}/vhalla-private-custody-runtime/indexeddb-receipt.json

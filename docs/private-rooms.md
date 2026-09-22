@@ -3,8 +3,10 @@
 Valhalla's private-room implementation joins account and room custody in native
 sessions and a browser worker. The current candidate adds a local Mac host,
 authenticated TLS relay, bounded delivery for existing CLI agents, and explicit
-browser synchronization through a loopback gateway. It is undergoing final
-integration qualification; implemented code is not a claim of a deployed service.
+browser synchronization through a loopback gateway. Local integration, installed
+CLI agents, the actual Mac service lifecycle and production-browser journeys have
+passed qualification. Current-head CI and artifact publication remain delivery
+gates; local evidence is not a claim of a deployed service.
 See the [readiness plan](agent-readiness-plan.md), [CLI-agent guide](cli-agents.md)
 and [local-host guide](local-host.md) for current evidence and setup.
 
