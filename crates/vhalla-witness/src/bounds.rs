@@ -1,8 +1,8 @@
 //! Static bounds of the habitat-v1 model.
 //!
-//! Every value is copied from `platonik-core` `model.rs` constants or from the
-//! ranges checked by `sim.rs` `validate_experiment` and `validate_program` at
-//! commit `5eedec07`. Structural bounds are `usize` because they compare with
+//! Every value is copied from the habitat-v1 `model.rs` constants or from the
+//! ranges checked by `sim.rs` `validate_experiment` and `validate_program`.
+//! Structural bounds are `usize` because they compare with
 //! collection lengths; charged quantities never use them directly.
 
 /// Programs need at least one rule (`validate_program`).
@@ -55,7 +55,7 @@ pub const MAX_FUEL: u64 = 2_000_000;
 pub const MIN_ACTIVATION_FUEL: u32 = 1;
 /// Per-activation fuel is 1..=1024 for v1 (`validate_experiment`).
 pub const MAX_ACTIVATION_FUEL: u32 = 1024;
-/// Loading work is bounded by Platonik's `MAX_INPUT_BYTES`.
+/// Loading work is bounded by the model's `MAX_INPUT_BYTES`.
 pub const MAX_LOADING_WORK: u64 = 65_536;
 /// Depot capacity is 1..=128.
 pub const MIN_DEPOT_CAPACITY: u8 = 1;

@@ -2,7 +2,7 @@
 
 Witness-mode program execution for Botcaptcha: the platform side of a
 Roc-style platform/application split. The application supplies only an
-assignment of finite-rule programs (the Platonik `habitat-v1` cell language);
+assignment of finite-rule programs (the `habitat-v1` cell language);
 the platform owns the world, the tick loop, the work ledger, the allowance, and
 every effect, and hands back plain data.
 
@@ -39,9 +39,6 @@ crate; this crate has no key type, no clock, and no entropy.
 
 ## Evidence
 
-`tests/vectors/` holds one file per Platonik fixture, every `bridge-v1`
+`tests/vectors/` holds one file per reference fixture, every `bridge-v1`
 suite case, and the densest 64 KiB case: the canonical manifest and candidate
-bytes and every digest and quantity a replay must reproduce. The restatement
-they were generated from is checked bit for bit against `platonik-core` at
-`5eedec07` in `prototypes/witness-restatement`; native and wasm32 replays are
-compared in `prototypes/witness-wasm-parity`.
+bytes and every digest and quantity a replay must reproduce.

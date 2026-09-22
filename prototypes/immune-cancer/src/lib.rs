@@ -1,4 +1,4 @@
-//! Bounded immune-system prototype for Valhalla and Platonik realms.
+//! Bounded immune-system prototype for Valhalla realms.
 //!
 //! This models containment policy only. Reports are hints, never authority;
 //! owner revocation is immediate, while community quarantine requires distinct

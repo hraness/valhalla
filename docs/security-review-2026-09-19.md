@@ -46,9 +46,6 @@ browser participation, or a general public service.
   only for additional evidence on an already counted support tuple, with all
   other canonical state unchanged. This preserves the existing application
   replay semantics. Local continuity checks are not consensus proofs.
-- Game replay bounds file size, field sizes, record count, and verification
-  work. Its final receipt reuses the receiver's already charged replay.
-  [Replay policy](game-replay.md) documents the limits and their scope.
 - Private-network onboarding restores the exact shared archive into a separate,
   frozen genesis store. Subsequent owner posts must not replace a running
   network's genesis. [The product review](p2p-product-review-2026-09-19.md)

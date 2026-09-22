@@ -2,7 +2,7 @@
 title: Valhalla Platonik session adapter
 type: plan
 area: valhalla-platonik-session-adapter
-status: in-progress
+status: cancelled
 tags:
   - games
   - verification
@@ -12,7 +12,7 @@ tags:
 
 # Valhalla Platonik session adapter
 
-**Status:** proposed; one platform change and six discovery spikes gate the first release
+**Status:** cancelled; the adapter and the `platonik-core` dependency were removed from the codebase
 **Date:** 2026-09-16
 **Scope:** `crates/vhalla-game-platonik`, the Slice 5 crate that carries a Platonik session as a
 host-ordered signed event log, commits its state through `vhalla-witness` replay, and lets any
@@ -1664,3 +1664,20 @@ Remaining limitation: cross-room intake producer policy stays open — it needs 
 consensus-visible producer-identity model rather than a cosmetic filter. Relayed
 transport beyond loopback remains live-qualification-gated on `VHALLA_TAILCAT=1`, which
 now exercises the pinned grammar end to end.
+
+## Result
+
+Cancelled on 2026-09-22. `crates/vhalla-game-platonik`, the `platonik-core` git
+dependency, the `experimental-game` CLI feature and `vhalla game replay`, the
+steel-thread `GameSession` lane, and the adapter spikes (`game-fuzz`,
+`game-wasm-parity`, `game-artifact-sizes`, `witness-restatement`,
+`witness-contract-spike`, `witness-wasm-parity`) were all removed from the
+codebase. The `vhalla-witness` crate remains as the verifier-owned habitat-v1
+VM; `GameCommitment` lanes in `vhalla-rooms-consensus` stay engine-independent.
+
+## Durable memory
+
+No durable promotion: the subsystem it planned no longer exists. The live
+pinned-mesh intake tests in `crates/vhalla-cli/tests/rooms_node.rs` now drive
+ordinary intake batches instead of quorum game lanes. If game work resumes,
+start a new plan rather than reviving this one.

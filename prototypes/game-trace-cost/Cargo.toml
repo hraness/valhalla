@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 license = "MIT"
 publish = false
-description = "Spike 1 of the Platonik session adapter plan: does hashing every frame through platform::run_observed keep replay within budget?"
+description = "Witness trace-cost spike: does hashing every frame through platform::run_observed keep replay within budget?"
 
 [workspace]
 

@@ -4,7 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Witness-mode program execution: the Platonik habitat-v1 finite-rule VM restated as the verifier-owned platform, with canonical codecs, digests, task manifests, a move-only run capability, and receipts"
+description = "Witness-mode program execution: the habitat-v1 finite-rule VM restated as the verifier-owned platform, with canonical codecs, digests, task manifests, a move-only run capability, and receipts"
 
 [lints]
 workspace = true

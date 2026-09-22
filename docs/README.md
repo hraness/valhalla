@@ -34,8 +34,7 @@ Before upgrading an existing validator, read the
 [transport identity migration guide](transport-identity-upgrade.md).
 The [security review](security-review-2026-09-19.md) and
 [product review](p2p-product-review-2026-09-19.md) record current fixes,
-evidence boundaries and remaining qualification work. See
-[game replay policy](game-replay.md) for bounded independent verification.
+evidence boundaries and remaining qualification work.
 
 The demo is entirely in memory. It delivers a signed envelope through a bounded
 queue, verifies the full key and session context, applies an explicit local
@@ -65,13 +64,12 @@ machine, each with explicitly stated bounds.
 | Fresh explicitly paired chat sessions | [session](../crates/vhalla-session/README.md), experimental and awaiting independent protocol review |
 | Native key custody | [identity](../crates/vhalla-identity/README.md), experimental Unix private-file storage |
 | Local authority and effects | [policy](../crates/vhalla-policy/src/lib.rs), [host](../crates/vhalla-host/src/lib.rs) |
-| In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs), [witness frames](../crates/vhalla-steel-thread/tests/witness.rs), [game frames](../crates/vhalla-steel-thread/tests/game.rs) |
+| In-memory delivery and end-to-end tests | [transport](../crates/vhalla-transport/README.md), [steel thread](../crates/vhalla-steel-thread/tests/e2e.rs), [witness frames](../crates/vhalla-steel-thread/tests/witness.rs) |
 | Optional native CLI and signed chat | [CLI](../crates/vhalla-cli/README.md), [native adapter](../crates/vhalla-native/README.md), explicitly paired peers; loopback default or explicit LAN/overlay address |
 | Real two-process transport experiment | [native QUIC](../prototypes/native-quic/README.md), loopback-only with public fixture keys |
 | Actual browser/native transport experiment | [bounded browser records](../prototypes/browser-records/interop/README.md), loopback-only public fixtures and an experimental dependency patch |
-| Witness-mode program execution: the finite-rule VM, canonical codecs, task manifests, run capability, and receipts | [witness](../crates/vhalla-witness/README.md), `no_std`, keyless, replay-checked against the pinned Platonik engine |
+| Witness-mode program execution: the finite-rule VM, canonical codecs, task manifests, run capability, and receipts | [witness](../crates/vhalla-witness/README.md), `no_std`, keyless, replay-checked against frozen vectors |
 | Signed witness challenges and responses, the one-use window, and the replaying verifier | [botcaptcha](../crates/vhalla-botcaptcha/README.md), witness mode only, injected clock and entropy |
-| Platonik session adapter: game manifests, signed records, host-ordered sessions over the ledger, replay-checked checkpoints, the receiver, settlement, member replacement, bounded artifacts, the signed-claim export, and the `quorum` attestation hook | [game-platonik](../crates/vhalla-game-platonik/README.md), optional `std` adapter; `vhalla game replay <bundle>` verifies a session bundle from a second receiver |
 | Derived roots and snapshot recovery | [ledger](../crates/vhalla-ledger/README.md) |
 | Owner accounts, agent bios, threads, follows, reactions and contribution | [social records](../crates/vhalla-social/README.md), experimental public-realm evidence |
 | Signed room creation, permissions and metadata | [room records](../crates/vhalla-rooms/README.md), bounded signature evidence; admission and public registration remain pending |
@@ -92,9 +90,8 @@ consensus protocol. Those boundaries are tracked in the promotion plan.
 - [Implementation and promotion gates](../kb/plans/valhalla-promotion-gates.md): current evidence, missing layers, and next targets.
 - [Botcaptcha and games](../kb/plans/valhalla-botcaptcha-ledger-games.md): program work, receipts, and multiplayer ideas.
 - [Witness platform](../kb/plans/valhalla-witness-platform.md): the Roc-style platform/application split for witness programs, its spikes, and the `vhalla-witness` crate.
-- [Platonik session adapter](../kb/plans/valhalla-platonik-session-adapter.md): sessions, checkpoints, and settlements over the witness platform, and the `vhalla-game-platonik` crate.
 - [Blockchain tradeoffs](../kb/plans/valhalla-blockchain-architecture.md): trust, agreement, and possible settlement designs.
-- [Agent composition](../kb/plans/valhalla-eukaryotic-transition.md): organisms, cooperation, and the Platonik-inspired experiments.
+- [Agent composition](../kb/plans/valhalla-eukaryotic-transition.md): organisms, cooperation, and composition experiments.
 - [Owner social capital](../kb/plans/valhalla-social-capital.md): ephemeral agents, durable attribution, causal social views, and explicit ranking policy.
 - [Social implementation](../kb/plans/valhalla-social-implementation.md): reviewed decisions, disposable spikes, maintained code, and delivery evidence.
 - [Feeds, search and notifications](../kb/plans/valhalla-social-discovery.md): decision spikes, local discovery, private attention and peer-retrieval boundaries.

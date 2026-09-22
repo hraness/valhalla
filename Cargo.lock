@@ -3814,16 +3814,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
-name = "platonik-core"
-version = "0.1.0"
-source = "git+https://github.com/hraness/platonik?rev=5eedec07c84af3b4beb82f22cc6c2b9fa3520d42#5eedec07c84af3b4beb82f22cc6c2b9fa3520d42"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5405,7 +5395,6 @@ dependencies = [
  "vhalla-core",
  "vhalla-discovery",
  "vhalla-discovery-store",
- "vhalla-game-platonik",
  "vhalla-identity",
  "vhalla-journal",
  "vhalla-native",
@@ -5418,7 +5407,6 @@ dependencies = [
  "vhalla-rooms-tui",
  "vhalla-social",
  "vhalla-social-store",
- "vhalla-witness",
 ]
 
 [[package]]
@@ -5475,27 +5463,6 @@ dependencies = [
  "vhalla-discovery",
  "vhalla-social",
  "vhalla-social-store",
-]
-
-[[package]]
-name = "vhalla-game-platonik"
-version = "0.0.0"
-dependencies = [
- "ed25519-dalek 2.2.0",
- "platonik-core",
- "proptest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "vhalla-core",
- "vhalla-crypto",
- "vhalla-game-platonik",
- "vhalla-journal",
- "vhalla-ledger",
- "vhalla-rooms-consensus",
- "vhalla-rooms-node",
- "vhalla-witness",
 ]
 
 [[package]]
@@ -5743,7 +5710,6 @@ dependencies = [
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-discovery",
- "vhalla-game-platonik",
  "vhalla-host",
  "vhalla-identity",
  "vhalla-native",
