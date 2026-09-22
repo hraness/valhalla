@@ -262,7 +262,7 @@ fork at a known retained floor quarantines the device and preserves bounded proo
 if publication succeeds. If storage cannot write, the pending proof must be
 preserved separately; observing it in memory does not make it durable.
 
-Current state uses `VHPKSTATE\x04`; invitation packets use `VHPKINVITE\x02`.
+Current state uses `VHPKSTATE\x04`; invitation packets use `VHPKINVITE\x03`.
 State versions 1, 2 and 3 are not automatically migrated. Opening an old, incomplete
 or inconsistent store refuses; it does not overwrite, migrate or silently
 regenerate it. Retain compatible source and complete custody when inspecting

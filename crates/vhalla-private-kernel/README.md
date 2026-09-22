@@ -205,7 +205,7 @@ still apply when nested pieces are individually valid. Histories use checked u64
 counters and separate indexed records with no artificial lifetime message cap.
 Backend quotas must refuse without pruning, reset or partial acknowledgment.
 
-Current state uses `VHPKSTATE\x04` and invitation format `VHPKINVITE\x02`.
+Current state uses `VHPKSTATE\x04` and invitation format `VHPKINVITE\x03`.
 The control envelope is `VHPKCTRL\x01`; encrypted local control records contain
 `VHPKCTRLREC\x01` framing around the signed proof and optional retained envelope.
 State versions 1, 2 and 3 are refused, not loaded or migrated. Storage record keys,
