@@ -1694,6 +1694,34 @@ items. Quota exhaustion, foreign namespaces, conflicting sequence/operation
 reuse and a second live handle all refuse. Retention is still not delivery,
 scheduling or authentication.
 
+A bounded token-authenticated TCP adapter carries the same canonical items
+between separate processes on an operator-controlled network:
+
+```sh
+vhalla private relay-serve mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
+  --token token-file --listen 127.0.0.1:9400
+vhalla private relay-submit private-files/item.vhrelay \
+  --addr 127.0.0.1:9400 --token token-file --out private-files/receipt.json
+vhalla private relay-scan catchup-dir --addr 127.0.0.1:9400 \
+  --token token-file --out private-files/scan.json
+```
+
+`relay-serve` opens an existing mailbox and prints one `relay-serve IP:PORT`
+ready line before accepting connections. The admission token is a 64-digit
+lowercase hexadecimal secret read from a 0600 file or a bounded pipe (`-`),
+never argv. `--listen`/`--addr` accept only explicit numeric `IP:PORT` — there
+is no DNS resolution, TLS or remote-host hardening, so this is a local
+reference adapter for an operator-controlled segment or an outer tunnel, not a
+public Internet service. Frames are size-bounded with deadlines; wrong tokens,
+malformed input, foreign namespaces, sequence conflicts and quota exhaustion
+all refuse without touching retained items. `relay-scan` pages the mailbox
+into a private cursor directory: each canonical item lands under
+`catchup-dir/items/`, the cursor persists after every item, and a killed scan
+or offline interval resumes exactly where it stopped. A pre-existing item file
+with different bytes fails closed instead of being overwritten. A socket
+receipt remains retention only — never delivery, scheduling or member
+acceptance.
+
 ### Output uncertainty and exact recovery
 
 Keep each operation ID and all exact arguments, including validity endpoints,

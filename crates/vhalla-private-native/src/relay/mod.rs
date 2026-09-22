@@ -12,6 +12,9 @@ use std::{collections::BTreeMap, fs::File, path::Path};
 use vhalla_custody as custody;
 use vhalla_private_kernel::{CommittedOutbox, OperationId, OutboxKind};
 
+/// Authenticated socket adapter and durable cursor catch-up for this boundary.
+pub mod net;
+
 const MAGIC: &[u8] = b"VHPRELAY\x01";
 const DIGEST_DOMAIN: &[u8] = b"vhalla/private/relay-item/v1";
 /// Maximum ciphertext payload in one relay item.

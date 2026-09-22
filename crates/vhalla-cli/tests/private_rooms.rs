@@ -712,6 +712,238 @@ fn private_cli_relay_mailbox_is_opaque_durable_and_never_member_acceptance() {
     );
 }
 
+/// A running relay service must be torn down even when a journey panics.
+struct Server(std::process::Child);
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Spawn `relay-serve` on an ephemeral loopback port and read its one ready
+/// line. A failed start ends the line early and the assertion rejects it.
+fn serve(f: &Fixture, mailbox: &str, namespace: &str, tokenfile: &str) -> (Server, String) {
+    use std::io::{BufRead, BufReader};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .args(["private", "relay-serve"])
+        .arg(f.root.join(mailbox))
+        .args([
+            "--namespace",
+            namespace,
+            "--token",
+            &f.path(tokenfile),
+            "--listen",
+            "127.0.0.1:0",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let addr = line
+        .trim()
+        .strip_prefix("relay-serve ")
+        .unwrap_or_else(|| panic!("relay-serve did not report a listener: {line:?}"))
+        .to_owned();
+    (Server(child), addr)
+}
+
+#[test]
+fn private_cli_relay_socket_adapter_delivers_canonical_items() {
+    let f = Fixture::new();
+    f.join();
+    let owner = f.inspect("owner-key", "owner-room", "owner-inspect");
+    f.write("text", b"delivered over the socket adapter\n");
+    f.ok(
+        "send",
+        "owner-key",
+        Some("owner-room"),
+        &send_options(&f, &owner, 3, "message"),
+    );
+    let namespace = "ef".repeat(32);
+    f.ok(
+        "relay-export",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("sequence", "3".into()),
+            ("out", f.path("item")),
+        ],
+    );
+    f.ok(
+        "relay-mailbox",
+        &f.path("mailbox"),
+        None,
+        &[("namespace", namespace.clone()), ("max-items", "8".into())],
+    );
+    // The mailbox admission secret is a 0600 file, never an argv value.
+    f.write("token", "11".repeat(32).as_bytes());
+    f.write("wrong-token", "22".repeat(32).as_bytes());
+    let (server, addr) = serve(&f, "mailbox", &namespace, "token");
+    let submit = |out: &str| {
+        f.ok(
+            "relay-submit",
+            &f.path("item"),
+            None,
+            &[
+                ("addr", addr.clone()),
+                ("token", f.path("token")),
+                ("out", f.path(out)),
+            ],
+        );
+        f.json(out)
+    };
+    let receipt = submit("receipt");
+    assert_eq!(receipt["sequence"], 3);
+    assert_eq!(receipt["duplicate"], false);
+    // An exact retry is idempotent over the socket.
+    assert_eq!(submit("receipt-retry")["duplicate"], true);
+    // A wrong token is refused and writes no receipt.
+    assert!(!f
+        .run(
+            "relay-submit",
+            &f.path("item"),
+            None,
+            &[
+                ("addr", addr.clone()),
+                ("token", f.path("wrong-token")),
+                ("out", f.path("must-not-exist")),
+            ],
+            None
+        )
+        .status
+        .success());
+    assert!(!f.root.join("must-not-exist").exists());
+    // Catch-up pulls the retained item through the socket into a private dir.
+    f.ok(
+        "relay-scan",
+        &f.path("catchup"),
+        None,
+        &[
+            ("addr", addr.clone()),
+            ("token", f.path("token")),
+            ("out", f.path("scan")),
+        ],
+    );
+    let scan = f.json("scan");
+    assert_eq!(scan["scanned"], 1);
+    assert_eq!(scan["cursor"], 3);
+    assert_eq!(scan["head"], 3);
+    let delivered = f.root.join("catchup/items/0000000000000003.vhrelay");
+    assert_eq!(
+        fs::read(&delivered).unwrap(),
+        fs::read(f.root.join("item")).unwrap()
+    );
+    // An unchanged mailbox rescans to zero new items.
+    f.ok(
+        "relay-scan",
+        &f.path("catchup"),
+        None,
+        &[
+            ("addr", addr.clone()),
+            ("token", f.path("token")),
+            ("out", f.path("scan-again")),
+        ],
+    );
+    assert_eq!(f.json("scan-again")["scanned"], 0);
+    // Offline periods refuse, then the durable cursor resumes exactly.
+    drop(server);
+    assert!(!f
+        .run(
+            "relay-scan",
+            &f.path("catchup"),
+            None,
+            &[
+                ("addr", addr),
+                ("token", f.path("token")),
+                ("out", f.path("must-not-exist")),
+            ],
+            None
+        )
+        .status
+        .success());
+    assert!(!f.root.join("must-not-exist").exists());
+    // The same durable mailbox reopens under a fresh service process.
+    let (_server, addr) = serve(&f, "mailbox", &namespace, "token");
+    let owner = f.inspect("owner-key", "owner-room", "owner-inspect-2");
+    f.write("text", b"second socket delivery\n");
+    f.ok(
+        "send",
+        "owner-key",
+        Some("owner-room"),
+        &send_options(&f, &owner, 4, "message-2"),
+    );
+    f.ok(
+        "relay-export",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("sequence", "4".into()),
+            ("out", f.path("item-2")),
+        ],
+    );
+    f.ok(
+        "relay-submit",
+        &f.path("item-2"),
+        None,
+        &[
+            ("addr", addr.clone()),
+            ("token", f.path("token")),
+            ("out", f.path("receipt-2")),
+        ],
+    );
+    f.ok(
+        "relay-scan",
+        &f.path("catchup"),
+        None,
+        &[
+            ("addr", addr),
+            ("token", f.path("token")),
+            ("out", f.path("scan-resumed")),
+        ],
+    );
+    let resumed = f.json("scan-resumed");
+    assert_eq!(resumed["scanned"], 1);
+    assert_eq!(resumed["cursor"], 4);
+    // The delivered ciphertext applies into the member room unchanged.
+    f.ok(
+        "relay-apply",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("relay", delivered.to_str().unwrap().into()),
+            ("out", f.path("applied")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("applied")).unwrap(),
+        b"delivered over the socket adapter\n"
+    );
+    let second = f.root.join("catchup/items/0000000000000004.vhrelay");
+    f.ok(
+        "relay-apply",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace),
+            ("relay", second.to_str().unwrap().into()),
+            ("out", f.path("applied-2")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("applied-2")).unwrap(),
+        b"second socket delivery\n"
+    );
+}
+
 #[test]
 fn private_cli_same_account_fresh_device_rejoins_under_new_enrollment() {
     let f = Fixture::new();

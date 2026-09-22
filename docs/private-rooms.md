@@ -207,8 +207,16 @@ offer metadata and never
 exposes room, anchor, account, device or plaintext fields to the relay. This is
 the transport boundary, not a deployed relay or delivery acknowledgment; the CLI
 can export and explicitly apply the canonical envelope for local adapter
-integration, while an HTTP/QUIC/file adapter and live failure-domain
-qualification remain required.
+integration. A bounded token-authenticated TCP reference adapter now exists for
+operator-controlled deployments: `relay-serve` exposes an existing mailbox over
+an explicit numeric `IP:PORT` listener, `relay-submit` retains an item against
+a 64-digit lowercase hexadecimal token read from a 0600 file or bounded pipe,
+and `relay-scan` performs durable cursor catch-up into a private directory,
+persisting the cursor after each item so a killed scan or offline interval
+resumes exactly. It is a local reference adapter — no DNS, TLS, remote-host
+hardening or public Internet service claim — and a retention receipt is never
+member acceptance. Hardened interchangeable transports and independent-machine
+failure-domain qualification remain required.
 
 ## Durable state and limits
 
@@ -315,9 +323,10 @@ Before a private-room release, finish and qualify:
 3. Usable delivery of the implemented confidential bootstrap and encrypted
    controls. Keep secret offers, legacy plaintext bootstrap and local proof
    artifacts out of public relay uploads.
-4. Integrate the maintained bounded opaque relay-item protocol with an actual
-   interchangeable transport, offline retry, congestion/quota behavior and
-   strict separation between relay retention and member acceptance.
+4. Harden the bounded opaque relay path beyond the local token/TCP reference
+   adapter — interchangeable authenticated transports, offline scheduling,
+   congestion/backpressure behavior and independent-machine acceptance — while
+   keeping strict separation between relay retention and member acceptance.
 5. Enforced agent compartments and inference-provider grants, with fresh contexts
    across rooms and explicit intentional export.
 6. Owner-device succession policy, overload/storage-full behavior, full worker

@@ -113,10 +113,14 @@ Before a private-room release, complete and qualify:
   receipts, plus a durable file-backed mailbox that re-verifies retained items
   on open behind an exclusive lock. The CLI exposes it as
   `relay-mailbox`/`relay-put`/`relay-get`/`relay-page`, which never open
-  identity or room custody. A real network adapter still needs offline
-  scheduling, congestion handling, relay authentication and independent
-  acceptance status. An isolated sender cannot detect an unseen removal merely
-  by asking an untrusted relay.
+  identity or room custody. A bounded token-authenticated TCP reference adapter
+  (`relay-serve`/`relay-submit`/`relay-scan`, explicit numeric `IP:PORT`, token
+  read only from a 0600 file or pipe) now carries those items between separate
+  processes with durable cursor catch-up; it is a local operator-controlled
+  adapter, not a hardened Internet service. Production operation still needs
+  offline scheduling, congestion handling, stronger relay authentication and
+  independent acceptance status. An isolated sender cannot detect an unseen
+  removal merely by asking an untrusted relay.
 - Explicit fresh-device admission now has qualified kernel, CLI and browser
   coverage; device retirement and owner succession remain when current ratchet
   custody cannot safely move.

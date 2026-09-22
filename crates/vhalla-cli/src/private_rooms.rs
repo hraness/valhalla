@@ -42,6 +42,9 @@ vhalla private relay-mailbox NEW_DIR --namespace NS64 [--max-items N --max-bytes
 vhalla private relay-put MAILBOX --namespace NS64 --relay RELAY_ITEM --out RECEIPT_JSON
 vhalla private relay-get MAILBOX --namespace NS64 --sequence N --out RELAY_ITEM
 vhalla private relay-page MAILBOX --namespace NS64 --after N --limit N --out PAGE_JSON
+vhalla private relay-serve MAILBOX --namespace NS64 --token FILE|- --listen IP:PORT
+vhalla private relay-submit RELAY_ITEM --addr IP:PORT --token FILE|- --out RECEIPT_JSON
+vhalla private relay-scan CURSOR_DIR --addr IP:PORT --token FILE|- [--limit N] --out SCAN_JSON
 vhalla private control-export ID STORE --after N --parent CONTROL64|none --out CIPHERTEXT
 vhalla private control-proof ID STORE --after N --parent CONTROL64|none --out SIGNED
 vhalla private observe ID STORE --control SIGNED --out JSON
@@ -56,7 +59,7 @@ vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out P
 vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
 Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
 control-proof exports signed owner controls for inspection; observe compares one signed control against retained history only and writes durable quarantine on a proven conflict; fork-evidence reports the retained proof. None claim global freshness or grant succession.
-Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. There is no listener, relay service, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
+Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated bounded TCP socket — a local or operator-controlled reference adapter, not a hardened Internet service — while relay-submit retains one item and relay-scan pulls every retained item after a durable cursor into a private directory. There is no TLS, remote-host hardening, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
 const OFFER_LIMIT: usize = 1024;
@@ -64,8 +67,9 @@ const OFFER_LIMIT: usize = 1024;
 struct Args {
     command: String,
     /// Identity directory for custody commands; the relay mailbox directory for
-    /// `relay-mailbox`/`relay-put`/`relay-get`/`relay-page`, which never open
-    /// identity or room custody.
+    /// `relay-mailbox`/`relay-put`/`relay-get`/`relay-page`/`relay-serve`, the
+    /// canonical item file for `relay-submit`, and the catch-up directory for
+    /// `relay-scan` — none of which open identity or room custody.
     identity: PathBuf,
     store: Option<PathBuf>,
     flags: BTreeMap<String, OsString>,
@@ -115,6 +119,9 @@ impl Args {
             "relay-put" => &["namespace", "relay", "out"],
             "relay-get" => &["namespace", "sequence", "out"],
             "relay-page" => &["namespace", "after", "limit", "out"],
+            "relay-serve" => &["namespace", "token", "listen"],
+            "relay-submit" => &["addr", "token", "out"],
+            "relay-scan" => &["addr", "token", "limit", "out"],
             "control-export" => &["after", "parent", "out"],
             "control-proof" => &["after", "parent", "out"],
             "observe" => &["control", "out"],
@@ -126,7 +133,14 @@ impl Args {
         };
         let start = if matches!(
             command,
-            "offer-inspect" | "relay-mailbox" | "relay-put" | "relay-get" | "relay-page"
+            "offer-inspect"
+                | "relay-mailbox"
+                | "relay-put"
+                | "relay-get"
+                | "relay-page"
+                | "relay-serve"
+                | "relay-submit"
+                | "relay-scan"
         ) {
             3
         } else {
@@ -148,10 +162,10 @@ impl Args {
                 return Err("unknown, duplicate, empty or incomplete private option".into());
             }
         }
-        for required in allowed
-            .iter()
-            .filter(|name| !matches!(**name, "max-records" | "max-items" | "max-bytes"))
-        {
+        for required in allowed.iter().filter(|name| {
+            !matches!(**name, "max-records" | "max-items" | "max-bytes")
+                && !(command == "relay-scan" && **name == "limit")
+        }) {
             if !flags.contains_key(*required) {
                 return Err("missing required private option; see private --help".into());
             }
@@ -253,7 +267,13 @@ pub fn run(raw: &[OsString]) -> Result<(), String> {
 async fn execute(args: Args) -> Result<(), String> {
     if matches!(
         args.command.as_str(),
-        "relay-mailbox" | "relay-put" | "relay-get" | "relay-page"
+        "relay-mailbox"
+            | "relay-put"
+            | "relay-get"
+            | "relay-page"
+            | "relay-serve"
+            | "relay-submit"
+            | "relay-scan"
     ) {
         return relay_mailbox(&args);
     }
@@ -598,7 +618,7 @@ async fn execute(args: Args) -> Result<(), String> {
 /// storage: these commands never open identity custody or a private room
 /// store, and a retention receipt is never recipient acceptance.
 fn relay_mailbox(args: &Args) -> Result<(), String> {
-    use vhalla_private_native::relay::{FileStore, RelayItem, MAX_RELAY_PAYLOAD};
+    use vhalla_private_native::relay::{net, FileStore, RelayItem, MAX_RELAY_PAYLOAD};
     let mailbox = args.identity.as_path();
     match args.command.as_str() {
         "relay-mailbox" => {
@@ -644,6 +664,46 @@ fn relay_mailbox(args: &Args) -> Result<(), String> {
             args.json(json!({"coverage":"local retained mailbox manifest only; not delivery or member acceptance",
                 "head":page.head,"next":page.next,"records":records}))?;
         }
+        "relay-serve" => {
+            use std::net::TcpListener;
+            let token = relay_token(args)?;
+            let listen = relay_addr(args, "listen")?;
+            let store = FileStore::open(mailbox, args.namespace()?).map_err(relay_error)?;
+            let listener = TcpListener::bind(listen)
+                .map_err(|_| "relay listener bind failed; choose an explicit IP:port")?;
+            // One line is the ready signal; no room, account or item content.
+            println!(
+                "relay-serve {}",
+                listener
+                    .local_addr()
+                    .map_err(|_| "relay listener unavailable")?
+            );
+            net::serve(listener, store, token, None).map_err(relay_error)?;
+        }
+        "relay-submit" => {
+            let raw = files::read(&args.identity, MAX_RELAY_PAYLOAD + 256, false)?;
+            let item = RelayItem::decode(&raw)
+                .map_err(|_| "relay item is malformed, oversized or fails its commitment")?;
+            let relay = net::SocketRelay::new(relay_addr(args, "addr")?, relay_token(args)?);
+            let receipt = relay.submit(&item).map_err(net_error)?;
+            args.json(json!({"coverage":"relay retention only; not delivery or member acceptance",
+                "sequence":receipt.sequence,"digest":hex(&receipt.digest),"duplicate":receipt.duplicate}))?;
+        }
+        "relay-scan" => {
+            let relay = net::SocketRelay::new(relay_addr(args, "addr")?, relay_token(args)?);
+            let limit = if args.flags.contains_key("limit") {
+                usize::try_from(args.number("limit")?)
+                    .map_err(|_| "scan page limit out of range")?
+                    .clamp(1, vhalla_private_native::relay::MAX_RELAY_PAGE)
+            } else {
+                vhalla_private_native::relay::MAX_RELAY_PAGE
+            };
+            let report = net::scan(&args.identity, &relay, limit).map_err(scan_error)?;
+            args.json(
+                json!({"coverage":"opaque relay catch-up only; not room acceptance",
+                "head":report.head,"cursor":report.cursor,"scanned":report.scanned}),
+            )?;
+        }
         _ => return Err(HELP.into()),
     }
     Ok(())
@@ -671,6 +731,55 @@ fn relay_page_limit(args: &Args) -> Result<usize, String> {
         return Err("relay page limit must be 1..64".into());
     }
     Ok(limit)
+}
+
+/// The mailbox admission secret is secret input: a bounded pipe or 0600 file
+/// holding one nonzero 64-digit lowercase hex token, never an argv value.
+fn relay_token(args: &Args) -> Result<vhalla_private_native::relay::net::RelayToken, String> {
+    let raw = args.input("token", 65, true)?;
+    let text = std::str::from_utf8(&raw)
+        .map_err(|_| "relay token must be a 64-digit lowercase hex secret")?;
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    vhalla_private_native::relay::net::RelayToken::from_bytes(unhex(text)?)
+        .map_err(|_| "relay token must be a nonzero 64-digit lowercase hex secret".into())
+}
+
+/// Relay addresses are explicit numeric IP:port pairs; no DNS or ambient host.
+fn relay_addr(args: &Args, name: &str) -> Result<std::net::SocketAddr, String> {
+    args.text(name)?
+        .parse()
+        .map_err(|_| "relay address must be an explicit IP:port".into())
+}
+
+fn net_error(error: vhalla_private_native::relay::net::NetError) -> String {
+    use vhalla_private_native::relay::net::NetError;
+    match error {
+        NetError::Connect => "relay listener unreachable or connection refused",
+        NetError::Timeout => "relay connection exceeded its bounded deadline",
+        NetError::Denied => "relay mailbox refused the presented token",
+        NetError::Conflict => {
+            "the same relay sequence or operation was presented with different bytes"
+        }
+        NetError::Capacity => "relay mailbox quota is full; retained items are never pruned",
+        NetError::Bounds => "relay input is malformed, noncanonical or exceeds a fixed bound",
+        NetError::Scope => "relay item or mailbox belongs to another explicit namespace",
+        NetError::Malformed => "relay answered with a noncanonical frame or status",
+        NetError::Unavailable => "relay storage or socket operation failed",
+    }
+    .into()
+}
+
+fn scan_error(error: vhalla_private_native::relay::net::ScanFailure) -> String {
+    use vhalla_private_native::relay::net::ScanFailure;
+    match error {
+        ScanFailure::Net(error) => net_error(error),
+        ScanFailure::Corrupt => {
+            "a retained item file disagrees with the relay's canonical bytes; preserve it and reconcile manually".into()
+        }
+        ScanFailure::Storage => {
+            "cursor directory storage is unavailable or not owner-private; the next run resumes unchanged".into()
+        }
+    }
 }
 
 fn relay_error(error: vhalla_private_native::relay::Error) -> String {
