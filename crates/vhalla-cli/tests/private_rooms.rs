@@ -1019,6 +1019,19 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
             .collect::<Vec<_>>(),
         vec![3]
     );
+    // The skipped contact request routes to its dedicated command through
+    // relay-unwrap: the staged item verifies and yields the exact request
+    // envelope bytes the accept path consumed earlier.
+    f.ok(
+        "relay-unwrap",
+        &f.path("owner-catchup/items/0000000000000003.vhrelay"),
+        None,
+        &[("out", f.path("unwrapped-request"))],
+    );
+    assert_eq!(
+        fs::read(f.root.join("unwrapped-request")).unwrap(),
+        fs::read(f.root.join("request")).unwrap()
+    );
     // The accepted reply is durable in the owner's inbox.
     f.ok(
         "inbox",

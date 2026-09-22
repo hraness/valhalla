@@ -243,11 +243,15 @@ sequence beside its assigned mailbox position (secret offer issuance is
 skipped, never relayed), while `relay-pull` scans the mailbox then applies
 every retained item in position order — refusing its own echo, skipping
 KeyPackage/contact-request envelopes that require dedicated commands, and
-reopening custody after each deterministic refusal. Refused items are retried
-in a bounded fixpoint (at most eight passes), so an item delivered before its
-parent heals inside the same pull once the parent lands at a later position;
-anything still refusing stays listed for a later pull. Both composites — and
-the low-level `relay-submit`/`relay-scan` — run over interchangeable
+reopening custody after each deterministic refusal. A skipped item still lands
+in the scan directory as a canonical `.vhrelay`; `relay-unwrap` verifies it and
+writes only its inner payload for the dedicated `request`/`accept`/`join` or
+key-package commands, which authenticate the envelope themselves. Refused
+items are retried in a bounded fixpoint (at most eight passes), so an item
+delivered before its parent heals inside the same pull once the parent lands at
+a later position; anything still refusing stays listed for a later pull. Both
+composites — and the low-level `relay-submit`/`relay-scan` — run over
+interchangeable
 transports: the token-authenticated socket, or `--mailbox DIR` opening the
 durable mailbox directory directly under filesystem custody (one process at a
 time) for synced-folder or explicitly copied carriage. It is a local reference

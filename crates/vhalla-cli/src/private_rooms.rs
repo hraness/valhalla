@@ -41,6 +41,7 @@ vhalla private relay-apply ID STORE --namespace NS64 --relay RELAY_ITEM --out PR
 vhalla private relay-mailbox NEW_DIR --namespace NS64 [--max-items N --max-bytes N]
 vhalla private relay-put MAILBOX --namespace NS64 --relay RELAY_ITEM --out RECEIPT_JSON
 vhalla private relay-get MAILBOX --namespace NS64 --position N --out RELAY_ITEM
+vhalla private relay-unwrap RELAY_ITEM --out PAYLOAD
 vhalla private relay-page MAILBOX --namespace NS64 --after N --limit N --out PAGE_JSON
 vhalla private relay-serve MAILBOX --namespace NS64 --token FILE|- --listen IP:PORT
 vhalla private relay-submit RELAY_ITEM (--addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) --out RECEIPT_JSON
@@ -62,7 +63,7 @@ vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out P
 vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
 Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
 control-proof exports signed owner controls for inspection; observe compares one signed control against retained history only and writes durable quarantine on a proven conflict; fork-evidence reports the retained proof. None claim global freshness or grant succession.
-Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated bounded TCP socket — a local or operator-controlled reference adapter, not a hardened Internet service — while relay-submit retains one item and relay-scan pulls every retained item after a durable cursor into a private directory. relay-submit/relay-scan/relay-push/relay-pull accept either the socket transport (--addr with --token) or --mailbox DIR, which opens the durable mailbox directly under filesystem custody — one process at a time, suitable for a synced or explicitly copied directory. relay-push submits a bounded local outbox prefix and relay-pull scans then applies each applicable item, reopening custody after each deterministic refusal and retrying refused items within one pull so out-of-order delivery heals without an extra pass; neither emits plaintext or claims acceptance by another member. A mailbox assigns each retained item its own increasing position shared by every sender in the namespace, so pages, cursors and relay-get use positions while each item still carries its sender-local outbox sequence. There is no TLS, remote-host hardening, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
+Local files only. Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated bounded TCP socket — a local or operator-controlled reference adapter, not a hardened Internet service — while relay-submit retains one item and relay-scan pulls every retained item after a durable cursor into a private directory. relay-submit/relay-scan/relay-push/relay-pull accept either the socket transport (--addr with --token) or --mailbox DIR, which opens the durable mailbox directly under filesystem custody — one process at a time, suitable for a synced or explicitly copied directory. relay-push submits a bounded local outbox prefix and relay-pull scans then applies each applicable item, reopening custody after each deterministic refusal and retrying refused items within one pull so out-of-order delivery heals without an extra pass; neither emits plaintext or claims acceptance by another member. relay-unwrap verifies one retained item and writes only its inner payload, feeding skipped key-package/contact kinds to the dedicated commands which authenticate the envelope themselves. A mailbox assigns each retained item its own increasing position shared by every sender in the namespace, so pages, cursors and relay-get use positions while each item still carries its sender-local outbox sequence. There is no TLS, remote-host hardening, agent registration, reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
 const OFFER_LIMIT: usize = 1024;
@@ -71,8 +72,8 @@ struct Args {
     command: String,
     /// Identity directory for custody commands; the relay mailbox directory for
     /// `relay-mailbox`/`relay-put`/`relay-get`/`relay-page`/`relay-serve`, the
-    /// canonical item file for `relay-submit`, and the catch-up directory for
-    /// `relay-scan` — none of which open identity or room custody.
+    /// canonical item file for `relay-submit`/`relay-unwrap`, and the catch-up
+    /// directory for `relay-scan` — none of which open identity or room custody.
     identity: PathBuf,
     store: Option<PathBuf>,
     flags: BTreeMap<String, OsString>,
@@ -121,6 +122,7 @@ impl Args {
             "relay-mailbox" => &["namespace", "max-items", "max-bytes"],
             "relay-put" => &["namespace", "relay", "out"],
             "relay-get" => &["namespace", "position", "out"],
+            "relay-unwrap" => &["out"],
             "relay-page" => &["namespace", "after", "limit", "out"],
             "relay-serve" => &["namespace", "token", "listen"],
             "relay-submit" => &["addr", "token", "mailbox", "namespace", "out"],
@@ -162,6 +164,7 @@ impl Args {
                 | "relay-page"
                 | "relay-serve"
                 | "relay-submit"
+                | "relay-unwrap"
                 | "relay-scan"
         ) {
             3
@@ -297,6 +300,7 @@ async fn execute(args: Args) -> Result<(), String> {
         "relay-mailbox"
             | "relay-put"
             | "relay-get"
+            | "relay-unwrap"
             | "relay-page"
             | "relay-serve"
             | "relay-submit"
@@ -882,6 +886,15 @@ fn relay_mailbox(args: &Args) -> Result<(), String> {
             let receipt = transport.submit(&item)?;
             args.json(json!({"coverage":"relay retention only; not delivery or member acceptance",
                 "position":receipt.position,"digest":hex(&receipt.digest),"duplicate":receipt.duplicate}))?;
+        }
+        "relay-unwrap" => {
+            // Emit only the verified payload: the destination file feeds a
+            // dedicated command (request, join, accept, key-package) which
+            // authenticates the envelope itself.
+            let raw = files::read(&args.identity, MAX_RELAY_PAYLOAD + 256, false)?;
+            let item = RelayItem::decode(&raw)
+                .map_err(|_| "relay item is malformed, oversized or fails its commitment")?;
+            args.output(item.payload())?;
         }
         "relay-scan" => {
             let namespace = if args.flags.contains_key("mailbox") {

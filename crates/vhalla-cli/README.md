@@ -1673,6 +1673,10 @@ vhalla private relay-apply member-key member-room \
 an application message, ordered control, invitation or contact invitation to its
 dedicated authenticated kernel path. KeyPackage and contact-request envelopes
 require their explicit owner/member commands; they are never silently admitted.
+`relay-unwrap RELAY_ITEM --out PAYLOAD` verifies one retained item and writes
+only its inner payload, so a staged KeyPackage or contact-request item can feed
+`request`, `accept`, `join` or the key-package commands, which authenticate the
+envelope themselves.
 The output is either the locally accepted plaintext or a bounded status JSON.
 This is an adapter boundary and explicit local transport, not a listener, relay
 service, recipient acknowledgment or evidence that another member processed the
