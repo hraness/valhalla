@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { docs } from "./pages.ts";
+import { compare, useCases } from "./compare.ts";
+import { renderDoc, renderCompare, renderUseCases, docHref, compareHref } from "./docs.ts";
 
 const index = await readFile(new URL("./index.html", import.meta.url), "utf8");
 const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
@@ -10,6 +13,8 @@ const csp = (): string => {
   if (!header) throw new Error("Missing Content-Security-Policy header");
   return header.value;
 };
+
+const pages = new Map([["/", index], ...docs.map(page => [docHref(page), renderDoc(page, index)]), ...compare.map(page => [compareHref(page), renderCompare(page, index)]), ["/use-cases/", renderUseCases(index)]]);
 
 test("page metadata is complete and consistent", () => {
   expect(index).toContain('<link rel="canonical" href="https://vhalla.com/">');
@@ -29,19 +34,26 @@ test("structured data describes only what the page shows", () => {
   if (!match) throw new Error("Missing JSON-LD block");
   const graph = JSON.parse(match[1]);
   const types = graph["@graph"].map((node: { "@type": string }) => node["@type"]);
-  expect(types).toEqual(["Organization", "WebSite", "SoftwareApplication", "SoftwareSourceCode"]);
+  expect(types).toEqual(["Organization", "WebSite", "SoftwareApplication", "SoftwareSourceCode", "FAQPage"]);
   const app = graph["@graph"][2];
   expect(app.description).toContain("in development");
   expect(app.applicationCategory).toBe("CommunicationApplication");
   expect(app.operatingSystem).toBeUndefined();
   expect(app.offers).toBeUndefined();
+  const faq = graph["@graph"][4];
+  const questions = index.matchAll(/hraness-marketing-question__summary">([^<]+)</g);
+  expect(faq.mainEntity.length).toBe([...questions].length);
 });
 
-test("the CSP admits exactly the checked JSON-LD block", () => {
-  const match = index.match(/<script type="application\/ld\+json">(.+?)<\/script>/);
-  if (!match) throw new Error("Missing JSON-LD block");
-  const digest = `sha256-${createHash("sha256").update(match[1], "utf8").digest("base64")}`;
-  expect(csp()).toContain(`'${digest}'`);
+test("every page carries one JSON-LD block whose hash is admitted by the CSP", () => {
+  for (const [path, html] of pages) {
+    const blocks = [...html.matchAll(/<script type="application\/ld\+json">(.+?)<\/script>/g)];
+    expect(blocks.length, path).toBe(1);
+    const digest = `sha256-${createHash("sha256").update(blocks[0][1], "utf8").digest("base64")}`;
+    expect(csp(), `${path} JSON-LD ${digest}`).toContain(`'${digest}'`);
+    const parsed = JSON.parse(blocks[0][1]);
+    expect(Array.isArray(parsed["@graph"]), path).toBe(true);
+  }
   expect(csp()).not.toContain("unsafe-inline");
 });
 

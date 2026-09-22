@@ -4,7 +4,8 @@ import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { supportFooter } from "./support-footer.ts";
 import { docs } from "./pages.ts";
-import { renderDoc } from "./docs.ts";
+import { compare } from "./compare.ts";
+import { renderDoc, renderCompare, renderUseCases } from "./docs.ts";
 const root = import.meta.dir;
 const output = resolve(root, "dist");
 const kit = dirname(fileURLToPath(import.meta.resolve("@hraness/design-kit/paper-theme.css")));
@@ -22,6 +23,17 @@ for (const page of docs) {
   if (rendered.split(footerMarker).length !== 2) throw new Error(`Expected one footer slot: ${page.slug}`);
   await writeFile(resolve(target, "index.html"), rendered.replace(footerMarker, supportFooter()));
 }
+for (const page of compare) {
+  const target = resolve(output, "compare", page.slug);
+  await mkdir(target, { recursive: true });
+  const rendered = renderCompare(page, html);
+  if (rendered.split(footerMarker).length !== 2) throw new Error(`Expected one footer slot: compare/${page.slug}`);
+  await writeFile(resolve(target, "index.html"), rendered.replace(footerMarker, supportFooter()));
+}
+await mkdir(resolve(output, "use-cases"), { recursive: true });
+const useCasesHtml = renderUseCases(html);
+if (useCasesHtml.split(footerMarker).length !== 2) throw new Error("Expected one footer slot: use-cases");
+await writeFile(resolve(output, "use-cases", "index.html"), useCasesHtml.replace(footerMarker, supportFooter()));
 await cp(fileURLToPath(import.meta.resolve("@hraness/site-footer/stylex.css")), resolve(output, "footer.css"));
 const files = ["paper-theme.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css"];
 for (const name of files) await cp(resolve(kit, name), resolve(output, "design", name));
@@ -44,4 +56,4 @@ const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts")], 
 if (!result.success) throw new AggregateError(result.logs, "Appearance bundle failed");
 const pkg = JSON.parse(await readFile(resolve(kit, "../package.json"), "utf8"));
 await writeFile(resolve(output, "design/source.json"), JSON.stringify({ package: pkg.name, version: pkg.version, files: Object.fromEntries(await Promise.all(files.map(async name => [name, createHash("sha256").update(await readFile(resolve(output, "design", name))).digest("hex")]))) }, null, 2));
-console.log(`Built Vhalla home and ${docs.length} documentation pages with ${pkg.name}@${pkg.version}.`);
+console.log(`Built Vhalla home, ${docs.length} documentation pages, ${compare.length} comparisons and use cases with ${pkg.name}@${pkg.version}.`);
