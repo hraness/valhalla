@@ -1036,6 +1036,109 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
         .unwrap()
         .iter()
         .any(|m| m["body_utf8"] == "member reply over the same mailbox\n"));
+    // Out-of-order healing: two owner renewals chain controls 5 then 6. The
+    // mailbox gets 6 before 5; the member's pull refuses the orphan, then a
+    // later pull applies both once the missing parent exists. Each renewal
+    // must strictly extend the credential expiry.
+    let before = f.inspect("member-key", "member-room", "member-before-heal");
+    let epoch_before = before["status"]["epoch"].as_u64().unwrap();
+    for (operation, expires, out) in [
+        (op(6), f.now + 7200, "renewal-5"),
+        (op(7), f.now + 10800, "renewal-6"),
+    ] {
+        f.ok(
+            "renew",
+            "owner-key",
+            Some("owner-room"),
+            &[
+                ("operation", operation),
+                ("not-before", (f.now - 10).to_string()),
+                ("expires", expires.to_string()),
+                ("out", f.path(out)),
+            ],
+        );
+    }
+    for (sequence, out) in [("6", "item-6"), ("5", "item-5")] {
+        f.ok(
+            "relay-export",
+            "owner-key",
+            Some("owner-room"),
+            &[
+                ("namespace", namespace.clone()),
+                ("sequence", sequence.into()),
+                ("out", f.path(out)),
+            ],
+        );
+    }
+    f.ok(
+        "relay-submit",
+        &f.path("item-6"),
+        None,
+        &[
+            ("addr", addr.clone()),
+            ("token", f.path("token")),
+            ("out", f.path("receipt-6")),
+        ],
+    );
+    assert_eq!(f.json("receipt-6")["position"], 5);
+    f.ok(
+        "relay-pull",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("dir", f.path("member-heal")),
+            ("addr", addr.clone()),
+            ("token", f.path("token")),
+            ("out", f.path("member-pull-1")),
+        ],
+    );
+    let first = f.json("member-pull-1");
+    // The member accepts the owner's messages, refuses its own echo and the
+    // orphaned control whose parent has not arrived, and skips its own
+    // contact-request envelope pending its dedicated command.
+    assert_eq!(first["skipped"].as_array().unwrap().len(), 1);
+    assert!(first["refused"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_u64() == Some(5)));
+    f.ok(
+        "relay-submit",
+        &f.path("item-5"),
+        None,
+        &[
+            ("addr", addr.clone()),
+            ("token", f.path("token")),
+            ("out", f.path("receipt-5")),
+        ],
+    );
+    assert_eq!(f.json("receipt-5")["position"], 6);
+    f.ok(
+        "relay-pull",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace),
+            ("dir", f.path("member-heal")),
+            ("addr", addr),
+            ("token", f.path("token")),
+            ("out", f.path("member-pull-2")),
+        ],
+    );
+    let healed = f.json("member-pull-2");
+    // Position 5 heals once its parent is retained; position 6 applies right
+    // behind it in the same pass.
+    let healed_accepted: Vec<u64> = healed["accepted"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    assert!(healed_accepted.contains(&5));
+    assert!(healed_accepted.contains(&6));
+    let member = f.inspect("member-key", "member-room", "member-healed");
+    assert_eq!(member["status"]["epoch"], epoch_before + 2);
 }
 
 #[test]

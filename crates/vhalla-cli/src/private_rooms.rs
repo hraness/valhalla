@@ -593,57 +593,80 @@ async fn execute(args: Args) -> Result<(), String> {
                 }
             }
             positions.sort_unstable();
+            // Apply in position order, then retry refused items until a pass
+            // accepts nothing new: an item delivered before its predecessor
+            // heals once the parent lands at a later position. Accepted and
+            // dedicated-command items are terminal for this pull.
+            const MAX_PULL_PASSES: usize = 8;
             let mut accepted = Vec::new();
-            let mut refused = Vec::new();
             let mut skipped = Vec::new();
-            for position in positions {
-                let raw = std::fs::read(items.join(format!("{position:016x}.vhrelay")))
-                    .map_err(|_| "catchup item vanished or is unreadable; rerun the scan")?;
-                let item = vhalla_private_native::relay::RelayItem::decode(&raw)
-                    .map_err(|_| "a retained catchup item is malformed; preserve the directory")?;
-                if item.namespace() != namespace {
-                    return Err(
-                        "a catchup item belongs to another namespace; preserve the directory"
-                            .into(),
-                    );
-                }
-                // KeyPackage and contact requests always need their dedicated
-                // explicit commands; a confidential offer can never be relayed.
-                let outcome = match item.kind() {
-                    OutboxKind::Application => room.receive(item.payload()).await.map(|_| ()),
-                    OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
-                        room.apply_control(item.payload()).await.map(|_| ())
-                    }
-                    OutboxKind::Invitation => room.join(item.payload()).await.map(|_| ()),
-                    OutboxKind::ContactInvitation => {
-                        room.join_contact(item.payload()).await.map(|_| ())
-                    }
-                    OutboxKind::KeyPackage
-                    | OutboxKind::ContactRequest
-                    | OutboxKind::ContactOffer => {
-                        skipped.push(position);
+            let mut done = std::collections::BTreeSet::new();
+            let mut refused: Vec<u64> = positions.clone();
+            for _ in 0..MAX_PULL_PASSES {
+                let mut progressed = false;
+                refused = Vec::new();
+                for &position in &positions {
+                    if done.contains(&position) {
                         continue;
                     }
-                };
-                match outcome {
-                    Ok(()) => accepted.push(position),
-                    // A deterministic refusal is recoverable on a later pull once
-                    // missing predecessors arrive; reopen clears the uncertainty
-                    // latch before the next item.
-                    Err(_) => {
-                        refused.push(position);
-                        // The live session still holds the identity custody
-                        // lock; drop it before reopening.
-                        room.lock();
-                        room = RoomSession::open(
-                            Identity::open(&args.identity)
-                                .map_err(|_| "existing identity custody unavailable")?,
-                            args.store()?,
-                            context,
-                        )
-                        .await
-                        .map_err(|_| REFUSED)?;
+                    let raw = std::fs::read(items.join(format!("{position:016x}.vhrelay")))
+                        .map_err(|_| "catchup item vanished or is unreadable; rerun the scan")?;
+                    let item =
+                        vhalla_private_native::relay::RelayItem::decode(&raw).map_err(|_| {
+                            "a retained catchup item is malformed; preserve the directory"
+                        })?;
+                    if item.namespace() != namespace {
+                        return Err(
+                            "a catchup item belongs to another namespace; preserve the directory"
+                                .into(),
+                        );
                     }
+                    // KeyPackage and contact requests always need their dedicated
+                    // explicit commands; a confidential offer can never be relayed.
+                    let outcome = match item.kind() {
+                        OutboxKind::Application => room.receive(item.payload()).await.map(|_| ()),
+                        OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
+                            room.apply_control(item.payload()).await.map(|_| ())
+                        }
+                        OutboxKind::Invitation => room.join(item.payload()).await.map(|_| ()),
+                        OutboxKind::ContactInvitation => {
+                            room.join_contact(item.payload()).await.map(|_| ())
+                        }
+                        OutboxKind::KeyPackage
+                        | OutboxKind::ContactRequest
+                        | OutboxKind::ContactOffer => {
+                            skipped.push(position);
+                            done.insert(position);
+                            continue;
+                        }
+                    };
+                    match outcome {
+                        Ok(()) => {
+                            accepted.push(position);
+                            done.insert(position);
+                            progressed = true;
+                        }
+                        // A deterministic refusal is recoverable once missing
+                        // predecessors arrive; reopen clears the uncertainty
+                        // latch before the next item.
+                        Err(_) => {
+                            refused.push(position);
+                            // The live session still holds the identity custody
+                            // lock; drop it before reopening.
+                            room.lock();
+                            room = RoomSession::open(
+                                Identity::open(&args.identity)
+                                    .map_err(|_| "existing identity custody unavailable")?,
+                                args.store()?,
+                                context,
+                            )
+                            .await
+                            .map_err(|_| REFUSED)?;
+                        }
+                    }
+                }
+                if !progressed {
+                    break;
                 }
             }
             args.json(json!({"coverage":"opaque relay catch-up applied locally; a refused item may succeed after its predecessors arrive",

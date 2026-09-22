@@ -243,12 +243,14 @@ sequence beside its assigned mailbox position (secret offer issuance is
 skipped, never relayed), while `relay-pull` scans the mailbox then applies
 every retained item in position order — refusing its own echo, skipping
 KeyPackage/contact-request envelopes that require dedicated commands, and
-reopening custody after each deterministic refusal so out-of-order items can
-still heal on a later pull. It is a local reference adapter — no DNS, TLS,
-remote-host
-hardening or public Internet service claim — and a retention receipt is never
-member acceptance. Hardened interchangeable transports and independent-machine
-failure-domain qualification remain required.
+reopening custody after each deterministic refusal. Refused items are retried
+in a bounded fixpoint (at most eight passes), so an item delivered before its
+parent heals inside the same pull once the parent lands at a later position;
+anything still refusing stays listed for a later pull. It is a local reference
+adapter — no DNS, TLS, remote-host hardening or public Internet service claim
+— and a retention receipt is never member acceptance. Hardened interchangeable
+transports and independent-machine failure-domain qualification remain
+required.
 
 ## Durable state and limits
 

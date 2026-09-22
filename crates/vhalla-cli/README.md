@@ -1754,10 +1754,11 @@ runs the same durable scan into `--dir`, then applies every retained item in
 position order: application frames, controls and invitations go through their
 authenticated kernel paths, KeyPackage/contact-request envelopes are reported
 as `skipped` for their dedicated explicit commands, and deterministic refusals
-(including the puller's own echo) are listed under `refused` after reopening
-custody, so a later pull still heals an item whose predecessors arrived out of
-order. Neither composite prints plaintext nor claims another member accepted
-anything.
+(including the puller's own echo) reopen custody and are retried within the
+same pull — a bounded fixpoint of at most eight passes heals items whose
+predecessors landed at later positions, and whatever still refuses is listed
+under `refused` for a later pull. Neither composite prints plaintext nor
+claims another member accepted anything.
 
 ### Output uncertainty and exact recovery
 

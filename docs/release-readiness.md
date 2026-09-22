@@ -124,9 +124,9 @@ Before a private-room release, complete and qualify:
   replies through the same mailbox. Explicit `relay-push`/`relay-pull`
   composites submit a bounded outbox page and apply every retained item in
   position order — refusing own-echo, skipping dedicated-command kinds, and
-  healing out-of-order items on a later pull — without emitting plaintext or
-  claiming remote acceptance; it is a local operator-controlled
-  adapter, not a hardened Internet service. Production operation still needs
+  healing out-of-order items through a bounded in-pull retry — without
+  emitting plaintext or claiming remote acceptance; it is a local
+  operator-controlled adapter, not a hardened Internet service. Production operation still needs
   offline scheduling, congestion handling, stronger relay authentication and
   independent acceptance status. An isolated sender cannot detect an unseen
   removal merely by asking an untrusted relay.
