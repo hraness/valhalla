@@ -123,7 +123,7 @@ pub struct MemberDraft {
     enrollment: UnsignedDeviceEnrollment,
     anchor: VerifiedRoomAnchor,
     owner: VerifiedDeviceEnrollment,
-    successions: Vec<VerifiedOwnerSuccession>,
+    successions: Vec<OwnerSuccessionProof>,
     clock: u64,
 }
 impl MemberDraft {
@@ -147,22 +147,18 @@ impl MemberDraft {
         scope: PrivateRoomScope,
         anchor: SignedRoomAnchor,
         owner: SignedDeviceEnrollment,
-        successions: Vec<SignedOwnerSuccession>,
+        successions: Vec<OwnerSuccessionProof>,
         account: Key,
         validity: Validity,
         now: u64,
     ) -> Result<Self> {
-        let grants = successions
-            .iter()
-            .map(|grant| grant.verify().map_err(Error::from))
-            .collect::<Result<Vec<_>>>()?;
-        Self::checked(scope, anchor, owner, grants, account, validity, now)
+        Self::checked(scope, anchor, owner, successions, account, validity, now)
     }
     fn checked(
         scope: PrivateRoomScope,
         anchor: SignedRoomAnchor,
         owner: SignedDeviceEnrollment,
-        successions: Vec<VerifiedOwnerSuccession>,
+        successions: Vec<OwnerSuccessionProof>,
         account: Key,
         validity: Validity,
         now: u64,
@@ -250,7 +246,7 @@ fn initial(
     anchor: VerifiedRoomAnchor,
     local: VerifiedDeviceEnrollment,
     owner: VerifiedDeviceEnrollment,
-    successions: Vec<VerifiedOwnerSuccession>,
+    successions: Vec<OwnerSuccessionProof>,
     now: u64,
 ) -> Result<State> {
     Ok(State {

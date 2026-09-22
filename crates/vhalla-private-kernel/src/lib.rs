@@ -57,6 +57,8 @@ pub const MAX_PAGE_BYTES: usize = 512 * 1024;
 pub const MAX_TRANSACTION_RECORDS: usize = 3;
 /// Explicit active-device capacity, including the fixed owner device.
 pub const MAX_MEMBERS: usize = 16;
+/// Maximum historical owner handoffs retained in a private room.
+pub use model::MAX_SUCCESSIONS;
 
 /// Bounded refusal. No error grants permission to reset or clone retained state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

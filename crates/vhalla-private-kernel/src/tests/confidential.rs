@@ -343,8 +343,8 @@ fn confidential_envelope_and_record_bounds_and_legacy_state_refuse_without_repai
             MAX_IMAGE_BYTES,
         )
         .unwrap();
-        assert_eq!(&clear[..10], b"VHPKSTATE\x04");
-        clear[9] = 3;
+        assert_eq!(&clear[..10], b"VHPKSTATE\x05");
+        clear[9] = 4;
         let old = Image::from_bytes(
             &codec::seal(
                 &pair.member_key,

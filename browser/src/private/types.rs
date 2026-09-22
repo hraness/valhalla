@@ -1,8 +1,7 @@
 //! Closed local UI/worker vocabulary. None of these reports is network authority.
 use vhalla_private_kernel::{
     protocol::{
-        ControlFloor, Key, SignedDeviceEnrollment, SignedOwnerSuccession, SignedRoomAnchor,
-        Validity,
+        ControlFloor, Key, OwnerSuccessionProof, SignedDeviceEnrollment, SignedRoomAnchor, Validity,
     },
     Context, OperationId, OutboxKind, Status,
 };
@@ -268,10 +267,10 @@ pub struct Membership {
     pub local: SignedDeviceEnrollment,
     /// Bounded current admitted roster, including the owner.
     pub members: Vec<SignedDeviceEnrollment>,
-    /// Accepted account-signed handoff chain from the anchor owner to the
+    /// Accepted predecessor-signed handoff proof chain from the anchor owner to the
     /// current owner, in ascending control order. Empty while the anchor
     /// device still leads.
-    pub successions: Vec<SignedOwnerSuccession>,
+    pub successions: Vec<OwnerSuccessionProof>,
 }
 /// Local outbox report, not evidence that any peer received the artifact.
 pub struct Artifact {

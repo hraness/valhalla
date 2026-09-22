@@ -4,11 +4,12 @@ pub mod types;
 pub use types::*;
 use vhalla_private_kernel::{
     protocol::{
-        AnchorId, ControlFloor, ControlId, Key, PrivateRoomScope, RoomId, SignedDeviceEnrollment,
-        SignedOwnerControl, SignedOwnerSuccession, SignedRoomAnchor, Validity, MAX_RECORD_BYTES,
+        AnchorId, ControlFloor, ControlId, Key, OwnerSuccessionProof, PrivateRoomScope, RoomId,
+        SignedDeviceEnrollment, SignedOwnerControl, SignedRoomAnchor, Validity, MAX_RECORD_BYTES,
     },
     recovery::MAX_ARCHIVE_PAGE_BYTES,
     Context, OperationId, OutboxKind, Phase, Status, MAX_BODY_BYTES, MAX_MEMBERS, MAX_PAGE_RECORDS,
+    MAX_SUCCESSIONS,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -22,7 +23,7 @@ pub enum CodecError {
     InvalidFrame,
 }
 type Result<T> = std::result::Result<T, CodecError>;
-const MAGIC: &[u8] = b"VHBRPRIVATE\x01";
+const MAGIC: &[u8] = b"VHBRPRIVATE\x02";
 struct Writer(Vec<u8>);
 impl Drop for Writer {
     fn drop(&mut self) {
@@ -898,10 +899,13 @@ impl Response {
                     members.push(r.enrollment()?);
                 }
                 let count = r.count()?;
+                if count > MAX_SUCCESSIONS {
+                    return Err(CodecError::InvalidFrame);
+                }
                 let mut successions = Vec::with_capacity(count);
                 for _ in 0..count {
                     successions.push(
-                        SignedOwnerSuccession::decode(&r.blob(MAX_RECORD_BYTES)?[..])
+                        OwnerSuccessionProof::decode(&r.blob(MAX_RECORD_BYTES)?[..])
                             .map_err(|_| CodecError::InvalidFrame)?,
                     );
                 }
@@ -914,16 +918,15 @@ impl Response {
                     return Err(CodecError::InvalidFrame);
                 }
                 // The reported owner is the anchor device only before any
-                // handoff; afterwards the verified grant chain must walk from
+                // handoff; afterwards the verified carrying-control chain must walk from
                 // the anchor device to the reported owner without a gap. This
                 // mirrors the kernel's retained-chain check: a grant is
                 // historical evidence, so its successor need not still be
                 // rostered (a promoted owner may later renew or be removed).
                 let mut expected = verified.claims().owner_device;
                 let mut prior_sequence = 0u64;
-                for grant in &successions {
-                    let grant = grant.verify().map_err(|_| CodecError::InvalidFrame)?;
-                    let claims = grant.claims();
+                for proof in &successions {
+                    let claims = proof.claims();
                     if claims.scope != status.context.scope
                         || claims.account != verified.claims().owner_account
                         || claims.predecessor != expected

@@ -362,12 +362,7 @@ fn succeeded_room_joins_only_with_the_exact_retained_chain() {
         let work = retained_work(&successor_disk, &successor_key, successor.status().context);
         let anchor = work.state.anchor.signed().clone();
         let owner = work.state.owner.signed().clone();
-        let chain: Vec<SignedOwnerSuccession> = work
-            .state
-            .successions
-            .iter()
-            .map(|grant| grant.signed().clone())
-            .collect();
+        let chain: Vec<OwnerSuccessionProof> = work.state.successions.clone();
         let scope = successor.status().context.scope;
         let account = account();
         let validity = validity(pair.now);
@@ -426,5 +421,292 @@ fn succeeded_room_joins_only_with_the_exact_retained_chain() {
         let work = retained_work(&disk, &secret, member.status().context);
         assert_eq!(work.state.successions.len(), 1);
         assert_eq!(work.state.owner.claims().device, device);
+    });
+}
+
+async fn short_lived_successor(pair: &mut Pair) -> Kernel<Memory> {
+    let owner = pair.owner.membership().await.unwrap();
+    let draft = MemberDraft::new(
+        owner.status().context.scope,
+        owner.anchor().clone(),
+        owner.owner().clone(),
+        key(&pair.owner_account),
+        Validity::new(pair.now - 30, pair.now + 10).unwrap(),
+        pair.now,
+    )
+    .unwrap();
+    let enrollment = draft
+        .enrollment_request()
+        .sign(&pair.owner_account)
+        .unwrap();
+    let mut successor = draft
+        .initialize(Memory::default(), &storage_key(), enrollment, pair.now)
+        .await
+        .unwrap();
+    let control = add_device(pair, &mut successor, 60).await;
+    pair.member.apply_control(&control, pair.now).await.unwrap();
+    successor
+}
+
+#[test]
+fn expired_successor_refuses_both_emission_and_application_without_mutation() {
+    block_on(async {
+        let mut pair = joined().await;
+        let successor = short_lived_successor(&mut pair).await;
+        let window = validity(pair.now);
+        let grant = grant(&mut pair, successor.status().context.device, window).await;
+        let before = pair.owner_disk.snapshot();
+        assert!(matches!(
+            pair.owner
+                .succeed(op(61), grant.clone(), pair.now + 10)
+                .await,
+            Err(Error::Time)
+        ));
+        assert!(pair.owner_disk.snapshot() == before);
+        assert!(matches!(pair.owner.status().phase, Phase::OwnerJoined));
+        pair.reopen_owner().await;
+        // A handoff legitimately emitted before expiry still cannot promote an
+        // expired successor on a recipient that catches up later.
+        let handoff = pair.owner.succeed(op(61), grant, pair.now).await.unwrap();
+        let before = pair.member_disk.snapshot();
+        assert!(matches!(
+            pair.member
+                .apply_control(handoff.bytes(), pair.now + 10)
+                .await,
+            Err(Error::Time)
+        ));
+        assert!(pair.member_disk.snapshot() == before);
+    });
+}
+
+#[test]
+fn expired_predecessor_can_still_handoff_to_a_current_successor() {
+    block_on(async {
+        let mut pair = fresh_with_lifetimes(10, 7200).await;
+        let package = pair.member.key_package(op(1), pair.now).await.unwrap();
+        let invitation = pair
+            .owner
+            .invite(op(1), package.bytes(), validity(pair.now), pair.now)
+            .await
+            .unwrap();
+        pair.member
+            .join(invitation.bytes(), pair.now)
+            .await
+            .unwrap();
+        let (mut successor, _, _) = joined_successor(&mut pair, 10).await;
+        let window = validity(pair.now);
+        let grant = grant(&mut pair, successor.status().context.device, window).await;
+        let handoff = pair
+            .owner
+            .succeed(op(62), grant, pair.now + 10)
+            .await
+            .unwrap();
+        successor
+            .apply_control(handoff.bytes(), pair.now + 10)
+            .await
+            .unwrap();
+        pair.member
+            .apply_control(handoff.bytes(), pair.now + 10)
+            .await
+            .unwrap();
+        assert_eq!(successor.status().phase, Phase::OwnerJoined);
+        assert_eq!(pair.owner.status().phase, Phase::MemberJoined);
+    });
+}
+
+#[test]
+fn successor_signed_contact_cannot_substitute_a_prepared_account_grant_for_proof() {
+    use openmls_traits::signatures::Signer;
+    block_on(async {
+        let mut pair = joined().await;
+        let (mut successor, disk, secret) = joined_successor(&mut pair, 10).await;
+        let window = validity(pair.now);
+        let prepared = grant(&mut pair, successor.status().context.device, window).await;
+        // Even a legitimate prepared grant cannot construct bootstrap authority.
+        assert!(OwnerSuccessionProof::decode(&prepared.encode()).is_err());
+        let handoff = pair
+            .owner
+            .succeed(op(63), prepared.clone(), pair.now)
+            .await
+            .unwrap();
+        successor
+            .apply_control(handoff.bytes(), pair.now)
+            .await
+            .unwrap();
+        let recipient = account();
+        let offer = successor
+            .create_contact_offer(op(64), key(&recipient), window, pair.now)
+            .await
+            .unwrap();
+        let original = offer.confidential_bytes();
+        assert_eq!(&original[..10], b"VHPKOFFER\x03");
+        // Fixed bootstrap metadata ends at its proof count (byte 585). Replace
+        // the sole proof with the real account-signed grant, then authenticate
+        // the whole counterfeit offer with the actual successor device key.
+        assert_eq!(original[585], 1);
+        let mut forged = original[..586].to_vec();
+        let raw = prepared.encode();
+        forged.extend((raw.len() as u32).to_be_bytes());
+        forged.extend(raw);
+        forged.extend_from_slice(&original[original.len() - 128..original.len() - 64]);
+        let mut signing = b"vhalla/private/contact/owner-offer/v1\0".to_vec();
+        signing.extend(&forged);
+        let work = retained_work(&disk, &secret, successor.status().context);
+        forged.extend(work.signer().unwrap().sign(&signing).unwrap());
+        assert!(ContactBootstrap::inspect(
+            &forged,
+            key(&pair.owner_account),
+            key(&recipient),
+            pair.now
+        )
+        .is_err());
+        assert!(ContactBootstrap::inspect(
+            original,
+            key(&pair.owner_account),
+            key(&recipient),
+            pair.now
+        )
+        .is_ok());
+    });
+}
+
+#[test]
+fn two_generation_proof_chain_supports_fresh_joins_and_rejects_a_wrong_predecessor() {
+    use openmls_traits::signatures::Signer;
+    block_on(async {
+        let mut pair = joined().await;
+        let (mut successor, _, _) = joined_successor(&mut pair, 10).await;
+        let window = validity(pair.now);
+        let grant = grant(&mut pair, successor.status().context.device, window).await;
+        let handoff = pair.owner.succeed(op(65), grant, pair.now).await.unwrap();
+        successor
+            .apply_control(handoff.bytes(), pair.now)
+            .await
+            .unwrap();
+        pair.member
+            .apply_control(handoff.bytes(), pair.now)
+            .await
+            .unwrap();
+        let first = pair.owner.membership().await.unwrap().successions()[0].clone();
+        let request = successor
+            .succession_request(pair.owner.status().context.device, window)
+            .await
+            .unwrap();
+        let next = request.sign(&pair.owner_account).unwrap();
+        // A former owner plus the account cannot substitute its own device for
+        // the current predecessor in the second generation.
+        let mut false_grant = next.claims().clone();
+        false_grant.predecessor = pair.owner.status().context.device;
+        false_grant.successor = first.claims().successor.clone();
+        let false_grant = UnsignedOwnerSuccession::new(false_grant)
+            .unwrap()
+            .sign(&pair.owner_account)
+            .unwrap();
+        let mut claims = first.control().claims().clone();
+        claims.parent = pair.owner.status().control_floor;
+        claims.prior_epoch = pair.owner.status().epoch;
+        claims.next_epoch = claims.prior_epoch + 1;
+        claims.change = ControlChange::Succession {
+            grant: Box::new(false_grant),
+        };
+        let unsigned = UnsignedOwnerControl::new(claims).unwrap();
+        let work = retained_work(
+            &pair.owner_disk,
+            &pair.owner_key,
+            pair.owner.status().context,
+        );
+        let false_control = unsigned
+            .attach(
+                work.signer()
+                    .unwrap()
+                    .sign(&unsigned.signing_bytes())
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            )
+            .unwrap();
+        let false_proof = OwnerSuccessionProof::from_control(false_control).unwrap();
+        assert!(crate::model::check_succession_chain(
+            &work.state.anchor,
+            &[first.clone(), false_proof]
+        )
+        .is_err());
+        let back = successor.succeed(op(66), next, pair.now).await.unwrap();
+        pair.owner
+            .apply_control(back.bytes(), pair.now)
+            .await
+            .unwrap();
+        pair.member
+            .apply_control(back.bytes(), pair.now)
+            .await
+            .unwrap();
+        let snapshot = pair.owner.membership().await.unwrap();
+        assert_eq!(snapshot.successions().len(), 2);
+        let mut reversed = snapshot.successions().to_vec();
+        reversed.reverse();
+        assert!(MemberDraft::new_succeeded(
+            snapshot.status().context.scope,
+            snapshot.anchor().clone(),
+            snapshot.owner().clone(),
+            reversed,
+            key(&account()),
+            window,
+            pair.now
+        )
+        .is_err());
+        let (mut newcomer, disk, secret) = pending_device(&pair, &account()).await;
+        add_device(&mut pair, &mut newcomer, 67).await;
+        let state = retained_work(&disk, &secret, newcomer.status().context);
+        assert_eq!(state.state.successions.len(), 2);
+        assert_eq!(newcomer.status().phase, Phase::MemberJoined);
+        let offer = pair
+            .owner
+            .create_contact_offer(op(68), key(&account()), window, pair.now)
+            .await
+            .unwrap();
+        assert_eq!(offer.confidential_bytes().len(), 714 + 2 * (4 + 637));
+    });
+}
+
+#[test]
+fn legacy_grant_only_bootstrap_formats_refuse_without_repair() {
+    block_on(async {
+        let mut pair = fresh().await;
+        let offer = pair
+            .owner
+            .create_contact_offer(
+                op(70),
+                pair.member.status().context.account,
+                validity(pair.now),
+                pair.now,
+            )
+            .await
+            .unwrap();
+        let mut old_offer = offer.confidential_bytes().to_vec();
+        old_offer[9] = 2;
+        let before = pair.member_disk.snapshot();
+        assert!(matches!(
+            pair.member
+                .contact_request(op(2), &old_offer, pair.now)
+                .await,
+            Err(Error::Encoding)
+        ));
+        assert!(pair.member_disk.snapshot() == before);
+        pair.reopen_member().await;
+        let package = pair.member.key_package(op(1), pair.now).await.unwrap();
+        let invite = pair
+            .owner
+            .invite(op(71), package.bytes(), validity(pair.now), pair.now)
+            .await
+            .unwrap();
+        let mut old_invite = invite.bytes().to_vec();
+        assert_eq!(&old_invite[..11], b"VHPKINVITE\x04");
+        old_invite[10] = 3;
+        let before = pair.member_disk.snapshot();
+        assert!(matches!(
+            pair.member.join(&old_invite, pair.now).await,
+            Err(Error::Encoding)
+        ));
+        assert!(pair.member_disk.snapshot() == before);
     });
 }

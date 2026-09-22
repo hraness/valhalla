@@ -12,9 +12,9 @@ use crate::{
 pub(crate) const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 const MAX_PROVIDER_RECORDS: usize = 256;
 /// Bounded account-authorized owner handoffs ever accepted for this room.
-pub(crate) const MAX_SUCCESSIONS: usize = 16;
-// No automatic migration from preserved plaintext-control qualification images.
-const MAGIC: &[u8] = b"VHPKSTATE\x04";
+pub const MAX_SUCCESSIONS: usize = 16;
+// No automatic migration from earlier or grant-only experimental state images.
+const MAGIC: &[u8] = b"VHPKSTATE\x05";
 const FAULT_RESERVE: usize = MAX_RECORD_BYTES + 64;
 
 pub(crate) struct State {
@@ -30,7 +30,7 @@ pub(crate) struct State {
     pub(crate) owner: VerifiedDeviceEnrollment,
     /// Accepted account-authorized owner handoffs in ascending control order.
     /// The control at each grant's exact sequence remains predecessor-signed.
-    pub(crate) successions: Vec<VerifiedOwnerSuccession>,
+    pub(crate) successions: Vec<OwnerSuccessionProof>,
     pub(crate) roster: Vec<VerifiedDeviceEnrollment>,
     pub(crate) base: ControlFloor,
     pub(crate) checkpoint: Option<crate::checkpoint::Checkpoint>,
@@ -385,14 +385,11 @@ impl State {
             w.blob(key, 4096)?;
             w.blob(value, MAX_STATE_BYTES)?;
         }
-        // Trailing extension: rooms that never accepted a handoff keep the exact
-        // v4 image so an older binary can still open them. Strict trailing rules
-        // make a pre-succession binary refuse a post-succession image entirely.
-        if !self.successions.is_empty() {
-            w.byte(u8::try_from(self.successions.len()).map_err(|_| Error::Bounds)?)?;
-            for grant in &self.successions {
-                w.blob(&grant.signed().encode(), MAX_RECORD_BYTES)?;
-            }
+        // v5 always carries an explicit proof count. v4 grant-only state is
+        // refused; no signed carrying control can be reconstructed by guessing.
+        w.byte(u8::try_from(self.successions.len()).map_err(|_| Error::Bounds)?)?;
+        for proof in &self.successions {
+            w.blob(&proof.encode(), MAX_RECORD_BYTES)?;
         }
         Ok(w.finish())
     }
@@ -487,19 +484,14 @@ impl State {
             }
             records.push((key.to_vec(), value.to_vec()));
         }
-        let successions = if r.rest.is_empty() {
-            Vec::new()
-        } else {
-            let count = usize::from(r.byte()?);
-            if count == 0 || count > MAX_SUCCESSIONS {
-                return Err(Error::Bounds);
-            }
-            let mut grants = Vec::with_capacity(count);
-            for _ in 0..count {
-                grants.push(SignedOwnerSuccession::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?);
-            }
-            grants
-        };
+        let count = usize::from(r.byte()?);
+        if count > MAX_SUCCESSIONS {
+            return Err(Error::Bounds);
+        }
+        let mut successions = Vec::with_capacity(count);
+        for _ in 0..count {
+            successions.push(OwnerSuccessionProof::decode(r.blob(MAX_RECORD_BYTES)?)?);
+        }
         r.end()?;
         let state = Self {
             revision,
@@ -635,12 +627,12 @@ impl Working {
     }
 }
 
-/// Verify a complete account-authorized owner handoff chain against an anchor
-/// and return the device it authorizes as current owner. The chain is empty
-/// exactly when the anchor's own owner device still holds authority.
+/// Verify both account and predecessor-device authority for every retained
+/// handoff against an anchor. An empty chain describes no accepted handoffs;
+/// a later handoff may return authority to the original anchor device.
 pub(crate) fn check_succession_chain(
     anchor: &VerifiedRoomAnchor,
-    grants: &[VerifiedOwnerSuccession],
+    grants: &[OwnerSuccessionProof],
 ) -> Result<Key> {
     if grants.len() > MAX_SUCCESSIONS {
         return Err(Error::Bounds);

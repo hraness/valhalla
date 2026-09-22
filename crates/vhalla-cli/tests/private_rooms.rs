@@ -831,6 +831,7 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
         &f.path("catchup"),
         None,
         &[
+            ("namespace", namespace.clone()),
             ("addr", addr.clone()),
             ("token", f.path("token")),
             ("out", f.path("scan")),
@@ -851,6 +852,7 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
         &f.path("catchup"),
         None,
         &[
+            ("namespace", namespace.clone()),
             ("addr", addr.clone()),
             ("token", f.path("token")),
             ("out", f.path("scan-again")),
@@ -865,6 +867,7 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
             &f.path("catchup"),
             None,
             &[
+                ("namespace", namespace.clone()),
                 ("addr", addr),
                 ("token", f.path("token")),
                 ("out", f.path("must-not-exist")),
@@ -909,6 +912,7 @@ fn private_cli_relay_socket_adapter_delivers_canonical_items() {
         &f.path("catchup"),
         None,
         &[
+            ("namespace", namespace.clone()),
             ("addr", addr.clone()),
             ("token", f.path("token")),
             ("out", f.path("scan-resumed")),
@@ -1802,3 +1806,290 @@ fn private_cli_signed_control_observe_detects_fork_and_preserves_evidence() {
 
 #[path = "private_rooms/archive.rs"]
 mod archive;
+
+#[test]
+fn private_cli_relay_refuses_legacy_bootstrap_and_push_skips_it() {
+    use vhalla_private_kernel::{protocol::Validity, OperationId};
+    use vhalla_private_native::{
+        client::RoomCreation,
+        private_rooms::Limits,
+        relay::{Error, RelayItem, RelayNamespace},
+    };
+    let f = Fixture::new();
+    let namespace = RelayNamespace::from_bytes([0xef; 32]).unwrap();
+    let validity = Validity::new(f.now - 30, f.now + 3600).unwrap();
+    let limits = Limits {
+        max_records: 128,
+        max_record_bytes: 8 * 1024 * 1024,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let creation = RoomCreation::owner(
+                vhalla_identity::Identity::open(f.root.join("owner-key")).unwrap(),
+                validity,
+            )
+            .unwrap();
+            let context = creation.context();
+            let mut owner = creation
+                .commit(f.root.join("owner-room"), limits)
+                .await
+                .unwrap();
+            let snapshot = owner.membership().await.unwrap();
+            let creation = RoomCreation::member(
+                vhalla_identity::Identity::open(f.root.join("member-key")).unwrap(),
+                context.scope,
+                snapshot.anchor().clone(),
+                snapshot.owner().clone(),
+                validity,
+            )
+            .unwrap();
+            let mut member = creation
+                .commit(f.root.join("member-room"), limits)
+                .await
+                .unwrap();
+            let request = member
+                .key_package(OperationId::from_bytes([1; 16]).unwrap())
+                .await
+                .unwrap();
+            let invite = owner
+                .invite(
+                    OperationId::from_bytes([2; 16]).unwrap(),
+                    request.bytes(),
+                    validity,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                RelayItem::from_artifact(namespace, &request),
+                Err(Error::Confidential)
+            );
+            assert_eq!(
+                RelayItem::from_artifact(namespace, &invite),
+                Err(Error::Confidential)
+            );
+            member.join(invite.bytes()).await.unwrap();
+            let draft = owner.prepare_message(b"ordinary encrypted item").unwrap();
+            owner
+                .send(OperationId::from_bytes([3; 16]).unwrap(), &draft)
+                .await
+                .unwrap();
+        });
+    let namespace = "ef".repeat(32);
+    for (identity, room, output) in [
+        ("owner-key", "owner-room", "forbidden-invite"),
+        ("member-key", "member-room", "forbidden-package"),
+    ] {
+        assert!(!f
+            .run(
+                "relay-export",
+                identity,
+                Some(room),
+                &[
+                    ("namespace", namespace.clone()),
+                    ("sequence", "1".into()),
+                    ("out", f.path(output)),
+                ],
+                None
+            )
+            .status
+            .success());
+        assert!(!f.root.join(output).exists());
+    }
+    f.ok(
+        "relay-mailbox",
+        &f.path("mailbox"),
+        None,
+        &[("namespace", namespace.clone())],
+    );
+    f.ok(
+        "relay-push",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("mailbox", f.path("mailbox")),
+            ("out", f.path("push-owner")),
+        ],
+    );
+    assert_eq!(f.json("push-owner")["skipped_bootstrap"], 1);
+    assert_eq!(f.json("push-owner")["submitted"], 1);
+    assert!(f.json("push-owner")["next"].is_null());
+    f.ok(
+        "relay-push",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace),
+            ("mailbox", f.path("mailbox")),
+            ("out", f.path("push-member")),
+        ],
+    );
+    assert_eq!(f.json("push-member")["skipped_bootstrap"], 1);
+    assert_eq!(f.json("push-member")["submitted"], 0);
+}
+
+#[test]
+fn private_cli_relay_scan_requires_namespace_and_pull_respects_custody_and_file_bounds() {
+    use vhalla_private_kernel::{OperationId, OutboxKind};
+    use vhalla_private_native::relay::{
+        net::ScanDirectory, FileStore, Limits, RelayItem, RelayNamespace,
+    };
+    let f = Fixture::new();
+    f.join();
+    let namespace = RelayNamespace::from_bytes([0xef; 32]).unwrap();
+    let mut mailbox = FileStore::create_new(
+        f.root.join("mailbox"),
+        namespace,
+        Limits {
+            max_items: 8,
+            max_bytes: 4096,
+        },
+    )
+    .unwrap();
+    mailbox
+        .put(
+            RelayItem::new(
+                namespace,
+                1,
+                OperationId::from_bytes([7; 16]).unwrap(),
+                OutboxKind::Application,
+                b"opaque item",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let mut guard = ScanDirectory::open(&f.root.join("catchup"), namespace).unwrap();
+    guard.scan(&mailbox, 8).unwrap();
+    drop(mailbox);
+    let namespace = "ef".repeat(32);
+    let scan_options = [
+        ("namespace", namespace.clone()),
+        ("mailbox", f.path("mailbox")),
+        ("out", f.path("busy-output")),
+    ];
+    let busy = f.run("relay-scan", &f.path("catchup"), None, &scan_options, None);
+    assert!(!busy.status.success());
+    assert!(String::from_utf8_lossy(&busy.stderr).contains("in use"));
+    assert!(!f.root.join("busy-output").exists());
+    // Parser admission requires an explicit namespace even for a token socket.
+    let missing = f.run(
+        "relay-scan",
+        &f.path("must-not-create"),
+        None,
+        &[
+            ("addr", "127.0.0.1:1".into()),
+            ("token", f.path("unused-token")),
+            ("out", f.path("missing-output")),
+        ],
+        None,
+    );
+    assert!(!missing.status.success());
+    assert!(!f.root.join("must-not-create").exists());
+    drop(guard);
+    let item = f.root.join("catchup/items/0000000000000001.vhrelay");
+    fs::remove_file(&item).unwrap();
+    symlink("/dev/zero", &item).unwrap();
+    let refused = f.run(
+        "relay-pull",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace),
+            ("mailbox", f.path("mailbox")),
+            ("dir", f.path("catchup")),
+            ("out", f.path("pull-output")),
+        ],
+        None,
+    );
+    assert!(!refused.status.success());
+    assert!(!f.root.join("pull-output").exists());
+    assert_eq!(
+        fs::read(f.root.join("catchup/cursor")).unwrap(),
+        1u64.to_be_bytes()
+    );
+    assert!(fs::symlink_metadata(&item)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+#[test]
+fn private_cli_relay_submit_checks_an_explicit_namespace_before_transport() {
+    use vhalla_private_kernel::{OperationId, OutboxKind};
+    use vhalla_private_native::relay::{FileStore, RelayItem, RelayNamespace};
+    let f = Fixture::new();
+    let namespace = RelayNamespace::from_bytes([0xef; 32]).unwrap();
+    let item = RelayItem::new(
+        namespace,
+        1,
+        OperationId::from_bytes([7; 16]).unwrap(),
+        OutboxKind::Application,
+        b"opaque ciphertext",
+    )
+    .unwrap();
+    f.write("item", &item.encode().unwrap());
+    f.ok(
+        "relay-mailbox",
+        &f.path("mailbox"),
+        None,
+        &[("namespace", "ef".repeat(32))],
+    );
+    let refused = f.run(
+        "relay-submit",
+        &f.path("item"),
+        None,
+        &[
+            ("namespace", "ff".repeat(32)),
+            ("mailbox", f.path("mailbox")),
+            ("out", f.path("must-not-exist")),
+        ],
+        None,
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("explicit namespace"));
+    assert!(!f.root.join("must-not-exist").exists());
+    assert_eq!(
+        FileStore::open(f.root.join("mailbox"), namespace)
+            .unwrap()
+            .page(0, 1)
+            .unwrap()
+            .head,
+        0
+    );
+    // Equality is checked before even attempting to read a socket credential.
+    let refused_socket = f.run(
+        "relay-submit",
+        &f.path("item"),
+        None,
+        &[
+            ("namespace", "ff".repeat(32)),
+            ("addr", "127.0.0.1:1".into()),
+            ("token", f.path("absent-token")),
+            ("out", f.path("must-not-exist")),
+        ],
+        None,
+    );
+    assert!(!refused_socket.status.success());
+    assert!(String::from_utf8_lossy(&refused_socket.stderr).contains("explicit namespace"));
+    f.ok(
+        "relay-submit",
+        &f.path("item"),
+        None,
+        &[
+            ("namespace", "ef".repeat(32)),
+            ("mailbox", f.path("mailbox")),
+            ("out", f.path("receipt")),
+        ],
+    );
+    assert_eq!(f.json("receipt")["position"], 1);
+    assert_eq!(
+        FileStore::open(f.root.join("mailbox"), namespace)
+            .unwrap()
+            .page(0, 1)
+            .unwrap()
+            .head,
+        1
+    );
+}

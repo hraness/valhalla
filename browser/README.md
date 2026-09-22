@@ -250,14 +250,22 @@ rejects qualification hooks; the optional private interface requires an explicit
 
 The panel also handles the canonical `.vharchive` container shared with the
 native CLI. An open room exports its complete retained state as one encrypted
-file through bounded `ArchiveExport`/`ArchiveExportNext` page requests; a
+file through bounded `ArchiveExport`/`ArchiveExportNext` page requests, up to a
+16 MiB browser download limit. The buffer and aggregate live Blob downloads
+share that payload ceiling; Rust, JS and browser backing copies still have
+separate memory costs. Larger exports need a future streaming sink or multipart
+workflow. Reaching the limit closes the export's worker without changing the
+retained room. The larger archive import format remains supported. A
 selected file imports page-by-page into a separate read-only IndexedDB namespace
 (`ArchiveImportBegin`/`ArchiveImportFeed`/`ArchiveImportFinish`) whose durable
 receiving cursor resumes exactly after interruption, and `ArchiveOpen` reopens a
 finished archive for read-only membership, inbox and redacted-outbox inspection
 plus explicit ciphertext downloads. Header fields are unauthenticated hints;
-foreign accounts, malformed containers, oversized pages and trailing bytes are
-refused before any kernel call. An archive destination never becomes a live
+foreign accounts refuse before import begins; malformed containers, oversized
+pages and trailing bytes refuse as their bounded slices are read. Earlier
+authenticated pages may already be retained. A local read failure after import
+begins locks custody and directs the user to unlock and reselect the same
+complete archive to resume its exact durable cursor. An archive destination never becomes a live
 sender and never overwrites existing state. The emitted-worker journey now also
 exports a real archive, refuses a foreign-account header, interrupts and resumes
 an import at its durable cursor, reopens the finished archive read-only, verifies

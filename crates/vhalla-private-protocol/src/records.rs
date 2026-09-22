@@ -444,3 +444,51 @@ signed_record!(
     SuccessionId,
     b"vhalla/private-room/succession-id/v1\0"
 );
+
+/// Historical owner handoff authenticated by both the account grant and the
+/// predecessor device's exact carrying control. An account grant alone cannot
+/// construct this proof. Verification does not establish persistence, global
+/// freshness, or MLS membership: those remain retained-state checks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnerSuccessionProof {
+    control: VerifiedOwnerControl,
+    grant: VerifiedOwnerSuccession,
+}
+impl OwnerSuccessionProof {
+    /// Authenticate the predecessor's carrying control and its embedded grant.
+    /// The room's independently selected anchor and preceding owner generation
+    /// must still be checked when admitting this proof into a chain.
+    pub fn from_control(control: SignedOwnerControl) -> Result<Self, Error> {
+        let control = control.verify()?;
+        let claims = control.claims();
+        let ControlChange::Succession { grant } = &claims.change else {
+            return Err(Error::Membership);
+        };
+        let grant = grant.verify()?;
+        if claims.scope != grant.claims().scope
+            || claims.owner_device != grant.claims().predecessor
+            || claims.sequence()? != grant.claims().sequence
+            || claims.next_epoch != grant.claims().sequence
+        {
+            return Err(Error::Sequence);
+        }
+        Ok(Self { control, grant })
+    }
+    /// Decode the canonical carrying-control record, never a bare account grant.
+    pub fn decode(raw: &[u8]) -> Result<Self, Error> {
+        Self::from_control(SignedOwnerControl::decode(raw)?)
+    }
+    /// Canonical predecessor-signed control including its exact account grant.
+    pub fn encode(&self) -> Vec<u8> {
+        self.control.signed().encode()
+    }
+    /// Authenticated historical grant; its original apply window need not be
+    /// current when inspecting already accepted owner history.
+    pub fn claims(&self) -> &OwnerSuccessionClaims {
+        self.grant.claims()
+    }
+    /// Predecessor-signed carrying control, not an MLS catch-up envelope.
+    pub fn control(&self) -> &SignedOwnerControl {
+        self.control.signed()
+    }
+}

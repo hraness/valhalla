@@ -31,6 +31,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Delivery and security regression tests
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Dead-device recovery policy counterexample
+        run: python3 -m unittest discover -s prototypes/device-recovery-policy -p 'test_*.py'
+      - name: Fixed-room disclosure broker model
+        run: python3 -m unittest discover -s prototypes/agent-compartment -p 'test_*.py'
 
   workspace-tests:
     name: Workspace tests (${{ matrix.name }})
@@ -189,16 +193,18 @@ jobs:
       - name: Install exact browser bindings for runtime qualification
         run: cargo install wasm-bindgen-cli --version 0.2.108 --locked
       - name: Check archive and continuity receipt browser fixtures
-        run: cargo clippy --locked -p vhalla-browser-storage --example private_archive_indexeddb --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy --locked -p vhalla-browser-storage --example private_archive_indexeddb --example private_archive_recovery --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown -- -D warnings
       - name: Build archive and continuity receipt browser fixtures
         run: |
-          cargo build --locked -p vhalla-browser-storage --example private_archive_indexeddb --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown
+          cargo build --locked -p vhalla-browser-storage --example private_archive_indexeddb --example private_archive_recovery --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown
           wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_archive_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-archive-runtime"
+          wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_archive_recovery.wasm --target web --out-name archive_recovery --out-dir "$RUNNER_TEMP/vhalla-archive-recovery-runtime"
           wasm-bindgen target/wasm32-unknown-unknown/debug/examples/continuity_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-continuity-runtime"
       - name: Exercise archive and receipt recovery in Window and dedicated worker
         run: |
           chrome=$(command -v google-chrome)
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-archive-runtime" "$chrome"
+          node prototypes/browser-archive-recovery/qualify.mjs "$RUNNER_TEMP/vhalla-archive-recovery-runtime" "$chrome" "$RUNNER_TEMP/vhalla-archive-recovery-results"
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-continuity-runtime" "$chrome"
       - name: Check optional private room worker and local qualification entry points
         run: cargo clippy --locked -p vhalla-browser --features private-rooms,local-qualification --target wasm32-unknown-unknown -- -D warnings
@@ -376,6 +382,8 @@ jobs:
         run: cargo build --locked --manifest-path desktop/Cargo.toml
       - name: Menubar tests
         run: cargo test --locked --manifest-path desktop/Cargo.toml
+      - name: Synthetic macOS agent compartment denial probes
+        run: python3 prototypes/agent-compartment/qualify_macos.py
 
   site:
     runs-on: ubuntu-latest

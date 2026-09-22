@@ -1,6 +1,6 @@
 # Private group kernel
 
-This workspace crate implements fixed-owner private MLS rooms with up to 16 active devices, repeated invitations, later-epoch fresh joins, ordered member catch-up, messages, targeted removal, owner credential renewal and explicit new-device rejoin. It has no network endpoint, public-directory prerequisite, transport, private-room UI or agent execution. See [the release boundaries](../../docs/private-rooms.md).
+This workspace crate implements owner-serialized private MLS rooms with up to 16 active devices, repeated invitations, later-epoch fresh joins, ordered member catch-up, messages, targeted removal, owner credential renewal and explicit new-device rejoin. It has no network endpoint, public-directory prerequisite, transport, private-room UI or agent execution. See [the release boundaries](../../docs/private-rooms.md).
 
 The owner is the exact device pinned by the account-signed room anchor. Several
 devices may belong to one account; that relationship does not grant owner powers.
@@ -50,10 +50,11 @@ controls cannot grant sender authority. Delayed old-epoch ciphertext may be refu
 after a membership change. It is never automatically decrypted and re-shared with
 an expanded roster. Membership changes cannot retract plaintext already received.
 
+
 ## Confidential recipient bootstrap
 
 `create_contact_offer` produces one bounded secret file (714 bytes before any
-succession, at most 6794 bytes) bound to a full recipient account. It contains
+succession, at most 10,970 bytes) bound to a full recipient account. It contains
 the signed anchor and current owner enrollment, the exact retained succession
 chain proving how the current owner holds authority, a separate random offer
 ID, expiry, and two independently random direction keys. The current owner
@@ -205,10 +206,16 @@ still apply when nested pieces are individually valid. Histories use checked u64
 counters and separate indexed records with no artificial lifetime message cap.
 Backend quotas must refuse without pruning, reset or partial acknowledgment.
 
-Current state uses `VHPKSTATE\x04` and invitation format `VHPKINVITE\x03`.
+Current state uses `VHPKSTATE\x05`, invitation format `VHPKINVITE\x04`,
+and confidential offer format `VHPKOFFER\x03`.
 The control envelope is `VHPKCTRL\x01`; encrypted local control records contain
 `VHPKCTRLREC\x01` framing around the signed proof and optional retained envelope.
-State versions 1, 2 and 3 are refused, not loaded or migrated. Storage record keys,
+State versions 1 through 4, invitation versions before 4, and offer versions
+before 3 are refused, not loaded or migrated. The current formats retain full
+predecessor-signed handoff controls; a bare account grant cannot replace one.
+Older archives containing a v4 live source image also refuse under this kernel;
+retain a compatible binary to inspect them without activating an old device.
+Storage record keys,
 outer storage AEAD and the maximum-three-record Store transaction contract remain
 unchanged. Preserve compatible source and complete custody when inspecting older
 experimental stores; there is no automatic format or storage-key migration.
@@ -258,8 +265,8 @@ predecessor device signs the carrying `ControlChange::Succession` owner control,
 which rides the ordinary floor ordering, encrypted envelope and fork-quarantine
 machinery. Applying it atomically installs the successor enrollment as
 `state.owner` without roster churn, demotes the predecessor to an ordinary
-member, clears outstanding owner-scoped offers and retains the grant as bounded
-historical evidence — at most 16 recorded successions per room.
+member, clears outstanding owner-scoped offers and retains the complete
+predecessor-signed control with its grant as bounded historical evidence — at most 16 recorded successions per room.
 
 Owner-dependent checks — control signer, checkpoint, fault, recovery and join
 pins — resolve the owner device at the relevant control sequence rather than
@@ -270,6 +277,25 @@ predecessor keeps its membership and received history but loses all owner
 operations. Membership snapshots, contact offers and join packets carry the
 retained chain so every device authenticates the current owner through each
 recorded handoff.
+
+
+Owner succession requires a current, already-enrolled successor of the same
+account and an account-signed grant bound to the next control sequence. The live
+predecessor commits its signed carrying control before releasing it; its previous
+enrollment may be expired on this narrow path. The successor's enrollment must
+be current at emission and application. The predecessor becomes an ordinary
+member, and only the successor controls later membership updates.
+
+Fresh-device bootstrap carries at most `MAX_SUCCESSIONS` (16)
+`OwnerSuccessionProof` records, each containing the exact predecessor-signed
+control and embedded account grant. Bare prepared grants, account-only signatures,
+foreign scopes, wrong carrying sequences and broken predecessor generations do
+not establish authority under the unchanged anchor. Both ordinary invitations
+and confidential contact offers carry this same proof chain. Historical proof
+inspection does not require the old apply windows to remain current and does not
+prove global freshness or that every member accepted the control. Existing
+members still process each ordered MLS control and cannot use bootstrap proofs
+to skip their retained state.
 
 ## Optional account-derived storage custody
 

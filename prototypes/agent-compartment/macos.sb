@@ -1,0 +1,24 @@
+;; Experimental qualification only: sandbox-exec/SBPL is deprecated and is not
+;; Apple's supported third-party product interface. Never fall back unsandboxed.
+(version 1)
+(deny default)
+
+;; Apple's installed loader-only profile supplies cryptex reads/mappings and
+;; root-directory metadata needed by dyld on this OS. Do not import system.sb:
+;; its broad application conveniences are outside this experiment's authority.
+(import "dyld-support.sb")
+
+;; Allow the initial exact fixture executable and system dynamic-loader inputs.
+;; No room store, home directory, temporary directory or broker file is readable.
+(allow process-exec (literal (param "PROBE_BINARY")))
+(allow file-read*
+    (literal (param "PROBE_BINARY"))
+    (subpath "/System/Library")
+    (subpath "/usr/lib"))
+(allow file-map-executable
+    (literal (param "PROBE_BINARY"))
+    (subpath "/System/Library")
+    (subpath "/usr/lib"))
+
+;; All network, file writes, process-fork, other executables and Mach service
+;; lookups remain denied. IPC is only the pipes inherited by the launcher.

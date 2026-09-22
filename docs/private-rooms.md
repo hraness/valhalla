@@ -106,20 +106,31 @@ carrying `ControlChange::Succession` owner control, which rides the ordinary
 floor ordering, encrypted envelope and fork-quarantine machinery. Applying it
 atomically installs the successor as owner with no roster churn, demotes the
 predecessor to an ordinary member, clears outstanding owner-scoped offers and
-retains the grant as bounded historical evidence — at most 16 recorded
+retains the predecessor-signed carrying control, including its account grant,
+as bounded historical evidence — at most 16 recorded
 successions. Owner-dependent validation pins the owner device at the relevant
 control sequence rather than assuming one device for the room's lifetime, so
 history signed by earlier generations stays verifiable and controls signed by
 the current owner verify after the handoff. Exact retries return the retained
 ciphertext. Membership inspection, contact offers and join packets carry the
-retained chain so every device authenticates the current owner through each
-recorded handoff. The predecessor must still be live to commit the handoff:
+retained carrying-control chain so every device authenticates the current owner
+through each recorded handoff. A prepared account grant alone cannot authorize
+fresh onboarding under an existing anchor. The successor's enrollment must be
+current when emitting or applying the handoff. The predecessor must still be
+live to commit the handoff:
 losing every copy of the current owner device's custody before a succession
 leaves the room unable to administer membership, and an account key alone
 cannot recover MLS state. Member renewal otherwise remains an owner-authorized
 fresh-device rejoin, not a reset or clone of existing state.
 
 ## Custody and confidential artifacts
+
+The September 22 authority repair deliberately versions private state to v5,
+invitations to v4 and confidential offers to v3. Earlier images, invitations and
+offers are preserved and refused; do not reset a store, strip history or invent
+missing predecessor signatures to make it open. Retain a compatible binary for
+readback and pursue a separately reviewed migration. Older archive images also
+need compatible readback; archive import never upgrades them into live custody.
 
 `Identity::private_storage_key` and `UnlockedIdentity::private_storage_key` share
 one fixed HKDF-SHA256 contract over the secret account seed and full private
@@ -179,7 +190,7 @@ against local history only, not a global freshness claim.
 ## Confidential recipient bootstrap
 
 `create_contact_offer` produces one bounded secret file (714 bytes before any
-succession, at most 6794 bytes) bound to a full recipient account. It contains
+succession, at most 10,970 bytes) bound to a full recipient account. It contains
 the signed anchor and current owner enrollment, the exact retained succession
 chain proving how the current owner holds authority, a separate random offer
 ID, expiry, and two independently random direction keys. The current owner
@@ -225,8 +236,8 @@ provide idempotent retries and retention-only receipts. One mailbox serves every
 sender in the namespace: the mailbox assigns each retained item an increasing
 position used for pages, cursors, fetches and scan filenames, while each item's
 sender-local outbox sequence remains committed metadata — so members' streams
-never collide when their sequences overlap. The mailbox refuses confidential
-offer metadata and never
+never collide when their sequences overlap. The mailbox refuses secret contact
+offers and the plaintext legacy KeyPackage/Invitation artifacts, and never
 exposes room, anchor, account, device or plaintext fields to the relay. This is
 the transport boundary, not a deployed relay or delivery acknowledgment; the CLI
 can export and explicitly apply the canonical envelope for local adapter
@@ -234,19 +245,26 @@ integration. A bounded token-authenticated TCP reference adapter now exists for
 operator-controlled deployments: `relay-serve` exposes an existing mailbox over
 an explicit numeric `IP:PORT` listener, `relay-submit` retains an item against
 a 64-digit lowercase hexadecimal token read from a 0600 file or bounded pipe,
-and `relay-scan` performs durable position-cursor catch-up into a private
-directory,
-persisting the cursor after each item so a killed scan or offline interval
-resumes exactly. Two explicit room-side composites close the delivery loop:
+and `relay-scan` requires the explicit namespace and performs durable
+position-cursor catch-up into a private directory. One exclusive scan lock
+covers catch-up and staged consumption. Each complete item and its containing
+directory are synced before its cursor; malformed or nonprogressing pages
+refuse before publication. Each pass drains its first observed head within
+finite work/time budgets. Nonempty older scan directories lacking the versioned
+namespace marker refuse: preserve them and select a new empty output directory.
+Older mailboxes containing the now-refused plaintext bootstrap kinds also remain
+preserved rather than serving those artifacts. Two room-side composites close
+the explicit local delivery loop:
 `relay-push` submits a bounded local outbox page and reports each sender
-sequence beside its assigned mailbox position (secret offer issuance is
-skipped, never relayed), while `relay-pull` scans the mailbox then applies
+sequence beside its assigned mailbox position and returns the next outbox cursor
+(secret offers and legacy plaintext bootstrap are skipped, never relayed), while
+`relay-pull` scans the mailbox then applies
 every retained item in position order — refusing its own echo, skipping
-KeyPackage/contact-request envelopes that require dedicated commands, and
+encrypted contact-request envelopes that require dedicated commands, and
 reopening custody after each deterministic refusal. A skipped item still lands
 in the scan directory as a canonical `.vhrelay`; `relay-unwrap` verifies it and
-writes only its inner payload for the dedicated `request`/`accept`/`join` or
-key-package commands, which authenticate the envelope themselves. Refused
+writes only its inner ciphertext for dedicated contact commands, which
+authenticate the envelope themselves. Refused
 items are retried in a bounded fixpoint (at most eight passes), so an item
 delivered before its parent heals inside the same pull once the parent lands at
 a later position; anything still refusing stays listed for a later pull. Both

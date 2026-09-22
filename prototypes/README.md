@@ -1,9 +1,16 @@
 # Disposable Valhalla prototypes
 
-These standalone Rust crates are reference experiments for unresolved protocol forks. They are excluded from the production workspace and may be replaced after design review.
+These reference experiments explore unresolved protocol and integration decisions.
+Standalone Rust crates are excluded from the production workspace; the browser
+recovery fixture uses a qualification-only workspace example. None implicitly
+activates a production capability.
 
 | Prototype | Decision surface |
 | --- | --- |
+| [`relay-tls`](relay-tls/README.md) | Server-authenticated TLS around the opaque mailbox contract, with bounded requests and hostile-client fixtures; no deployed endpoint |
+| [`agent-compartment`](agent-compartment/README.md) | Fixed-room provider disclosure broker and actual macOS file/network/process denial probes; no production sandbox or provider calls |
+| [`browser-archive-recovery`](browser-archive-recovery/README.md) | Authenticated per-snapshot destinations, real IndexedDB quota abort and worker-termination recovery; no production migration |
+| [`device-recovery-policy`](device-recovery-policy/README.md) | Exhaustive bounded loss/partition histories and a counterexample to unilateral timeout recovery |
 | `botcaptcha` | Signed, context-bound SHA-256 challenge work and one-use replay; superseded by `crates/vhalla-botcaptcha` Hashcash mode |
 | `attestation` | Portable, hardware-key, and TEE/RATS evidence policy |
 | `witness` | Bounded deterministic program execution and work receipts |
@@ -61,5 +68,11 @@ for manifest in prototypes/*/Cargo.toml; do
   cargo clippy --manifest-path "$manifest" --all-targets --locked --offline -- -D warnings
 done
 ```
+
+The dependency-free [device recovery policy experiment](device-recovery-policy/README.md)
+separately enumerates lost-device/partition observation histories. Run it with
+`python3 -m unittest discover -s prototypes/device-recovery-policy -p 'test_*.py'`.
+It demonstrates why timeout-based account recovery cannot fence existing custody;
+it does not activate a recovery protocol.
 
 Passing a prototype test is evidence about its stated boundary only. It is not production cryptography, a consensus proof, a security audit, or evidence that an agent is autonomous.

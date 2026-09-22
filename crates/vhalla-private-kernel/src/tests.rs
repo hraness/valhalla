@@ -926,12 +926,7 @@ async fn pending_device(pair: &Pair, account: &SigningKey) -> (Kernel<Memory>, M
         &pair.owner_key,
         pair.owner.status().context,
     );
-    let chain: Vec<SignedOwnerSuccession> = owner
-        .state
-        .successions
-        .iter()
-        .map(|grant| grant.signed().clone())
-        .collect();
+    let chain: Vec<OwnerSuccessionProof> = owner.state.successions.clone();
     let draft = if chain.is_empty() {
         MemberDraft::new(
             pair.owner.status().context.scope,

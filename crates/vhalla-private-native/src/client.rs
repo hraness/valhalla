@@ -13,7 +13,7 @@ use std::{
 use vhalla_identity::Identity;
 use vhalla_private_kernel::{
     protocol::{
-        Key, PrivateRoomScope, SignedDeviceEnrollment, SignedOwnerSuccession, SignedRoomAnchor,
+        Key, OwnerSuccessionProof, PrivateRoomScope, SignedDeviceEnrollment, SignedRoomAnchor,
         Validity,
     },
     storage::StoreError,
@@ -129,14 +129,14 @@ impl RoomCreation {
     }
 
     /// Prepare an explicitly invited fresh member after owner handoffs: the
-    /// exact retained grant chain must prove `owner` against `anchor`. An empty
+    /// exact predecessor-authorized control chain must prove `owner` against `anchor`. An empty
     /// or stale chain is refused; it never downgrades to the anchor device.
     pub fn member_succeeded(
         identity: Identity,
         scope: PrivateRoomScope,
         anchor: SignedRoomAnchor,
         owner: SignedDeviceEnrollment,
-        successions: Vec<SignedOwnerSuccession>,
+        successions: Vec<OwnerSuccessionProof>,
         validity: Validity,
     ) -> Result<Self> {
         let draft = MemberDraft::new_succeeded(

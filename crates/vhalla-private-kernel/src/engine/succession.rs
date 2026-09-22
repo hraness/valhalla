@@ -138,7 +138,7 @@ impl<S: Store> Kernel<S> {
         group
             .merge_pending_commit(&work.provider)
             .map_err(|_| Error::Mls)?;
-        promote(&mut work.state, grant)?;
+        promote(&mut work.state, &owner_control)?;
         advance(&mut work, &owner_control, now)?;
         work.state.set_membership_phase();
         self.publish_sent_control(
@@ -199,7 +199,7 @@ impl<S: Store> Kernel<S> {
         group
             .merge_staged_commit(&work.provider, *staged)
             .map_err(|_| Error::Mls)?;
-        promote(&mut work.state, grant)?;
+        promote(&mut work.state, &packet.control)?;
         advance(&mut work, &packet.control, now)?;
         work.state.set_membership_phase();
         let record = self.encrypt_record(
@@ -236,6 +236,7 @@ fn check_grant(
         return Err(Error::Scope);
     }
     claims.validity.check_at(now)?;
+    claims.successor.claims().validity.check_at(now)?;
     if state.successions.len() >= MAX_SUCCESSIONS {
         return Err(Error::Bounds);
     }
@@ -249,7 +250,8 @@ fn check_grant(
 
 /// Record the grant, promote the rostered successor and retire any outstanding
 /// owner-scoped contact basis in one state transition.
-fn promote(state: &mut State, grant: VerifiedOwnerSuccession) -> Result<()> {
+fn promote(state: &mut State, control: &VerifiedOwnerControl) -> Result<()> {
+    let grant = OwnerSuccessionProof::from_control(control.signed().clone())?;
     let successor = state
         .roster
         .iter()

@@ -111,7 +111,7 @@ impl ArchiveSourceReader {
         self.failed = false;
         Ok(self.image.len() == header.image_len as usize)
     }
-    /// Authenticate canonical v4 state, retained provider, revision and required
+    /// Authenticate canonical v5 state, retained provider, revision and required
     /// record count. No method returns the decrypted provider map.
     pub fn finish(self) -> Result<ArchiveSource> {
         if self.failed {
@@ -173,7 +173,7 @@ pub struct ArchiveExport<S: ArchiveStore> {
     failed: bool,
 }
 impl<S: ArchiveStore> ArchiveExport<S> {
-    /// Open only an existing exact authenticated ordinary v4 source. This does
+    /// Open only an existing exact authenticated ordinary v5 source. This does
     /// not freeze it, mutate it or grant transfer/live-restore authority.
     pub async fn open(mut store: S, key: &StorageKey, context: Context) -> Result<Self> {
         let value = store.accounting(context).await.map_err(store_error)?;

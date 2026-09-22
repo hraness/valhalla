@@ -57,8 +57,8 @@ development. One mailbox serves every sender in its namespace: it assigns each
 retained item an increasing mailbox `position`, so pages, cursors and fetches
 order by that position while `RelayItem::sequence` stays committed sender-local
 metadata. It enforces item and byte quotas, rejects cross-namespace writes and
-conflicting operation reuse, refuses confidential offer metadata,
-and makes exact retries idempotent. Its `RelayReceipt` means only that this
+conflicting operation reuse, refuses confidential offer metadata and legacy
+plaintext KeyPackage/Invitation artifacts, and makes exact retries idempotent. Its `RelayReceipt` means only that this
 relay kept
 the opaque bytes. It is never a member acknowledgment, a delivery guarantee or
 an authorization decision. The receiving session still passes only the item
@@ -80,7 +80,27 @@ recipient acceptance belong to a real adapter.
 itself implements `PageSource` so `net::scan` drains a local mailbox directory
 directly — a synced or explicitly copied folder is a second transport under
 filesystem custody rather than the mailbox token, with one process holding the
-mailbox lock at a time.
+mailbox lock at a time. TCP requests have one absolute read/write deadline,
+including partial progress, and a page must contain the exact contiguous prefix
+requested within its declared head and count budget.
+
+Catch-up requires an explicit `RelayNamespace` for both transports. A new private
+directory records a versioned namespace binding; nonempty older unbound cursor
+directories refuse and must be preserved while a new empty output directory is
+selected. There is no reset or automatic migration. A mailbox database containing
+legacy plaintext bootstrap artifacts also refuses on reopen; preserve that
+material for its explicit confidential handoff path.
+
+`ScanDirectory` retains one exclusive lock across scanning and subsequent staged
+item consumption. It validates canonical filenames, regular owner-private files,
+item sizes and a contiguous inventory bounded by 4096 positions. Staging publishes
+a synced complete item and syncs `items/` before advancing the cursor. Interrupted
+scratch writes reconcile only against the exact retry; conflicting committed
+bytes are never replaced. `read` provides the same bounded descriptor checks to
+consumers. Each scan freezes its first observed head and shares a 90-second budget
+with its guarded consumption; later arrivals wait for another invocation. File
+barriers are synchronous, so deadlines prevent further work after a slow
+filesystem operation returns rather than forcibly interrupting a barrier.
 
 ## Optional trusted native session
 

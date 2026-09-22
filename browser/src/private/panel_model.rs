@@ -6,6 +6,49 @@ use vhalla_private_kernel::{
 const LOCATOR: &[u8; 8] = b"VHPLOC1\0";
 /// Exact nonsecret locator width: versioned prefix plus four full identifiers.
 pub const LOCATOR_BYTES: usize = 136;
+/// Every private text/file input shares lock cleanup and busy-state handling.
+pub const PRIVATE_INPUTS: &[&str] = &[
+    "private-owner",
+    "private-recipient",
+    "private-remove-device",
+    "private-succeed-device",
+    "private-offer-file",
+    "private-locator-file",
+    "private-message-file",
+    "private-request-file",
+    "private-join-file",
+    "private-control-file",
+    "private-proof-file",
+    "private-resume-offer-file",
+    "private-archive-file",
+];
+/// Blob downloads temporarily retain Rust, JS and browser backing copies. Keep
+/// all live download payloads within 16 MiB; the larger import format is unchanged.
+pub const DOWNLOAD_BYTES_MAX: usize = 16 * 1024 * 1024;
+
+/// Reserve the complete payload before allocating another download copy.
+pub fn admit_download(retained: usize, incoming: usize) -> Result<(), &'static str> {
+    if retained
+        .checked_add(incoming)
+        .is_none_or(|total| total > DOWNLOAD_BYTES_MAX)
+    {
+        return Err(
+            "Browser downloads are limited to 16 MiB in total. Wait for earlier downloads to release, then retry. A larger archive needs a streaming export; retained room data is unchanged.",
+        );
+    }
+    Ok(())
+}
+
+/// Account for a page's length prefix and the eventual container terminator
+/// before buffering its bytes. `current` already includes the terminator.
+pub fn archive_download_size(current: usize, page: usize) -> Result<usize, &'static str> {
+    let next = current
+        .checked_add(4)
+        .and_then(|n| n.checked_add(page))
+        .ok_or("Archive size overflow.")?;
+    admit_download(0, next)?;
+    Ok(next)
+}
 
 /// Borrowed exact message disclosure, used immediately before a worker request.
 pub struct Disclosure<'a> {

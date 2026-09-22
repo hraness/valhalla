@@ -1,6 +1,6 @@
 # Current release readiness
 
-This describes the source implementation on 21 September 2026. A passing local
+This describes the source implementation on 22 September 2026. A passing local
 qualification is not a released artifact or a running public network. The target
 is a small native/browser product with public discoverable rooms and private
 invite-only rooms; optional Clankdar exchange uses the ordinary room protocol.
@@ -41,6 +41,17 @@ sharing an epoch encryption key does not grant owner authority. The contact flow
 fully encrypted KeyPackage/Welcome requests and replies, with atomic one-use
 consumption. Ordinary outbox paging reveals only metadata for secret issuance.
 Legacy raw bootstrap artifacts still must not be uploaded to an untrusted relay.
+The canonical relay constructor and decoder now refuse those plaintext legacy
+KeyPackage/Invitation kinds. They remain available only through their dedicated
+confidential exchange commands.
+
+New-client owner history now requires the predecessor-signed carrying control
+for every account-signed succession grant. The successor's enrollment must be
+current when the handoff applies. This changes experimental state images to v5,
+invitations to v4 and contact offers to v3; older formats are preserved and
+refused, with no automatic migration or account-key reset. Use a compatible
+reader for old archives. The [review](design-review-2026-09-22.md) records the
+reason and [private-room guide](private-rooms.md) records compatibility limits.
 
 Optional native `RoomSession` joins account and room custody in one lifetime.
 Storage keys derive from the account secret and the exact room/anchor/account/
@@ -78,8 +89,9 @@ journey also restores an encrypted `.vhkey` account backup into a third browser
 context, admits it through a self-addressed confidential offer as a distinct
 same-account device, and verifies it receives no pre-join history while
 exchanging post-join messages in both directions. Kernel and CLI-process
-journeys cover the identical lifecycle. Owner-device succession and safe
-live-custody transfer remain unfinished.
+journeys cover the identical lifecycle. Owner-device succession requires a
+live predecessor and an already-enrolled successor. Safe dead-device recovery
+and live-custody transfer remain unfinished.
 These features remain optional and do not add MLS or SQLite to the default public
 browser dependency graph.
 
@@ -121,7 +133,11 @@ Before a private-room release, complete and qualify:
   (`relay-serve`/`relay-submit`/`relay-scan`, explicit numeric `IP:PORT`, token
   read only from a 0600 file or pipe) now carries those items between separate
   processes with durable position-cursor catch-up, including member-to-owner
-  replies through the same mailbox. Explicit `relay-push`/`relay-pull`
+  replies through the same mailbox. Scan directories now bind an explicitly
+  selected namespace, retain exclusive custody through pull consumption, publish
+  and sync complete items before the cursor, and validate contiguous pages under
+  fixed work and absolute time bounds. Legacy nonempty unbound scan directories
+  are preserved and refused. Explicit `relay-push`/`relay-pull`
   composites submit a bounded outbox page and apply every retained item in
   position order — refusing own-echo, skipping dedicated-command kinds, and
   healing out-of-order items through a bounded in-pull retry — without
@@ -135,13 +151,18 @@ Before a private-room release, complete and qualify:
 - Explicit fresh-device admission now has qualified kernel, CLI and browser
   coverage. Account-authorized owner succession is implemented and qualified:
   a live predecessor hands authority to an already-enrolled same-account
-  device through one retained account-signed grant. Safe live-custody transfer
+  device through an account-signed grant carried by its predecessor-signed
+  control. Safe live-custody transfer
   and device retirement remain when current ratchet custody cannot safely move.
   History recovery is a separate choice; a key-only restore cannot recover
   erased history keys or justify restarting old counters.
 - Browser custody locking plus account and room recovery UX remain. Existing
   anchors cannot acquire new recovery authority implicitly; succession still
   requires a live predecessor to commit its handoff control.
+  All private input fields now clear on lock and disable during work. A frontend
+  archive parse failure locks the worker while preserving durable progress for
+  an explicit retry of the complete original file. The contiguous download
+  fallback is capped at 16 MiB; larger streaming export remains unfinished.
 
 Owner availability currently gates membership and key updates. Loss of all
 current owner-device custody can strand administration. Relays can observe
@@ -175,6 +196,16 @@ network/filesystem tool. The optional native client now consumes its trusted
 drop order and refusing locked or uncertain conversion. This remains a
 cooperating-host boundary: it does not sandbox an independently privileged agent
 or provide a room-lifetime inference compartment.
+
+The isolated [compartment experiment](../prototypes/agent-compartment/README.md)
+adds a synthetic fixed-room/provider/content broker and actual macOS denial
+probes. Its deprecated `sandbox-exec` backend is qualification evidence only;
+it is not a supported production application sandbox or a real provider
+integration. The [archive experiment](../prototypes/browser-archive-recovery/README.md)
+and [recovery-policy model](../prototypes/device-recovery-policy/README.md)
+likewise leave production routing and recovery authority unchanged. See the
+[independent-machine qualification plan](operational-qualification.md) for the
+remaining deployment topology and failure cases.
 
 ## Public history, capacity and operations
 

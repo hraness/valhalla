@@ -21,9 +21,9 @@ pub const MAX_CONTACT_TTL: u64 = 24 * 60 * 60;
 // Protocol v1 fixed records: prefix5+kind1+claims+signature64.
 const ANCHOR_BYTES: usize = 6 + 96 + 3 + 64;
 const ENROLLMENT_BYTES: usize = 6 + 64 + 16 + 64;
-// v1 succession record: prefix6 + scope64 + account32 + predecessor32 +
-// enrollment blob4+150 + sequence8 + validity16 + signature64 = 376.
-const SUCCESSION_BYTES: usize = 6 + 64 + 32 + 32 + 4 + ENROLLMENT_BYTES + 8 + 16 + 64;
+// The proof is a predecessor-signed owner control embedding the account grant.
+// Fixed v1 control fields add 261 bytes to the 376-byte succession grant.
+const SUCCESSION_BYTES: usize = 637;
 /// Maximum encoded confidential contact offer, including the bounded retained
 /// succession chain a post-handoff room must disclose to a contact joiner.
 pub const MAX_OFFER_BYTES: usize = 10
@@ -40,9 +40,9 @@ pub const MAX_OFFER_BYTES: usize = 10
     + crate::model::MAX_SUCCESSIONS * (4 + SUCCESSION_BYTES)
     + 64;
 const SIGN_DOMAIN: &[u8] = b"vhalla/private/contact/owner-offer/v1\0";
-// v2 inserts the bounded handoff chain after the owner enrollment; a v1 offer
-// decodes as a different layout, so it is refused by magic rather than parsed.
-const OFFER: &[u8] = b"VHPKOFFER\x02";
+// v3 requires predecessor-signed handoff proofs. Older grant-only offers
+// are refused by magic rather than interpreted as completed owner authority.
+const OFFER: &[u8] = b"VHPKOFFER\x03";
 const FRAME: &[u8] = b"VHPKCONTACT\x01";
 const HEADER: usize = FRAME.len() + 1 + 32 + 32 + 24 + 4;
 
@@ -71,7 +71,7 @@ impl ConfidentialContactOffer {
 pub struct ContactBootstrap {
     anchor: VerifiedRoomAnchor,
     owner: VerifiedDeviceEnrollment,
-    successions: Vec<VerifiedOwnerSuccession>,
+    successions: Vec<OwnerSuccessionProof>,
     recipient: Key,
     validity: Validity,
 }
@@ -149,13 +149,10 @@ impl ContactBootstrap {
     pub fn owner(&self) -> &SignedDeviceEnrollment {
         self.owner.signed()
     }
-    /// Complete handoff chain proving `owner` against `anchor`; empty while the
-    /// anchor device leads. Required by `MemberDraft::new_succeeded`.
-    pub fn successions(&self) -> Vec<SignedOwnerSuccession> {
-        self.successions
-            .iter()
-            .map(|grant| grant.signed().clone())
-            .collect()
+    /// Complete predecessor-signed handoff chain proving `owner` against `anchor`;
+    /// empty before the first handoff. Required by `MemberDraft::new_succeeded`.
+    pub fn successions(&self) -> Vec<OwnerSuccessionProof> {
+        self.successions.clone()
     }
     /// Account the offer can admit; this does not select or invent a device.
     pub fn recipient(&self) -> Key {
@@ -180,7 +177,7 @@ pub(crate) struct Offer {
     owner: VerifiedDeviceEnrollment,
     /// Exact retained handoff chain proving `owner` under `anchor`; never a
     /// substitute for the kernel's retained floor/roster checks.
-    successions: Vec<VerifiedOwnerSuccession>,
+    successions: Vec<OwnerSuccessionProof>,
     request_key: Zeroizing<[u8; 32]>,
     response_key: Zeroizing<[u8; 32]>,
     signature: [u8; 64],
@@ -310,7 +307,7 @@ impl Offer {
         raw.extend(owner);
         raw.push(u8::try_from(self.successions.len()).map_err(|_| Error::Bounds)?);
         for grant in &self.successions {
-            let signed = grant.signed().encode();
+            let signed = grant.encode();
             if signed.len() > SUCCESSION_BYTES {
                 return Err(Error::Encoding);
             }
@@ -373,8 +370,7 @@ impl Offer {
                 }
                 let mut grants = Vec::with_capacity(count);
                 for _ in 0..count {
-                    grants
-                        .push(SignedOwnerSuccession::decode(r.blob(SUCCESSION_BYTES)?)?.verify()?);
+                    grants.push(OwnerSuccessionProof::decode(r.blob(SUCCESSION_BYTES)?)?);
                 }
                 grants
             },

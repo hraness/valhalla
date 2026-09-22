@@ -141,7 +141,8 @@ struct State {
     controls_next: Option<ControlFloor>,
     proofs_next: Option<ControlFloor>,
     archive: Option<ArchivePanel>,
-    downloads: Vec<String>,
+    archive_in_flight: bool,
+    downloads: Vec<(String, usize)>,
     handlers: Vec<Closure<dyn FnMut(Event)>>,
 }
 /// Read-only archive view state, mirroring the worker's authenticated report.
@@ -336,24 +337,12 @@ pub fn clear_sensitive_state() {
         s.controls_next = None;
         s.proofs_next = None;
         s.archive = None;
-        for url in s.downloads.drain(..) {
+        s.archive_in_flight = false;
+        for (url, _) in s.downloads.drain(..) {
             let _ = Url::revoke_object_url(&url);
         }
     }
-    for id in [
-        "private-owner",
-        "private-recipient",
-        "private-remove-device",
-        "private-offer-file",
-        "private-locator-file",
-        "private-message-file",
-        "private-request-file",
-        "private-join-file",
-        "private-control-file",
-        "private-proof-file",
-        "private-resume-offer-file",
-        "private-archive-file",
-    ] {
+    for id in model::PRIVATE_INPUTS {
         input(&app, id).set_value("");
     }
     input(&app, "private-locator-retained").set_checked(false);
@@ -380,7 +369,11 @@ pub fn clear_sensitive_state() {
         text(&app, id, "");
     }
     public_composition(&app, false, false);
-    status(&app,"Private custody closed. Explicitly unlock and reopen the retained locator. A failed operation may already be saved; inspect retained outputs before a new intent.",false);
+    status(
+        &app,
+        "Private custody closed. Explicitly unlock and reopen the retained locator. A failed operation may already be saved; inspect retained outputs before a new intent.",
+        false,
+    );
     render(&app);
 }
 fn owner(s: &State) -> bool {
@@ -474,21 +467,11 @@ fn render(app: &App) {
             .unwrap()
             .set_disabled(!enabled);
     }
-    for id in [
-        "private-owner",
-        "private-recipient",
-        "private-remove-device",
-        "private-offer-file",
-        "private-locator-file",
-        "private-message-file",
-        "private-request-file",
-        "private-join-file",
-        "private-control-file",
-        "private-proof-file",
-        "private-resume-offer-file",
-        "private-archive-file",
-        "private-locator-retained",
-    ] {
+    for id in model::PRIVATE_INPUTS
+        .iter()
+        .copied()
+        .chain(["private-locator-retained"])
+    {
         input_unborrowed(&s.document, id).set_disabled(s.busy);
     }
     s.document
@@ -675,6 +658,13 @@ fn download_parts(app: &App, name: &str, contents: &[&[u8]]) -> Result<()> {
     if app.borrow().downloads.len() >= 8 {
         return Err("Wait for recent downloads to finish before exporting another file.".into());
     }
+    let bytes = contents.iter().try_fold(0usize, |total, part| {
+        total
+            .checked_add(part.len())
+            .ok_or("Download size overflow.")
+    })?;
+    let retained = app.borrow().downloads.iter().map(|(_, bytes)| bytes).sum();
+    model::admit_download(retained, bytes)?;
     let parts = Array::new();
     for raw in contents {
         parts.push(&Uint8Array::from(*raw));
@@ -685,7 +675,7 @@ fn download_parts(app: &App, name: &str, contents: &[&[u8]]) -> Result<()> {
         .map_err(|_| "Could not prepare download.")?;
     let url =
         Url::create_object_url_with_blob(&blob).map_err(|_| "Could not prepare download URL.")?;
-    app.borrow_mut().downloads.push(url.clone());
+    app.borrow_mut().downloads.push((url.clone(), bytes));
     let clicked = (|| -> Result<()> {
         let document = app.borrow().document.clone();
         let link: HtmlAnchorElement = document
@@ -706,14 +696,14 @@ fn download_parts(app: &App, name: &str, contents: &[&[u8]]) -> Result<()> {
     })();
     if let Err(error) = clicked {
         let _ = Url::revoke_object_url(&url);
-        app.borrow_mut().downloads.retain(|u| u != &url);
+        app.borrow_mut().downloads.retain(|(u, _)| u != &url);
         return Err(error);
     }
     let weak = Rc::downgrade(app);
     let expire = Closure::once_into_js(move || {
         let _ = Url::revoke_object_url(&url);
         if let Some(app) = weak.upgrade() {
-            app.borrow_mut().downloads.retain(|u| u != &url);
+            app.borrow_mut().downloads.retain(|(u, _)| u != &url);
         }
     });
     web_sys::window()
@@ -781,6 +771,31 @@ fn action(app: &App, selected: Action) {
         }
         app.borrow_mut().busy = false;
         if let Err(error) = result {
+            let archive_in_flight = app.borrow().archive_in_flight;
+            if archive_in_flight {
+                // A local file/DOM error can occur between successful worker
+                // requests. End custody so a durable importer cannot remain
+                // hidden behind an idle panel; retained progress is untouched.
+                let locked = broker::leave_and_lock().is_ok();
+                let next = if selected == Action::ImportArchive {
+                    "Preserve the complete original archive. Unlock, enter private custody, and select that same complete file to resume its retained progress."
+                } else {
+                    "Unlock and reopen the exact room locator before retrying export. Retained room data is unchanged."
+                };
+                status(
+                    &app,
+                    &format!(
+                        "{error} {} {next}",
+                        if locked {
+                            "Private custody was locked."
+                        } else {
+                            "Reload before unlocking again."
+                        }
+                    ),
+                    true,
+                );
+                return;
+            }
             status(&app, &error, true);
         }
         render(&app);
@@ -836,6 +851,7 @@ pub fn start() {
         controls_next: None,
         proofs_next: None,
         archive: None,
+        archive_in_flight: false,
         downloads: Vec::new(),
         handlers: Vec::new(),
     }));

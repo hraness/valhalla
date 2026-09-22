@@ -40,8 +40,8 @@ pub(crate) struct InvitePacket {
     pub(crate) control: VerifiedOwnerControl,
     pub(crate) owner: VerifiedDeviceEnrollment,
     /// Complete account-authorized handoff chain proving `owner` against the
-    /// independently selected anchor; empty only while the anchor device leads.
-    pub(crate) successions: Vec<VerifiedOwnerSuccession>,
+    /// independently selected anchor; empty before the first accepted handoff.
+    pub(crate) successions: Vec<OwnerSuccessionProof>,
     pub(crate) member: VerifiedDeviceEnrollment,
     pub(crate) commit: Vec<u8>,
     pub(crate) welcome: Vec<u8>,
@@ -49,13 +49,13 @@ pub(crate) struct InvitePacket {
 }
 impl InvitePacket {
     pub(crate) fn encode(&self) -> Result<Vec<u8>> {
-        let mut w = Writer::new(b"VHPKINVITE\x03", MAX_PACKET)?;
+        let mut w = Writer::new(b"VHPKINVITE\x04", MAX_PACKET)?;
         w.blob(&self.invitation.signed().encode(), MAX_RECORD_BYTES)?;
         w.blob(&self.control.signed().encode(), MAX_RECORD_BYTES)?;
         w.blob(&self.owner.signed().encode(), MAX_RECORD_BYTES)?;
         w.byte(u8::try_from(self.successions.len()).map_err(|_| Error::Bounds)?)?;
         for grant in &self.successions {
-            w.blob(&grant.signed().encode(), MAX_RECORD_BYTES)?;
+            w.blob(&grant.encode(), MAX_RECORD_BYTES)?;
         }
         w.blob(&self.member.signed().encode(), MAX_RECORD_BYTES)?;
         w.blob(&self.commit, MAX_WIRE_BYTES)?;
@@ -64,7 +64,7 @@ impl InvitePacket {
         Ok(w.finish())
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
-        let mut r = Reader::new(bytes, b"VHPKINVITE\x03", MAX_PACKET)?;
+        let mut r = Reader::new(bytes, b"VHPKINVITE\x04", MAX_PACKET)?;
         let invitation = SignedInvitation::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?;
         let control = SignedOwnerControl::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?;
         let owner = SignedDeviceEnrollment::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?;
@@ -74,7 +74,7 @@ impl InvitePacket {
         }
         let mut successions = Vec::with_capacity(count);
         for _ in 0..count {
-            successions.push(SignedOwnerSuccession::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?);
+            successions.push(OwnerSuccessionProof::decode(r.blob(MAX_RECORD_BYTES)?)?);
         }
         let member = SignedDeviceEnrollment::decode(r.blob(MAX_RECORD_BYTES)?)?.verify()?;
         let commit = nonempty(r.blob(MAX_WIRE_BYTES)?)?.to_vec();

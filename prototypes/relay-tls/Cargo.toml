@@ -1,0 +1,13 @@
+[package]
+name = "valhalla-relay-tls-prototype"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring"] }
+rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"] }
+vhalla-private-native = { path = "../../crates/vhalla-private-native" }
+vhalla-private-kernel = { path = "../../crates/vhalla-private-kernel" }

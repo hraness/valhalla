@@ -1,5 +1,10 @@
 # Valhalla docs
 
+The current continuation is tracked in the
+[22 September design review](design-review-2026-09-22.md). Its
+[independent-machine qualification plan](operational-qualification.md) separates
+local repair evidence from deployed service acceptance.
+
 Valhalla is in development. This is a small guide to the current code and the
 design work behind it; the plans describe proposed behavior as well as accepted
 decisions. Start with the [current release gaps](release-readiness.md),
@@ -33,7 +38,8 @@ empty. The scoped DNS dependency backport is documented in
 
 Before upgrading an existing validator, read the
 [transport identity migration guide](transport-identity-upgrade.md).
-The [security review](security-review-2026-09-19.md) and
+The [CodeQL source triage](codeql-review-2026-09-22.md),
+[security review](security-review-2026-09-19.md) and
 [product review](p2p-product-review-2026-09-19.md) record current fixes,
 evidence boundaries and remaining qualification work. See
 [game replay policy](game-replay.md) for bounded independent verification.

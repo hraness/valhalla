@@ -1,6 +1,92 @@
 use super::*;
 use alloc::vec;
 
+#[test]
+fn succession_proof_requires_the_exact_predecessor_signed_control() {
+    let successor = UnsignedDeviceEnrollment::new(DeviceEnrollmentClaims {
+        account: key(2),
+        device: key(6),
+        validity: Validity::new(10, 20).unwrap(),
+    })
+    .unwrap()
+    .sign(&signer(2))
+    .unwrap();
+    let grant = UnsignedOwnerSuccession::new(OwnerSuccessionClaims {
+        scope: anchor().verify().unwrap().scope(),
+        account: key(2),
+        predecessor: key(3),
+        successor,
+        sequence: 1,
+        validity: Validity::new(10, 20).unwrap(),
+    })
+    .unwrap()
+    .sign(&signer(2))
+    .unwrap();
+    // A valid account signature is not evidence that the device handed off.
+    assert!(OwnerSuccessionProof::decode(&grant.encode()).is_err());
+    let mut claims = control().claims().clone();
+    claims.change = ControlChange::Succession {
+        grant: Box::new(grant.clone()),
+    };
+    let signed = UnsignedOwnerControl::new(claims.clone())
+        .unwrap()
+        .sign(&signer(3))
+        .unwrap();
+    let proof = OwnerSuccessionProof::from_control(signed.clone()).unwrap();
+    assert_eq!(proof.claims(), grant.claims());
+    assert_eq!(proof.control(), &signed);
+    assert_eq!(proof.encode().len(), 637);
+    assert_eq!(
+        OwnerSuccessionProof::decode(&proof.encode()).unwrap(),
+        proof
+    );
+    // Account or successor possession cannot stand in for the predecessor.
+    assert!(UnsignedOwnerControl::new(claims.clone())
+        .unwrap()
+        .sign(&signer(2))
+        .is_err());
+    let mut foreign_owner = claims.clone();
+    foreign_owner.owner_device = key(6);
+    assert!(OwnerSuccessionProof::from_control(
+        UnsignedOwnerControl::new(foreign_owner)
+            .unwrap()
+            .sign(&signer(6))
+            .unwrap()
+    )
+    .is_err());
+    let mut foreign_scope = claims.clone();
+    foreign_scope.scope.room = RoomId::from_bytes([9; 32]).unwrap();
+    assert!(OwnerSuccessionProof::from_control(
+        UnsignedOwnerControl::new(foreign_scope)
+            .unwrap()
+            .sign(&signer(3))
+            .unwrap()
+    )
+    .is_err());
+    let mut wrong_sequence = claims.clone();
+    wrong_sequence.parent = ControlFloor::new(1, Some(signed.id())).unwrap();
+    assert!(OwnerSuccessionProof::from_control(
+        UnsignedOwnerControl::new(wrong_sequence)
+            .unwrap()
+            .sign(&signer(3))
+            .unwrap()
+    )
+    .is_err());
+    claims.prior_epoch = 7;
+    claims.next_epoch = 8;
+    assert!(OwnerSuccessionProof::from_control(
+        UnsignedOwnerControl::new(claims)
+            .unwrap()
+            .sign(&signer(3))
+            .unwrap()
+    )
+    .is_err());
+    assert!(OwnerSuccessionProof::from_control(control()).is_err());
+    let mut damaged = proof.encode();
+    *damaged.last_mut().unwrap() ^= 1;
+    assert!(OwnerSuccessionProof::decode(&damaged).is_err());
+}
+
 // Public deterministic fixture keys only; production has no seed constructor.
 fn signer(n: u8) -> SigningKey {
     SigningKey::from_bytes(&[n; 32])

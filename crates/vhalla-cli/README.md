@@ -1656,7 +1656,7 @@ canonical `RelayItem` for an adapter or an explicit local handoff. The namespace
 is a nonzero 32-byte rendezvous token selected out of band; it is not a room ID,
 account key or authorization proof. The envelope binds that namespace, the
 sender-local sequence, operation ID, artifact kind and exact ciphertext. Secret
-contact offers are refused before encoding.
+contact offers and legacy plaintext bootstrap artifacts are refused before encoding.
 
 ```sh
 PRIVATE_RELAY_NS=... # 64 lowercase hex bytes, shared out of band
@@ -1670,13 +1670,13 @@ vhalla private relay-apply member-key member-room \
 ```
 
 `relay-apply` verifies the canonical commitment and namespace before dispatching
-an application message, ordered control, invitation or contact invitation to its
-dedicated authenticated kernel path. KeyPackage and contact-request envelopes
-require their explicit owner/member commands; they are never silently admitted.
+an application message, ordered control or encrypted contact invitation to its
+dedicated authenticated kernel path. Encrypted contact requests require their
+explicit owner command; they are never silently admitted.
 `relay-unwrap RELAY_ITEM --out PAYLOAD` verifies one retained item and writes
-only its inner payload, so a staged KeyPackage or contact-request item can feed
-`request`, `accept`, `join` or the key-package commands, which authenticate the
-envelope themselves.
+only its inner payload, so a staged encrypted contact request can feed `accept`,
+which authenticates the envelope itself. Raw KeyPackage and invitation artifacts
+remain confined to explicit confidential local handoff APIs.
 The output is either the locally accepted plaintext or a bounded status JSON.
 This is an adapter boundary and explicit local transport, not a listener, relay
 service, recipient acknowledgment or evidence that another member processed the
@@ -1721,8 +1721,8 @@ vhalla private relay-serve mailbox-dir --namespace "$PRIVATE_RELAY_NS" \
   --token token-file --listen 127.0.0.1:9400
 vhalla private relay-submit private-files/item.vhrelay \
   --addr 127.0.0.1:9400 --token token-file --out private-files/receipt.json
-vhalla private relay-scan catchup-dir --addr 127.0.0.1:9400 \
-  --token token-file --out private-files/scan.json
+vhalla private relay-scan catchup-dir --namespace "$PRIVATE_RELAY_NS" \
+  --addr 127.0.0.1:9400 --token token-file --out private-files/scan.json
 
 # Composite room-side delivery: push the local outbox prefix, then let a
 # peer pull the mailbox into their room.
@@ -1747,32 +1747,50 @@ lowercase hexadecimal secret read from a 0600 file or a bounded pipe (`-`),
 never argv. `--listen`/`--addr` accept only explicit numeric `IP:PORT` — there
 is no DNS resolution, TLS or remote-host hardening, so this is a local
 reference adapter for an operator-controlled segment or an outer tunnel, not a
-public Internet service. Frames are size-bounded with deadlines; wrong tokens,
+public Internet service. Frames have size bounds and one absolute deadline
+across partial reads and writes; wrong tokens,
 malformed input, foreign namespaces, operation conflicts and quota exhaustion
 all refuse without touching retained items. `relay-scan` pages the mailbox
 into a private cursor directory: each canonical item lands under
 `catchup-dir/items/` named by its mailbox position, the position cursor
-persists after every item, and a killed scan or offline interval resumes
-exactly where it stopped across sender boundaries. A pre-existing item file
-with different bytes fails closed instead of being overwritten. A socket
+persists only after complete item publication and the item-directory sync.
+Interrupted scratch writes reconcile against the exact retry, and a pre-existing
+committed file with different bytes fails closed instead of being overwritten.
+The scan freezes the first observed head, bounds the directory to 4096 canonical
+items, and holds exclusive custody through pull application. Staged reads check
+regular-file type, ownership, private permissions and size before allocation.
+A shared 90-second scan/pull budget preserves progress for an explicit retry;
+synchronous filesystem barriers finish before the next deadline check. A socket
 receipt remains retention only — never delivery, scheduling or member
 acceptance.
+
+`relay-submit` derives its namespace from the canonical item. Its optional
+`--namespace` pins that choice and refuses a mismatch before opening transport
+or reading a socket credential.
 
 `relay-submit`, `relay-scan`, `relay-push` and `relay-pull` each accept
 exactly one transport: the socket (`--addr` with `--token`) or `--mailbox
 DIR`, which opens the durable mailbox directly. The directory transport
 replaces token authentication with filesystem custody — one process holds the
 mailbox at a time — and suits a synced folder or an explicitly copied mailbox;
-a socket scan needs no `--namespace` (the token identifies the mailbox) while
-the directory form does.
+both forms now require explicit `--namespace`. This is an experimental CLI
+compatibility change. A versioned namespace marker binds each catch-up directory;
+a different namespace refuses before scanning. Nonempty older unbound directories
+must be preserved; use a new empty output directory. No cursor reset or automatic
+migration occurs.
 
 `relay-push` submits one bounded local outbox page (`--after`/`--limit`,
 default the first 16 records) as canonical items and reports each sender
-sequence beside its assigned mailbox position; secret offer issuance is
-counted under `skipped_secret` and never leaves the room store. `relay-pull`
+sequence beside its assigned mailbox position, plus the outbox `next` cursor for
+continuation. Secret offers are counted under `skipped_secret`; legacy plaintext
+KeyPackage/Invitation artifacts are counted under `skipped_bootstrap`. Neither
+leaves the room store. Generic relay export and decoding refuse those legacy
+bootstrap kinds as well. Preserve existing mailboxes containing them: reopen
+refuses rather than serving private metadata. Push has a 90-second deadline and
+exact retries reconcile any retention that preceded a timeout. `relay-pull`
 runs the same durable scan into `--dir`, then applies every retained item in
 position order: application frames, controls and invitations go through their
-authenticated kernel paths, KeyPackage/contact-request envelopes are reported
+authenticated kernel paths, and encrypted contact requests are reported
 as `skipped` for their dedicated explicit commands, and deterministic refusals
 (including the puller's own echo) reopen custody and are retried within the
 same pull — a bounded fixpoint of at most eight passes heals items whose

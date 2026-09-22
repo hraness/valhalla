@@ -147,7 +147,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Request::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x01".len();
+        let tag = b"VHBRPRIVATE\x02".len();
         changed.truncate(raw.len());
         changed[tag] = 250;
         assert!(Request::decode(&changed).is_err());
@@ -157,7 +157,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
 
 #[test]
 fn untrusted_lengths_counts_boolean_and_floor_refuse_before_allocation() {
-    let prefix = b"VHBRPRIVATE\x01".len();
+    let prefix = b"VHBRPRIVATE\x02".len();
     let mut raw = Request::PrepareMessage(bytes(1)).encode().unwrap();
     raw[prefix + 1..prefix + 5].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Request::decode(&raw).is_err());
@@ -301,7 +301,7 @@ fn response_collection_count_and_blob_budgets_are_checked_on_raw_input() {
     }
     .encode()
     .unwrap();
-    let at = b"VHBRPRIVATE\x01".len() + 1 + 128 + 8 + 32;
+    let at = b"VHBRPRIVATE\x02".len() + 1 + 128 + 8 + 32;
     raw[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Response::decode(&raw).is_err());
     assert!(Response::decode(&vec![0; MAX_FRAME + 1]).is_err());
@@ -366,7 +366,7 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x01".len();
+        let tag = b"VHBRPRIVATE\x02".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -509,7 +509,7 @@ fn signed_proofs_and_fork_evidence_verify_at_the_local_boundary() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x01".len();
+        let tag = b"VHBRPRIVATE\x02".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -707,8 +707,9 @@ fn succession_artifact_round_trip_carries_the_owner_control_kind() {
 #[test]
 fn membership_view_round_trips_and_verifies_the_succession_chain() {
     use vhalla_private_kernel::protocol::{
-        DeviceEnrollmentClaims, OwnerSuccessionClaims, RoomAnchorClaims, UnsignedDeviceEnrollment,
-        UnsignedOwnerSuccession, UnsignedRoomAnchor,
+        DeviceEnrollmentClaims, OwnerSuccessionClaims, OwnerSuccessionProof, RoomAnchorClaims,
+        SignedOwnerSuccession, UnsignedDeviceEnrollment, UnsignedOwnerSuccession,
+        UnsignedRoomAnchor,
     };
     let account = SigningKey::from_bytes(&[7; 32]);
     let account_key = Key::from_bytes(account.verifying_key().to_bytes()).unwrap();
@@ -749,6 +750,33 @@ fn membership_view_round_trips_and_verifies_the_succession_chain() {
     .unwrap()
     .sign(&account)
     .unwrap();
+    let proof = |grant: SignedOwnerSuccession, predecessor: &SigningKey| {
+        let claims = grant.claims();
+        OwnerSuccessionProof::from_control(
+            UnsignedOwnerControl::new(OwnerControlClaims {
+                scope: claims.scope,
+                owner_device: claims.predecessor,
+                parent: ControlFloor::new(
+                    claims.sequence - 1,
+                    Some(ControlId::from_bytes([4; 32]).unwrap()),
+                )
+                .unwrap(),
+                prior_epoch: claims.sequence - 1,
+                next_epoch: claims.sequence,
+                commit: CommitDigest::from_bytes([5; 32]).unwrap(),
+                change: ControlChange::Succession {
+                    grant: Box::new(grant),
+                },
+            })
+            .unwrap()
+            .sign(predecessor)
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    // An authentic account grant is not a predecessor-authorized handoff.
+    assert!(OwnerSuccessionProof::decode(&grant.encode()).is_err());
+    let grant = proof(grant, &owner_key);
     let mut status = status();
     status.context = Context {
         scope: anchor.verify().unwrap().scope(),
@@ -785,17 +813,20 @@ fn membership_view_round_trips_and_verifies_the_succession_chain() {
     // is refused, and an empty chain cannot name a different owner device.
     for (mut grants, owner) in [
         (
-            vec![UnsignedOwnerSuccession::new(OwnerSuccessionClaims {
-                scope,
-                account: account_key,
-                predecessor: fresh_device,
-                successor: owner_enrollment.clone(),
-                sequence: 5,
-                validity: validity(),
-            })
-            .unwrap()
-            .sign(&account)
-            .unwrap()],
+            vec![proof(
+                UnsignedOwnerSuccession::new(OwnerSuccessionClaims {
+                    scope,
+                    account: account_key,
+                    predecessor: fresh_device,
+                    successor: owner_enrollment.clone(),
+                    sequence: 5,
+                    validity: validity(),
+                })
+                .unwrap()
+                .sign(&account)
+                .unwrap(),
+                &fresh_key,
+            )],
             owner_enrollment.clone(),
         ),
         (vec![grant.clone()], owner_enrollment.clone()),

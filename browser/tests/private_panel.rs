@@ -117,6 +117,47 @@ fn archive_container_bounds_are_fixed_and_nonzero() {
 }
 
 #[test]
+fn every_private_markup_input_participates_in_lock_and_busy_handling() {
+    let markup = include_str!("../src/private/panel.html");
+    let mut inputs = markup
+        .split("<input ")
+        .skip(1)
+        .filter(|tag| !tag.split('>').next().unwrap().contains("type=\"checkbox\""))
+        .map(|tag| {
+            tag.split("id=\"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let mut covered = model::PRIVATE_INPUTS.to_vec();
+    inputs.sort_unstable();
+    covered.sort_unstable();
+    assert_eq!(inputs, covered);
+}
+
+#[test]
+fn archive_download_caps_aggregate_backing_and_reserves_the_end_marker() {
+    let cap = model::DOWNLOAD_BYTES_MAX;
+    assert!(
+        model::ARCHIVE_FILE_MAX > cap as u64,
+        "imports keep the full format"
+    );
+    assert!(model::admit_download(0, cap).is_ok());
+    assert!(model::admit_download(cap - 10, 10).is_ok());
+    assert!(model::admit_download(cap - 10, 11).is_err());
+    assert!(model::admit_download(usize::MAX, 1).is_err());
+    let initial = model::ARCHIVE_HEADER + 4;
+    // A length-prefixed final payload exactly fills the capped complete file.
+    let payload = cap - initial - 4;
+    assert_eq!(model::archive_download_size(initial, payload).unwrap(), cap);
+    assert!(model::archive_download_size(initial, payload + 1).is_err());
+    assert!(model::archive_download_size(usize::MAX, 1).is_err());
+}
+
+#[test]
 fn disclosure_refuses_every_scope_roster_epoch_or_text_switch() {
     let context = context();
     let original = model::Disclosure {

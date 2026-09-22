@@ -24,6 +24,8 @@ const DIGEST_DOMAIN: &[u8] = b"vhalla/private/relay-item/v1";
 pub const MAX_RELAY_PAYLOAD: usize = 2 * 128 * 1024 + 4096;
 /// Maximum items returned by one relay page.
 pub const MAX_RELAY_PAGE: usize = 64;
+/// Maximum retained items in one immutable mailbox and catch-up directory.
+pub const MAX_RELAY_ITEMS: usize = 4096;
 const MAX_RELAY_DB_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 /// Closed failures. No error includes ciphertext, room metadata, or a path.
@@ -97,7 +99,7 @@ pub struct RelayItem {
 
 impl RelayItem {
     /// Convert a committed ordinary artifact into an opaque relay item.
-    /// Confidential offer metadata never has an artifact and cannot reach here.
+    /// Confidential offers and legacy plaintext bootstrap artifacts are refused.
     pub fn from_artifact(namespace: RelayNamespace, artifact: &CommittedOutbox) -> Result<Self> {
         if !relay_kind(artifact.kind()) {
             return Err(Error::Confidential);
@@ -235,7 +237,7 @@ pub struct Limits {
 
 impl Limits {
     fn check(self) -> Result<()> {
-        if self.max_items == 0 || self.max_items > 4096 || self.max_bytes == 0 {
+        if self.max_items == 0 || self.max_items > MAX_RELAY_ITEMS || self.max_bytes == 0 {
             return Err(Error::Bounds);
         }
         Ok(())
@@ -707,9 +709,7 @@ pub struct RelayPage {
 fn relay_kind(kind: OutboxKind) -> bool {
     matches!(
         kind,
-        OutboxKind::KeyPackage
-            | OutboxKind::Invitation
-            | OutboxKind::ContactRequest
+        OutboxKind::ContactRequest
             | OutboxKind::ContactInvitation
             | OutboxKind::Application
             | OutboxKind::Removal
@@ -811,6 +811,30 @@ mod tests {
         let mut changed = encoded;
         *changed.last_mut().unwrap() ^= 1;
         assert_eq!(RelayItem::decode(&changed), Err(Error::Conflict));
+    }
+
+    #[test]
+    fn legacy_plaintext_bootstrap_is_refused_by_construction_and_decode() {
+        for kind in [OutboxKind::KeyPackage, OutboxKind::Invitation] {
+            assert_eq!(
+                RelayItem::new(namespace(), 1, operation(1), kind, b"private metadata"),
+                Err(Error::Confidential)
+            );
+            // Encode an old-format object directly to exercise the decoder's
+            // admission path, including a correct digest for the forbidden kind.
+            let old = RelayItem {
+                namespace: namespace(),
+                sequence: 1,
+                operation: operation(1),
+                kind,
+                payload: b"private metadata".to_vec(),
+                digest: digest(namespace(), 1, operation(1), kind, b"private metadata"),
+            };
+            assert_eq!(
+                RelayItem::decode(&old.encode().unwrap()),
+                Err(Error::Confidential)
+            );
+        }
     }
 
     #[test]
@@ -976,7 +1000,7 @@ mod tests {
             );
             assert!(
                 !store
-                    .put(item(2, OutboxKind::KeyPackage))
+                    .put(item(2, OutboxKind::ContactRequest))
                     .unwrap()
                     .duplicate
             );
@@ -990,13 +1014,13 @@ mod tests {
             page.records,
             vec![
                 positioned(1, item(1, OutboxKind::Application)),
-                positioned(2, item(2, OutboxKind::KeyPackage))
+                positioned(2, item(2, OutboxKind::ContactRequest))
             ]
         );
         let page = store.page(1, 1).unwrap();
         assert_eq!(
             page.records,
-            vec![positioned(2, item(2, OutboxKind::KeyPackage))]
+            vec![positioned(2, item(2, OutboxKind::ContactRequest))]
         );
         assert_eq!(page.next, None);
         std::fs::remove_dir_all(&path).unwrap();

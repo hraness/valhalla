@@ -942,6 +942,8 @@ fn archive_inspected(app: &App, reply: Response) -> Result<()> {
     Ok(())
 }
 async fn export_archive(app: &App, ticket: u64) -> Result<()> {
+    let retained = app.borrow().downloads.iter().map(|(_, bytes)| bytes).sum();
+    model::admit_download(retained, model::ARCHIVE_HEADER + 4)?;
     let Response::ArchiveBegin {
         context,
         archive_id,
@@ -949,8 +951,13 @@ async fn export_archive(app: &App, ticket: u64) -> Result<()> {
     else {
         return Err("Unexpected archive start report.".into());
     };
-    let mut parts: Vec<Vec<u8>> = vec![model::archive_header(context, archive_id)];
-    let mut total = model::ARCHIVE_HEADER as u64;
+    app.borrow_mut().archive_in_flight = true;
+    // The worker exposes bounded pages, not an authenticated whole-file size.
+    // One capped buffer avoids a collection of archive-sized Rust/JS parts.
+    // Reserve the final end marker in every admission decision.
+    let mut bytes = Vec::with_capacity(64 * 1024);
+    bytes.extend_from_slice(&model::archive_header(context, archive_id));
+    let mut total = model::ARCHIVE_HEADER + 4;
     let mut pages = 0u64;
     loop {
         let Response::ArchivePage {
@@ -965,39 +972,47 @@ async fn export_archive(app: &App, ticket: u64) -> Result<()> {
         }
         let Some(page) = page else { break };
         pages = pages.checked_add(1).ok_or("Archive page overflow.")?;
-        total = total
-            .checked_add(4)
-            .and_then(|v| v.checked_add(page.len() as u64))
-            .ok_or("Archive size overflow.")?;
-        if pages > model::ARCHIVE_PAGES_MAX || total > model::ARCHIVE_FILE_MAX {
+        total = model::archive_download_size(total, page.len())?;
+        let retained = app.borrow().downloads.iter().map(|(_, bytes)| bytes).sum();
+        model::admit_download(retained, total)?;
+        if pages > model::ARCHIVE_PAGES_MAX {
             return Err("Archive exceeds the bounded browser file format.".into());
         }
-        parts.push(
-            u32::try_from(page.len())
+        bytes
+            .try_reserve(4 + page.len())
+            .map_err(|_| "Not enough memory to prepare this archive download.")?;
+        bytes.extend_from_slice(
+            &u32::try_from(page.len())
                 .expect("bounded page")
-                .to_be_bytes()
-                .to_vec(),
+                .to_be_bytes(),
         );
-        parts.push(page.to_vec());
+        bytes.extend_from_slice(&page);
         status(
             app,
-            &format!("Streaming encrypted archive: {pages} pages, {total} bytes so far."),
+            &format!(
+                "Preparing encrypted archive download: {pages} pages, {total} bytes of the 16 MiB browser limit."
+            ),
             false,
         );
     }
-    parts.push(0u32.to_be_bytes().to_vec());
-    total += 4;
-    let parts: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
-    download_parts(
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    app.borrow_mut().archive_in_flight = false;
+    download(
         app,
         &format!(
             "private-archive-{}-{}.vharchive",
             hex(context.scope.room.as_bytes()),
             hex(&archive_id)
         ),
-        &parts,
+        &bytes,
     )?;
-    status(app, &format!("Exported {pages} encrypted pages ({total} bytes) as one .vharchive file. Keep it private: this account's key opens it, and it never grants live membership."), false);
+    status(
+        app,
+        &format!(
+            "Exported {pages} encrypted pages ({total} bytes) as one .vharchive file. Keep it private: this account's key opens it, and it never grants live membership."
+        ),
+        false,
+    );
     Ok(())
 }
 async fn import_archive(app: &App, ticket: u64) -> Result<()> {
@@ -1026,6 +1041,7 @@ async fn import_archive(app: &App, ticket: u64) -> Result<()> {
     if reported != context || reported_id != archive_id {
         return Err("The archive destination does not match the selected file.".into());
     }
+    app.borrow_mut().archive_in_flight = true;
     let mut offset = model::ARCHIVE_HEADER as u64;
     let mut index = 0u64;
     let mut ready = false;
@@ -1072,6 +1088,7 @@ async fn import_archive(app: &App, ticket: u64) -> Result<()> {
     };
     let reply = call(app, ticket, Request::ArchiveImportFinish(final_page)).await?;
     archive_inspected(app, reply)?;
+    app.borrow_mut().archive_in_flight = false;
     status(app, "Archive imported into read-only storage and verified complete. This view cannot send, invite, or mutate the live room.", false);
     Ok(())
 }

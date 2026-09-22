@@ -8,15 +8,15 @@
 //! receipt is relay custody only and never proves delivery or acceptance.
 
 use super::{
-    Error, FileStore, PositionedItem, RelayItem, RelayPage, RelayReceipt, Result, Store, MAGIC,
-    MAX_RELAY_PAGE, MAX_RELAY_PAYLOAD,
+    Error, FileStore, PositionedItem, RelayItem, RelayNamespace, RelayPage, RelayReceipt, Result,
+    Store, MAGIC, MAX_RELAY_ITEMS, MAX_RELAY_PAGE, MAX_RELAY_PAYLOAD,
 };
 use std::{
     fs::{self, File},
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use vhalla_custody as custody;
 
@@ -32,6 +32,12 @@ const MAX_RESPONSE: usize = 1 + MAX_PAGE_BODY;
 /// Bounded per-socket IO deadlines; a stalled peer cannot hold the server.
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Absolute budget for a scan and its guarded local consumption. A budget
+/// refusal retains progress for the next explicit invocation.
+const SCAN_TIMEOUT: Duration = Duration::from_secs(90);
+const MAX_ITEM_BYTES: usize = MAGIC.len() + 32 + 8 + 16 + 1 + 4 + MAX_RELAY_PAYLOAD + 32;
+const MAX_SCAN_BYTES: usize = MAX_RELAY_ITEMS * MAX_ITEM_BYTES;
+const SCAN_MAGIC: &[u8] = b"VHSCAN\x01";
 const OP_PUT: u8 = 1;
 const OP_PAGE: u8 = 2;
 const STATUS_OK: u8 = 0;
@@ -74,8 +80,13 @@ type NetResult<T> = std::result::Result<T, NetError>;
 
 /// A 32-byte mailbox admission secret shared out of band. It is a transport
 /// credential only; it never derives from or grants room authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct RelayToken([u8; 32]);
+impl core::fmt::Debug for RelayToken {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RelayToken([REDACTED])")
+    }
+}
 impl RelayToken {
     /// Construct a nonzero token supplied by the operator out of band.
     pub fn from_bytes(bytes: [u8; 32]) -> NetResult<Self> {
@@ -111,6 +122,9 @@ fn status(error: Error) -> u8 {
     }
 }
 fn decode_status(code: u8, body: &[u8]) -> NetResult<Vec<u8>> {
+    if code != STATUS_OK && !body.is_empty() {
+        return Err(NetError::Malformed);
+    }
     match code {
         STATUS_OK => Ok(body.to_vec()),
         STATUS_CONFLICT => Err(NetError::Conflict),
@@ -142,25 +156,60 @@ fn io(error: std::io::Error) -> NetError {
         _ => NetError::Unavailable,
     }
 }
-fn read_exact(stream: &mut TcpStream, buf: &mut [u8]) -> NetResult<()> {
-    stream.read_exact(buf).map_err(io)
+fn remaining(deadline: Instant) -> NetResult<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or(NetError::Timeout)
 }
-fn read_frame(stream: &mut TcpStream, max: usize) -> NetResult<Vec<u8>> {
+fn read_exact(stream: &mut TcpStream, mut buf: &mut [u8], deadline: Instant) -> NetResult<()> {
+    while !buf.is_empty() {
+        stream
+            .set_read_timeout(Some(remaining(deadline)?))
+            .map_err(io)?;
+        match stream.read(buf) {
+            Ok(0) => return Err(NetError::Unavailable),
+            Ok(n) => buf = &mut buf[n..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(io(error)),
+        }
+    }
+    remaining(deadline)?;
+    Ok(())
+}
+fn read_frame(stream: &mut TcpStream, max: usize, deadline: Instant) -> NetResult<Vec<u8>> {
     let mut len = [0u8; 4];
-    read_exact(stream, &mut len)?;
+    read_exact(stream, &mut len, deadline)?;
     let len = u32::from_be_bytes(len) as usize;
     if len == 0 || len > max {
         return Err(NetError::Malformed);
     }
     let mut body = vec![0u8; len];
-    read_exact(stream, &mut body)?;
+    read_exact(stream, &mut body, deadline)?;
     Ok(body)
 }
-fn write_frame(stream: &mut TcpStream, status: u8, body: &[u8]) -> NetResult<()> {
-    stream
-        .write_all(&frame(status, body))
-        .and_then(|()| stream.flush())
-        .map_err(io)
+fn write_bytes(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> NetResult<()> {
+    while !bytes.is_empty() {
+        stream
+            .set_write_timeout(Some(remaining(deadline)?))
+            .map_err(io)?;
+        match stream.write(bytes) {
+            Ok(0) => return Err(NetError::Unavailable),
+            Ok(n) => bytes = &bytes[n..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(io(error)),
+        }
+    }
+    remaining(deadline)?;
+    Ok(())
+}
+fn write_frame(
+    stream: &mut TcpStream,
+    status: u8,
+    body: &[u8],
+    deadline: Instant,
+) -> NetResult<()> {
+    write_bytes(stream, &frame(status, body), deadline)
 }
 
 /// The retention surface one adapter serves. `Store` covers in-process use;
@@ -190,12 +239,17 @@ impl Mailbox for FileStore {
 
 /// One bounded request on one connection. Authentication precedes any parse of
 /// the operation payload, and every outcome maps to a closed status.
-fn handle(stream: &mut TcpStream, store: &mut dyn Mailbox, token: &RelayToken) -> NetResult<()> {
-    let request = read_frame(stream, MAX_REQUEST)?;
+fn handle(
+    stream: &mut TcpStream,
+    store: &mut dyn Mailbox,
+    token: &RelayToken,
+    deadline: Instant,
+) -> NetResult<()> {
+    let request = read_frame(stream, MAX_REQUEST, deadline)?;
     let op = request[0];
     let body = &request[1..];
     if body.len() < 32 || !authorized(token, &body[..32]) {
-        return write_frame(stream, STATUS_DENIED, &[]);
+        return write_frame(stream, STATUS_DENIED, &[], deadline);
     }
     let body = &body[32..];
     match op {
@@ -207,14 +261,14 @@ fn handle(stream: &mut TcpStream, store: &mut dyn Mailbox, token: &RelayToken) -
                     out.extend_from_slice(&receipt.position.to_be_bytes());
                     out.extend_from_slice(&receipt.digest);
                     out.push(u8::from(receipt.duplicate));
-                    write_frame(stream, STATUS_OK, &out)
+                    write_frame(stream, STATUS_OK, &out, deadline)
                 }
-                Err(error) => write_frame(stream, status(error), &[]),
+                Err(error) => write_frame(stream, status(error), &[], deadline),
             }
         }
         OP_PAGE => {
             if body.len() != 10 {
-                return write_frame(stream, STATUS_BOUNDS, &[]);
+                return write_frame(stream, STATUS_BOUNDS, &[], deadline);
             }
             let after = u64::from_be_bytes(body[..8].try_into().expect("bounded"));
             let limit = u16::from_be_bytes(body[8..10].try_into().expect("bounded")) as usize;
@@ -239,12 +293,12 @@ fn handle(stream: &mut TcpStream, store: &mut dyn Mailbox, token: &RelayToken) -
                     out.push(u8::from(more));
                     out.extend_from_slice(&count.to_be_bytes());
                     out.extend_from_slice(&items);
-                    write_frame(stream, STATUS_OK, &out)
+                    write_frame(stream, STATUS_OK, &out, deadline)
                 }
-                Err(error) => write_frame(stream, status(error), &[]),
+                Err(error) => write_frame(stream, status(error), &[], deadline),
             }
         }
-        _ => write_frame(stream, STATUS_BOUNDS, &[]),
+        _ => write_frame(stream, STATUS_BOUNDS, &[], deadline),
     }
 }
 
@@ -253,9 +307,18 @@ fn handle(stream: &mut TcpStream, store: &mut dyn Mailbox, token: &RelayToken) -
 /// carries one bounded request and is closed after its response.
 pub fn serve(
     listener: TcpListener,
+    store: impl Mailbox,
+    token: RelayToken,
+    limit: Option<u64>,
+) -> Result<()> {
+    serve_with_timeout(listener, store, token, limit, IO_TIMEOUT)
+}
+fn serve_with_timeout(
+    listener: TcpListener,
     mut store: impl Mailbox,
     token: RelayToken,
     limit: Option<u64>,
+    timeout: Duration,
 ) -> Result<()> {
     let mut accepted = 0u64;
     loop {
@@ -264,10 +327,9 @@ pub fn serve(
         }
         let (mut stream, _) = listener.accept().map_err(|_| Error::Storage)?;
         accepted += 1;
-        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-        // A client-side refusal or drop must not abort the service loop.
-        let _ = handle(&mut stream, &mut store, &token);
+        // One absolute deadline includes every partial read and write. A
+        // trickling or dropped unauthenticated client cannot park this loop.
+        let _ = handle(&mut stream, &mut store, &token, Instant::now() + timeout);
     }
 }
 
@@ -282,32 +344,33 @@ impl SocketRelay {
     pub fn new(addr: SocketAddr, token: RelayToken) -> Self {
         Self { addr, token }
     }
-    fn exchange(&self, op: u8, body: &[u8]) -> NetResult<Vec<u8>> {
-        let mut stream = TcpStream::connect_timeout(&self.addr, CONNECT_TIMEOUT).map_err(io)?;
-        stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(io)?;
-        stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(io)?;
+    fn exchange(&self, op: u8, body: &[u8], deadline: Instant) -> NetResult<Vec<u8>> {
+        let connect = remaining(deadline)?.min(CONNECT_TIMEOUT);
+        let mut stream = TcpStream::connect_timeout(&self.addr, connect).map_err(io)?;
         let mut request = Vec::with_capacity(32 + body.len());
         request.extend_from_slice(self.token.as_bytes());
         request.extend_from_slice(body);
-        stream
-            .write_all(&frame(op, &request))
-            .and_then(|()| stream.flush())
-            .map_err(io)?;
-        let response = read_frame(&mut stream, MAX_RESPONSE)?;
+        write_bytes(&mut stream, &frame(op, &request), deadline)?;
+        let response = read_frame(&mut stream, MAX_RESPONSE, deadline)?;
         decode_status(response[0], &response[1..])
     }
     /// Retain one canonical item and return the relay's retention receipt.
     /// The position is mailbox-assigned; the receipt is never delivery or
     /// member acceptance.
     pub fn submit(&self, item: &RelayItem) -> NetResult<RelayReceipt> {
+        self.submit_until(item, Instant::now() + CONNECT_TIMEOUT + IO_TIMEOUT)
+    }
+    /// Retain an exact item within a larger caller operation's absolute deadline.
+    pub fn submit_until(&self, item: &RelayItem, deadline: Instant) -> NetResult<RelayReceipt> {
+        let deadline = deadline.min(Instant::now() + CONNECT_TIMEOUT + IO_TIMEOUT);
         let encoded = item.encode().map_err(|_| NetError::Bounds)?;
-        let body = self.exchange(OP_PUT, &encoded)?;
+        let body = self.exchange(OP_PUT, &encoded, deadline)?;
         if body.len() != 41 {
             return Err(NetError::Malformed);
         }
         let position = u64::from_be_bytes(body[..8].try_into().expect("bounded"));
         let digest: [u8; 32] = body[8..40].try_into().expect("bounded");
-        if position == 0 || digest != item.digest() {
+        if position == 0 || digest != item.digest() || body[40] > 1 {
             return Err(NetError::Malformed);
         }
         Ok(RelayReceipt {
@@ -319,13 +382,16 @@ impl SocketRelay {
     /// Read one authenticated page. A large retained page is truncated to the
     /// wire budget with `next` set, so catch-up can always resume.
     pub fn page(&self, after: u64, limit: usize) -> NetResult<RelayPage> {
+        self.page_until(after, limit, Instant::now() + CONNECT_TIMEOUT + IO_TIMEOUT)
+    }
+    fn page_until(&self, after: u64, limit: usize, deadline: Instant) -> NetResult<RelayPage> {
         if limit == 0 || limit > MAX_RELAY_PAGE {
             return Err(NetError::Bounds);
         }
         let mut request = Vec::with_capacity(10);
         request.extend_from_slice(&after.to_be_bytes());
         request.extend_from_slice(&(limit as u16).to_be_bytes());
-        let body = self.exchange(OP_PAGE, &request)?;
+        let body = self.exchange(OP_PAGE, &request, deadline)?;
         if body.len() < 11 {
             return Err(NetError::Malformed);
         }
@@ -336,7 +402,7 @@ impl SocketRelay {
             _ => return Err(NetError::Malformed),
         };
         let count = u16::from_be_bytes(body[9..11].try_into().expect("bounded")) as usize;
-        if count > MAX_RELAY_PAGE {
+        if count > limit {
             return Err(NetError::Malformed);
         }
         let mut records = Vec::with_capacity(count);
@@ -375,11 +441,13 @@ impl SocketRelay {
             return Err(NetError::Malformed);
         }
         let next = more.then(|| records.last().expect("nonempty").position);
-        Ok(RelayPage {
+        let page = RelayPage {
             head,
             next,
             records,
-        })
+        };
+        validate_page(&page, after, limit)?;
+        Ok(page)
     }
     /// Fetch one exact retained relay position, or report its absence.
     pub fn fetch(&self, position: u64) -> NetResult<Option<PositionedItem>> {
@@ -392,32 +460,69 @@ impl SocketRelay {
     }
 }
 
-/// The outcome of one catch-up pass over the relay. A returned report means
-/// the pass drained the mailbox through its reported head; failures preserve
-/// the last durable cursor and return `ScanFailure` instead.
+/// Validate the immutable, contiguous mailbox page contract before any effects.
+fn validate_page(page: &RelayPage, after: u64, limit: usize) -> NetResult<()> {
+    if limit == 0 || limit > MAX_RELAY_PAGE || page.records.len() > limit {
+        return Err(NetError::Malformed);
+    }
+    // A standalone fetch beyond the retained head is a valid absence. A scan
+    // separately refuses this as a rollback of its already retained cursor.
+    if page.head < after {
+        return if page.records.is_empty() && page.next.is_none() {
+            Ok(())
+        } else {
+            Err(NetError::Malformed)
+        };
+    }
+    let mut previous = after;
+    for record in &page.records {
+        if Some(record.position) != previous.checked_add(1) || record.position > page.head {
+            return Err(NetError::Malformed);
+        }
+        previous = record.position;
+    }
+    if (previous < page.head && (page.records.is_empty() || page.next != Some(previous)))
+        || (previous == page.head && page.next.is_some())
+    {
+        return Err(NetError::Malformed);
+    }
+    Ok(())
+}
+
+/// A completed catch-up pass through the first observed mailbox head. Items
+/// appended during the pass wait for the next explicit scan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanReport {
-    /// Highest retained relay position the relay reported during the pass.
+    /// First observed head, fully staged by this completed pass.
     pub head: u64,
-    /// Durable cursor: the last position written into the items directory.
+    /// Durable cursor: the last position published in the items directory.
     pub cursor: u64,
-    /// Items retained during this pass; an exact rescan counts zero.
+    /// Items newly published during this pass; an exact rescan counts zero.
     pub scanned: usize,
 }
 
-/// Cursor catch-up failures. A failure preserves the last durable cursor and
-/// every already-written item file; rerunning resumes exactly.
+/// Closed failures preserve committed evidence and the last durable cursor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScanFailure {
     /// The relay refused, timed out, or answered noncanonically.
     Net(NetError),
-    /// A retained item file disagreed with the relay's canonical bytes.
+    /// Retained item bytes or the contiguous local inventory are inconsistent.
     Corrupt,
-    /// Local cursor or item storage failed; the next run resumes unchanged.
+    /// Local cursor or item storage failed. Reopen the exact directory.
     Storage,
-    /// The mailbox source itself failed; a durable `FileStore` is damaged,
-    /// foreign or busy rather than a socket refusal.
+    /// The source mailbox is damaged, foreign or busy.
     Source,
+    /// The directory or a returned item belongs to another explicit namespace.
+    Scope,
+    /// A nonempty directory lacks the new namespace binding. Preserve it and
+    /// select a new empty output directory; no automatic migration is safe.
+    Legacy,
+    /// Another scan or pull holds this directory's exclusive custody lock.
+    Busy,
+    /// A fixed retained-item or retained-byte budget would be exceeded.
+    Capacity,
+    /// The absolute scan/pull time budget elapsed. Progress remains resumable.
+    Timeout,
 }
 impl core::fmt::Display for ScanFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -432,27 +537,28 @@ fn read_cursor(directory: &Path, uid: u32) -> std::result::Result<u64, ScanFailu
         return Ok(0);
     }
     let raw = custody::read_private_file(&path, uid, 8).map_err(|_| ScanFailure::Storage)?;
-    if raw.len() != 8 {
-        return Err(ScanFailure::Corrupt);
+    let bytes = raw.try_into().map_err(|_| ScanFailure::Corrupt)?;
+    let cursor = u64::from_be_bytes(bytes);
+    if cursor > MAX_RELAY_ITEMS as u64 {
+        return Err(ScanFailure::Capacity);
     }
-    Ok(u64::from_be_bytes(raw.try_into().expect("bounded")))
+    Ok(cursor)
 }
 fn publish_cursor(
     directory: &Path,
     handle: &File,
     cursor: u64,
+    uid: u32,
 ) -> std::result::Result<(), ScanFailure> {
     let tmp = directory.join("cursor.tmp");
-    // A leftover partial write is owner-only inside the verified 0700 dir.
-    if fs::symlink_metadata(&tmp).is_ok() {
+    // Only this guard owns the scratch file. Never unlink an arbitrary path.
+    if custody::private_file_present(&tmp, uid, 8).map_err(|_| ScanFailure::Storage)? {
         fs::remove_file(&tmp).map_err(|_| ScanFailure::Storage)?;
     }
-    {
-        let mut file = custody::create_private_file(&tmp).map_err(|_| ScanFailure::Storage)?;
-        file.write_all(&cursor.to_be_bytes())
-            .map_err(|_| ScanFailure::Storage)?;
-        file.sync_all().map_err(|_| ScanFailure::Storage)?;
-    }
+    let mut file = custody::create_private_file(&tmp).map_err(|_| ScanFailure::Storage)?;
+    file.write_all(&cursor.to_be_bytes())
+        .map_err(|_| ScanFailure::Storage)?;
+    file.sync_all().map_err(|_| ScanFailure::Storage)?;
     fs::rename(&tmp, directory.join("cursor")).map_err(|_| ScanFailure::Storage)?;
     handle.sync_all().map_err(|_| ScanFailure::Storage)
 }
@@ -460,91 +566,413 @@ fn item_path(items: &Path, position: u64) -> PathBuf {
     items.join(format!("{position:016x}.vhrelay"))
 }
 
-/// A position-ordered source of retained relay pages. `SocketRelay` reads them
-/// over the token-authenticated socket; a local `FileStore` reads its own
-/// durable mailbox directly, which makes a synced or shared directory an
-/// interchangeable transport under filesystem custody instead of the token.
+/// A bounded position-ordered source. Implementations must honor the absolute
+/// deadline across every network read/write, not reset it for partial progress.
 pub trait PageSource {
-    /// Read one bounded page after `after`, failing closed on any error.
-    fn source_page(&self, after: u64, limit: usize) -> std::result::Result<RelayPage, ScanFailure>;
+    /// Read one bounded page before the caller's operation deadline.
+    fn source_page(
+        &self,
+        after: u64,
+        limit: usize,
+        deadline: Instant,
+    ) -> std::result::Result<RelayPage, ScanFailure>;
 }
 impl PageSource for SocketRelay {
-    fn source_page(&self, after: u64, limit: usize) -> std::result::Result<RelayPage, ScanFailure> {
-        self.page(after, limit).map_err(ScanFailure::Net)
+    fn source_page(
+        &self,
+        after: u64,
+        limit: usize,
+        deadline: Instant,
+    ) -> std::result::Result<RelayPage, ScanFailure> {
+        self.page_until(
+            after,
+            limit,
+            deadline.min(Instant::now() + CONNECT_TIMEOUT + IO_TIMEOUT),
+        )
+        .map_err(ScanFailure::Net)
     }
 }
 impl PageSource for FileStore {
-    fn source_page(&self, after: u64, limit: usize) -> std::result::Result<RelayPage, ScanFailure> {
-        FileStore::page(self, after, limit).map_err(|_| ScanFailure::Source)
+    fn source_page(
+        &self,
+        after: u64,
+        limit: usize,
+        deadline: Instant,
+    ) -> std::result::Result<RelayPage, ScanFailure> {
+        remaining(deadline).map_err(|_| ScanFailure::Timeout)?;
+        let page = FileStore::page(self, after, limit).map_err(|_| ScanFailure::Source)?;
+        remaining(deadline).map_err(|_| ScanFailure::Timeout)?;
+        Ok(page)
     }
 }
 impl PageSource for Store {
-    fn source_page(&self, after: u64, limit: usize) -> std::result::Result<RelayPage, ScanFailure> {
-        Store::page(self, after, limit).map_err(|_| ScanFailure::Source)
+    fn source_page(
+        &self,
+        after: u64,
+        limit: usize,
+        deadline: Instant,
+    ) -> std::result::Result<RelayPage, ScanFailure> {
+        remaining(deadline).map_err(|_| ScanFailure::Timeout)?;
+        let page = Store::page(self, after, limit).map_err(|_| ScanFailure::Source)?;
+        remaining(deadline).map_err(|_| ScanFailure::Timeout)?;
+        Ok(page)
     }
 }
 
-/// Pull every retained item after the durable cursor into a private directory.
-/// The directory is created 0700 on first use and reopened thereafter; items
-/// land as one canonical file each named by relay position and the cursor
-/// advances only after the item's own bytes are durable. This is relay
-/// catch-up, not room acceptance.
+/// Exclusive namespace-bound catch-up custody. Retain this guard across a scan
+/// and consumption of staged items; dropping it releases the directory lock.
+/// Filesystem barriers are synchronous and cannot be forcibly cancelled. Time
+/// checks bound admission of further work after a slow filesystem call returns.
+pub struct ScanDirectory {
+    path: PathBuf,
+    directory: File,
+    items: File,
+    _lock: File,
+    uid: u32,
+    namespace: RelayNamespace,
+    cursor: u64,
+    deadline: Instant,
+    #[cfg(test)]
+    fault: Option<PublicationFault>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PublicationFault {
+    PartialItem,
+    ItemSynced,
+    ItemPublished,
+    ItemsSynced,
+    CursorPublished,
+}
+
+impl ScanDirectory {
+    /// Open or initialize an empty private directory for this explicit mailbox
+    /// namespace. Nonempty legacy directories refuse without changing evidence.
+    pub fn open(
+        directory: &Path,
+        namespace: RelayNamespace,
+    ) -> std::result::Result<Self, ScanFailure> {
+        let deadline = Instant::now() + SCAN_TIMEOUT;
+        let path = custody::absolute(directory).map_err(|_| ScanFailure::Storage)?;
+        let created = match fs::symlink_metadata(&path) {
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => return Err(ScanFailure::Storage),
+        };
+        let (dir, uid) =
+            custody::ensure_private_directory(&path).map_err(|_| ScanFailure::Storage)?;
+        let binding = path.join("namespace");
+        let bound = custody::private_file_present(&binding, uid, SCAN_MAGIC.len() + 32)
+            .map_err(|_| ScanFailure::Storage)?;
+        if !bound {
+            // A lock-only interrupted initialization has no mailbox data. All
+            // older cursor/items directories remain untouched and unbound.
+            for entry in fs::read_dir(&path).map_err(|_| ScanFailure::Storage)? {
+                let entry = entry.map_err(|_| ScanFailure::Storage)?;
+                if entry.file_name() != "lock" {
+                    return Err(ScanFailure::Legacy);
+                }
+            }
+        }
+        let lock_path = path.join("lock");
+        let lock = if bound {
+            // A bound directory must retain its original lock inode. Never
+            // recreate a missing lock while another process may still hold it.
+            custody::open_private_file(&lock_path, uid, 0).map_err(|_| ScanFailure::Storage)?
+        } else {
+            match custody::create_private_file(&lock_path) {
+                Ok(file) => file,
+                Err(_) => custody::open_private_file(&lock_path, uid, 0)
+                    .map_err(|_| ScanFailure::Storage)?,
+            }
+        };
+        custody::acquire_exclusive(&lock).map_err(|error| match error {
+            custody::Error::Busy => ScanFailure::Busy,
+            _ => ScanFailure::Storage,
+        })?;
+        // Recheck under the lock: another initializer may have finished while
+        // this caller was acquiring custody.
+        if custody::private_file_present(&binding, uid, SCAN_MAGIC.len() + 32)
+            .map_err(|_| ScanFailure::Storage)?
+        {
+            let raw = custody::read_private_file(&binding, uid, SCAN_MAGIC.len() + 32)
+                .map_err(|_| ScanFailure::Storage)?;
+            if raw.len() != SCAN_MAGIC.len() + 32 || !raw.starts_with(SCAN_MAGIC) {
+                return Err(ScanFailure::Corrupt);
+            }
+            if &raw[SCAN_MAGIC.len()..] != namespace.as_bytes() {
+                return Err(ScanFailure::Scope);
+            }
+        } else {
+            for entry in fs::read_dir(&path).map_err(|_| ScanFailure::Storage)? {
+                if entry.map_err(|_| ScanFailure::Storage)?.file_name() != "lock" {
+                    return Err(ScanFailure::Legacy);
+                }
+            }
+            let tmp = path.join("namespace.tmp");
+            let mut file = custody::create_private_file(&tmp).map_err(|_| ScanFailure::Storage)?;
+            file.write_all(SCAN_MAGIC)
+                .and_then(|()| file.write_all(namespace.as_bytes()))
+                .map_err(|_| ScanFailure::Storage)?;
+            file.sync_all().map_err(|_| ScanFailure::Storage)?;
+            fs::rename(&tmp, &binding).map_err(|_| ScanFailure::Storage)?;
+            dir.sync_all().map_err(|_| ScanFailure::Storage)?;
+        }
+        let (items, items_uid) = custody::ensure_private_directory(&path.join("items"))
+            .map_err(|_| ScanFailure::Storage)?;
+        if items_uid != uid {
+            return Err(ScanFailure::Storage);
+        }
+        dir.sync_all().map_err(|_| ScanFailure::Storage)?;
+        if created {
+            File::open(path.parent().ok_or(ScanFailure::Storage)?)
+                .and_then(|parent| parent.sync_all())
+                .map_err(|_| ScanFailure::Storage)?;
+        }
+        let cursor = read_cursor(&path, uid)?;
+        let out = Self {
+            path,
+            directory: dir,
+            items,
+            _lock: lock,
+            uid,
+            namespace,
+            cursor,
+            deadline,
+            #[cfg(test)]
+            fault: None,
+        };
+        out.positions()?;
+        Ok(out)
+    }
+
+    /// Refuse further scan/pull work after the one absolute operation budget.
+    pub fn check_deadline(&self) -> std::result::Result<(), ScanFailure> {
+        remaining(self.deadline)
+            .map(|_| ())
+            .map_err(|_| ScanFailure::Timeout)
+    }
+
+    /// Return the bounded contiguous committed positions after validating file
+    /// custody and sizes. One published item beyond the cursor is permitted as
+    /// interruption evidence; only the next scan can reconcile it.
+    pub fn positions(&self) -> std::result::Result<Vec<u64>, ScanFailure> {
+        self.check_deadline()?;
+        let mut positions = Vec::new();
+        let mut bytes = 0usize;
+        let mut entries = 0usize;
+        for entry in fs::read_dir(self.path.join("items")).map_err(|_| ScanFailure::Storage)? {
+            self.check_deadline()?;
+            entries += 1;
+            if entries > MAX_RELAY_ITEMS + 1 {
+                return Err(ScanFailure::Capacity);
+            }
+            let entry = entry.map_err(|_| ScanFailure::Storage)?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| ScanFailure::Corrupt)?;
+            let handle = custody::open_private_file(&entry.path(), self.uid, MAX_ITEM_BYTES)
+                .map_err(|_| ScanFailure::Storage)?;
+            let length =
+                usize::try_from(handle.metadata().map_err(|_| ScanFailure::Storage)?.len())
+                    .map_err(|_| ScanFailure::Capacity)?;
+            if name == "item.tmp" {
+                continue;
+            }
+            let position = name
+                .strip_suffix(".vhrelay")
+                .and_then(|raw| u64::from_str_radix(raw, 16).ok())
+                .filter(|position| *position > 0 && name == format!("{position:016x}.vhrelay"))
+                .ok_or(ScanFailure::Corrupt)?;
+            if position > MAX_RELAY_ITEMS as u64 || position > self.cursor + 1 {
+                return Err(ScanFailure::Corrupt);
+            }
+            bytes = bytes
+                .checked_add(length)
+                .filter(|bytes| *bytes <= MAX_SCAN_BYTES)
+                .ok_or(ScanFailure::Capacity)?;
+            positions.push(position);
+        }
+        positions.sort_unstable();
+        if positions
+            .iter()
+            .enumerate()
+            .any(|(index, position)| *position != index as u64 + 1)
+            || positions.len() < self.cursor as usize
+        {
+            return Err(ScanFailure::Corrupt);
+        }
+        positions.retain(|position| *position <= self.cursor);
+        Ok(positions)
+    }
+
+    /// Read one committed item under retained custody with descriptor, size,
+    /// canonical-envelope and namespace checks. No unbounded filesystem read.
+    pub fn read(&self, position: u64) -> std::result::Result<RelayItem, ScanFailure> {
+        self.check_deadline()?;
+        if position == 0 || position > self.cursor {
+            return Err(ScanFailure::Corrupt);
+        }
+        let raw = custody::read_private_file(
+            &item_path(&self.path.join("items"), position),
+            self.uid,
+            MAX_ITEM_BYTES,
+        )
+        .map_err(|_| ScanFailure::Storage)?;
+        let item = RelayItem::decode(&raw).map_err(|_| ScanFailure::Corrupt)?;
+        if item.namespace() != self.namespace {
+            return Err(ScanFailure::Scope);
+        }
+        self.check_deadline()?;
+        Ok(item)
+    }
+
+    fn publish_item(&mut self, record: &PositionedItem) -> std::result::Result<bool, ScanFailure> {
+        self.check_deadline()?;
+        let encoded = record.item.encode().map_err(|_| ScanFailure::Corrupt)?;
+        let items = self.path.join("items");
+        let target = item_path(&items, record.position);
+        let tmp = items.join("item.tmp");
+        if custody::private_file_present(&target, self.uid, MAX_ITEM_BYTES)
+            .map_err(|_| ScanFailure::Storage)?
+        {
+            let retained = custody::read_private_file(&target, self.uid, MAX_ITEM_BYTES)
+                .map_err(|_| ScanFailure::Storage)?;
+            if retained != encoded {
+                return Err(ScanFailure::Corrupt);
+            }
+            // A prior interruption after rename still requires the directory
+            // durability barrier before this run may advance its cursor.
+            self.items.sync_all().map_err(|_| ScanFailure::Storage)?;
+            return Ok(false);
+        }
+        if custody::private_file_present(&tmp, self.uid, MAX_ITEM_BYTES)
+            .map_err(|_| ScanFailure::Storage)?
+        {
+            let retained = custody::read_private_file(&tmp, self.uid, MAX_ITEM_BYTES)
+                .map_err(|_| ScanFailure::Storage)?;
+            if !encoded.starts_with(&retained) {
+                return Err(ScanFailure::Corrupt);
+            }
+            // Only a verified prefix of this exact retry is disposable scratch.
+            fs::remove_file(&tmp).map_err(|_| ScanFailure::Storage)?;
+        }
+        let mut file = custody::create_private_file(&tmp).map_err(|_| ScanFailure::Storage)?;
+        #[cfg(test)]
+        if self.fault == Some(PublicationFault::PartialItem) {
+            file.write_all(&encoded[..encoded.len() / 2])
+                .map_err(|_| ScanFailure::Storage)?;
+            return Err(ScanFailure::Storage);
+        }
+        file.write_all(&encoded).map_err(|_| ScanFailure::Storage)?;
+        file.sync_all().map_err(|_| ScanFailure::Storage)?;
+        #[cfg(test)]
+        self.fail_at(PublicationFault::ItemSynced)?;
+        // This exclusive guard is the sole publisher. Existing committed paths
+        // were checked above and are never a recovery overwrite target.
+        fs::rename(&tmp, &target).map_err(|_| ScanFailure::Storage)?;
+        #[cfg(test)]
+        self.fail_at(PublicationFault::ItemPublished)?;
+        self.items.sync_all().map_err(|_| ScanFailure::Storage)?;
+        #[cfg(test)]
+        self.fail_at(PublicationFault::ItemsSynced)?;
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    fn fail_at(&self, phase: PublicationFault) -> std::result::Result<(), ScanFailure> {
+        if self.fault == Some(phase) {
+            Err(ScanFailure::Storage)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Stage the bounded immutable prefix through the first page's head. The
+    /// guard and its deadline remain in force while the caller consumes items.
+    pub fn scan(
+        &mut self,
+        source: &dyn PageSource,
+        limit: usize,
+    ) -> std::result::Result<ScanReport, ScanFailure> {
+        if limit == 0 || limit > MAX_RELAY_PAGE {
+            return Err(ScanFailure::Net(NetError::Bounds));
+        }
+        let mut target = None;
+        let mut scanned = 0usize;
+        loop {
+            self.check_deadline()?;
+            let page = source.source_page(self.cursor, limit, self.deadline)?;
+            self.check_deadline()?;
+            validate_page(&page, self.cursor, limit).map_err(ScanFailure::Net)?;
+            if page.head < self.cursor {
+                return Err(ScanFailure::Net(NetError::Malformed));
+            }
+            if page.head > MAX_RELAY_ITEMS as u64 {
+                return Err(ScanFailure::Capacity);
+            }
+            if page
+                .records
+                .iter()
+                .any(|record| record.item.namespace() != self.namespace)
+            {
+                return Err(ScanFailure::Scope);
+            }
+            let head = *target.get_or_insert(page.head);
+            if page.head < head {
+                return Err(ScanFailure::Net(NetError::Malformed));
+            }
+            for record in page
+                .records
+                .iter()
+                .take_while(|record| record.position <= head)
+            {
+                scanned += usize::from(self.publish_item(record)?);
+                publish_cursor(&self.path, &self.directory, record.position, self.uid)?;
+                self.cursor = record.position;
+                #[cfg(test)]
+                self.fail_at(PublicationFault::CursorPublished)?;
+            }
+            if self.cursor == head {
+                // Never report completion over unreconciled publication evidence
+                // that the selected source no longer acknowledges.
+                if custody::private_file_present(
+                    &self.path.join("items/item.tmp"),
+                    self.uid,
+                    MAX_ITEM_BYTES,
+                )
+                .map_err(|_| ScanFailure::Storage)?
+                    || custody::private_file_present(
+                        &item_path(&self.path.join("items"), self.cursor + 1),
+                        self.uid,
+                        MAX_ITEM_BYTES,
+                    )
+                    .map_err(|_| ScanFailure::Storage)?
+                {
+                    return Err(ScanFailure::Corrupt);
+                }
+                self.check_deadline()?;
+                return Ok(ScanReport {
+                    head,
+                    cursor: self.cursor,
+                    scanned,
+                });
+            }
+        }
+    }
+}
+
+/// Scan one explicit namespace, retaining exclusive directory custody until
+/// completion. Use `ScanDirectory` when consuming staged files afterward.
 pub fn scan(
     directory: &Path,
+    namespace: RelayNamespace,
     source: &dyn PageSource,
     limit: usize,
 ) -> std::result::Result<ScanReport, ScanFailure> {
-    let path = custody::absolute(directory).map_err(|_| ScanFailure::Storage)?;
-    let (dir, uid) = if path.exists() {
-        custody::open_private_directory(&path).map_err(|_| ScanFailure::Storage)?
-    } else {
-        custody::create_private_directory(&path).map_err(|_| ScanFailure::Storage)?
-    };
-    let items = path.join("items");
-    if items.exists() {
-        custody::open_private_directory(&items).map_err(|_| ScanFailure::Storage)?;
-    } else {
-        custody::create_private_directory(&items).map_err(|_| ScanFailure::Storage)?;
-    }
-    let mut cursor = read_cursor(&path, uid)?;
-    let mut scanned = 0usize;
-    let head = loop {
-        let page = source.source_page(cursor, limit.clamp(1, MAX_RELAY_PAGE))?;
-        let head = page.head;
-        for record in &page.records {
-            let encoded = record.item.encode().map_err(|_| ScanFailure::Corrupt)?;
-            let file = item_path(&items, record.position);
-            if file.exists() {
-                let retained = custody::read_private_file(
-                    &file,
-                    uid,
-                    MAGIC.len() + 32 + 8 + 16 + 1 + 4 + MAX_RELAY_PAYLOAD + 32,
-                )
-                .map_err(|_| ScanFailure::Storage)?;
-                if retained != encoded {
-                    return Err(ScanFailure::Corrupt);
-                }
-            } else {
-                let mut created =
-                    custody::create_private_file(&file).map_err(|_| ScanFailure::Storage)?;
-                created
-                    .write_all(&encoded)
-                    .and_then(|()| created.sync_all())
-                    .map_err(|_| ScanFailure::Storage)?;
-                scanned += 1;
-            }
-            cursor = record.position;
-            publish_cursor(&path, &dir, cursor)?;
-        }
-        if page.next.is_none() || page.records.is_empty() {
-            break head;
-        }
-    };
-    Ok(ScanReport {
-        head,
-        cursor,
-        scanned,
-    })
+    ScanDirectory::open(directory, namespace)?.scan(source, limit)
 }
 
 #[cfg(test)]
@@ -583,7 +1011,7 @@ mod tests {
     fn relay(addr: SocketAddr) -> SocketRelay {
         SocketRelay::new(addr, token())
     }
-    fn tempdir(name: &str) -> PathBuf {
+    pub(super) fn tempdir(name: &str) -> PathBuf {
         static SERIAL: AtomicU64 = AtomicU64::new(0);
         let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         // The path stays absent; scan creates it as a 0700 private directory.
@@ -704,7 +1132,7 @@ mod tests {
         let mut body = token().as_bytes().to_vec();
         body.extend_from_slice(b"??");
         stream.write_all(&frame(0x7f, &body)).unwrap();
-        let response = read_frame(&mut stream, MAX_RESPONSE).unwrap();
+        let response = read_frame(&mut stream, MAX_RESPONSE, Instant::now() + IO_TIMEOUT).unwrap();
         assert_eq!(response[0], STATUS_BOUNDS);
         drop(stream);
         // A truncated write then close is dropped without killing the loop.
@@ -754,7 +1182,7 @@ mod tests {
         client.submit(&item(1)).unwrap();
         client.submit(&item(2)).unwrap();
         let dir = tempdir("cursor");
-        let report = scan(&dir, &client, 1).unwrap();
+        let report = scan(&dir, namespace(), &client, 1).unwrap();
         assert_eq!(
             report,
             ScanReport {
@@ -765,9 +1193,9 @@ mod tests {
         );
         assert!(dir.join("items/0000000000000001.vhrelay").exists());
         // An exact rescan changes nothing and counts nothing.
-        assert_eq!(scan(&dir, &client, 8).unwrap().scanned, 0);
+        assert_eq!(scan(&dir, namespace(), &client, 8).unwrap().scanned, 0);
         client.submit(&item(3)).unwrap();
-        let next = scan(&dir, &client, 8).unwrap();
+        let next = scan(&dir, namespace(), &client, 8).unwrap();
         assert_eq!((next.cursor, next.scanned, next.head), (3, 1, 3));
         // A pre-placed owner file at an unfetched sequence with different
         // bytes fails closed; the durable cursor never regresses.
@@ -776,7 +1204,10 @@ mod tests {
         fs::write(&bogus, item(5).encode().unwrap()).unwrap();
         fs::set_permissions(&bogus, fs::Permissions::from_mode(0o600)).unwrap();
         client.submit(&item(4)).unwrap();
-        assert_eq!(scan(&dir, &client, 8), Err(ScanFailure::Corrupt));
+        assert_eq!(
+            scan(&dir, namespace(), &client, 8),
+            Err(ScanFailure::Corrupt)
+        );
         assert_eq!(fs::read(dir.join("cursor")).unwrap(), 3u64.to_be_bytes());
     }
 
@@ -808,10 +1239,14 @@ mod tests {
         assert!(first.records.len() < 20);
         assert_eq!(first.next, Some(first.records.last().unwrap().position));
         let dir = tempdir("truncated");
-        let report = scan(&dir, &client, MAX_RELAY_PAGE).unwrap();
+        let report = scan(&dir, namespace(), &client, MAX_RELAY_PAGE).unwrap();
         assert_eq!((report.cursor, report.scanned, report.head), (20, 20, 20));
         assert!(client.fetch(20).unwrap().is_some());
         assert!(client.fetch(21).unwrap().is_none());
         worker.join().unwrap().unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "net_tests.rs"]
+mod hardening_tests;

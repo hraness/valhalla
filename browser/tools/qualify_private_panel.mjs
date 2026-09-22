@@ -116,7 +116,7 @@ async function download(page,button,extension) {
   },button+' real download');
   const path=join(page.downloads,item.guid);
   const raw=await readFile(path);
-  if (!raw.length || raw.length>266280) throw Error('download byte bound');
+  if (!raw.length || raw.length>(extension==='vharchive'?16*1024*1024:266280)) throw Error('download byte bound');
   await chmod(path,0o600);
   // Confirm the actual downloaded locator/output before any retention acknowledgement.
   const file=await open(path,'r+');try{await file.sync();}finally{await file.close();}
@@ -179,7 +179,7 @@ async function send(page,body) {
   return download(page,'private-download-output','vhmsg');
 }
 async function leave(page) {
-  await evaluate(page,"(async()=>{await qclick('private-leave');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'new locked worker');qassert(qid('private-workspace').hidden,'private workspace survives lock');for(const id of ['private-message','private-owner','private-recipient','private-offer-file','private-locator-file','private-message-file'])qassert(qid(id).value==='','private input survived lock: '+id);for(const id of ['private-consent','private-inbox-content','private-membership-details','private-secret-label'])qassert(qid(id).textContent==='','private view survived lock: '+id);qassert(qaURLs.size===0,'download URL survived lock');qassert(!qid('activity-heading').closest('.activity').hidden,'public activity remains hidden');for(const id of ['activity-text','puzzle-artifact','puzzle-part'])qassert(qid(id).value==='','private text carried into public composer');return true;})()");
+  await evaluate(page,"(async()=>{await qclick('private-leave');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'new locked worker');qassert(qid('private-workspace').hidden,'private workspace survives lock');qassert(qid('private-message').value==='','private message survived lock');for(const field of document.querySelectorAll('#private-panel input'))qassert(field.type==='checkbox'?!field.checked:field.value==='','private input survived lock: '+field.id);for(const id of ['private-consent','private-inbox-content','private-membership-details','private-secret-label'])qassert(qid(id).textContent==='','private view survived lock: '+id);qassert(qaURLs.size===0,'download URL survived lock');qassert(!qid('activity-heading').closest('.activity').hidden,'public activity remains hidden');for(const id of ['activity-text','puzzle-artifact','puzzle-part'])qassert(qid(id).value==='','private text carried into public composer');return true;})()");
 }
 async function reopen(page) {
   await evaluate(page,"(async()=>{qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','explicit unlock');await qclick('private-enter');await qwait(()=>!qid('private-open').disabled,'new private entry');return true;})()");
@@ -383,7 +383,7 @@ async function task(abortSignal) {
   for(const width of [1280,768,390])await screenshot(member,width);
   // The removal-control download seconds ago still holds a live temporary URL;
   // the lock hook must revoke it. No extra download: the panel caps live URLs.
-  await evaluate(owner,"qassert(qaURLs.size>0,'temporary download URL not observed');qset('private-message','PRIVATE_TEXT_MUST_NOT_CROSS_MODES');true");
+  await evaluate(owner,"qassert(qaURLs.size>0,'temporary download URL not observed');qset('private-message','PRIVATE_TEXT_MUST_NOT_CROSS_MODES');qset('private-succeed-device','PRIVATE_SUCCESSOR_MUST_NOT_SURVIVE_LOCK');true");
   await leave(owner);await leave(member);
   await reopen(member);
   await evaluate(member,"(async()=>{await qclick('private-outbox');await qidle();const select=qid('private-outbox-select');select.selectedIndex=Array.from(select.options).findIndex(o=>o.textContent.includes('Encrypted message'));qassert(select.selectedIndex>=0,'reopened ciphertext missing');return true;})()");
@@ -434,7 +434,7 @@ async function task(abortSignal) {
   // successor issues controls after the handoff floor.
   await reopen(owner);await reopen(fresh);
   const freshDevice=await evaluate(fresh,`(async()=>{await qclick('private-refresh');await qidle();const m=qid('private-membership-details').textContent.match(/Device ([0-9a-f]{64})/);qassert(m,'fresh device key absent');return m[1];})()`);
-  await invoke(owner,`async function(device){qset('private-succeed-device',device);await qclick('private-succeed');await qidle();qassert(qid('private-secret-output').hidden&&qid('private-download-secret').disabled,'succession retained a stale offer');qassert(qid('private-remove').disabled&&qid('private-renew').disabled&&qid('private-succeed').disabled&&qid('private-offer').disabled,'predecessor kept owner actions');qassert(!qid('private-prepare-message').disabled,'predecessor lost ordinary membership');return true;}`,[freshDevice]);
+  await invoke(owner,`async function(device){qset('private-succeed-device',device);await qclick('private-succeed');qassert(qid('private-succeed-device').disabled,'successor input is editable during mutation');await qidle();qassert(qid('private-secret-output').hidden&&qid('private-download-secret').disabled,'succession retained a stale offer');qassert(qid('private-remove').disabled&&qid('private-renew').disabled&&qid('private-succeed').disabled&&qid('private-offer').disabled,'predecessor kept owner actions');qassert(!qid('private-prepare-message').disabled,'predecessor lost ordinary membership');return true;}`,[freshDevice]);
   const handoff=await download(owner,'private-download-output','vhcontrol');
   await setFile(fresh,'private-control-file',handoff.path);
   await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'succession churned the roster');qassert(!qid('private-remove').disabled&&!qid('private-renew').disabled&&!qid('private-succeed').disabled&&!qid('private-offer').disabled,'successor lacks owner actions');return true;})()");
@@ -444,6 +444,24 @@ async function task(abortSignal) {
   const successorRenewal=await download(fresh,'private-download-output','vhcontrol');
   await setFile(owner,'private-control-file',successorRenewal.path);
   await evaluate(owner,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-remove').disabled,'demoted owner regained owner actions');return true;})()");
+  // A malformed tail is discovered after source and record pages have already
+  // committed. The UI must close the importer, retain its exact cursor and make
+  // a same-file retry possible in a new unlocked worker.
+  const archive=await download(owner,'private-export-archive','vharchive');
+  const malformedArchive=join(output,'archive-with-trailing-byte.vharchive');
+  await writeFile(malformedArchive,Buffer.concat([archive.raw,Buffer.from([1])]),{mode:0o600});
+  await leave(fresh);
+  const enterArchive=async()=>evaluate(fresh,"(async()=>{qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','archive account unlock');await qclick('private-enter');await qwait(()=>!qid('private-import-archive').disabled,'archive selection');return true;})()");
+  await enterArchive();
+  await setFile(fresh,'private-archive-file',malformedArchive);
+  await evaluate(fresh,"(async()=>{await qclick('private-import-archive');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'malformed archive closes custody');qassert(qid('private-status').dataset.error==='true','malformed archive lacks error');qassert(qid('private-status').textContent.includes('same complete file'),'missing archive resume guidance');qassert(qid('private-archive-file').value==='','failed import kept file selection');return true;})()");
+  const archiveDb='vhalla-browser-storage-v1-'+Buffer.from('vhalla-browser-local-archive-v01').toString('hex');
+  const retainedImportKeys=await invoke(fresh,`async function(name){return await new Promise((resolve,reject)=>{const request=indexedDB.open(name);request.onerror=()=>reject(Error('retained archive open'));request.onsuccess=()=>{const db=request.result,tx=db.transaction('images','readonly'),count=tx.objectStore('images').count();tx.oncomplete=()=>{db.close();resolve(count.result);};tx.onabort=()=>{db.close();reject(Error('retained archive read'));};};});}`,[archiveDb]);
+  if(retainedImportKeys<=2)throw Error('malformed archive did not exercise a durable partial import');
+  await enterArchive();
+  await setFile(fresh,'private-archive-file',archive.path);
+  await evaluate(fresh,"(async()=>{await qclick('private-import-archive');await qwait(()=>!qid('private-archive').hidden&&!qid('private-archive-close').disabled,'same archive resume completes');qassert(qid('private-status').dataset.error!=='true','archive resume refused');await qclick('private-archive-outbox');await qwait(()=>!qid('private-archive-close').disabled,'archive outbox');qassert(qid('private-archive-outbox-select').options.length>0,'resumed archive lost retained output');return true;})()");
+  facts.push('DOM archive import discovers malformed trailing bytes after durable progress, locks without discarding records, then resumes the complete original file after explicit unlock');
   await leave(owner);await leave(fresh);
   facts.push('account-authorized succession hands ownership to the enrolled same-account device through one distributed owner control: the predecessor keeps ordinary membership, and the promoted successor issues controls the predecessor applies in order');
   if(unexpectedNetwork||networkWrites)throw Error('unexpected route, network write or unbounded download event');

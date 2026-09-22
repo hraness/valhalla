@@ -66,3 +66,7 @@ required-features = ["private-archive-qualification"]
 [[example]]
 name = "continuity_indexeddb"
 required-features = ["continuity-qualification"]
+
+[[example]]
+name = "private_archive_recovery"
+required-features = ["private-archive-qualification"]
