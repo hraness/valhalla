@@ -10,7 +10,7 @@ const output = resolve(root, "dist");
 const kit = dirname(fileURLToPath(import.meta.resolve("@hraness/design-kit/paper-theme.css")));
 await rm(output, { recursive: true, force: true });
 await mkdir(resolve(output, "design"), { recursive: true });
-for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "robots.txt", "sitemap.xml", "llms.txt"]) await cp(resolve(root, name), resolve(output, name));
+for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "robots.txt", "sitemap.xml", "llms.txt", "valhalla-mark.svg"]) await cp(resolve(root, name), resolve(output, name));
 const html = await readFile(resolve(root, "index.html"), "utf8");
 const footerMarker = "<!-- hraness-site-footer -->";
 if (html.split(footerMarker).length !== 2) throw new Error("Expected one shared footer slot.");
@@ -23,7 +23,7 @@ for (const page of docs) {
   await writeFile(resolve(target, "index.html"), rendered.replace(footerMarker, supportFooter()));
 }
 await cp(fileURLToPath(import.meta.resolve("@hraness/site-footer/stylex.css")), resolve(output, "footer.css"));
-const files = ["paper-theme.css", "product-marketing-preset.css", "lantern-material.css", "appearance-menu.css", "fonts.css"];
+const files = ["paper-theme.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css"];
 for (const name of files) await cp(resolve(kit, name), resolve(output, "design", name));
 // Keep the exact web fonts and license/provenance files, not native OTF copies
 // or the embedded TypeScript font data used only by social-card generators.

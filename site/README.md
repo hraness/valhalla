@@ -18,6 +18,9 @@ from the final header control. Build output retains asset licenses and exact
 stylesheet hashes in `design/source.json`. Deployment includes the referenced web
 fonts and their licenses, excluding duplicate native-font files and generator-only
 TypeScript font data. The build checks every shared font URL resolves. Product content and layout stay here. `pages.ts` owns the maintained static documentation, `docs.ts` renders the shared navigation and per-page metadata, and `build.ts` writes ordinary HTML paths under `/docs/`. No framework, analytics, external scripts or runtime content fetching are added. Navigation and code examples remain usable without JavaScript.
+The header title and transparent catalog mark use the shared metallic foil
+recipe. The original SVG remains the fallback for unsupported masks and forced
+colors; mask configuration stays in the external stylesheet under the same CSP.
 The pinned shared footer renders an optional paid-support link for Valhalla,
 without a newsletter form or client runtime. `bun run check:site` checks that
 boundary, validates documentation links/security disclosures, and builds every page; `/llms.txt` documents the installed CLI's optional

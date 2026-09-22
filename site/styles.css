@@ -97,12 +97,6 @@ main {
   white-space:nowrap;
 }
 
-.product-icon {
-  font-size:24px;
-  letter-spacing:0;
-  margin-right:7px;
-}
-
 .primary-nav {
   margin-left:auto;
   display:flex;
@@ -119,12 +113,25 @@ main {
 }
 
 .source-link {
-  gap:7px;
+  display:inline-flex;
+  align-items:center;
+  gap:9px;
+  font-size:14px;
+  text-decoration:none;
+}
+
+.source-link svg {
+  width:16px;
+  height:16px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.5;
 }
 
 .header-actions {
   display:flex;
   align-items:center;
+  gap:1.25rem;
 }
 
 .header-actions .hraness-design-theme-toggle__trigger {
@@ -1100,16 +1107,12 @@ table a {
   .wordmark {
     font-size:22px;
   }
-  .product-icon {
-    font-size:21px;
-    margin-right:3px;
-  }
   .primary-nav {
     gap:16px;
     font-size:12px;
   }
-  .primary-nav .source-link {
-    display:none;
+  .source-link {
+    font-size:13px;
   }
   .header-actions {
     flex-shrink:0;
@@ -1343,4 +1346,16 @@ table a {
   .avatar {
     border:1px solid CanvasText;
   }
+}
+
+/* Header identity follows the same checked mark as the public project catalog. */
+.masthead .wordmark {
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+}
+
+.masthead .brand-mark {
+  --hraness-foil-size:24px;
+  --hraness-foil-mask:url("/valhalla-mark.svg");
 }
