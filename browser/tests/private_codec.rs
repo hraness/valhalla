@@ -807,7 +807,7 @@ fn membership_view_round_trips_and_verifies_the_succession_chain() {
             owner,
             local: fresh_enrollment.clone(),
             members: vec![owner_enrollment.clone(), fresh_enrollment.clone()],
-            successions: grants.drain(..).collect(),
+            successions: std::mem::take(&mut grants),
         };
         assert!(Response::Membership(Box::new(view))
             .encode()
