@@ -37,8 +37,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build vhalla
-        # Preserve the maintained non-game commands. Legacy Platonik replay is
-        # opt-in; the complete all-features verification gate still runs above.
+        # Include the maintained public/private commands. The complete
+        # all-features verification gate still runs above.
         run: cargo build --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "${{ matrix.target }}"
       - name: macOS host custody and lifecycle regressions
         if: runner.os == 'macOS'
@@ -67,7 +67,7 @@ jobs:
             cat game-disabled.txt
             exit 1
           fi
-          [[ "$(cat game-disabled.txt)" == *"require an explicit build with --features experimental-game"* ]]
+          [[ "$(cat game-disabled.txt)" == *"usage: vhalla identity"* ]]
       - name: Package
         shell: bash
         run: |

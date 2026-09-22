@@ -85,8 +85,8 @@ no-dial peer selection.
 
 The existing [Clankdar prototype](../prototypes/clankdar-attest/README.md) owns
 the challenge/answer/admission workflow and local evaluator integration. No
-Clankdar hosted account is required. Platonik is not part of this path; legacy
-game replay remains an explicit source-build option.
+Clankdar hosted account is required. The Platonik adapter and legacy game replay
+command were removed; Clankdar continues through the ordinary room protocol.
 
 Puzzle exchange uses the same signed text, author sequence and durable outbox as
 ordinary room posts. A small artifact is one part; larger artifacts are bounded

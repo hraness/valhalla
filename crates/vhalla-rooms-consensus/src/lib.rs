@@ -219,8 +219,8 @@ impl Frontier {
 }
 
 /// The game object whose digest a consensus batch orders and includes.
-/// Values match the corresponding `vhalla-game-platonik` record tags, while
-/// this crate remains independent of any game engine.
+/// This crate stays independent of any game engine; the tag values are
+/// reserved by convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum GameCommitmentKind {

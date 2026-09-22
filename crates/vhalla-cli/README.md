@@ -62,22 +62,24 @@ launch is `VHALLA_MENUBAR_PATH`, the installed copy, a binary adjacent to
 Pushing a version tag such as `v0.1.7` runs the complete Rust, Kani,
 desktop, and site gates at that commit, then builds unbundled binaries:
 `vhalla` (`--release --locked --no-default-features --features
-experimental-network,experimental-sync,experimental-rooms-tui,experimental-public`)
+experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private`)
 for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`, plus
-`vhalla-menubar` for `aarch64-apple-darwin`, each as a tarball with a
+`vhalla-menubar` for `aarch64-apple-darwin` and the exact qualified production
+browser artifact, each as a tarball with a
 `.sha256` sidecar. A single publisher requires that the tag still names
-the current `main` commit and that all four default CodeQL analyses passed
-on that exact SHA. It uploads all six assets to a draft, verifies their
+the current `main` commit, that all four managed CodeQL analyses passed
+on that exact SHA, and that no CodeQL alerts remain open. It uploads all eight
+assets to a draft, verifies their
 downloaded bytes, then publishes the complete release. Failed uploads
 leave a draft; retries never overwrite an already published release.
 The workflow uses only the repository `GITHUB_TOKEN`. These are developer
 binaries without application signing or notarization.
 
 The release feature selection preserves paired networking, social sync, the
-room-directory CLI/TUI and public-peer commands. Platonik `game replay` remains
-an [opt-in source build](../../docs/game-replay.md); newly built release archives
-omit it. Older archives keep the commands they were published with. The complete
-all-features checks and game vectors still run before publication.
+room-directory CLI/TUI, public-peer commands and private-room tooling. The
+Platonik adapter and `game replay` command were removed from current source.
+Older archives keep the commands they were published with. The complete
+all-features checks and remaining protocol vectors still run before publication.
 
 Each archive has a different top-level directory. On Apple Silicon macOS,
 download both archives and their checksum sidecars from the same release,
@@ -1095,7 +1097,7 @@ explicit capability negotiation. Stripping annotations cannot repair signed hist
 ## Native local public activity
 
 The native Unix author commands use the maintained room-activity protocol and
-custody identity, independently of the optional Platonik feature. Build them with:
+custody identity. Build them with:
 
 ```console
 cargo build --locked -p vhalla-cli --features experimental-public --bin vhalla

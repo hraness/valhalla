@@ -4,7 +4,8 @@ This describes the source implementation on 22 September 2026. A passing local
 qualification is not a released artifact or a running public network. The target
 is a small native/browser product with public discoverable rooms and private
 invite-only rooms; optional Clankdar exchange uses the ordinary room protocol.
-Platonik is not a default product dependency.
+The Platonik adapter and game replay command were removed; the standalone witness
+VM and engine-independent consensus tags remain.
 
 ## Implemented and locally exercised
 

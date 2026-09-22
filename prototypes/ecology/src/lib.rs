@@ -1,4 +1,4 @@
-//! Deterministic ecology model for Platonik-style composition experiments.
+//! Deterministic ecology model for composition experiments.
 //!
 //! The state is intentionally tiny: organisms have typed abilities, resources,
 //! and lineage. Each tick uses a seed-derived deterministic schedule so a

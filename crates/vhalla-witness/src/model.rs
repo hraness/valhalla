@@ -3,8 +3,8 @@
 //!
 //! Only the v1 surface is present. `HasMaterial`, `AssemblyStage`,
 //! `AssemblyEdits`, `GatherMaterial`, `Build`, `Activate`, and
-//! `EditDirection` are v3/v4 and are rejected by Platonik's own validator for
-//! version 1, so the restated enums have no variant for them.
+//! `EditDirection` are v3/v4 and are rejected by the v1 validator, so the
+//! restated enums have no variant for them.
 
 use alloc::vec::Vec;
 

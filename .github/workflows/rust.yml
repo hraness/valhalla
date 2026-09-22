@@ -77,7 +77,7 @@ jobs:
           - name: private-rooms
             packages: -p vhalla-private-kernel -p vhalla-private-native -p vhalla-private-relay
           - name: remaining
-            packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-game-platonik -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
+            packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -117,10 +117,9 @@ jobs:
           cargo test --workspace --doc --all-features --locked
           cargo test -p vhalla-cli --no-default-features --test identity --locked
           cargo test -p vhalla-cli --no-default-features --test social --locked
-          cargo test -p vhalla-cli --features experimental-game --test game --locked
       - name: WASM pure crate checks
         run: |
-          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-game-platonik -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
+          cargo check -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-ledger -p vhalla-session -p vhalla-social -p vhalla-discovery -p vhalla-attention -p vhalla-retrieval -p vhalla-rooms -p vhalla-rooms-app -p vhalla-journal -p vhalla-rooms-consensus -p vhalla-rooms-node -p vhalla-witness -p vhalla-botcaptcha -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser --target wasm32-unknown-unknown --locked
           cargo check -p vhalla-private-kernel -p vhalla-private-relay -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-proof/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
@@ -129,7 +128,6 @@ jobs:
           cargo check --manifest-path prototypes/social-reducer/Cargo.toml --lib --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/social-sync/Cargo.toml --lib --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/room-registry/Cargo.toml --lib --target wasm32-unknown-unknown --locked
-          cargo check --manifest-path prototypes/game-wasm-parity/Cargo.toml --lib --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/browser-records/Cargo.toml --target wasm32-unknown-unknown --locked
           cargo check --manifest-path prototypes/browser-records/interop/Cargo.toml --lib --target wasm32-unknown-unknown --locked
       - name: Signed discovery native and WASM execution parity
@@ -141,8 +139,6 @@ jobs:
         run: python3 prototypes/social-facets/verify-vectors.py
       - name: Independent witness encoding golden vectors
         run: python3 prototypes/witness-vectors/verify-vectors.py
-      - name: Independent game session golden vectors
-        run: python3 prototypes/witness-vectors/verify-game-vectors.py
       - name: Native checkpoint persistence
         run: |
           cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked

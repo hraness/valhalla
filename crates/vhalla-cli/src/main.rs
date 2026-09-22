@@ -23,9 +23,6 @@ mod json;
 #[cfg(all(unix, feature = "experimental-social"))]
 mod social;
 
-#[cfg(all(unix, feature = "experimental-game"))]
-mod game;
-
 #[cfg(all(unix, feature = "experimental-rooms"))]
 mod rooms;
 #[cfg(all(unix, feature = "experimental-rooms-node"))]
@@ -94,8 +91,6 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         println!("\n{}", private_gateway::help());
         #[cfg(feature = "experimental-public")]
         println!("\n{}", public_network::HELP);
-        #[cfg(feature = "experimental-game")]
-        println!("\n{}", game::HELP);
         return Ok(());
     }
     if args.first().is_some_and(|s| s == "private-gateway") {
@@ -136,14 +131,6 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         #[cfg(not(feature = "experimental-rooms"))]
         return Err(
             "rooms commands require an explicit build with --features experimental-rooms".into(),
-        );
-    }
-    if args.first().is_some_and(|s| s == "game") {
-        #[cfg(feature = "experimental-game")]
-        return game::run(args);
-        #[cfg(not(feature = "experimental-game"))]
-        return Err(
-            "game commands require an explicit build with --features experimental-game".into(),
         );
     }
     if args.first().is_some_and(|s| s == "experimental") {

@@ -40,11 +40,18 @@ and both peer receipt chains after restart. See the [test runbook](browser/READM
 and [measured performance](docs/performance.md) for reproducible checks and limits.
 
 Public activity is **signed plaintext**. These local checks do not establish an
-activated public network or independent peer availability. Private group rooms,
-encrypted relay delivery, safe device rejoin and enforced agent compartments
-remain incomplete. A private validator set or paired chat is not an encrypted
-group room. The [readiness guide](docs/release-readiness.md) lists each remaining
-boundary and the work needed to close it.
+activated public network or independent peer availability. The experimental
+private-room source now includes MLS membership, encrypted relay delivery and
+bounded native/browser clients. Independent-host delivery, supported recovery
+and distribution still require the acceptance evidence in the
+[readiness guide](docs/release-readiness.md).
+
+For existing Codex or Devin sessions, start with [private rooms for CLI agents](docs/cli-agents.md).
+Trusted setup grants one room and finite permissions through a local MCP server;
+this cooperating-host interface is not an OS sandbox. A mostly persistent Mac
+can run the [local private-room host](docs/local-host.md) with explicit Tailcat
+forwarding and a stable browser origin. These are development-source workflows,
+not a claim that a host is already running or that a release is published.
 
 ## Start with the public development tools
 
@@ -81,10 +88,9 @@ instructions; the source runbooks do not imply that every change is released.
 [Clankdar](prototypes/clankdar-attest/README.md) is optional evidence exchange over
 the ordinary room path. It does not run incoming puzzles automatically.
 
-The legacy [Platonik verifier](docs/game-replay.md) requires an explicit
-`experimental-game` source build. It is outside the public-room/browser path and
-omitted from newly built release archives. Its existing vectors remain checked.
-The retired Dioxus experiments remain removed.
+The Platonik adapter and `game replay` command were removed. The standalone
+witness VM and engine-independent consensus tags remain; the retired Dioxus
+experiments remain removed.
 
 Other retained experiments include [explicitly paired chat](crates/vhalla-native/README.md),
 [social records](crates/vhalla-social/README.md), the directory terminal client and

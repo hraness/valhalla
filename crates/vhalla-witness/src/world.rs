@@ -1,4 +1,4 @@
-//! The platform-owned world: the Platonik `Experiment` minus cell programs
+//! The platform-owned world: the `Experiment` minus cell programs
 //! and fuel fields, plus the per-run [`Case`] and the validated
 //! [`Assignment`] of programs to cells.
 //!
@@ -488,7 +488,7 @@ pub struct CaseSpec {
     pub activation_fuel: u32,
     /// Scheduled events, at most 64, in declaration order.
     pub events: Vec<Event>,
-    /// Declared loading work; the Platonik adapter sets it to the JSON byte
+    /// Declared loading work; an adapter sets it to the JSON byte
     /// length of the original experiment.
     pub loading_work: u64,
 }

@@ -28,7 +28,7 @@ use crate::world::{
 
 /// Encoding version byte; moves together with every domain tag.
 pub const VERSION: u8 = 1;
-/// The only admitted language: Platonik habitat-v1 finite-rule programs.
+/// The only admitted language: habitat-v1 finite-rule programs.
 pub const LANGUAGE_FINITE_RULE_V1: u8 = 1;
 
 /// Widest condition: tag plus two one-byte fields.

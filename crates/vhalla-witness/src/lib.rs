@@ -7,7 +7,7 @@
 //! or arithmetic. The platform owns the world, the tick loop, the work ledger,
 //! the allowance, and every effect, and hands back plain data.
 //!
-//! - `bounds`, `model`, `world`, `ledger`, `vm`: the Platonik `habitat-v1`
+//! - `bounds`, `model`, `world`, `ledger`, `vm`: the `habitat-v1`
 //!   execution model restated bit for bit (see the witness platform plan).
 //! - `codec`, `hash`: canonical fixed-width encodings and domain-separated
 //!   SHA-256 digests.

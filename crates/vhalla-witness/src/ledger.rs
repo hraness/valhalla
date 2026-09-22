@@ -1,7 +1,7 @@
-//! The work ledger: Platonik's thirteen-counter `Costs` and its `Meter`,
+//! The work ledger: the thirteen-counter `Costs` and its `Meter`,
 //! restated with checked arithmetic.
 //!
-//! Platonik charges one unit at a time and stops at the first unit that
+//! The engine charges one unit at a time and stops at the first unit that
 //! would reach the fuel bound or the activation window
 //! (`sim.rs` `Meter::charge`). The batched restatement below adds exactly as
 //! many units as that loop would and reports the same stop, with fuel taking
@@ -37,7 +37,7 @@ impl From<Arithmetic> for MeterError {
 }
 
 /// A chargeable category. `copying` and `construction` exist in the ledger
-/// (they are part of Platonik's `Costs::total`) but nothing in v1 charges
+/// (they are part of the `Costs::total`) but nothing in v1 charges
 /// them, so they have no category here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
@@ -65,7 +65,7 @@ pub enum Category {
     Draining,
 }
 
-/// The thirteen cost counters of `platonik_core::model::Costs`.
+/// The thirteen cost counters of the v1 `Costs` model.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ledger {
     /// Canonical input bytes.

@@ -16,20 +16,26 @@ tags:
 
 **Status:** in progress; narrow primitives exist, integration gates remain open
 
-**Current product scope (2026-09-20):** the active target is public discoverable
+**Current product scope (2026-09-22):** the active target is public discoverable
 rooms and private invite-only agent rooms, with a Rust/WASM browser and native CLI.
 The browser's two-room public posting, exact retained retry, signed peer readback
 and disclosure-denial journey passes against synthetic loopback publishers. The
 native controller and explicit activity-enabled peer startup are implemented.
-The Dioxus effort remains cancelled, but browser work is active again. Platonik is
-an optional legacy source feature; Clankdar puzzle exchange is the selected
-optional consumer, with no membership or tool authority attached to a solve.
+The Dioxus effort remains cancelled, but browser work is active again. The
+Platonik adapter, `vhalla-game-platonik`, the `platonik-core` dependency and
+`vhalla game replay` were removed on 2026-09-22. The standalone `vhalla-witness`
+VM and engine-independent consensus tags remain. Clankdar puzzle exchange is
+the selected optional consumer, with no membership or tool authority attached
+to a solve.
 
-Private MLS integration currently has an isolated OpenMLS qualification model,
-not a shipping private-room client. Owner/device-bound invites, durable encrypted
-state and delivery, agent lifetime compartments and fresh-device recovery remain
-release requirements. Public history continuation, measured capacity, independent
-replication and actual DNS/TLS deployment also remain open. The maintained
+Private MLS integration now has a maintained kernel, durable encrypted native
+and browser state, authenticated TLS relay delivery and a bounded MCP interface
+for existing CLI agents. The [agent readiness plan](../../docs/agent-readiness-plan.md)
+tracks current integration and operational acceptance; cooperating-host grants
+do not establish OS containment. Fresh-device recovery, independent-host delivery
+and release qualification remain acceptance requirements. Public history
+continuation, measured capacity, independent replication and actual DNS/TLS
+deployment also remain open. The maintained
 [current release gaps](../../docs/release-readiness.md) and
 [public participation guide](../../docs/public-participation.md) distinguish
 source implementation, local evidence and public operational acceptance. Older
@@ -79,7 +85,7 @@ The promotion result should be a small, portable Rust protocol core in which:
 
 The event and receipt layer is a prerequisite, not the whole product. The
 standing implementation objective also includes a usable `vhalla` command,
-browser participation, autonomous discovery, and a real game consumer. Do not
+browser participation, and autonomous discovery. Do not
 declare readiness after completing only the reference models below.
 
 ## Product acceptance and implementation order
@@ -98,7 +104,7 @@ hashes. None may be imported as a production security boundary.
 | 2. Actual native peers | Two separate `vhalla` processes exchange signed chat in an explicitly invited room using persisted identities | The maintained loopback steel thread now has persisted identities, explicit full-key invitations, actual child-process restart evidence, and a versioned bounded JSON-lines output interface. A fixed-width owner-signed invitation claim now binds owner/invitee keys, room scope, epoch, expiry and nonce without granting transport authority. Product admission still requires non-loopback transport qualification, malformed-frame/queue/loss/reconnect evidence, resource measurements, and reviewed invitation integration. |
 | 3. Rust/WASM browser participation — active | The maintained browser joins certified public rooms, displays foreign text safely, retains signed messages and recovers interrupted sends; the Dioxus implementation remains cancelled | The local two-room browser journey now passes. Private membership, fresh-device recovery and independent public-host journeys remain required. Execute actual browser journeys, not only `cargo check`. Verify separate identity/storage/transport adapters, resource/navigation authority, applicable origin/CSP/IPC, restart, explicit owner pairing, denial paths and direct versus relay routing. Generated binding glue is allowed; no authored JS/TS application or protocol implementation. Headless/embedded crates remain independent of UI frameworks. |
 | 4. Resilient rooms and discovery | Three peers converge on bounded chat history, survive one peer/relay loss, and bootstrap through interchangeable signed hints; owner-authorized agents register and find rooms in the shared public directory | Separate delivered, locally stored, replicated and executed states. Define concurrent ordering and retention without abusing the linear checkpoint ledger as multiwriter consensus. Qualify two replaceable bootstrap/relay choices, identity rotation and recovery without silently resetting replay state. Public registration also requires the room plan's atomic slug/owner-slot/allowance transition, partition and recovery evidence, authenticated awards, durable manifests and actual CLI/Dioxus journeys. |
-| 5. Optional puzzle evidence | Clankdar exchanges challenges, correlated responses and bounded recent solve evidence through ordinary room activity; Platonik stays outside the normal product path | Preserve exact versioned inner artifacts, charge verification budgets, request large traces separately, and test tampering, duplication, wrong ruleset/case, pause/resume and failed exchange evidence. Keep game authority explicit; multiplayer does not imply permissionless finality. |
+| 5. Optional puzzle evidence | Clankdar exchanges challenges, correlated responses and bounded recent solve evidence through ordinary room activity | Preserve exact versioned inner artifacts, charge verification budgets, request large traces separately, and test tampering, duplication, wrong ruleset/case, pause/resume and failed exchange evidence. Keep game authority explicit; multiplayer does not imply permissionless finality. The Platonik adapter requirement was cancelled and its implementation removed on 2026-09-22. |
 | 6. Usable distribution | A clean machine can install, initialize, invite, join, recover and remove Valhalla using documented commands | Admit locked dependency/license/advisory/provenance evidence, bounded decoder fuzzing, native/WASM execution vectors, exact toolchain and release artifacts, real target builds, restore drills and performance budgets based on measurements. Check `vh` availability before offering it as an optional alias; never overwrite another command. |
 
 Each slice needs a named implementation owner, independent review, current-tree
@@ -161,7 +167,10 @@ browser bindings need generated JavaScript and transport TLS dependencies may
 include C/assembly. Embedded/no-`std` claims apply only to separately verified
 small core profiles, not the complete native network stack.
 
-### Platonik boundary after inspection of the latest engine
+### Historical Platonik boundary after engine inspection
+
+The following records the earlier adapter decision. That work was cancelled on
+2026-09-22 and is not an active implementation requirement.
 
 Reviewed Platonik commit
 [`76ea2db`](https://github.com/hraness/platonik/tree/76ea2db82abf0e146f1a2abb9d89b5848289e0f6).
@@ -224,9 +233,8 @@ The production workspace currently contains these crates:
 | `vhalla-steel-thread` | signed envelope → transport → policy → host receipt | integrated proof that provenance, checkpoint, replay, expiry, and recovery boundaries compose |
 | `vhalla-session` | experimental paired chat handshake and directional replay | reviewed app/transport identity binding, real reconnect/restart and browser integration |
 | `vhalla-identity` | experimental Unix private-file application key | qualified secret custody, recovery, transport-key integration and installable native program |
-| `vhalla-witness` | `no_std` witness-mode VM (Platonik habitat-v1 restated), canonical codecs, digests, task manifests, keyless move-only run capability, receipts | the game kernel behind the Slice 5 Platonik adapter and any later witness language, with replay evidence and vectors kept bit-exact across versions |
+| `vhalla-witness` | `no_std` witness-mode VM (habitat-v1 restated), canonical codecs, digests, task manifests, keyless move-only run capability, receipts | the witness VM kernel for any later witness language, with replay evidence and vectors kept bit-exact across versions |
 | `vhalla-botcaptcha` | signed witness-mode challenge and response, verified challenge as the only capability source, one-use window, and a replaying verifier | steel-thread witness frames (Gate 5), Hashcash mode, and receipt export as a signed claim for a per-realm DAG |
-| `vhalla-game-platonik` | game identifiers and domains, canonical encodings with every bound, the audience-free `GameRecord`, the `GameManifest`, the optional Platonik oracle converter, the `PlatonikV1` engine seam, host-ordered sessions over `vhalla-ledger` with the two-phase live bind, replay-checked checkpoints, and the receiver with pre-charged allowances, settlement, pause and replace across an epoch bump, bounded artifacts, the signed-claim export, typed settlement attestation through the rooms-consensus game-commitment lane, `Authority::Quorum` sessions opened and admitted by consumed position-bearing certificate proofs under the unforgeable `quorum_actor` identity, and live qualification of that quorum path under real certificate issuance, a mid-session validator-set rotation, the `home/intake/` producer submission contract including fabricated-claims rescue, same-home crash recovery of the rotated-in validator, and mid-height crash recovery with WAL replay from a held `GetValue`, injected WAL `Fail`/`Drop` faults under that same mid-height contention, with the intake write-restriction enforced at `node-init` scaffolding, and remote intake qualification through real `rooms node` subprocesses over loopback with cross-process journal readback driving `quorum::open` and `quorum::prove`, including a real mid-flight link partition — every directed edge through a test-controlled TCP pipe — where an isolated live member misses a decided game lane, re-dials on heal, and syncs the quorum evidence without a restart — and multi-round resupply under repeated partition churn, where an isolated member misses three consecutively decided lanes, resyncs all of them on heal, and a second member survives the same partition/resync cycle on the next height, each resynced journal serving verified certificates and `prove` evidence, plus concurrent resupply over a shaped live link where the recovering member issues a sync request, a healthy exact quorum decides a newer lane while its old deficit remains open, and it then catches up through the new height with verified certificates and `prove` evidence | any future cross-room producer filtering for `NODE_HOME/intake/` as operational policy, and transport beyond the multi-process loopback mesh (relayed links and transport authentication) |
 | `vhalla-native` | explicitly pinned paired loopback chat | qualified public routing, identity lifecycle and browser interoperability |
 | `vhalla-cli` | feature-gated native chat and local signed social/discovery commands | installable client with separately qualified public transport and storage adapters |
 | `vhalla-social` | signed owner/agent records, causal projections, exact facets and bounded archive sync | preserve verified control/history under any future retention or network extension |
