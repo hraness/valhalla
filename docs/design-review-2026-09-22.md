@@ -208,7 +208,8 @@ Final local `cargo test -p vhalla-private-native --all-targets --all-features --
 `cargo test -p vhalla-cli --all-features --locked --test private_rooms`,
 `cargo test --workspace --doc --all-features --locked` and
 `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
-all passed after the final corrections. Workspace/prototype formatting and
+all passed after the final corrections: 67 private-native tests, all 16 private CLI
+journeys, 48 workspace doctests, and strict workspace lint. Workspace/prototype formatting and
 `git diff --check` passed. The exact-head CI aggregate remains pending delivery;
 baseline CI does not validate subsequent working-tree changes. Use Rust 1.98.1 explicitly
 on this host; its default toolchain is older. Heavy commands use the installed

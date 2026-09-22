@@ -1,7 +1,7 @@
 // Maintained static documentation. No visitor input, runtime fetches or analytics.
 export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string };
 const code = (value: string) => `<pre><code>${value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</code></pre>`;
-export const documentedRevision = "3a9b0aec426ae0355242e7ed5eff75afefeccb39";
+export const documentedRevision = "ed8076547a8aa2010686369c369aaf230f73887c";
 const source = (path: string, label = "Source guide") => `<a href="https://github.com/hraness/valhalla/blob/${documentedRevision}/${path}">${label} ↗</a>`;
 const note = (title: string, text: string) => `<aside class="doc-note"><strong>${title}</strong><p>${text}</p></aside>`;
 export const docs: DocPage[] = [
