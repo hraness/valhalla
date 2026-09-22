@@ -591,6 +591,10 @@ async fn execute(args: Args) -> Result<(), String> {
             let report =
                 vhalla_private_native::relay::net::scan(&directory, transport.source(), limit)
                     .map_err(scan_error)?;
+            // A mailbox-directory transport holds its exclusive lock while
+            // open; the apply pass below needs only the staged item files, so
+            // release the mailbox before touching room custody.
+            drop(transport);
             let items = directory.join("items");
             let mut positions = Vec::new();
             for entry in std::fs::read_dir(&items).map_err(|_| "catchup directory unreadable")? {

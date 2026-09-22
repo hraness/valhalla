@@ -1265,6 +1265,65 @@ fn private_cli_relay_directory_transport_delivers_bidirectionally() {
         .iter()
         .any(|m| m["body_utf8"] == "member reply through a directory\n"));
     let _ = owner;
+    // The low-level submit/scan pair runs on the directory transport too:
+    // a second owner message exported by sequence, retained through
+    // relay-submit --mailbox, staged through relay-scan --mailbox, then
+    // applied through the authenticated item path.
+    let owner = f.inspect("owner-key", "owner-room", "owner-inspect-2");
+    f.write("text", b"second directory message\n");
+    f.ok(
+        "send",
+        "owner-key",
+        Some("owner-room"),
+        &send_options(&f, &owner, 5, "message-2"),
+    );
+    f.ok(
+        "relay-export",
+        "owner-key",
+        Some("owner-room"),
+        &[
+            ("namespace", namespace.clone()),
+            ("sequence", "4".into()),
+            ("out", f.path("item-4")),
+        ],
+    );
+    f.ok(
+        "relay-submit",
+        &f.path("item-4"),
+        None,
+        &[("mailbox", f.path("mailbox")), ("out", f.path("receipt-4"))],
+    );
+    assert_eq!(f.json("receipt-4")["position"], 5);
+    f.ok(
+        "relay-scan",
+        &f.path("member-catchup-2"),
+        None,
+        &[
+            ("mailbox", f.path("mailbox")),
+            ("namespace", namespace.clone()),
+            ("out", f.path("scan-2")),
+        ],
+    );
+    let scanned = f.json("scan-2");
+    assert_eq!(scanned["scanned"], 5);
+    assert_eq!(scanned["cursor"], 5);
+    f.ok(
+        "relay-apply",
+        "member-key",
+        Some("member-room"),
+        &[
+            ("namespace", namespace.clone()),
+            (
+                "relay",
+                f.path("member-catchup-2/items/0000000000000005.vhrelay"),
+            ),
+            ("out", f.path("applied-4")),
+        ],
+    );
+    assert_eq!(
+        fs::read(f.root.join("applied-4")).unwrap(),
+        b"second directory message\n"
+    );
 }
 
 #[test]
