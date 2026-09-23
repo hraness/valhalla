@@ -273,8 +273,11 @@ inference from connectivity failures.
 
 The service caps concurrent connection threads and handshake starts per fixed
 work window. Each credential receives at most half the global storage,
-request/byte and concurrent allowances. A response reserves its maximum wire
-size before database work; slow response writes do not hold the mailbox mutex.
+request/byte and concurrent allowances. Admission charges the request frame;
+after dispatch the service charges the actual encoded response size. An
+admitted response can exceed the remaining window allowance by its bounded
+size; subsequent admission observes the spent budget. Slow response writes do
+not hold the mailbox mutex.
 Excess work receives canonical capacity refusal (or an immediate close before
 TLS authentication). Fixed-window work counters restart with the service;
 storage quotas are durable. A durable storage failure poisons the service,
@@ -326,13 +329,22 @@ Status distinguishes `Pending`, `Uncertain`, `Retained` and `Stopped`.
 refusal. A scope/conflict/protocol refusal stops the job. Credential denial ends
 the tick and current host grant while preserving exact bytes, charged attempts
 and backoff. An explicit new grant with a replacement credential can retry under
-the original lifetime budget; exhausted jobs remain stopped. Capacity and
-transient transport failures use capped exponential backoff
-and a finite attempt budget. The host schedules the next tick; the library
+the existing attempt budget; exhausted jobs remain stopped until an explicit
+host `resume`. Resume preserves the job identity, ciphertext and uncertainty,
+moves the prior attempt count into durable `spent_attempts` evidence, and
+starts a fresh budget. Repeating resume on a live job does nothing.
+
+Capacity refusals consume the finite attempt budget. Connection failure,
+timeout and unavailability preserve uncertainty, record outage evidence and
+restore the attempt charge when that outcome commits; a crash before outcome
+publication leaves the durable intent charged and uncertain. Both outcomes
+use capped exponential backoff. The host schedules the next tick; the library
 never sleeps, spins or starts a background worker. Each tick limits due jobs,
-canonical bytes and total time. Caller UNIX time cannot move behind retained
-time. Queue capacity includes completed/stopped jobs, and no API deletes or
-resets evidence or silently renews a stopped budget.
+canonical bytes and total time. A wall-clock step back of at most one hour uses
+the retained clock; larger regressions refuse. The live-job limit includes
+pending, uncertain and stopped jobs. Retained jobs release that slot but their
+bytes still count toward the byte limit. No API deletes retained evidence or
+silently renews a stopped budget.
 
 A queue is a trusted host facility, not an agent tool. Its profile and full
 context must come from the host's independently selected session. The agent

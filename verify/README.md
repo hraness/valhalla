@@ -5,7 +5,9 @@ the deployed system meets the claim of another layer. Tool download hashes live
 in `tools.json` and the CI workflow; complete model logs and counterexamples are
 retained as CI artifacts. The original private-room evidence is recorded in
 `docs/production-formal-plan-2026-09-23.md`; the subsequent tool comparison and
-new boundaries are tracked in `kb/plans/valhalla-formal-rigor.md`.
+new boundaries are tracked in `kb/plans/valhalla-formal-rigor.md`. Additional
+shipping protocols are covered by the
+[protocol expansion](../kb/plans/valhalla-protocol-formal-expansion.md).
 
 | Claim | Production correspondence | Evidence | Limits |
 | --- | --- | --- | --- |
@@ -16,8 +18,12 @@ new boundaries are tracked in `kb/plans/valhalla-formal-rigor.md`.
 | A new acceptance cannot let a local membership control overtake older output | Native monotone outbox capture and sender-local control merge | `private-egress/PrivateEgress.tla`, tail-shortcut counterexample and real TLS bounded-backlog regression | Three already-committed local artifacts, one control and capacity one. Checks staging/egress order; does not prove source artifact creation, global delivery order or remote epoch availability. |
 | Drained generation cutover preserves pending work, spend and receipt scope | Proposed contract in `docs/private-rotation-contract.md` | `private-rotation/PrivateRotation.tla`, two jobs/two generations, separate durable retention/receipt, frozen predecessor head and three counterexamples | Design evidence only until native/browser/host transition implementation is qualified. Does not model distributed global drain discovery, malicious peers, credential revocation or offline-member availability. |
 | Release follows confirmed publication and a final local grant check; drafts retain their roster | `AgentSession::queue`, `authority`, kernel send and storage CAS | `private-publication/PrivatePublication.tla`; existing `agent_pending_cancellation_and_uncertain_commit_conserve_charges`, `agent_authority_expires_or_is_revoked_while_publication_is_pending`, kernel competing-custody tests | Two sessions, one exact operation per session, one roster change, irreversible local revocation. Atomic storage is assumed. Release linearizes at its final grant check; this does not prevent bytes already authorized from arriving later or provide remote instantaneous revocation. No liveness claim. |
-| An operating rooms host preserves reply custody, prepares live values durably and resolves empty requests | `drain_answerable_held`, `prepare_local_parts`, `flush_held`, `run` in rooms-node `unix.rs` | [Held reply model](rooms-held-reply/README.md); `unix::tests::formal_held_reply` drives the real host loop; `seen_failed_preparation_cannot_release_direct_or_held_reply` checks send ordering under a forced write failure | Two requests at one height, one durable batch and one metadata slot. Progress assumes advancing deadlines, fair host polling, live receiver and eventual network drain. No hard wall-clock deadline, shutdown custody, hash-injectivity, Malachite or filesystem theorem. |
+| An operating rooms host preserves reply custody, durably prepares and admits live candidates, and resolves empty requests | `drain_answerable_held`, `prepare_local_parts`, `flush_held`, `run` in rooms-node `unix.rs` | [Held reply model](rooms-held-reply/README.md); real host-loop tests, forced preparation failure, and a three-height candidate-pruning regression | Two requests at one height, one retained valid batch and one metadata slot. Prior-height pruning is abstracted as absent adapter admission. Progress assumes advancing deadlines, fair host polling, live receiver and eventual network drain. No hard wall-clock deadline, shutdown custody, hash-injectivity, Malachite or filesystem theorem. |
 | Sealed host recovery preserves its rollback evidence across repeated interruptions | `recover_seal`, `restore_seal_backups_with`, `remove_seal_scratch` and `load` in private-host `config.rs` | [Host recovery model](host-recovery/README.md), including a counterexample to the former absent-marker cleanup; `formal_host_recovery_*` regressions | Two data files plus config/completion, two interruptions, atomic durable replacement assumed. Separates process-visible unlink from durable absence. No physical APFS power-cut proof, mailbox migration or simultaneous-writer theorem. |
+| Rooms acknowledgments follow the complete durable frontier; failed finalization preserves WAL custody | `Adapter::open_with`, `reconcile_committed`, `decide`, snapshot `publish` and the rooms-node `Finalized` response | [Rooms frontier model](rooms-frontier/README.md); seven adapter recovery regressions and two real host-loop finalization regressions | Two heights/values, two interruptions, four root-change schedules, one height-1 WAL obligation and one roster transition. Atomic publication and verified replay are assumed; the pinned engine's restart/reset mapping is source-reviewed, not proved. No physical persistence or whole-consensus theorem. |
+| Native retries retain exact transport identity, uncertainty and attempt evidence | `DeliveryStore::tick`, outcome publication, `resume` and reopen | [Native delivery model](native-delivery/README.md); existing delivery tests and the real TLS lost-receipt/resume regression | One exact job, two attempts per allowance, one explicit resume, bounded outages/crashes and one precommit outcome refusal. Atomic local publication is assumed; postcommit barrier/readback failure, delivery liveness, cancellation and re-encryption are outside this model. |
+| Relay retention and quota charges publish together; exact retries preserve position and original charge ownership | Relay store PUT transaction, TLS service storage quotas and stable credential ID | [Relay quota model](relay-quota/README.md); the compound TLS regression reopens both stores, replaces a token and reconciles the original mailbox position | Two items, two credential IDs, four requests and two interruptions. Process restart and SQLite atomicity are modeled; no physical power-loss, concurrent writers or rate-window theorem. |
+| Owner handoffs retain historical authority and uncertain fork publication preserves quarantine custody | Kernel `owner_device_at`, succession checks, control observation, storage publication and reopen | [Private control model](private-control/README.md); real A→B→A and storage-fault succession tests | Two devices, four control slots, two handoffs and bounded new-process reopens; ordinary and late-join histories. Valid signatures and atomic storage are assumed. No MLS, disconnected-replica agreement, dead-owner recovery or observation persistence after a refused write and process loss. |
 
 ## Running and interpreting finite-model checks
 
@@ -77,13 +83,23 @@ artifacts already exist; the integration test supplies that correspondence.
 The held reply model adds a liveness counterexample: with deadline resolution
 disabled, the connector can stutter forever awaiting its reply even though no
 producer supplies a batch. The other mutants drop custody, reply before
-retaining exact metadata, and publish a tombstone. Production regressions drive
+retaining exact metadata, omit adapter admission, and publish a tombstone. Production regressions drive
 actual `run`/oneshot/network channels with a late submission, deadline-only
 resolution and a full metadata budget. The live-value test observes retained
 data when its receiver resumes; the independent forced-write-failure test is
 what rejects sending before synchronous persistence. These tests and source
 review establish correspondence evidence, not automatic trace extraction or
 a Rust refinement proof.
+
+Broader rooms validation exposed a separate gap between durable retention and
+decision readiness. Committing earlier heights pruned a future batch from the
+adapter, while its bytes remained available for a local proposal. Because
+self-gossip does not run through remote admission, that proposer could reject
+its own later decision. Local preparation now validates and restores the exact
+candidate after metadata admission. The three-height regression reproduces the
+failure without network timing; a full-budget case checks that refused
+preparation cannot add a hold. The held-reply model's separate admission state
+and mutant preserve this distinction.
 
 The host model distinguishes process interruption from power loss. It exposed
 the former cleanup sequence: unlink marker, stop before the directory fence,
@@ -94,6 +110,40 @@ must succeed before any backup is deleted. The counterexample demonstrates a
 missing ordering guarantee under conservative metadata persistence assumptions;
 it is not a reproduction of physical disk loss. Additional schedules cover
 interrupted restoration, corrupt evidence and whole-snapshot admission.
+
+The rooms frontier expansion reproduced three adapter defects with real
+canonical journal and snapshot writes: root-preserving batches could be
+acknowledged before their full frontier advanced, independently inferred
+snapshot heights could refuse an honest social-only interruption, and changed
+snapshots could be admitted beneath an empty journal. Recovery now selects a
+jointly compatible prefix and applies each remaining full frontier. Separate
+host-loop tests reproduced failed finalization requesting a same-height engine
+restart, which resets the WAL in the pinned engine. Failure now withholds that
+response; successful finalization uses the actual next height's validator set.
+The model's `HonestRecovery` property checks recovery state before successful
+admission, so a stuck or incorrectly refused honest recovery cannot hide behind
+the final equality guard. Its source map and mutants distinguish these repaired
+defects from deliberately introduced future-regression checks.
+
+Native sender attempts and relay storage charges have different meanings. An
+attempt intent becomes durable before transport; a durably classified outage
+restores its attempt charge while retaining uncertainty and outage evidence.
+Explicit resume grants a new allowance while accumulating previous spend.
+At the relay, an exact duplicate keeps its original position and charge owner,
+even after a token changes under the same stable credential ID. The compound
+TLS trace crosses both boundaries: it loses a successful PUT completion,
+reopens, exhausts and resumes the sender, then receives the original position
+without renewed relay quota. The two models keep these accounting rules
+separate.
+
+The private-control model derives the signer for a control sequence from
+accepted handoff history, including the predecessor signature on the carrying
+handoff itself. Observation compares evidence and cannot advance accepted
+authority. Unknown precheckpoint history cannot establish a fork, while a
+known conflicting historical proof can. Interrupted fork publication blocks
+live work until recovery; once quarantine is durable, reopening retains it.
+The runtime tests distinguish a refused write whose volatile observation is
+lost with the process from a committed fault whose completion was lost.
 
 ## Lean comparison decision
 

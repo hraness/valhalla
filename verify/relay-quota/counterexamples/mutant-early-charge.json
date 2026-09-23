@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "scope": "current finite-model counterexample, not an implementation execution",
+  "model_sha256": "ab29acba3b1f51534f41c1e116b148361c9ca6668b07eb6b540ca4c5be5719c6",
+  "config_sha256": "3804b357799730f2bcadb002795e0ac0215828d1cfc75ef0b64b879cdd5c2d2c",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "expected": {
+    "kind": "invariant",
+    "property": "ItemsChargedTogether"
+  },
+  "states": [
+    {
+      "state": 1,
+      "action": "Init",
+      "tlc_text": "<Initial predicate>\ns = [ charges |-> {},\n  items |-> {},\n  key |-> \"owner\",\n  item |-> \"first\",\n  positions |-> [first |-> 0, second |-> 0],\n  pc |-> \"idle\",\n  original |-> [first |-> 0, second |-> 0],\n  owner |-> [first |-> \"none\", second |-> \"none\"],\n  synced |-> {},\n  head |-> 0,\n  token |-> \"old\",\n  rotated |-> FALSE,\n  duplicate |-> FALSE,\n  stagedItems |-> {},\n  stagedCharges |-> {},\n  receipts |-> {},\n  crashes |-> 0,\n  attempts |-> 0 ]"
+    },
+    {
+      "state": 2,
+      "action": "Begin",
+      "tlc_text": "<Begin line 41, col 5 to line 46, col 57 of module RelayQuota>\ns = [ charges |-> {},\n  items |-> {},\n  key |-> \"owner\",\n  item |-> \"first\",\n  positions |-> [first |-> 0, second |-> 0],\n  pc |-> \"charge\",\n  original |-> [first |-> 0, second |-> 0],\n  owner |-> [first |-> \"none\", second |-> \"none\"],\n  synced |-> {},\n  head |-> 0,\n  token |-> \"old\",\n  rotated |-> FALSE,\n  duplicate |-> FALSE,\n  stagedItems |-> {},\n  stagedCharges |-> {},\n  receipts |-> {},\n  crashes |-> 0,\n  attempts |-> 1 ]"
+    },
+    {
+      "state": 3,
+      "action": "StageCharge",
+      "tlc_text": "<StageCharge line 48, col 5 to line 54, col 71 of module RelayQuota>\ns = [ charges |-> {[bytes |-> 1, key |-> \"owner\", item |-> \"first\", serial |-> 0]},\n  items |-> {},\n  key |-> \"owner\",\n  item |-> \"first\",\n  positions |-> [first |-> 0, second |-> 0],\n  pc |-> \"item\",\n  original |-> [first |-> 0, second |-> 0],\n  owner |-> [first |-> \"none\", second |-> \"none\"],\n  synced |-> {},\n  head |-> 0,\n  token |-> \"old\",\n  rotated |-> FALSE,\n  duplicate |-> FALSE,\n  stagedItems |-> {},\n  stagedCharges |->\n      {[bytes |-> 1, key |-> \"owner\", item |-> \"first\", serial |-> 0]},\n  receipts |-> {},\n  crashes |-> 0,\n  attempts |-> 1 ]"
+    }
+  ],
+  "loop": null
+}

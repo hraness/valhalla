@@ -483,6 +483,260 @@ fn production_tls_transport_completes_a_durable_bound_delivery_job() {
 }
 
 #[test]
+fn formal_relay_lost_receipt_resume_preserves_custody_and_quota() {
+    use crate::relay::delivery::{self, DeliveryStore, JobState, RetryPolicy, TickBudget};
+    use vhalla_private_kernel::{
+        protocol::{AnchorId, Key, PrivateRoomScope, RoomId},
+        Context,
+    };
+
+    // Only the completion is lost: the real TLS client verifies a real receipt
+    // from the production service before this test seam returns a timeout.
+    struct LoseReceipt {
+        inner: TlsRelay,
+        queue: PathBuf,
+        retained: Option<RelayReceipt>,
+        sent: Vec<u8>,
+    }
+    impl delivery::Transport for LoseReceipt {
+        fn endpoint_id(&self) -> delivery::EndpointId {
+            self.inner.endpoint_id()
+        }
+        fn namespace(&self) -> RelayNamespace {
+            ns()
+        }
+        fn submit_until(
+            &mut self,
+            item: &RelayItem,
+            until: Instant,
+        ) -> std::result::Result<RelayReceipt, NetError> {
+            assert!(
+                self.retained.is_none(),
+                "only one lost completion is injected"
+            );
+            let reader = rusqlite::Connection::open_with_flags(
+                self.queue.join("delivery.db"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let (state, attempts, uncertain, raw): (i64, i64, i64, Vec<u8>) = reader
+                .query_row(
+                    "SELECT state,attempts,uncertain,item FROM jobs WHERE id=?1",
+                    rusqlite::params![item.digest().as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!((state, attempts, uncertain), (1, 1, 1));
+            assert_eq!(raw, item.encode().unwrap());
+            self.sent = raw;
+            self.retained = Some(self.inner.submit_until(item, until)?);
+            Err(NetError::Timeout)
+        }
+    }
+
+    fn assert_mailbox(fixture: &Fixture, exact: &RelayItem) {
+        let store = fixture.open();
+        let page = store.page(0, 4).unwrap();
+        assert_eq!(page.head, 1);
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].item, *exact);
+        let (count, bytes): (i64, i64) = store
+            .conn
+            .query_row("SELECT COUNT(*), SUM(bytes) FROM tls_charges", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(bytes as usize, exact.payload().len());
+        let (digest, owner): (Vec<u8>, Vec<u8>) = store
+            .conn
+            .query_row("SELECT digest,key_id FROM tls_charges", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(digest, exact.digest());
+        assert_eq!(owner, [1; 16]);
+    }
+
+    let f = Fixture::new();
+    let cert = certificates();
+    // Keep the selected endpoint unchanged across service restarts. Neither
+    // the queue nor its transport profile is relabeled to a new test port.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut owner = credential(1, 7);
+    owner.storage.max_items = 1;
+    let first = Service::new(
+        f.open(),
+        cert.config.clone(),
+        vec![owner],
+        ServiceLimits::default(),
+    )
+    .unwrap();
+    let first_listener = listener.try_clone().unwrap();
+    let first_worker = thread::spawn(move || first.serve(first_listener, Some(1)).unwrap());
+    let context = Context {
+        scope: PrivateRoomScope {
+            room: RoomId::from_bytes([1; 32]).unwrap(),
+            anchor: AnchorId::from_bytes([2; 32]).unwrap(),
+        },
+        account: Key::from_bytes(
+            ed25519_dalek::SigningKey::from_bytes(&[3; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .unwrap(),
+        device: Key::from_bytes(
+            ed25519_dalek::SigningKey::from_bytes(&[4; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .unwrap(),
+    };
+    let queue = f.0.join("formal-delivery");
+    let profile = client(address, &cert, 7).endpoint_id();
+    let mut jobs = DeliveryStore::create_new(
+        &queue,
+        context,
+        ns(),
+        profile,
+        delivery::Limits {
+            max_jobs: 2,
+            max_bytes: 1024 * 1024,
+        },
+        RetryPolicy {
+            max_attempts: 2,
+            initial_backoff_secs: 1,
+            max_backoff_secs: 8,
+        },
+    )
+    .unwrap();
+    let budget = || TickBudget {
+        max_jobs: 2,
+        max_bytes: 1024 * 1024,
+        deadline: deadline(),
+    };
+    let exact = item(1);
+    let queued = jobs.enqueue(&exact, 100).unwrap();
+    let mut lost = LoseReceipt {
+        inner: client(address, &cert, 7),
+        queue: queue.clone(),
+        retained: None,
+        sent: Vec::new(),
+    };
+    let uncertain = jobs.tick(&mut lost, 100, budget()).unwrap().jobs.remove(0);
+    assert_eq!(uncertain.state, JobState::Uncertain);
+    assert_eq!(
+        uncertain.attempts, 0,
+        "a committed outage restores its charge"
+    );
+    assert!(uncertain.uncertain);
+    assert_eq!(jobs.evidence(queued.id).unwrap().outages, 1);
+    let receipt = lost.retained.unwrap();
+    assert_eq!(receipt.digest, queued.id);
+    assert_eq!(receipt.position, 1);
+    assert!(!receipt.duplicate);
+    assert_eq!(lost.sent, exact.encode().unwrap());
+    first_worker.join().unwrap();
+    drop(jobs);
+    assert_mailbox(&f, &exact);
+
+    let mut replacement = credential(1, 9);
+    replacement.storage.max_items = 1;
+    let second = Service::new(
+        f.open(),
+        cert.config.clone(),
+        vec![replacement],
+        ServiceLimits::default(),
+    )
+    .unwrap();
+    let second_listener = listener.try_clone().unwrap();
+    let second_worker = thread::spawn(move || second.serve(second_listener, Some(4)).unwrap());
+    let mut jobs = DeliveryStore::open(&queue, context, ns(), profile).unwrap();
+    assert_eq!(jobs.job(queued.id).unwrap(), Some(uncertain.clone()));
+    let mut old_token = client(address, &cert, 7);
+    let mut new_token = client(address, &cert, 9);
+    assert_eq!(old_token.endpoint_id(), new_token.endpoint_id());
+    let denied = jobs
+        .tick(&mut old_token, uncertain.next_due, budget())
+        .unwrap()
+        .jobs
+        .remove(0);
+    assert_eq!(denied.state, JobState::Uncertain);
+    assert_eq!(denied.attempts, 1);
+    assert_eq!(denied.last_error, Some(NetError::Denied));
+    assert!(denied.uncertain);
+    drop(jobs);
+    let mut jobs = DeliveryStore::open(&queue, context, ns(), profile).unwrap();
+    let stopped = jobs
+        .tick(&mut old_token, denied.next_due, budget())
+        .unwrap()
+        .jobs
+        .remove(0);
+    assert_eq!(stopped.state, JobState::Stopped);
+    assert_eq!(stopped.attempts, 2);
+    assert!(stopped.uncertain);
+    drop(jobs);
+    let mut jobs = DeliveryStore::open(&queue, context, ns(), profile).unwrap();
+    assert!(jobs
+        .tick(&mut new_token, stopped.next_due, budget())
+        .unwrap()
+        .jobs
+        .is_empty());
+    let resumed = jobs.resume(Some(queued.id), stopped.next_due).unwrap();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].state, JobState::Uncertain);
+    assert!(resumed[0].uncertain);
+    assert_eq!(resumed[0].attempts, 0);
+    assert_eq!(resumed[0].id, queued.id);
+    assert_eq!(resumed[0].operation, queued.operation);
+    assert_eq!(resumed[0].sequence, queued.sequence);
+    let evidence = jobs.evidence(queued.id).unwrap();
+    assert_eq!(
+        (evidence.outages, evidence.resumes, evidence.spent_attempts),
+        (1, 1, 2)
+    );
+    assert!(jobs
+        .resume(Some(queued.id), stopped.next_due)
+        .unwrap()
+        .is_empty());
+    assert_eq!(jobs.evidence(queued.id).unwrap(), evidence);
+    assert_eq!(jobs.enqueue(&exact, stopped.next_due).unwrap(), resumed[0]);
+    drop(jobs);
+    let mut jobs = DeliveryStore::open(&queue, context, ns(), profile).unwrap();
+    let retained = jobs
+        .tick(&mut new_token, stopped.next_due, budget())
+        .unwrap()
+        .jobs
+        .remove(0);
+    assert_eq!(retained.state, JobState::Retained);
+    assert_eq!(retained.position, Some(receipt.position));
+    assert_eq!(retained.attempts, 1);
+    assert!(!retained.uncertain);
+    assert_eq!(jobs.evidence(queued.id).unwrap(), evidence);
+
+    // Token replacement did not renew the stable identity's retained quota.
+    let second_job = jobs.enqueue(&item(2), stopped.next_due + 1).unwrap();
+    let full = jobs
+        .tick(&mut new_token, stopped.next_due + 1, budget())
+        .unwrap()
+        .jobs
+        .remove(0);
+    assert_eq!(full.id, second_job.id);
+    assert_eq!(full.last_error, Some(NetError::Capacity));
+    assert_eq!(full.state, JobState::Pending);
+    assert_eq!(full.attempts, 1);
+    assert!(!full.uncertain);
+    second_worker.join().unwrap();
+    drop(jobs);
+    assert_mailbox(&f, &exact);
+    let jobs = DeliveryStore::open(&queue, context, ns(), profile).unwrap();
+    assert_eq!(jobs.job(queued.id).unwrap(), Some(retained));
+    assert_eq!(jobs.job(second_job.id).unwrap(), Some(full));
+    assert_eq!(jobs.evidence(queued.id).unwrap(), evidence);
+}
+
+#[test]
 fn poisoned_storage_stops_supervision_without_waiting_for_another_client() {
     let f = Fixture::new();
     let cert = certificates();

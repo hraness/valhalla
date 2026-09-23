@@ -957,6 +957,13 @@ relayed tunnel (Tailcat over a DERP relay):
   state. This release does not provide an incompatible-WAL migration.
   Never delete or roll back a WAL, or rewrite its marker to make a newer
   binary start. A stale backup is not a safe replacement for newer votes.
+- **Failed finalization preserves the current height.** A rejected or uncertain
+  application commit receives no acknowledgment or next-height response. The
+  node logs `decision did not commit durably` and leaves consensus stalled;
+  it does not request the engine operation that resets the current-height WAL.
+  Diagnose the storage or value-availability failure while retaining the node
+  home, journal, snapshots, pending batches and WAL. A compatible process restart
+  reopens that evidence; it must not replace or clear it to force progress.
 - **Rejected submissions are loud.** `RUST_LOG=vhalla_rooms_node=warn`
   surfaces intake rejections with reasons (`unsafe file stem`,
   `undecodable body`, `prepare failed: …`); the `*.rejected` marker in

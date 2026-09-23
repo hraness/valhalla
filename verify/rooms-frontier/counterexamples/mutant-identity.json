@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "scope": "current finite-model counterexample, not an implementation execution",
+  "model_sha256": "682e32a20cdbd92d6a723a6229e8a0abc99f204fe8d9d4bb3027719b7268b770",
+  "config_sha256": "53aa919fccaabf5d041afcca2465404ea03f310cd41e83cf4b3ce72e25722f9c",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "expected": {
+    "kind": "invariant",
+    "property": "CommittedIdentity"
+  },
+  "states": [
+    {
+      "state": 1,
+      "action": "Init",
+      "tlc_text": "<Initial predicate>\ns = [ value |-> \"a\",\n  social |-> 0,\n  journal |-> <<\"none\", \"none\">>,\n  pc |-> \"idle\",\n  journalHead |-> 0,\n  original |-> <<\"none\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"none\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |-> {},\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    },
+    {
+      "state": 2,
+      "action": "NewDecision",
+      "tlc_text": "<NewDecision line 52, col 19 to line 57, col 69 of module RoomsFrontier>\ns = [ value |-> \"a\",\n  social |-> 0,\n  journal |-> <<\"none\", \"none\">>,\n  pc |-> \"journal\",\n  journalHead |-> 0,\n  original |-> <<\"none\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"none\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |-> {},\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    },
+    {
+      "state": 3,
+      "action": "JournalCommit",
+      "tlc_text": "<JournalCommit line 72, col 18 to line 76, col 52 of module RoomsFrontier>\ns = [ value |-> \"a\",\n  social |-> 0,\n  journal |-> <<\"a\", \"none\">>,\n  pc |-> \"social\",\n  journalHead |-> 1,\n  original |-> <<\"a\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"none\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |-> {},\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    },
+    {
+      "state": 4,
+      "action": "Fail",
+      "tlc_text": "<Fail line 115, col 9 to line 117, col 67 of module RoomsFrontier>\ns = [ value |-> \"a\",\n  social |-> 0,\n  journal |-> <<\"a\", \"none\">>,\n  pc |-> \"respond\",\n  journalHead |-> 1,\n  original |-> <<\"a\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"Withheld\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |-> {},\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    },
+    {
+      "state": 5,
+      "action": "HostFailure",
+      "tlc_text": "<HostFailure line 127, col 16 to line 129, col 81 of module RoomsFrontier>\ns = [ value |-> \"a\",\n  social |-> 0,\n  journal |-> <<\"a\", \"none\">>,\n  pc |-> \"idle\",\n  journalHead |-> 1,\n  original |-> <<\"a\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"Withheld\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |-> {},\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    },
+    {
+      "state": 6,
+      "action": "Redeliver",
+      "tlc_text": "<Redeliver line 62, col 5 to line 70, col 46 of module RoomsFrontier>\ns = [ value |-> \"b\",\n  social |-> 0,\n  journal |-> <<\"b\", \"none\">>,\n  pc |-> \"respond\",\n  journalHead |-> 1,\n  original |-> <<\"a\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"Rejected\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |-> {},\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    }
+  ],
+  "loop": null
+}

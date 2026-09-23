@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "scope": "current finite-model counterexample, not an implementation execution",
+  "model_sha256": "fc27ecb2d577390a390dff7c192211e9bae13e78282f9226d42879bae5430fc4",
+  "config_sha256": "4f9755a5186427717b0b6fce735530a0d73be5f92993bf677d7a5110ae22df98",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "expected": {
+    "kind": "invariant",
+    "property": "PersistentQuarantine"
+  },
+  "states": [
+    {
+      "state": 1,
+      "action": "Init",
+      "tlc_text": "<Initial predicate>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"idle\",\n  needsReopen |-> FALSE,\n  uncertain |-> FALSE,\n  kind |-> \"none\",\n  pendingFork |-> 0,\n  everFault |-> FALSE,\n  grant |->\n      [ sequence |-> 0,\n        present |-> FALSE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |-> {},\n  observation |->\n      [ sequence |-> 1,\n        present |-> FALSE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"exact\",\n        result |-> \"Exact\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 0 ]"
+    },
+    {
+      "state": 2,
+      "action": "Observe",
+      "tlc_text": "<Observe line 71, col 5 to line 92, col 76 of module PrivateControl>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"publishing\",\n  needsReopen |-> TRUE,\n  uncertain |-> TRUE,\n  kind |-> \"fork\",\n  pendingFork |-> 1,\n  everFault |-> FALSE,\n  grant |->\n      [ sequence |-> 0,\n        present |-> FALSE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |-> {},\n  observation |->\n      [ sequence |-> 1,\n        present |-> TRUE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"conflict\",\n        result |-> \"Fork\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 0 ]"
+    },
+    {
+      "state": 3,
+      "action": "Publish",
+      "tlc_text": "<Publish line 103, col 5 to line 115, col 25 of module PrivateControl>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 1 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"readback\",\n  needsReopen |-> TRUE,\n  uncertain |-> TRUE,\n  kind |-> \"fork\",\n  pendingFork |-> 1,\n  everFault |-> TRUE,\n  grant |->\n      [ sequence |-> 0,\n        present |-> FALSE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |-> {},\n  observation |->\n      [ sequence |-> 1,\n        present |-> TRUE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"conflict\",\n        result |-> \"Fork\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 0 ]"
+    },
+    {
+      "state": 4,
+      "action": "Reopen",
+      "tlc_text": "<Reopen line 130, col 11 to line 134, col 71 of module PrivateControl>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 1 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"idle\",\n  needsReopen |-> FALSE,\n  uncertain |-> FALSE,\n  kind |-> \"none\",\n  pendingFork |-> 0,\n  everFault |-> TRUE,\n  grant |->\n      [ sequence |-> 0,\n        present |-> FALSE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |-> {},\n  observation |->\n      [ sequence |-> 1,\n        present |-> TRUE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"conflict\",\n        result |-> \"Fork\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 1 ]"
+    }
+  ],
+  "loop": null
+}

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "scope": "current finite-model counterexample, not an implementation execution",
+  "model_sha256": "89f71680ec422849dc925fa6f21f196f6a070e4a3938e00efaaf815203ddbfa7",
+  "config_sha256": "3bbf7938bae7a856283618a499a8c1cb0b9d9b25a23247636d21cfb61d5d5a81",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "expected": {
+    "kind": "invariant",
+    "property": "AttemptEvidenceConserved"
+  },
+  "states": [
+    {
+      "state": 1,
+      "action": "Init",
+      "tlc_text": "<Initial predicate>\ns = [ pc |-> \"new\",\n  present |-> FALSE,\n  state |-> \"Pending\",\n  attempts |-> 0,\n  spent |-> 0,\n  outages |-> 0,\n  resumes |-> 0,\n  uncertain |-> FALSE,\n  due |-> TRUE,\n  intents |-> 0,\n  classified |-> 0,\n  unresolved |-> {},\n  current |-> 0,\n  priorAttempts |-> 0,\n  priorUncertain |-> FALSE,\n  selected |->\n      [ id |-> \"exact\",\n        operation |-> \"operation\",\n        sequence |-> 1,\n        bytes |-> \"ciphertext\",\n        namespace |-> \"namespace\",\n        endpoint |-> \"pinned\" ],\n  outcome |-> \"receipt\",\n  saved |-> [digest |-> \"none\", position |-> 0],\n  remote |-> FALSE,\n  sends |-> {},\n  crashes |-> 0,\n  failedWrite |-> FALSE ]"
+    },
+    {
+      "state": 2,
+      "action": "Enqueue",
+      "tlc_text": "<Enqueue line 42, col 12 to line 43, col 61 of module NativeDelivery>\ns = [ pc |-> \"idle\",\n  present |-> TRUE,\n  state |-> \"Pending\",\n  attempts |-> 0,\n  spent |-> 0,\n  outages |-> 0,\n  resumes |-> 0,\n  uncertain |-> FALSE,\n  due |-> TRUE,\n  intents |-> 0,\n  classified |-> 0,\n  unresolved |-> {},\n  current |-> 0,\n  priorAttempts |-> 0,\n  priorUncertain |-> FALSE,\n  selected |->\n      [ id |-> \"exact\",\n        operation |-> \"operation\",\n        sequence |-> 1,\n        bytes |-> \"ciphertext\",\n        namespace |-> \"namespace\",\n        endpoint |-> \"pinned\" ],\n  outcome |-> \"receipt\",\n  saved |-> [digest |-> \"none\", position |-> 0],\n  remote |-> FALSE,\n  sends |-> {},\n  crashes |-> 0,\n  failedWrite |-> FALSE ]"
+    },
+    {
+      "state": 3,
+      "action": "Select",
+      "tlc_text": "<Select line 49, col 5 to line 54, col 40 of module NativeDelivery>\ns = [ pc |-> \"intent\",\n  present |-> TRUE,\n  state |-> \"Pending\",\n  attempts |-> 0,\n  spent |-> 0,\n  outages |-> 0,\n  resumes |-> 0,\n  uncertain |-> FALSE,\n  due |-> TRUE,\n  intents |-> 0,\n  classified |-> 0,\n  unresolved |-> {},\n  current |-> 1,\n  priorAttempts |-> 0,\n  priorUncertain |-> FALSE,\n  selected |->\n      [ id |-> \"exact\",\n        operation |-> \"operation\",\n        sequence |-> 1,\n        bytes |-> \"ciphertext\",\n        namespace |-> \"namespace\",\n        endpoint |-> \"pinned\" ],\n  outcome |-> \"receipt\",\n  saved |-> [digest |-> \"none\", position |-> 0],\n  remote |-> FALSE,\n  sends |-> {},\n  crashes |-> 0,\n  failedWrite |-> FALSE ]"
+    },
+    {
+      "state": 4,
+      "action": "IntentCommit",
+      "tlc_text": "<IntentCommit line 55, col 17 to line 58, col 69 of module NativeDelivery>\ns = [ pc |-> \"transport\",\n  present |-> TRUE,\n  state |-> \"Uncertain\",\n  attempts |-> 1,\n  spent |-> 0,\n  outages |-> 0,\n  resumes |-> 0,\n  uncertain |-> TRUE,\n  due |-> FALSE,\n  intents |-> 1,\n  classified |-> 0,\n  unresolved |-> {1},\n  current |-> 1,\n  priorAttempts |-> 0,\n  priorUncertain |-> FALSE,\n  selected |->\n      [ id |-> \"exact\",\n        operation |-> \"operation\",\n        sequence |-> 1,\n        bytes |-> \"ciphertext\",\n        namespace |-> \"namespace\",\n        endpoint |-> \"pinned\" ],\n  outcome |-> \"receipt\",\n  saved |-> [digest |-> \"none\", position |-> 0],\n  remote |-> FALSE,\n  sends |-> {},\n  crashes |-> 0,\n  failedWrite |-> FALSE ]"
+    },
+    {
+      "state": 5,
+      "action": "Transport",
+      "tlc_text": "<Transport line 63, col 5 to line 71, col 72 of module NativeDelivery>\ns = [ pc |-> \"outcome\",\n  present |-> TRUE,\n  state |-> \"Uncertain\",\n  attempts |-> 1,\n  spent |-> 0,\n  outages |-> 0,\n  resumes |-> 0,\n  uncertain |-> TRUE,\n  due |-> FALSE,\n  intents |-> 1,\n  classified |-> 0,\n  unresolved |-> {1},\n  current |-> 1,\n  priorAttempts |-> 0,\n  priorUncertain |-> FALSE,\n  selected |->\n      [ id |-> \"exact\",\n        operation |-> \"operation\",\n        sequence |-> 1,\n        bytes |-> \"ciphertext\",\n        namespace |-> \"namespace\",\n        endpoint |-> \"pinned\" ],\n  outcome |-> \"permanent\",\n  saved |-> [digest |-> \"none\", position |-> 0],\n  remote |-> FALSE,\n  sends |->\n      { [ present |-> TRUE,\n          state |-> \"Uncertain\",\n          attempts |-> 1,\n          binding |->\n              [ id |-> \"exact\",\n                operation |-> \"operation\",\n                sequence |-> 1,\n                bytes |-> \"ciphertext\",\n                namespace |-> \"namespace\",\n                endpoint |-> \"pinned\" ],\n          serial |-> 1,\n          committed |-> 1 ] },\n  crashes |-> 0,\n  failedWrite |-> FALSE ]"
+    },
+    {
+      "state": 6,
+      "action": "OutcomeCommit",
+      "tlc_text": "<OutcomeCommit line 74, col 5 to line 96, col 64 of module NativeDelivery>\ns = [ pc |-> \"idle\",\n  present |-> TRUE,\n  state |-> \"Stopped\",\n  attempts |-> 1,\n  spent |-> 0,\n  outages |-> 0,\n  resumes |-> 0,\n  uncertain |-> FALSE,\n  due |-> FALSE,\n  intents |-> 1,\n  classified |-> 0,\n  unresolved |-> {},\n  current |-> 1,\n  priorAttempts |-> 0,\n  priorUncertain |-> FALSE,\n  selected |->\n      [ id |-> \"exact\",\n        operation |-> \"operation\",\n        sequence |-> 1,\n        bytes |-> \"ciphertext\",\n        namespace |-> \"namespace\",\n        endpoint |-> \"pinned\" ],\n  outcome |-> \"permanent\",\n  saved |-> [digest |-> \"none\", position |-> 0],\n  remote |-> FALSE,\n  sends |->\n      { [ present |-> TRUE,\n          state |-> \"Uncertain\",\n          attempts |-> 1,\n          binding |->\n              [ id |-> \"exact\",\n                operation |-> \"operation\",\n                sequence |-> 1,\n                bytes |-> \"ciphertext\",\n                namespace |-> \"namespace\",\n                endpoint |-> \"pinned\" ],\n          serial |-> 1,\n          committed |-> 1 ] },\n  crashes |-> 0,\n  failedWrite |-> FALSE ]"
+    },
+    {
+      "state": 7,
+      "action": "Resume",
+      "tlc_text": "<Resume line 101, col 11 to line 104, col 59 of module NativeDelivery>\ns = [ pc |-> \"idle\",\n  present |-> TRUE,\n  state |-> \"Pending\",\n  attempts |-> 0,\n  spent |-> 0,\n  outages |-> 0,\n  resumes |-> 1,\n  uncertain |-> FALSE,\n  due |-> TRUE,\n  intents |-> 1,\n  classified |-> 0,\n  unresolved |-> {},\n  current |-> 1,\n  priorAttempts |-> 0,\n  priorUncertain |-> FALSE,\n  selected |->\n      [ id |-> \"exact\",\n        operation |-> \"operation\",\n        sequence |-> 1,\n        bytes |-> \"ciphertext\",\n        namespace |-> \"namespace\",\n        endpoint |-> \"pinned\" ],\n  outcome |-> \"permanent\",\n  saved |-> [digest |-> \"none\", position |-> 0],\n  remote |-> FALSE,\n  sends |->\n      { [ present |-> TRUE,\n          state |-> \"Uncertain\",\n          attempts |-> 1,\n          binding |->\n              [ id |-> \"exact\",\n                operation |-> \"operation\",\n                sequence |-> 1,\n                bytes |-> \"ciphertext\",\n                namespace |-> \"namespace\",\n                endpoint |-> \"pinned\" ],\n          serial |-> 1,\n          committed |-> 1 ] },\n  crashes |-> 0,\n  failedWrite |-> FALSE ]"
+    }
+  ],
+  "loop": null
+}
