@@ -378,6 +378,31 @@ fn agent_drafts_permissions_bounds_and_finite_budgets() {
 }
 
 #[test]
+fn outbox_metadata_polls_charge_fixed_bytes_and_no_read_slots() {
+    block_on(async {
+        let mut pair = Pair::fresh(100, 100).await;
+        pair.join().await;
+        let (mut agent, _authority) = session(pair.owner);
+        let before = agent.grant.budget;
+        for _ in 0..1000 {
+            let page = agent.outbox_status(0, 1).await.unwrap();
+            assert_eq!(page.records.len(), 1);
+        }
+        let after = agent.grant.budget;
+        assert_eq!(after.read_records, before.read_records);
+        assert_eq!(
+            before.read_bytes - after.read_bytes,
+            1000 * OUTBOX_STATUS_BYTES
+        );
+        // Inbox pages still charge slots and plaintext bytes ahead of I/O.
+        agent.grant.budget.read_bytes = OUTBOX_STATUS_BYTES - 1;
+        assert!(matches!(agent.outbox_status(0, 1).await, Err(Error::Quota)));
+        assert!(matches!(agent.inbox(0, 1).await, Err(Error::Quota)));
+        assert!(!agent.latched());
+    });
+}
+
+#[test]
 fn agent_grant_binding_drop_revocation_and_expiry_refuse_before_writes() {
     block_on(async {
         let mut pair = Pair::fresh(100, 100).await;

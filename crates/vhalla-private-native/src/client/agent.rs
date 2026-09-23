@@ -112,6 +112,30 @@ impl AgentHostSession {
             .await
             .map_err(Error::Agent)
     }
+    /// Host-only durable lookup of one committed send by exact ciphertext
+    /// commitment. The kernel sent index answers without replaying the outbox.
+    pub async fn original(
+        &mut self,
+        ciphertext_hash: &[u8; 32],
+    ) -> Result<Option<CommittedOutbox>> {
+        self.agent
+            .live()?
+            .host_original(ciphertext_hash)
+            .await
+            .map_err(Error::Agent)
+    }
+    /// Host-only durable verified member acceptances for one committed outbox
+    /// position, restored from the kernel's receipt index after any restart.
+    pub async fn acceptances(
+        &mut self,
+        outbox_sequence: u64,
+    ) -> Result<Vec<vhalla_private_kernel::MemberAcceptance>> {
+        self.agent
+            .live()?
+            .host_acceptances(outbox_sequence)
+            .await
+            .map_err(Error::Agent)
+    }
 }
 
 impl OwnedAgentRoomSession {
@@ -128,6 +152,15 @@ impl OwnedAgentRoomSession {
     /// Whether this wrapper's complete custody lifetime has been destroyed.
     pub fn is_locked(&self) -> bool {
         self.custody.is_none()
+    }
+
+    /// Whether live custody is latched by an uncertain operation. A latched
+    /// session refuses data operations but still answers, so a transport can
+    /// deliver the refusal instead of closing without a reply.
+    pub fn latched(&self) -> bool {
+        self.custody
+            .as_ref()
+            .is_some_and(|custody| custody.session.latched())
     }
 
     /// Read bounded locally authenticated status.

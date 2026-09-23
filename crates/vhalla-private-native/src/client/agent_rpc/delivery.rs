@@ -45,19 +45,60 @@ impl RpcSession {
         if original.operation() != status.operation || item.digest() != status.id {
             return Err(Error::Authority);
         }
-        let view = self.delivery_view(status.sequence, status.operation)?;
-        if let Some(old) = &view.relay {
-            if old.id != status.id
-                || old.attempts > status.attempts
-                || (old.uncertain && !status.uncertain && status.state != JobState::Retained)
-                || (old.state == JobState::Retained
-                    && (status.state != JobState::Retained || old.position != status.position))
-                || (old.state == JobState::Stopped && status.state != JobState::Stopped)
-            {
-                return Err(Error::Authority);
+        let changed = {
+            let view = self.delivery_view(status.sequence, status.operation)?;
+            if let Some(old) = &view.relay {
+                if old.id != status.id
+                    || old.attempts > status.attempts
+                    || (old.uncertain && !status.uncertain && status.state != JobState::Retained)
+                    || (old.state == JobState::Retained
+                        && (status.state != JobState::Retained || old.position != status.position))
+                    || (old.state == JobState::Stopped && status.state != JobState::Stopped)
+                {
+                    return Err(Error::Authority);
+                }
+            }
+            let changed = view.relay.as_ref() != Some(status);
+            if changed {
+                view.relay = Some(status.clone());
+            }
+            changed
+        };
+        // Restore verified member claims from the kernel's durable acceptance
+        // index, so a relaunched host reports the same evidence without
+        // re-walking retained inbox content through this session.
+        if self
+            .deliveries
+            .get(&status.sequence)
+            .is_some_and(|view| view.acceptances.is_empty())
+        {
+            let proofs = self
+                .session
+                .acceptances(status.sequence)
+                .await
+                .map_err(|_| Error::Authority)?;
+            for proof in proofs {
+                let recipient = *proof.recipient().as_bytes();
+                let inserted = {
+                    let view = self.delivery_view(status.sequence, status.operation)?;
+                    match view.acceptances.get(&recipient) {
+                        Some(old) if *old != proof => return Err(Error::Authority),
+                        Some(_) => false,
+                        None if view.acceptances.len() < MAX_MEMBERS => {
+                            view.acceptances.insert(recipient, proof);
+                            true
+                        }
+                        None => return Err(Error::Bounds),
+                    }
+                };
+                if inserted {
+                    self.delivery_version = self.delivery_version.wrapping_add(1);
+                }
             }
         }
-        view.relay = Some(status.clone());
+        if changed {
+            self.delivery_version = self.delivery_version.wrapping_add(1);
+        }
         self.delivery_namespace = Some(namespace);
         Ok(())
     }
@@ -88,6 +129,7 @@ impl RpcSession {
             return Err(Error::Bounds);
         }
         view.acceptances.insert(recipient, proof);
+        self.delivery_version = self.delivery_version.wrapping_add(1);
         Ok(())
     }
 
@@ -134,7 +176,20 @@ impl RpcSession {
             .filter(|view| view.operation == status.operation)
         {
             if let Some(relay) = &view.relay {
-                value["relay"] = json!({"state":match relay.state{JobState::Pending=>"pending",JobState::Uncertain=>"uncertain",JobState::Retained=>"retained",JobState::Stopped=>"stopped"},"attempts":relay.attempts,"uncertain":relay.uncertain,"position":relay.position.map(|p|p.to_string()),"next_due":relay.next_due.to_string(),"last_error":relay.last_error.map(net_error),"evidence":"durable local delivery journal; relay retention is not member acceptance"});
+                // A refused TCP connect means the endpoint did not accept the
+                // attempt: nothing reached the relay. Report it distinctly from
+                // `uncertain`, which is reserved for attempts that may have
+                // retained bytes remotely.
+                let state = match relay.state {
+                    JobState::Pending => "pending",
+                    JobState::Uncertain if relay.last_error == Some(NetError::Connect) => {
+                        "unreachable"
+                    }
+                    JobState::Uncertain => "uncertain",
+                    JobState::Retained => "retained",
+                    JobState::Stopped => "stopped",
+                };
+                value["relay"] = json!({"state":state,"attempts":relay.attempts,"uncertain":relay.uncertain,"position":relay.position.map(|p|p.to_string()),"next_due":relay.next_due.to_string(),"last_error":relay.last_error.map(net_error),"evidence":"durable local delivery journal; relay retention is not member acceptance"});
             }
             value["member_acceptances"]=json!(view.acceptances.values().map(|proof|json!({"recipient":hex(proof.recipient().as_bytes()),"received_sequence":proof.received_sequence().to_string(),"evidence":"device-signed durable-reception claim; not human reading or current membership"})).collect::<Vec<_>>());
         }
