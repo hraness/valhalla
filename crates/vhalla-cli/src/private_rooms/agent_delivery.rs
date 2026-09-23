@@ -1136,7 +1136,7 @@ impl Driver {
             .await
             .map_err(|_| REFUSED)?
             .ok_or(REFUSED)?;
-        if value["inbox_sequence"] != received.sequence().to_string() {
+        if value["inbox_sequence"].as_str() != Some(received.sequence().to_string().as_str()) {
             return Err(REFUSED.into());
         }
         let mut verified = None;
@@ -1177,15 +1177,13 @@ impl Driver {
                 }
             }
             "unmatched-receipt-content"
-                if MemberAcceptance::is_receipt(received.body()) && verified.is_none() =>
-            {
-                ()
-            }
+                if MemberAcceptance::is_receipt(received.body()) && verified.is_none() => {}
             "recipient-device-claim" => {
                 let (sequence, claim) = verified.ok_or(REFUSED)?;
-                if value["outbox_sequence"] != sequence.to_string()
+                if value["outbox_sequence"].as_str() != Some(sequence.to_string().as_str())
                     || value["recipient"] != hex(claim.recipient().as_bytes())
-                    || value["recipient_inbox_sequence"] != claim.received_sequence().to_string()
+                    || value["recipient_inbox_sequence"].as_str()
+                        != Some(claim.received_sequence().to_string().as_str())
                 {
                     return Err(REFUSED.into());
                 }

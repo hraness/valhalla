@@ -342,15 +342,30 @@ mod tests {
         for (key, value) in [
             ("state", json!("unknown")),
             ("position", json!("2")),
+            ("position", json!(1)),
             ("inbox_sequence", json!("3")),
             ("inbox_sequence", json!("0")),
             ("inbox_sequence", json!("02")),
+            ("inbox_sequence", json!(2)),
             ("digest", json!(hex(&[9; 32]))),
             ("extra", json!(true)),
         ] {
             let mut bad = base.clone();
             bad[key] = value;
             assert!(check(&bad, false, false).is_err(), "{key}");
+        }
+        let claim = json!({"digest":hex(&item.digest()),"position":"1","state":"recipient-device-claim","inbox_sequence":"2","outbox_sequence":"3","recipient":hex(&[9; 32]),"recipient_inbox_sequence":"5"});
+        assert!(check(&claim, false, false).unwrap());
+        for (key, number) in [
+            ("inbox_sequence", 2),
+            ("outbox_sequence", 3),
+            ("recipient_inbox_sequence", 5),
+        ] {
+            for noncanonical in [json!(number), json!(format!("0{number}")), Value::Null] {
+                let mut bad = claim.clone();
+                bad[key] = noncanonical;
+                assert!(check(&bad, false, false).is_err(), "{key}");
+            }
         }
         let mut missing = base.clone();
         missing.as_object_mut().unwrap().remove("state");

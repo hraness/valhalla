@@ -28,8 +28,12 @@ delivery/recovery unit tests. Independent source review found no remaining
 blocker after all three final regressions reproduced before repair. Formatting
 and diff whitespace checks pass. The production browser delivery journey passes
 all 13 receipt facts, including offline third-member admission, causal ordering
-and verified acceptance in the DOM. Workspace strict Clippy is scheduled; the complete current-head CI remains
-the final integration gate.
+and verified acceptance in the DOM. Strict workspace Clippy passes with all
+targets/features and warnings denied. The first aggregate attempt found an old
+relay-kind match in the benchmark; the repaired application-only benchmark
+retains its narrow scope. Marker comparison lint repairs preserve canonical
+JSON strings, with 10/10 recovery units and the real TLS replay case passing
+again. The complete current-head CI remains the final integration gate.
 
 ## Review findings incorporated during implementation
 

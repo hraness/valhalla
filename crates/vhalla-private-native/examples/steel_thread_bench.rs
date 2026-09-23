@@ -5,10 +5,11 @@
 //! TLS relay, using the production kernel store, delivery queue, scan directory
 //! and TLS service. Everything lives under one NEW private home on an ephemeral
 //! `127.0.0.1:0` port; the installed host, its ports and launchd labels are never
-//! touched. The driver loop mirrors `vhalla private agent-serve --delivery`
-//! (`crates/vhalla-cli/src/private_rooms/agent_delivery.rs`) step for step; its
-//! cadence is a command-line choice so the host policy and the storage floor
-//! can be measured separately.
+//! touched. The application-only measurement loop derives from
+//! `vhalla private agent-serve --delivery`; it does not qualify the controller's
+//! encrypted-control merge or restored-marker recovery. Its cadence is a
+//! command-line choice so the host policy and storage floor can be measured
+//! separately.
 //!
 //! Usage:
 //!   cargo run --release -p vhalla-private-native --features relay-tls \
@@ -54,7 +55,8 @@ mod bench {
             delivery::{DeliveryStore, JobState, Limits as QueueLimits, RetryPolicy, TickBudget},
             net::{NetError, RelayToken, ScanDirectory, ScanFailure},
             tls::{self, Credential, Permissions, Service, ServiceLimits, TlsRelay},
-            FileStore, Limits as RelayLimits, RelayItem, RelayNamespace, MAX_RELAY_ITEMS,
+            FileStore, Limits as RelayLimits, RelayItem, RelayKind, RelayNamespace,
+            MAX_RELAY_ITEMS,
         },
     };
 
@@ -458,7 +460,7 @@ mod bench {
                 let mut state = "exact-local-outbox-echo";
                 if !self.echoes.contains_key(&item.digest()) {
                     match item.kind() {
-                        OutboxKind::Application => {
+                        RelayKind::Outbox(OutboxKind::Application) => {
                             let now = now_secs()?;
                             self.counters.receives += 1;
                             let received = block_on(self.kernel.receive(item.payload(), now))
