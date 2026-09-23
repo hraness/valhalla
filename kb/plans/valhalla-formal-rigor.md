@@ -1,7 +1,7 @@
 ---
 type: plan
 area: formal-verification
-status: in-progress
+status: completed
 ---
 
 # Valhalla formal rigor: assessed tools, executable contracts
@@ -153,7 +153,7 @@ is not evidence of a useful theorem, and passing a model is not a Rust proof.
 
 ## Phase 4: Delivery
 
-- **Status:** In progress
+- **Status:** Done
 - **Depends on:** 3
 - **Objective:** integrate only task-owned changes through current branch policy.
 - **Acceptance criteria:** source-policy audit, independent review, passing
@@ -267,6 +267,20 @@ counterexamples and logs. Do not repair actual user stores or reset WALs.
   18.01 seconds with all 60 attested inputs and 32 consumed copies unchanged:
   `/private/tmp/valhalla-formal-integrated-20260923-c/receipt.json`. The staged
   whitespace gate and final KB refresh/check are clean.
+- 2026-09-23, phase 4 completion: [PR #98](https://github.com/hraness/valhalla/pull/98)
+  merged reviewed candidate `9a4d06f3c64968e805c4d38b2ec077e3f880dda8`
+  as `4066036902e0b20951acee79e8af8aa80a7e34c4`, without a branch-policy
+  bypass. All 70 PR checks passed, including the complete aggregate, five
+  CodeQL analyses and the managed verdict with no new alerts. Final independent
+  whole-feature review passed without edits or unresolved findings. All 69
+  post-merge checks passed in the [Rust run](https://github.com/hraness/valhalla/actions/runs/35919070042)
+  and [CodeQL run](https://github.com/hraness/valhalla/actions/runs/35919068321).
+  The merged tree exactly matched the reviewed candidate. Fresh merged-main
+  formal evidence passed all 26 cases; all 60 attested source hashes, 32
+  consumed-input hashes and 26 log hashes were independently verified.
+  Local main and the remote main readback matched the merge commit, with a
+  clean local working tree. All implementation and delivery phases are
+  complete. Maintained Lean adoption remains deferred as decided in phase 0.
 
 ## Result
 
@@ -276,9 +290,10 @@ Lean weighted-quorum theorem as an optional experiment. The held-reply steel
 thread and recovery model connect bounded claims to actual Rust regressions.
 The recovery model exposed and drove a repair for the absent-marker directory
 fence. A complete inventory and checked evidence contract now cover all six
-TLA+ suites. Delivery is tracked by the checked PR for branch
-`codex/formal-rigor-20260923`; its current-head checks and merge record are the
-authoritative external delivery evidence after this pre-merge source snapshot.
+TLA+ suites. All phases were delivered through
+[PR #98](https://github.com/hraness/valhalla/pull/98), with passing current-head
+and post-merge checks recorded above. The PR retains the external delivery
+record for branch `codex/formal-rigor-20260923` and merge `4066036`.
 
 ## Durable memory
 
