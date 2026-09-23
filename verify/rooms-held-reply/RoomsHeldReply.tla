@@ -2,7 +2,8 @@
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS RequestCount, MetadataCapacity,
-          DropEmpty, EarlyLiveReply, PublishTombstone, ForgetDeadline
+          DropEmpty, EarlyLiveReply, PublishTombstone, ForgetDeadline,
+          ForgetAdmission
 
 ASSUME /\ RequestCount \in Nat \ {0}
        /\ MetadataCapacity \in Nat
@@ -10,6 +11,7 @@ ASSUME /\ RequestCount \in Nat \ {0}
        /\ EarlyLiveReply \in BOOLEAN
        /\ PublishTombstone \in BOOLEAN
        /\ ForgetDeadline \in BOOLEAN
+       /\ ForgetAdmission \in BOOLEAN
 
 Requests == 1..RequestCount
 Phases == {"idle", "held", "selected", "prepared", "publishing", "lost"}
@@ -19,9 +21,9 @@ Kinds == {"none", "live", "tombstone"}
 \* sequential connector awaits one reply at a time. The host also serializes
 \* network publication before accepting its next message. Bytes, signatures,
 \* fsync internals and a stopped host are outside this finite abstraction.
-VARIABLES current, phase, arrived, expired, issued, seen, kind,
+VARIABLES current, phase, arrived, expired, issued, seen, admitted, kind,
           replied, replyKind, published
-vars == <<current, phase, arrived, expired, issued, seen, kind,
+vars == <<current, phase, arrived, expired, issued, seen, admitted, kind,
           replied, replyKind, published>>
 
 Init == /\ current = 0
@@ -30,6 +32,7 @@ Init == /\ current = 0
         /\ expired = FALSE
         /\ issued = {}
         /\ seen = {}
+        /\ admitted = {}
         /\ kind = "none"
         /\ replied = {}
         /\ replyKind = [r \in Requests |-> "none"]
@@ -43,21 +46,24 @@ Request == /\ phase = "idle" /\ current < RequestCount
            /\ phase' = IF DropEmpty /\ ~arrived THEN "lost" ELSE "held"
            /\ expired' = FALSE
            /\ kind' = "none"
-           /\ UNCHANGED <<arrived, seen, replied, replyKind, published>>
+           /\ UNCHANGED <<arrived, seen, admitted, replied, replyKind, published>>
 
-\* register_batch has completed its durable write before a live value is
-\* available. There is deliberately no fairness assumption on Arrival: the
-\* host must answer an empty request even if no producer ever submits work.
+\* Retained exact bytes become available independently of adapter admission:
+\* a future batch can remain on disk after earlier-height pending-map pruning.
+\* This one-height abstraction starts with no confirmed adapter admission.
+\* The supplied live candidate is valid at this frontier; validation rejection
+\* and the preceding heights are exercised by the implementation regressions.
+\* There is no fairness on Arrival: no producer need ever submit work.
 Arrival == /\ ~arrived
            /\ arrived' = TRUE
-           /\ UNCHANGED <<current, phase, expired, issued, seen, kind,
+           /\ UNCHANGED <<current, phase, expired, issued, seen, admitted, kind,
                           replied, replyKind, published>>
 
 \* Time eventually crosses this request's deadline. This is not a hard
 \* wall-clock bound: the subsequent poll still needs host scheduling.
 Expire == /\ phase = "held" /\ ~expired
           /\ expired' = TRUE
-          /\ UNCHANGED <<current, phase, arrived, issued, seen, kind,
+          /\ UNCHANGED <<current, phase, arrived, issued, seen, admitted, kind,
                          replied, replyKind, published>>
 
 \* drain_answerable_held prefers a materializable value even after expiry.
@@ -66,15 +72,19 @@ Resolve == /\ phase = "held"
            /\ (arrived \/ (expired /\ ~ForgetDeadline))
            /\ kind' = IF arrived THEN "live" ELSE "tombstone"
            /\ phase' = "selected"
-           /\ UNCHANGED <<current, arrived, expired, issued, seen,
+           /\ UNCHANGED <<current, arrived, expired, issued, seen, admitted,
                           replied, replyKind, published>>
 
 \* prepare_local_parts records exact seen metadata before exposing a real
-\* proposal to the engine. A full budget falls back to a tombstone; it never
-\* prunes existing evidence or releases an unrecorded real value.
+\* proposal to the engine, then restores confirmed adapter admission. Durable
+\* availability and seen metadata alone cannot make a decision committable.
+\* A full budget falls back to a tombstone and adds no adapter admission;
+\* it never prunes existing evidence or releases an unrecorded real value.
 Prepare == /\ phase = "selected"
            /\ LET admit == kind = "live" /\ Cardinality(seen) < MetadataCapacity
               IN /\ seen' = IF admit THEN seen \cup {current} ELSE seen
+                 /\ admitted' = IF admit /\ ~ForgetAdmission
+                                 THEN admitted \cup {current} ELSE admitted
                  /\ kind' = IF kind = "live" /\ ~admit THEN "tombstone" ELSE kind
            /\ phase' = "prepared"
            /\ UNCHANGED <<current, arrived, expired, issued,
@@ -88,14 +98,15 @@ Reply == /\ (phase = "prepared"
          /\ replyKind' = [replyKind EXCEPT ![current] = kind]
          /\ phase' = IF kind = "live" \/ PublishTombstone
                       THEN "publishing" ELSE "idle"
-         /\ UNCHANGED <<current, arrived, expired, issued, seen, kind, published>>
+         /\ UNCHANGED <<current, arrived, expired, issued, seen, admitted, kind,
+                        published>>
 
 \* A stream may block the host loop until its network consumer drains it.
 \* One action abstracts the finite paced stream, without a latency claim.
 Publish == /\ phase = "publishing"
            /\ published' = published \cup {current}
            /\ phase' = "idle"
-           /\ UNCHANGED <<current, arrived, expired, issued, seen, kind,
+           /\ UNCHANGED <<current, arrived, expired, issued, seen, admitted, kind,
                           replied, replyKind>>
 
 Next == Request \/ Arrival \/ Expire \/ Resolve \/ Prepare \/ Reply \/ Publish
@@ -110,6 +121,7 @@ OwnedReply == IF phase \in {"held", "selected", "prepared"}
 TypeOK == /\ current \in 0..RequestCount /\ phase \in Phases
           /\ arrived \in BOOLEAN /\ expired \in BOOLEAN
           /\ issued \subseteq Requests /\ seen \subseteq issued
+          /\ admitted \subseteq seen
           /\ kind \in Kinds /\ replied \subseteq issued
           /\ replyKind \in [Requests -> Kinds]
           /\ published \subseteq replied
@@ -117,6 +129,8 @@ ReplyCustody == /\ issued = replied \cup OwnedReply
                 /\ replied \intersect OwnedReply = {}
 DurableBeforeReply == \A r \in replied :
                         replyKind[r] = "live" => (arrived /\ r \in seen)
+AdmittedBeforeReply == \A r \in replied :
+                         replyKind[r] = "live" => r \in admitted
 TombstonesStayLocal == \A r \in published : replyKind[r] = "live"
 MetadataBound == Cardinality(seen) <= MetadataCapacity
 AllRequestsAnswered == <> (replied = Requests)

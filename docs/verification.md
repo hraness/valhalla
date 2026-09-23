@@ -100,12 +100,16 @@ delivery. The model assumes source artifacts exist and does not establish
 global message order, remote availability or source-publication correctness.
 
 `verify/rooms-held-reply` checks the rooms node's sequential connector boundary:
-preserved oneshot custody, durable preparation before a real reply, reply-only
+preserved oneshot custody, durable preparation and confirmed candidate admission
+before a real reply, reply-only
 tombstones, bounded metadata admission and eventual deadline resolution under
 explicit scheduling/network assumptions. Its deliberate failures include a
 temporal counterexample that leaves an empty request waiting forever. The
 real host-loop tests use actual channels and synthetic stores, and the existing
-forced-persistence-failure regression checks the send ordering. This is not a
+forced-persistence-failure regression checks the send ordering. A three-height
+regression exercises a retained future batch pruned from the pending adapter;
+local preparation must restore it before replying. A separate mutant omits
+that admission while preserving durable metadata. This is not a
 hard real-time guarantee or a proof of Malachite consensus.
 
 `verify/host-recovery` checks sealed maintenance and repeated recovery with
@@ -116,6 +120,45 @@ Its regression injects a failed directory sync and requires every backup to
 remain. Other cases challenge consumed backups, premature cleanup and admission
 using only matching config/completion files. Atomic durable replacement remains
 an assumption; these checks do not simulate physical filesystem power loss.
+
+`verify/rooms-frontier` separates journal commitment, the two snapshot stores,
+the full application frontier and finalization replies. Four positive root
+schedules include empty batches and changes to only one store. Seven mutants
+challenge acknowledgment ordering, root equality as progress, independent
+snapshot-height inference, committed identity, publication order, failed
+finalization and next-height roster selection. Real adapter regressions cover
+each publication cut and exact reopen/redelivery; real host messages reproduce
+failed finalization with authenticated certificates. The repair preserves the
+WAL by withholding failure responses instead of requesting an engine reset.
+The model assumes atomic publication and verified replay, and source-binds the
+external engine behavior to its pinned revision. It is not a consensus proof.
+
+`verify/native-delivery` separates durable attempt intent, transport results,
+outcome publication, uncertainty, budget exhaustion and explicit resume. It
+checks exact destination/ciphertext binding, checked retention receipts and
+conservation of spent attempts plus durably classified outages. Two attempts
+per allowance, one resume and bounded failures keep the state space finite;
+the split outcome-refusal action is limited to precommit failures. Failure
+after SQL commit during barrier/readback and delivery liveness are outside this
+model.
+
+`verify/relay-quota` checks atomic item/charge publication, exact duplicate
+position, stable credential ownership and durable retention before receipt.
+Two items, two credential IDs, four requests and two interruptions cover item
+and byte limits separately. A real TLS regression loses a successful PUT
+completion, reopens both stores, replaces the token under the same credential
+ID, exhausts/resumes the sender and recovers the original position with one
+charge. SQLite atomicity and successful durability barriers remain assumptions.
+
+`verify/private-control` checks sequence-bound owner attribution across two
+handoffs, grants pinned to their carrying sequence, observation-only authority,
+known-history fork evidence and quarantine across uncertain publication and
+new-process reopen. Ordinary and late-join configurations use two devices and
+four control slots. Real kernel tests exercise A→B→A and storage refusal,
+lost completion and canceled completion. A precommit refusal can lose volatile
+fork evidence when the process is lost; committed quarantine must survive.
+The model assumes valid signatures and atomic publication and does not verify
+MLS or agreement between disconnected replicas.
 
 All use checksum-pinned TLC 1.7.4. The complete case inventory is required by the
 runner: new configs cannot silently miss the gate. It requires complete positive
