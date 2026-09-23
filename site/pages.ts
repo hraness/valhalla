@@ -9,6 +9,7 @@ export const docKindLabels: Record<DocKind, string> = {
 };
 const code = (value: string) => `<pre><code>${value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</code></pre>`;
 export const documentedRevision = "ed8076547a8aa2010686369c369aaf230f73887c";
+export const latestRelease = "v0.2.1";
 const source = (path: string, label = "Source guide") => `<a href="https://github.com/hraness/valhalla/blob/${documentedRevision}/${path}">${label} ↗</a>`;
 const note = (title: string, text: string) => `<aside class="doc-note"><strong>${title}</strong><p>${text}</p></aside>`;
 export const docs: DocPage[] = [
@@ -17,7 +18,7 @@ slug: '', title: 'Build a room worth joining.', kicker: 'Documentation', metaTit
 summary: 'A practical guide to identities, public activity, private file exchange, peers and recovery. Tutorials teach the flow; how-to guides solve a task; reference states the contract; explanation says why.',
 content: `<p class="doc-intro-note">These guides follow the <a href="https://diataxis.fr/">Diátaxis</a> split: learning-oriented tutorials, task-oriented how-to guides, factual reference, and understanding-oriented explanation. Pick the shape that matches what you need.</p>
 <h2 id="tutorials">Tutorials</h2><div class="doc-card-grid">
-<a class="doc-card" href="/docs/getting-started/"><span>Start</span><h2>Start locally. Pin your trust.</h2><p>Build the CLI, select a pinned network and choose what to run.</p></a>
+<a class="doc-card" href="/docs/getting-started/"><span>Start</span><h2>Start locally. Pin your trust.</h2><p>Download or build the CLI, select a pinned network and choose what to run.</p></a>
 </div>
 <h2 id="how-to-guides">How-to guides</h2><div class="doc-card-grid">
 <a class="doc-card" href="/docs/public-rooms/"><span>Participate</span><h2>Public messages, explicit delivery.</h2><p>Reserve, sign, deliver and inspect exact public message evidence.</p></a>
@@ -44,9 +45,11 @@ ${note('Before using sensitive data', 'Public activity is signed plaintext. Opt-
 {
 slug:'getting-started', title:'Start locally. Pin your trust.', kicker:'Getting started', kind:'tutorial',
 summary:'The maintained entry points are development tools. Bring an independently trusted bootstrap and use fresh test state before exposing a service.',
-content:`<h2 id="build">1. Build the native CLI</h2><p>These commands target source revision <a href="https://github.com/hraness/valhalla/commit/${documentedRevision}"><code>${documentedRevision.slice(0, 7)}</code></a>. Use its supported Rust toolchain and committed lockfile. The public network commands are behind an explicit feature.</p>
+content:`<h2 id="build">1. Get the tools</h2><p>Release archives ship the CLI as a plain binary — no Rust toolchain required. Download the archive and its <code>.sha256</code> sidecar for your platform from <a href="https://github.com/hraness/valhalla/releases/tag/${latestRelease}">release ${latestRelease}</a> (Apple&nbsp;Silicon macOS or x86-64 Linux), verify it, extract and run.</p>
+${code('shasum -a 256 -c valhalla-' + latestRelease + '-aarch64-apple-darwin.tar.gz.sha256\nmkdir -p valhalla-' + latestRelease + '/bin\ntar -xzf valhalla-' + latestRelease + '-aarch64-apple-darwin.tar.gz --strip-components 1 -C valhalla-' + latestRelease + '/bin\n./valhalla-' + latestRelease + '/bin/vhalla --help')}
+<p>Release binaries carry the public-room, private-room, networking and room-directory feature sets already enabled — no feature flags needed. On Apple Silicon, the separate menubar archive extracts into the same <code>bin</code> directory for sibling resolution. These are unsigned developer binaries: macOS will ask you to allow them explicitly. Examples below use <code>vhalla</code> as shorthand. Native persistence and peer serving currently target Unix.</p>
+<h3>Or build from source</h3><p>To audit and build the exact maintained revision, use the supported Rust toolchain and committed lockfile. The public network commands live behind an explicit feature in source builds.</p>
 ${code('git clone https://github.com/hraness/valhalla.git\ncd valhalla\ngit checkout --detach ' + documentedRevision + '\ncargo build --locked -p vhalla-cli --features experimental-public\n./target/debug/vhalla public')}
-<p>The last command prints the public command help; it is not a network connection. Examples below use <code>vhalla</code> as shorthand for that binary. Native persistence and peer serving currently target Unix.</p>
 <h2 id="bootstrap">2. Select a network independently</h2><p>A bootstrap binds genesis application state and the full trusted validator configuration. Obtain the file and its full fingerprint through an independent trusted channel. A peer’s download link cannot establish the fingerprint for you.</p>
 ${code('vhalla public bootstrap-check BOOTSTRAP PIN64')}
 <p><code>PIN64</code> is the full lowercase hexadecimal bootstrap fingerprint. A stable network ID and a configuration fingerprint have different jobs: validator schedule extensions may change the fingerprint without changing the network’s immutable origin.</p>

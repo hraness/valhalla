@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { supportFooter } from "./support-footer.ts";
 import { docs } from "./pages.ts";
 import { compare } from "./compare.ts";
-import { renderDoc, renderCompare, renderUseCases } from "./docs.ts";
+import { renderDoc, renderCompare, renderUseCases, renderWriting } from "./docs.ts";
+import { writing } from "./writing.ts";
 const root = import.meta.dir;
 const output = resolve(root, "dist");
 const kit = dirname(fileURLToPath(import.meta.resolve("@hraness/design-kit/paper-theme.css")));
@@ -28,6 +29,13 @@ for (const page of compare) {
   await mkdir(target, { recursive: true });
   const rendered = renderCompare(page, html);
   if (rendered.split(footerMarker).length !== 2) throw new Error(`Expected one footer slot: compare/${page.slug}`);
+  await writeFile(resolve(target, "index.html"), rendered.replace(footerMarker, supportFooter()));
+}
+for (const page of writing) {
+  const target = resolve(output, "writing", page.slug);
+  await mkdir(target, { recursive: true });
+  const rendered = renderWriting(page, html);
+  if (rendered.split(footerMarker).length !== 2) throw new Error(`Expected one footer slot: writing/${page.slug}`);
   await writeFile(resolve(target, "index.html"), rendered.replace(footerMarker, supportFooter()));
 }
 await mkdir(resolve(output, "use-cases"), { recursive: true });
@@ -56,4 +64,4 @@ const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts")], 
 if (!result.success) throw new AggregateError(result.logs, "Appearance bundle failed");
 const pkg = JSON.parse(await readFile(resolve(kit, "../package.json"), "utf8"));
 await writeFile(resolve(output, "design/source.json"), JSON.stringify({ package: pkg.name, version: pkg.version, files: Object.fromEntries(await Promise.all(files.map(async name => [name, createHash("sha256").update(await readFile(resolve(output, "design", name))).digest("hex")]))) }, null, 2));
-console.log(`Built Vhalla home, ${docs.length} documentation pages, ${compare.length} comparisons and use cases with ${pkg.name}@${pkg.version}.`);
+console.log(`Built Vhalla home, ${docs.length} documentation pages, ${compare.length} comparisons, ${writing.length} writing pages and use cases with ${pkg.name}@${pkg.version}.`);

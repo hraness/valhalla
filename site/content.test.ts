@@ -2,9 +2,10 @@ import { expect, test } from 'bun:test';
 import { readFile, access } from 'node:fs/promises';
 import { docs, documentedRevision } from './pages.ts';
 import { compare, useCases } from './compare.ts';
-import { renderDoc, renderCompare, renderUseCases, docHref, compareHref } from './docs.ts';
+import { writing } from './writing.ts';
+import { renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from './docs.ts';
 const home = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-const pages = new Map([['/', home], ...docs.map(page=>[docHref(page), renderDoc(page, home)]), ...compare.map(page=>[compareHref(page), renderCompare(page, home)]), ['/use-cases/', renderUseCases(home)]]);
+const pages = new Map([['/', home], ...docs.map(page=>[docHref(page), renderDoc(page, home)]), ...compare.map(page=>[compareHref(page), renderCompare(page, home)]), ...writing.map(page=>[writingHref(page), renderWriting(page, home)]), ['/use-cases/', renderUseCases(home)]]);
 
 test('every local page destination and section resolves', () => {
   for (const [path, html] of pages) {
@@ -23,7 +24,7 @@ test('every local page destination and section resolves', () => {
   for (const [path, html] of pages) {
     for (const match of html.matchAll(/href="(\/[^" ]+)"/g)) {
       const url=new URL(match[1], `https://vhalla.com${path}`);
-      if (url.pathname==='/'||url.pathname.startsWith('/docs/')||url.pathname.startsWith('/compare/')||url.pathname.startsWith('/use-cases/')) {
+      if (url.pathname==='/'||url.pathname.startsWith('/docs/')||url.pathname.startsWith('/compare/')||url.pathname.startsWith('/writing/')||url.pathname.startsWith('/use-cases/')) {
         expect(pages.has(url.pathname), `${path} -> ${match[1]} unresolved`).toBe(true);
       }
     }
@@ -37,7 +38,7 @@ test('documentation and marketing pages are static, accessible and correctly can
     expect(html).toContain('<main id="main"');
     expect(html).toContain('Skip to content');
     expect(html).toContain('aria-current="page"');
-    expect(html).toMatch(/<summary>(Documentation|Compare|Explore)/);
+    expect(html).toMatch(/<summary>(Documentation|Compare|Writing|Explore)/);
     expect(html).not.toContain('<form');
     expect(html).not.toMatch(/<script[^>]+src="https?:/);
     expect(html).not.toMatch(/\son(?:click|load|error)=/);
@@ -49,7 +50,7 @@ test('readiness and privacy limitations stay discoverable from the home page', (
   expect(home).toContain('href="/docs/status/"');
   expect(home).toContain('Private rooms');
   expect(home).toContain('Not ready');
-  expect(home).toContain('Illustrative public room');
+  expect(home).toContain('Illustrative network');
   expect(home).not.toContain('href="https://app.vhalla.com');
   const status=pages.get('/docs/status/')!;
   for(const phrase of ['4,096', '30 seconds', '512', 'Incremental finalization', 'Status/Stage hints never advance permanent retention', 'independent-machine']) {
@@ -101,6 +102,10 @@ test('search and agent guides include every maintained page', async () => {
   for(const page of compare) {
     expect(sitemap).toContain(`<loc>https://vhalla.com${compareHref(page)}</loc>`);
     expect(agentGuide).toContain(`https://vhalla.com${compareHref(page)}`);
+  }
+  for(const page of writing) {
+    expect(sitemap).toContain(`<loc>https://vhalla.com${writingHref(page)}</loc>`);
+    expect(agentGuide).toContain(`https://vhalla.com${writingHref(page)}`);
   }
   expect(sitemap).toContain('<loc>https://vhalla.com/use-cases/</loc>');
   expect(agentGuide).toContain('https://vhalla.com/use-cases/');

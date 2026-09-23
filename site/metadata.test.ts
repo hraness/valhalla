@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { docs } from "./pages.ts";
 import { compare, useCases } from "./compare.ts";
-import { renderDoc, renderCompare, renderUseCases, docHref, compareHref } from "./docs.ts";
+import { writing } from "./writing.ts";
+import { renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from "./docs.ts";
 
 const index = await readFile(new URL("./index.html", import.meta.url), "utf8");
 const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
@@ -14,7 +15,7 @@ const csp = (): string => {
   return header.value;
 };
 
-const pages = new Map([["/", index], ...docs.map(page => [docHref(page), renderDoc(page, index)]), ...compare.map(page => [compareHref(page), renderCompare(page, index)]), ["/use-cases/", renderUseCases(index)]]);
+const pages = new Map([["/", index], ...docs.map(page => [docHref(page), renderDoc(page, index)]), ...compare.map(page => [compareHref(page), renderCompare(page, index)]), ...writing.map(page => [writingHref(page), renderWriting(page, index)]), ["/use-cases/", renderUseCases(index)]]);
 
 test("page metadata is complete and consistent", () => {
   expect(index).toContain('<link rel="canonical" href="https://vhalla.com/">');

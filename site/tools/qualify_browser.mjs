@@ -25,8 +25,14 @@ async function work(){
  async function navigate(path,width,height){await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<600},sessionId);await call('Page.navigate',{url:base+path},sessionId);let ready=false;for(let i=0;i<200;i++){if(await evaluate("location.pathname==="+JSON.stringify(path)+" && document.readyState==='complete' && !!document.querySelector('main')")){ready=true;break;}await new Promise(r=>setTimeout(r,25));}if(!ready)throw Error('navigation did not finish '+path);await evaluate('document.fonts.ready.then(()=>true)');}
  async function shot(name){const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId);await writeFile(join(out,name+'.png'),Buffer.from(data,'base64'));}
  const results=[];
- const directories=(await readdir(join(root,'docs'),{withFileTypes:true})).filter(x=>x.isDirectory()).map(x=>'/docs/'+x.name+'/');
- for(const path of ['/', '/docs/', ...directories]){
+ const paths=['/'];
+ const walk=async dir=>{for(const e of await readdir(join(root,dir),{withFileTypes:true})){
+  if(!e.isDirectory()||e.name==='design')continue;
+  const sub=dir?dir+'/'+e.name:e.name;
+  try{await readFile(join(root,sub,'index.html'));paths.push('/'+sub+'/');}catch{}
+  await walk(sub);}};
+ await walk('');
+ for(const path of paths){
   await navigate(path,1365,950);
   const state=await evaluate(`({path:location.pathname,title:document.title,canonical:document.querySelector('link[rel=canonical]')?.href,main:document.querySelectorAll('main').length,h1:document.querySelectorAll('h1').length,width:innerWidth,scroll:document.documentElement.scrollWidth,images:Array.from(document.images).every(i=>i.complete&&i.naturalWidth>0),missingAnchors:Array.from(document.querySelectorAll('a[href^="#"]')).map(a=>a.getAttribute('href').slice(1)).filter(id=>id&&!document.getElementById(id)),links:Array.from(document.querySelectorAll('a[href^="/"]')).map(a=>a.getAttribute('href'))})`);
   if(state.main!==1||state.h1!==1||state.scroll>state.width||!state.images||state.missingAnchors.length)throw Error(JSON.stringify(state));
@@ -36,13 +42,13 @@ async function work(){
   if(path==='/'){const {cssContentSize}=await call('Page.getLayoutMetrics',{},sessionId);const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:cssContentSize.width,height:cssContentSize.height,scale:1}},sessionId);await writeFile(join(out,'home-full.png'),Buffer.from(data,'base64'));}
  }
  for(const width of [390,320,768,1024]){
-  for(const path of ['/','/docs/status/','/docs/public-rooms/','/docs/private-rooms/']){
+  for(const path of ['/','/docs/status/','/docs/public-rooms/','/docs/private-rooms/','/compare/moltbook/','/writing/agent-swarms/','/use-cases/']){
    await navigate(path,width,844);
    const state=await evaluate('({width:innerWidth,scroll:document.documentElement.scrollWidth})');if(state.scroll>state.width)throw Error('mobile overflow '+path+' '+JSON.stringify(state));
    if(path!=='/'){
-    const menu=await evaluate(`(()=>{const d=document.querySelector('.mobile-doc-nav');d.open=true;const ok=d.querySelectorAll('a').length>=9;d.open=false;return ok;})()`);if(!menu)throw Error('missing mobile documentation navigation');
+    const menu=await evaluate(`(()=>{const d=document.querySelector('.mobile-doc-nav');d.open=true;const ok=d.querySelectorAll('a').length>=4;d.open=false;return ok;})()`);if(!menu)throw Error('missing mobile documentation navigation '+path);
    }
-   if(width===390)await shot(path==='/'?'home-mobile':path.split('/')[2]+'-mobile');
+   if(width===390)await shot(path==='/'?'home-mobile':path.split('/').filter(Boolean).pop()+'-mobile');
   }
  }
  await navigate('/',1365,950);

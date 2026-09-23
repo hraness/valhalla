@@ -82,27 +82,18 @@ main {
 }
 
 .masthead {
-  display:flex;
-  align-items:center;
-  gap:32px;
-  padding:22px 0;
-  min-height:92px;
+  --hraness-marketing-measure:1376px;
+  --hraness-marketing-gutter:64px;
+  --hraness-marketing-header-height:76px;
+  --hraness-marketing-header-background:var(--paper);
 }
 
 .wordmark {
   text-decoration:none;
-  font-size:25px;
+  font-size:22px;
   font-weight:650;
   letter-spacing:-.04em;
   white-space:nowrap;
-}
-
-.primary-nav {
-  margin-left:auto;
-  display:flex;
-  align-items:center;
-  gap:28px;
-  font-size:14px;
 }
 
 .primary-nav a {
@@ -119,6 +110,7 @@ main {
   gap:9px;
   font-size:14px;
   text-decoration:none;
+  white-space:nowrap;
 }
 
 .source-link svg {
@@ -241,10 +233,91 @@ h1 {
   margin-top:3px;
 }
 
-.room {
+.room,.mesh {
   padding:0;
   align-self:center;
   overflow:hidden;
+}
+
+.mesh-map {
+  display:block;
+  width:100%;
+  height:auto;
+  padding:14px 12px 6px;
+  box-sizing:border-box;
+}
+
+.mesh-edge,.mesh-edges line {
+  stroke:var(--line);
+  stroke-width:1;
+}
+
+.mesh-room rect {
+  fill:var(--selected);
+  stroke:var(--line);
+}
+
+.mesh-room text {
+  font:600 9.5px ui-monospace,monospace;
+  fill:var(--ink);
+  text-anchor:middle;
+}
+
+.mesh-agent circle {
+  fill:var(--paper);
+  stroke:var(--muted);
+  stroke-width:.8;
+  animation:mesh-pulse 5.2s ease-in-out infinite;
+}
+
+.mesh-agent text {
+  font:500 9px ui-monospace,monospace;
+  fill:var(--muted);
+  text-anchor:middle;
+}
+
+.mesh-agent.d1 circle { animation-delay:-1.3s; }
+.mesh-agent.d2 circle { animation-delay:-2.7s; }
+.mesh-agent.d3 circle { animation-delay:-3.9s; }
+
+.mesh-peer {
+  fill:var(--paper);
+  stroke:var(--focus);
+  stroke-width:1.4;
+}
+
+.mesh-peer-dot {
+  fill:var(--focus);
+}
+
+.mesh-legend {
+  display:flex;
+  align-items:center;
+  gap:16px;
+  padding:13px 22px 15px;
+  border-top:1px solid var(--line);
+  font:10px/1.5 ui-monospace,monospace;
+  color:var(--muted);
+}
+
+.mesh-legend>span:last-child {
+  margin-left:auto;
+}
+
+.legend-key {
+  display:inline-block;
+  width:8px;
+  height:8px;
+  margin-right:5px;
+  vertical-align:baseline;
+}
+
+.key-agent { border:1px solid var(--muted); border-radius:50%; }
+.key-room { background:var(--selected); border:1px solid var(--line); border-radius:2px; }
+.key-peer { background:var(--focus); transform:rotate(45deg) scale(.8); }
+
+@keyframes mesh-pulse {
+  50% { opacity:.4; }
 }
 
 .room-heading {
@@ -629,8 +702,8 @@ h1 {
 }
 
 /* Static docs remain usable without JavaScript. Only the shared theme menu runs. */
-.docs-page .masthead {
-  border-bottom:1px solid var(--line);
+.docs-page .mobile-doc-nav {
+  margin-top:4px;
 }
 
 .docs-layout {
@@ -1095,21 +1168,37 @@ table a {
   }
 }
 
+@media(max-width:1120px) {
+  .masthead {
+    --hraness-marketing-gutter:40px;
+  }
+}
+
+@media(max-width:900px) {
+  .primary-nav .nav-writing {
+    display:none;
+  }
+}
+
+@media(max-width:560px) {
+  .source-link {
+    display:none;
+  }
+  .primary-nav a {
+    min-height:40px;
+  }
+}
+
 @media(max-width:640px) {
   .page {
     padding:0 24px;
   }
   .masthead {
-    min-height:82px;
-    gap:12px;
-    padding:17px 0;
+    --hraness-marketing-gutter:24px;
+    --hraness-marketing-header-height:64px;
   }
   .wordmark {
-    font-size:22px;
-  }
-  .primary-nav {
-    gap:16px;
-    font-size:12px;
+    font-size:20px;
   }
   .source-link {
     font-size:13px;
@@ -1335,9 +1424,17 @@ table a {
 }
 
 @media(forced-colors:active) {
-  .room,.scope-card,.doc-card,.doc-note,.state,.button-link,.build-command,.hraness-design-theme-toggle__trigger,.hraness-design-theme-toggle__popover {
+  .room,.mesh,.scope-card,.doc-card,.doc-note,.state,.button-link,.build-command,.hraness-design-theme-toggle__trigger,.hraness-design-theme-toggle__popover {
     border:1px solid CanvasText;
   }
+  .mesh-agent circle { stroke:CanvasText; fill:Canvas; }
+  .mesh-agent text { fill:CanvasText; }
+  .mesh-room rect { fill:Canvas; stroke:CanvasText; }
+  .mesh-room text { fill:CanvasText; }
+  .mesh-edges line { stroke:CanvasText; }
+  .mesh-peer { fill:Canvas; stroke:CanvasText; }
+  .mesh-peer-dot { fill:CanvasText; }
+}
   .button-link {
     color:ButtonText;
     background:ButtonFace;
@@ -1525,6 +1622,9 @@ table a {
 .section-more {
   margin-top:34px;
   font-size:13px;
+  display:flex;
+  gap:24px;
+  flex-wrap:wrap;
 }
 
 .doc-sidebar nav .nav-group {
