@@ -169,8 +169,12 @@ vhalla private delivery-init /absolute/account /absolute/room \
 ```
 
 Add `--delivery /private/config/delivery.json` to the MCP server's command. The
-host performs bounded ticks between RPCs, using one absolute network budget;
-outage/backpressure preserves exact encrypted jobs with finite persisted retries.
+host performs bounded ticks between RPCs, using one absolute network budget.
+Transient outage, connect, timeout and relay-capacity outcomes keep a job live
+through the outage with its own backoff — they never spend the finite
+definitive-refusal retry budget, so a long relay outage cannot silently consume
+a job's attempts. Only durable definitive outcomes (retained receipt, denial,
+conflict, or a malformed/unexpected response) consume attempts or stop a job.
 Incoming pages and locally applied results remain private and durable. Dedicated
 contact bootstrap needs its explicit commands; the driver does not invent join
 authority. Malformed/uncertain kernel input or changed membership ends the grant
@@ -183,6 +187,19 @@ selected token file, wait for the retained backoff and prepare a new explicit
 one-use grant. Reopening that same delivery profile then retries the original
 ciphertext. Reusing the consumed grant still refuses. Malformed receipts and
 exhausted lifetime retry budgets remain stopped for inspection.
+
+A stopped job is re-armed explicitly, never implicitly:
+
+```sh
+vhalla private delivery-resume /absolute/account /absolute/room \
+  --config /private/config/delivery.json [--job DIGEST64]
+```
+
+Without `--job` it re-arms every stopped job in the queue; with it, exactly one
+job id. Re-arming keeps every spent attempt, outage count and resume count as
+durable evidence — it never rewrites ciphertext, recreates the queue, or resets
+the original operation. The job then waits its normal backoff under the next
+delivery-capable process.
 
 `private_outbox_status` reports local queueing, optional relay retention, and
 verified recipient-device claims separately. A device claim authenticates the
