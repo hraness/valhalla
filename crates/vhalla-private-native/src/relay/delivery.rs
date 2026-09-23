@@ -254,7 +254,9 @@ impl DeliveryStore {
         .map_err(|_| Error::Storage)?;
         configure(&conn)?;
         conn.execute_batch("CREATE TABLE meta(id INTEGER PRIMARY KEY CHECK(id=1),format INTEGER NOT NULL CHECK(format=1),context BLOB NOT NULL CHECK(length(context)=128),namespace BLOB NOT NULL CHECK(length(namespace)=32),endpoint BLOB NOT NULL CHECK(length(endpoint)=32),max_jobs INTEGER NOT NULL,max_bytes INTEGER NOT NULL,max_attempts INTEGER NOT NULL,initial_backoff INTEGER NOT NULL,max_backoff INTEGER NOT NULL,clock INTEGER NOT NULL CHECK(clock>=0));
-            CREATE TABLE jobs(id BLOB PRIMARY KEY CHECK(length(id)=32),sequence BLOB NOT NULL UNIQUE CHECK(length(sequence)=8),operation BLOB NOT NULL UNIQUE CHECK(length(operation)=16),item BLOB NOT NULL,state INTEGER NOT NULL CHECK(state BETWEEN 0 AND 3),attempts INTEGER NOT NULL CHECK(attempts>=0),next_due INTEGER NOT NULL CHECK(next_due>=0),uncertain INTEGER NOT NULL CHECK(uncertain IN (0,1)),position INTEGER,last_error INTEGER NOT NULL CHECK(last_error BETWEEN 0 AND 9));").map_err(|_|Error::Storage)?;
+            CREATE TABLE jobs(id BLOB PRIMARY KEY CHECK(length(id)=32),sequence BLOB NOT NULL UNIQUE CHECK(length(sequence)=8),operation BLOB NOT NULL UNIQUE CHECK(length(operation)=16),item BLOB NOT NULL,state INTEGER NOT NULL CHECK(state BETWEEN 0 AND 3),attempts INTEGER NOT NULL CHECK(attempts>=0),next_due INTEGER NOT NULL CHECK(next_due>=0),uncertain INTEGER NOT NULL CHECK(uncertain IN (0,1)),position INTEGER,last_error INTEGER NOT NULL CHECK(last_error BETWEEN 0 AND 9));
+            CREATE TABLE driver(id INTEGER PRIMARY KEY CHECK(id=1),outgoing INTEGER NOT NULL CHECK(outgoing>=0),applied INTEGER NOT NULL CHECK(applied>=0));
+            INSERT INTO driver VALUES(1,0,0);").map_err(|_|Error::Storage)?;
         conn.execute(
             "INSERT INTO meta VALUES(1,1,?1,?2,?3,?4,?5,?6,?7,?8,0)",
             params![
@@ -334,7 +336,7 @@ impl DeliveryStore {
         if clock < 0 {
             return Err(Error::Corrupt);
         }
-        let out = Self {
+        let mut out = Self {
             conn,
             directory,
             db_guard,
@@ -346,6 +348,16 @@ impl DeliveryStore {
             needs_reopen: false,
         };
         out.validate()?;
+        // Format-1 queues predate the driver watermark table. Add the table
+        // and its zero row under the same commit barrier; job/meta bytes and
+        // every retained attempt are untouched. A later save may only advance
+        // the monotone watermarks, never reinterpret them.
+        out.begin()?;
+        out.conn
+            .execute_batch("CREATE TABLE IF NOT EXISTS driver(id INTEGER PRIMARY KEY CHECK(id=1),outgoing INTEGER NOT NULL CHECK(outgoing>=0),applied INTEGER NOT NULL CHECK(applied>=0));
+                INSERT OR IGNORE INTO driver VALUES(1,0,0);")
+            .map_err(|_| Error::Storage)?;
+        out.commit(clock)?;
         Ok(out)
     }
     fn sync(&self) -> Result<()> {
@@ -411,8 +423,10 @@ impl DeliveryStore {
             if self.item(item.digest())? != *item {
                 return Err(Error::Conflict);
             }
-            self.begin()?;
-            self.commit(clock)?;
+            // An exact retry is a pure read: it must not append a begin/commit
+            // barrier, or every relaunch replay would rewrite the journal once
+            // per already-enqueued job. The retained clock is unchanged because
+            // no durable fact was published.
             return Ok(prior);
         }
         let conflict: bool = self
@@ -488,6 +502,57 @@ impl DeliveryStore {
             out.push(self.find(id)?.ok_or(Error::Corrupt)?);
         }
         Ok(out)
+    }
+    /// Read the retained status of one exact-ciphertext job, if present. The
+    /// digest is a durable local-echo commitment: a staged mailbox item whose
+    /// digest matches a job was already committed to this queue by this owner.
+    pub fn job(&self, id: [u8; 32]) -> Result<Option<JobStatus>> {
+        self.live()?;
+        self.find(id)
+    }
+    /// Durable monotone driver watermarks: the local-outbox sequence already
+    /// scanned into this queue and the contiguous applied mailbox position.
+    /// Both start at zero for queues that predate the driver table.
+    pub fn driver_checkpoint(&self) -> Result<(u64, u64)> {
+        self.live()?;
+        let row: Option<(i64, i64)> = self
+            .conn
+            .query_row("SELECT outgoing,applied FROM driver WHERE id=1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()
+            .map_err(|_| Error::Corrupt)?;
+        let Some((outgoing, applied)) = row else {
+            return Ok((0, 0));
+        };
+        Ok((
+            u64::try_from(outgoing).map_err(|_| Error::Corrupt)?,
+            u64::try_from(applied).map_err(|_| Error::Corrupt)?,
+        ))
+    }
+    /// Advance the durable driver watermarks. They may only move forward; a
+    /// lower value than retained is a caller bug, never a state repair.
+    pub fn save_driver_checkpoint(&mut self, outgoing: u64, applied: u64, now: u64) -> Result<()> {
+        let clock = self.clock(now)?;
+        let (last_outgoing, last_applied) = self.driver_checkpoint()?;
+        if outgoing < last_outgoing || applied < last_applied {
+            return Err(Error::Bounds);
+        }
+        if outgoing == last_outgoing && applied == last_applied {
+            return Ok(());
+        }
+        self.begin()?;
+        self.conn
+            .execute(
+                "UPDATE driver SET outgoing=?1,applied=?2 WHERE id=1",
+                params![outgoing as i64, applied as i64],
+            )
+            .map_err(|_| Error::Storage)?;
+        self.commit(clock)?;
+        if self.driver_checkpoint()? != (outgoing, applied) {
+            return Err(Error::Corrupt);
+        }
+        Ok(())
     }
     /// Run finite due work without sleeping or re-encrypting. The host schedules
     /// another tick after next_due; an expired deadline never starts a new attempt.
