@@ -565,3 +565,68 @@ fn admission_cursor_reconciles_every_exact_pending_cursor_prefix() {
         fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[test]
+fn idle_reopen_uses_the_validated_signature_without_reopening_items() {
+    let dir = directory("idle-rescan");
+    let mut source = Store::new(
+        namespace(),
+        Limits {
+            max_items: MAX_RELAY_ITEMS,
+            max_bytes: 64 * 1024 * 1024,
+        },
+    )
+    .unwrap();
+    for position in 1..=600u64 {
+        let mut operation = [0u8; 16];
+        operation[8..].copy_from_slice(&position.to_be_bytes());
+        source
+            .put(
+                RelayItem::new(
+                    namespace(),
+                    position,
+                    OperationId::from_bytes(operation).unwrap(),
+                    OutboxKind::Application,
+                    b"opaque ciphertext",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    {
+        let mut scan = ScanDirectory::open(&dir, namespace()).unwrap();
+        scan.scan(&source, MAX_RELAY_PAGE).unwrap();
+    }
+    // The first reopen after publication performs the complete custody sweep
+    // and publishes the validated snapshot for later idle reopens.
+    let started = Instant::now();
+    let scan = ScanDirectory::open(&dir, namespace()).unwrap();
+    let full_sweep = started.elapsed();
+    assert_eq!(scan.positions().unwrap().len(), 600);
+    assert_eq!(
+        fs::metadata(dir.join("signature"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o600
+    );
+    drop(scan);
+    // In-place custody drift never touches the directory, so the exact
+    // signature derives positions; read() keeps the deferred custody refusal.
+    let file = item_path(&dir.join("items"), 1);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+    let started = Instant::now();
+    let scan = ScanDirectory::open(&dir, namespace()).unwrap();
+    assert_eq!(scan.positions().unwrap().len(), 600);
+    let idle_open = started.elapsed();
+    assert_eq!(scan.read(1), Err(ScanFailure::Storage));
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    // Any committed-directory change invalidates the snapshot: a removal is
+    // corruption evidence, never silently rederived positions.
+    fs::remove_file(&file).unwrap();
+    assert_eq!(scan.positions(), Err(ScanFailure::Corrupt));
+    drop(scan);
+    eprintln!("idle-rescan 600 items: full sweep {full_sweep:?}, signed idle open {idle_open:?}");
+    fs::remove_dir_all(dir).unwrap();
+}
