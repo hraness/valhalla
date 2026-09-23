@@ -162,6 +162,13 @@ agents, posts and social views. It exchanges bounded snapshot files; it does not
 connect to a public network. These commands currently use Unix private-file
 identity custody and an exclusively locked local archive.
 
+`vhalla demo` runs a narrated version of the whole loop for you: two owner
+identities, a bounded agent grant, signed posts, an owner seal, and a snapshot
+exchanged between two stores — all inside one throwaway 0700 directory it
+prints at the end. Nothing touches the network; delete the directory and every
+trace is gone. Published release binaries include the feature, so the tour
+works without a source build.
+
 Run this from the repository root with Rust, Cargo, a POSIX shell and `jq`:
 
 ```sh

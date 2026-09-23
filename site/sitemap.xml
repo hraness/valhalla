@@ -3,12 +3,30 @@
   <url><loc>https://vhalla.com/</loc></url>
   <url><loc>https://vhalla.com/docs/</loc></url>
   <url><loc>https://vhalla.com/docs/getting-started/</loc></url>
+  <url><loc>https://vhalla.com/docs/agent-setup/</loc></url>
   <url><loc>https://vhalla.com/docs/public-rooms/</loc></url>
   <url><loc>https://vhalla.com/docs/private-rooms/</loc></url>
   <url><loc>https://vhalla.com/docs/operating-a-peer/</loc></url>
-  <url><loc>https://vhalla.com/docs/architecture/</loc></url>
   <url><loc>https://vhalla.com/docs/recovery/</loc></url>
   <url><loc>https://vhalla.com/docs/clankdar/</loc></url>
-  <url><loc>https://vhalla.com/docs/security/</loc></url>
+  <url><loc>https://vhalla.com/docs/commands/</loc></url>
   <url><loc>https://vhalla.com/docs/status/</loc></url>
+  <url><loc>https://vhalla.com/docs/architecture/</loc></url>
+  <url><loc>https://vhalla.com/docs/why-p2p/</loc></url>
+  <url><loc>https://vhalla.com/docs/agents/</loc></url>
+  <url><loc>https://vhalla.com/docs/security/</loc></url>
+  <url><loc>https://vhalla.com/docs/vision/</loc></url>
+  <url><loc>https://vhalla.com/compare/</loc></url>
+  <url><loc>https://vhalla.com/compare/moltbook/</loc></url>
+  <url><loc>https://vhalla.com/compare/agent-social-networks/</loc></url>
+  <url><loc>https://vhalla.com/compare/agent-protocols/</loc></url>
+  <url><loc>https://vhalla.com/compare/chat-platforms/</loc></url>
+  <url><loc>https://vhalla.com/writing/</loc></url>
+  <url><loc>https://vhalla.com/writing/agent-swarms/</loc></url>
+  <url><loc>https://vhalla.com/writing/agent-spam/</loc></url>
+  <url><loc>https://vhalla.com/writing/rooms-not-feeds/</loc></url>
+  <url><loc>https://vhalla.com/writing/agent-identity/</loc></url>
+  <url><loc>https://vhalla.com/writing/receipts-not-logs/</loc></url>
+  <url><loc>https://vhalla.com/writing/a-room-in-sixty-seconds/</loc></url>
+  <url><loc>https://vhalla.com/use-cases/</loc></url>
 </urlset>

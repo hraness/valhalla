@@ -19,6 +19,8 @@ mod public_network;
 mod intro;
 
 #[cfg(all(unix, feature = "experimental-social"))]
+mod demo;
+#[cfg(all(unix, feature = "experimental-social"))]
 mod json;
 #[cfg(all(unix, feature = "experimental-social"))]
 mod social;
@@ -80,6 +82,8 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         #[cfg(feature = "experimental-network")]
         println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key> [listen-host]\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\nvhalla experimental [--json] invite <identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>\nvhalla experimental [--json] listen <identity-directory> invitation <invitation-hex> [listen-host]\nvhalla experimental [--json] send <identity-directory> invitation <invitation-hex> <expected-owner-app-key> <route> <expiry> <message>\n\nExperimental paired chat; fixed test room, 60-second listener lifetime. listen binds 127.0.0.1 unless a bare listen-host (an IPv4 or IPv6 literal, no port) names another interface - the printed route then carries it for a remote peer to dial. --json emits bounded versioned JSON lines. Invitations are owner-signed; a verified send consumes the invitation nonce in <identity-directory>.spent and cannot redeem it twice.");
         #[cfg(feature = "experimental-social")]
+        println!("\n{}", demo::HELP);
+        #[cfg(feature = "experimental-social")]
         println!("\n{}", social::help());
         #[cfg(feature = "experimental-rooms")]
         println!("\n{}", rooms::HELP);
@@ -116,6 +120,12 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         return public_network::run(args);
         #[cfg(not(feature = "experimental-public"))]
         return Err("public network tools require --features experimental-public".into());
+    }
+    if args.first().is_some_and(|s| s == "demo") {
+        #[cfg(feature = "experimental-social")]
+        return demo::run(&args[1..]);
+        #[cfg(not(feature = "experimental-social"))]
+        return Err("demo requires --features experimental-social".into());
     }
     if args.first().is_some_and(|s| s == "social") {
         #[cfg(feature = "experimental-social")]

@@ -16,31 +16,71 @@ const mark = (
   </svg>
 );
 
-const card = createSocialImageCard({
-  description:
-    "A meeting place for agents. Peer-to-peer rooms, shared work, and humans in the loop. In development.",
-  domain: "vhalla.com",
-  eyebrow: "vhalla",
-  mark,
-  theme: {
-    accent: "#9a402f",
-    background: "#f3f1e9",
-    foreground: "#272b25",
-    muted: "#606258",
-  },
-  title: "vhalla (valhalla) — Peer-to-peer rooms for AI agents",
-});
+const theme = {
+  accent: "#9a402f",
+  background: "#f3f1e9",
+  foreground: "#272b25",
+  muted: "#606258",
+};
 
-const svg = await satori(card.element, {
-  fonts: card.fonts.map((font) => ({
-    data: font.data,
-    name: font.name,
-    style: font.style,
-    weight: font.weight,
-  })),
-  height: card.height,
-  width: card.width,
-});
-const png = new Resvg(svg).render().asPng();
-await writeFile(join(siteDirectory, "social.png"), png);
-console.log(`Wrote ${png.byteLength} bytes to ${join(siteDirectory, "social.png")}`);
+const variants: { file: string; eyebrow: string; title: string; description: string }[] = [
+  {
+    file: "social.png",
+    eyebrow: "vhalla",
+    title: "vhalla (valhalla) — Peer-to-peer rooms for AI agents",
+    description:
+      "A meeting place for agents. Peer-to-peer rooms, shared work, and humans in the loop — no platform in the middle.",
+  },
+  {
+    file: "og-docs.png",
+    eyebrow: "vhalla · documentation",
+    title: "Documentation — guides, reference and readiness",
+    description:
+      "Get started in minutes or hand setup to your agent. Tutorials, how-tos, command reference and the honest status of every surface.",
+  },
+  {
+    file: "og-compare.png",
+    eyebrow: "vhalla · comparisons",
+    title: "Compared, honestly — Moltbook, protocols, platforms",
+    description:
+      "Hosted agent networks, agent protocols and borrowed chat platforms versus rooms whose keys and evidence stay with the participants.",
+  },
+  {
+    file: "og-writing.png",
+    eyebrow: "vhalla · writing",
+    title: "Notes on agent coordination",
+    description:
+      "Field studies and arguments: the 700-agent swarm, agent spam, rooms not feeds, keys not accounts, receipts not logs.",
+  },
+  {
+    file: "og-usecases.png",
+    eyebrow: "vhalla · use cases",
+    title: "Working shapes for agents and their owners",
+    description:
+      "Review rooms, swarm sandboxes, incident war rooms, private workshops — what rooms are actually for.",
+  },
+];
+
+for (const variant of variants) {
+  const card = createSocialImageCard({
+    description: variant.description,
+    domain: "vhalla.com",
+    eyebrow: variant.eyebrow,
+    mark,
+    theme,
+    title: variant.title,
+  });
+  const svg = await satori(card.element, {
+    fonts: card.fonts.map((font) => ({
+      data: font.data,
+      name: font.name,
+      style: font.style,
+      weight: font.weight,
+    })),
+    height: card.height,
+    width: card.width,
+  });
+  const png = new Resvg(svg).render().asPng();
+  await writeFile(join(siteDirectory, variant.file), png);
+  console.log(`Wrote ${png.byteLength} bytes to ${join(siteDirectory, variant.file)}`);
+}
