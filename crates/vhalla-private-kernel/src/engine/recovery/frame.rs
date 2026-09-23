@@ -144,17 +144,22 @@ impl Page {
 }
 
 pub(super) fn put_record(w: &mut Writer, record: &StoredRecord) -> Result<()> {
-    w.blob(&record.key().encode(), 33)?;
+    w.blob(&record.key().encode(), 64)?;
     w.blob(record.as_bytes(), MAX_STORED_RECORD_BYTES)
 }
 pub(super) fn read_record(r: &mut Reader<'_>) -> Result<StoredRecord> {
-    let mut key = Reader { rest: r.blob(33)? };
+    let mut key = Reader { rest: r.blob(64)? };
     let key_value = match key.byte()? {
         1 => RecordKey::Outbox(key.u64()?),
         2 => RecordKey::Inbox(key.u64()?),
         3 => RecordKey::Operation(OperationId::from_bytes(key.array()?)?),
         4 => RecordKey::Received(key.array()?),
         5 => RecordKey::Control(key.u64()?),
+        6 => RecordKey::Sent(key.array()?),
+        7 => RecordKey::Acceptance {
+            outbox: key.u64()?,
+            recipient: protocol::Key::from_bytes(key.array()?)?,
+        },
         _ => return Err(Error::Encoding),
     };
     key.end()?;

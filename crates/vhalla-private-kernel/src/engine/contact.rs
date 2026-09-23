@@ -56,7 +56,6 @@ impl<S: Store> Kernel<S> {
             .retained_offer(operation, request, work.state.outbox)
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         if !work.state.owner_role() {
@@ -121,7 +120,6 @@ impl<S: Store> Kernel<S> {
             )
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         work.state.check_time(now)?;
@@ -174,7 +172,6 @@ impl<S: Store> Kernel<S> {
             )
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         if !work.state.owner_role() {
@@ -223,7 +220,6 @@ impl<S: Store> Kernel<S> {
         let id = contact::response_hash(raw);
         let work = self.begin_live().await?;
         if work.state.phase == Phase::MemberJoined && work.state.joined == Some(id) {
-            self.needs_reopen = false;
             return Ok(self.status);
         }
         if work.state.phase != Phase::AwaitingWelcome {

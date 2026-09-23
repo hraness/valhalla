@@ -30,7 +30,6 @@ impl<S: Store> Kernel<S> {
             .try_into()
             .map_err(|_| Error::Mls)?;
         let signed = unsigned.attach(signature)?;
-        self.needs_reopen = false;
         Ok(signed.encode())
     }
 }

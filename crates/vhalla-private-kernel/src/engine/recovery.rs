@@ -84,17 +84,27 @@ impl Snapshot {
             })
             .ok_or(Error::Bounds)
     }
-    fn records(&self) -> Result<u64> {
-        self.outbox
-            .checked_add(self.inbox)
-            .and_then(|n| n.checked_mul(2))
-            .and_then(|n| {
-                self.floor
-                    .sequence()
-                    .checked_sub(self.base.sequence())
-                    .and_then(|c| n.checked_add(c))
-            })
-            .ok_or(Error::Bounds)
+    /// Exact record counts are not derivable from heads alone: an outbox unit
+    /// carries its operation index plus (application sends only) a ciphertext
+    /// index, and an inbox unit carries its wire index plus (verified member
+    /// receipts only) an acceptance index. The honest bounds are therefore a
+    /// (minimum, maximum) pair; the backend's actual count must lie inside.
+    fn records_range(&self) -> Result<(u64, u64)> {
+        let pairs = self.outbox.checked_add(self.inbox).ok_or(Error::Bounds)?;
+        let controls = self
+            .floor
+            .sequence()
+            .checked_sub(self.base.sequence())
+            .ok_or(Error::Bounds)?;
+        let min = pairs
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(controls))
+            .ok_or(Error::Bounds)?;
+        let max = pairs
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(controls))
+            .ok_or(Error::Bounds)?;
+        Ok((min, max))
     }
 }
 fn page_digest(bytes: &[u8]) -> [u8; 32] {
@@ -108,6 +118,25 @@ fn accounting(value: &Accounting, image: Option<&Image>, records: u64, bytes: u6
         || value.records != records
         || value.bytes != bytes
         || records > value.max_records
+        || bytes > value.max_bytes
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
+/// Accounting check where only a (minimum, maximum) record range is derivable
+/// from state heads — the exact count depends on per-unit content kinds. The
+/// backend's actual count must lie inside the range and its bytes match.
+fn accounting_range(
+    value: &Accounting,
+    image: Option<&Image>,
+    records: (u64, u64),
+    bytes: u64,
+) -> Result<()> {
+    if value.image.as_ref() != image
+        || !(records.0..=records.1).contains(&value.records)
+        || value.bytes != bytes
+        || records.1 > value.max_records
         || bytes > value.max_bytes
     {
         return Err(Error::Conflict);

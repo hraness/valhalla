@@ -183,7 +183,8 @@ fn confidential_wrong_scope_purpose_epoch_and_tamper_have_no_effects() {
             foreign.member.status().context,
         )
         .state
-        .local;
+        .local
+        .clone();
         assert!(matches!(
             transport::open(
                 &changed_roster,

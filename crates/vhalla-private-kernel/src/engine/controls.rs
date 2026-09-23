@@ -17,9 +17,9 @@ impl<S: Store> Kernel<S> {
         if limit == 0 || limit > MAX_PAGE_RECORDS {
             return Err(Error::Bounds);
         }
-        let work = self.begin().await?;
-        let base = encrypted_base(&work);
-        let head = work.state.floor;
+        let state = self.begin_state().await?;
+        let base = encrypted_base(&state);
+        let head = state.floor;
         if after.sequence() < base.sequence() {
             return Err(Error::Missing);
         }
@@ -40,8 +40,7 @@ impl<S: Store> Kernel<S> {
         while cursor.sequence() < head.sequence() && records.len() < limit {
             let retained = self.control_at(cursor.next_sequence()?).await?;
             let floor = retained.floor()?;
-            if retained.control.claims().owner_device
-                != work.state.owner_device_at(floor.sequence())?
+            if retained.control.claims().owner_device != state.owner_device_at(floor.sequence())?
                 || retained.control.claims().parent != cursor
             {
                 return Err(Error::Policy);
@@ -65,7 +64,6 @@ impl<S: Store> Kernel<S> {
         if cursor.sequence() == head.sequence() && cursor != head {
             return Err(Error::Conflict);
         }
-        self.needs_reopen = false;
         Ok(EncryptedControlPage {
             base,
             head,
@@ -88,10 +86,10 @@ impl<S: Store> Kernel<S> {
     /// Read the first durable fork proof. It never clears quarantine or grants
     /// owner succession. Missing evidence means no locally retained proof only.
     pub async fn fork_evidence(&mut self) -> Result<Option<ForkEvidence>> {
-        let work = self.begin().await?;
-        let evidence = if let Some(fault) = &work.state.fault {
+        let state = self.begin_state().await?;
+        let evidence = if let Some(fault) = &state.fault {
             let (accepted_proof, accepted_from_checkpoint) =
-                self.accepted_proof(&work, fault.accepted).await?;
+                self.accepted_proof(&state, fault.accepted).await?;
             Some(ForkEvidence {
                 accepted: fault.accepted,
                 conflicting: fault.conflicting.signed().clone(),
@@ -101,7 +99,6 @@ impl<S: Store> Kernel<S> {
         } else {
             None
         };
-        self.needs_reopen = false;
         Ok(evidence)
     }
 
@@ -128,11 +125,11 @@ impl<S: Store> Kernel<S> {
 
     async fn accepted_proof(
         &mut self,
-        work: &Working,
+        state: &State,
         floor: ControlFloor,
     ) -> Result<(Vec<u8>, bool)> {
-        if floor == work.state.base {
-            let checkpoint = work.state.checkpoint.as_ref().ok_or(Error::Missing)?;
+        if floor == state.base {
+            let checkpoint = state.checkpoint.as_ref().ok_or(Error::Missing)?;
             if floor.sequence() == 0 || checkpoint.claims().parent != floor {
                 return Err(Error::Policy);
             }
@@ -141,7 +138,7 @@ impl<S: Store> Kernel<S> {
             let packet = self.control_at(floor.sequence()).await?;
             if packet.floor()? != floor
                 || packet.control.claims().owner_device
-                    != work.state.owner_device_at(floor.sequence())?
+                    != state.owner_device_at(floor.sequence())?
             {
                 return Err(Error::Policy);
             }
@@ -155,9 +152,9 @@ impl<S: Store> Kernel<S> {
         if limit == 0 || limit > MAX_PAGE_RECORDS {
             return Err(Error::Bounds);
         }
-        let work = self.begin().await?;
-        let base = work.state.base;
-        let head = work.state.floor;
+        let state = self.begin_state().await?;
+        let base = state.base;
+        let head = state.floor;
         if after.sequence() < base.sequence() {
             return Err(Error::Missing);
         }
@@ -178,7 +175,7 @@ impl<S: Store> Kernel<S> {
         while cursor.sequence() < head.sequence() && records.len() < limit {
             let packet = self.control_at(cursor.next_sequence()?).await?;
             if packet.control.claims().owner_device
-                != work.state.owner_device_at(cursor.next_sequence()?)?
+                != state.owner_device_at(cursor.next_sequence()?)?
                 || packet.control.claims().parent != cursor
             {
                 return Err(Error::Policy);
@@ -201,7 +198,6 @@ impl<S: Store> Kernel<S> {
         if cursor.sequence() == head.sequence() && cursor != head {
             return Err(Error::Conflict);
         }
-        self.needs_reopen = false;
         Ok(ControlPage {
             base,
             head,
@@ -225,7 +221,7 @@ impl<S: Store> Kernel<S> {
             return Err(Error::Policy);
         }
         if now < work.state.clock {
-            return Err(Error::Time);
+            return Err(Error::ClockRegressed);
         }
         let sequence = c.sequence()?;
         if sequence > work.state.floor.sequence() {
@@ -240,11 +236,10 @@ impl<S: Store> Kernel<S> {
             self.control_at(sequence).await?.floor()?
         };
         if accepted.id() == Some(control.id()) {
-            self.needs_reopen = false;
             return Ok(None);
         }
         let (accepted_proof, accepted_from_checkpoint) =
-            self.accepted_proof(&work, accepted).await?;
+            self.accepted_proof(&work.state, accepted).await?;
         self.pending_fault = Some(ForkEvidence {
             accepted,
             conflicting: control.signed().clone(),

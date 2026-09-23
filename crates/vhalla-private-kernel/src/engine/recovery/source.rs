@@ -124,9 +124,10 @@ impl ArchiveSourceReader {
         let image = Image::from_bytes(&self.image)?;
         let (clear, state) = canonical_state(&self.key, self.context, &image)?;
         let snapshot = Snapshot::of(&state);
+        let (min, max) = snapshot.records_range()?;
         if hash(&clear) != header.state_hash
             || snapshot.revision != header.revision
-            || snapshot.records()? != header.records
+            || !(min..=max).contains(&header.records)
         {
             return Err(Error::Conflict);
         }
@@ -180,7 +181,7 @@ impl<S: ArchiveStore> ArchiveExport<S> {
         let image = value.image.as_ref().ok_or(Error::Missing)?.clone();
         let (clear, state) = canonical_state(key, context, &image)?;
         let snapshot = Snapshot::of(&state);
-        accounting(&value, Some(&image), snapshot.records()?, value.bytes)?;
+        accounting_range(&value, Some(&image), snapshot.records_range()?, value.bytes)?;
         let header = Header {
             revision: state.revision,
             records: value.records,

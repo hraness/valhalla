@@ -20,28 +20,84 @@ pub(super) fn first(snapshot: &Snapshot, unit: u64) -> Result<RecordKey> {
     }
     Ok(RecordKey::Control(sequence))
 }
-fn second(key: &StorageKey, context: Context, record: &StoredRecord) -> Result<Option<RecordKey>> {
+/// Derive every auxiliary index record a unit must carry. A unit has zero to
+/// two secondaries: outbox units index their operation and (for application
+/// sends) their ciphertext hash; inbox units index their wire hash and (for a
+/// verified member receipt) the sender-side acceptance. Re-deriving the exact
+/// expectation keeps archive accounting honest when a unit carries one or
+/// three records, instead of assuming one auxiliary per unit.
+async fn secondaries<S: Store>(
+    store: &mut S,
+    key: &StorageKey,
+    context: Context,
+    record: &StoredRecord,
+) -> Result<Vec<RecordKey>> {
     let clear = record_clear(key, context, record)?;
-    Ok(match record.key() {
+    match record.key() {
         RecordKey::Outbox(index) => {
             let sent = Sent::decode(&clear)?;
             if sent.sequence != index {
                 return Err(Error::Encoding);
             }
-            Some(RecordKey::Operation(sent.operation))
+            let mut keys = vec![RecordKey::Operation(sent.operation)];
+            if sent.kind == OutboxKind::Application {
+                keys.push(RecordKey::Sent(wire_hash(&sent.bytes)));
+            }
+            Ok(keys)
         }
         RecordKey::Inbox(index) => {
-            let mut received = Received::decode(&clear)?;
-            // The decoded plaintext copy is immediately guarded, including all errors.
-            let _body = Zeroizing::new(std::mem::take(&mut received.body));
+            let received = Received::decode(&clear)?;
             if received.sequence != index {
                 return Err(Error::Encoding);
             }
-            Some(RecordKey::Received(wire_hash(&received.wire)))
+            let sender = received.sender;
+            let body = Zeroizing::new(received.body.clone());
+            let mut keys = vec![RecordKey::Received(wire_hash(&received.wire))];
+            let Some(claim) = MemberAcceptance::claimed_ciphertext(&body) else {
+                return Ok(keys);
+            };
+            let Some(lookup) = store
+                .read(context, RecordKey::Sent(claim))
+                .await
+                .map_err(store_error)?
+            else {
+                // A receipt for ciphertext this custody never sent carries no
+                // acceptance record: it stays inert content in the archive.
+                return Ok(keys);
+            };
+            if lookup.key() != RecordKey::Sent(claim) {
+                return Err(Error::Scope);
+            }
+            let outbox = decode_index(&record_clear(key, context, &lookup)?)?;
+            let original_record = store
+                .read(context, RecordKey::Outbox(outbox))
+                .await
+                .map_err(store_error)?
+                .ok_or(Error::Missing)?;
+            if original_record.key() != RecordKey::Outbox(outbox) {
+                return Err(Error::Scope);
+            }
+            let sent = Sent::decode(&record_clear(key, context, &original_record)?)?;
+            if sent.sequence != outbox || sent.kind != OutboxKind::Application {
+                return Ok(keys);
+            }
+            let original = sent.committed()?;
+            let message = ReceivedMessage {
+                sequence: received.sequence,
+                sender,
+                body: body.to_vec(),
+            };
+            if let Ok(Some(_)) = MemberAcceptance::verify(context, &original, &message) {
+                keys.push(RecordKey::Acceptance {
+                    outbox,
+                    recipient: sender,
+                });
+            }
+            Ok(keys)
         }
-        RecordKey::Control(_) => None,
-        _ => return Err(Error::Encoding),
-    })
+        RecordKey::Control(_) => Ok(Vec::new()),
+        _ => Err(Error::Encoding),
+    }
 }
 pub(super) async fn load<S: Store>(
     store: &mut S,
@@ -61,21 +117,22 @@ pub(super) async fn load<S: Store>(
         return Err(Error::Scope);
     }
     let mut records = vec![first];
-    if let Some(second) = second(key, context, &records[0])? {
+    for secondary in secondaries(store, key, context, &records[0]).await? {
         let record = store
-            .read(context, second)
+            .read(context, secondary)
             .await
             .map_err(store_error)?
             .ok_or(Error::Missing)?;
-        if record.key() != second {
+        if record.key() != secondary {
             return Err(Error::Scope);
         }
         records.push(record);
     }
-    let next = check(key, context, snapshot, unit, prior, &records)?;
+    let next = check(store, key, context, snapshot, unit, prior, &records).await?;
     Ok((records, next))
 }
-pub(super) fn check(
+pub(super) async fn check<S: Store>(
+    store: &mut S,
     key: &StorageKey,
     context: Context,
     snapshot: &Snapshot,
@@ -88,41 +145,44 @@ pub(super) fn check(
     if record.key() != first_key {
         return Err(Error::Scope);
     }
-    match second(key, context, record)? {
-        Some(index_key) => {
-            if records.len() != 2 || records[1].key() != index_key {
-                return Err(Error::Encoding);
-            }
-            let clear = record_clear(key, context, &records[1])?;
-            let expected = match first_key {
-                RecordKey::Outbox(n) | RecordKey::Inbox(n) => n,
-                _ => return Err(Error::Encoding),
-            };
-            if decode_index(&clear)? != expected {
-                return Err(Error::Conflict);
-            }
-            Ok(prior)
+    let expected = secondaries(store, key, context, record).await?;
+    if expected.is_empty() {
+        if records.len() != 1 {
+            return Err(Error::Encoding);
         }
-        None => {
-            if records.len() != 1 {
+        let clear = record_clear(key, context, record)?;
+        let retained = transport::RetainedControl::decode(&clear)?;
+        let claims = retained.control.claims();
+        let floor = retained.floor()?;
+        if first_key != RecordKey::Control(floor.sequence())
+            || claims.scope != context.scope
+            || claims.owner_device != snapshot.owner_at(floor.sequence())
+            || claims.parent != prior
+        {
+            return Err(Error::Policy);
+        }
+        if floor.sequence() == snapshot.floor.sequence() && floor != snapshot.floor {
+            return Err(Error::Conflict);
+        }
+        Ok(floor)
+    } else {
+        if records.len() != expected.len() + 1 {
+            return Err(Error::Encoding);
+        }
+        let index = match first_key {
+            RecordKey::Outbox(n) | RecordKey::Inbox(n) => n,
+            _ => return Err(Error::Encoding),
+        };
+        for (record, key_expected) in records[1..].iter().zip(expected.iter()) {
+            if record.key() != *key_expected {
                 return Err(Error::Encoding);
             }
             let clear = record_clear(key, context, record)?;
-            let retained = transport::RetainedControl::decode(&clear)?;
-            let claims = retained.control.claims();
-            let floor = retained.floor()?;
-            if first_key != RecordKey::Control(floor.sequence())
-                || claims.scope != context.scope
-                || claims.owner_device != snapshot.owner_at(floor.sequence())
-                || claims.parent != prior
-            {
-                return Err(Error::Policy);
-            }
-            if floor.sequence() == snapshot.floor.sequence() && floor != snapshot.floor {
+            if decode_index(&clear)? != index {
                 return Err(Error::Conflict);
             }
-            Ok(floor)
         }
+        Ok(prior)
     }
 }
 pub(super) fn bytes(records: &[StoredRecord]) -> Result<u64> {

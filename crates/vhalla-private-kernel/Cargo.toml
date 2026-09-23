@@ -33,6 +33,7 @@ getrandom = { version = "=0.2.17", features = ["js"] }
 
 [dev-dependencies]
 futures = "=0.3.34"
+hegeltest = "0.46.0"
 
 # Exact browser bindings shared with the maintained browser client.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

@@ -2,6 +2,7 @@ use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider;
+use zeroize::Zeroize;
 
 use crate::{
     codec::{Reader, Writer},
@@ -13,10 +14,14 @@ pub(crate) const SUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM
 const MAX_PROVIDER_RECORDS: usize = 256;
 /// Bounded account-authorized owner handoffs ever accepted for this room.
 pub const MAX_SUCCESSIONS: usize = 16;
+/// Largest forward jump a caller clock may commit. Far beyond every enrollment
+/// validity, so only a caller/host clock defect can ever reach it.
+pub(crate) const MAX_CLOCK_STEP_SECS: u64 = 400 * 24 * 60 * 60;
 // No automatic migration from earlier or grant-only experimental state images.
 const MAGIC: &[u8] = b"VHPKSTATE\x05";
 const FAULT_RESERVE: usize = MAX_RECORD_BYTES + 64;
 
+#[derive(Clone)]
 pub(crate) struct State {
     pub(crate) revision: u64,
     pub(crate) phase: Phase,
@@ -54,6 +59,7 @@ impl State {
             context: self.context(),
             phase: self.phase,
             epoch: self.epoch,
+            clock: self.clock,
             control_sequence: self.floor.sequence(),
             control_floor: self.floor,
             outbox_head: self.outbox,
@@ -303,7 +309,13 @@ impl State {
     }
     pub(crate) fn check_time(&self, now: u64) -> Result<()> {
         if now < self.clock {
-            return Err(Error::Time);
+            return Err(Error::ClockRegressed);
+        }
+        // A far-future `now` (unit bug, host clock set a year ahead) must not be
+        // committed: it would refuse every later operation until real time
+        // caught up. Enrollment validity is always far below this bound.
+        if now > self.clock.saturating_add(MAX_CLOCK_STEP_SECS) {
+            return Err(Error::Bounds);
         }
         self.local.claims().validity.check_at(now)?;
         self.owner.claims().validity.check_at(now)?;
@@ -626,6 +638,17 @@ impl Working {
         Ok(self.state)
     }
 }
+impl Drop for State {
+    fn drop(&mut self) {
+        // Our decoded copy of the MLS provider map holds ratchet/epoch secrets;
+        // scrub it on every drop (refusal paths, captures and clones alike).
+        // The OpenMLS provider's own storage cannot be zeroized from here.
+        for (key, value) in &mut self.records {
+            key.zeroize();
+            value.zeroize();
+        }
+    }
+}
 
 /// Verify both account and predecessor-device authority for every retained
 /// handoff against an anchor. An empty chain describes no accepted handoffs;
@@ -721,6 +744,7 @@ fn decode_phase(value: u8) -> Result<Phase> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct FaultEvidence {
     pub(crate) accepted: ControlFloor,
     pub(crate) conflicting: VerifiedOwnerControl,
