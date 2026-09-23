@@ -99,36 +99,45 @@ fn three_record_control_transaction_preflights_all_keys_and_preserves_old_encodi
         vec![vec![6], vec![9; 32]].concat()
     );
     assert!(RecordKey::Sent([0; 32]).encode().is_err());
-    assert_eq!(
+    let acceptance = RecordKey::Acceptance {
+        outbox: 1,
+        recipient: [7; 32],
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(acceptance.len(), 33);
+    assert_eq!(acceptance[0], 7);
+    assert_ne!(acceptance[1..], [0; 32]);
+    assert_ne!(
         RecordKey::Acceptance {
-            outbox: 1,
+            outbox: 2,
             recipient: [7; 32],
         }
         .encode()
         .unwrap(),
-        vec![
-            vec![7],
-            1u64.to_be_bytes().to_vec(),
-            vec![7; 32]
-        ]
-        .concat()
+        acceptance
     );
-    assert!(
-        RecordKey::Acceptance {
-            outbox: 0,
-            recipient: [7; 32],
-        }
-        .encode()
-        .is_err()
-    );
-    assert!(
+    assert_ne!(
         RecordKey::Acceptance {
             outbox: 1,
-            recipient: [0; 32],
+            recipient: [8; 32],
         }
         .encode()
-        .is_err()
+        .unwrap(),
+        acceptance
     );
+    assert!(RecordKey::Acceptance {
+        outbox: 0,
+        recipient: [7; 32],
+    }
+    .encode()
+    .is_err());
+    assert!(RecordKey::Acceptance {
+        outbox: 1,
+        recipient: [0; 32],
+    }
+    .encode()
+    .is_err());
     let path = home();
     let ctx = context();
     let mut store = NativePrivateStore::create_new(&path, ctx, limits()).unwrap();

@@ -148,13 +148,17 @@ impl RecordKey {
             Self::Operation(id) if id != [0; 16] => (3, id.to_vec()),
             Self::Received(hash) if hash != [0; 32] => (4, hash.to_vec()),
             Self::Sent(hash) if hash != [0; 32] => (6, hash.to_vec()),
-            Self::Acceptance {
-                outbox,
-                recipient,
-            } if outbox != 0 && recipient != [0; 32] => {
-                let mut body = outbox.to_be_bytes().to_vec();
-                body.extend_from_slice(&recipient);
-                (7, body)
+            Self::Acceptance { outbox, recipient } if outbox != 0 && recipient != [0; 32] => {
+                // The records table admits only 9/17/33-byte keys, so the pair
+                // is committed under one domain-separated 32-byte digest.
+                (
+                    7,
+                    digest(
+                        b"vhalla/private-native/acceptance-key/v1",
+                        &[&outbox.to_be_bytes(), &recipient],
+                    )
+                    .to_vec(),
+                )
             }
             _ => return Err(Error::Refused),
         };
