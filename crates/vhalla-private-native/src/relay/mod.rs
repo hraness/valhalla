@@ -266,6 +266,18 @@ impl FileStore {
     /// A receipt means only that this mailbox committed the bytes locally;
     /// it is not recipient acceptance.
     pub fn put(&mut self, item: RelayItem) -> Result<RelayReceipt> {
+        let receipt = self.put_staged(item)?;
+        if !receipt.duplicate {
+            self.sync()?;
+        }
+        Ok(receipt)
+    }
+
+    /// Stage one item inside the caller's explicit immediate transaction. The
+    /// caller owns the single durable barrier: commit the transaction, then
+    /// `sync` once. A staged write never fsyncs mid-transaction where the
+    /// barrier cannot cover the commit. Receipt semantics equal `put`.
+    pub(crate) fn put_staged(&mut self, item: RelayItem) -> Result<RelayReceipt> {
         if item.namespace() != self.namespace {
             return Err(Error::Scope);
         }
@@ -337,7 +349,6 @@ impl FileStore {
                 ],
             )
             .map_err(|_| Error::Storage)?;
-        self.sync()?;
         Ok(RelayReceipt {
             position: u64::try_from(position).map_err(|_| Error::Storage)?,
             digest: item.digest(),
@@ -777,6 +788,47 @@ mod tests {
         let store = FileStore::open(&path, namespace()).unwrap();
         let page = store.page(0, MAX_RELAY_PAGE).unwrap();
         assert_eq!(page.records, vec![positioned(1, first)]);
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn staged_put_commits_and_rolls_back_with_the_caller_barrier() {
+        let path = home();
+        {
+            let mut store = FileStore::create_new(&path, namespace(), file_limits()).unwrap();
+            store.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            assert_eq!(
+                store
+                    .put_staged(item(1, OutboxKind::Application))
+                    .unwrap()
+                    .position,
+                1
+            );
+            store.conn.execute_batch("ROLLBACK").unwrap();
+        }
+        assert_eq!(
+            FileStore::open(&path, namespace())
+                .unwrap()
+                .page(0, 1)
+                .unwrap()
+                .head,
+            0
+        );
+        {
+            let mut store = FileStore::open(&path, namespace()).unwrap();
+            store.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            store.put_staged(item(1, OutboxKind::Application)).unwrap();
+            store.conn.execute_batch("COMMIT").unwrap();
+            store.sync().unwrap();
+        }
+        let page = FileStore::open(&path, namespace())
+            .unwrap()
+            .page(0, 1)
+            .unwrap();
+        assert_eq!(
+            page.records,
+            vec![positioned(1, item(1, OutboxKind::Application))]
+        );
         std::fs::remove_dir_all(&path).unwrap();
     }
 

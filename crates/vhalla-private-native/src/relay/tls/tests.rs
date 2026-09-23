@@ -529,6 +529,94 @@ fn poisoned_storage_stops_supervision_without_waiting_for_another_client() {
 }
 
 #[test]
+fn page_window_bills_actual_response_bytes_not_worst_case() {
+    let f = Fixture::new();
+    let cert = certificates();
+    // item(1) encodes to 122 bytes: PUT bills 155+4 request + 46 response.
+    // Each one-record PAGE bills 43+4 request + 150 actual response bytes.
+    let mut limited = credential(1, 7);
+    limited.bytes_per_window = 800;
+    let limits = ServiceLimits {
+        bytes_per_window: 1600,
+        window: Duration::from_secs(60),
+        ..ServiceLimits::default()
+    };
+    let (addr, worker) = f.serve(&cert, vec![limited], limits, 5);
+    let c = client(addr, &cert, 7);
+    c.submit(&item(1)).unwrap();
+    for _ in 0..3 {
+        assert_eq!(c.page(0, 64).unwrap().records.len(), 1);
+    }
+    // Worst-case reservation (4 MiB per PAGE) could never admit even the first
+    // page under an 800-byte window; actual billing admits real work and then
+    // reports an explicit retryable capacity once the true budget is spent.
+    assert_eq!(c.page(0, 64).err(), Some(NetError::Capacity));
+    worker.join().unwrap();
+}
+#[test]
+fn over_limit_pre_auth_sockets_get_an_alert_and_progress_resumes() {
+    let f = Fixture::new();
+    let cert = certificates();
+    let limits = ServiceLimits {
+        max_connections: 2,
+        request_timeout: Duration::from_millis(800),
+        window: Duration::from_secs(60),
+        ..ServiceLimits::default()
+    };
+    let (addr, worker) = f.serve(&cert, vec![credential(1, 7)], limits, 4);
+    // Two unauthenticated sockets occupy every worker slot.
+    let _hold1 = TcpStream::connect(addr).unwrap();
+    let _hold2 = TcpStream::connect(addr).unwrap();
+    thread::sleep(Duration::from_millis(150));
+    // The next socket is answered, not silently dropped: the pre-handshake
+    // fatal internal_error alert is the only refusal a TLS client can read.
+    let mut refused = TcpStream::connect(addr).unwrap();
+    refused
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut alert = [0; 7];
+    refused.read_exact(&mut alert).unwrap();
+    assert_eq!(alert, [0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x50]);
+    // Held sockets expire at their bounded handshake deadline; an admitted
+    // authenticated request then completes normally.
+    thread::sleep(Duration::from_millis(1300));
+    client(addr, &cert, 7).submit(&item(1)).unwrap();
+    worker.join().unwrap();
+    assert_eq!(f.open().page(0, 64).unwrap().head, 1);
+}
+#[test]
+fn per_key_charge_index_is_created_and_repaired_idempotently() {
+    let f = Fixture::new();
+    let cert = certificates();
+    let present = |store: &FileStore| {
+        store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='tls_charges_by_key'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(present(&f.open()), 1);
+    f.open()
+        .conn
+        .execute_batch("DROP INDEX tls_charges_by_key")
+        .unwrap();
+    assert_eq!(present(&f.open()), 0);
+    // A store enrolled before the index existed is repaired once at open.
+    let service = Service::new(
+        f.open(),
+        cert.config.clone(),
+        vec![credential(1, 7)],
+        ServiceLimits::default(),
+    )
+    .unwrap();
+    drop(service);
+    assert_eq!(present(&f.open()), 1);
+}
+
+#[test]
 fn explicit_stop_drains_admitted_handshake_and_releases_exact_custody() {
     let fixture = Fixture::new();
     let cert = certificates();

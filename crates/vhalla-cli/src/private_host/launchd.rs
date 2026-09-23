@@ -1,11 +1,30 @@
-//! Per-user, exact-home LaunchAgent ownership. Never manages unrelated services.
+//! Per-user, exact-identity LaunchAgent ownership. Never manages unrelated services.
 use super::{
     config::{self, Config, Loaded},
     REFUSED,
 };
 use std::path::Path;
 
-fn xml(value: &str) -> Result<String, String> {
+/// A fully resolved per-user LaunchAgent: the exact label plus the exact plist
+/// bytes it must contain. `alternates` names earlier emitted shapes that
+/// remain admissible for the same label so an upgrade never wedges a sealed
+/// home's installed agent. The host and the gateway install through this one
+/// custody path, which refuses foreign content at the selected label.
+pub(crate) struct AgentSpec {
+    pub label: String,
+    pub plist: String,
+    pub alternates: Vec<String>,
+}
+/// Resolve the host's selected agent, embedding its exact home and log.
+pub(super) fn spec(home: &Path, c: &Config) -> Result<AgentSpec, String> {
+    Ok(AgentSpec {
+        label: c.label.clone(),
+        plist: plist(home, c)?,
+        alternates: vec![plist_v1(home, c)?],
+    })
+}
+
+pub(crate) fn xml(value: &str) -> Result<String, String> {
     if value.chars().any(|c| c < ' ' || c == '\u{7f}') {
         return Err(REFUSED.into());
     }
@@ -16,7 +35,17 @@ fn xml(value: &str) -> Result<String, String> {
         .replace('"', "&quot;")
         .replace('\'', "&apos;"))
 }
+/// The event log launchd output is redirected into: bounded, rotated and
+/// inside the owner-private home rather than discarded.
+pub(crate) const LOG_NAME: &str = "events.log";
+fn plist_v1(home: &Path, c: &Config) -> Result<String, String> {
+    plist_shape(home, c, "/dev/null")
+}
 pub(super) fn plist(home: &Path, c: &Config) -> Result<String, String> {
+    let log = xml(home.join(LOG_NAME).to_str().ok_or(REFUSED)?)?;
+    plist_shape(home, c, &log)
+}
+fn plist_shape(home: &Path, c: &Config, out: &str) -> Result<String, String> {
     let executable = xml(c.executable.to_str().ok_or(REFUSED)?)?;
     let home = xml(home.to_str().ok_or(REFUSED)?)?;
     let label = xml(&c.label)?;
@@ -33,11 +62,25 @@ pub(super) fn plist(home: &Path, c: &Config) -> Result<String, String> {
 <key>Umask</key><integer>63</integer>
 <key>ProcessType</key><string>Background</string>
 <key>AbandonProcessGroup</key><false/>
-<key>StandardOutPath</key><string>/dev/null</string>
-<key>StandardErrorPath</key><string>/dev/null</string>
+<key>StandardOutPath</key><string>{out}</string>
+<key>StandardErrorPath</key><string>{out}</string>
 </dict></plist>
 "#
     ))
+}
+/// Earlier homes were sealed with launchd output discarded; that exact shape
+/// remains admissible evidence so an upgrade never invalidates a sealed home.
+fn ours(spec: &AgentSpec, bytes: &[u8]) -> bool {
+    spec.plist.as_bytes() == bytes
+        || spec
+            .alternates
+            .iter()
+            .any(|shape| shape.as_bytes() == bytes)
+}
+/// The sealed template is ours only if it matches a plist shape this software
+/// can emit; legacy /dev/null output stays acceptable for existing homes.
+pub(super) fn template_ours(loaded: &Loaded, template: &[u8]) -> Result<bool, String> {
+    Ok(ours(&spec(&loaded.home, &loaded.config)?, template))
 }
 
 /// Generate only an exact one-port overlay template. This neither creates a key
@@ -126,16 +169,40 @@ fn tailcat_port(config: &Config) -> Result<String, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn status(_: &Loaded) -> Result<serde_json::Value, String> {
+pub(crate) fn agent_status(_: &AgentSpec) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({"supported":false,"loaded":false,"installed":false}))
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn install(_: &Loaded) -> Result<(), String> {
+pub(crate) fn agent_install(_: &AgentSpec) -> Result<(), String> {
     Err("LaunchAgent installation requires macOS; use foreground serve on this platform".into())
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn uninstall(_: &Loaded) -> Result<(), String> {
+pub(crate) fn agent_uninstall(_: &AgentSpec) -> Result<(), String> {
     Err("LaunchAgent removal requires macOS".into())
+}
+#[cfg(not(target_os = "macos"))]
+pub(super) fn status(_: &Loaded) -> Result<serde_json::Value, String> {
+    agent_status(&AgentSpec {
+        label: String::new(),
+        plist: String::new(),
+        alternates: Vec::new(),
+    })
+}
+#[cfg(not(target_os = "macos"))]
+pub(super) fn install(_: &Loaded) -> Result<(), String> {
+    agent_install(&AgentSpec {
+        label: String::new(),
+        plist: String::new(),
+        alternates: Vec::new(),
+    })
+}
+#[cfg(not(target_os = "macos"))]
+pub(super) fn uninstall(_: &Loaded) -> Result<(), String> {
+    agent_uninstall(&AgentSpec {
+        label: String::new(),
+        plist: String::new(),
+        alternates: Vec::new(),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -208,8 +275,8 @@ mod mac {
     fn domain() -> String {
         format!("gui/{}", rustix::process::geteuid().as_raw())
     }
-    fn target(loaded: &Loaded) -> String {
-        format!("{}/{}", domain(), loaded.config.label)
+    fn target(spec: &AgentSpec) -> String {
+        format!("{}/{}", domain(), spec.label)
     }
     fn directory(create: bool) -> Result<PathBuf, String> {
         let base = PathBuf::from(std::env::var_os("HOME").ok_or("user home unavailable")?)
@@ -250,29 +317,28 @@ mod mac {
         }
         Ok(path)
     }
-    fn destination(loaded: &Loaded, create: bool) -> Result<PathBuf, String> {
-        Ok(directory(create)?.join(format!("{}.plist", loaded.config.label)))
+    fn destination(spec: &AgentSpec, create: bool) -> Result<PathBuf, String> {
+        Ok(directory(create)?.join(format!("{}.plist", spec.label)))
     }
-    fn expected(loaded: &Loaded, path: &Path) -> Result<bool, String> {
+    fn expected(spec: &AgentSpec, path: &Path) -> Result<bool, String> {
         let uid = rustix::process::geteuid().as_raw();
         if !custody::private_file_present(path, uid, 65536).map_err(|_| REFUSED)? {
             return Ok(false);
         }
-        if custody::read_private_file(path, uid, 65536)
-            .map_err(|_| REFUSED)?
-            .as_slice()
-            != plist(&loaded.home, &loaded.config)?.as_bytes()
-        {
+        if !ours(
+            spec,
+            &custody::read_private_file(path, uid, 65536).map_err(|_| REFUSED)?,
+        ) {
             return Err("refusing a foreign or changed LaunchAgent at the selected label".into());
         }
         Ok(true)
     }
     // Only the exact service-not-found response proves absence. IPC errors,
     // unavailable domains, permissions failures and signals preserve custody.
-    fn classify_service(loaded: &Loaded, reply: Reply) -> Result<Reply, String> {
+    fn classify_service(spec: &AgentSpec, reply: Reply) -> Result<Reply, String> {
         let absent = format!(
             "Bad request.\nCould not find service \"{}\" in domain for user gui: {}\n",
-            loaded.config.label,
+            spec.label,
             rustix::process::geteuid().as_raw(),
         );
         if reply.success
@@ -283,46 +349,52 @@ mod mac {
             Err("launchctl could not prove the selected service state; preserve its plist and exact home".into())
         }
     }
-    fn loaded(loaded: &Loaded) -> Result<Reply, String> {
-        classify_service(loaded, command(&["print".into(), target(loaded).into()])?)
+    fn loaded(spec: &AgentSpec) -> Result<Reply, String> {
+        classify_service(spec, command(&["print".into(), target(spec).into()])?)
     }
-    pub(in crate::private_host) fn status(
-        loaded_home: &Loaded,
-    ) -> Result<serde_json::Value, String> {
-        let path = destination(loaded_home, false)?;
-        let installed = expected(loaded_home, &path)?;
-        let reply = loaded(loaded_home)?;
+    fn field<'a>(stdout: &'a str, name: &str) -> Option<&'a str> {
+        stdout
+            .lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix(name).and_then(|v| v.strip_prefix(" = ")))
+    }
+    pub(crate) fn agent_status(spec: &AgentSpec) -> Result<serde_json::Value, String> {
+        let path = destination(spec, false)?;
+        let installed = expected(spec, &path)?;
+        let reply = loaded(spec)?;
+        let state = field(&reply.stdout, "state").unwrap_or("unavailable");
+        let pid = field(&reply.stdout, "pid").and_then(|v| v.parse::<u64>().ok());
+        let last_exit = field(&reply.stdout, "last exit code").and_then(|v| v.parse::<i64>().ok());
+        // KeepAlive{SuccessfulExit:false} means a nonzero exit with no live
+        // pid is launchd rescheduling a failing service — suspicion only.
+        let restart_loop_suspected =
+            reply.success && pid.is_none() && last_exit.is_some_and(|code| code != 0);
         Ok(
-            serde_json::json!({"supported":true,"installed":installed,"loaded":reply.success,"launch_agent":path,"state":reply.stdout.lines().map(str::trim).find_map(|s|s.strip_prefix("state = ")).unwrap_or("unavailable")}),
+            serde_json::json!({"supported":true,"installed":installed,"loaded":reply.success,"launch_agent":path,"state":state,"pid":pid,"last_exit_code":last_exit,"restart_loop_suspected":restart_loop_suspected}),
         )
     }
-    pub(in crate::private_host) fn install(loaded_home: &Loaded) -> Result<(), String> {
-        if time::OffsetDateTime::now_utc().unix_timestamp()
-            >= loaded_home.config.certificate_expires_at
-        {
-            return Err("refusing to install an expired TLS host".into());
-        }
-        install_selected(loaded_home, || destination(loaded_home, true), command)
+    pub(crate) fn agent_install(spec: &AgentSpec) -> Result<(), String> {
+        install_selected(spec, || destination(spec, true), command)
     }
     fn install_selected(
-        loaded_home: &Loaded,
+        spec: &AgentSpec,
         destination: impl FnOnce() -> Result<PathBuf, String>,
         mut run: impl FnMut(&[OsString]) -> Result<Reply, String>,
     ) -> Result<(), String> {
         // The exact service probe also proves that this GUI domain exists.
         // Never list the entire domain: a user's unrelated services can exceed
         // the bounded output and are outside this command's selection.
-        let probe = ["print".into(), target(loaded_home).into()];
-        if classify_service(loaded_home, run(&probe)?)?.success {
+        let probe = ["print".into(), target(spec).into()];
+        if classify_service(spec, run(&probe)?)?.success {
             return Err(
-                "this exact host label is already loaded; inspect status before changing it".into(),
+                "this exact label is already loaded; inspect status before changing it".into(),
             );
         }
         let path = destination()?;
-        if !expected(loaded_home, &path)? {
+        if !expected(spec, &path)? {
             use std::io::Write;
             let mut file = custody::create_private_file(&path).map_err(|_| REFUSED)?;
-            file.write_all(plist(&loaded_home.home, &loaded_home.config)?.as_bytes())
+            file.write_all(spec.plist.as_bytes())
                 .and_then(|()| file.sync_all())
                 .and_then(|()| {
                     fs::File::open(
@@ -333,7 +405,7 @@ mod mac {
                 })
                 .map_err(|_| REFUSED)?;
         }
-        if !expected(loaded_home, &path)? {
+        if !expected(spec, &path)? {
             return Err(REFUSED.into());
         }
         if !run(&[
@@ -348,39 +420,39 @@ mod mac {
                     .into(),
             );
         }
-        if !classify_service(loaded_home, run(&probe)?)?.success {
+        if !classify_service(spec, run(&probe)?)?.success {
             return Err("bootstrap returned without a verifiable loaded service; preserve exact home and plist".into());
         }
         println!(
             "{}",
-            serde_json::json!({"status":"installed","label":loaded_home.config.label,"health":"not yet qualified; check TLS and durable retention separately"})
+            serde_json::json!({"status":"installed","label":spec.label,"health":"not yet qualified; check TLS and durable retention separately"})
         );
         Ok(())
     }
-    pub(in crate::private_host) fn uninstall(loaded_home: &Loaded) -> Result<(), String> {
-        let path = destination(loaded_home, false)?;
-        uninstall_at(loaded_home, &path, command)
+    pub(crate) fn agent_uninstall(spec: &AgentSpec) -> Result<(), String> {
+        let path = destination(spec, false)?;
+        uninstall_at(spec, &path, command)
     }
     fn uninstall_at(
-        loaded_home: &Loaded,
+        spec: &AgentSpec,
         path: &Path,
         mut run: impl FnMut(&[OsString]) -> Result<Reply, String>,
     ) -> Result<(), String> {
-        let installed = expected(loaded_home, path)?;
-        let probe = ["print".into(), target(loaded_home).into()];
-        let active = classify_service(loaded_home, run(&probe)?)?;
+        let installed = expected(spec, path)?;
+        let probe = ["print".into(), target(spec).into()];
+        let active = classify_service(spec, run(&probe)?)?;
         if active.success {
             let wanted = format!("path = {}", path.to_str().ok_or(REFUSED)?);
             if !installed || !active.stdout.lines().any(|line| line.trim() == wanted) {
                 return Err("loaded service does not identify the exact owned LaunchAgent; refusing to stop it".into());
             }
-            if !run(&["bootout".into(), target(loaded_home).into()])?.success {
+            if !run(&["bootout".into(), target(spec).into()])?.success {
                 return Err(
                     "LaunchAgent stop refused; preserve the installed plist and host home".into(),
                 );
             }
             let deadline = Instant::now() + Duration::from_secs(20);
-            while classify_service(loaded_home, run(&probe)?)?.success {
+            while classify_service(spec, run(&probe)?)?.success {
                 if Instant::now() >= deadline {
                     return Err(
                         "LaunchAgent has not stopped; preserve its plist and exact custody".into(),
@@ -390,7 +462,7 @@ mod mac {
             }
         }
         if installed {
-            if !expected(loaded_home, path)? {
+            if !expected(spec, path)? {
                 return Err(REFUSED.into());
             }
             fs::remove_file(path).map_err(|_| REFUSED)?;
@@ -400,9 +472,22 @@ mod mac {
         }
         println!(
             "{}",
-            serde_json::json!({"status":"uninstalled","label":loaded_home.config.label,"home_preserved":true})
+            serde_json::json!({"status":"uninstalled","label":spec.label,"home_preserved":true})
         );
         Ok(())
+    }
+    pub(in crate::private_host) fn status(loaded: &Loaded) -> Result<serde_json::Value, String> {
+        agent_status(&spec(&loaded.home, &loaded.config)?)
+    }
+    pub(in crate::private_host) fn install(loaded: &Loaded) -> Result<(), String> {
+        if time::OffsetDateTime::now_utc().unix_timestamp() >= loaded.config.certificate_expires_at
+        {
+            return Err("refusing to install an expired TLS host".into());
+        }
+        agent_install(&spec(&loaded.home, &loaded.config)?)
+    }
+    pub(in crate::private_host) fn uninstall(loaded: &Loaded) -> Result<(), String> {
+        agent_uninstall(&spec(&loaded.home, &loaded.config)?)
     }
 
     #[cfg(test)]
@@ -425,7 +510,8 @@ mod mac {
                     tls_name: "relay.invalid".into(),
                     executable: "/private/binary".into(),
                     namespace: "a".repeat(64),
-                    credential_ids: ["b".repeat(32), "c".repeat(32)],
+                    credential_ids: vec!["b".repeat(32), "c".repeat(32)],
+                    mailbox: "mailbox".into(),
                     created_at: 1,
                     certificate_expires_at: 2,
                     authority_expires_at: 3,
@@ -433,6 +519,7 @@ mod mac {
                 },
             };
             let path = home.join("selected.plist");
+            let agent = spec(&loaded.home, &loaded.config).unwrap();
             let absent = format!(
                 "Bad request.\nCould not find service \"{}\" in domain for user gui: {}\n",
                 loaded.config.label,
@@ -440,10 +527,10 @@ mod mac {
             );
             for success in [true, false] {
                 let result = install_selected(
-                    &loaded,
+                    &agent,
                     || panic!("probe refusal must precede destination creation"),
                     |args| {
-                        assert_eq!(args, [OsString::from("print"), target(&loaded).into()]);
+                        assert_eq!(args, [OsString::from("print"), target(&agent).into()]);
                         Ok(Reply {
                             success,
                             code: Some(if success { 0 } else { 5 }),
@@ -457,13 +544,13 @@ mod mac {
             }
             let mut calls = 0;
             install_selected(
-                &loaded,
+                &agent,
                 || Ok(path.clone()),
                 |args| {
                     calls += 1;
                     match calls {
                         1 => {
-                            assert_eq!(args, [OsString::from("print"), target(&loaded).into()]);
+                            assert_eq!(args, [OsString::from("print"), target(&agent).into()]);
                             Ok(Reply {
                                 success: false,
                                 code: Some(113),
@@ -480,7 +567,7 @@ mod mac {
                                     path.as_os_str().to_owned()
                                 ]
                             );
-                            assert!(expected(&loaded, &path).unwrap());
+                            assert!(expected(&agent, &path).unwrap());
                             Ok(Reply {
                                 success: true,
                                 code: Some(0),
@@ -489,7 +576,7 @@ mod mac {
                             })
                         }
                         3 => {
-                            assert_eq!(args, [OsString::from("print"), target(&loaded).into()]);
+                            assert_eq!(args, [OsString::from("print"), target(&agent).into()]);
                             Ok(Reply {
                                 success: true,
                                 code: Some(0),
@@ -503,7 +590,7 @@ mod mac {
             )
             .unwrap();
             assert_eq!(calls, 3);
-            assert!(expected(&loaded, &path).unwrap());
+            assert!(expected(&agent, &path).unwrap());
             fs::remove_dir_all(home).unwrap();
         }
         #[test]
@@ -522,7 +609,8 @@ mod mac {
                     tls_name: "relay.invalid".into(),
                     executable: "/private/binary".into(),
                     namespace: "a".repeat(64),
-                    credential_ids: ["b".repeat(32), "c".repeat(32)],
+                    credential_ids: vec!["b".repeat(32), "c".repeat(32)],
+                    mailbox: "mailbox".into(),
                     created_at: 1,
                     certificate_expires_at: 2,
                     authority_expires_at: 3,
@@ -530,6 +618,7 @@ mod mac {
                 },
             };
             let path = home.join("selected.plist");
+            let agent = spec(&loaded.home, &loaded.config).unwrap();
             let exact = plist(&home, &loaded.config).unwrap();
             fs::write(&path, &exact).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -553,9 +642,9 @@ mod mac {
                 (Some(113), "unexpected", absent.clone()),
             ] {
                 let mut calls = 0;
-                let outcome = uninstall_at(&loaded, &path, |args| {
+                let outcome = uninstall_at(&agent, &path, |args| {
                     calls += 1;
-                    assert_eq!(args, [OsString::from("print"), target(&loaded).into()]);
+                    assert_eq!(args, [OsString::from("print"), target(&agent).into()]);
                     Ok(Reply {
                         success: false,
                         code,
@@ -570,7 +659,7 @@ mod mac {
             // Even after a successful bootout, an uncertain follow-up must
             // preserve the installed template, allowing an exact later retry.
             let mut calls = 0;
-            assert!(uninstall_at(&loaded, &path, |args| {
+            assert!(uninstall_at(&agent, &path, |args| {
                 calls += 1;
                 match calls {
                     1 => Ok(Reply {
@@ -601,7 +690,7 @@ mod mac {
             assert_eq!(fs::read_to_string(&path).unwrap(), exact);
             // The exact observed macOS absence response authorizes removal of
             // only this matching installed template, never the private home.
-            uninstall_at(&loaded, &path, |_| {
+            uninstall_at(&agent, &path, |_| {
                 Ok(Reply {
                     success: false,
                     code: Some(113),
@@ -630,7 +719,8 @@ mod mac {
                     tls_name: "relay.invalid".into(),
                     executable: "/private/binary".into(),
                     namespace: "a".repeat(64),
-                    credential_ids: ["b".repeat(32), "c".repeat(32)],
+                    credential_ids: vec!["b".repeat(32), "c".repeat(32)],
+                    mailbox: "mailbox".into(),
                     created_at: 1,
                     certificate_expires_at: 2,
                     authority_expires_at: 3,
@@ -638,21 +728,22 @@ mod mac {
                 },
             };
             let target = home.join("selected.plist");
-            assert!(!expected(&loaded, &target).unwrap());
+            let agent = spec(&loaded.home, &loaded.config).unwrap();
+            assert!(!expected(&agent, &target).unwrap());
             fs::write(&target, plist(&home, &loaded.config).unwrap()).unwrap();
             fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-            assert!(expected(&loaded, &target).unwrap());
+            assert!(expected(&agent, &target).unwrap());
             fs::write(&target, b"foreign retained configuration").unwrap();
-            assert!(expected(&loaded, &target).is_err());
+            assert!(expected(&agent, &target).is_err());
             assert_eq!(
                 fs::read(&target).unwrap(),
                 b"foreign retained configuration"
             );
             fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
-            assert!(expected(&loaded, &target).is_err());
+            assert!(expected(&agent, &target).is_err());
             let link = home.join("linked.plist");
             std::os::unix::fs::symlink(&target, &link).unwrap();
-            assert!(expected(&loaded, &link).is_err());
+            assert!(expected(&agent, &link).is_err());
             assert!(fs::symlink_metadata(&link)
                 .unwrap()
                 .file_type()
@@ -661,6 +752,8 @@ mod mac {
         }
     }
 }
+#[cfg(target_os = "macos")]
+pub(crate) use mac::{agent_install, agent_status, agent_uninstall};
 #[cfg(target_os = "macos")]
 pub(super) use mac::{install, status, uninstall};
 
@@ -676,7 +769,8 @@ mod tests {
             tls_name: "relay.invalid".into(),
             executable: "/private/binary & tool".into(),
             namespace: "a".repeat(64),
-            credential_ids: ["b".repeat(32), "c".repeat(32)],
+            credential_ids: vec!["b".repeat(32), "c".repeat(32)],
+            mailbox: "mailbox".into(),
             created_at: 1,
             certificate_expires_at: 2,
             authority_expires_at: 3,
