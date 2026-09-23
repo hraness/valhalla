@@ -116,8 +116,9 @@ mod bench {
         sorted[(sorted.len() - 1) * p / 100]
     }
 
-    /// One tick's host policy. `production` is the exact cadence of
-    /// `agent-serve`: a tick at most once per second with a two-second budget,
+    /// One tick's fixture policy. The CLI label `production` preserves the
+    /// historical baseline cadence, not the current `agent-serve` controller:
+    /// a tick at most once per second with a two-second budget,
     /// one relay job per tick, one eight-item relay poll every five seconds and
     /// at most eight applied positions per tick. `fast` removes the waits and
     /// takes the largest bounded page/job counts, so the run is bound by
@@ -812,7 +813,7 @@ mod bench {
                     }
                 }
                 let run_counters = std::mem::take(&mut b.counters);
-                // Idle phase at production cadence.
+                // Idle phase at the historical baseline cadence.
                 let idle_start = Instant::now();
                 let mut next_tick = Instant::now();
                 while idle_start.elapsed() < idle {

@@ -24,7 +24,7 @@ use vhalla_private_native::relay::{
     delivery::{DeliveryStore, JobState},
     net::{NetError, RelayToken},
     tls::TlsRelay,
-    RelayItem, RelayNamespace,
+    RelayItem, RelayKind, RelayNamespace, RelayPage,
 };
 
 const TLS_NAME: &str = "steel-thread.test.invalid";
@@ -258,6 +258,56 @@ impl Journey {
         let raw = fs::read(self.path("host").join(who.token())).unwrap();
         unhex(std::str::from_utf8(&raw).unwrap().trim_end_matches('\n'))
     }
+    /// Match the complete bounded mailbox to this journey's committed
+    /// admission artifacts, including the separately forwarded control.
+    fn assert_relay_contents(&self, mailbox: &TlsRelay, sent: u64) -> RelayPage {
+        let expected = 3 + 2 * sent;
+        assert!(expected <= 64, "journey fits in one complete relay page");
+        let deadline = Instant::now() + CONVERGENCE;
+        let page = loop {
+            let page = mailbox.page(0, 64).unwrap();
+            if page.head >= expected {
+                break page;
+            }
+            assert!(Instant::now() < deadline, "admission delivery converges");
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(
+            page.head, expected,
+            "two admission artifacts, their encrypted control, and one message/receipt pair per send"
+        );
+        assert_eq!(page.records.len() as u64, expected);
+        assert_eq!(page.next, None, "inspect every retained relay item");
+        let mut kinds = [0u64; 4];
+        for record in &page.records {
+            let item = &record.item;
+            assert_eq!(item.namespace(), self.namespace());
+            let (index, retained) = match item.kind() {
+                RelayKind::Outbox(OutboxKind::ContactRequest) => {
+                    (0, Some("admission-request.cipher"))
+                }
+                RelayKind::Outbox(OutboxKind::ContactInvitation) => {
+                    (1, Some("admission-response.cipher"))
+                }
+                RelayKind::Control => {
+                    assert_eq!(item.sequence(), 1, "the first admission control floor");
+                    (2, Some("admission-control.cipher"))
+                }
+                RelayKind::Outbox(OutboxKind::Application) => (3, None),
+                kind => panic!("unexpected relay artifact: {kind:?}"),
+            };
+            kinds[index] += 1;
+            if let Some(retained) = retained {
+                assert_eq!(
+                    item.payload(),
+                    fs::read(self.path(retained)).unwrap(),
+                    "relay preserves the exact committed {retained}"
+                );
+            }
+        }
+        assert_eq!(kinds, [1, 1, 1, 2 * sent]);
+        page
+    }
 
     // ----- Step 2: accounts and confidential admission -----
     fn identities(&mut self) {
@@ -341,6 +391,18 @@ impl Journey {
         ]);
         self.private_ok("accept", Who::A, true, &flags);
         self.private_ok("join", Who::B, true, &[("response", response)]);
+        // Export the exact committed admission control for identity checks;
+        // delivery below must forward it without a manual apply command.
+        self.private_ok(
+            "control-export",
+            Who::A,
+            true,
+            &[
+                ("after", "0".to_owned()),
+                ("parent", "none".to_owned()),
+                ("out", self.text(&self.path("admission-control.cipher"))),
+            ],
+        );
     }
     fn inspect(&self, who: Who) -> Value {
         let out = self.agent_path(who, "inspect.json");
@@ -966,15 +1028,10 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
         0,
         "receipts are filtered from the agent inbox"
     );
-    // Relay-eligible kinds include the confidential admission artifacts, so the
-    // mailbox also carries A's ContactInvitation and B's ContactRequest ahead
-    // of the two messages and the two device receipts.
+    // The maintained path also forwards the exact encrypted admission control.
     let mailbox = journey.relay_client(journey.host_token(Who::A));
-    assert_eq!(
-        mailbox.page(0, 8).unwrap().head,
-        6,
-        "two admission artifacts, two messages and two device receipts"
-    );
+    let initial = journey.assert_relay_contents(&mailbox, 2);
+    let third_position = initial.head + 1;
     // 5. Host outage: SIGTERM, queue while down, restart, fresh grants.
     host.stop();
     assert!(TcpStream::connect(journey.addr).is_err());
@@ -1019,7 +1076,11 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
     let mut agent_a = journey.agent(Who::A, 2);
     let mut agent_b = journey.agent(Who::B, 2);
     let delivered = agent_a.await_acceptance(third);
-    assert_eq!(delivered["relay"]["position"], "7", "{delivered}");
+    assert_eq!(
+        delivered["relay"]["position"],
+        third_position.to_string(),
+        "{delivered}"
+    );
     let after_restart = agent_b.await_inbox_text("steel thread 3: queued while the host was down");
     assert_eq!(
         delivered["member_acceptances"][0]["received_sequence"],
@@ -1046,16 +1107,16 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
     let (retained_job, _) = journey.delivery_job(Who::A, third);
     assert_eq!(retained_job.id, durable.id, "restart retries the exact job");
     assert_eq!(retained_job.state, JobState::Retained, "{retained_job:?}");
-    assert_eq!(retained_job.position, Some(7), "{retained_job:?}");
+    assert_eq!(
+        retained_job.position,
+        Some(third_position),
+        "{retained_job:?}"
+    );
     assert!(journey
         .applied_states(Who::A)
         .contains(&"recipient-device-claim".to_owned()));
     // 6. A wrong host credential is refused and changes nothing.
-    let before = mailbox.page(0, 8).unwrap();
-    assert_eq!(
-        before.head, 8,
-        "two admission artifacts, three messages and three device receipts"
-    );
+    let before = journey.assert_relay_contents(&mailbox, 3);
     let wrong = journey.relay_client([0x5a; 32]);
     assert!(matches!(wrong.page(0, 1), Err(NetError::Denied)));
     let intruder = RelayItem::new(
@@ -1067,7 +1128,7 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
     )
     .unwrap();
     assert!(matches!(wrong.submit(&intruder), Err(NetError::Denied)));
-    let after = mailbox.page(0, 8).unwrap();
+    let after = mailbox.page(0, 64).unwrap();
     assert_eq!(after.head, before.head);
     assert_eq!(after.records.len(), before.records.len());
     assert!(after
@@ -1174,14 +1235,10 @@ fn hegel_two_agents_interleaved_restarts_relaunches_and_delivery(tc: TestCase) {
     for agent in agents.iter_mut().flatten() {
         assert!(agent.receipt_records().is_empty());
     }
-    // The mailbox carries exactly the two admission artifacts plus one
-    // message and one device receipt per send.
+    // Exact admission artifacts/control remain deduplicated across relaunches;
+    // every send adds precisely its application and one device receipt.
     let mailbox = journey.relay_client(journey.host_token(Who::A));
-    assert_eq!(
-        mailbox.page(0, 64).unwrap().head,
-        2 + 2 * sent,
-        "admission artifacts plus one message and receipt per send"
-    );
+    journey.assert_relay_contents(&mailbox, sent);
 }
 
 /// Bring both agents live under fresh grants where needed and drain every

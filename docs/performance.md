@@ -84,7 +84,13 @@ A bounded same-room batch could share intent, directory and final-head barriers.
 
 These baseline measurements were recorded on the unmodified tree before the barrier-reduction changes below. They are synthetic local evidence, not a production capacity recommendation.
 
-The [steel-thread example](../crates/vhalla-private-native/examples/steel_thread_bench.rs) runs two in-process cooperating-host drivers against one loopback TLS relay on `127.0.0.1:0` under fresh synthetic homes (`/private/tmp/valhalla-perf-*`). It exercises the production kernel store, delivery store, scan directory, relay and TLS service — the same tick loop as `agent-serve --delivery` — and stamps six points per message (A queue, A relay enqueue, relay retained, B applied, B acceptance retained, A acceptance recorded). The installed host, its ports and its launchd labels are never touched. Runs were scheduled through the same heavy compute wrapper as the sections above, on the same hardware and toolchain, with the shared target directory and a 60-second passive idle phase inside each process.
+The [steel-thread example](../crates/vhalla-private-native/examples/steel_thread_bench.rs) runs two in-process cooperating-host drivers against one loopback TLS relay on `127.0.0.1:0` under fresh synthetic homes (`/private/tmp/valhalla-perf-*`). It exercises the production kernel store, delivery store, scan directory, relay and TLS service through a separate application-only measurement loop. It stamps six points per message (A queue, A relay enqueue, relay retained, B applied, B acceptance retained, A acceptance recorded). The installed host, its ports and its launchd labels are never touched. Runs were scheduled through the same heavy compute wrapper as the sections above, on the same hardware and toolchain, with the shared target directory and a 60-second passive idle phase inside each process.
+
+The fixture's `production` cadence label is retained for baseline comparability:
+one job, an eight-item page and a fixed five-second poll. It does not track the
+current native controller's eight-job ticks, 64-item pages, adaptive idle polling,
+control merge or restored-marker verification. These results do not measure
+current real-process MCP or browser queue-to-acceptance performance.
 
 ```text
 CARGO_TARGET_DIR=/private/tmp/valhalla-steel-20260922/.build \
@@ -116,7 +122,7 @@ A 10,000-message run is refused by the harness: two relay items per acknowledged
 
 Per-driver production counters for the 1,000 run: A made 1,209 ticks, 1,000 puts, 292 relay pages, 1,000 enqueues, 1,000 receives, 2,000 applied markers and 1,207 scan reopens; B made 1,151 ticks, 1,001 puts, 291 pages, 2,000 enqueues, 1,000 receives, 1,000 acceptances and 1,999 applied markers. Idle phases made only ticks, page polls, outbox reads and scan reopens (B also one deferred applied marker).
 
-The multi-second per-stage latencies include the production cadence's poll intervals, not only fsync cost; the stage medians are the useful comparison points between baseline and optimized trees, not the wall totals. The 1,000-run directory calibration reads ~5µs because repeated directory syncs of an unchanged directory are cheap — directory barriers cost ~4.7ms only when a new entry must be flushed, which is exactly the case the optimized paths remove.
+The multi-second per-stage latencies include the fixture cadence's poll intervals, not only fsync cost; the stage medians are the useful comparison points between baseline and optimized trees, not the wall totals. The 1,000-run directory calibration reads ~5µs because repeated directory syncs of an unchanged directory are cheap — directory barriers cost ~4.7ms only when a new entry must be flushed, which is exactly the case the optimized paths remove.
 
 ## Optimizations landed and after-measurements
 
@@ -165,4 +171,4 @@ Steel-100 after-run counters: A made 132 ticks / 100 puts / 29 pages / 100 enque
 
 Two earlier steel-1,000 after-runs aborted on a `ScanFailure::Timeout` from the scan guard's 90-second absolute budget under heavy host contention (~800 and ~400 acknowledgements; 447k involuntary context switches). Both preserved their synthetic homes without `metrics.tsv`. The harness treated that transient timeout as fatal; the fix (commit `b88f31c`) ends the tick and retries, matching the production host loop and the timeout policy `scan_page_until` already used. The completed 1,000 run above used the fixed harness; it changes only the failure path, not the measured steady-state stages.
 
-Wall-time deltas are cadence-dominated: the harness polls on production tick boundaries, so removing ~8 barriers (~37ms) per acknowledged message moves the 100-message wall only ~1% — matching the observed 218.0→215.8s. The useful signals are the barrier ledger (static), the journal/activity append phase times (barrier-dominated), and the spike's measured 2-barrier append (p50 9.96ms at ~4.9ms/barrier on this host, 64-record verified page read in 276µs).
+Wall-time deltas are cadence-dominated: the harness polls on its historical tick boundaries, so removing ~8 barriers (~37ms) per acknowledged message moves the 100-message wall only ~1% — matching the observed 218.0→215.8s. The useful signals are the barrier ledger (static), the journal/activity append phase times (barrier-dominated), and the spike's measured 2-barrier append (p50 9.96ms at ~4.9ms/barrier on this host, 64-record verified page read in 276µs).
