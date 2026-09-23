@@ -1527,3 +1527,45 @@ table a {
   .field-tower .tower-window, .field-tower .tower-flag { display: none; }
   .field-sign { border-color: CanvasText; color: CanvasText; filter: none; opacity: 1; }
 }
+
+/* Field positions: every item's placement, drift, timing, and size live in
+ * the stylesheet — the strict CSP (style-src 'self') admits no inline
+ * style attributes, so presentation stays here. */
+.fp-1 { --x:8%; --y:14%; --dx:9px; --dy:13px; --s:38s; --d:-7s; --bs:11s; --bd:-3s; --size:10px; }
+.fp-2 { --x:22%; --y:8%; --dx:11px; --dy:9px; --s:42s; --d:-19s; --bs:13s; --bd:-8s; --size:7px; }
+.fp-3 { --x:38%; --y:12%; --dx:8px; --dy:11px; --s:36s; --d:-12s; --bs:10s; --bd:-5s; --size:8px; }
+.fp-4 { --x:55%; --y:9%; --dx:12px; --dy:10px; --s:44s; --d:-26s; --bs:12s; --bd:-11s; --size:9px; }
+.fp-5 { --x:70%; --y:15%; --dx:9px; --dy:14px; --s:39s; --d:-16s; --bs:14s; --bd:-2s; --size:11px; }
+.fp-6 { --x:88%; --y:11%; --dx:10px; --dy:8px; --s:41s; --d:-31s; --bs:11s; --bd:-14s; --size:7px; }
+.fp-7 { --x:14%; --y:38%; --dx:10px; --dy:12px; --s:37s; --d:-22s; --bs:12s; --bd:-6s; --size:8px; }
+.fp-8 { --x:30%; --y:30%; --dx:8px; --dy:10px; --s:43s; --d:-9s; --bs:13s; --bd:-10s; --size:6px; }
+.fp-9 { --x:62%; --y:34%; --dx:11px; --dy:9px; --s:35s; --d:-28s; --bs:10s; --bd:-4s; --size:8px; }
+.fp-10 { --x:80%; --y:40%; --dx:9px; --dy:13px; --s:40s; --d:-15s; --bs:12s; --bd:-9s; --size:10px; }
+.fp-11 { --x:94%; --y:33%; --dx:8px; --dy:11px; --s:39s; --d:-24s; --bs:11s; --bd:-7s; --size:7px; }
+.fp-12 { --x:46%; --y:26%; --dx:10px; --dy:12px; --s:45s; --d:-34s; --bs:14s; --bd:-12s; --size:6px; }
+.fp-13 { --x:12%; --y:62%; --dx:9px; --dy:10px; --s:42s; --d:-18s; --bs:12s; --bd:-5s; --size:9px; }
+.fp-14 { --x:26%; --y:70%; --dx:11px; --dy:8px; --s:37s; --d:-29s; --bs:11s; --bd:-13s; --size:7px; }
+.fp-15 { --x:52%; --y:74%; --dx:10px; --dy:12px; --s:40s; --d:-11s; --bs:13s; --bd:-8s; --size:10px; }
+.fp-16 { --x:66%; --y:66%; --dx:8px; --dy:11px; --s:36s; --d:-21s; --bs:10s; --bd:-6s; --size:7px; }
+.fp-17 { --x:85%; --y:72%; --dx:12px; --dy:9px; --s:44s; --d:-33s; --bs:12s; --bd:-15s; --size:8px; }
+.fp-18 { --x:20%; --y:48%; --r:-1.4deg; --dx:8px; --dy:11px; --s:41s; --d:-13s; --bs:12s; --bd:-4s; }
+.fp-19 { --x:58%; --y:52%; --r:1.2deg; --dx:9px; --dy:10px; --s:38s; --d:-25s; --bs:11s; --bd:-9s; }
+.fp-20 { --x:36%; --y:82%; --r:-0.8deg; --dx:10px; --dy:9px; --s:43s; --d:-6s; --bs:13s; --bd:-11s; }
+.fp-21 { --x:76%; --y:56%; --r:1.5deg; --dx:8px; --dy:12px; --s:39s; --d:-17s; --bs:12s; --bd:-7s; }
+.fp-22 { --x:5%; --y:78%; --dx:4px; --dy:5px; --s:47s; --d:-14s; --bs:15s; --bd:-6s; --w:46px; }
+.fp-23 { --x:91%; --y:82%; --dx:5px; --dy:4px; --s:49s; --d:-23s; --bs:16s; --bd:-10s; --w:54px; }
+.fp-24 { --x:44%; --y:88%; --dx:4px; --dy:5px; --s:46s; --d:-30s; --bs:14s; --bd:-9s; --w:38px; }
+
+/* The script flips bucketed data attributes; the stylesheet maps each
+ * bucket onto the reveal variables. Attributes, not inline styles, so the
+ * strict CSP admits the interaction without unsafe-inline. */
+[data-prox="0"] { --prox:0; } [data-prox="1"] { --prox:.084; } [data-prox="2"] { --prox:.167; }
+[data-prox="3"] { --prox:.25; } [data-prox="4"] { --prox:.334; } [data-prox="5"] { --prox:.417; }
+[data-prox="6"] { --prox:.5; } [data-prox="7"] { --prox:.584; } [data-prox="8"] { --prox:.667; }
+[data-prox="9"] { --prox:.75; } [data-prox="10"] { --prox:.834; } [data-prox="11"] { --prox:.917; }
+[data-prox="12"] { --prox:1; }
+[data-wave="0"] { --wave:0; } [data-wave="1"] { --wave:.084; } [data-wave="2"] { --wave:.167; }
+[data-wave="3"] { --wave:.25; } [data-wave="4"] { --wave:.334; } [data-wave="5"] { --wave:.417; }
+[data-wave="6"] { --wave:.5; } [data-wave="7"] { --wave:.584; } [data-wave="8"] { --wave:.667; }
+[data-wave="9"] { --wave:.75; } [data-wave="10"] { --wave:.834; } [data-wave="11"] { --wave:.917; }
+[data-wave="12"] { --wave:1; }

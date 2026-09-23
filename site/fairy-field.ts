@@ -1,15 +1,19 @@
 /* The fairy field's interaction layer. The DOM ships in index.html; this
- * script sets --prox on every light, sign, and tower by pointer distance,
- * and --wave for the expanding reveal ring a press sends through the wall.
- * --breath/--bloomv run in CSS — twinkle and drift need no timers here.
- * Everything is decorative: the field is aria-hidden and pointer-transparent,
- * and prefers-reduced-motion leaves the still collage untouched. */
+ * script moves a bucketed proximity/wave value onto each light, sign, and
+ * tower as a data attribute, and the stylesheet maps those buckets onto
+ * --prox/--wave. Attributes are the contract because the site's strict CSP
+ * (style-src 'self') admits no inline style mutation — all presentation
+ * stays in the stylesheet, JS only flips attributes. --breath/--bloomv run
+ * in CSS — twinkle and drift need no timers here. Everything is decorative:
+ * the field is aria-hidden and pointer-transparent, and
+ * prefers-reduced-motion leaves the still scene untouched. */
 
 const REVEAL_RADIUS = 340;
 const WAVE_SPEED = 560;   // px/s — the ring's expanding front
 const WAVE_BAND = 150;    // px — how wide the lit band stays
 const WAVE_SECONDS = 1.8; // total wave lifetime
 const MAX_WAVES = 4;
+const BUCKETS = 12;       // data-prox / data-wave quanta; stylesheet maps 0..12
 
 const root = document.querySelector<HTMLElement>(".fairy-field");
 if (root !== null && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -25,6 +29,7 @@ if (root !== null && !window.matchMedia("(prefers-reduced-motion: reduce)").matc
     };
     measure();
 
+    const bucket = (v: number) => String(Math.round(v * BUCKETS));
     const waves: { x: number; y: number; t0: number }[] = [];
     let raf = 0;
     let waveRaf = 0;
@@ -38,7 +43,8 @@ if (root !== null && !window.matchMedia("(prefers-reduced-motion: reduce)").matc
         if (center === undefined) continue;
         const distance = Math.hypot(center[0] - pointerX, center[1] - pointerY);
         const proximity = Math.max(0, 1 - distance / REVEAL_RADIUS);
-        el.style.setProperty("--prox", proximity.toFixed(3));
+        const value = bucket(proximity);
+        if (el.dataset.prox !== value) el.dataset.prox = value;
       }
     };
     const schedule = () => {
@@ -75,7 +81,8 @@ if (root !== null && !window.matchMedia("(prefers-reduced-motion: reduce)").matc
             if (strength > strongest) strongest = strength;
           }
         }
-        el.style.setProperty("--wave", strongest.toFixed(3));
+        const value = bucket(strongest);
+        if (el.dataset.wave !== value) el.dataset.wave = value;
       }
       for (let index = waves.length - 1; index >= 0; index -= 1) {
         if ((now - waves[index].t0) / 1000 > WAVE_SECONDS) waves.splice(index, 1);
