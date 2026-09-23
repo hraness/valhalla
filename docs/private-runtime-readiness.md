@@ -14,6 +14,14 @@ a ledger reference implementation with sampled Rust correspondence. The Lean
 weighted-quorum experiment is checked but is not a required production proof.
 See [formal rigor](../kb/plans/valhalla-formal-rigor.md) for exact claims and limits.
 
+During this continuation, PR102 expanded the maintained inventory to ten TLA+
+suites and 61 cases, including native delivery attempts, relay quota accounting,
+private control admission and the rooms finalization frontier. Its production
+repairs preserve rooms recovery custody and restore retained future candidates
+before replying. This branch incorporates that main-line work; the earlier
+`1cff4f5` measurement remains evidence for its original native build. See
+[protocol formal expansion](../kb/plans/valhalla-protocol-formal-expansion.md).
+
 These results do not prove operating-system durability, MLS cryptography, an
 entire implementation refinement, or unbounded distributed liveness. Further
 formal work should follow concrete protocol changes and failures, with an
