@@ -300,14 +300,18 @@ fn legacy_read_only_session_and_cancellation_keep_claim_consumed() {
         result["result"]["structuredContent"]["code"],
         "permission_denied"
     );
+    // A cancellation naming an already-answered request is stale: MCP permits
+    // ignoring it, so the session keeps serving and no reply is owed.
     host.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}));
-    wait_exit(&mut host.child);
     assert!(host.responses.recv_timeout(Duration::from_secs(1)).is_err());
+    let live = host.ask(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"private_status","arguments":{"session":grant["grant_id"]}}}));
+    assert_eq!(live["result"]["structuredContent"]["status"], "live");
+    host.close();
     assert!(fixture.path.join("claim.json").exists());
 }
 
 #[test]
-fn oversized_unterminated_stdio_frame_closes_custody_and_preserves_claim() {
+fn oversized_unterminated_stdio_frame_closes_custody_and_spares_an_uncalled_grant() {
     let fixture = Fixture::new();
     fixture.grant("read-only");
     let mut host = fixture.spawn();
@@ -317,6 +321,83 @@ fn oversized_unterminated_stdio_frame_closes_custody_and_preserves_claim() {
     let _ = input.flush();
     wait_exit(&mut host.child);
     assert!(!host.child.try_wait().unwrap().unwrap().success());
-    assert!(fixture.path.join("claim.json").exists());
+    // The stream never ends silently: a closing notice precedes EOF.
+    let notice: Value = serde_json::from_str(
+        &host
+            .responses
+            .recv_timeout(Duration::from_secs(2))
+            .expect("closing frame before EOF"),
+    )
+    .unwrap();
+    assert_eq!(notice["method"], "notifications/message");
+    assert_eq!(notice["params"]["data"]["status"], "closed");
+    // A handshake and a malformed frame never reached a tool call, so the
+    // one-use claim was never written and a fresh launch still serves.
+    assert!(!fixture.path.join("claim.json").exists());
     assert!(Identity::open(fixture.path.join("agent-id")).is_ok());
+}
+
+#[test]
+fn an_immediate_eof_spares_the_grant_then_a_second_launch_serves() {
+    let fixture = Fixture::new();
+    let grant = fixture.grant("read-only");
+    // A client that connects and disconnects without any frame (a status
+    // probe or crashed registration) must not burn the one-use grant.
+    fixture.spawn().close();
+    assert!(!fixture.path.join("claim.json").exists());
+    let mut host = fixture.spawn();
+    let live = host.ask(tool(&grant, "private_status", json!({})));
+    assert_eq!(live["result"]["structuredContent"]["status"], "live");
+    host.close();
+    assert!(fixture.path.join("claim.json").exists());
+}
+
+#[test]
+fn out_of_range_outbox_cursor_gets_a_reply_and_service_continues() {
+    let fixture = Fixture::new();
+    let grant = fixture.grant("read-write");
+    let mut host = fixture.spawn();
+    let beyond = host.ask(tool(
+        &grant,
+        "private_outbox_status",
+        json!({"after":"99","limit":1}),
+    ));
+    assert_eq!(beyond["result"]["isError"], true);
+    assert_eq!(beyond["result"]["structuredContent"]["code"], "bounds");
+    let status = host.ask(tool(&grant, "private_status", json!({})));
+    assert_eq!(status["result"]["structuredContent"]["status"], "live");
+    let prepared = host.ask(tool(
+        &grant,
+        "private_prepare",
+        json!({"body":"still serving"}),
+    ));
+    let draft = prepared["result"]["structuredContent"]["draft"].clone();
+    let queued = host.ask(tool(
+        &grant,
+        "private_queue",
+        json!({"draft":draft,"operation":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"}),
+    ));
+    assert_eq!(
+        queued["result"]["structuredContent"]["status"],
+        "durable_local_only"
+    );
+    let conflicting = host.ask(tool(
+        &grant,
+        "private_prepare",
+        json!({"body":"other body, same operation"}),
+    ));
+    let draft = conflicting["result"]["structuredContent"]["draft"].clone();
+    let refused = host.ask(tool(
+        &grant,
+        "private_queue",
+        json!({"draft":draft,"operation":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"}),
+    ));
+    assert_eq!(
+        refused["result"]["structuredContent"]["code"],
+        "operation_conflict"
+    );
+    let status = host.ask(tool(&grant, "private_status", json!({})));
+    assert_eq!(status["result"]["structuredContent"]["status"], "live");
+    host.close();
+    assert!(fixture.path.join("claim.json").exists());
 }
