@@ -11,6 +11,9 @@ use std::path::Path;
 /// home's installed agent. The host and the gateway install through this one
 /// custody path, which refuses foreign content at the selected label.
 pub(crate) struct AgentSpec {
+    // Only the macOS backend reads the label: other platforms cannot load
+    // launchd services, so the field is inert there.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub label: String,
     pub plist: String,
     pub alternates: Vec<String>,
