@@ -459,10 +459,13 @@ impl Store {
                 return Err(Error::Corrupt);
             }
             let claims = record.event.claims();
+            // The sequence index must point back at this exact record. Compare
+            // the stored index itself: loading the record again would decode
+            // and re-verify the same signature a second time per page row.
             let indexed = self
-                .lookup_sequence(claims.author, claims.sequence, self.pin.count)?
+                .read_sequence_index(claims.author, claims.sequence)?
                 .ok_or(Error::Corrupt)?;
-            if indexed.index() != record.index() {
+            if indexed != record.index() {
                 return Err(Error::Corrupt);
             }
             previous = record.digest();
@@ -579,11 +582,7 @@ impl Store {
             let author = intent.record.event.claims().author;
             if self.read_author_index(author)? != intent.old
                 || self
-                    .lookup_sequence(
-                        author,
-                        intent.record.event.claims().sequence,
-                        self.pin.count,
-                    )?
+                    .read_sequence_index(author, intent.record.event.claims().sequence)?
                     .is_some()
             {
                 return Err(Error::Corrupt);
@@ -607,11 +606,10 @@ impl Store {
         self.validate_pin(intent.expected)?;
         let author = intent.record.event.claims().author;
         if let Some(old) = intent.old {
-            let record = self.load_index_record(old, author, intent.expected.count)?;
-            let retained = self
-                .lookup_sequence(author, old.sequence, intent.expected.count)?
-                .ok_or(Error::Corrupt)?;
-            if retained.index() != record.index() {
+            self.load_index_record(old, author, intent.expected.count)?;
+            // The sequence file must retain exactly the prior head index; its
+            // pointed-to record was just proven by load_index_record.
+            if self.read_sequence_index(author, old.sequence)? != Some(old) {
                 return Err(Error::Corrupt);
             }
         }
@@ -624,14 +622,13 @@ impl Store {
             if actual.encode() != intent.record.encode() || current != Some(intent.record.index()) {
                 return Err(Error::Corrupt);
             }
+            // Index equality is record equality here: index.receipt is the
+            // SHA-256 identity of the record encoding, and the pointed record
+            // itself was just proven byte-identical by `actual` above.
             let indexed = self
-                .lookup_sequence(
-                    author,
-                    intent.record.event.claims().sequence,
-                    intent.next.count,
-                )?
+                .read_sequence_index(author, intent.record.event.claims().sequence)?
                 .ok_or(Error::Corrupt)?;
-            if indexed.encode() != intent.record.encode() {
+            if indexed != intent.record.index() {
                 return Err(Error::Corrupt);
             }
         }
@@ -722,20 +719,17 @@ impl Store {
             return Ok(None);
         };
         let record = self.load_index_record(index, author, ceiling)?;
-        let indexed = self
-            .lookup_sequence(author, index.sequence, ceiling)?
-            .ok_or(Error::Corrupt)?;
-        if indexed.index() != index {
+        // Confirm the per-sequence index agrees with the head index without
+        // decoding and re-verifying the same head record a second time.
+        if self.read_sequence_index(author, index.sequence)? != Some(index) {
             return Err(Error::Corrupt);
         }
         Ok(Some((index, record)))
     }
-    fn lookup_sequence(
-        &self,
-        author: [u8; 32],
-        sequence: u64,
-        ceiling: u64,
-    ) -> Result<Option<Record>, Error> {
+    /// Read only the stored sequence index. Callers that already hold the
+    /// record it must name compare `Index` values directly and never decode or
+    /// re-verify the pointed record a second time.
+    fn read_sequence_index(&self, author: [u8; 32], sequence: u64) -> Result<Option<Index>, Error> {
         if !self.has_author_dir(author)? {
             return Ok(None);
         }
@@ -747,6 +741,17 @@ impl Store {
         if index.sequence != sequence {
             return Err(Error::Corrupt);
         }
+        Ok(Some(index))
+    }
+    fn lookup_sequence(
+        &self,
+        author: [u8; 32],
+        sequence: u64,
+        ceiling: u64,
+    ) -> Result<Option<Record>, Error> {
+        let Some(index) = self.read_sequence_index(author, sequence)? else {
+            return Ok(None);
+        };
         self.load_index_record(index, author, ceiling).map(Some)
     }
     fn read_author_index(&self, author: [u8; 32]) -> Result<Option<Index>, Error> {

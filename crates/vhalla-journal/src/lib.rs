@@ -220,13 +220,17 @@ impl Bundle {
 
     /// Re-derives a bundle from stored bytes, recomputing the identity so a
     /// corrupted or substituted file cannot impersonate the expected id.
+    /// Fields are parsed as slices — the identity is SHA-256 over the exact
+    /// `(u64 length || bytes)` field region, so no per-field copy is needed.
     pub fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
         if bytes.len() > MAX_BUNDLE_BYTES || bytes.len() < 4 || &bytes[..4] != BUNDLE_MAGIC {
             return Err(JournalError::Corrupt);
         }
         let mut rest = &bytes[4..];
-        let mut fields: Vec<Vec<u8>> = Vec::with_capacity(9);
-        for _ in 0..9 {
+        let mut predecessor = None;
+        let mut next = None;
+        let mut height = None;
+        for i in 0..9 {
             if rest.len() < 8 {
                 return Err(JournalError::Corrupt);
             }
@@ -241,28 +245,30 @@ impl Bundle {
             if rest.len() < len {
                 return Err(JournalError::Corrupt);
             }
-            fields.push(rest[..len].to_vec());
+            let field = &rest[..len];
+            match i {
+                1 => predecessor = Some(field.try_into().map_err(|_| JournalError::Corrupt)?),
+                2 => next = Some(field.try_into().map_err(|_| JournalError::Corrupt)?),
+                8 if field.len() == 8 => {
+                    height = Some(u64::from_le_bytes(field.try_into().unwrap()))
+                }
+                8 => return Err(JournalError::Corrupt),
+                _ => {}
+            }
             rest = &rest[len..];
         }
         if !rest.is_empty() {
             return Err(JournalError::Corrupt);
         }
-        let predecessor: [u8; 32] = fields[1]
-            .as_slice()
-            .try_into()
-            .map_err(|_| JournalError::Corrupt)?;
-        let next: [u8; 32] = fields[2]
-            .as_slice()
-            .try_into()
-            .map_err(|_| JournalError::Corrupt)?;
-        if fields[8].len() != 8 {
+        let (Some(predecessor), Some(next), Some(height)) = (predecessor, next, height) else {
             return Err(JournalError::Corrupt);
-        }
-        let height = u64::from_le_bytes(fields[8].as_slice().try_into().unwrap());
-        // Re-hash the parsed fields: the returned identity is derived from
-        // content, never trusted from the filename or a header.
-        let refs: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();
-        let id = sha256(&refs);
+        };
+        // Re-hash the parsed field region: the returned identity is derived
+        // from content, never trusted from the filename or a header. The wire
+        // layout already IS length-prefix || bytes per field, in order.
+        let mut h = Sha256::new();
+        h.update(&bytes[4..]);
+        let id: [u8; 32] = h.finalize().into();
         Ok(Bundle {
             predecessor,
             next,
