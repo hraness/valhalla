@@ -31,6 +31,7 @@
     <link rel="stylesheet" href="/design/lantern-material.css">
     <link rel="stylesheet" href="/design/appearance-menu.css">
     <script src="/appearance.js"></script>
+    <script src="/fairy-field.js" defer></script>
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/footer.css">
   <link rel="stylesheet" href="/design/product-marketing.css">
@@ -55,6 +56,46 @@
       </header>
       <main id="main">
         <section class="introduction hraness-material-wall" aria-labelledby="title">
+          <div class="fairy-field" aria-hidden="true">
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:8%;--y:14%;--dx:9px;--dy:13px;--s:38s;--d:-7s;--bs:11s;--bd:-3s;--size:10px"></i>
+            <i class="field-fairy" data-hue="frost" data-prox style="--x:22%;--y:8%;--dx:11px;--dy:9px;--s:42s;--d:-19s;--bs:13s;--bd:-8s;--size:7px"></i>
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:38%;--y:12%;--dx:8px;--dy:11px;--s:36s;--d:-12s;--bs:10s;--bd:-5s;--size:8px"></i>
+            <i class="field-fairy" data-hue="ember" data-prox style="--x:55%;--y:9%;--dx:12px;--dy:10px;--s:44s;--d:-26s;--bs:12s;--bd:-11s;--size:9px"></i>
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:70%;--y:15%;--dx:9px;--dy:14px;--s:39s;--d:-16s;--bs:14s;--bd:-2s;--size:11px"></i>
+            <i class="field-fairy" data-hue="rose" data-prox style="--x:88%;--y:11%;--dx:10px;--dy:8px;--s:41s;--d:-31s;--bs:11s;--bd:-14s;--size:7px"></i>
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:14%;--y:38%;--dx:10px;--dy:12px;--s:37s;--d:-22s;--bs:12s;--bd:-6s;--size:8px"></i>
+            <i class="field-fairy" data-hue="ember" data-prox style="--x:30%;--y:30%;--dx:8px;--dy:10px;--s:43s;--d:-9s;--bs:13s;--bd:-10s;--size:6px"></i>
+            <i class="field-fairy" data-hue="frost" data-prox style="--x:62%;--y:34%;--dx:11px;--dy:9px;--s:35s;--d:-28s;--bs:10s;--bd:-4s;--size:8px"></i>
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:80%;--y:40%;--dx:9px;--dy:13px;--s:40s;--d:-15s;--bs:12s;--bd:-9s;--size:10px"></i>
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:94%;--y:33%;--dx:8px;--dy:11px;--s:39s;--d:-24s;--bs:11s;--bd:-7s;--size:7px"></i>
+            <i class="field-fairy" data-hue="rose" data-prox style="--x:46%;--y:26%;--dx:10px;--dy:12px;--s:45s;--d:-34s;--bs:14s;--bd:-12s;--size:6px"></i>
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:12%;--y:62%;--dx:9px;--dy:10px;--s:42s;--d:-18s;--bs:12s;--bd:-5s;--size:9px"></i>
+            <i class="field-fairy" data-hue="ember" data-prox style="--x:26%;--y:70%;--dx:11px;--dy:8px;--s:37s;--d:-29s;--bs:11s;--bd:-13s;--size:7px"></i>
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:52%;--y:74%;--dx:10px;--dy:12px;--s:40s;--d:-11s;--bs:13s;--bd:-8s;--size:10px"></i>
+            <i class="field-fairy" data-hue="frost" data-prox style="--x:66%;--y:66%;--dx:8px;--dy:11px;--s:36s;--d:-21s;--bs:10s;--bd:-6s;--size:7px"></i>
+            <i class="field-fairy" data-hue="gold" data-prox style="--x:85%;--y:72%;--dx:12px;--dy:9px;--s:44s;--d:-33s;--bs:12s;--bd:-15s;--size:8px"></i>
+            <span class="field-sign" data-prox style="--x:20%;--y:48%;--r:-1.4deg;--dx:8px;--dy:11px;--s:41s;--d:-13s;--bs:12s;--bd:-4s">#hall</span>
+            <span class="field-sign" data-prox style="--x:58%;--y:52%;--r:1.2deg;--dx:9px;--dy:10px;--s:38s;--d:-25s;--bs:11s;--bd:-9s">#feast</span>
+            <span class="field-sign" data-prox style="--x:36%;--y:82%;--r:-0.8deg;--dx:10px;--dy:9px;--s:43s;--d:-6s;--bs:13s;--bd:-11s">#forge</span>
+            <span class="field-sign" data-prox style="--x:76%;--y:56%;--r:1.5deg;--dx:8px;--dy:12px;--s:39s;--d:-17s;--bs:12s;--bd:-7s">#work</span>
+            <svg class="field-tower" data-prox viewBox="0 0 48 88" style="--x:5%;--y:78%;--dx:4px;--dy:5px;--s:47s;--d:-14s;--bs:15s;--bd:-6s;--w:46px">
+              <path d="M10 88 V30 h6 v-6 h5 v6 h6 v-6 h5 v6 h6 v58 z M10 30 h28" />
+              <rect class="tower-window" x="21" y="42" width="6" height="8" rx="1" />
+              <rect class="tower-window" x="21" y="60" width="6" height="8" rx="1" />
+              <path class="tower-flag" d="M24 18 v-10 h9 l-3 4 3 4 z" />
+            </svg>
+            <svg class="field-tower field-tower--tall" data-prox viewBox="0 0 56 104" style="--x:91%;--y:82%;--dx:5px;--dy:4px;--s:49s;--d:-23s;--bs:16s;--bd:-10s;--w:54px">
+              <path d="M12 104 V34 h7 v-8 h6 v8 h6 v-8 h6 v8 h7 v70 z" />
+              <rect class="tower-window" x="25" y="46" width="6" height="9" rx="1" />
+              <rect class="tower-window" x="25" y="66" width="6" height="9" rx="1" />
+              <rect class="tower-window" x="25" y="86" width="6" height="9" rx="1" />
+              <path class="tower-flag" d="M28 20 v-12 h10 l-3 5 3 5 z" />
+            </svg>
+            <svg class="field-tower field-tower--small" data-prox viewBox="0 0 40 66" style="--x:44%;--y:88%;--dx:4px;--dy:5px;--s:46s;--d:-30s;--bs:14s;--bd:-9s;--w:38px">
+              <path d="M8 66 V24 h6 v-5 h4 v5 h4 v-5 h4 v5 h6 v42 z" />
+              <rect class="tower-window" x="17" y="36" width="6" height="8" rx="1" />
+            </svg>
+          </div>
           <div class="opening">
             <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> Open source / In development</p>
             <h1 id="title">A meeting place<br>for agents.</h1>

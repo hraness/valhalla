@@ -1359,3 +1359,171 @@ table a {
   --hraness-foil-size:24px;
   --hraness-foil-mask:url("/valhalla-mark.svg");
 }
+
+/* The fairy field: a quiet stretch of grounds behind the hero — pulsing
+ * fairy lights, castle towers with windows that light, and room signposts
+ * (#hall, #feast, #forge, #work). The DOM ships in index.html; fairy-field.js
+ * sets --prox by pointer distance and --wave for click rings, while
+ * --breath/--bloomv are registered so the twinkle runs without JS. --focus
+ * resolves whichever channel is strongest. Everything is decorative:
+ * aria-hidden, pointer-transparent, reduced-motion leaves a still scene. */
+@property --breath { syntax: "<number>"; inherits: false; initial-value: 0; }
+@property --bloomv { syntax: "<number>"; inherits: false; initial-value: 0; }
+
+:root {
+  --fairy-gold: light-dark(#a97e1f, #f0be4a);
+  --fairy-ember: light-dark(#b85a22, #ef8a4d);
+  --fairy-frost: light-dark(#4a7fb5, #8fb8e8);
+  --fairy-rose: light-dark(#a84a76, #e08ab0);
+}
+
+.fairy-field {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Rolling grounds: two soft hill lines under everything. */
+.fairy-field::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 55% at 18% 108%, color-mix(in oklch, var(--ink) 5%, transparent) 0%, transparent 60%),
+    radial-gradient(130% 60% at 84% 112%, color-mix(in oklch, var(--ink) 6%, transparent) 0%, transparent 62%);
+  pointer-events: none;
+}
+
+/* Edge fades: the grounds continue past the hero. */
+.fairy-field::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to right, var(--paper), transparent 8%, transparent 92%, var(--paper)),
+    linear-gradient(to bottom, var(--paper), transparent 10%, transparent 88%, var(--paper));
+  pointer-events: none;
+}
+
+/* The hero copy and the imagined room stay above the field. */
+.introduction .opening,
+.introduction .room { position: relative; z-index: 1; }
+.introduction .opening::before {
+  content: "";
+  position: absolute;
+  inset: -2rem -3rem;
+  z-index: -1;
+  background: radial-gradient(ellipse 78% 72% at 42% 46%,
+    color-mix(in oklch, var(--paper) 82%, transparent) 0%,
+    color-mix(in oklch, var(--paper) 48%, transparent) 60%,
+    transparent 100%);
+  pointer-events: none;
+}
+
+/* Shared reveal contract for every item in the field. */
+.field-fairy,
+.field-tower,
+.field-sign {
+  --focus: max(var(--prox, 0), var(--wave, 0), var(--breath, 0), var(--bloomv, 0));
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  translate: -50% -50%;
+  rotate: var(--r, 0deg);
+  pointer-events: none;
+  transition: opacity .45s ease, filter .45s ease;
+  animation:
+    fairy-drift var(--s, 40s) ease-in-out var(--d, 0s) infinite alternate,
+    fairy-breath var(--bs, 12s) ease-in-out var(--bd, 0s) infinite;
+}
+
+@keyframes fairy-drift {
+  from { transform: translate(calc(var(--dx, 0px) * -1), calc(var(--dy, 0px) * -1)); }
+  to { transform: translate(var(--dx, 0px), var(--dy, 0px)); }
+}
+
+@keyframes fairy-breath {
+  0%, 100% { --breath: 0; }
+  50% { --breath: 0.5; }
+}
+
+/* Fairy lights: a tiny warm core in a halo that swells with focus. They
+ * never fully blur — they dim and glow instead. */
+.field-fairy {
+  --glow: var(--fairy-gold);
+  width: var(--size, 8px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--glow);
+  opacity: calc(.38 + var(--focus) * .62);
+  filter: blur(calc((1 - var(--focus)) * .7px));
+  box-shadow:
+    0 0 calc(3px + var(--focus) * 7px) calc(var(--focus) * 2px) var(--glow),
+    0 0 calc(8px + var(--focus) * 22px) color-mix(in oklch, var(--glow) 60%, transparent);
+  scale: calc(.85 + var(--focus) * .3);
+  transition: opacity .45s ease, filter .45s ease, scale .45s ease, box-shadow .45s ease;
+}
+.field-fairy[data-hue="frost"] { --glow: var(--fairy-frost); }
+.field-fairy[data-hue="ember"] { --glow: var(--fairy-ember); }
+.field-fairy[data-hue="rose"] { --glow: var(--fairy-rose); }
+
+/* Towers: ink silhouettes; windows warm as focus approaches. */
+.field-tower {
+  width: var(--w, 48px);
+  height: auto;
+  opacity: calc(.3 + var(--focus) * .55);
+  filter: blur(calc((1 - var(--focus)) * 1.2px));
+}
+.field-tower path {
+  fill: color-mix(in oklch, var(--ink) 15%, transparent);
+}
+.field-tower .tower-flag {
+  fill: color-mix(in oklch, var(--focus) 55%, var(--ink) 20%);
+}
+.field-tower .tower-window {
+  fill: var(--fairy-gold);
+  opacity: calc(.12 + var(--focus) * .88);
+  transition: opacity .45s ease;
+}
+
+/* Room signposts: the product's own vocabulary as trail markers. */
+.field-sign {
+  padding: .22rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--paper) 78%, transparent);
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: .625rem;
+  letter-spacing: .05em;
+  opacity: calc(.4 + var(--focus) * .6);
+  filter: blur(calc((1 - var(--focus)) * 1.3px));
+}
+
+@media (max-width: 640px) {
+  .field-fairy:nth-of-type(n + 10) { display: none; }
+  .field-sign:nth-of-type(n + 3) { display: none; }
+  .field-tower--small { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .field-fairy,
+  .field-tower,
+  .field-sign {
+    animation: none;
+    transition: none;
+  }
+  /* The still scene reads at a fixed low glow. */
+  .field-fairy { filter: blur(.4px); opacity: .45; }
+  .field-tower, .field-sign { filter: blur(.6px); opacity: .5; }
+}
+
+@media (forced-colors: active) {
+  .field-fairy { background: CanvasText; box-shadow: none; opacity: .5; }
+  .field-tower { filter: none; opacity: .6; }
+  .field-tower path { fill: CanvasText; }
+  .field-tower .tower-window, .field-tower .tower-flag { display: none; }
+  .field-sign { border-color: CanvasText; color: CanvasText; filter: none; opacity: 1; }
+}
