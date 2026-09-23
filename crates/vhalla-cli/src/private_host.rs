@@ -1,6 +1,7 @@
 //! Explicit local opaque-relay hosting. No account or room custody lives here.
 mod config;
-mod launchd;
+pub(crate) mod events;
+pub(crate) mod launchd;
 
 use config::{Config, Loaded};
 use std::{
@@ -18,7 +19,7 @@ use vhalla_private_native::relay::{
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-3650]\nvhalla private-host serve|status|install|uninstall HOME\nvhalla private-host add-credential|rotate|renew HOME\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, two or more distinct client credentials, explicit macOS LaunchAgent lifecycle. No account keys, automatic update, public listener, or cloud provisioning.";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-3650]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|renew HOME\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, two or more distinct client credentials, explicit macOS LaunchAgent lifecycle. No account keys, automatic update, public listener, or cloud provisioning.";
 const REFUSED: &str = "local host refused; preserve the exact home, configuration, certificates and mailbox; never reset retained custody";
 /// Status marks the leaf for explicit operator renewal inside this window.
 const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
@@ -121,7 +122,13 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             );
             Ok(())
         }
-        Some(action @ ("serve" | "status" | "install" | "uninstall")) if args.len() == 3 => {
+        Some(action @ ("serve" | "status" | "install" | "uninstall"))
+            if args.len() == 3 || (action == "status" && args.len() == 4) =>
+        {
+            let probing = action == "status" && args.len() == 4;
+            if probing && args[3] != "--probe" {
+                return Err(HELP.into());
+            }
             let loaded = if action == "uninstall" {
                 config::load_for_stop(home)?
             } else {
@@ -131,14 +138,30 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                 "serve" => serve(loaded),
                 "status" => {
                     let now = time::OffsetDateTime::now_utc().unix_timestamp();
-                    println!(
-                        "{}",
-                        serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"health":"not probed; loaded service is not TLS or retention evidence"})
-                    );
+                    let mut report = serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"log":loaded.home.join(launchd::LOG_NAME),"recent_events":events::tail(&loaded.home,8)?});
+                    if probing {
+                        report["probe"] = probe(&loaded)?;
+                    } else {
+                        report["health"] =
+                            "not probed; loaded service is not TLS or retention evidence".into();
+                    }
+                    println!("{report}");
                     Ok(())
                 }
-                "install" => launchd::install(&loaded),
-                "uninstall" => launchd::uninstall(&loaded),
+                "install" => {
+                    let result = launchd::install(&loaded);
+                    if result.is_ok() {
+                        let _ = events::append(&loaded.home, "agent-installed", &[]);
+                    }
+                    result
+                }
+                "uninstall" => {
+                    let result = launchd::uninstall(&loaded);
+                    if result.is_ok() {
+                        let _ = events::append(&loaded.home, "agent-uninstalled", &[]);
+                    }
+                    result
+                }
                 _ => Err(HELP.into()),
             }
         }
@@ -187,6 +210,53 @@ fn service(home: &Path, config: &Config) -> Result<Service, String> {
     .map_err(|_| REFUSED.into())
 }
 
+/// A live probe performs the real pinned-TLS authenticated empty-page check
+/// against the configured listener and reports the outcome without secrets.
+fn probe(loaded: &Loaded) -> Result<serde_json::Value, String> {
+    use std::time::{Duration, Instant};
+    let ca = config::read_bound(&loaded.home, &loaded.config, "ca.der", 65536)?;
+    let raw = config::read_bound(&loaded.home, &loaded.config, "client-1.token", 65)?;
+    let text = std::str::from_utf8(&raw).map_err(|_| REFUSED)?;
+    let token = RelayToken::from_bytes(config::decode_hex::<32>(text.trim_end_matches('\n'))?)
+        .map_err(|_| REFUSED)?;
+    let namespace = RelayNamespace::from_bytes(config::decode_hex(&loaded.config.namespace)?)
+        .map_err(|_| REFUSED)?;
+    let relay = tls::TlsRelay::new(
+        loaded.config.listen,
+        &loaded.config.tls_name,
+        ca.to_vec(),
+        token,
+        namespace,
+    )
+    .map_err(|_| REFUSED)?;
+    let listening =
+        std::net::TcpStream::connect_timeout(&loaded.config.listen, Duration::from_millis(250))
+            .is_ok();
+    match relay.page_until(0, 1, Instant::now() + Duration::from_secs(5)) {
+        Ok(page) => Ok(
+            serde_json::json!({"listening":listening,"probed":true,"head":page.head,"records":page.records.len()}),
+        ),
+        Err(error) => Ok(
+            serde_json::json!({"listening":listening,"probed":false,"error":net_error_name(&error)}),
+        ),
+    }
+}
+/// Stable error-kind names for operator tooling; never carries payloads.
+fn net_error_name(error: &vhalla_private_native::relay::net::NetError) -> &'static str {
+    use vhalla_private_native::relay::net::NetError::*;
+    match error {
+        Connect => "connect",
+        Timeout => "timeout",
+        Unavailable => "unavailable",
+        Denied => "denied",
+        Conflict => "conflict",
+        Capacity => "capacity",
+        Bounds => "bounds",
+        Scope => "scope",
+        Malformed => "malformed",
+    }
+}
+
 fn serve(loaded: Loaded) -> Result<(), String> {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     if now < loaded.config.created_at - 300 || now >= loaded.config.certificate_expires_at {
@@ -196,8 +266,29 @@ fn serve(loaded: Loaded) -> Result<(), String> {
         );
     }
     let service = service(&loaded.home, &loaded.config)?;
-    let listener =
-        TcpListener::bind(loaded.config.listen).map_err(|_| "local relay bind refused")?;
+    // Mailbox custody is held before the bounded bind retry so a restart
+    // handoff cannot let a second owner take the store mid-recovery.
+    let mut listener = None;
+    for attempt in 0..20 {
+        match TcpListener::bind(loaded.config.listen) {
+            Ok(bound) => {
+                listener = Some(bound);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                events::append(
+                    &loaded.home,
+                    "bind-retry",
+                    &[("attempt", &attempt.to_string())],
+                )?;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            Err(_) => return Err("local relay bind refused".into()),
+        }
+    }
+    let Some(listener) = listener else {
+        return Err("local relay bind refused".into());
+    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -208,13 +299,17 @@ fn serve(loaded: Loaded) -> Result<(), String> {
         let mut interrupt=signal(SignalKind::interrupt()).map_err(|_|REFUSED)?;
         let stop=Arc::new(AtomicBool::new(false));
         let selected=stop.clone();
+        events::append(&loaded.home,"serve-start",&[("listen",&loaded.config.listen.to_string())])?;
         println!("{}",serde_json::json!({"status":"listening","listen":loaded.config.listen,"label":loaded.config.label}));
         let mut worker=tokio::task::spawn_blocking(move||service.serve_until(listener,None,selected));
-        tokio::select! {
-            result=&mut worker => result.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned()),
-            _=terminate.recv() => {stop.store(true,Ordering::Release);worker.await.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned())},
-            _=interrupt.recv() => {stop.store(true,Ordering::Release);worker.await.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned())},
-        }
+        let outcome=tokio::select! {
+            result=&mut worker => (result.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned()),"worker"),
+            _=terminate.recv() => {stop.store(true,Ordering::Release);(worker.await.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned()),"terminate")},
+            _=interrupt.recv() => {stop.store(true,Ordering::Release);(worker.await.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned()),"interrupt")},
+        };
+        let (result,reason)=outcome;
+        let _=events::append(&loaded.home,"serve-stop",&[("reason",reason),("ok",if result.is_ok(){"true"}else{"false"})]);
+        result
     })
 }
 

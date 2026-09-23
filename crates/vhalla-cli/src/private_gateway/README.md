@@ -6,6 +6,24 @@ Run it as a separate foreground process alongside the TLS host. It connects as
 a TLS client and never opens a second mailbox writer. The host's LaunchAgent
 manages the relay only; it does not start the browser gateway.
 
+Lifecycle commands take the same canonical absolute config path:
+
+- `vhalla private-gateway status CONFIG` reports the validated configuration,
+  the deterministic `me.vhalla.private-gateway.<path-digest>` label, launchd
+  state and the sibling bounded `events.log`. `status --probe` additionally
+  performs a real bounded loopback HTTP GET and reports whether the listener
+  answered `HTTP/1.1 200`; a probe proves listener shape only, never upstream
+  TLS or mailbox retention.
+- `vhalla private-gateway install CONFIG` validates the full configuration,
+  writes the exact plist for that one label into `~/Library/LaunchAgents` and
+  bootstraps it. A foreign or changed plist at the label refuses; the command
+  never lists or touches other services in the GUI domain.
+- `vhalla private-gateway uninstall CONFIG` boots out only the exact label when
+  the loaded service identifies the owned plist, then removes the plist file.
+- `serve` retries a transient address-in-use bind for a bounded window, logs
+  `serve-start`/`bind-retry`/`serve-stop` to the bounded `events.log` beside
+  the config, and drains SIGTERM/SIGINT before exit.
+
 The bounded 0600 configuration file and credential/CA files must have 0700 parent
 directories. All paths are absolute. Unknown fields refuse. Example structure
 (values below are placeholders, never usable credentials):

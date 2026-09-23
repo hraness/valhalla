@@ -357,7 +357,13 @@ pub(super) fn load_for_stop(path: &Path) -> Result<Loaded, String> {
     }
     let template = read(&home, "launch-agent.plist", 65536)?;
     if config.files.get("launch-agent.plist") != Some(&digest(&template))
-        || template.as_slice() != launchd::plist(&home, &config)?.as_bytes()
+        || !launchd::template_ours(
+            &Loaded {
+                home: home.clone(),
+                config: config.clone(),
+            },
+            &template,
+        )?
     {
         return Err(REFUSED.into());
     }
