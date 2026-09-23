@@ -1,4 +1,6 @@
+use openmls::framing::errors::{MessageDecryptionError, SecretTreeError};
 use openmls::prelude::*;
+use openmls_memory_storage::MemoryStorageError;
 use tls_codec::Deserialize as _;
 
 use super::*;
@@ -60,7 +62,6 @@ impl<S: Store> Kernel<S> {
             )
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         if matches!(work.state.phase, Phase::AwaitingWelcome | Phase::Removed) {
@@ -88,7 +89,6 @@ impl<S: Store> Kernel<S> {
         bounded_wire(raw)?;
         let mut work = self.begin_live().await?;
         if let Some(retained) = self.received(raw, work.state.inbox).await? {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         if !matches!(work.state.phase, Phase::OwnerJoined | Phase::MemberJoined) {
@@ -145,14 +145,20 @@ pub(super) fn process(
         .map_err(|_| Error::Encoding)?
         .try_into_protocol_message()
         .map_err(|_| Error::Encoding)?;
-    if message.group_id().as_slice() != work.state.context().scope.room.as_bytes()
-        || message.epoch().as_u64() != work.state.epoch
-    {
+    if message.group_id().as_slice() != work.state.context().scope.room.as_bytes() {
         return Err(Error::Scope);
+    }
+    // Epoch mismatches are typed for drivers: an older epoch is permanently
+    // undecryptable here, a newer one needs the pending control applied first.
+    // Neither is a foreign-room or tampering signal.
+    match message.epoch().as_u64().cmp(&work.state.epoch) {
+        core::cmp::Ordering::Less => return Err(Error::StaleEpoch),
+        core::cmp::Ordering::Greater => return Err(Error::FutureEpoch),
+        core::cmp::Ordering::Equal => {}
     }
     let processed = group
         .process_message(&work.provider, message)
-        .map_err(|_| Error::Mls)?;
+        .map_err(process_error)?;
     if processed.group_id().as_slice() != work.state.context().scope.room.as_bytes()
         || processed.epoch().as_u64() != work.state.epoch
         || processed.aad() != app_aad(work.state.context())
@@ -160,6 +166,26 @@ pub(super) fn process(
         return Err(Error::Scope);
     }
     Ok(processed)
+}
+/// Map only typed delivery-gap conditions out of the MLS error surface.
+/// Everything else stays a generic refusal: drivers may skip the exact item,
+/// but no ratchet/epoch interpretation is claimed for untyped failures.
+fn process_error(error: ProcessMessageError<MemoryStorageError>) -> Error {
+    match error {
+        ProcessMessageError::ValidationError(ValidationError::UnableToDecrypt(
+            MessageDecryptionError::SecretTreeError(SecretTreeError::TooDistantInThePast),
+        ))
+        | ProcessMessageError::ValidationError(ValidationError::UnableToDecrypt(
+            MessageDecryptionError::SecretTreeError(SecretTreeError::SecretReuseError),
+        ))
+        | ProcessMessageError::ValidationError(ValidationError::UnableToDecrypt(
+            MessageDecryptionError::GenerationOutOfBound,
+        )) => Error::RatchetGap { past: true },
+        ProcessMessageError::ValidationError(ValidationError::UnableToDecrypt(
+            MessageDecryptionError::SecretTreeError(SecretTreeError::TooDistantInTheFuture),
+        )) => Error::RatchetGap { past: false },
+        _ => Error::Mls,
+    }
 }
 pub(super) fn member_sender(
     work: &Working,

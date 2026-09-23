@@ -40,13 +40,25 @@ pub enum RecordKey {
     /// Nonzero owner-control sequence. Its encrypted payload still requires
     /// private protocol and retained-state verification by the kernel.
     Control(u64),
+    /// Committed application ciphertext hash to its outbox index. Written only
+    /// for application sends so receipts can resolve their exact original.
+    Sent([u8; 32]),
+    /// Verified member receipt for one exact outbox position from one exact
+    /// recipient device. The immutable payload is the receipt's inbox index.
+    Acceptance {
+        /// Committed local outbox position the receipt acknowledges.
+        outbox: u64,
+        /// Member device that produced the verified receipt.
+        recipient: crate::protocol::Key,
+    },
 }
 impl RecordKey {
     /// Validate counter/sentinel shape before a backend chooses any path or key.
     pub fn validate(self) -> Result<(), Error> {
         match self {
             Self::Outbox(0) | Self::Inbox(0) | Self::Control(0) => Err(Error::Encoding),
-            Self::Received(hash) if hash == [0; 32] => Err(Error::Encoding),
+            Self::Received(hash) | Self::Sent(hash) if hash == [0; 32] => Err(Error::Encoding),
+            Self::Acceptance { outbox: 0, .. } => Err(Error::Encoding),
             _ => Ok(()),
         }
     }
@@ -74,6 +86,15 @@ impl RecordKey {
             Self::Control(n) => {
                 out.push(5);
                 out.extend(n.to_be_bytes());
+            }
+            Self::Sent(hash) => {
+                out.push(6);
+                out.extend(hash);
+            }
+            Self::Acceptance { outbox, recipient } => {
+                out.push(7);
+                out.extend(outbox.to_be_bytes());
+                out.extend(recipient.as_bytes());
             }
         }
         out

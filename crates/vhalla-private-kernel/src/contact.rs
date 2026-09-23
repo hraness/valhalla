@@ -164,6 +164,7 @@ impl ContactBootstrap {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Offer {
     pub(crate) id: [u8; 32],
     pub(crate) scope: PrivateRoomScope,
@@ -465,6 +466,7 @@ pub(crate) fn response_hash(raw: &[u8]) -> [u8; 32] {
     codec::hash(b"vhalla/private/contact/response/v1\0", raw)
 }
 
+#[derive(Clone)]
 pub(crate) struct PendingContact {
     pub(crate) offer: Offer,
     pub(crate) request: [u8; 32],

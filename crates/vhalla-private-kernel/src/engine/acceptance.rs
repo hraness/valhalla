@@ -146,7 +146,6 @@ impl<S: Store> Kernel<S> {
             )
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         if !matches!(work.state.phase, Phase::OwnerJoined | Phase::MemberJoined) {

@@ -608,7 +608,7 @@ fn bounded_pages_exceed_sixty_four_messages_and_clock_rejects_without_effects() 
             pair.owner
                 .test_send(op(72), b"clock regressed", pair.now)
                 .await,
-            Err(Error::Time)
+            Err(Error::ClockRegressed)
         ));
         assert!(pair.owner_disk.snapshot() == before);
         pair.reopen_owner().await;
@@ -1000,7 +1000,7 @@ fn four_devices_late_join_ordered_catchup_and_explicit_new_device_rejoin() {
         let before = pair.member_disk.snapshot();
         assert!(matches!(
             pair.member.apply_control(&control3, pair.now).await,
-            Err(Error::Policy)
+            Err(Error::ControlGap)
         ));
         assert!(pair.member_disk.snapshot() == before);
         pair.reopen_member().await;
@@ -1103,11 +1103,146 @@ fn typed_release_refuses_new_epoch_author_and_roster_but_retains_exact_old_ciphe
             Err(Error::Scope)
         ));
         // The old epoch is never re-encrypted or silently re-shared with third.
-        assert!(third.receive(sent.bytes(), pair.now).await.is_err());
+        assert!(matches!(
+            third.receive(sent.bytes(), pair.now).await,
+            Err(Error::StaleEpoch)
+        ));
         let explicit = pair.owner.prepare_message(draft.body()).unwrap();
         let new = pair.owner.send(op(22), &explicit, pair.now).await.unwrap();
         assert_ne!(new.bytes(), sent.bytes());
         assert_eq!(pair.owner.status().outbox_head, 4);
+    });
+}
+
+#[test]
+fn epoch_and_control_gaps_refuse_with_typed_errors_and_no_effects() {
+    block_on(async {
+        let mut pair = joined().await;
+        // Emitted at epoch 1, retained by the mailbox after the owner's control.
+        let stale = pair
+            .member
+            .test_send(op(40), b"emitted before the control", pair.now)
+            .await
+            .unwrap();
+        let (mut third, _, _) = pending_device(&pair, &account()).await;
+        let control = add_device(&mut pair, &mut third, 41).await;
+        assert_eq!(pair.owner.status().epoch, 2);
+        let before = pair.owner_disk.snapshot();
+        assert!(matches!(
+            pair.owner.receive(stale.bytes(), pair.now).await,
+            Err(Error::StaleEpoch)
+        ));
+        assert!(pair.owner_disk.snapshot() == before);
+        pair.reopen_owner().await;
+        // Emitted at epoch 2 and delivered before the member applied the control.
+        let fresh = pair
+            .owner
+            .test_send(op(42), b"after the control", pair.now)
+            .await
+            .unwrap();
+        let before = pair.member_disk.snapshot();
+        assert!(matches!(
+            pair.member.receive(fresh.bytes(), pair.now).await,
+            Err(Error::FutureEpoch)
+        ));
+        assert!(pair.member_disk.snapshot() == before);
+        pair.reopen_member().await;
+        pair.member.apply_control(&control, pair.now).await.unwrap();
+        assert_eq!(
+            pair.member
+                .receive(fresh.bytes(), pair.now)
+                .await
+                .unwrap()
+                .body(),
+            b"after the control"
+        );
+        // Two further controls delivered out of order: the later one is a gap,
+        // never a forgery, and applies once its predecessor has landed.
+        let (mut fourth, _, _) = pending_device(&pair, &account()).await;
+        let second = add_device(&mut pair, &mut fourth, 43).await;
+        let (mut fifth, _, _) = pending_device(&pair, &account()).await;
+        let later = add_device(&mut pair, &mut fifth, 44).await;
+        let before = pair.member_disk.snapshot();
+        assert!(matches!(
+            pair.member.apply_control(&later, pair.now).await,
+            Err(Error::ControlGap)
+        ));
+        assert!(pair.member_disk.snapshot() == before);
+        pair.reopen_member().await;
+        pair.member.apply_control(&second, pair.now).await.unwrap();
+        pair.member.apply_control(&later, pair.now).await.unwrap();
+        assert_eq!(pair.member.status().epoch, 4);
+        assert_eq!(pair.member.status().members, 5);
+        // An already accepted control is an exact retained retry, not a gap.
+        pair.member.apply_control(&second, pair.now).await.unwrap();
+    });
+}
+
+#[test]
+fn ratchet_gaps_are_typed_without_effects_and_heal_with_the_next_epoch() {
+    block_on(async {
+        let mut pair = joined().await;
+        let mut sent = Vec::new();
+        for index in 0..40u64 {
+            sent.push(
+                pair.member
+                    .test_send(op(30 + index), b"burst", pair.now)
+                    .await
+                    .unwrap(),
+            );
+        }
+        // Generation 39 is 39 derivations ahead of an untouched receiver
+        // ratchet: past the 32-step forward window, a typed future gap.
+        let before = pair.owner_disk.snapshot();
+        assert!(matches!(
+            pair.owner.receive(sent[39].bytes(), pair.now).await,
+            Err(Error::RatchetGap { past: false })
+        ));
+        assert!(pair.owner_disk.snapshot() == before);
+        assert!(!pair.owner.needs_reopen());
+        // Inside the window, in-order and forward-skipped delivery still work.
+        assert_eq!(
+            pair.owner
+                .receive(sent[0].bytes(), pair.now)
+                .await
+                .unwrap()
+                .body(),
+            b"burst"
+        );
+        pair.owner.receive(sent[7].bytes(), pair.now).await.unwrap();
+        // Generation 1 is six behind the retained window (tolerance 4).
+        let before = pair.owner_disk.snapshot();
+        assert!(matches!(
+            pair.owner.receive(sent[1].bytes(), pair.now).await,
+            Err(Error::RatchetGap { past: true })
+        ));
+        assert!(pair.owner_disk.snapshot() == before);
+        assert!(!pair.owner.needs_reopen());
+        // An owner renewal advances the epoch on both sides and resets every
+        // sender ratchet: the next send decrypts again.
+        let enrollment = renewal(&pair, Validity::new(pair.now, pair.now + 14400).unwrap());
+        let control = pair
+            .owner
+            .renew_owner(op(70), enrollment, pair.now + 1)
+            .await
+            .unwrap();
+        pair.member
+            .apply_control(control.bytes(), pair.now + 1)
+            .await
+            .unwrap();
+        let healed = pair
+            .member
+            .test_send(op(71), b"after the renewal", pair.now + 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            pair.owner
+                .receive(healed.bytes(), pair.now + 1)
+                .await
+                .unwrap()
+                .body(),
+            b"after the renewal"
+        );
     });
 }
 
@@ -1310,7 +1445,8 @@ fn later_join_checks_owner_endorsement_against_actual_mls_roster_before_committi
         let replacement =
             retained_work(&replacement_disk, &replacement_secret, replacement_context)
                 .state
-                .local;
+                .local
+                .clone();
         let mut claims = packet.checkpoint.claims().clone();
         let original = pair.member.status().context.device;
         let index = claims
@@ -1877,7 +2013,7 @@ fn renewal_controls_cannot_skip_parent_floor_or_reactivate_expired_local_member(
         let before = pair.member_disk.snapshot();
         assert!(matches!(
             pair.member.apply_control(update2.bytes(), pair.now).await,
-            Err(Error::Policy)
+            Err(Error::ControlGap)
         ));
         assert!(pair.member_disk.snapshot() == before);
         pair.reopen_member().await;
@@ -1904,8 +2040,8 @@ fn renewal_controls_cannot_skip_parent_floor_or_reactivate_expired_local_member(
 
 mod acceptance;
 mod confidential;
-
 mod contact;
+mod interleaved;
 
 mod recovery;
 

@@ -88,6 +88,26 @@ pub enum Error {
     Missing,
     /// OpenMLS rejected the isolated operation.
     Mls,
+    /// The item's MLS epoch is older than the retained epoch. Its keys are gone,
+    /// so these exact bytes can never apply here; record that and move on.
+    StaleEpoch,
+    /// The item's MLS epoch is newer than the retained epoch. Apply the pending
+    /// owner control(s) first, then retry the identical bytes.
+    FutureEpoch,
+    /// A control envelope skips past the next accepted floor. Apply the missing
+    /// predecessor control(s) first, then retry the identical bytes.
+    ControlGap,
+    /// The sender ratchet cannot reach the item's generation: `past` means the
+    /// generation was already consumed or pruned (reorder/replay evidence);
+    /// `false` means a delivery gap beyond the forward window, healed only by a
+    /// new owner control resetting sender ratchets.
+    RatchetGap {
+        /// Direction of the unreachable generation.
+        past: bool,
+    },
+    /// The caller clock moved backwards; the retained monotone clock stands.
+    /// Deterministic refusal: nothing was written and the session stays usable.
+    ClockRegressed,
     /// The backend explicitly refused a transaction without effects.
     Refused,
     /// A retained owner-signed fork permits history/evidence reads only.
@@ -355,6 +375,8 @@ pub struct Status {
     pub phase: Phase,
     /// Confirmed MLS epoch, zero before member join.
     pub epoch: u64,
+    /// Last committed caller clock; new mutations refuse an earlier `now`.
+    pub clock: u64,
     /// Current accepted owner control sequence.
     pub control_sequence: u64,
     /// Exact accepted control sequence and signed ID, suitable as a page cursor.

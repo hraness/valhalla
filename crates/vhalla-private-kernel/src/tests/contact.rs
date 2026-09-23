@@ -489,7 +489,7 @@ fn contact_offer_capacity_expiry_clock_and_renewal_are_bounded() {
             pair.owner
                 .create_contact_offer(op(66), recipient, validity(pair.now), pair.now)
                 .await,
-            Err(Error::Time)
+            Err(Error::ClockRegressed)
         ));
         assert!(pair.owner_disk.snapshot() == before);
         pair.reopen_owner().await;

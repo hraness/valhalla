@@ -334,7 +334,18 @@ fork at a known retained floor quarantines the device and preserves bounded proo
 if publication succeeds. If storage cannot write, the pending proof must be
 preserved separately; observing it in memory does not make it durable.
 
-Current state uses `VHPKSTATE\x04`; invitation packets use `VHPKINVITE\x03`.
+Some bounds are permanent rather than per-operation. Owner succession accepts at
+most 16 handoffs for the life of a room; afterwards `succession_request` refuses
+`Bounds` forever and authority is fixed. Up to 64 contact offers live in the
+current image and are reclaimed only when a new offer is issued: an owner that
+stops issuing keeps expired offers in every decode. Each received message keeps
+its full ciphertext (up to 128 KiB), its decrypted body and an index record for
+the store's lifetime, roughly wire bytes plus body plus ~200 B per message;
+sent messages additionally carry a ciphertext-hash index and each verified
+member receipt an acceptance record.
+
+Current state uses `VHPKSTATE\x05`; invitation packets use `VHPKINVITE\x04`;
+confidential offers use `VHPKOFFER\x03`.
 State versions 1, 2 and 3 are not automatically migrated. Opening an old, incomplete
 or inconsistent store refuses; it does not overwrite, migrate or silently
 regenerate it. Retain compatible source and complete custody when inspecting
