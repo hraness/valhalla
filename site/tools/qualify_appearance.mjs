@@ -1,5 +1,7 @@
 // Focused checks run against the same static server, real Chromium and CSP as
 // qualify_browser.mjs. No synthetic page lifecycle events or mocked media APIs.
+import {closeTargetChecked} from '../../browser/tools/qualification_lifecycle.mjs';
+
 export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
   const key = 'hraness-design-theme-v1';
   const expected = {light: 'rgb(250, 244, 237)', dark: 'rgb(25, 23, 36)'};
@@ -117,11 +119,10 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
   await media('light');
   const afterBack = await assertState('light','system','system');
   const suppression = [];
-  for (const condition of ['coarse','reduced','forced']) {
-    if (condition === 'coarse') await call('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1},sessionId);
-    else await media('light',[condition==='reduced'
+  for (const condition of ['reduced','forced']) {
+    await media('light',[condition==='reduced'
       ? {name:'prefers-reduced-motion',value:'reduce'} : {name:'forced-colors',value:'active'}]);
-    const query = condition === 'coarse' ? '(pointer: coarse)' : condition === 'reduced'
+    const query = condition === 'reduced'
       ? '(prefers-reduced-motion: reduce)' : '(forced-colors: active)';
     if (!await evaluate(`matchMedia(${JSON.stringify(query)}).matches`)) throw Error('Native negative condition missing: '+condition);
     await waitFor(() => evaluate("!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')"),condition+' resets hero input');
@@ -129,12 +130,42 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     if (await evaluate("!!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')")) throw Error('Hero input ignored '+condition+' guard');
     suppression.push(condition);
-    await call('Emulation.setTouchEmulationEnabled',{enabled:false},sessionId);
     await media('light');
     try { await move(0.7); }
     catch (cause) { throw Error('Hero did not resume after '+condition,{cause}); }
   }
-  return {desktopMedia,suppression,firstVisit,liveLight,liveDark,savedLight,savedDark,restoredSystem,
+  // CDP ending touch emulation restores the host's physical capabilities, which
+  // can be pointer:none on Linux. Keep the coarse device in its own native target
+  // rather than changing the desktop document's selected capabilities mid-proof.
+  const origin = await evaluate('location.origin');
+  const {targetId} = await call('Target.createTarget',{url:'about:blank'});
+  try {
+    const {sessionId:coarseSession} = await call('Target.attachToTarget',{targetId,flatten:true});
+    const coarseEvaluate = async expression => {
+      const value = await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},coarseSession);
+      if (value.exceptionDetails) throw Error(JSON.stringify(value.exceptionDetails));
+      return value.result.value;
+    };
+    await call('Page.enable',{},coarseSession);
+    await call('Runtime.enable',{},coarseSession);
+    await call('Log.enable',{},coarseSession);
+    await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true},coarseSession);
+    await call('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1},coarseSession);
+    await call('Page.navigate',{url:origin+'/'},coarseSession);
+    await call('Page.bringToFront',{},coarseSession);
+    await waitFor(() => coarseEvaluate("document.readyState==='complete' && !!document.querySelector('.introduction')"),'coarse target ready');
+    if (!await coarseEvaluate("matchMedia('(pointer: coarse)').matches && matchMedia('(hover: none)').matches")) throw Error('Native coarse target capability missing');
+    await call('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:100,y:240}]},coarseSession);
+    await call('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:160,y:245}]},coarseSession);
+    await call('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]},coarseSession);
+    await coarseEvaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    if (await coarseEvaluate("!!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')")) throw Error('Hero input ignored coarse guard');
+    suppression.push('coarse');
+  } finally {
+    await closeTargetChecked(call,targetId);
+  }
+  await move(0.4);
+  return {desktopMedia,suppression,coarseTargetIsolated:true,firstVisit,liveLight,liveDark,savedLight,savedDark,restoredSystem,
     bfcache:{token,lifecycle,before,after,afterBack}};
 }
 

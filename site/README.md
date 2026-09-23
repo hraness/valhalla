@@ -85,6 +85,8 @@ The same gate checks first-visit System appearance, live OS preference changes,
 saved Light/Dark choices and actual back/forward-cache restoration of the hero
 controller. Append `--appearance-only` to run only those focused checks against
 an already built site; this does not replace the complete deployment gate.
+Reduced-motion and forced-color changes suppress interaction in the desktop
+document; coarse-pointer suppression uses a separate native touch target.
 
 
 Documentation source links and the setup command pin `documentedRevision` to a
