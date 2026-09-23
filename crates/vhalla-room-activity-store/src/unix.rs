@@ -314,7 +314,7 @@ impl Store {
             if intent.record.event.encode() != event.encode() {
                 return Err(Error::RecoveryRequired);
             }
-            return self.finish_intent(intent, true);
+            return self.finish_intent(intent, None, true);
         }
         self.ready()?;
         self.validate_pin(self.pin)?;
@@ -390,7 +390,12 @@ impl Store {
         self.step(Step::IntentRenamed)?;
         self.directory.sync_all()?;
         self.step(Step::IntentDurable)?;
-        let result = self.finish_intent(intent, false)?;
+        // The exact INTENT inode was synced before its rename and its root
+        // directory entry was just synced above, still under the lifetime
+        // lock. Mint the proof that lets `finish_intent` skip re-syncing them;
+        // nothing between here and there may mutate either, and no other call
+        // site can produce the token.
+        let result = self.finish_intent(intent, Some(IntentDurable { _sealed: () }), false)?;
         let mut chain = chain;
         chain.commit_after_persist(candidate, context)?;
         Ok(result)
@@ -422,7 +427,7 @@ impl Store {
             return Ok(None);
         }
         let intent = self.validate_intent()?;
-        self.finish_intent(intent, true).map(Some)
+        self.finish_intent(intent, None, true).map(Some)
     }
     /// Read at most MAX_PAGE verified records directly by local ordinal. This
     /// neither enumerates the history directory nor collects lifetime history.
@@ -454,10 +459,13 @@ impl Store {
                 return Err(Error::Corrupt);
             }
             let claims = record.event.claims();
+            // The sequence index must point back at this exact record. Compare
+            // the stored index itself: loading the record again would decode
+            // and re-verify the same signature a second time per page row.
             let indexed = self
-                .lookup_sequence(claims.author, claims.sequence, self.pin.count)?
+                .read_sequence_index(claims.author, claims.sequence)?
                 .ok_or(Error::Corrupt)?;
-            if indexed.index() != record.index() {
+            if indexed != record.index() {
                 return Err(Error::Corrupt);
             }
             previous = record.digest();
@@ -476,14 +484,23 @@ impl Store {
             tip: self.pin,
         })
     }
-    fn finish_intent(&mut self, intent: Intent, reconciled: bool) -> Result<StoredEvent, Error> {
+    fn finish_intent(
+        &mut self,
+        intent: Intent,
+        durable: Option<IntentDurable>,
+        reconciled: bool,
+    ) -> Result<StoredEvent, Error> {
         self.check_pin()?;
         self.validate_intent_structure(&intent)?;
         // Recovery may find a complete intent whose original writer stopped
-        // before fsync. Re-establish its durability before dependent writes.
-        open(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
-        self.directory.sync_all()?;
-        self.step(Step::RecoveryIntentSynced)?;
+        // before fsync. Re-establish its durability before dependent writes —
+        // unless this append just synced the same inode and root directory
+        // entry in this critical section and carries the token proving it.
+        if durable.is_none() {
+            open(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+            self.directory.sync_all()?;
+            self.step(Step::RecoveryIntentSynced)?;
+        }
         // O_NOFOLLOW on the final record file does not protect its parent.
         open_dir(&self.path.join(RECORDS), self.uid)?;
         let committed = self.pin == intent.next;
@@ -565,11 +582,7 @@ impl Store {
             let author = intent.record.event.claims().author;
             if self.read_author_index(author)? != intent.old
                 || self
-                    .lookup_sequence(
-                        author,
-                        intent.record.event.claims().sequence,
-                        self.pin.count,
-                    )?
+                    .read_sequence_index(author, intent.record.event.claims().sequence)?
                     .is_some()
             {
                 return Err(Error::Corrupt);
@@ -593,11 +606,10 @@ impl Store {
         self.validate_pin(intent.expected)?;
         let author = intent.record.event.claims().author;
         if let Some(old) = intent.old {
-            let record = self.load_index_record(old, author, intent.expected.count)?;
-            let retained = self
-                .lookup_sequence(author, old.sequence, intent.expected.count)?
-                .ok_or(Error::Corrupt)?;
-            if retained.index() != record.index() {
+            self.load_index_record(old, author, intent.expected.count)?;
+            // The sequence file must retain exactly the prior head index; its
+            // pointed-to record was just proven by load_index_record.
+            if self.read_sequence_index(author, old.sequence)? != Some(old) {
                 return Err(Error::Corrupt);
             }
         }
@@ -610,14 +622,13 @@ impl Store {
             if actual.encode() != intent.record.encode() || current != Some(intent.record.index()) {
                 return Err(Error::Corrupt);
             }
+            // Index equality is record equality here: index.receipt is the
+            // SHA-256 identity of the record encoding, and the pointed record
+            // itself was just proven byte-identical by `actual` above.
             let indexed = self
-                .lookup_sequence(
-                    author,
-                    intent.record.event.claims().sequence,
-                    intent.next.count,
-                )?
+                .read_sequence_index(author, intent.record.event.claims().sequence)?
                 .ok_or(Error::Corrupt)?;
-            if indexed.encode() != intent.record.encode() {
+            if indexed != intent.record.index() {
                 return Err(Error::Corrupt);
             }
         }
@@ -708,20 +719,17 @@ impl Store {
             return Ok(None);
         };
         let record = self.load_index_record(index, author, ceiling)?;
-        let indexed = self
-            .lookup_sequence(author, index.sequence, ceiling)?
-            .ok_or(Error::Corrupt)?;
-        if indexed.index() != index {
+        // Confirm the per-sequence index agrees with the head index without
+        // decoding and re-verifying the same head record a second time.
+        if self.read_sequence_index(author, index.sequence)? != Some(index) {
             return Err(Error::Corrupt);
         }
         Ok(Some((index, record)))
     }
-    fn lookup_sequence(
-        &self,
-        author: [u8; 32],
-        sequence: u64,
-        ceiling: u64,
-    ) -> Result<Option<Record>, Error> {
+    /// Read only the stored sequence index. Callers that already hold the
+    /// record it must name compare `Index` values directly and never decode or
+    /// re-verify the pointed record a second time.
+    fn read_sequence_index(&self, author: [u8; 32], sequence: u64) -> Result<Option<Index>, Error> {
         if !self.has_author_dir(author)? {
             return Ok(None);
         }
@@ -733,6 +741,17 @@ impl Store {
         if index.sequence != sequence {
             return Err(Error::Corrupt);
         }
+        Ok(Some(index))
+    }
+    fn lookup_sequence(
+        &self,
+        author: [u8; 32],
+        sequence: u64,
+        ceiling: u64,
+    ) -> Result<Option<Record>, Error> {
+        let Some(index) = self.read_sequence_index(author, sequence)? else {
+            return Ok(None);
+        };
         self.load_index_record(index, author, ceiling).map(Some)
     }
     fn read_author_index(&self, author: [u8; 32]) -> Result<Option<Index>, Error> {
@@ -852,6 +871,15 @@ impl Store {
         let _ = step;
         Ok(())
     }
+}
+/// Proof that the exact retained `intent` inode and its root directory entry
+/// were synchronized inside this append's critical section. It is minted only
+/// in `append_inner` after `Step::IntentDurable` completes and is consumed by
+/// `finish_intent`; retained-intent and explicit-recovery paths never hold
+/// one, so a crash between those two points still re-syncs before dependent
+/// writes. Private fields keep it unforgeable outside this module.
+struct IntentDurable {
+    _sealed: (),
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Step {

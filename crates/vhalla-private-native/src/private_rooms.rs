@@ -205,7 +205,7 @@ enum Point {
     RecordInserted,
     StateUpdated,
     Committed,
-    DirectorySynced,
+    Checked,
 }
 
 /// Atomic image and accounting snapshot for explicit bounded archive work.
@@ -391,7 +391,9 @@ impl NativePrivateStore {
         };
         out.validate()?;
         // Reassert completed recovery/previous commit before publishing a usable
-        // handle, including a prior COMMIT followed by an uncertain directory sync.
+        // handle, including a prior COMMIT whose post-transaction state this
+        // caller could not observe. This is the one code-level re-sync the store
+        // keeps: it runs once per open, never per publish.
         out.sync().map_err(|_| Error::Uncertain)?;
         out.poisoned = false;
         Ok(out)
@@ -431,7 +433,11 @@ impl NativePrivateStore {
 
     /// Exact encrypted image CAS and at most three immutable records. Semantic
     /// conflict/refusal rolls back without effects; any uncertain transaction or
-    /// post-COMMIT failure poisons this handle. Success includes readback and sync.
+    /// post-COMMIT failure poisons this handle. Success includes readback; the
+    /// transaction's own `synchronous=EXTRA` + `fullfsync=ON` barriers inside
+    /// COMMIT (journal, database pages and the journal-unlink directory sync,
+    /// each an `F_FULLFSYNC`) already made every byte this commit wrote durable,
+    /// so no code-level device sync follows COMMIT.
     pub fn publish(
         &mut self,
         context: Context,
@@ -512,8 +518,12 @@ impl NativePrivateStore {
             .execute_batch("COMMIT")
             .map_err(|_| Error::Uncertain)?;
         self.hit(Point::Committed)?;
-        self.sync().map_err(|_| Error::Uncertain)?;
-        self.hit(Point::DirectorySynced)?;
+        // COMMIT already issued every F_FULLFSYNC this transaction needs under
+        // EXTRA + fullfsync (verified in `configure`); the removed code-level
+        // `db_guard`/`directory` syncs repeated the same inode and directory.
+        // Custody is still reasserted and the committed state is read back.
+        self.check_files().map_err(|_| Error::Uncertain)?;
+        self.hit(Point::Checked)?;
         if self.meta().map_err(|_| Error::Uncertain)?.image.as_deref() != Some(next) {
             return Err(Error::Uncertain);
         }

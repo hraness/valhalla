@@ -79,3 +79,90 @@ The steady-state v1 activity append performs 14 `sync_all` calls: six file and e
 The smallest proposed change is an internal proof token or split helper allowing only an already-durable fresh intent to omit those two repeated barriers. Recovery must retain them. Keep the file format, all checks, record/index/head barriers and final cleanup-before-ack contract. Crash tests must prove the token is never available before completed publication and every interrupted point still recovers exactly once. No sync reduction or speedup is implemented or measured here.
 
 A bounded same-room batch could share intent, directory and final-head barriers. It needs a versioned bounded batch intent, exact current registry basis under the integration lock, per-full-key author bases checked across all offered events, all immutable records/indices durable before heads, exact retry after policy revocation, and bounded prefix recovery. Acknowledgements must wait for the complete transaction. Batch waiting must be bounded and cannot wait for work that itself depends on an acknowledgement. This is a separate recovery/format design, not permission to delete sync calls.
+
+# Private steel thread baseline
+
+These baseline measurements were recorded on the unmodified tree before the barrier-reduction changes below. They are synthetic local evidence, not a production capacity recommendation.
+
+The [steel-thread example](../crates/vhalla-private-native/examples/steel_thread_bench.rs) runs two in-process cooperating-host drivers against one loopback TLS relay on `127.0.0.1:0` under fresh synthetic homes (`/private/tmp/valhalla-perf-*`). It exercises the production kernel store, delivery store, scan directory, relay and TLS service — the same tick loop as `agent-serve --delivery` — and stamps six points per message (A queue, A relay enqueue, relay retained, B applied, B acceptance retained, A acceptance recorded). The installed host, its ports and its launchd labels are never touched. Runs were scheduled through the same heavy compute wrapper as the sections above, on the same hardware and toolchain, with the shared target directory and a 60-second passive idle phase inside each process.
+
+```text
+CARGO_TARGET_DIR=/private/tmp/valhalla-steel-20260922/.build \
+  cargo build --release --locked -p vhalla-private-native \
+  --example steel_thread_bench --features relay-tls
+$BUILD/release/examples/steel_thread_bench /private/tmp/valhalla-perf-base-100 100
+$BUILD/release/examples/steel_thread_bench /private/tmp/valhalla-perf-base-1000 1000
+```
+
+A 10,000-message run is refused by the harness: two relay items per acknowledged message would exceed the fixed 4,096-item mailbox capacity. `/usr/bin/time -lp` was not wrapped around these runs, so process maximum RSS is unavailable; retained-home file counts and bytes are reported instead. F_FULLFSYNC counts are estimated from the reviewed barrier ledger (approximately 56 per acknowledged message in this cadence), not measured with kernel counters.
+
+| Measurement | 100 messages | 1,000 messages |
+|---|---:|---:|
+| Calibrated file F_FULLFSYNC p50 |4.740ms (32 samples)|3.985ms (32 samples)|
+| Calibrated directory F_FULLFSYNC p50 |4.669ms|0.005ms (clean directory)|
+| Relay + device + join setup |0.821s|0.382s|
+| Acknowledged-message wall time |218.017s (2.18s/message)|1,710.696s (1.71s/message)|
+| First queue to last acceptance |157.954s|1,650.495s|
+| `queue_kernel_send` p50 / p95 / p99 |30.156 /91.063 /140.900ms|48.419 /110.580 /290.835ms|
+| `queue_to_relay_retained` p50 / p95 / p99 |2,423 /5,210 /7,980ms|2,438 /5,042 /6,518ms|
+| `relay_retained_to_b_applied` p50 / p95 / p99 |2,807 /5,290 /5,863ms|3,435 /5,862 /6,830ms|
+| `b_applied_to_acceptance_retained` p50 / p95 / p99 |2,957 /4,600 /5,353ms|3,261 /5,949 /7,226ms|
+| `acceptance_retained_to_a_recorded` p50 / p95 / p99 |3,319 /5,562 /5,894ms|3,192 /5,812 /6,358ms|
+| Round-trip p50 / p95 / p99 |11.257 /16.854 /17.741s|11.550 /17.228 /19.341s|
+| Passive idle phase wall |60.000s|60.000s|
+| Relay retained files / logical / allocated |2 /200,704 /200,704B|2 /1,662,976 /2,162,688B|
+| Driver A files / logical / allocated |408 /508,871 /2,011,136B|4,008 /4,502,876 /19,542,016B|
+| Driver B files / logical / allocated |408 /495,983 /1,998,848B|4,008 /4,464,108 /19,542,016B|
+
+Per-driver production counters for the 1,000 run: A made 1,209 ticks, 1,000 puts, 292 relay pages, 1,000 enqueues, 1,000 receives, 2,000 applied markers and 1,207 scan reopens; B made 1,151 ticks, 1,001 puts, 291 pages, 2,000 enqueues, 1,000 receives, 1,000 acceptances and 1,999 applied markers. Idle phases made only ticks, page polls, outbox reads and scan reopens (B also one deferred applied marker).
+
+The multi-second per-stage latencies include the production cadence's poll intervals, not only fsync cost; the stage medians are the useful comparison points between baseline and optimized trees, not the wall totals. The 1,000-run directory calibration reads ~5µs because repeated directory syncs of an unchanged directory are cheap — directory barriers cost ~4.7ms only when a new entry must be flushed, which is exactly the case the optimized paths remove.
+
+## Optimizations landed and after-measurements
+
+The landed barrier reductions, per the reviewed ledger (counts are `F_FULLFSYNC` equivalents; the private kernel store gets three inside every SQLite `COMMIT` under `synchronous=EXTRA` + `fullfsync=ON` — journal, database pages and the journal-unlink directory sync):
+
+| Path | Before | After | Removed |
+|---|---:|---:|---:|
+| Private kernel store `publish` |5 (3 COMMIT-internal + 2 code-level)|3|2 code-level re-syncs (E-14)|
+| Journal commit, fresh bundle, warm layout |10|6|3 proven-layout + 1 fresh-bundle re-sync (E-15)|
+| Journal commit, retained bundle |11|7|same 4; bundle re-sync retained|
+| Activity append, fresh intent |14 (6 file + 8 dir)|12 (5 file + 7 dir)|2 proven intent re-syncs (E-1)|
+| Activity append, retained/recovery |14|14|0 — conservative re-sync retained|
+| `read_page` signature verifications |2 per record|1 per record|CPU, not a barrier (E-18)|
+| Steel thread per acknowledged message |~56 (estimated)|~48 (estimated)|~8 via 4 kernel publishes × 2 (E-14)|
+
+The E-2 spike under [`prototypes/activity-append-log`](../prototypes/activity-append-log/README.md) measures the proposed append-log format at exactly 2 barriers per append (log sync, then head-slot sync) — versus 12 in the shipped store — with the retained-intent, torn-tail and torn-slot recovery cases covered by 8 tests. Production adoption stays deferred for the reasons that README lists (signed-record framing, bounded open, author-table bound, bounded-history compaction, v1 migration and the full crash matrix).
+
+After-run results, same commands, same host class, optimized tree (`valhalla-perf-opt-*`):
+
+| Steel thread | 100 baseline | 100 after | 1,000 baseline | 1,000 after |
+|---|---:|---:|---:|---:|
+| Calibrated file F_FULLFSYNC p50 |4.740ms|4.637ms|3.985ms|3.931ms|
+| Acknowledged-message wall |218.017s|215.828s|1,710.696s|1,649.404s (−3.6%)|
+| First queue to last acceptance |157.954s|155.746s|1,650.495s|1,589.034s (−3.7%)|
+| Round-trip p50 / p95 / p99 |11.257 /16.854 /17.741s|10.968 /17.600 /18.372s|11.550 /17.228 /19.341s|11.574 /17.480 /19.720s|
+| Driver A files / logical / allocated |408 /508,871 /2,011,136B|408 /508,871 /2,068,480B|4,008 /4,502,876 /19,542,016B|4,008 /4,486,492 /19,542,016B|
+| Driver B files / logical / allocated |408 /495,983 /1,998,848B|408 /495,983 /2,056,192B|4,008 /4,464,108 /19,542,016B|4,008 /4,468,204 /19,542,016B|
+
+| Activity / replay (1,000 ops) | Baseline | After (first run) | After (clean re-run) |
+|---|---:|---:|---:|
+| Activity sign + verify + durable append |64.671s|94.964s (contended)|62.099s (−4.0%)|
+| Activity append p50 / p95 / p99 |64.885 /78.905 /93.976ms|73.117 /226.936 /361.020ms|60.621 /83.847 /104.798ms|
+| Canonical sign/decode/verify only |0.155s|0.252s|0.143s|
+| Journal generate/sign/verify + fsync |52.806s|47.742s|—|
+| Certified disk replay from genesis |183.103ms|168.455ms|—|
+| Simulated native replay budget |complete, 173.707ms|complete, 150.735ms|—|
+| Full verified activity pagination |249.628ms|245.090ms|273.325ms|
+| 100 exact retained retries |64.430ms|46.592ms|61.941ms|
+| 20 reopen + verified author-head reads |18.828ms|16.860ms|26.743ms|
+| Activity allocated regular-file bytes |8,204,288|8,204,288 (2,004 files)|8,204,288 (2,004 files)|
+| Replay allocated regular-file bytes |8,196,096|8,196,096 (2,002 files)|—|
+
+The first activity after-run ran inside a contended window: its p95 roughly tripled while p50 rose only ~13%, and the same batch's later replay and steel runs show ~4.6ms barrier calibration — a signature of external disk pressure during that run, not of extra barriers (the fresh path is statically 12 `sync_all` calls, pinned by tests). The clean re-run confirms: append wall −4.0% and p50 −6.6% while paying ~9% *more* per barrier than the baseline run (60.6ms for 12 barriers ≈ 5.05ms each versus 64.9ms for 14 ≈ 4.64ms each) — removing two barriers is what kept the number ahead despite the dearer barrier unit price. Pagination, exact-retry and reopen-read deltas of a few milliseconds are run-to-run noise on this shared host.
+
+Steel-100 after-run counters: A made 132 ticks / 100 puts / 29 pages / 100 enqueues / 100 receives / 232 outbox reads / 131 scan reopens; B made 128 ticks / 100 puts / 29 pages / 200 enqueues / 100 receives / 100 acceptances / 128 scan reopens. Steel-1,000 after-run counters: A 1,224 ticks / 1,000 puts / 279 pages / 1,000 enqueues / 1,000 receives / 2,000 applied markers / 2,224 outbox reads / 1,223 scan reopens; B 1,204 ticks / 1,000 puts / 279 pages / 2,000 enqueues / 1,000 receives / 1,000 acceptances / 2,000 applied markers / 1,204 scan reopens.
+
+Two earlier steel-1,000 after-runs aborted on a `ScanFailure::Timeout` from the scan guard's 90-second absolute budget under heavy host contention (~800 and ~400 acknowledgements; 447k involuntary context switches). Both preserved their synthetic homes without `metrics.tsv`. The harness treated that transient timeout as fatal; the fix (commit `b88f31c`) ends the tick and retries, matching the production host loop and the timeout policy `scan_page_until` already used. The completed 1,000 run above used the fixed harness; it changes only the failure path, not the measured steady-state stages.
+
+Wall-time deltas are cadence-dominated: the harness polls on production tick boundaries, so removing ~8 barriers (~37ms) per acknowledged message moves the 100-message wall only ~1% — matching the observed 218.0→215.8s. The useful signals are the barrier ledger (static), the journal/activity append phase times (barrier-dominated), and the spike's measured 2-barrier append (p50 9.96ms at ~4.9ms/barrier on this host, 64-record verified page read in 276µs).

@@ -15,7 +15,7 @@ pub use bootstrap::{
     MAX_VALIDATOR_SETS,
 };
 
-use vhalla_journal::{Bundle, BundleParts, MAX_BUNDLE_BYTES};
+use vhalla_journal::{Bundle, MAX_BUNDLE_BYTES};
 use vhalla_rooms::registry::Registry;
 use vhalla_rooms_consensus::{Application, Batch, Checked, Frontier};
 use vhalla_rooms_node::{cert::verify_canonical_certificate, RoomValidatorSet, RoomValueId};
@@ -211,25 +211,22 @@ impl CertifiedClient {
         if next.height != height || bundle.next() != next.commitment() {
             return Err(Error::Frontier);
         }
-        // Rebuild EVERY field exactly as the maintained producer does. A valid
-        // certificate authenticates the batch; it does not independently
-        // authenticate arbitrary journal annotations. Reject such substitutions.
-        let canonical = Bundle::new(BundleParts {
-            certificate: certificate.to_vec(),
-            predecessor: base.commitment(),
-            next: next.commitment(),
-            batch: batch.encode(),
-            value: value.to_vec(),
-            configuration: self.registry().policy().id().as_bytes().to_vec(),
-            control_record: next.control.to_vec(),
-            debit_marker: next.value.to_vec(),
-            height,
-        })
-        .map_err(|_| Error::Bounds)?;
-        if canonical.bytes() != raw || canonical.id() != bundle.id() {
+        // Compare EVERY field against the maintained producer contract. A
+        // valid certificate authenticates the batch; it does not independently
+        // authenticate arbitrary journal annotations, so substitutions must be
+        // rejected. Bundle::decode already proved canonical framing (magic,
+        // nine length-prefixed fields, bounds, no trailing bytes); the
+        // certificate, both frontiers, the batch bytes, the value id and the
+        // height are verified above. Checking the remaining annotation fields
+        // in place is byte-equality with the rebuilt canonical bundle without
+        // copying and re-serializing every field again.
+        if bundle.field(5) != Some(self.registry().policy().id().as_bytes().as_slice())
+            || bundle.field(6) != Some(next.control.as_slice())
+            || bundle.field(7) != Some(next.value.as_slice())
+        {
             return Err(Error::BundleFields);
         }
-        let next_head = checkpoint::CheckpointHead::new(next, canonical.id())?;
+        let next_head = checkpoint::CheckpointHead::new(next, bundle.id())?;
         if self.anchor.is_some_and(|anchor| {
             !anchor.matched
                 && anchor.head.frontier().height == next.height
@@ -242,7 +239,7 @@ impl CertifiedClient {
             bootstrap: self.bootstrap,
             base,
             checked,
-            bundle: canonical,
+            bundle,
             anchor: self.anchor,
         })
     }
