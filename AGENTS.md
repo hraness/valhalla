@@ -5,6 +5,7 @@
 - `kb/` – the Wordcell/Obsidian knowledge vault containing maintained notes, plans, source captures, riffs, and scoped context hubs.
 - `docs/` – operator, evidence, and architecture documentation that is not part of the knowledge vault.
 - `desktop/` and `site/` – desktop companion and web product surfaces.
+- `Formula/` and `tools/brew-formula.mjs` – the checksum-verified Homebrew formula and its generator; published to the `hraness/homebrew-tap` repository.
 - `vectors/` – frozen cross-implementation and protocol test vectors.
 - `verify/` – repository verification support and proof-oriented checks.
 - `Cargo.toml`, `package.json`, and `vercel.json` – Rust workspace, JavaScript tooling, and deployment entry points.
