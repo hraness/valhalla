@@ -23,7 +23,7 @@ pub enum CodecError {
     InvalidFrame,
 }
 type Result<T> = std::result::Result<T, CodecError>;
-const MAGIC: &[u8] = b"VHBRPRIVATE\x04";
+const MAGIC: &[u8] = b"VHBRPRIVATE\x05";
 struct Writer(Vec<u8>);
 impl Drop for Writer {
     fn drop(&mut self) {
@@ -111,6 +111,12 @@ impl Writer {
         }
         self.byte(n as u8)
     }
+    fn position(&mut self, n: u64) -> Result<()> {
+        if n == 0 || n > vhalla_private_relay::MAX_RELAY_ITEMS as u64 {
+            return Err(CodecError::InvalidFrame);
+        }
+        self.number(n)
+    }
     fn consent(&mut self, c: &Consent) -> Result<()> {
         if c.id == 0 {
             return Err(CodecError::InvalidFrame);
@@ -125,6 +131,7 @@ impl Writer {
         self.context(s.context)?;
         self.byte(phase_tag(s.phase))?;
         self.number(s.epoch)?;
+        self.number(s.clock)?;
         self.floor(s.control_floor)?;
         self.number(s.outbox_head)?;
         self.number(s.inbox_head)?;
@@ -278,6 +285,14 @@ impl<'a> Reader<'a> {
             Ok(n)
         }
     }
+    fn position(&mut self) -> Result<u64> {
+        let n = self.number()?;
+        if n == 0 || n > vhalla_private_relay::MAX_RELAY_ITEMS as u64 {
+            Err(CodecError::InvalidFrame)
+        } else {
+            Ok(n)
+        }
+    }
     fn consent(&mut self) -> Result<Consent> {
         let id = self.number()?;
         if id == 0 {
@@ -295,6 +310,7 @@ impl<'a> Reader<'a> {
         let context = self.context()?;
         let phase = phase(self.byte()?)?;
         let epoch = self.number()?;
+        let clock = self.number()?;
         let control_floor = self.floor()?;
         let outbox_head = self.number()?;
         let inbox_head = self.number()?;
@@ -308,6 +324,7 @@ impl<'a> Reader<'a> {
             context,
             phase,
             epoch,
+            clock,
             control_sequence: control_floor.sequence(),
             control_floor,
             outbox_head,
@@ -459,6 +476,9 @@ impl Request {
             Self::Succeed { .. } => 35,
             Self::DeliveryConnect { .. } => 36,
             Self::DeliverySync => 37,
+            Self::DeliveryAdmissions => 38,
+            Self::DeliveryAdmission { .. } => 39,
+            Self::DeliveryDiscard { .. } => 40,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -571,10 +591,13 @@ impl Request {
                 w.number(*after)?;
                 w.limit(*limit)?;
             }
-            Self::ArchiveClose | Self::DeliverySync => (),
+            Self::ArchiveClose | Self::DeliverySync | Self::DeliveryAdmissions => (),
             Self::DeliveryConnect { profile, create } => {
                 w.blob(profile, 4096)?;
                 w.byte(u8::from(*create))?;
+            }
+            Self::DeliveryAdmission { position } | Self::DeliveryDiscard { position } => {
+                w.position(*position)?;
             }
         }
         Ok(w.finish())
@@ -684,6 +707,13 @@ impl Request {
                 create: r.boolean()?,
             },
             37 => Self::DeliverySync,
+            38 => Self::DeliveryAdmissions,
+            39 => Self::DeliveryAdmission {
+                position: r.position()?,
+            },
+            40 => Self::DeliveryDiscard {
+                position: r.position()?,
+            },
             35 => Self::Succeed {
                 operation: r.op()?,
                 successor: r.key()?,
@@ -702,6 +732,7 @@ impl Response {
         let tag = match self {
             Self::Entered(_) => 101,
             Self::Delivery(_) => 120,
+            Self::Admissions { .. } => 121,
             Self::Prepared(_) => 102,
             Self::Membership(_) => 103,
             Self::Draft(_) => 104,
@@ -728,12 +759,53 @@ impl Response {
             Self::Delivery(v) => {
                 w.context(v.context)?;
                 for n in [
-                    v.sent, v.cursor, v.retained, v.received, v.attempts, v.retry_at,
+                    v.sent,
+                    v.cursor,
+                    v.retained,
+                    v.received,
+                    v.attempts,
+                    v.wire_bytes,
+                    v.retry_at,
+                    v.refused,
+                    v.admissions,
                 ] {
                     w.number(n)?;
                 }
-                for b in [v.pending, v.stopped, v.review] {
-                    w.byte(u8::from(b))?;
+                if v.stop > 3 || (v.stop == 2) != (v.detail != 0) || v.blocked > 3 {
+                    return Err(CodecError::InvalidFrame);
+                }
+                for b in [
+                    u8::from(v.pending),
+                    v.stop,
+                    v.detail,
+                    v.blocked,
+                    u8::from(v.review),
+                ] {
+                    w.byte(b)?;
+                }
+            }
+            Self::Admissions { context, items } => {
+                w.context(*context)?;
+                if items.len() > MAX_ADMISSION_ITEMS {
+                    return Err(CodecError::InvalidFrame);
+                }
+                w.byte(items.len() as u8)?;
+                let mut last = 0;
+                for item in items {
+                    if item.position <= last
+                        || item.len == 0
+                        || !matches!(
+                            item.kind,
+                            OutboxKind::ContactRequest | OutboxKind::ContactInvitation
+                        )
+                    {
+                        return Err(CodecError::InvalidFrame);
+                    }
+                    last = item.position;
+                    w.number(item.position)?;
+                    w.byte(kind_tag(item.kind))?;
+                    w.number(item.len)?;
+                    w.put(&item.digest)?;
                 }
             }
             Self::Prepared(p) => {
@@ -896,18 +968,79 @@ impl Response {
         let mut r = Reader::new(raw)?;
         let out = match r.byte()? {
             101 => Self::Entered(r.key()?),
-            120 => Self::Delivery(DeliveryReport {
-                context: r.context()?,
-                sent: r.number()?,
-                cursor: r.number()?,
-                retained: r.number()?,
-                received: r.number()?,
-                attempts: r.number()?,
-                retry_at: r.number()?,
-                pending: r.boolean()?,
-                stopped: r.boolean()?,
-                review: r.boolean()?,
-            }),
+            120 => {
+                let context = r.context()?;
+                let sent = r.number()?;
+                let cursor = r.number()?;
+                let retained = r.number()?;
+                let received = r.number()?;
+                let attempts = r.number()?;
+                let wire_bytes = r.number()?;
+                let retry_at = r.number()?;
+                let refused = r.number()?;
+                let admissions = r.number()?;
+                let pending = r.boolean()?;
+                let stop = r.byte()?;
+                let detail = r.byte()?;
+                let blocked = r.byte()?;
+                let review = r.boolean()?;
+                if stop > 3
+                    || (stop == 2) != (detail != 0)
+                    || blocked > 3
+                    || admissions > MAX_ADMISSION_ITEMS as u64
+                {
+                    return Err(CodecError::InvalidFrame);
+                }
+                Self::Delivery(DeliveryReport {
+                    context,
+                    sent,
+                    cursor,
+                    retained,
+                    received,
+                    attempts,
+                    wire_bytes,
+                    retry_at,
+                    pending,
+                    stop,
+                    detail,
+                    blocked,
+                    refused,
+                    admissions,
+                    review,
+                })
+            }
+            121 => {
+                let context = r.context()?;
+                let count = r.byte()? as usize;
+                if count > MAX_ADMISSION_ITEMS {
+                    return Err(CodecError::InvalidFrame);
+                }
+                let mut items = Vec::with_capacity(count);
+                let mut last = 0;
+                for _ in 0..count {
+                    let position = r.position()?;
+                    let kind = kind(r.byte()?)?;
+                    let len = r.number()?;
+                    let digest = r.array()?;
+                    if position <= last
+                        || len == 0
+                        || !matches!(
+                            kind,
+                            OutboxKind::ContactRequest | OutboxKind::ContactInvitation
+                        )
+                    {
+                        return Err(CodecError::InvalidFrame);
+                    }
+                    last = position;
+                    items.push(AdmissionItem {
+                        position,
+                        kind,
+                        len,
+                        digest,
+                    });
+                }
+                Self::Admissions { context, items }
+            }
             102 => {
                 let p = Preview {
                     context: r.context()?,

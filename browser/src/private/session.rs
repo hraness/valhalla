@@ -22,30 +22,8 @@ use vhalla_private_kernel::{
 };
 use zeroize::Zeroizing;
 
-#[derive(Clone, Copy, Debug)]
-pub enum Failure {
-    Invalid,
-    IdentityChanged,
-    State,
-    Storage,
-    Kernel,
-}
+pub use delivery::engine::Failure;
 type Result<T> = std::result::Result<T, Failure>;
-impl From<vhalla_private_kernel::Error> for Failure {
-    fn from(_: vhalla_private_kernel::Error) -> Self {
-        Self::Kernel
-    }
-}
-impl From<vhalla_private_kernel::protocol::Error> for Failure {
-    fn from(_: vhalla_private_kernel::protocol::Error) -> Self {
-        Self::Invalid
-    }
-}
-impl From<vhalla_private_kernel::storage::StoreError> for Failure {
-    fn from(_: vhalla_private_kernel::storage::StoreError) -> Self {
-        Self::Storage
-    }
-}
 
 enum CreationKind {
     Owner(Box<OwnerDraft>),
@@ -108,6 +86,10 @@ pub struct Session {
     archive: Option<Archive>,
     identity: UnlockedIdentity,
     saved: IdentitySnapshot,
+    // One read-only profile handle for identity revalidation. A foreign
+    // version change closes it, which ends this session like any other
+    // uncertain storage condition; it is never reopened silently.
+    profile: IndexedStorage,
     counter: u64,
 }
 fn now() -> Result<u64> {
@@ -161,14 +143,12 @@ impl Session {
             archive: None,
             identity,
             saved,
+            profile,
             counter: 0,
         })
     }
-    async fn revalidate(&self) -> Result<()> {
-        let mut profile = IndexedStorage::open(Namespace::new(PROFILE))
-            .await
-            .map_err(|_| Failure::Storage)?;
-        profile
+    async fn revalidate(&mut self) -> Result<()> {
+        self.profile
             .revalidate_identity(&self.saved)
             .await
             .map_err(|_| Failure::IdentityChanged)?;
@@ -364,8 +344,8 @@ impl Session {
                     return Err(Failure::State);
                 }
                 let context = self.kernel()?.membership().await?.status().context;
-                let delivery = delivery::Delivery::connect(context, &profile, create).await?;
-                let report = delivery.report(context, false);
+                let delivery = delivery::Delivery::connect(self, context, &profile, create).await?;
+                let report = delivery.status(context);
                 self.delivery = Some(delivery);
                 Ok(Response::Delivery(report))
             }
@@ -374,10 +354,49 @@ impl Session {
                 // empty or the roster stays unchanged. Reject any old preview
                 // at worker custody, independently of the panel clearing it.
                 self.message = None;
+                let context = self.kernel()?.status().context;
                 let mut delivery = self.delivery.take().ok_or(Failure::State)?;
-                let report = delivery.sync(self).await?;
+                let report = delivery.sync(self, context).await;
                 self.delivery = Some(delivery);
-                Ok(Response::Delivery(report))
+                Ok(Response::Delivery(report?))
+            }
+            Request::DeliveryAdmissions => {
+                let context = self.kernel()?.status().context;
+                let delivery = self.delivery.as_ref().ok_or(Failure::State)?;
+                let items = delivery
+                    .admissions()
+                    .into_iter()
+                    .map(|a| AdmissionItem {
+                        position: a.position,
+                        kind: a.kind,
+                        len: u64::from(a.len),
+                        digest: a.digest,
+                    })
+                    .collect();
+                Ok(Response::Admissions { context, items })
+            }
+            Request::DeliveryAdmission { position } => {
+                let context = self.kernel()?.status().context;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let item = delivery.retained(self, position).await;
+                self.delivery = Some(delivery);
+                let item = item?;
+                Ok(Response::Artifact {
+                    context,
+                    artifact: Artifact {
+                        sequence: item.sequence(),
+                        operation: item.operation(),
+                        kind: item.kind(),
+                        bytes: Some(Zeroizing::new(item.payload().to_vec())),
+                    },
+                })
+            }
+            Request::DeliveryDiscard { position } => {
+                let context = self.kernel()?.status().context;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let report = delivery.discard(self, context, position).await;
+                self.delivery = Some(delivery);
+                Ok(Response::Delivery(report?))
             }
             Request::PrepareMessage(body) => {
                 self.kernel()?.membership().await?;

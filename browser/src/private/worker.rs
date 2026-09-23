@@ -99,6 +99,9 @@ impl Broker {
             }
             let token = token.to_vec().try_into().map_err(|_| ())?;
             let bytes = Zeroizing::new(raw.to_vec());
+            // The request bytes were copied into zeroed Rust custody; remove
+            // the JS-heap copy before decoding or touching storage.
+            Uint8Array::fill(&raw, 0, 0, raw.length());
             Ok((token, Request::decode(&bytes).map_err(|_| ())?))
         };
         let Ok((token, request)) = parse() else {
