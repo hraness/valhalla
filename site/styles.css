@@ -884,6 +884,24 @@ h1 {
   margin:8px 0;
 }
 
+.custody-table th:last-child,
+.custody-table td:last-child {
+  background:color-mix(in srgb, var(--focus) 5%, var(--paper));
+  border-left:2px solid color-mix(in srgb, var(--focus) 40%, var(--line));
+}
+
+.custody-table th:last-child {
+  border-top-color:color-mix(in srgb, var(--focus) 40%, var(--line));
+}
+
+.custody-self td {
+  background:color-mix(in srgb, var(--focus) 5%, var(--paper));
+}
+
+.custody-self td:first-child {
+  border-left:2px solid color-mix(in srgb, var(--focus) 40%, var(--line));
+}
+
 .doc-content .state {
   vertical-align:2px;
   margin-right:5px;
