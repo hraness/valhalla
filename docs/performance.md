@@ -79,3 +79,45 @@ The steady-state v1 activity append performs 14 `sync_all` calls: six file and e
 The smallest proposed change is an internal proof token or split helper allowing only an already-durable fresh intent to omit those two repeated barriers. Recovery must retain them. Keep the file format, all checks, record/index/head barriers and final cleanup-before-ack contract. Crash tests must prove the token is never available before completed publication and every interrupted point still recovers exactly once. No sync reduction or speedup is implemented or measured here.
 
 A bounded same-room batch could share intent, directory and final-head barriers. It needs a versioned bounded batch intent, exact current registry basis under the integration lock, per-full-key author bases checked across all offered events, all immutable records/indices durable before heads, exact retry after policy revocation, and bounded prefix recovery. Acknowledgements must wait for the complete transaction. Batch waiting must be bounded and cannot wait for work that itself depends on an acknowledgement. This is a separate recovery/format design, not permission to delete sync calls.
+
+# Private steel thread baseline
+
+These baseline measurements were recorded on the unmodified tree before the barrier-reduction changes below. They are synthetic local evidence, not a production capacity recommendation.
+
+The [steel-thread example](../crates/vhalla-private-native/examples/steel_thread_bench.rs) runs two in-process cooperating-host drivers against one loopback TLS relay on `127.0.0.1:0` under fresh synthetic homes (`/private/tmp/valhalla-perf-*`). It exercises the production kernel store, delivery store, scan directory, relay and TLS service — the same tick loop as `agent-serve --delivery` — and stamps six points per message (A queue, A relay enqueue, relay retained, B applied, B acceptance retained, A acceptance recorded). The installed host, its ports and its launchd labels are never touched. Runs were scheduled through the same heavy compute wrapper as the sections above, on the same hardware and toolchain, with the shared target directory and a 60-second passive idle phase inside each process.
+
+```text
+CARGO_TARGET_DIR=/private/tmp/valhalla-steel-20260922/.build \
+  cargo build --release --locked -p vhalla-private-native \
+  --example steel_thread_bench --features relay-tls
+$BUILD/release/examples/steel_thread_bench /private/tmp/valhalla-perf-base-100 100
+$BUILD/release/examples/steel_thread_bench /private/tmp/valhalla-perf-base-1000 1000
+```
+
+A 10,000-message run is refused by the harness: two relay items per acknowledged message would exceed the fixed 4,096-item mailbox capacity. `/usr/bin/time -lp` was not wrapped around these runs, so process maximum RSS is unavailable; retained-home file counts and bytes are reported instead. F_FULLFSYNC counts are estimated from the reviewed barrier ledger (approximately 56 per acknowledged message in this cadence), not measured with kernel counters.
+
+| Measurement | 100 messages | 1,000 messages |
+|---|---:|---:|
+| Calibrated file F_FULLFSYNC p50 |4.740ms (32 samples)|3.985ms (32 samples)|
+| Calibrated directory F_FULLFSYNC p50 |4.669ms|0.005ms (clean directory)|
+| Relay + device + join setup |0.821s|0.382s|
+| Acknowledged-message wall time |218.017s (2.18s/message)|1,710.696s (1.71s/message)|
+| First queue to last acceptance |157.954s|1,650.495s|
+| `queue_kernel_send` p50 / p95 / p99 |30.156 /91.063 /140.900ms|48.419 /110.580 /290.835ms|
+| `queue_to_relay_retained` p50 / p95 / p99 |2,423 /5,210 /7,980ms|2,438 /5,042 /6,518ms|
+| `relay_retained_to_b_applied` p50 / p95 / p99 |2,807 /5,290 /5,863ms|3,435 /5,862 /6,830ms|
+| `b_applied_to_acceptance_retained` p50 / p95 / p99 |2,957 /4,600 /5,353ms|3,261 /5,949 /7,226ms|
+| `acceptance_retained_to_a_recorded` p50 / p95 / p99 |3,319 /5,562 /5,894ms|3,192 /5,812 /6,358ms|
+| Round-trip p50 / p95 / p99 |11.257 /16.854 /17.741s|11.550 /17.228 /19.341s|
+| Passive idle phase wall |60.000s|60.000s|
+| Relay retained files / logical / allocated |2 /200,704 /200,704B|2 /1,662,976 /2,162,688B|
+| Driver A files / logical / allocated |408 /508,871 /2,011,136B|4,008 /4,502,876 /19,542,016B|
+| Driver B files / logical / allocated |408 /495,983 /1,998,848B|4,008 /4,464,108 /19,542,016B|
+
+Per-driver production counters for the 1,000 run: A made 1,209 ticks, 1,000 puts, 292 relay pages, 1,000 enqueues, 1,000 receives, 2,000 applied markers and 1,207 scan reopens; B made 1,151 ticks, 1,001 puts, 291 pages, 2,000 enqueues, 1,000 receives, 1,000 acceptances and 1,999 applied markers. Idle phases made only ticks, page polls, outbox reads and scan reopens (B also one deferred applied marker).
+
+The multi-second per-stage latencies include the production cadence's poll intervals, not only fsync cost; the stage medians are the useful comparison points between baseline and optimized trees, not the wall totals. The 1,000-run directory calibration reads ~5µs because repeated directory syncs of an unchanged directory are cheap — directory barriers cost ~4.7ms only when a new entry must be flushed, which is exactly the case the optimized paths remove.
+
+## Optimizations landed and after-measurements
+
+Pending after-run recording; this section is updated in the same change that reports them.
