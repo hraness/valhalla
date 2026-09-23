@@ -121,6 +121,15 @@ impl<T: 'static> Transaction<T> {
             .map_err(storage)?;
         Ok(())
     }
+    /// Remove one retained private-delivery record. Only the `private-rooms`
+    /// delivery journal uses deletion; other histories are append-only.
+    #[cfg(feature = "private-rooms")]
+    pub(super) fn delete(&self, key: &str) -> Result<(), Error> {
+        self.store
+            .delete(&JsValue::from_str(key))
+            .map_err(storage)?;
+        Ok(())
+    }
 }
 struct Guard<T>(Rc<Transaction<T>>);
 impl<T> Drop for Guard<T> {

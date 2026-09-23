@@ -14,7 +14,10 @@ const MARKER: &[u8; 8] = b"VHPIM001";
 pub(crate) const FORMAT_BYTES: usize = 184;
 pub(crate) use vhalla_private_kernel::MAX_TRANSACTION_RECORDS;
 pub(crate) const STATE_OVERHEAD: usize = 196;
-pub(crate) const MAX_MARKER_BYTES: usize = 238;
+// Marker = MARKER(8) + context(128) + key-length(1) + key + record-length(4) +
+// payload checksum(32) + marker checksum(32) = 205 + key length. The longest
+// RecordKey encoding is Acceptance{outbox, recipient} at 1 + 8 + 32 = 41.
+pub(crate) const MAX_MARKER_BYTES: usize = 205 + 41;
 
 /// Immutable local budgets. Exhaustion never authorizes pruning or a reset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

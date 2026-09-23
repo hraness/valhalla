@@ -318,12 +318,16 @@ async fn request(app: &App, operation: Request) -> Result<Response, String> {
     let call = Array::new();
     call.push(&"private".into());
     call.push(&Uint8Array::from(token_bytes.as_slice()));
-    call.push(&Uint8Array::from(raw.as_slice()));
+    let payload = Uint8Array::from(raw.as_slice());
+    call.push(&payload);
+    // Transfer the payload's ArrayBuffer: structured clone moves it to the
+    // worker instead of copying it, and detaches this thread's JS-heap copy.
+    let transfer = Array::of1(&payload.buffer());
     let sent = app
         .borrow()
         .worker
         .as_ref()
-        .is_some_and(|worker| worker.post_message(&call).is_ok());
+        .is_some_and(|worker| worker.post_message_with_transfer(&call, &transfer).is_ok());
     if !sent {
         fail(
             app,

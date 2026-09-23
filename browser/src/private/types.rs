@@ -69,6 +69,19 @@ pub enum Request {
     Open(Context),
     /// Authenticate and return the selected room's retained membership snapshot.
     Membership,
+    /// List relay-delivered bootstrap items retained for explicit admission.
+    DeliveryAdmissions,
+    /// Return the exact retained bootstrap item at one mailbox position as a
+    /// downloadable artifact for the dedicated admission inputs.
+    DeliveryAdmission {
+        /// Exact mailbox position named by the retained listing.
+        position: u64,
+    },
+    /// Discard one retained bootstrap item explicitly; nothing else changes.
+    DeliveryDiscard {
+        /// Exact mailbox position named by the retained listing.
+        position: u64,
+    },
     /// Retain one exact body and prepare its current epoch/roster disclosure preview.
     PrepareMessage(Bytes),
     /// Publish the exact retained draft locally after full consent comparison.
@@ -353,19 +366,54 @@ pub struct DeliveryReport {
     pub received: u64,
     /// Durably reserved lifetime network attempts.
     pub attempts: u64,
+    /// Lifetime relay-frame bytes charged: exact bytes of completed exchanges
+    /// plus the pessimistic reservation of every interrupted attempt.
+    pub wire_bytes: u64,
     /// Earliest permitted retry in Unix seconds, or zero after success.
     pub retry_at: u64,
     /// Exact outgoing or staged incoming work remains.
     pub pending: bool,
-    /// Persistent finite-budget or protocol refusal; never reset on reload.
-    pub stopped: bool,
-    /// A control changed membership; review it before another sync.
+    /// Durable stop class: 0 none, 1 budget exhausted, 2 retained refusal,
+    /// 3 transient-failure pause cleared only by explicit reopen.
+    pub stop: u8,
+    /// Durable detail of a retained refusal; zero otherwise.
+    pub detail: u8,
+    /// Nonzero while the cursor is held before one record that cannot apply
+    /// yet: 1 owner control gap/authority, 2 clock or validity, 3 every
+    /// retained-admission slot is used.
+    pub blocked: u8,
+    /// Lifetime count of staged records durably refused and skipped.
+    pub refused: u64,
+    /// Relay-delivered bootstrap items retained for explicit admission.
+    pub admissions: u64,
+    /// A membership control was applied; review the roster before continuing.
     pub review: bool,
 }
-/// Closed local worker reports; decoding is not independent network admission.
+/// One retained relay-delivered bootstrap item awaiting explicit admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdmissionItem {
+    /// Mailbox position that delivered it.
+    pub position: u64,
+    /// Contact request or contact invitation only.
+    pub kind: OutboxKind,
+    /// Exact retained canonical relay item length.
+    pub len: u64,
+    /// Relay item digest, matching the sender's outbox artifact.
+    pub digest: [u8; 32],
+}
+/// Bounded retained-admission listing.
+pub const MAX_ADMISSION_ITEMS: usize = 8;
+/// One bounded reply to an explicit panel or worker request.
 pub enum Response {
     /// Bounded local progress after explicit relay configuration or sync.
     Delivery(DeliveryReport),
+    /// Retained relay-delivered bootstrap items awaiting explicit admission.
+    Admissions {
+        /// Complete context of the selected local room/device.
+        context: Context,
+        /// Bounded listing in mailbox order.
+        items: Vec<AdmissionItem>,
+    },
     /// Private entry completed for this authenticated account key.
     Entered(Key),
     /// Fresh preparation awaiting exact locator retention and explicit commit.
@@ -538,7 +586,8 @@ impl Response {
             | Self::ArchivePage { context, .. }
             | Self::ArchiveProgress { context, .. }
             | Self::ArchiveInspect { context, .. }
-            | Self::ArchiveClosed { context } => Some(*context),
+            | Self::ArchiveClosed { context }
+            | Self::Admissions { context, .. } => Some(*context),
             #[cfg(feature = "local-qualification")]
             Self::Divergent { context, .. } => Some(*context),
         }
@@ -550,6 +599,8 @@ impl Response {
 pub enum ReplyKind {
     /// Local relay progress only.
     Delivery,
+    /// Bounded retained relay-delivered admission listing.
+    Admissions,
     /// Account-only private entry.
     Entered,
     /// Uncommitted creation preparation.
@@ -595,7 +646,11 @@ impl Request {
     pub fn reply_kind(&self) -> ReplyKind {
         match self {
             Self::Enter { .. } => ReplyKind::Entered,
-            Self::DeliveryConnect { .. } | Self::DeliverySync => ReplyKind::Delivery,
+            Self::DeliveryConnect { .. } | Self::DeliverySync | Self::DeliveryDiscard { .. } => {
+                ReplyKind::Delivery
+            }
+            Self::DeliveryAdmissions => ReplyKind::Admissions,
+            Self::DeliveryAdmission { .. } => ReplyKind::Artifact,
             Self::PrepareOwner(_) | Self::PrepareContact { .. } => ReplyKind::Prepared,
             Self::CommitCreation(_)
             | Self::Open(_)
@@ -637,6 +692,7 @@ impl Response {
         match self {
             Self::Entered(_) => ReplyKind::Entered,
             Self::Delivery(_) => ReplyKind::Delivery,
+            Self::Admissions { .. } => ReplyKind::Admissions,
             Self::Prepared(_) => ReplyKind::Prepared,
             Self::Membership(_) => ReplyKind::Membership,
             Self::Draft(_) => ReplyKind::Draft,

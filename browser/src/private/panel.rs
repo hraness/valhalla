@@ -34,6 +34,8 @@ const IDS: &[(&str, Action)] = &[
     ("private-delivery-create", Action::DeliveryCreate),
     ("private-delivery-open", Action::DeliveryOpen),
     ("private-delivery-sync", Action::DeliverySync),
+    ("private-admission-download", Action::AdmissionDownload),
+    ("private-admission-discard", Action::AdmissionDiscard),
     ("private-prepare-message", Action::Prepare),
     ("private-save-message", Action::Send),
     ("private-download-output", Action::Download),
@@ -121,6 +123,8 @@ enum Action {
     ArchiveInbox,
     ArchiveInboxNext,
     ArchiveClose,
+    AdmissionDownload,
+    AdmissionDiscard,
 }
 struct Secret {
     operation: OperationId,
@@ -150,7 +154,9 @@ struct State {
     proofs_next: Option<ControlFloor>,
     archive: Option<ArchivePanel>,
     archive_in_flight: bool,
+    delivery_connected: bool,
     delivery_ready: bool,
+    admissions: Vec<AdmissionItem>,
     archive_sink: Option<Rc<archive_save::Sink>>,
     downloads: Vec<(String, usize)>,
     handlers: Vec<Closure<dyn FnMut(Event)>>,
@@ -285,7 +291,10 @@ async fn file(app: &App, ticket: u64, id: &str, max: usize) -> Result<Bytes> {
     if raw.length() as usize > max || f64::from(raw.length()) != selected.size() {
         return Err("The selected file changed or exceeds its bound.".into());
     }
-    Ok(Zeroizing::new(raw.to_vec()))
+    let bytes = Zeroizing::new(raw.to_vec());
+    // Zero the JS-heap copy now that the file bytes live in zeroed Rust custody.
+    Uint8Array::fill(&raw, 0, 0, raw.length());
+    Ok(bytes)
 }
 fn metadata(c: Context) -> String {
     format!(
@@ -348,7 +357,9 @@ pub fn clear_sensitive_state() {
         s.proofs_next = None;
         s.archive = None;
         s.archive_in_flight = false;
+        s.delivery_connected = false;
         s.delivery_ready = false;
+        s.admissions.clear();
         if let Some(sink) = s.archive_sink.take() {
             sink.abort();
         }
@@ -376,6 +387,7 @@ pub fn clear_sensitive_state() {
         "private-proof-select",
         "private-evidence",
         "private-outbox-select",
+        "private-admission-select",
         "private-archive-title",
         "private-archive-summary",
         "private-archive-details",
@@ -453,6 +465,9 @@ fn render(app: &App) {
             Action::Receive | Action::Apply => active && ready,
             Action::DeliveryCreate | Action::DeliveryOpen => active && ready && !s.delivery_ready,
             Action::DeliverySync => active && ready && s.delivery_ready,
+            Action::AdmissionDownload | Action::AdmissionDiscard => {
+                active && s.delivery_connected && !s.admissions.is_empty()
+            }
             Action::ControlsNext => active && s.controls_next.is_some(),
             Action::ProofsNext => active && s.proofs_next.is_some(),
             Action::DownloadProof => active && !s.proofs.is_empty(),
@@ -891,7 +906,9 @@ pub fn start() {
         proofs_next: None,
         archive: None,
         archive_in_flight: false,
+        delivery_connected: false,
         delivery_ready: false,
+        admissions: Vec::new(),
         archive_sink: None,
         downloads: Vec::new(),
         handlers: Vec::new(),

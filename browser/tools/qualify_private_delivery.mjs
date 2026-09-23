@@ -4,13 +4,21 @@ import {trackChild, childStopped, cleanupOwned, runQualification, closeTargetChe
 import {stopChild, stopServer} from './qualification_lifecycle.mjs';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
-import {createServer as createTcpServer} from 'node:net';
+import {createConnection, createServer as createTcpServer} from 'node:net';
 import {createHash} from 'node:crypto';
 import {readFile, writeFile, mkdir, mkdtemp, chmod, open} from 'node:fs/promises';
 import {resolve, join} from 'node:path';
 
-const [artifactArg, chromeExecutable, outputArg, cliArg, opensslArg] = process.argv.slice(2);
-if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL');
+const [artifactArg, chromeExecutable, outputArg, cliArg, opensslArg, ...flags] = process.argv.slice(2);
+if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M]');
+const options={};
+for(let i=0;i<flags.length;i++){
+  const flag=flags[i];
+  if(flag!=='--gateway-port'&&flag!=='--tls-port')throw Error('unknown flag: '+flag);
+  const value=flags[++i];
+  if(!/^[0-9]+$/.test(value??''))throw Error(flag+' requires a decimal loopback port');
+  options[flag]=Number(value);
+}
 const artifact = resolve(artifactArg), output = resolve(outputArg);
 await mkdir(output, {recursive:false, mode:0o700});
 const profile = await mkdtemp(join(output,'profile-'));
@@ -152,8 +160,10 @@ async function context(name) {
   const page={name,downloads:directory,browserContextId,targetId,sessionId};pages.push(page);
   for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
   await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);
-  await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
+  await call('Page.navigate',{url:gatewayOrigin},sessionId);
   await wait(()=>evaluate(page,"!!document.getElementById('private-panel') && !!document.getElementById('create') && !document.getElementById('create').disabled"),'private app '+name);
+  const origin=await evaluate(page,"location.origin");
+  if(origin!==gatewayOrigin)throw Error('private app origin '+origin+' != configured '+gatewayOrigin);
   return page;
 }
 async function account(name) {
@@ -202,7 +212,7 @@ async function reload(page) {
   page.targetId=targetId;page.sessionId=sessionId;
   for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
   await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);
-  await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
+  await call('Page.navigate',{url:gatewayOrigin},sessionId);
   // A Runtime.evaluate bound to a context dying mid-navigation is dropped
   // without any response; bound each probe so a dropped call retries. On an
   // existing account the app boots to Locked with `create` disabled — `unlock`
@@ -215,7 +225,42 @@ async function reload(page) {
 }
 const cli=resolve(cliArg), openssl=resolve(opensslArg);
 const namespace='31'.repeat(32), relayToken='42'.repeat(32), browserCapability='53'.repeat(32);
-const tlsAddress='127.0.0.1:19473';
+async function probeRefused(port) {
+  await new Promise((resolve,reject)=>{
+    const socket=createConnection({host:'127.0.0.1',port});
+    socket.once('connect',()=>{socket.destroy();reject(Error('loopback port '+port+' already accepts connections'));});
+    socket.once('error',error=>error?.code==='ECONNREFUSED'?resolve():reject(error));
+    socket.setTimeout(2000,()=>{socket.destroy();reject(Error('loopback port '+port+' probe timed out'));});
+  });
+}
+async function ephemeralPort() {
+  const probe=createTcpServer();
+  await new Promise((resolve,reject)=>{probe.once('error',reject);probe.listen(0,'127.0.0.1',resolve);});
+  const {port}=probe.address();
+  await new Promise(r=>probe.close(r));
+  return port;
+}
+// One loopback address, one name, one chosen port: an occupied port always
+// refuses and is never silently reused, whichever service owns the collision.
+async function resolvePort(explicit,label) {
+  const port=explicit===undefined?await ephemeralPort():explicit;
+  if(!Number.isInteger(port)||port<1||port>65535)throw Error(label+' port out of range');
+  await probeRefused(port);
+  return port;
+}
+const gatewayPort=await resolvePort(options['--gateway-port'],'gateway');
+const tlsPort=await resolvePort(options['--tls-port'],'relay TLS');
+const gatewayOrigin=`http://127.0.0.1:${gatewayPort}`;
+const tlsAddress=`127.0.0.1:${tlsPort}`;
+// Collision-refusal self-check: resolvePort must never accept an occupied port.
+{
+  const occupied=createTcpServer();
+  await new Promise((resolve,reject)=>{occupied.once('error',reject);occupied.listen(0,'127.0.0.1',resolve);});
+  let refused=false;
+  try{await resolvePort(occupied.address().port,'collision self-check');}catch{refused=true;}
+  await new Promise(r=>occupied.close(r));
+  if(!refused)throw Error('occupied loopback port was accepted');
+}
 let relay, gateway, blackhole, hostile, fixtureSerial=0;
 const blackholeSockets=new Set();
 const serviceLogs=[];
@@ -232,14 +277,20 @@ async function child(args,ready) {
   process.stdout.on('data',v=>record.stdout=(record.stdout+v).slice(-65536));process.stderr.on('data',v=>record.stderr=(record.stderr+v).slice(-65536));
   await wait(()=>{if(childStopped(process))throw Error('fixture service exited: '+record.stderr);return record.stdout.includes(ready);},ready);return process;
 }
-async function gatewayStart() {gateway=await child(['private-gateway','serve',join(output,'gateway.json')],'private-gateway');}
-async function relayStart() {relay=await child(['private','relay-tls-serve',join(output,'mailbox'),'--namespace',namespace,'--config',join(output,'tls.json'),'--cert',join(output,'server.der'),'--key',join(output,'server-key.der'),'--listen',tlsAddress],'relay-tls-serve');}
+async function gatewayStart() {gateway=await child(['private-gateway','serve',join(output,'gateway.json')],'private-gateway '+gatewayOrigin);}
+async function relayStart() {relay=await child(['private','relay-tls-serve',join(output,'mailbox'),'--namespace',namespace,'--config',join(output,'tls.json'),'--cert',join(output,'server.der'),'--key',join(output,'server-key.der'),'--listen',tlsAddress],'relay-tls-serve '+tlsAddress);}
 async function fixture() {
   const caKey=join(output,'ca-key.pem'),caPem=join(output,'ca.pem'),serverKey=join(output,'server-key.pem'),csr=join(output,'server.csr'),serverPem=join(output,'server.pem');
-  await command(openssl,['req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-keyout',caKey,'-out',caPem,'-days','2','-subj','/CN=Synthetic Valhalla qualification CA','-addext','basicConstraints=critical,CA:TRUE']);
-  await command(openssl,['req','-new','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-keyout',serverKey,'-out',csr,'-subj','/CN=relay.test']);
+  // Generate named-curve P-256 keys: an explicit-parameter EC encoding is
+  // refused by the rustls server/client credential checks.
+  await command(openssl,['ecparam','-name','prime256v1','-genkey','-noout','-out',caKey]);
+  await command(openssl,['req','-x509','-new','-key',caKey,'-out',caPem,'-days','2','-subj','/CN=Synthetic Valhalla qualification CA','-addext','basicConstraints=critical,CA:TRUE']);
+  await command(openssl,['ecparam','-name','prime256v1','-genkey','-noout','-out',serverKey]);
+  await command(openssl,['req','-new','-key',serverKey,'-out',csr,'-subj','/CN=relay.test']);
   const extension=await privateFile('server.ext','basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:relay.test\n');
-  await command(openssl,['x509','-req','-in',csr,'-CA',caPem,'-CAkey',caKey,'-CAcreateserial','-out',serverPem,'-days','2','-extfile',extension]);
+  // LibreSSL's x509 -req defaults to ecdsa-with-SHA1, which webpki refuses.
+  // -sha256 is accepted by both LibreSSL and OpenSSL for the signing digest.
+  await command(openssl,['x509','-req','-in',csr,'-CA',caPem,'-CAkey',caKey,'-CAcreateserial','-out',serverPem,'-days','2','-sha256','-extfile',extension]);
   await command(openssl,['x509','-in',caPem,'-outform','DER','-out',join(output,'ca.der')]);
   await command(openssl,['x509','-in',serverPem,'-outform','DER','-out',join(output,'server.der')]);
   await command(openssl,['pkcs8','-topk8','-nocrypt','-in',serverKey,'-outform','DER','-out',join(output,'server-key.der')]);
@@ -248,10 +299,10 @@ async function fixture() {
   await command(cli,['private','relay-mailbox',join(output,'mailbox'),'--namespace',namespace,'--max-items','4096','--max-bytes',String(128*1024*1024)]);
   await command(cli,['private','relay-tls-init',join(output,'mailbox'),'--namespace',namespace]);
   await privateFile('tls.json',JSON.stringify({max_connections:16,request_timeout_ms:10000,window_ms:1000,requests_per_window:128,bytes_per_window:64*1024*1024,credentials:[{id:'64'.repeat(16),namespace,token_files:[join(output,'relay-token')],put:true,page:true,max_items:2048,max_bytes:64*1024*1024,max_inflight:8,requests_per_window:64,bytes_per_window:32*1024*1024}]}));
-  await privateFile('gateway.json',JSON.stringify({format:1,listen:'127.0.0.1:8790',namespace,browser_token_file:join(output,'browser-token'),upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')},assets_dir:artifact,initial_cursor:'0'}));
+  await privateFile('gateway.json',JSON.stringify({format:1,listen:'127.0.0.1:'+gatewayPort,namespace,browser_token_file:join(output,'browser-token'),upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')},assets_dir:artifact,initial_cursor:'0'}));
   await relayStart();await gatewayStart();
 }
-async function profileFile(initial,overrides={}) {return privateFile('profile-'+(++fixtureSerial)+'.json',JSON.stringify({format:1,origin:'http://127.0.0.1:8790',namespace,capability:browserCapability,initial_cursor:String(initial),...overrides}));}
+async function profileFile(initial,overrides={}) {return privateFile('profile-'+(++fixtureSerial)+'.json',JSON.stringify({format:1,origin:gatewayOrigin,namespace,capability:browserCapability,initial_cursor:String(initial),...overrides}));}
 async function connect(page,path,create=false) {
   await setFile(page,'private-delivery-profile',path);
   await evaluate(page,`(async()=>{await qclick('${create?'private-delivery-create':'private-delivery-open'}');await qidle();qassert(qid('private-delivery-profile').value==='','profile capability selection survived');qassert(!qid('private-delivery-sync').disabled,'delivery not ready');return true;})()`);
@@ -260,7 +311,7 @@ async function sync(page) {return evaluate(page,"(async()=>{await qclick('privat
 async function sendRetainedPreview(page) {
   return evaluate(page,`(async()=>{
     qassert(qaDraft instanceof Uint8Array,'captured actual disclosure preview');
-    const expected=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(4));
+    const expected=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(5));
     qassert(expected.length===12&&expected.every((v,i)=>qaDraft[i]===v)&&qaDraft[12]===104,'actual private wire version');
     const frame=new Uint8Array(qaDraft.length+16);frame.set(expected);frame[12]=8;
     frame.set(crypto.getRandomValues(new Uint8Array(16)),13);frame.set(qaDraft.subarray(13),29);
@@ -273,12 +324,31 @@ async function head() {
   await command(cli,['private','relay-scan',join(output,'scan-'+n),'--namespace',namespace,'--addr',tlsAddress,'--token',join(output,'relay-token'),'--tls-ca',join(output,'ca.der'),'--tls-name','relay.test','--limit','64','--out',path]);
   return JSON.parse(await readFile(path,'utf8')).head;
 }
-function chargedPending(before,after,committed,stopped=0) {
-  // Versioned delivery image: immutable binding/owner, twelve u64 counters,
-  // stopped byte and canonical pending RelayItem. These assertions inspect the
-  // exact persisted effect independently of the UI report (the worker is dead).
-  if(after[152]!==stopped||after.readBigUInt64BE(80)!==before.readBigUInt64BE(80)+1n||after.readBigUInt64BE(88)<=before.readBigUInt64BE(88)||after.readBigUInt64BE(112)!==before.readBigUInt64BE(112)+1n||after.readBigUInt64BE(104)<=after.readBigUInt64BE(96))throw Error('credential refusal reset or stopped finite progress');
-  const length=after.readUInt32BE(153),item=after.subarray(157,157+length);
+// Read the charged retry deadline from the durable image itself rather than
+// assuming the current backoff constant.
+async function backoffWait(image) {
+  const retry=Number(image.readBigUInt64BE(104));
+  if(!retry)throw Error('charged attempt left no backoff deadline');
+  const delay=retry*1000-Date.now()+250;
+  if(delay>0)await new Promise(r=>setTimeout(r,Math.min(delay,15000)));
+}
+// An explicit reopen rotates only the owner token (40..56) and refreshes the
+// durable monotone wall counter (96..104); every other reserved counter and
+// all retained ciphertext must be byte-identical, and the wall never regresses.
+function sameRetained(before,after,label) {
+  const a=Buffer.from(before),b=Buffer.from(after);
+  if(a.length!==b.length||!a.subarray(56,96).equals(b.subarray(56,96))||!a.subarray(104).equals(b.subarray(104))||b.readBigUInt64BE(96)<a.readBigUInt64BE(96))throw Error(label);
+}
+function chargedPending(before,after,committed,stopCode=0) {
+  // Versioned delivery image v2: 8-byte magic, 32-byte binding, 16-byte owner,
+  // thirteen u64 counters, stop/detail/blocked bytes, a refused-record ring,
+  // a retained-admission index, then canonical pending and staged RelayItems.
+  // These assertions inspect the exact persisted effect independently of the
+  // UI report (the worker is dead).
+  if(after.subarray(0,8).toString()!=='VHBRDEL'+String.fromCharCode(2))throw Error('delivery image is not the v2 format');
+  if(after[160]!==stopCode||after.readBigUInt64BE(80)!==before.readBigUInt64BE(80)+1n||after.readBigUInt64BE(88)<=before.readBigUInt64BE(88)||after.readBigUInt64BE(112)!==before.readBigUInt64BE(112)+1n||after.readBigUInt64BE(104)<=after.readBigUInt64BE(96))throw Error('credential refusal reset or stopped finite progress');
+  let at=164+after[163]*41;at+=1+after[at]*45;
+  const length=after.readUInt32BE(at),item=after.subarray(at+4,at+4+length);
   if(length<102||item.subarray(0,9).toString()!=='VHPRELAY'+String.fromCharCode(1)||!item.subarray(70,70+item.readUInt32BE(66)).equals(committed))throw Error('credential refusal lost exact committed ciphertext');
 }
 async function snapshot(page, expected=1) {
@@ -290,7 +360,7 @@ async function task(abortSignal) {
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
-  socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith('http://127.0.0.1:8790/')&&!url.startsWith('blob:http://127.0.0.1:8790/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
+  socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith(gatewayOrigin+'/')&&!url.startsWith('blob:'+gatewayOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
   const owner=await account('owner'),member=await account('member');
   await enter(owner,true);await evaluate(owner,"qclick('private-create')");await retainCreation(owner);
   await send(owner,'SYNTHETIC_PREJOIN_HISTORY');
@@ -312,6 +382,24 @@ async function task(abortSignal) {
   await send(owner,'SYNTHETIC_GATEWAY_TLS_MESSAGE');await sync(owner);await sync(member);
   await evaluate(member,"(async()=>{await qclick('private-inbox');await qidle();qassert(qid('private-inbox-content').textContent.includes('SYNTHETIC_GATEWAY_TLS_MESSAGE'),'network message absent');qassert(!qid('private-inbox-content').textContent.includes('SYNTHETIC_PREJOIN_HISTORY'),'prejoin history leaked');return true;})()");
   await sync(member);await sync(owner);facts.push('production browser worker sends exact ciphertext through HTTP gateway and authenticated TLS relay, receiver commits locally and queues signed acceptance without receipt loops');
+  // An owner renewal publishes a membership control that advances the epoch.
+  // A member ciphertext committed before applying that control is stale: it is
+  // durably refused per record, skipped at the mailbox cursor, and delivery
+  // continues for the epoch-fresh record behind it.
+  await send(member,'SYNTHETIC_PRE_RENEW_STALE');
+  await evaluate(owner,"(async()=>{await qclick('private-renew');await qidle();return true;})()");
+  // The member's first sync after renewal applies the owner control and stops
+  // at the review boundary before publishing its already-staged stale output;
+  // the second sync publishes it. This mirrors the model's review assertion.
+  await sync(owner);await sync(member);
+  if(!/Review the current roster/.test(await evaluate(member,"qid('private-status').textContent")))throw Error('member sync after owner renewal did not stop at the review boundary');
+  await sync(member);
+  const refusedReport=await sync(owner);
+  if(!/Refused and skipped records: [1-9]/.test(refusedReport))throw Error('stale member record was not durably refused and skipped: '+refusedReport);
+  await send(member,'SYNTHETIC_POST_RENEW');await sync(member);await sync(owner);
+  await evaluate(owner,"(async()=>{await qclick('private-inbox');await qidle();qassert(qid('private-inbox-content').textContent.includes('SYNTHETIC_POST_RENEW'),'post-renewal message absent');return true;})()");
+  await sync(owner);await sync(member);
+  facts.push('owner renewal publishes a control before member sync; the stale-epoch member record is durably refused and skipped at the cursor while the epoch-fresh message behind it still delivers');
   // Positive ABI control: the actual worker accepts the current preview.
   // After a successful same-roster Sync, replaying its next still-valid preview
   // must fail inside worker custody even if a caller bypasses panel controls.
@@ -325,9 +413,8 @@ async function task(abortSignal) {
   const beforeOutage=await head();await send(owner,'SYNTHETIC_OUTAGE_RETRY');await stopChild(relay);const report=await sync(owner);if(!report.includes('Pending: true'))throw Error('outage did not preserve pending output');
   const before=Buffer.from(await snapshot(owner));if(before.includes(Buffer.from(browserCapability)))throw Error('gateway capability persisted');
   await reload(owner);await connect(owner,owner.deliveryProfile);const reopened=Buffer.from(await snapshot(owner));
-  // Owner token changes on reopen; all reserved counters and ciphertext remain.
-  if(!before.subarray(56).equals(reopened.subarray(56)))throw Error('reload changed pending progress/budget');
-  await relayStart();await new Promise(r=>setTimeout(r,2200));await sync(owner);const afterOutage=await head();if(afterOutage!==beforeOutage+1)throw Error('outage retry duplicated or lost committed ciphertext');
+  sameRetained(before,reopened,'reload changed pending progress/budget');
+  await relayStart();await backoffWait(before);await sync(owner);const afterOutage=await head();if(afterOutage!==beforeOutage+1)throw Error('outage retry duplicated or lost committed ciphertext');
   await sync(member);facts.push('relay outage, real document teardown, same-profile reopen and exact retry preserve ciphertext and counters and retain the output once');
   // Authentication refusal ends custody, but a newly supplied host capability
   // may resume the exact charged job. Neither unlock nor corrected authority
@@ -340,8 +427,8 @@ async function task(abortSignal) {
   chargedPending(beforeDenied,denied,capabilityMessage.raw);
   if(await head()!==beforeCapabilityHead)throw Error('wrong capability retained an item');
   await reload(owner);await connect(owner,owner.deliveryProfile);
-  if(!denied.subarray(56).equals(Buffer.from(await snapshot(owner)).subarray(56)))throw Error('corrected capability renewed retained budgets or pending work');
-  await new Promise(r=>setTimeout(r,2200));await sync(owner);
+  sameRetained(denied,Buffer.from(await snapshot(owner)),'corrected capability renewed retained budgets or pending work');
+  await backoffWait(denied);await sync(owner);
   if(await head()!==beforeCapabilityHead+1)throw Error('corrected capability did not resume exact item once');
   await sync(member);
   facts.push('wrong gateway capability locks the worker without discarding exact pending ciphertext or charged attempts/backoff; explicit reopen with corrected authority resumes once and does not renew lifetime budgets');
@@ -355,8 +442,8 @@ async function task(abortSignal) {
   if(await head()!==beforeUpstreamHead)throw Error('invalid upstream token retained an item');
   await stopChild(gateway);await writeFile(join(output,'gateway-upstream-token'),relayToken);await gatewayStart();
   await reload(owner);await connect(owner,owner.deliveryProfile);
-  if(!upstreamDenied.subarray(56).equals(Buffer.from(await snapshot(owner)).subarray(56)))throw Error('upstream repair renewed retained budgets or pending work');
-  await new Promise(r=>setTimeout(r,2200));await sync(owner);
+  sameRetained(upstreamDenied,Buffer.from(await snapshot(owner)),'upstream repair renewed retained budgets or pending work');
+  await backoffWait(upstreamDenied);await sync(owner);
   if(await head()!==beforeUpstreamHead+1)throw Error('upstream repair did not resume exact item once');
   await sync(member);
   facts.push('canonical upstream authorization denial locks custody with exact charged progress retained; operator repairs host token and explicit browser reopen resumes once without resetting credits');
@@ -368,18 +455,18 @@ async function task(abortSignal) {
   // A second same-origin tab claims a fresh CAS owner; the old worker refuses.
   const {targetId}=await call('Target.createTarget',{url:'about:blank',browserContextId:owner.browserContextId});const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});const twin={...owner,targetId,sessionId};
   for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
-  await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
+  await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);await call('Page.navigate',{url:gatewayOrigin},sessionId);
   await wait(()=>evaluate(twin,"!!document.getElementById('unlock')&&!document.getElementById('unlock').disabled"),'second tab load');await evaluate(twin,helpers);await reopen(twin);await connect(twin,owner.deliveryProfile);
   await evaluate(owner,"(async()=>{await qclick('private-delivery-sync');await qwait(()=>qid('identity-state').textContent==='Reload required','old worker fence');return true;})()");await sync(twin);facts.push('second-tab CAS ownership invalidates the prior worker before another sync; the new worker retains exact existing counters');
   // Terminate the worker while the actual native gateway waits on a TLS
   // handshake. No delayed completion may repopulate its private UI or budgets.
   await send(twin,'SYNTHETIC_LOCKED_IN_FLIGHT');await stopChild(relay);
   blackhole=createTcpServer(socket=>{blackholeSockets.add(socket);socket.once('close',()=>blackholeSockets.delete(socket));});
-  await new Promise((r,j)=>{blackhole.once('error',j);blackhole.listen(19473,'127.0.0.1',r);});
+  await new Promise((r,j)=>{blackhole.once('error',j);blackhole.listen(tlsPort,'127.0.0.1',r);});
   await evaluate(twin,"qclick('private-delivery-sync')");await wait(()=>blackholeSockets.size>0,'gateway pending actual TLS handshake');
   await leave(twin);const canceled=Buffer.from(await snapshot(twin));
   for(const socket of blackholeSockets)socket.destroy();await new Promise(r=>blackhole.close(r));blackhole=undefined;
-  await relayStart();await new Promise(r=>setTimeout(r,2200));
+  await relayStart();await backoffWait(canceled);
   await evaluate(twin,"qassert(qid('private-delivery-status').textContent==='','late response repopulated locked private UI');true");
   if(!canceled.equals(Buffer.from(await snapshot(twin))))throw Error('late canceled response changed durable progress');
   await reopen(twin);await connect(twin,owner.deliveryProfile);await sync(twin);
@@ -389,19 +476,24 @@ async function task(abortSignal) {
   const hostileHead=await head();const hostileMessage=await send(twin,'SYNTHETIC_CORRUPT_RECEIPT');
   const beforeHostile=Buffer.from(await snapshot(twin));await stopChild(gateway);
   hostile=createServer((request,response)=>{
-    if(request.method!=='POST'||request.url!=='/private-relay/v1'||request.headers.origin!=='http://127.0.0.1:8790'||request.headers.authorization!=='Bearer '+browserCapability){response.writeHead(403);response.end();return;}
+    if(request.method!=='POST'||request.url!=='/private-relay/v1'||request.headers.origin!==gatewayOrigin||request.headers.authorization!=='Bearer '+browserCapability){response.writeHead(403);response.end();return;}
     const chunks=[];let size=0;request.on('data',chunk=>{size+=chunk.length;if(size>300000){request.destroy();return;}chunks.push(chunk);});
     request.on('end',()=>{const body=Buffer.concat(chunks);if(body.length<40||body[4]!==1){response.writeHead(400);response.end();return;}const receipt=Buffer.alloc(46);receipt.writeUInt32BE(42,0);receipt.writeBigUInt64BE(1n,5);body.subarray(-32).copy(receipt,13);receipt[13]^=1;response.writeHead(200,{'content-type':'application/octet-stream','content-length':receipt.length,'cache-control':'no-store'});response.end(receipt);});
-  });await new Promise((r,j)=>{hostile.once('error',j);hostile.listen(8790,'127.0.0.1',r);});
+  });await new Promise((r,j)=>{hostile.once('error',j);hostile.listen(gatewayPort,'127.0.0.1',r);});
   await evaluate(twin,"(async()=>{await qclick('private-delivery-sync');await qwait(()=>qid('identity-state').textContent==='Reload required','corrupt receipt ends worker');return true;})()");
-  const halted=Buffer.from(await snapshot(twin));chargedPending(beforeHostile,halted,hostileMessage.raw,1);
+  const halted=Buffer.from(await snapshot(twin));chargedPending(beforeHostile,halted,hostileMessage.raw,2);
   await stopServer(hostile);hostile=undefined;await gatewayStart();
   await reload(twin);await setFile(twin,'private-delivery-profile',owner.deliveryProfile);
-  await evaluate(twin,"(async()=>{await qclick('private-delivery-open');await qidle();qassert(qid('private-delivery-sync').disabled&&qid('private-delivery-status').textContent.includes('stopped: true'),'durable refusal lost on reopen');qid('private-delivery-sync').disabled=false;qid('private-delivery-sync').click();await qwait(()=>!qid('private-refresh').disabled,'forced stopped sync finished');return true;})()");
-  if(!halted.subarray(56).equals(Buffer.from(await snapshot(twin)).subarray(56))||await head()!==hostileHead)throw Error('reopen or forced Sync reset durable hostile-response stop');
+  // Reopening the durably stopped delivery reports stop in the status banner;
+  // the generic idle assertion cannot be used here because that refusal is the
+  // expected outcome being verified.
+  await evaluate(twin,"(async()=>{await qclick('private-delivery-open');await qwait(()=>!qid('private-refresh').disabled,'stopped reopen idle');qassert(qid('private-delivery-sync').disabled&&qid('private-delivery-status').textContent.includes('stopped: true'),'durable refusal lost on reopen');qid('private-delivery-sync').disabled=false;qid('private-delivery-sync').click();await qwait(()=>!qid('private-refresh').disabled,'forced stopped sync finished');return true;})()");
+  sameRetained(halted,Buffer.from(await snapshot(twin)),'reopen or forced Sync reset durable hostile-response stop');
+  if(await head()!==hostileHead)throw Error('reopen or forced Sync reset durable hostile-response stop');
   facts.push('a well-framed HTTP200 receipt with a corrupt commitment durably stops before worker termination; exact pending bytes and charged credits survive, and reopen or forced Sync cannot resume network work');
   await leave(twin);await leave(member);
   if(unexpectedNetwork)throw Error('unexpected non-loopback page route');
-  return {passed:true,artifact,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,files,profile,scope:'production browser private custody → maintained local HTTP gateway → real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim'};
+  const digest=v=>createHash('sha256').update(v).digest('hex');
+  return {passed:true,artifact,artifactManifestSha256:digest(manifestRaw),gatewayOrigin,tlsAddress,namespaceSha256:digest(namespace),relayTokenSha256:digest(relayToken),browserCapabilitySha256:digest(browserCapability),facts,files,profile,scope:'production browser private custody → maintained local HTTP gateway → real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim'};
 }
 await runQualification({work:task,timeoutMs:360000,cleanup:async()=>{try{for(const socket of blackholeSockets)socket.destroy();if(blackhole){await new Promise(r=>blackhole.close(r));blackhole=undefined;}await cleanupOwned({children,server:hostile,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));await writeFile(join(output,'network-failure.txt'),fatalNetwork);}},publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));}});
