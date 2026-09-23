@@ -1162,6 +1162,21 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         println!("{}", help());
         return Ok(());
     }
+    let output = execute(raw)?;
+    // The escaped presentation has its own ceiling, separate from signed text
+    // and query budgets. Never emit a partial JSON object on overflow.
+    if output.len() > 2 * 1024 * 1024 {
+        return Err("presentation exceeds 2 MiB; reduce --limit and inspect durable state before retrying a write".into());
+    }
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "{output}")
+        .and_then(|()| stdout.flush())
+        .map_err(|e| {
+            format!("output failed after operation; inspect durable store before retry: {e}")
+        })
+}
+
+pub(crate) fn execute(raw: Vec<OsString>) -> Result<String, String> {
     let args = Args::parse(raw)?;
     let output = if args.command == "restore-new" {
         restore_new(&args)?
@@ -1236,17 +1251,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
             _ => query(&args, &store)?,
         }
     };
-    // The escaped presentation has its own ceiling, separate from signed text
-    // and query budgets. Never emit a partial JSON object on overflow.
-    if output.len() > 2 * 1024 * 1024 {
-        return Err("presentation exceeds 2 MiB; reduce --limit and inspect durable state before retrying a write".into());
-    }
-    let mut stdout = std::io::stdout().lock();
-    writeln!(stdout, "{output}")
-        .and_then(|()| stdout.flush())
-        .map_err(|e| {
-            format!("output failed after operation; inspect durable store before retry: {e}")
-        })
+    Ok(output)
 }
 
 #[cfg(feature = "experimental-sync")]

@@ -16,12 +16,13 @@ type Collection = {
   href: (page: DocPage) => string;
   titleSuffix: string;
   articleType: string;
+  ogImage: string;
 };
 
 export const collections: Record<string, Collection> = {
-  docs: { base: '/docs/', label: 'Documentation', pages: orderedDocs, href: docHref, titleSuffix: ' — vhalla documentation', articleType: 'TechArticle' },
-  compare: { base: '/compare/', label: 'Compare', pages: compare, href: compareHref, titleSuffix: ' — vhalla', articleType: 'Article' },
-  writing: { base: '/writing/', label: 'Writing', pages: writing, href: writingHref, titleSuffix: ' — vhalla', articleType: 'Article' },
+  docs: { base: '/docs/', label: 'Documentation', pages: orderedDocs, href: docHref, titleSuffix: ' — vhalla documentation', articleType: 'TechArticle', ogImage: 'og-docs.png' },
+  compare: { base: '/compare/', label: 'Compare', pages: compare, href: compareHref, titleSuffix: ' — vhalla', articleType: 'Article', ogImage: 'og-compare.png' },
+  writing: { base: '/writing/', label: 'Writing', pages: writing, href: writingHref, titleSuffix: ' — vhalla', articleType: 'Article', ogImage: 'og-writing.png' },
 };
 
 const docsNav = (current: DocPage) => {
@@ -49,7 +50,7 @@ const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }
   ],
 });
 
-function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string }) {
+function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string; ogImage: string }) {
   const url = opts.url;
   const head = template.slice(0, template.indexOf('  <body>'))
     .replace(/<title>.*?<\/title>/, `<title>${escape(opts.title)}</title>`)
@@ -57,8 +58,10 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
     .replace(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${escape(page.title)} — vhalla">`)
     .replace(/<meta property="og:description" content="[^"]*">/, `<meta property="og:description" content="${escape(page.summary)}">`)
     .replace(/<meta property="og:url" content="[^"]*">/, `<meta property="og:url" content="${url}">`)
+    .replace(/<meta property="og:image" content="[^"]*">/, `<meta property="og:image" content="https://vhalla.com/${opts.ogImage}">`)
     .replace(/<meta name="twitter:title" content="[^"]*">/, `<meta name="twitter:title" content="${escape(page.title)} — vhalla">`)
     .replace(/<meta name="twitter:description" content="[^"]*">/, `<meta name="twitter:description" content="${escape(page.summary)}">`)
+    .replace(/<meta name="twitter:image" content="[^"]*">/, `<meta name="twitter:image" content="https://vhalla.com/${opts.ogImage}">`)
     .replace(/<link rel="canonical" href="[^"]*">/, `<link rel="canonical" href="${url}">`)
     .replace(/\s*<script type="application\/ld\+json">.*?<\/script>/, `\n    <script type="application/ld+json">${jsonLd(page, url, opts.trail, opts.articleType)}</script>`);
   const header = template.match(/<header class="masthead[\s\S]*?<\/header>\n/)?.[0];
@@ -88,6 +91,7 @@ export function renderDoc(page: DocPage, template: string): string {
     siblings: collection.pages,
     siblingHref: docHref,
     updatedLabel: 'Development documentation',
+    ogImage: collection.ogImage,
   });
 }
 
@@ -103,6 +107,7 @@ export function renderCompare(page: DocPage, template: string): string {
     siblings: collection.pages,
     siblingHref: compareHref,
     updatedLabel: 'Comparison notes',
+    ogImage: collection.ogImage,
   });
 }
 
@@ -118,6 +123,7 @@ export function renderWriting(page: DocPage, template: string): string {
     siblings: collection.pages,
     siblingHref: writingHref,
     updatedLabel: 'Research notes',
+    ogImage: collection.ogImage,
   });
 }
 
@@ -132,5 +138,6 @@ export function renderUseCases(template: string): string {
     siblings: [useCases],
     siblingHref: () => '/use-cases/',
     updatedLabel: 'Working shapes',
+    ogImage: 'og-usecases.png',
   });
 }
