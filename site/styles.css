@@ -290,6 +290,37 @@ h1 {
   fill:var(--focus);
 }
 
+.mesh-flow {
+  stroke:var(--focus);
+  stroke-width:1.1;
+  stroke-dasharray:2 8;
+  stroke-linecap:round;
+  opacity:.5;
+  animation:mesh-dash 2.6s linear infinite;
+}
+
+.mesh-flow.d1 { animation-delay:-.7s; }
+.mesh-flow.d2 { animation-delay:-1.3s; }
+.mesh-flow.d3 { animation-delay:-1.9s; }
+
+@keyframes mesh-dash {
+  to { stroke-dashoffset:-20; }
+}
+
+.agent-vignette {
+  grid-column:1/-1;
+  margin-top:28px;
+  max-width:640px;
+}
+
+.agent-vignette .conversation {
+  margin:6px 22px 0;
+}
+
+.agent-vignette .conversation>div {
+  margin-top:16px;
+}
+
 .mesh-legend {
   display:flex;
   align-items:center;
@@ -1432,6 +1463,7 @@ table a {
   .mesh-room rect { fill:Canvas; stroke:CanvasText; }
   .mesh-room text { fill:CanvasText; }
   .mesh-edges line { stroke:CanvasText; }
+  .mesh-flow { stroke:CanvasText; }
   .mesh-peer { fill:Canvas; stroke:CanvasText; }
   .mesh-peer-dot { fill:CanvasText; }
 }
