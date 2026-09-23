@@ -99,10 +99,30 @@ application. The real TLS backlog regression exercises that defect in native
 delivery. The model assumes source artifacts exist and does not establish
 global message order, remote availability or source-publication correctness.
 
-All use checksum-pinned TLC 1.7.4. The runner requires complete positive runs
-and the specific expected invariant failure for each intentionally broken
-configuration. It preserves counterexamples, logs and source/tool hashes; a
-parse error or timeout cannot count as finding the expected defect.
+`verify/rooms-held-reply` checks the rooms node's sequential connector boundary:
+preserved oneshot custody, durable preparation before a real reply, reply-only
+tombstones, bounded metadata admission and eventual deadline resolution under
+explicit scheduling/network assumptions. Its deliberate failures include a
+temporal counterexample that leaves an empty request waiting forever. The
+real host-loop tests use actual channels and synthetic stores, and the existing
+forced-persistence-failure regression checks the send ordering. This is not a
+hard real-time guarantee or a proof of Malachite consensus.
+
+`verify/host-recovery` checks sealed maintenance and repeated recovery with
+process interruption distinguished from power loss. The model found that a
+retry after an unsynced marker unlink could skip the pre-cleanup fence; the
+implementation now syncs before deleting backups even when no marker is visible.
+Its regression injects a failed directory sync and requires every backup to
+remain. Other cases challenge consumed backups, premature cleanup and admission
+using only matching config/completion files. Atomic durable replacement remains
+an assumption; these checks do not simulate physical filesystem power loss.
+
+All use checksum-pinned TLC 1.7.4. The complete case inventory is required by the
+runner: new configs cannot silently miss the gate. It requires complete positive
+runs, named invariant failures or an unambiguously attributed temporal witness
+for intentionally broken configurations. It preserves copied model inputs,
+counterexamples, logs and source/tool/runner hashes; parse errors, input changes
+or timeouts cannot count as finding the expected defect.
 
 ```console
 python3 verify/run_tlc.py --jar /absolute/tla2tools.jar --java /absolute/java --out /new/evidence/directory
@@ -122,3 +142,16 @@ isolation remain outside these proofs. Kani results retain their input and
 unwinding bounds; Verus proves reference transition discipline; TLC checks its
 chosen finite protocol abstraction. Tests and live evidence cover different
 parts of the argument and must not be relabeled as mathematical proofs.
+
+## Evaluated Lean experiment
+
+The optional [weighted-quorum spike](../prototypes/lean-quorum/README.md) contains
+a checked, unbounded theorem over finite weighted rosters, arithmetic lemmas,
+and witnesses showing why strict quorum and the Byzantine-weight bound matter.
+Its Lean 4.34.0 source uses only `Std` and reports its transitive axioms. It does
+not prove Rust correspondence, cross-round locking or validator rotation.
+
+The [tool comparison](../verify/README.md#lean-comparison-decision) recommends
+expanding the existing TLA+ gate and retaining Kani/Verus. Lean remains a
+reproducible optional experiment until a stable theorem and owned implementation
+boundary justify the extra toolchain; no required Lean CI layer was added.

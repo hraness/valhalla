@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "scope": "Illustrative finite-model counterexample; not an implementation execution",
+  "model": "RoomsHeldReply.tla",
+  "config": "mutant-tombstone.cfg",
+  "model_sha256": "be169e078f08a32447b85a4547d18c5d05950ca0ff0258382060e1367ad1e01e",
+  "config_sha256": "55a22dd8d46788e4f71a611d02be308287f31291273717ce2d5b6237c863a32c",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "expected": {
+    "type": "invariant",
+    "property": "TombstonesStayLocal"
+  },
+  "exit_code": 12,
+  "trace": [
+    {
+      "state": 1,
+      "tlc_text": "<Initial predicate>\n/\\ replyKind = <<\"none\", \"none\">>\n/\\ replied = {}\n/\\ seen = {}\n/\\ expired = FALSE\n/\\ published = {}\n/\\ current = 0\n/\\ phase = \"idle\"\n/\\ arrived = FALSE\n/\\ kind = \"none\"\n/\\ issued = {}"
+    },
+    {
+      "state": 2,
+      "tlc_text": "<Request line 40, col 12 to line 46, col 72 of module RoomsHeldReply>\n/\\ replyKind = <<\"none\", \"none\">>\n/\\ replied = {}\n/\\ seen = {}\n/\\ expired = FALSE\n/\\ published = {}\n/\\ current = 1\n/\\ phase = \"held\"\n/\\ arrived = FALSE\n/\\ kind = \"none\"\n/\\ issued = {1}"
+    },
+    {
+      "state": 3,
+      "tlc_text": "<Expire line 58, col 11 to line 61, col 56 of module RoomsHeldReply>\n/\\ replyKind = <<\"none\", \"none\">>\n/\\ replied = {}\n/\\ seen = {}\n/\\ expired = TRUE\n/\\ published = {}\n/\\ current = 1\n/\\ phase = \"held\"\n/\\ arrived = FALSE\n/\\ kind = \"none\"\n/\\ issued = {1}"
+    },
+    {
+      "state": 4,
+      "tlc_text": "<Resolve line 65, col 12 to line 70, col 57 of module RoomsHeldReply>\n/\\ replyKind = <<\"none\", \"none\">>\n/\\ replied = {}\n/\\ seen = {}\n/\\ expired = TRUE\n/\\ published = {}\n/\\ current = 1\n/\\ phase = \"selected\"\n/\\ arrived = FALSE\n/\\ kind = \"tombstone\"\n/\\ issued = {1}"
+    },
+    {
+      "state": 5,
+      "tlc_text": "<Prepare line 75, col 12 to line 81, col 57 of module RoomsHeldReply>\n/\\ replyKind = <<\"none\", \"none\">>\n/\\ replied = {}\n/\\ seen = {}\n/\\ expired = TRUE\n/\\ published = {}\n/\\ current = 1\n/\\ phase = \"prepared\"\n/\\ arrived = FALSE\n/\\ kind = \"tombstone\"\n/\\ issued = {1}"
+    },
+    {
+      "state": 6,
+      "tlc_text": "<Reply line 85, col 10 to line 91, col 82 of module RoomsHeldReply>\n/\\ replyKind = <<\"tombstone\", \"none\">>\n/\\ replied = {1}\n/\\ seen = {}\n/\\ expired = TRUE\n/\\ published = {}\n/\\ current = 1\n/\\ phase = \"publishing\"\n/\\ arrived = FALSE\n/\\ kind = \"tombstone\"\n/\\ issued = {1}"
+    },
+    {
+      "state": 7,
+      "tlc_text": "<Publish line 95, col 12 to line 99, col 46 of module RoomsHeldReply>\n/\\ replyKind = <<\"tombstone\", \"none\">>\n/\\ replied = {1}\n/\\ seen = {}\n/\\ expired = TRUE\n/\\ published = {1}\n/\\ current = 1\n/\\ phase = \"idle\"\n/\\ arrived = FALSE\n/\\ kind = \"tombstone\"\n/\\ issued = {1}"
+    }
+  ]
+}

@@ -1,0 +1,416 @@
+{
+  "schema_version": 1,
+  "suites": [
+    {
+      "id": "private-delivery",
+      "module": "verify/private-delivery/PrivateDelivery.tla",
+      "claim": "Fetched retryable traffic retains custody across restart; exact replay does not repeat its application effect.",
+      "status": "implementation-correspondence",
+      "bounds": "Three item identities; normal has two clients, capacity three and one crash each; capacity case has one client and capacity one.",
+      "assumptions": [
+        "Atomic item/progress publication and exact item identities abstract storage and cryptography.",
+        "Conditional liveness assumes valid authority, successful storage/transport, fair scheduling and sufficient capacity. Capacity case checks safety only."
+      ],
+      "sources": [
+        {
+          "path": "browser/src/private/delivery_engine.rs",
+          "symbols": [
+            "Engine::inbound",
+            "Engine::retry_deferred",
+            "Engine::receive"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "browser/tests/private_delivery_engine.rs",
+          "symbols": [
+            "future_message_before_control_survives_restart_and_is_applied_once",
+            "deferred_ciphertext_and_cursor_publish_atomically_across_uncertain_completion"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/private-delivery/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "capacity",
+          "config": "verify/private-delivery/capacity.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-skip",
+          "config": "verify/private-delivery/mutant-skip.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "NoLostWork"
+          },
+          "historical_trace": "verify/private-delivery/counterexamples/mutant-skip.json"
+        },
+        {
+          "id": "mutant-crash",
+          "config": "verify/private-delivery/mutant-crash.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "NoLostWork"
+          },
+          "historical_trace": "verify/private-delivery/counterexamples/mutant-crash.json"
+        },
+        {
+          "id": "mutant-duplicate",
+          "config": "verify/private-delivery/mutant-duplicate.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ExactlyOnce"
+          },
+          "historical_trace": "verify/private-delivery/counterexamples/mutant-duplicate.json"
+        }
+      ]
+    },
+    {
+      "id": "private-rotation",
+      "module": "verify/private-rotation/PrivateRotation.tla",
+      "claim": "A proposed drained generation cutover preserves pending work, spend and receipt scope.",
+      "status": "design-only",
+      "bounds": "Two jobs, two generations, one cutover, separate storage/receipt state and frozen predecessor head.",
+      "assumptions": [
+        "Design evidence only; current production transitions are not claimed to implement this contract.",
+        "Atomic cutover publication; no distributed drain discovery, malicious peers, credential revocation or offline-member availability."
+      ],
+      "sources": [
+        {
+          "path": "docs/private-rotation-contract.md",
+          "symbols": [
+            "Drain",
+            "Cutover"
+          ],
+          "role": "contract"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/private-rotation/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-orphan",
+          "config": "verify/private-rotation/mutant-orphan.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "NoOrphans"
+          },
+          "historical_trace": "verify/private-rotation/counterexamples/mutant-orphan.json"
+        },
+        {
+          "id": "mutant-budget",
+          "config": "verify/private-rotation/mutant-budget.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "PreservedSpend"
+          },
+          "historical_trace": "verify/private-rotation/counterexamples/mutant-budget.json"
+        },
+        {
+          "id": "mutant-receipt",
+          "config": "verify/private-rotation/mutant-receipt.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "BoundReceipts"
+          },
+          "historical_trace": "verify/private-rotation/counterexamples/mutant-receipt.json"
+        }
+      ]
+    },
+    {
+      "id": "private-publication",
+      "module": "verify/private-publication/PrivatePublication.tla",
+      "claim": "Output release follows confirmed publication and a final local grant check; drafts retain their roster.",
+      "status": "implementation-correspondence",
+      "bounds": "Two sessions, one fixed operation per session, one roster change and irreversible local revocation.",
+      "assumptions": [
+        "Atomic storage CAS and exact ciphertext identity are assumed.",
+        "Release linearizes at its final local grant check; previously authorized bytes may arrive later. No liveness claim."
+      ],
+      "sources": [
+        {
+          "path": "crates/vhalla-private-native/src/agent.rs",
+          "symbols": [
+            "AgentSession::queue",
+            "AgentSession::authority"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-native/src/agent/tests.rs",
+          "symbols": [
+            "agent_pending_cancellation_and_uncertain_commit_conserve_charges",
+            "agent_authority_expires_or_is_revoked_while_publication_is_pending"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/private-publication/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-early",
+          "config": "verify/private-publication/mutant-early.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ConfirmedOutput"
+          },
+          "historical_trace": "verify/private-publication/counterexamples/mutant-early.json"
+        },
+        {
+          "id": "mutant-retarget",
+          "config": "verify/private-publication/mutant-retarget.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "DraftBinding"
+          },
+          "historical_trace": "verify/private-publication/counterexamples/mutant-retarget.json"
+        },
+        {
+          "id": "mutant-revoked",
+          "config": "verify/private-publication/mutant-revoked.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "AuthorizedOutput"
+          },
+          "historical_trace": "verify/private-publication/counterexamples/mutant-revoked.json"
+        }
+      ]
+    },
+    {
+      "id": "private-egress",
+      "module": "verify/private-egress/PrivateEgress.tla",
+      "claim": "A new acceptance cannot let local membership control overtake older committed output.",
+      "status": "implementation-correspondence",
+      "bounds": "Three committed artifacts, one control, one queue slot and a monotone capture frontier.",
+      "assumptions": [
+        "Source artifacts already exist and local outbox order is authoritative.",
+        "No claim about source creation, global delivery order or remote epoch availability."
+      ],
+      "sources": [
+        {
+          "path": "crates/vhalla-cli/src/private_rooms/agent_delivery.rs",
+          "symbols": [
+            "issue_acceptance",
+            "acceptance_operation"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-cli/tests/private_agent_delivery.rs",
+          "symbols": [
+            "acceptance_staging_cannot_leapfrog_a_bounded_outbox_backlog"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/private-egress/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-tail",
+          "config": "verify/private-egress/mutant-tail.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "OldBeforeControl"
+          },
+          "historical_trace": "verify/private-egress/counterexamples/mutant-tail.json"
+        }
+      ]
+    },
+    {
+      "id": "rooms-held-reply",
+      "module": "verify/rooms-held-reply/RoomsHeldReply.tla",
+      "claim": "Held replies retain custody, live replies follow durable preparation, tombstones stay local and each request eventually resolves under the operating-host assumptions.",
+      "status": "implementation-correspondence",
+      "bounds": "Two distinct request/metadata slots sharing one height budget; capacity one; one durable value may arrive or remain absent.",
+      "assumptions": [
+        "One sequential connector, live reply receiver, successful storage, continuing host scheduling and draining network.",
+        "No fairness assumption on producer arrival; deadline expiry and host actions are fair. No wall-clock bound, signature, tombstone identity or physical fsync proof."
+      ],
+      "sources": [
+        {
+          "path": "crates/vhalla-rooms-node/src/unix.rs",
+          "symbols": [
+            "GetValue",
+            "drain_answerable_held",
+            "prepare_local_parts",
+            "flush_held"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-rooms-node/src/unix/formal_held_reply.rs",
+          "symbols": [
+            "deadline_unparks_connector_without_another_message",
+            "late_submit_is_durable_before_reply_and_network_drain",
+            "full_metadata_answers_locally_without_publishing"
+          ],
+          "role": "regression"
+        },
+        {
+          "path": "crates/vhalla-rooms-node/src/unix/seen_tests.rs",
+          "symbols": [
+            "seen_failed_preparation_cannot_release_direct_or_held_reply",
+            "seen_direct_and_held_replies_follow_durable_preparation"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/rooms-held-reply/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-drop",
+          "config": "verify/rooms-held-reply/mutant-drop.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ReplyCustody"
+          },
+          "historical_trace": "verify/rooms-held-reply/counterexamples/mutant-drop.json"
+        },
+        {
+          "id": "mutant-early",
+          "config": "verify/rooms-held-reply/mutant-early.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "DurableBeforeReply"
+          },
+          "historical_trace": "verify/rooms-held-reply/counterexamples/mutant-early.json"
+        },
+        {
+          "id": "mutant-tombstone",
+          "config": "verify/rooms-held-reply/mutant-tombstone.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "TombstonesStayLocal"
+          },
+          "historical_trace": "verify/rooms-held-reply/counterexamples/mutant-tombstone.json"
+        },
+        {
+          "id": "mutant-deadline",
+          "config": "verify/rooms-held-reply/mutant-deadline.cfg",
+          "expected": {
+            "kind": "temporal",
+            "property": "AllRequestsAnswered"
+          },
+          "historical_trace": "verify/rooms-held-reply/counterexamples/mutant-deadline.json"
+        }
+      ]
+    },
+    {
+      "id": "host-recovery",
+      "module": "verify/host-recovery/HostRecovery.tla",
+      "claim": "Interrupted sealed-host maintenance preserves restart evidence and admits only a complete sealed snapshot.",
+      "status": "implementation-correspondence",
+      "bounds": "Two selected files, old/new versions, one replacement, config/file backups and at most two process interruptions or power losses. Uncertain case corrupts a retained rollback backup.",
+      "assumptions": [
+        "Successful individual rewrite is atomic and durable; visible marker unlink and directory durability are distinct.",
+        "One cooperative maintenance owner. No physical filesystem, fsync, cryptographic or APFS proof. Corrupt rollback evidence requires preserved refusal."
+      ],
+      "sources": [
+        {
+          "path": "crates/vhalla-cli/src/private_host/config.rs",
+          "symbols": [
+            "begin_seal",
+            "seal_files",
+            "commit_seal",
+            "recover_seal",
+            "restore_seal_backups_with",
+            "remove_seal_scratch",
+            "load"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-cli/src/private_host/config.rs",
+          "role": "regression",
+          "symbols": [
+            "formal_host_recovery_absent_marker_sync_failure_preserves_every_backup",
+            "formal_host_recovery_two_interruptions_retain_exact_snapshot",
+            "formal_host_recovery_matching_pair_still_checks_live_commitments",
+            "formal_host_recovery_partial_cleanup_retries_without_changing_snapshot",
+            "formal_host_recovery_corrupt_backup_refuses_before_any_restore"
+          ]
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/host-recovery/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "uncertain",
+          "config": "verify/host-recovery/uncertain.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-consume",
+          "config": "verify/host-recovery/mutant-consume.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "RestoreEvidence"
+          }
+        },
+        {
+          "id": "mutant-cleanup",
+          "config": "verify/host-recovery/mutant-cleanup.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "RestartEvidence"
+          }
+        },
+        {
+          "id": "mutant-pair-only",
+          "config": "verify/host-recovery/mutant-pair-only.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "SealedAdmission"
+          }
+        },
+        {
+          "id": "mutant-absent-marker",
+          "config": "verify/host-recovery/mutant-absent-marker.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "RestartEvidence"
+          }
+        }
+      ]
+    }
+  ]
+}
