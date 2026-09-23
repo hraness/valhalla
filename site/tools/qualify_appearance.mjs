@@ -41,6 +41,8 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
     })()`);
   };
 
+  await call('Page.bringToFront',{},sessionId);
+  await call('Emulation.setTouchEmulationEnabled',{enabled:false},sessionId);
   await media('dark');
   await navigate('/',1365,950);
   const firstVisit = await assertState('dark','system',null);
@@ -74,10 +76,20 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
     return window.__appearanceQualification.token;
   })()`);
   const move = async fraction => {
+    await call('Page.bringToFront',{},sessionId);
+    await waitFor(() => evaluate("document.visibilityState === 'visible'"),'foreground desktop target');
     const point = await evaluate(`(() => {const b=document.querySelector('.introduction').getBoundingClientRect();
       return {x:b.left+b.width*${fraction},y:Math.max(1,b.top)+Math.min(b.height,innerHeight-Math.max(1,b.top))*0.3};})()`);
     await call('Input.dispatchMouseEvent',{type:'mouseMoved',...point},sessionId);
-    await waitFor(() => evaluate("!!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')"),'trusted hero pointer input');
+    try {
+      await waitFor(() => evaluate("!!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')"),'trusted hero pointer input');
+    } catch (cause) {
+      const diagnostic = await evaluate(`({visibility:document.visibilityState,focused:document.hasFocus(),
+        media:matchMedia('(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) and (forced-colors: none)').matches,
+        hit:document.elementFromPoint(${point.x},${point.y})?.tagName,
+        inside:!!document.elementFromPoint(${point.x},${point.y})?.closest('.introduction')})`);
+      throw Error('trusted hero pointer input: '+JSON.stringify(diagnostic),{cause});
+    }
     return evaluate(`(() => {const s=document.querySelector('.introduction').style;
       return ['--hraness-hero-light-x','--hraness-hero-light-y','--hraness-hero-drift-x','--hraness-hero-drift-y'].map(n=>s.getPropertyValue(n));})()`);
   };
