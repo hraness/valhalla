@@ -1,10 +1,12 @@
 // Static-site responsive/CSP/navigation smoke, isolated browser only.
 import {trackChild, cleanupOwned, runQualification} from '../../browser/tools/qualification_lifecycle.mjs';
+import {qualifyAppearance} from './qualify_appearance.mjs';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {readFile,writeFile,mkdir,mkdtemp,readdir} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
-const [rootArg,chromePath,outArg,headersArg]=process.argv.slice(2), root=resolve(rootArg),out=resolve(outArg);
+const [rootArg,chromePath,outArg,headersArg,mode]=process.argv.slice(2), root=resolve(rootArg),out=resolve(outArg);
+if(mode!==undefined&&mode!=='--appearance-only')throw Error('unknown qualification mode');
 await mkdir(out,{recursive:false});const profile=await mkdtemp(join(out,'profile-'));
 const headers=JSON.parse(await readFile(headersArg,'utf8')).headers[0].headers;
 const server=createServer(async(req,res)=>{try{let path=decodeURIComponent(new URL(req.url,'http://127.0.0.1').pathname);if(path.endsWith('/'))path+='index.html';const f=resolve(root,'.'+path);if(!f.startsWith(root+sep))throw Error('nonlocal');for(const h of headers)res.setHeader(h.key,h.value);res.setHeader('Content-Type',f.endsWith('.html')?'text/html':f.endsWith('.css')?'text/css':f.endsWith('.js')?'text/javascript':f.endsWith('.png')?'image/png':f.endsWith('.svg')?'image/svg+xml':f.endsWith('.woff2')?'font/woff2':'application/octet-stream');res.end(await readFile(f));}catch{res.writeHead(404);res.end();}});
@@ -24,6 +26,11 @@ async function work(){
  const base='http://127.0.0.1:'+server.address().port;
  async function navigate(path,width,height){await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<600},sessionId);await call('Page.navigate',{url:base+path},sessionId);let ready=false;for(let i=0;i<200;i++){if(await evaluate("location.pathname==="+JSON.stringify(path)+" && document.readyState==='complete' && !!document.querySelector('main')")){ready=true;break;}await new Promise(r=>setTimeout(r,25));}if(!ready)throw Error('navigation did not finish '+path);await evaluate('document.fonts.ready.then(()=>true)');}
  async function shot(name){const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId);await writeFile(join(out,name+'.png'),Buffer.from(data,'base64'));}
+ const appearance=await qualifyAppearance({call,evaluate,navigate,sessionId});
+ if(mode==='--appearance-only'){
+  if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
+  return {passed:true,appearance,consoleErrors:errors,root,profile};
+ }
  const results=[];
  const paths=['/'];
  const walk=async dir=>{for(const e of await readdir(join(root,dir),{withFileTypes:true})){
@@ -59,7 +66,7 @@ async function work(){
  if(dark.ready!=='true'||dark.checked!=='true')throw Error('appearance control failed '+JSON.stringify(dark));await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');await shot('home-dark');
  await call('Emulation.setScriptExecutionDisabled',{value:true},sessionId);await navigate('/docs/public-rooms/',390,844);const noScript=await evaluate("document.querySelector('main').textContent.includes('peer-add') && document.querySelectorAll('.mobile-doc-nav a').length >= 9");if(!noScript)throw Error('docs missing without JavaScript');
  if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
- return {passed:true,pages:results,viewports:[1365,1024,768,390,320],light,dark,noScript,keyboard,consoleErrors:errors,root,profile};
+ return {passed:true,pages:results,viewports:[1365,1024,768,390,320],light,dark,noScript,keyboard,appearance,consoleErrors:errors,root,profile};
 }
 await runQualification({
   work, timeoutMs: 150000,

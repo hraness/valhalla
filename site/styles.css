@@ -1500,7 +1500,6 @@ table a {
   .mesh-flow { stroke:CanvasText; }
   .mesh-peer { fill:Canvas; stroke:CanvasText; }
   .mesh-peer-dot { fill:CanvasText; }
-}
   .button-link {
     color:ButtonText;
     background:ButtonFace;
@@ -1525,18 +1524,18 @@ table a {
 /* The fairy field: a quiet stretch of grounds behind the hero — pulsing
  * fairy lights, castle towers with windows that light, and room signposts
  * (#hall, #feast, #forge, #work). The DOM ships in index.html; fairy-field.js
- * sets --prox by pointer distance and --wave for click rings, while
- * --breath/--bloomv are registered so the twinkle runs without JS. --focus
+ * sets --hraness-hero-proximity from the shared light field, while
+ * --breath/--bloomv are registered so the twinkle runs without JS. --reveal
  * resolves whichever channel is strongest. Everything is decorative:
  * aria-hidden, pointer-transparent, reduced-motion leaves a still scene. */
 @property --breath { syntax: "<number>"; inherits: false; initial-value: 0; }
 @property --bloomv { syntax: "<number>"; inherits: false; initial-value: 0; }
 
 :root {
-  --fairy-gold: light-dark(#a97e1f, #f0be4a);
-  --fairy-ember: light-dark(#b85a22, #ef8a4d);
-  --fairy-frost: light-dark(#4a7fb5, #8fb8e8);
-  --fairy-rose: light-dark(#a84a76, #e08ab0);
+  --fairy-gold: var(--primary);
+  --fairy-ember: var(--warning);
+  --fairy-frost: var(--info);
+  --fairy-rose: var(--hraness-palette-chart1);
 }
 
 .fairy-field {
@@ -1588,7 +1587,7 @@ table a {
 .field-fairy,
 .field-tower,
 .field-sign {
-  --focus: max(var(--prox, 0), var(--wave, 0), var(--breath, 0), var(--bloomv, 0));
+  --reveal: max(var(--hraness-hero-proximity, 0), var(--breath, 0), var(--bloomv, 0));
   position: absolute;
   left: var(--x);
   top: var(--y);
@@ -1619,12 +1618,12 @@ table a {
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--glow);
-  opacity: calc(.38 + var(--focus) * .62);
-  filter: blur(calc((1 - var(--focus)) * .7px));
+  opacity: calc(.38 + var(--reveal) * .62);
+  filter: blur(calc((1 - var(--reveal)) * .7px));
   box-shadow:
-    0 0 calc(3px + var(--focus) * 7px) calc(var(--focus) * 2px) var(--glow),
-    0 0 calc(8px + var(--focus) * 22px) color-mix(in oklch, var(--glow) 60%, transparent);
-  scale: calc(.85 + var(--focus) * .3);
+    0 0 calc(3px + var(--reveal) * 7px) calc(var(--reveal) * 2px) var(--glow),
+    0 0 calc(8px + var(--reveal) * 22px) color-mix(in oklch, var(--glow) 60%, transparent);
+  scale: calc(.85 + var(--reveal) * .3);
   transition: opacity .45s ease, filter .45s ease, scale .45s ease, box-shadow .45s ease;
 }
 .field-fairy[data-hue="frost"] { --glow: var(--fairy-frost); }
@@ -1635,18 +1634,18 @@ table a {
 .field-tower {
   width: var(--w, 48px);
   height: auto;
-  opacity: calc(.3 + var(--focus) * .55);
-  filter: blur(calc((1 - var(--focus)) * 1.2px));
+  opacity: calc(.3 + var(--reveal) * .55);
+  filter: blur(calc((1 - var(--reveal)) * 1.2px));
 }
 .field-tower path {
   fill: color-mix(in oklch, var(--ink) 15%, transparent);
 }
 .field-tower .tower-flag {
-  fill: color-mix(in oklch, var(--focus) 55%, var(--ink) 20%);
+  fill: color-mix(in oklch, var(--primary) 55%, var(--ink) 20%);
 }
 .field-tower .tower-window {
   fill: var(--fairy-gold);
-  opacity: calc(.12 + var(--focus) * .88);
+  opacity: calc(.12 + var(--reveal) * .88);
   transition: opacity .45s ease;
 }
 
@@ -1660,8 +1659,8 @@ table a {
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: .625rem;
   letter-spacing: .05em;
-  opacity: calc(.4 + var(--focus) * .6);
-  filter: blur(calc((1 - var(--focus)) * 1.3px));
+  opacity: calc(.4 + var(--reveal) * .6);
+  filter: blur(calc((1 - var(--reveal)) * 1.3px));
 }
 
 @media (max-width: 640px) {
@@ -1717,20 +1716,6 @@ table a {
 .fp-22 { --x:5%; --y:78%; --dx:4px; --dy:5px; --s:47s; --d:-14s; --bs:15s; --bd:-6s; --w:46px; }
 .fp-23 { --x:91%; --y:82%; --dx:5px; --dy:4px; --s:49s; --d:-23s; --bs:16s; --bd:-10s; --w:54px; }
 .fp-24 { --x:44%; --y:88%; --dx:4px; --dy:5px; --s:46s; --d:-30s; --bs:14s; --bd:-9s; --w:38px; }
-
-/* The script flips bucketed data attributes; the stylesheet maps each
- * bucket onto the reveal variables. Attributes, not inline styles, so the
- * strict CSP admits the interaction without unsafe-inline. */
-[data-prox="0"] { --prox:0; } [data-prox="1"] { --prox:.084; } [data-prox="2"] { --prox:.167; }
-[data-prox="3"] { --prox:.25; } [data-prox="4"] { --prox:.334; } [data-prox="5"] { --prox:.417; }
-[data-prox="6"] { --prox:.5; } [data-prox="7"] { --prox:.584; } [data-prox="8"] { --prox:.667; }
-[data-prox="9"] { --prox:.75; } [data-prox="10"] { --prox:.834; } [data-prox="11"] { --prox:.917; }
-[data-prox="12"] { --prox:1; }
-[data-wave="0"] { --wave:0; } [data-wave="1"] { --wave:.084; } [data-wave="2"] { --wave:.167; }
-[data-wave="3"] { --wave:.25; } [data-wave="4"] { --wave:.334; } [data-wave="5"] { --wave:.417; }
-[data-wave="6"] { --wave:.5; } [data-wave="7"] { --wave:.584; } [data-wave="8"] { --wave:.667; }
-[data-wave="9"] { --wave:.75; } [data-wave="10"] { --wave:.834; } [data-wave="11"] { --wave:.917; }
-[data-wave="12"] { --wave:1; }
 
 /* Marketing grammar sections sit inside the product .page, so the grammar's
    own gutter tokens stay at zero and spacing follows the product rhythm. */
@@ -1970,3 +1955,17 @@ table a {
     color:CanvasText;
   }
 }
+
+/* Shared material, quiet reading typography, and a focus-safe decorative layer. */
+.introduction { position: relative; isolation: isolate; overflow: visible; }
+.fairy-field { overflow: clip; transform: translate(var(--hraness-hero-drift-x, 0px), var(--hraness-hero-drift-y, 0px)); }
+.opening h1 { font-size: var(--hraness-marketing-h1-size); line-height: var(--hraness-marketing-h1-leading); letter-spacing: var(--hraness-marketing-h1-tracking); }
+.eyebrow, .opening > .eyebrow { font-size: .875rem; }
+.hero-footnote, .doc-updated, .doc-pagination small { font-size: .9375rem; }
+.doc-header h1 { font-family: var(--font-text); font-size: clamp(2rem, 4vw, 3rem); font-weight: 600; line-height: 1.15; }
+.doc-content { font-size: 1rem; line-height: var(--hraness-reading-leading, 1.7); }
+.doc-content pre { max-width: 100%; overflow-x: auto; tab-size: 2; }
+.scope-card, .room, .build-command { border-color: var(--hraness-material-outline); box-shadow: var(--hraness-material-rest); }
+.header-actions .hraness-design-theme-toggle__trigger { border-color: var(--hraness-material-outline); }
+@media (forced-colors: active) { .scope-card, .room, .build-command, .header-actions .hraness-design-theme-toggle__trigger { border-color: CanvasText; box-shadow: none; } }
+@media (forced-colors: active), (prefers-reduced-transparency: reduce) { .fairy-field { display: none; } }
