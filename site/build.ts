@@ -43,7 +43,7 @@ const useCasesHtml = renderUseCases(html);
 if (useCasesHtml.split(footerMarker).length !== 2) throw new Error("Expected one footer slot: use-cases");
 await writeFile(resolve(output, "use-cases", "index.html"), useCasesHtml.replace(footerMarker, supportFooter()));
 await cp(fileURLToPath(import.meta.resolve("@hraness/site-footer/stylex.css")), resolve(output, "footer.css"));
-const files = ["paper-theme.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css"];
+const files = ["paper-theme.css", "palette-bridge.css", "palette-system.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css"];
 for (const name of files) await cp(resolve(kit, name), resolve(output, "design", name));
 // Keep the exact web fonts and license/provenance files, not native OTF copies
 // or the embedded TypeScript font data used only by social-card generators.
