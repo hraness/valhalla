@@ -48,6 +48,8 @@ use std::io;
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(unix)]
 const HEAD_MAGIC: &[u8; 4] = b"VHP1";
@@ -452,8 +454,14 @@ pub enum Fault {
 #[cfg(unix)]
 pub trait Store {
     /// Acquire the exclusive writer lock; released when the returned handle
-    /// drops, including on process death.
-    fn lock(&self, dir: &Path) -> Result<File, JournalError>;
+    /// drops, including on process death. `durable` tells the store that this
+    /// process already established the journal directory layout's durability
+    /// in a previous successful `lock` call, so the ancestor and directory
+    /// barriers that publication needs are already proven. A `false` value, or
+    /// anything found missing under a `true` one, performs the full durable
+    /// creation path again — a retry still re-syncs an existing directory's
+    /// parent after an uncertain earlier creation.
+    fn lock(&self, dir: &Path, durable: bool) -> Result<File, JournalError>;
     /// Read the current pin bytes, or `None` when absent.
     fn read_pin(&self, dir: &Path) -> Result<Option<Vec<u8>>, JournalError>;
     /// Read `pin.tmp` bytes when present.
@@ -516,13 +524,28 @@ impl FsStore {
 
 #[cfg(unix)]
 impl Store for FsStore {
-    fn lock(&self, dir: &Path) -> Result<File, JournalError> {
+    fn lock(&self, dir: &Path, durable: bool) -> Result<File, JournalError> {
         // Create missing ancestors one at a time and durably publish each
         // before creating its children. A retry also re-syncs an existing
-        // directory's parent after an uncertain earlier creation.
-        create_directory_durable(&std::path::absolute(dir)?)?;
-        fs::create_dir_all(dir.join(BUNDLES))?;
-        fs::create_dir_all(dir.join(HEIGHTS))?;
+        // directory's parent after an uncertain earlier creation. `durable`
+        // marks that an earlier lock in this process already proved the whole
+        // layout; only a foreign removal can still leave anything missing, and
+        // whatever is missing is recreated and covered by one directory sync.
+        let dir = &std::path::absolute(dir)?;
+        let mut fresh = !durable;
+        if fresh || !dir.is_dir() {
+            create_directory_durable(dir)?;
+            fresh = true;
+        }
+        for sub in [dir.join(BUNDLES), dir.join(HEIGHTS)] {
+            if !sub.is_dir() {
+                fs::create_dir_all(&sub)?;
+                fresh = true;
+            }
+        }
+        if !dir.join(LOCK_FILE).exists() {
+            fresh = true;
+        }
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -535,7 +558,9 @@ impl Store for FsStore {
             }
             Err(error) => return Err(error.into()),
         }
-        File::open(dir)?.sync_all()?;
+        if fresh {
+            File::open(dir)?.sync_all()?;
+        }
         Ok(file)
     }
 
@@ -797,8 +822,8 @@ impl<S: Store> FaultingStore<S> {
 
 #[cfg(unix)]
 impl<S: Store> Store for FaultingStore<S> {
-    fn lock(&self, dir: &Path) -> Result<File, JournalError> {
-        self.apply(Step::Lock, || self.inner.lock(dir))
+    fn lock(&self, dir: &Path, durable: bool) -> Result<File, JournalError> {
+        self.apply(Step::Lock, || self.inner.lock(dir, durable))
     }
     fn read_pin(&self, dir: &Path) -> Result<Option<Vec<u8>>, JournalError> {
         self.apply(Step::ReadPin, || self.inner.read_pin(dir))
@@ -880,6 +905,11 @@ pub struct Journal<S: Store> {
     /// application's genesis commitment here; a stored pin supersedes it.
     genesis_next: [u8; 32],
     store: S,
+    /// Whether one `lock` already established this directory layout's
+    /// durability in this process. Process death clears it, so a new writer
+    /// always re-proves the layout once — the retry coverage for a creation
+    /// that crashed before its own barriers.
+    layout_durable: AtomicBool,
 }
 
 #[cfg(unix)]
@@ -897,6 +927,7 @@ impl<S: Store> Journal<S> {
             dir: dir.into(),
             genesis_next,
             store,
+            layout_durable: AtomicBool::new(false),
         }
     }
 
@@ -1007,7 +1038,10 @@ impl<S: Store> Journal<S> {
     /// the complete retained pin, bounded bundle bytes and height marker first;
     /// missing or altered accepted evidence is never repaired or acknowledged.
     pub fn commit(&self, bundle: &Bundle) -> Result<Outcome, JournalError> {
-        let lock = self.store.lock(&self.dir)?;
+        let lock = self
+            .store
+            .lock(&self.dir, self.layout_durable.load(Ordering::Acquire))?;
+        self.layout_durable.store(true, Ordering::Release);
         let current = match self.store.read_pin(&self.dir)? {
             None => self.genesis(),
             Some(bytes) => Pin::decode(&bytes)?,
@@ -1055,8 +1089,14 @@ impl<S: Store> Journal<S> {
             if stored != bundle.bytes() {
                 return Err(JournalError::Corrupt);
             }
+            // A bundle file this commit did not create has an unproven inode:
+            // its writer may have died before its own barrier. Re-sync it
+            // before publishing a pin over it. A freshly created bundle already
+            // had its inode synced inside `create_bundle` before the hard link,
+            // and its new directory entry is covered by `sync_bundles_dir`
+            // below, so the fresh path takes no second file barrier.
+            self.store.sync_bundle(&self.dir, bundle.id())?;
         }
-        self.store.sync_bundle(&self.dir, bundle.id())?;
         self.store.sync_bundles_dir(&self.dir)?;
         self.store
             .write_height_marker(&self.dir, bundle.height(), bundle.id())?;

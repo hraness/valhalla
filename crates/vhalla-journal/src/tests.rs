@@ -139,7 +139,10 @@ fn crash_after_bundle_create_then_rival_loses() {
     let b1 = bundle(g, [1; 32], 1, "winner");
     let rival = bundle(g, [2; 32], 1, "loser");
     {
-        let journal = fault_journal(&dir, &[(Step::SyncBundle, Fault::CrashBefore)]);
+        // A fresh commit no longer re-syncs its own bundle inode, so the crash
+        // lands at the next publication point — before the bundle's directory
+        // entry barrier and long before any pin.
+        let journal = fault_journal(&dir, &[(Step::SyncBundlesDir, Fault::CrashBefore)]);
         assert!(matches!(journal.commit(&b1), Err(JournalError::Crashed)));
     }
     // The rival arrives first after restart and wins the slot.
@@ -262,15 +265,36 @@ fn protocol_steps_are_ordered() {
     let journal = fault_journal(&dir, &[]);
     assert_eq!(journal.commit(&b1).unwrap(), Outcome::Committed);
     let log = journal.store.log.borrow().clone();
+    // A fresh bundle's inode is synced inside `create_bundle` before the hard
+    // link, so `SyncBundle` does not run on the fresh path at all.
+    assert!(!log.contains(&Step::SyncBundle));
     let position = |step: Step| log.iter().position(|s| *s == step).unwrap();
-    assert!(position(Step::CreateBundle) < position(Step::SyncBundle));
-    assert!(position(Step::SyncBundle) < position(Step::SyncBundlesDir));
+    assert!(position(Step::CreateBundle) < position(Step::SyncBundlesDir));
     assert!(position(Step::SyncBundlesDir) < position(Step::WriteHeightMarker));
     assert!(position(Step::WriteHeightMarker) < position(Step::SyncHeightMarker));
     assert!(position(Step::SyncHeightMarker) < position(Step::SyncHeightsDir));
     assert!(position(Step::SyncHeightsDir) < position(Step::WritePinTmp));
     assert!(position(Step::SyncPinTmp) < position(Step::RenamePin));
     assert!(position(Step::RenamePin) < position(Step::SyncDir));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn retained_bundle_retry_resyncs_before_publishing_a_pin() {
+    let dir = fixture();
+    let b1 = bundle(GENESIS_NEXT, [1; 32], 1, "a");
+    // Leave the durable bundle behind without its pin: the retry must verify
+    // the retained bytes and re-sync that inode before the pin can publish.
+    {
+        let journal = fault_journal(&dir, &[(Step::WritePinTmp, Fault::CrashBefore)]);
+        assert!(matches!(journal.commit(&b1), Err(JournalError::Crashed)));
+    }
+    let journal = fault_journal(&dir, &[]);
+    assert_eq!(journal.commit(&b1).unwrap(), Outcome::Committed);
+    let log = journal.store.log.borrow().clone();
+    let position = |step: Step| log.iter().position(|s| *s == step).unwrap();
+    assert!(position(Step::CreateBundle) < position(Step::SyncBundle));
+    assert!(position(Step::SyncBundle) < position(Step::SyncBundlesDir));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -528,7 +552,13 @@ fn fresh_bundle(seq: u64, predecessor: [u8; 32], height: u64) -> Bundle {
 /// procedure as `Journal::commit`: lock, read pin, reconcile an already
 /// published bundle, reject a mismatched predecessor or height, then the
 /// create/sync/marker/pin-tmp/rename/dir-sync sequence.
-fn simulate(pin: Pin, bundle: &Bundle, fstep: Step, fault: Fault) -> (Verdict, Vec<Step>, Effects) {
+fn simulate(
+    pin: Pin,
+    bundle: &Bundle,
+    fstep: Step,
+    fault: Fault,
+    bundle_exists: bool,
+) -> (Verdict, Vec<Step>, Effects) {
     let mut log = Vec::new();
     let mut fx = Effects::default();
     // Lock setup failures preserve their actual cause. Even `CrashAfter`
@@ -577,6 +607,12 @@ fn simulate(pin: Pin, bundle: &Bundle, fstep: Step, fault: Fault) -> (Verdict, V
         );
     }
     for step in &FAULTABLE_STEPS[2..] {
+        // `create_bundle` already synced a freshly written inode before its
+        // hard link, so the bundle re-sync runs only for a retained file whose
+        // earlier writer may have died before its barrier.
+        if *step == Step::SyncBundle && !bundle_exists {
+            continue;
+        }
         log.push(*step);
         // The step's effect lands unless the drawn fault suppresses it.
         if fstep != *step || matches!(fault, Fault::Pass | Fault::CrashAfter) {
@@ -677,7 +713,8 @@ fn interleaved_faults_preserve_commit_recovery_semantics(tc: TestCase) {
         let fstep =
             FAULTABLE_STEPS[tc.draw(gs::integers::<usize>().max_value(FAULTABLE_STEPS.len() - 1))];
         let fault = FAULT_KINDS[tc.draw(gs::integers::<usize>().max_value(3))];
-        let (want, want_log, fx) = simulate(pin, bundle, fstep, fault);
+        let (want, want_log, fx) =
+            simulate(pin, bundle, fstep, fault, files.contains(&bundle.id()));
 
         let journal = fault_journal(&dir, &[(fstep, fault)]);
         let got = match journal.commit(bundle) {
@@ -817,7 +854,7 @@ fn exact_committed_retry_revalidates_all_retained_evidence_without_repair() {
 fn lock_contention_and_setup_failure_have_distinct_recovery_paths() {
     let dir = fixture();
     let first = bundle(GENESIS_NEXT, [42; 32], 1, "lock-result");
-    let held = FsStore.lock(&dir).unwrap();
+    let held = FsStore.lock(&dir, false).unwrap();
     assert!(matches!(
         fs_journal(&dir).commit(&first),
         Err(JournalError::Busy)

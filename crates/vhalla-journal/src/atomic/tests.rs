@@ -49,7 +49,7 @@ fn atomic_bundle_faults_never_expose_partial_final_or_advance_head() {
         let old_head = fs::read(dir.join(HEAD_FILE)).unwrap();
         let next = bundle(first.next(), 2);
         {
-            let _lock = FsStore.lock(&dir).unwrap();
+            let _lock = FsStore.lock(&dir, false).unwrap();
             let result = create_bundle(&dir, next.id(), next.bytes(), |point| {
                 if point == fault {
                     Err(JournalError::Crashed)
@@ -102,7 +102,7 @@ fn atomic_bundle_existing_corrupt_final_is_never_repaired_or_overwritten() {
         let dir = fixture();
         let value = bundle(GENESIS_NEXT, 1);
         {
-            let _lock = FsStore.lock(&dir).unwrap();
+            let _lock = FsStore.lock(&dir, false).unwrap();
             fs::write(FsStore::bundle_path(&dir, value.id()), &bad).unwrap();
         }
         let scratch = dir.join(BUNDLES).join(SCRATCH);
@@ -126,7 +126,7 @@ fn atomic_bundle_unknown_scratch_kinds_and_custody_are_preserved() {
     for case in 0..5 {
         let dir = fixture();
         let value = bundle(GENESIS_NEXT, 1);
-        let _lock = FsStore.lock(&dir).unwrap();
+        let _lock = FsStore.lock(&dir, false).unwrap();
         let scratch = dir.join(BUNDLES).join(SCRATCH);
         let target = dir.join("unrelated");
         fs::write(&target, b"keep").unwrap();
@@ -176,7 +176,7 @@ fn atomic_bundle_conflict_or_corrupt_head_never_cleans_scratch() {
     journal.commit(&first).unwrap();
     let next = bundle(first.next(), 2);
     {
-        let _lock = FsStore.lock(&dir).unwrap();
+        let _lock = FsStore.lock(&dir, false).unwrap();
         assert!(matches!(
             create_bundle(&dir, next.id(), next.bytes(), |point| {
                 if point == BundleWriteStep::Partial {
@@ -209,7 +209,7 @@ fn atomic_bundle_conflict_or_corrupt_head_never_cleans_scratch() {
 #[test]
 fn atomic_bundle_size_rejection_precedes_scratch_mutation() {
     let dir = fixture();
-    let _lock = FsStore.lock(&dir).unwrap();
+    let _lock = FsStore.lock(&dir, false).unwrap();
     let scratch = dir.join(BUNDLES).join(SCRATCH);
     fs::write(&scratch, b"unchanged").unwrap();
     assert!(matches!(
