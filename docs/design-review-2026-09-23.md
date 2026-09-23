@@ -193,8 +193,8 @@ resilience gap; P3 cleanliness. Status is filled by the integration owner.
 | F10 | P2 | Driver hot loop performs O(items) file opens per second per agent (same evidence as A5, E-6) | agent/MCP | in progress |
 | F11 | P2 | Restart cost grows with outbox length and blocks inbound processing (same evidence as A6, B6) | agent/MCP | in progress |
 | F12 | P2 | No reboot, sleep/wake or logout qualification; the launchd crash loop is invisible (same evidence as A10) | relay/host | in progress |
-| F13 | P3 | Doc/code disagreements: `--delivery`-only status fields, `status` health wording, missing `vhalla --version`, README build features, stale Tailcat receipt | journey | in progress |
-| F14 | P3 | No read-only `delivery-status` command; the only views need a live grant or hand-reading SQLite (`delivery.rs:468`) | journey | in progress |
+| F13 | P3 | Doc/code disagreements: `--delivery`-only status fields, `status` health wording, missing `vhalla --version`, README build features, stale Tailcat receipt | journey | fixed: `vhalla --version`/`-V` reports crate version plus the compiled feature set; README documents the `experimental-private` build and feature check; `status` vs `status --probe` health wording landed with the relay lane; cli-agents.md documents the delivery-only outbox fields; Tailcat stays pinned at v0.7.0 matching the installed binary |
+| F14 | P3 | No read-only `delivery-status` command; the only views need a live grant or hand-reading SQLite (`delivery.rs:468`) | journey | fixed: `vhalla private delivery-status ID STORE --config P --out FILE` reads the durable journal under its own lock with `--after`/`--limit` paging and no grant, network or plaintext exposure |
 
 Lane B's B1 and lane F's F1 describe the same latch from two entry points
 (read-side argument error versus inbound item); C1 and D2 describe the same

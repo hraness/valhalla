@@ -28,6 +28,38 @@ impl Drop for Temp {
 }
 
 #[test]
+fn cli_version_reports_the_compiled_feature_set() {
+    for flag in ["--version", "-V"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{flag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let line = String::from_utf8(output.stdout).unwrap();
+        let version = line.trim().strip_prefix("vhalla ").expect("version prefix");
+        let features = version
+            .split_once(" features=[")
+            .expect("feature list")
+            .1
+            .strip_suffix(']')
+            .expect("closing bracket");
+        // A release artifact always compiles at least one experimental surface;
+        // a bare workspace build may legitimately report an empty set.
+        assert!(
+            features
+                .split(',')
+                .all(|f| f.is_empty() || f.starts_with("experimental-")),
+            "{flag}: unexpected feature list {features}"
+        );
+    }
+}
+
+#[test]
 fn cli_initializes_once_and_shows_only_the_same_public_key() {
     let dir = Temp::new();
     let run = |operation: &str| {

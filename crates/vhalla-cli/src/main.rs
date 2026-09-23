@@ -65,6 +65,34 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args.len() > 64 {
         return Err("too many arguments (maximum 64)".into());
     }
+    if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
+        // Release identity is the git tag, not the workspace crate version;
+        // the feature set is what actually distinguishes one binary.
+        let features: &[&str] = &[
+            #[cfg(feature = "experimental-network")]
+            "experimental-network",
+            #[cfg(feature = "experimental-social")]
+            "experimental-social",
+            #[cfg(feature = "experimental-rooms")]
+            "experimental-rooms",
+            #[cfg(feature = "experimental-rooms-node")]
+            "experimental-rooms-node",
+            #[cfg(feature = "experimental-rooms-tui")]
+            "experimental-rooms-tui",
+            #[cfg(feature = "experimental-sync")]
+            "experimental-sync",
+            #[cfg(feature = "experimental-private")]
+            "experimental-private",
+            #[cfg(feature = "experimental-public")]
+            "experimental-public",
+        ];
+        println!(
+            "vhalla {} features=[{}]",
+            env!("CARGO_PKG_VERSION"),
+            features.join(",")
+        );
+        return Ok(());
+    }
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         use std::io::IsTerminal;
         let term = std::env::var("TERM").ok();

@@ -6289,6 +6289,7 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
+ "hegeltest",
  "hraness-support-foundation",
  "libc",
  "rcgen",

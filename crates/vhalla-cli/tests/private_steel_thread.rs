@@ -2,6 +2,7 @@
 //! step is a documented operator command; only synthetic state under one
 //! temporary directory and ephemeral loopback ports are used.
 #![cfg(all(unix, feature = "experimental-private"))]
+use hegel::{generators as gs, HealthCheck, TestCase};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -1083,4 +1084,127 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
         "steel-thread journey completed in {:?}",
         journey.started.elapsed()
     );
+}
+
+/// Hegel variant of the steel-thread journey (lane F, Part 3): the same
+/// product machinery under drawn interleavings of sends from either side,
+/// host restarts, graceful and killed agent relaunches, and convergence.
+/// The model's liveness invariant: once the host is up and both agents are
+/// live, every queued message is retained, reaches exactly the other
+/// member's inbox and yields exactly that member's signed acceptance on the
+/// sender; receipts never appear in either agent-visible inbox.
+///
+/// The case count is lower than kernel Hegel tests because each case runs a
+/// full product journey — host process, two `agent-serve` children, real
+/// grants — end to end; the drawn interleaving is the coverage, not case
+/// volume. Only TooSlow is suppressed: the multi-process setup legitimately
+/// exceeds its budget.
+#[hegel::test(test_cases = 4, suppress_health_check = [HealthCheck::TooSlow])]
+fn hegel_two_agents_interleaved_restarts_relaunches_and_delivery(tc: TestCase) {
+    let mut journey = Journey::new();
+    journey.host_init();
+    let mut host = Some(journey.host_serve());
+    journey.identities();
+    journey.admit();
+    journey.inspect(Who::A);
+    journey.inspect(Who::B);
+    journey.delivery_profile(Who::A);
+    journey.delivery_profile(Who::B);
+    let mut generation = [1u32, 1u32];
+    let mut agents = [
+        Some(journey.agent(Who::A, generation[0])),
+        Some(journey.agent(Who::B, generation[1])),
+    ];
+    let mut sent = 0u64;
+    // (sender index, outbox sequence, body) queued but not yet converged.
+    let mut pending: Vec<(usize, u64, String)> = Vec::new();
+    let steps = tc.draw(gs::integers::<usize>().min_value(3).max_value(8));
+    for _ in 0..steps {
+        match tc.draw(gs::integers::<u8>().max_value(4)) {
+            // Queue one message from a side; a dead sender relaunches first,
+            // mirroring an operator restarting their agent under a new grant.
+            side @ (0 | 1) => {
+                let index = side as usize;
+                let who = if index == 0 { Who::A } else { Who::B };
+                if agents[index].is_none() {
+                    generation[index] += 1;
+                    agents[index] = Some(journey.agent(who, generation[index]));
+                }
+                sent += 1;
+                let body = format!("hegel steel thread {sent} from {}", who.dir());
+                // Admission consumed op(1)/op(2); committed operation IDs are
+                // one-use, so message operations start at 0x10 like the
+                // linear journey.
+                let sequence = agents[index].as_mut().unwrap().queue(&body, 0x10 * sent);
+                pending.push((index, sequence, body));
+            }
+            // Operator restart of the product host; queued and staged work
+            // must survive the outage untouched.
+            2 => {
+                host.take().unwrap().stop();
+                assert!(TcpStream::connect(journey.addr).is_err());
+                host = Some(journey.host_serve());
+            }
+            // Relaunch each live agent, drawn per side as a graceful stdin
+            // EOF or an abrupt kill; the consumed grant must stay refused
+            // and a fresh grant resumes the exact same custody.
+            3 => {
+                for (index, who) in [Who::A, Who::B].into_iter().enumerate() {
+                    let Some(agent) = agents[index].take() else {
+                        continue;
+                    };
+                    if tc.draw(gs::booleans()) {
+                        agent.close();
+                    } else {
+                        drop(agent);
+                    }
+                    journey.refused_agent(who, generation[index]);
+                    generation[index] += 1;
+                    agents[index] = Some(journey.agent(who, generation[index]));
+                }
+            }
+            // Convergence point: with connectivity and live agents, every
+            // queued message delivers and is accepted.
+            _ => converge(&journey, &mut agents, &mut generation, &mut pending),
+        }
+    }
+    converge(&journey, &mut agents, &mut generation, &mut pending);
+    // F5 invariant under interleavings: signed device receipts surface only
+    // through member_acceptances, never in the agent-visible inbox.
+    for agent in agents.iter_mut().flatten() {
+        assert!(agent.receipt_records().is_empty());
+    }
+    // The mailbox carries exactly the two admission artifacts plus one
+    // message and one device receipt per send.
+    let mailbox = journey.relay_client(journey.host_token(Who::A));
+    assert_eq!(
+        mailbox.page(0, 64).unwrap().head,
+        2 + 2 * sent,
+        "admission artifacts plus one message and receipt per send"
+    );
+}
+
+/// Bring both agents live under fresh grants where needed and drain every
+/// queued message end to end: retained relay delivery, the recipient's
+/// inbox copy and the recipient's signed acceptance back on the sender.
+fn converge<'a>(
+    journey: &'a Journey,
+    agents: &mut [Option<Agent<'a>>; 2],
+    generation: &mut [u32; 2],
+    pending: &mut Vec<(usize, u64, String)>,
+) {
+    for (index, who) in [Who::A, Who::B].into_iter().enumerate() {
+        if agents[index].is_none() {
+            generation[index] += 1;
+            agents[index] = Some(journey.agent(who, generation[index]));
+        }
+    }
+    for (sender, sequence, body) in pending.drain(..) {
+        let accepted = agents[sender].as_mut().unwrap().await_acceptance(sequence);
+        let received = agents[1 - sender].as_mut().unwrap().await_inbox_text(&body);
+        assert_eq!(
+            accepted["member_acceptances"][0]["received_sequence"], received["sequence"],
+            "acceptance must name the recipient's exact inbox sequence"
+        );
+    }
 }
