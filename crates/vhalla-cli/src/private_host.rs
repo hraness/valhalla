@@ -18,8 +18,10 @@ use vhalla_private_native::relay::{
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY]\nvhalla private-host serve|status|install|uninstall HOME\nvhalla private-host add-credential|rotate HOME\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, two or more distinct client credentials, explicit macOS LaunchAgent lifecycle. No account keys, automatic update, public listener, or cloud provisioning.";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-3650]\nvhalla private-host serve|status|install|uninstall HOME\nvhalla private-host add-credential|rotate|renew HOME\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, two or more distinct client credentials, explicit macOS LaunchAgent lifecycle. No account keys, automatic update, public listener, or cloud provisioning.";
 const REFUSED: &str = "local host refused; preserve the exact home, configuration, certificates and mailbox; never reset retained custody";
+/// Status marks the leaf for explicit operator renewal inside this window.
+const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
 
 pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
     if args.len() < 3 || args[0] != "private-host" {
@@ -31,6 +33,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             let mut listen: SocketAddr = "127.0.0.1:9473".parse().map_err(|_| REFUSED)?;
             let mut name = "relay.valhalla.invalid".to_owned();
             let mut executable = std::env::current_exe().map_err(|_| REFUSED)?;
+            let mut leaf_days = 365i64;
             let mut seen = std::collections::BTreeSet::new();
             if !(args.len() - 3).is_multiple_of(2) {
                 return Err(HELP.into());
@@ -51,13 +54,25 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                             return Err(HELP.into());
                         }
                     }
+                    "--leaf-days" => {
+                        leaf_days = pair[1].to_str().ok_or(HELP)?.parse().map_err(|_| HELP)?;
+                        if !(1..=3650).contains(&leaf_days) {
+                            return Err(HELP.into());
+                        }
+                    }
                     _ => return Err(HELP.into()),
                 }
             }
             if !listen.ip().is_loopback() || listen.port() == 0 {
                 return Err("local host requires an explicit nonzero loopback endpoint; expose it only through a separately reviewed encrypted overlay".into());
             }
-            let loaded = config::initialize(home, listen, &name, &executable)?;
+            let loaded = config::initialize_with_leaf_lifetime(
+                home,
+                listen,
+                &name,
+                &executable,
+                time::Duration::days(leaf_days),
+            )?;
             println!(
                 "{}",
                 serde_json::json!({"status":"initialized","home":loaded.home,"connection":loaded.home.join("connection.json"),"launch_agent":loaded.home.join("launch-agent.plist"),"label":loaded.config.label})
@@ -98,6 +113,14 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             );
             Ok(())
         }
+        Some("renew") if args.len() == 3 => {
+            let expires = config::renew(home)?;
+            println!(
+                "{}",
+                serde_json::json!({"status":"renewed","home":config::resolve(home)?,"certificate_expires_at":expires})
+            );
+            Ok(())
+        }
         Some(action @ ("serve" | "status" | "install" | "uninstall")) if args.len() == 3 => {
             let loaded = if action == "uninstall" {
                 config::load_for_stop(home)?
@@ -110,7 +133,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                     let now = time::OffsetDateTime::now_utc().unix_timestamp();
                     println!(
                         "{}",
-                        serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"service":launchd::status(&loaded)?,"health":"not probed; loaded service is not TLS or retention evidence"})
+                        serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"health":"not probed; loaded service is not TLS or retention evidence"})
                     );
                     Ok(())
                 }

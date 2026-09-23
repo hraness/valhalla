@@ -430,6 +430,87 @@ fn add_credential_and_rotate_extend_the_sealed_home_without_rebinding_members() 
 }
 
 #[test]
+fn renew_reissues_the_leaf_under_the_retained_ca_without_rebinding() {
+    let f = Fixture::new();
+    // A deliberately short-lived leaf exercises the status warning window.
+    let mut init = f.command("init");
+    init.args([
+        "--listen",
+        &f.addr.to_string(),
+        "--tls-name",
+        "local-host.test.invalid",
+        "--leaf-days",
+        "1",
+    ]);
+    ok(&run(init));
+    let ca = fs::read(f.home().join("ca.der")).unwrap();
+    let leaf = fs::read(f.home().join("server.der")).unwrap();
+    let leaf_key = fs::read(f.home().join("server-key.der")).unwrap();
+    let tokens: Vec<Vec<u8>> = (1..=2)
+        .map(|n| fs::read(f.home().join(format!("client-{n}.token"))).unwrap())
+        .collect();
+    let status = run(f.command("status"));
+    ok(&status);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["certificate_expired"], false);
+    assert_eq!(status["certificate_expiring"], true);
+    let renewed = run(f.command("renew"));
+    ok(&renewed);
+    let renewed: Value = serde_json::from_slice(&renewed.stdout).unwrap();
+    assert_eq!(renewed["status"], "renewed");
+    // Only the leaf pair and the published expiry advanced; the CA, tokens,
+    // namespace and binding are byte-identical.
+    assert_ne!(fs::read(f.home().join("server.der")).unwrap(), leaf);
+    assert_ne!(fs::read(f.home().join("server-key.der")).unwrap(), leaf_key);
+    assert_eq!(fs::read(f.home().join("ca.der")).unwrap(), ca);
+    assert_eq!(
+        f.json("connection.json")["certificate_expires_at"],
+        renewed["certificate_expires_at"]
+    );
+    assert_eq!(
+        f.json("config.json")["namespace"],
+        f.json("connection.json")["namespace"]
+    );
+    for (n, token) in tokens.iter().enumerate() {
+        assert_eq!(
+            fs::read(f.home().join(format!("client-{}.token", n + 1))).unwrap(),
+            *token
+        );
+    }
+    for name in [
+        "server.der",
+        "server-key.der",
+        "connection.json",
+        "config.json",
+    ] {
+        let meta = fs::symlink_metadata(f.home().join(name)).unwrap();
+        assert_eq!(meta.mode() & 0o7777, 0o600);
+        assert_eq!(meta.nlink(), 1);
+    }
+    // The renewed leaf chains to the retained CA: a real serve admits the
+    // unchanged credentials, and the leaf lifetime stayed one day.
+    let mut server = f.serve();
+    assert_eq!(f.client(1).page(0, 1).unwrap().head, 0);
+    server.stop();
+    let after = run(f.command("status"));
+    ok(&after);
+    let after: Value = serde_json::from_slice(&after.stdout).unwrap();
+    assert_eq!(after["certificate_expiring"], true);
+    let span = renewed["certificate_expires_at"].as_i64().unwrap()
+        - f.json("config.json")["created_at"].as_i64().unwrap();
+    assert!((86_000..=172_800).contains(&span));
+    // Without the retained CA private key renewal refuses and changes nothing.
+    let g = Fixture::new();
+    ok(&g.init());
+    let moved = g.home().join("retained-ca-key");
+    fs::rename(g.home().join("ca-key.der"), &moved).unwrap();
+    let leaf_before = fs::read(g.home().join("server.der")).unwrap();
+    assert!(!run(g.command("renew")).status.success());
+    assert_eq!(fs::read(g.home().join("server.der")).unwrap(), leaf_before);
+    assert!(moved.exists());
+}
+
+#[test]
 fn tailcat_template_uses_only_saved_private_key_and_exact_one_port_without_activation() {
     let f = Fixture::new();
     ok(&f.init());

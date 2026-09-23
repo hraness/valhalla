@@ -14,7 +14,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use vhalla_custody as custody;
-use vhalla_private_native::relay::{tls::Service, FileStore, Limits, RelayNamespace};
+use vhalla_private_native::relay::{
+    net::RelayToken, tls, tls::Service, FileStore, Limits, RelayNamespace,
+};
 use zeroize::Zeroizing;
 
 /// Files initialized before any credential; `client-N.token` names follow.
@@ -157,11 +159,53 @@ fn label(home: &Path) -> Result<String, String> {
     ))
 }
 
+/// The one issuer shape this command family ever publishes. Renewal rebuilds
+/// these exact params so the reissued leaf chains to the retained `ca.der`:
+/// `signed_by` consumes only the issuer subject name and key identifier.
+fn issuer_params(
+    not_before: time::OffsetDateTime,
+    not_after: time::OffsetDateTime,
+) -> Result<CertificateParams, String> {
+    let mut issuer = CertificateParams::new(Vec::<String>::new()).map_err(|_| REFUSED)?;
+    issuer.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    issuer.not_before = not_before;
+    issuer.not_after = not_after;
+    issuer.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    Ok(issuer)
+}
+fn leaf_params(
+    name: &str,
+    not_before: time::OffsetDateTime,
+    not_after: time::OffsetDateTime,
+) -> Result<CertificateParams, String> {
+    let mut leaf =
+        CertificateParams::new(vec![name.to_owned()]).map_err(|_| "invalid TLS server name")?;
+    leaf.not_before = not_before;
+    leaf.not_after = not_after;
+    leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    Ok(leaf)
+}
+
+#[cfg(test)]
 pub(super) fn initialize(
     path: &Path,
     listen: SocketAddr,
     name: &str,
     executable: &Path,
+) -> Result<Loaded, String> {
+    initialize_with_leaf_lifetime(path, listen, name, executable, time::Duration::days(365))
+}
+
+pub(super) fn initialize_with_leaf_lifetime(
+    path: &Path,
+    listen: SocketAddr,
+    name: &str,
+    executable: &Path,
+    leaf_lifetime: time::Duration,
 ) -> Result<Loaded, String> {
     let home = resolve(path)?;
     if !super::loopback(listen) || listen.port() == 0 || name.len() > 253 || name.is_empty() {
@@ -178,26 +222,14 @@ pub(super) fn initialize(
         );
     }
     let now = time::OffsetDateTime::now_utc();
-    let expires = now + time::Duration::days(365);
+    let expires = now + leaf_lifetime;
     let authority_expires = now + time::Duration::days(365 * 5);
     let issuer_key = KeyPair::generate().map_err(|_| REFUSED)?;
-    let mut issuer = CertificateParams::new(Vec::<String>::new()).map_err(|_| REFUSED)?;
-    issuer.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    issuer.not_before = now - time::Duration::minutes(5);
-    issuer.not_after = authority_expires;
-    issuer.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-    let issuer = issuer.self_signed(&issuer_key).map_err(|_| REFUSED)?;
+    let issuer = issuer_params(now - time::Duration::minutes(5), authority_expires)?
+        .self_signed(&issuer_key)
+        .map_err(|_| REFUSED)?;
     let key = KeyPair::generate().map_err(|_| REFUSED)?;
-    let mut leaf =
-        CertificateParams::new(vec![name.to_owned()]).map_err(|_| "invalid TLS server name")?;
-    leaf.not_before = now - time::Duration::minutes(5);
-    leaf.not_after = expires;
-    leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let leaf = leaf
+    let leaf = leaf_params(name, now - time::Duration::minutes(5), expires)?
         .signed_by(&key, &issuer, &issuer_key)
         .map_err(|_| REFUSED)?;
     // TLS name validation and crypto happen before the first filesystem mutation.
@@ -556,9 +588,12 @@ pub(super) fn add_credential(home: &Path) -> Result<(usize, String), String> {
         .insert(name.clone(), digest(&read(&loaded.home, &name, 65)?));
     seal_files(&loaded.home)?;
     commit_seal(&loaded.home, &config)?;
-    // Enroll the durable quota against the committed manifest, exactly as a
-    // restart would; a refusal leaves evidence without rolling back the seal.
-    drop(service(&loaded.home, &config)?);
+    // Verify the committed credential parses exactly as a restart reads it.
+    // Quota enrollment and live admission happen at the next service open, so
+    // this never takes the mailbox custody lock of a running server.
+    let raw = read_bound(&loaded.home, &config, &name, 65)?;
+    let text = std::str::from_utf8(&raw).map_err(|_| REFUSED)?;
+    RelayToken::from_bytes(decode_hex::<32>(text.trim_end_matches('\n'))?).map_err(|_| REFUSED)?;
     Ok((index, id))
 }
 
@@ -609,6 +644,88 @@ pub(super) fn rotate(home: &Path) -> Result<(String, String), String> {
     // Prove the rotated selection opens exactly as a restart will see it.
     drop(service(&loaded.home, &config)?);
     Ok((config.namespace, mailbox))
+}
+
+/// Reissue the serving leaf under the retained CA. The binding, namespace,
+/// mailbox, credential set and CA are unchanged; only `server.der`,
+/// `server-key.der`, the expiry in `connection.json` and the sealed manifest
+/// advance. Renewal refuses without the CA private key and never weakens the
+/// owner-private modes of the files it replaces.
+pub(super) fn renew(home: &Path) -> Result<i64, String> {
+    recover_seal(home)?;
+    let loaded = load(home)?;
+    let ca_key = read_bound(&loaded.home, &loaded.config, "ca-key.der", 65536).map_err(|_| {
+        "leaf renewal requires the retained CA private key; preserve custody, never replace the CA"
+    })?;
+    let issuer_key = KeyPair::try_from(ca_key.to_vec()).map_err(|_| REFUSED)?;
+    // Rebuilt issuer params give `signed_by` the same subject name and key
+    // identifier as the original CA object, so the new leaf chains to ca.der.
+    let authority = time::OffsetDateTime::from_unix_timestamp(loaded.config.authority_expires_at)
+        .map_err(|_| REFUSED)?;
+    let issuer = issuer_params(
+        time::OffsetDateTime::from_unix_timestamp(loaded.config.created_at).map_err(|_| REFUSED)?
+            - time::Duration::minutes(5),
+        authority,
+    )?
+    .self_signed(&issuer_key)
+    .map_err(|_| REFUSED)?;
+    let now = time::OffsetDateTime::now_utc();
+    // Renewal preserves the operator's chosen leaf lifetime, never the CA's.
+    let expires = (now
+        + time::Duration::seconds(loaded.config.certificate_expires_at - loaded.config.created_at))
+    .min(authority);
+    if expires <= now {
+        return Err("the retained CA has expired; a new CA is a new host, not a renewal".into());
+    }
+    let key = KeyPair::generate().map_err(|_| REFUSED)?;
+    let leaf = leaf_params(
+        &loaded.config.tls_name,
+        now - time::Duration::minutes(5),
+        expires,
+    )?
+    .signed_by(&key, &issuer, &issuer_key)
+    .map_err(|_| REFUSED)?;
+    // Carry a rotation's previous namespace forward unchanged.
+    let previous = serde_json::from_slice::<serde_json::Value>(&read_bound(
+        &loaded.home,
+        &loaded.config,
+        "connection.json",
+        65536,
+    )?)
+    .ok()
+    .and_then(|v| {
+        v.get("previous_namespace")
+            .and_then(|p| p.as_str().map(str::to_owned))
+    });
+    begin_seal(
+        &loaded.home,
+        &["server.der", "server-key.der", "connection.json"],
+    )?;
+    rewrite(&loaded.home, "server.der", leaf.der())?;
+    rewrite(
+        &loaded.home,
+        "server-key.der",
+        &Zeroizing::new(key.serialize_der()),
+    )?;
+    let mut config = loaded.config.clone();
+    config.certificate_expires_at = expires.unix_timestamp();
+    let connection = connection_document(&loaded.home, &config, previous.as_deref())?;
+    rewrite(&loaded.home, "connection.json", &connection)?;
+    for name in ["server.der", "server-key.der", "connection.json"] {
+        config
+            .files
+            .insert(name.to_owned(), digest(&read(&loaded.home, name, 65536)?));
+    }
+    seal_files(&loaded.home)?;
+    commit_seal(&loaded.home, &config)?;
+    // Prove the committed leaf pair loads as a serving TLS configuration
+    // without taking the mailbox custody lock of a running server.
+    tls::server_config(
+        vec![read_bound(&loaded.home, &config, "server.der", 65536)?.to_vec()],
+        read_bound(&loaded.home, &config, "server-key.der", 65536)?.to_vec(),
+    )
+    .map_err(|_| REFUSED)?;
+    Ok(config.certificate_expires_at)
 }
 
 #[cfg(test)]
