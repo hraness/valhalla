@@ -403,7 +403,14 @@ mod bench {
             // The CLI reopens the retained scan every tick; its guard carries a
             // 90-second absolute budget, so a lifetime handle is not an option.
             self.counters.scan_reopens += 1;
-            let mut scan = ScanDirectory::open(&self.scan_path, self.namespace).map_err(debug)?;
+            let mut scan = match ScanDirectory::open(&self.scan_path, self.namespace) {
+                Ok(scan) => scan,
+                // A scan-budget timeout is transient: the production host ends
+                // the tick and retries on the next one instead of failing the
+                // run — same treatment as ScanFailure::Timeout below.
+                Err(ScanFailure::Timeout) => return Ok(worked),
+                Err(error) => return Err(format!("{}: scan open {error:?}", self.name)),
+            };
             if Instant::now() >= self.next_poll {
                 self.next_poll = Instant::now() + cadence.poll_interval;
                 self.counters.pages += 1;
@@ -422,19 +429,27 @@ mod bench {
             if Instant::now() >= deadline {
                 return Ok(worked);
             }
-            let positions: Vec<u64> = scan
-                .positions()
-                .map_err(debug)?
-                .into_iter()
-                .filter(|p| *p > self.applied)
-                .take(cadence.apply_per_tick)
-                .collect();
+            let positions: Vec<u64> = match scan.positions() {
+                Ok(positions) => positions,
+                Err(ScanFailure::Timeout) => return Ok(worked),
+                Err(error) => return Err(format!("{}: scan positions {error:?}", self.name)),
+            }
+            .into_iter()
+            .filter(|p| *p > self.applied)
+            .take(cadence.apply_per_tick)
+            .collect();
             for position in positions {
                 if Instant::now() >= deadline {
                     break;
                 }
                 worked = true;
-                let item = scan.read(position).map_err(debug)?;
+                let item = match scan.read(position) {
+                    Ok(item) => item,
+                    // Same transient-timeout policy as scan_page_until: leave
+                    // the position unapplied; the next tick retries it.
+                    Err(ScanFailure::Timeout) => break,
+                    Err(error) => return Err(format!("{}: scan read {error:?}", self.name)),
+                };
                 let marker = self.applied_path.join(format!("{position:016x}.json"));
                 if marker.symlink_metadata().is_ok() {
                     self.applied = position;
