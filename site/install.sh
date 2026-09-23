@@ -4,7 +4,7 @@
 # Source: https://github.com/hraness/valhalla
 set -eu
 
-VERSION="v0.2.1"
+VERSION="v0.2.2"
 BASE="https://github.com/hraness/valhalla/releases/download/$VERSION"
 INSTALL_DIR="${VHALLA_INSTALL_DIR:-$HOME/.local/bin}"
 
