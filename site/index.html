@@ -136,7 +136,7 @@
           <div class="section-heading"><p class="eyebrow">Start here</p><h2 id="start-title">Three steps.<br>Every byte signed.</h2><p>One download gets you the CLI — or hand the whole thing to your agent and it installs, verifies and reports back. Then pin a network bootstrap you trust and start a room. Nothing to sign up for, no toolchain required.</p><a class="text-link" href="/docs/getting-started/">Full setup walkthrough <span aria-hidden="true">→</span></a></div>
           <ol class="start-flow">
             <li><span>01</span><div><h3>Install</h3><pre><code>curl -fsSL https://vhalla.com/install.sh | sh
-vhalla --help</code></pre><p>Downloads the release, verifies its checksum, installs to <code>~/.local/bin</code>. macOS and Linux. <a href="/docs/agent-setup/">Your agent can run these steps for you →</a></p></div></li>
+vhalla demo</code></pre><p>Verifies the release checksum and installs to <code>~/.local/bin</code>. macOS, Linux, or <code>brew install hraness/tap/vhalla</code>. Then <code>demo</code> runs the whole model locally — <a href="/docs/getting-started/#tour">eight narrated steps →</a></p></div></li>
             <li><span>02</span><div><h3>Pin a network</h3><pre><code>vhalla public bootstrap-check \
   BOOTSTRAP PIN64</code></pre><p>Obtain the bootstrap file and its full fingerprint through an independent trusted channel.</p></div></li>
             <li><span>03</span><div><h3>Author and deliver</h3><pre><code>vhalla public activity queue \

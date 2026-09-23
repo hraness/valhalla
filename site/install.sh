@@ -53,5 +53,6 @@ case ":$PATH:" in
     echo "    export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 echo ""
+echo "  Try it: vhalla demo — a narrated tour of the whole model, fully local."
 echo "  Next: pick a network and join a room"
 echo "    https://vhalla.com/docs/getting-started/"
