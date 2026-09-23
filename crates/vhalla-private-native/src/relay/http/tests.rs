@@ -460,3 +460,156 @@ fn stalled_large_asset_write_keeps_original_deadline_during_shutdown() {
     assert_eq!(&response[split..], &body[..response.len() - split]);
     assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
 }
+
+fn live_exchange(address: SocketAddr, raw: &[u8]) -> Vec<u8> {
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    socket.write_all(raw).unwrap();
+    let mut response = Vec::new();
+    if let Err(error) = socket.read_to_end(&mut response) {
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        assert!(!response.starts_with(b"HTTP/1.1 200"));
+    }
+    response
+}
+
+fn finish_failed_gateway(server: thread::JoinHandle<Result<()>>, stop: &AtomicBool) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !server.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    let stopped_itself = server.is_finished();
+    // Clean up even if a regression accidentally isolates uncertain state.
+    stop.store(true, Ordering::Release);
+    let result = server.join().unwrap();
+    assert!(
+        stopped_itself,
+        "shared uncertainty must stop admission without an operator stop"
+    );
+    assert!(matches!(result, Err(NetError::Unavailable)));
+}
+
+#[test]
+fn connection_local_panic_does_not_stop_legitimate_work_or_deadline_drain() {
+    let (gateway, listener, upstream) = fixture(Duration::from_millis(200), false);
+    let state = gateway.0.clone();
+    let address = listener.local_addr().unwrap();
+    let raw = request(&gateway, &frame(OP_PAGE, &page_request(0, 1).unwrap()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let selected = stop.clone();
+    let requests = AtomicUsize::new(0);
+    let server = thread::spawn(move || {
+        gateway.serve_with(
+            listener,
+            selected,
+            move |state, stream, upstream_uncertain| {
+                if requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                    panic!("injected connection-local parser failure");
+                }
+                handle_tracked(state, stream, upstream_uncertain)
+            },
+        )
+    });
+    let failed = live_exchange(address, &raw);
+    assert!(!failed.starts_with(b"HTTP/1.1 200"));
+    let legitimate = live_exchange(address, &raw);
+    assert!(legitimate.starts_with(b"HTTP/1.1 200"));
+    assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
+    assert!(!state.unhealthy.load(Ordering::Acquire));
+
+    // Leave one admitted request incomplete. The same stop flag that the CLI
+    // sets on SIGTERM/SIGINT drains it under its original request deadline.
+    // This is core flag coverage, not an operating-system signal test.
+    let mut stalled = TcpStream::connect(address).unwrap();
+    stalled.write_all(b"GET / HTTP/1.1\r\n").unwrap();
+    let wait_until = Instant::now() + Duration::from_secs(1);
+    while state.budget.lock().unwrap().requests < 3 && Instant::now() < wait_until {
+        thread::sleep(Duration::from_millis(5));
+    }
+    let admitted = state.budget.lock().unwrap().requests;
+    let started = Instant::now();
+    stop.store(true, Ordering::Release);
+    let result = server.join().unwrap();
+    assert_eq!(admitted, 3);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    result.unwrap();
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn poisoned_shared_budget_stops_admission_and_preserves_failure() {
+    let (gateway, listener, upstream) = fixture(Duration::from_millis(200), false);
+    let state = gateway.0.clone();
+    let address = listener.local_addr().unwrap();
+    let raw = request(&gateway, &frame(OP_PAGE, &page_request(0, 1).unwrap()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let selected = stop.clone();
+    let server = thread::spawn(move || {
+        gateway.serve_with(listener, selected, |state, _stream, _upstream_uncertain| {
+            let _budget = state.budget.lock().unwrap();
+            panic!("injected shared-budget mutation failure");
+        })
+    });
+    let failed = live_exchange(address, &raw);
+    assert!(!failed.starts_with(b"HTTP/1.1 200"));
+    finish_failed_gateway(server, &stop);
+    assert!(state.budget.is_poisoned());
+    assert!(state.unhealthy.load(Ordering::Acquire));
+    assert!(matches!(admit(&state, 0, true), Err(NetError::Unavailable)));
+    assert_eq!(upstream.calls.load(Ordering::SeqCst), 0);
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn upstream_unwind_is_uncertain_even_when_gateway_budget_is_healthy() {
+    struct PanickingUpstream;
+    impl Upstream for PanickingUpstream {
+        fn exchange(&self, _op: u8, _body: &[u8], _deadline: Instant) -> Result<Vec<u8>> {
+            panic!("injected upstream state uncertainty");
+        }
+    }
+    let (mut gateway, listener, _) = fixture(Duration::from_millis(200), false);
+    Arc::get_mut(&mut gateway.0).unwrap().upstream = Arc::new(PanickingUpstream);
+    let state = gateway.0.clone();
+    let address = listener.local_addr().unwrap();
+    let raw = request(&gateway, &frame(OP_PAGE, &page_request(0, 1).unwrap()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let selected = stop.clone();
+    let server = thread::spawn(move || gateway.serve_until(listener, selected));
+    assert!(!live_exchange(address, &raw).starts_with(b"HTTP/1.1 200"));
+    finish_failed_gateway(server, &stop);
+    assert!(!state.budget.is_poisoned());
+    assert!(state.unhealthy.load(Ordering::Acquire));
+    assert!(TcpStream::connect(address).is_err());
+}
+
+#[test]
+fn unexpected_worker_unwind_outside_audited_boundary_stops_gateway() {
+    struct FailingDrop;
+    impl Drop for FailingDrop {
+        fn drop(&mut self) {
+            panic!("injected unexpected worker cleanup failure");
+        }
+    }
+    let (gateway, listener, _) = fixture(Duration::from_millis(200), false);
+    let address = listener.local_addr().unwrap();
+    let raw = request(&gateway, &frame(OP_PAGE, &page_request(0, 1).unwrap()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let selected = stop.clone();
+    let server = thread::spawn(move || {
+        gateway.serve_with(
+            listener,
+            selected,
+            |_state, _stream, _upstream_uncertain| {
+                // The protected handler unwinds, then its opaque panic payload
+                // itself panics during cleanup outside that audited boundary.
+                std::panic::panic_any(FailingDrop);
+            },
+        )
+    });
+    assert!(!live_exchange(address, &raw).starts_with(b"HTTP/1.1 200"));
+    finish_failed_gateway(server, &stop);
+    assert!(TcpStream::connect(address).is_err());
+}

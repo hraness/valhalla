@@ -1,25 +1,42 @@
 name: Verification
 
-# Verus functional-verification of the ledger admission model.
-# Kani harnesses for the journal codec are intentionally local-only:
-# CBMC is too slow and too resource-hungry for GitHub's free runners
-# to complete within an acceptable PR gate.
+# Called by the complete Rust gate, including releases. Production changes
+# cannot silently bypass reference-model and finite-protocol checks.
 on:
-  pull_request:
-    paths:
-      - "verify/**"
-      - ".github/workflows/verification.yml"
-  push:
-    branches: [main]
-    paths:
-      - "verify/**"
-      - ".github/workflows/verification.yml"
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  private-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reject interrupted and malformed checker evidence
+        run: python3 -m unittest discover -s verify -p 'test_*.py'
+      - name: Install checksum-pinned Java runtime
+        run: |
+          curl -sSfL 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jre_x64_linux_hotspot_21.0.12.1_1.tar.gz' -o "$RUNNER_TEMP/jre.tar.gz"
+          echo "2413149700df0f7d440500a84a8f764c535f21e5a5e87d38328b64eec2c5b500  $RUNNER_TEMP/jre.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/private-jre"
+          tar -xzf "$RUNNER_TEMP/jre.tar.gz" -C "$RUNNER_TEMP/private-jre" --strip-components=1
+      - name: Fetch the pinned finite-model checker
+        run: |
+          curl -sSfL https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar -o "$RUNNER_TEMP/tla2tools.jar"
+      - name: Verify tool digest, finite models and counterexample mutations
+        run: python3 verify/run_tlc.py --java "$RUNNER_TEMP/private-jre/bin/java" --jar "$RUNNER_TEMP/tla2tools.jar" --out "$RUNNER_TEMP/private-models"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: private-model-evidence
+          path: ${{ runner.temp }}/private-models
+          if-no-files-found: error
+          retention-days: 14
   verus:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -31,5 +48,6 @@ jobs:
       - name: Install Verus 0.2026.09.13.671956e
         run: |
           curl -sSfL https://github.com/verus-lang/verus/releases/download/release/0.2026.09.13.671956e/verus-0.2026.09.13.671956e-x86-linux.zip -o verus.zip
+          echo '08c85b96e0fbbbdcb1b3a9fa8943dce7598c3e7b343680820f649b4e1efda4b4  verus.zip' | sha256sum -c -
           unzip -q verus.zip
       - run: ./verus-x86-linux/verus --crate-type=lib verify/ledger.rs

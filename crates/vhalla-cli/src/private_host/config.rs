@@ -6,7 +6,7 @@ use rcgen::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     net::SocketAddr,
@@ -29,11 +29,21 @@ const STATIC_FILES: [&str; 6] = [
     "launch-agent.plist",
 ];
 /// Immutable sealed files for a home with this many enrolled credentials.
-fn expected_files(credentials: usize) -> Vec<String> {
+fn expected_files(config: &Config) -> Vec<String> {
     STATIC_FILES
         .iter()
         .map(|name| (*name).to_owned())
-        .chain((1..=credentials).map(|index| format!("client-{index}.token")))
+        .chain((1..=config.credential_ids.len()).map(|index| format!("client-{index}.token")))
+        .chain(
+            config
+                .credential_generations
+                .iter()
+                .enumerate()
+                .flat_map(|(index, generation)| {
+                    (1..*generation)
+                        .map(move |old| format!("client-{}.generation-{old}.token", index + 1))
+                }),
+        )
         .collect()
 }
 fn default_mailbox() -> String {
@@ -50,6 +60,11 @@ pub(super) struct Config {
     pub namespace: String,
     /// Stable random credential identities; the token files are `client-N.token`.
     pub credential_ids: Vec<String>,
+    /// Absent only in legacy homes. Replacement never changes the quota ID.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_generations: Vec<u32>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub revoked_credential_ids: BTreeSet<String>,
     /// Mailbox directory relative to the home. Rotation advances it while
     /// every earlier mailbox directory remains untouched evidence.
     #[serde(default = "default_mailbox")]
@@ -57,6 +72,9 @@ pub(super) struct Config {
     pub created_at: i64,
     pub certificate_expires_at: i64,
     pub authority_expires_at: i64,
+    /// Legacy renewal may already have inflated expiry, so never infer this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leaf_lifetime_seconds: Option<i64>,
     pub files: BTreeMap<String, String>,
 }
 pub(super) struct Loaded {
@@ -83,6 +101,40 @@ fn owner(home: &Path) -> Result<(fs::File, u32), String> {
         return Err(REFUSED.into());
     }
     Ok((directory, uid))
+}
+/// One stable inode serializes maintenance and startup selection independently
+/// of the mailbox writer. Never unlink or replace this file, even after exit.
+pub(super) fn maintenance_lock(home: &Path) -> Result<fs::File, String> {
+    let (directory, uid) = owner(home)?;
+    let path = home.join("maintenance.lock");
+    match custody::create_private_file(&path) {
+        Ok(file) => {
+            file.sync_all()
+                .and_then(|()| directory.sync_all())
+                .map_err(|_| REFUSED)?;
+        }
+        Err(custody::Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(REFUSED.into()),
+    }
+    let file = custody::open_private_file(&path, uid, 0).map_err(|_| REFUSED)?;
+    file.try_lock().map_err(|error| match error {
+        fs::TryLockError::WouldBlock => {
+            "host maintenance busy; retry after the active operation completes".to_owned()
+        }
+        fs::TryLockError::Error(_) => REFUSED.to_owned(),
+    })?;
+    let named = fs::symlink_metadata(&path).map_err(|_| REFUSED)?;
+    let held = file.metadata().map_err(|_| REFUSED)?;
+    custody::check_regular_file(&named, uid, 0).map_err(|_| REFUSED)?;
+    if named.dev() != held.dev() || named.ino() != held.ino() {
+        return Err(REFUSED.into());
+    }
+    Ok(file)
+}
+
+const AUTHORITY_LIFETIME_SECONDS: i64 = 365 * 5 * 86400;
+pub(super) fn valid_leaf_lifetime(seconds: i64) -> bool {
+    (86400..AUTHORITY_LIFETIME_SECONDS).contains(&seconds)
 }
 pub(super) fn read(home: &Path, name: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>, String> {
     let (_, uid) = owner(home)?;
@@ -208,7 +260,12 @@ pub(super) fn initialize_with_leaf_lifetime(
     leaf_lifetime: time::Duration,
 ) -> Result<Loaded, String> {
     let home = resolve(path)?;
-    if !super::loopback(listen) || listen.port() == 0 || name.len() > 253 || name.is_empty() {
+    if !super::loopback(listen)
+        || listen.port() == 0
+        || name.len() > 253
+        || name.is_empty()
+        || !valid_leaf_lifetime(leaf_lifetime.whole_seconds())
+    {
         return Err(REFUSED.into());
     }
     let executable = executable
@@ -223,7 +280,7 @@ pub(super) fn initialize_with_leaf_lifetime(
     }
     let now = time::OffsetDateTime::now_utc();
     let expires = now + leaf_lifetime;
-    let authority_expires = now + time::Duration::days(365 * 5);
+    let authority_expires = now + time::Duration::seconds(AUTHORITY_LIFETIME_SECONDS);
     let issuer_key = KeyPair::generate().map_err(|_| REFUSED)?;
     let issuer = issuer_params(now - time::Duration::minutes(5), authority_expires)?
         .self_signed(&issuer_key)
@@ -245,17 +302,20 @@ pub(super) fn initialize_with_leaf_lifetime(
     )
     .map_err(|_| "invalid TLS trust/name selection")?;
     let mut config = Config {
-        version: 1,
+        version: 2,
         label: label(&home)?,
         listen,
         tls_name: name.to_owned(),
         executable,
         namespace: hex(namespace.as_bytes()),
         credential_ids: vec![hex(random::<16>()?.as_ref()), hex(random::<16>()?.as_ref())],
+        credential_generations: vec![1, 1],
+        revoked_credential_ids: BTreeSet::new(),
         mailbox: default_mailbox(),
         created_at: now.unix_timestamp(),
         certificate_expires_at: expires.unix_timestamp(),
         authority_expires_at: authority_expires.unix_timestamp(),
+        leaf_lifetime_seconds: Some(leaf_lifetime.whole_seconds()),
         files: BTreeMap::new(),
     };
     let planned_agent = launchd::plist(&home, &config)?;
@@ -296,7 +356,7 @@ pub(super) fn initialize_with_leaf_lifetime(
         .map_err(|_| REFUSED)?,
     )
     .map_err(|_| REFUSED)?;
-    for name in expected_files(config.credential_ids.len()) {
+    for name in expected_files(&config) {
         config
             .files
             .insert(name.clone(), digest(&read(&home, &name, 65536)?));
@@ -318,13 +378,32 @@ pub(super) fn initialize_with_leaf_lifetime(
 /// replacing its retained credential files first.
 pub(super) fn load_for_stop(path: &Path) -> Result<Loaded, String> {
     let home = resolve(path)?;
-    let bytes = read(&home, "config.json", 16384)?;
+    let bytes = read(&home, "config.json", 65536)?;
     if read(&home, "complete", 64)?.as_slice() != digest(&bytes).as_bytes() {
         return Err(REFUSED.into());
     }
     let config: Config = serde_json::from_slice(&bytes).map_err(|_| REFUSED)?;
-    if config.version != 1
-        || config.label != label(&home)?
+    validate_config(&home, &config)?;
+    let template = read(&home, "launch-agent.plist", 65536)?;
+    if config.files.get("launch-agent.plist") != Some(&digest(&template))
+        || !launchd::template_ours(
+            &Loaded {
+                home: home.clone(),
+                config: config.clone(),
+            },
+            &template,
+        )?
+    {
+        return Err(REFUSED.into());
+    }
+    Ok(Loaded { home, config })
+}
+
+/// Validate proposed manifests before publication, using the same structural
+/// constraints as readers. File commitments are checked separately.
+fn validate_config(home: &Path, config: &Config) -> Result<(), String> {
+    if ![1, 2].contains(&config.version)
+        || config.label != label(&resolve(home)?)?
         || !super::loopback(config.listen)
         || config.listen.port() == 0
         || !config.executable.is_absolute()
@@ -332,11 +411,34 @@ pub(super) fn load_for_stop(path: &Path) -> Result<Loaded, String> {
         || config.authority_expires_at <= config.certificate_expires_at
         || !(2..=64).contains(&config.credential_ids.len())
         || !valid_mailbox(&config.mailbox)
+        || config
+            .leaf_lifetime_seconds
+            .is_some_and(|seconds| !valid_leaf_lifetime(seconds))
+        || (config.version == 1
+            && (!config.credential_generations.is_empty()
+                || !config.revoked_credential_ids.is_empty()
+                || config.leaf_lifetime_seconds.is_some()))
+        || (config.version == 2
+            && (config.credential_generations.len() != config.credential_ids.len()
+                || config
+                    .credential_generations
+                    .iter()
+                    .any(|generation| !(1..=65).contains(generation))
+                || config
+                    .credential_generations
+                    .iter()
+                    .map(|generation| generation.saturating_sub(1) as usize)
+                    .sum::<usize>()
+                    > 64))
+        || config
+            .revoked_credential_ids
+            .iter()
+            .any(|id| !config.credential_ids.contains(id))
     {
         return Err(REFUSED.into());
     }
     RelayNamespace::from_bytes(decode_hex(&config.namespace)?).map_err(|_| REFUSED)?;
-    let expected = expected_files(config.credential_ids.len());
+    let expected = expected_files(config);
     if config.files.len() != expected.len()
         || config
             .credential_ids
@@ -355,19 +457,7 @@ pub(super) fn load_for_stop(path: &Path) -> Result<Loaded, String> {
     for name in &expected {
         decode_hex::<32>(config.files.get(name).ok_or(REFUSED)?)?;
     }
-    let template = read(&home, "launch-agent.plist", 65536)?;
-    if config.files.get("launch-agent.plist") != Some(&digest(&template))
-        || !launchd::template_ours(
-            &Loaded {
-                home: home.clone(),
-                config: config.clone(),
-            },
-            &template,
-        )?
-    {
-        return Err(REFUSED.into());
-    }
-    Ok(Loaded { home, config })
+    Ok(())
 }
 
 /// Mailbox directory names are bounded relative names created only by this
@@ -383,7 +473,7 @@ fn valid_mailbox(name: &str) -> bool {
 
 pub(super) fn load(path: &Path) -> Result<Loaded, String> {
     let loaded = load_for_stop(path)?;
-    for name in expected_files(loaded.config.credential_ids.len()) {
+    for name in expected_files(&loaded.config) {
         if loaded.config.files.get(&name) != Some(&digest(&read(&loaded.home, &name, 65536)?)) {
             return Err(REFUSED.into());
         }
@@ -414,6 +504,9 @@ pub(super) fn rewrite(home: &Path, name: &str, bytes: &[u8]) -> Result<(), Strin
     }
     let (directory, uid) = owner(home)?;
     let tmp = home.join(format!("{name}.rewrite-tmp"));
+    // A selected target may be absent (additive publication), but unsafe
+    // existing custody is never repaired by replacing it.
+    custody::private_file_present(&home.join(name), uid, 65536).map_err(|_| REFUSED)?;
     if custody::private_file_present(&tmp, uid, 65536).map_err(|_| REFUSED)? {
         fs::remove_file(&tmp).map_err(|_| REFUSED)?;
     }
@@ -466,7 +559,7 @@ fn seal_scratch(home: &Path, uid: u32) -> Result<(Option<Vec<u8>>, Vec<String>),
     Ok((pending, backups))
 }
 fn sealed_config(home: &Path, uid: u32) -> Option<Vec<u8>> {
-    let config = custody::read_private_file(&home.join("config.json"), uid, 16384).ok()?;
+    let config = custody::read_private_file(&home.join("config.json"), uid, 65536).ok()?;
     let complete = custody::read_private_file(&home.join("complete"), uid, 64).ok()?;
     (complete.as_slice() == digest(&config).as_bytes()).then_some(config)
 }
@@ -475,9 +568,12 @@ fn remove_seal_scratch(home: &Path, backups: &[String]) -> Result<(), String> {
     let pending = home.join(SEAL_PENDING);
     if custody::private_file_present(&pending, uid, 64).map_err(|_| REFUSED)? {
         fs::remove_file(&pending).map_err(|_| REFUSED)?;
+        // Make marker removal durable before deleting any recovery evidence.
+        // Otherwise a power loss can retain the marker but lose its backups.
+        directory.sync_all().map_err(|_| REFUSED)?;
     }
     for name in backups {
-        // A restored backup was renamed over its target; absence is expected.
+        // A previous cleanup may have stopped partway through this list.
         match fs::remove_file(home.join(name)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -489,55 +585,90 @@ fn remove_seal_scratch(home: &Path, backups: &[String]) -> Result<(), String> {
 /// Restore every backup over its sealed name and recompute `complete` from the
 /// restored config, returning the home to the pre-mutation snapshot.
 fn restore_seal_backups(home: &Path, backups: &[String]) -> Result<(), String> {
-    let (directory, uid) = owner(home)?;
+    restore_seal_backups_with(home, backups, |_| Ok(()))
+}
+fn restore_seal_backups_with(
+    home: &Path,
+    backups: &[String],
+    mut after_restore: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let (_, uid) = owner(home)?;
+    let config_bytes =
+        custody::read_private_file(&home.join("config.json.seal-backup"), uid, 65536)
+            .map_err(|_| REFUSED)?;
+    let config: Config = serde_json::from_slice(&config_bytes).map_err(|_| REFUSED)?;
+    validate_config(home, &config)?;
+    // Verify every retained backup before the first restoration write.
+    for name in backups {
+        let target = name.strip_suffix(SEAL_BACKUP).ok_or(REFUSED)?;
+        let bytes =
+            custody::read_private_file(&home.join(name), uid, 65536).map_err(|_| REFUSED)?;
+        if target != "config.json" && config.files.get(target) != Some(&digest(&bytes)) {
+            return Err(REFUSED.into());
+        }
+    }
     for name in backups {
         let backup = home.join(name);
         if !custody::private_file_present(&backup, uid, 65536).map_err(|_| REFUSED)? {
             return Err(REFUSED.into());
         }
         let target = name.strip_suffix(SEAL_BACKUP).ok_or(REFUSED)?;
-        fs::rename(&backup, home.join(target)).map_err(|_| REFUSED)?;
+        let bytes =
+            Zeroizing::new(custody::read_private_file(&backup, uid, 65536).map_err(|_| REFUSED)?);
+        // Never consume the snapshot: another interruption can replay every
+        // file, including config.json, from these same durable source bytes.
+        rewrite(home, target, &bytes)?;
+        after_restore(target)?;
     }
-    directory.sync_all().map_err(|_| REFUSED)?;
     let restored =
-        custody::read_private_file(&home.join("config.json"), uid, 16384).map_err(|_| REFUSED)?;
+        custody::read_private_file(&home.join("config.json"), uid, 65536).map_err(|_| REFUSED)?;
     let _: Config = serde_json::from_slice(&restored).map_err(|_| REFUSED)?;
     rewrite(home, "complete", digest(&restored).as_bytes())
 }
 /// Recover the last fully sealed snapshot after an interrupted mutation.
 /// Runs before every mutating command so a torn update is always re-runnable;
 /// read paths stay strict and still refuse a torn home.
-pub(super) fn recover_seal(home: &Path) -> Result<(), String> {
+fn recover_seal(home: &Path) -> Result<(), String> {
     let (_, uid) = owner(home)?;
     let (pending, backups) = seal_scratch(home, uid)?;
     let consistent = sealed_config(home, uid);
     let config_backup = backups.iter().any(|name| name == "config.json.seal-backup");
     match (pending.as_deref(), consistent.as_deref()) {
         // No mutation in progress; stale backups are inert scratch.
-        (None, Some(_)) => remove_seal_scratch(home, &backups),
+        (None, Some(_)) => {
+            load(home)?;
+            remove_seal_scratch(home, &backups)
+        }
         // A mutation stopped before the config phase: restore every backup.
         (Some(b"files"), _) if config_backup => {
             restore_seal_backups(home, &backups)?;
+            load(home)?;
             remove_seal_scratch(home, &backups)
         }
         // The config pair sealed (old or new). If the live config is still the
         // backup, the commit never happened and data files may have drifted.
         (Some(b"committing"), Some(config)) if config_backup => {
             let backup =
-                custody::read_private_file(&home.join("config.json.seal-backup"), uid, 16384)
+                custody::read_private_file(&home.join("config.json.seal-backup"), uid, 65536)
                     .map_err(|_| REFUSED)?;
             if config == backup.as_slice() {
                 restore_seal_backups(home, &backups)?;
             }
+            load(home)?;
             remove_seal_scratch(home, &backups)
         }
         // Torn between the config and seal writes: restore the snapshot.
         (Some(b"committing"), None) if config_backup => {
             restore_seal_backups(home, &backups)?;
+            load(home)?;
             remove_seal_scratch(home, &backups)
         }
-        _ => Err(REFUSED.into()),
+        _ => Err("sealed host recovery is uncertain; preserve seal.pending, every backup and the exact home for diagnosis; never reset retained custody".into()),
     }
+}
+pub(super) fn recover(home: &Path) -> Result<(), String> {
+    let _maintenance = maintenance_lock(home)?;
+    recover_seal(home)
 }
 /// Begin a sealed mutation: back up `config.json` plus every named file that
 /// exists, then mark the file phase. Callers must pass a `load`ed home.
@@ -559,6 +690,12 @@ pub(super) fn seal_files(home: &Path) -> Result<(), String> {
 }
 /// Publish the mutated config and its seal, then clear mutation scratch.
 pub(super) fn commit_seal(home: &Path, config: &Config) -> Result<(), String> {
+    validate_config(home, config)?;
+    for name in expected_files(config) {
+        if config.files.get(&name) != Some(&digest(&read(home, &name, 65536)?)) {
+            return Err(REFUSED.into());
+        }
+    }
     let bytes = serde_json::to_vec(config).map_err(|_| REFUSED)?;
     rewrite(home, "config.json", &bytes)?;
     rewrite(home, "complete", digest(&bytes).as_bytes())?;
@@ -571,6 +708,7 @@ pub(super) fn commit_seal(home: &Path, config: &Config) -> Result<(), String> {
 /// The new `client-N.token` is created before the sealed manifest references
 /// it, so a crash leaves inert residue rather than a dangling commitment.
 pub(super) fn add_credential(home: &Path) -> Result<(usize, String), String> {
+    let _maintenance = maintenance_lock(home)?;
     recover_seal(home)?;
     let loaded = load(home)?;
     if loaded.config.credential_ids.len() >= 64 {
@@ -589,6 +727,9 @@ pub(super) fn add_credential(home: &Path) -> Result<(usize, String), String> {
     let mut config = loaded.config.clone();
     let id = hex(random::<16>()?.as_ref());
     config.credential_ids.push(id.clone());
+    if config.version == 2 {
+        config.credential_generations.push(1);
+    }
     config
         .files
         .insert(name.clone(), digest(&read(&loaded.home, &name, 65)?));
@@ -603,11 +744,12 @@ pub(super) fn add_credential(home: &Path) -> Result<(usize, String), String> {
     Ok((index, id))
 }
 
-/// Open a fresh opaque namespace and empty mailbox under the retained CA,
-/// credentials and listener. The previous mailbox directory and sealed
-/// namespace stay untouched as evidence; members keep their tokens and only
-/// point a fresh delivery state at the published new namespace.
-pub(super) fn rotate(home: &Path) -> Result<(String, String), String> {
+/// Synthetic namespace mutation retained only to exercise the maintenance
+/// barrier. Production rotation refuses: changing this selection cannot migrate
+/// pending or uncertain client work and must never be exposed as recovery.
+#[cfg(test)]
+fn rotate(home: &Path) -> Result<(String, String), String> {
+    let _maintenance = maintenance_lock(home)?;
     recover_seal(home)?;
     let loaded = load(home)?;
     let mut index = 2u32;
@@ -657,9 +799,30 @@ pub(super) fn rotate(home: &Path) -> Result<(String, String), String> {
 /// `server-key.der`, the expiry in `connection.json` and the sealed manifest
 /// advance. Renewal refuses without the CA private key and never weakens the
 /// owner-private modes of the files it replaces.
-pub(super) fn renew(home: &Path) -> Result<i64, String> {
+pub(super) fn renew(home: &Path, leaf_days: Option<i64>) -> Result<i64, String> {
+    renew_at(home, leaf_days, time::OffsetDateTime::now_utc())
+}
+fn upgrade_config(config: &mut Config) {
+    if config.version == 1 {
+        config.version = 2;
+        config.credential_generations = vec![1; config.credential_ids.len()];
+    }
+}
+fn renew_at(home: &Path, leaf_days: Option<i64>, now: time::OffsetDateTime) -> Result<i64, String> {
+    let _maintenance = maintenance_lock(home)?;
     recover_seal(home)?;
     let loaded = load(home)?;
+    let lifetime = match leaf_days {
+        Some(days) => days.checked_mul(86400).ok_or(REFUSED)?,
+        None => loaded.config.leaf_lifetime_seconds.ok_or(
+            "legacy leaf lifetime is unknown; renew with explicit --leaf-days once to establish the retained renewal policy",
+        )?,
+    };
+    if !valid_leaf_lifetime(lifetime) {
+        return Err(
+            "leaf lifetime must be positive and shorter than the five-year CA lifetime".into(),
+        );
+    }
     let ca_key = read_bound(&loaded.home, &loaded.config, "ca-key.der", 65536).map_err(|_| {
         "leaf renewal requires the retained CA private key; preserve custody, never replace the CA"
     })?;
@@ -675,12 +838,12 @@ pub(super) fn renew(home: &Path) -> Result<i64, String> {
     )?
     .self_signed(&issuer_key)
     .map_err(|_| REFUSED)?;
-    let now = time::OffsetDateTime::now_utc();
     // Renewal preserves the operator's chosen leaf lifetime, never the CA's.
-    let expires = (now
-        + time::Duration::seconds(loaded.config.certificate_expires_at - loaded.config.created_at))
-    .min(authority);
-    if expires <= now {
+    let expires = now
+        .checked_add(time::Duration::seconds(lifetime))
+        .ok_or(REFUSED)?
+        .min(authority - time::Duration::seconds(1));
+    if now.unix_timestamp() < loaded.config.created_at - 300 || expires <= now {
         return Err("the retained CA has expired; a new CA is a new host, not a renewal".into());
     }
     let key = KeyPair::generate().map_err(|_| REFUSED)?;
@@ -714,6 +877,8 @@ pub(super) fn renew(home: &Path) -> Result<i64, String> {
         &Zeroizing::new(key.serialize_der()),
     )?;
     let mut config = loaded.config.clone();
+    upgrade_config(&mut config);
+    config.leaf_lifetime_seconds = Some(lifetime);
     config.certificate_expires_at = expires.unix_timestamp();
     let connection = connection_document(&loaded.home, &config, previous.as_deref())?;
     rewrite(&loaded.home, "connection.json", &connection)?;
@@ -734,10 +899,337 @@ pub(super) fn renew(home: &Path) -> Result<i64, String> {
     Ok(config.certificate_expires_at)
 }
 
+/// Revoke an identity, or replace its token without resetting its quota. Old
+/// token generations remain sealed owner-private evidence; no overlap is
+/// admitted. A running service keeps its startup selection until drained.
+pub(super) fn credential_lifecycle(
+    home: &Path,
+    index: usize,
+    replace: bool,
+) -> Result<(String, u32), String> {
+    let _maintenance = maintenance_lock(home)?;
+    recover_seal(home)?;
+    let loaded = load(home)?;
+    let offset = index
+        .checked_sub(1)
+        .ok_or("credential index must select an enrolled identity")?;
+    let id = loaded
+        .config
+        .credential_ids
+        .get(offset)
+        .ok_or("credential index must select an enrolled identity")?
+        .clone();
+    let mut config = loaded.config.clone();
+    upgrade_config(&mut config);
+    let generation = config.credential_generations[offset];
+    if replace {
+        let retired: usize = config
+            .credential_generations
+            .iter()
+            .map(|generation| (generation - 1) as usize)
+            .sum();
+        if retired >= 64 {
+            return Err("retained token history is bounded at 64 replacements; preserve the home and select a separately reviewed migration".into());
+        }
+        let name = format!("client-{index}.token");
+        let old = read_bound(&loaded.home, &loaded.config, &name, 65)?;
+        let history = format!("client-{index}.generation-{generation}.token");
+        let token = random::<32>()?;
+        // Additive history precedes the transaction. An interrupted attempt
+        // may leave an unlisted identical copy, never an admitted credential.
+        rewrite(&loaded.home, &history, &old)?;
+        begin_seal(&loaded.home, &[&name])?;
+        rewrite(
+            &loaded.home,
+            &name,
+            Zeroizing::new(hex(token.as_ref())).as_bytes(),
+        )?;
+        config.files.insert(history, digest(&old));
+        config
+            .files
+            .insert(name.clone(), digest(&read(&loaded.home, &name, 65)?));
+        config.credential_generations[offset] += 1;
+        config.revoked_credential_ids.remove(&id);
+    } else {
+        if config.revoked_credential_ids.contains(&id) {
+            return Ok((id, generation));
+        }
+        begin_seal(&loaded.home, &[])?;
+        config.revoked_credential_ids.insert(id.clone());
+    }
+    seal_files(&loaded.home)?;
+    commit_seal(&loaded.home, &config)?;
+    Ok((id, config.credential_generations[offset]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::DirBuilderExt;
+    struct Home(PathBuf);
+    impl Home {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "vhalla-host-maintenance-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+            let home = root.join("host");
+            initialize_with_leaf_lifetime(
+                &home,
+                "127.0.0.1:9473".parse().unwrap(),
+                "maintenance.test.invalid",
+                &std::env::current_exe().unwrap(),
+                time::Duration::days(1),
+            )
+            .unwrap();
+            Self(home)
+        }
+    }
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+    fn snapshot(home: &Path) -> BTreeMap<String, Vec<u8>> {
+        fs::read_dir(home)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_type().unwrap().is_file())
+            .map(|entry| {
+                (
+                    entry.file_name().into_string().unwrap(),
+                    fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    }
+    fn legacy(home: &Path) {
+        let mut config = load(home).unwrap().config;
+        config.version = 1;
+        config.credential_generations.clear();
+        config.leaf_lifetime_seconds = None;
+        let bytes = serde_json::to_vec(&config).unwrap();
+        rewrite(home, "config.json", &bytes).unwrap();
+        rewrite(home, "complete", digest(&bytes).as_bytes()).unwrap();
+        assert!(load(home).is_ok());
+    }
+    #[test]
+    fn repeated_renewal_preserves_policy_and_ca_boundary_remains_loadable() {
+        let home = Home::new();
+        let config = load(&home.0).unwrap().config;
+        let origin = time::OffsetDateTime::from_unix_timestamp(config.created_at).unwrap();
+        for day in [1, 2, 3, 40, 400] {
+            let now = origin + time::Duration::days(day);
+            let expiry = renew_at(&home.0, None, now).unwrap();
+            assert_eq!(expiry - now.unix_timestamp(), 86400);
+            assert_eq!(
+                load(&home.0).unwrap().config.leaf_lifetime_seconds,
+                Some(86400)
+            );
+        }
+        let before_ca =
+            time::OffsetDateTime::from_unix_timestamp(config.authority_expires_at - 60).unwrap();
+        assert_eq!(
+            renew_at(&home.0, None, before_ca).unwrap(),
+            config.authority_expires_at - 1
+        );
+        assert!(load(&home.0).is_ok());
+        let before = snapshot(&home.0);
+        assert!(renew_at(&home.0, None, before_ca + time::Duration::seconds(59)).is_err());
+        assert_eq!(snapshot(&home.0), before);
+    }
+    #[test]
+    fn legacy_home_requires_explicit_renewal_policy_and_migrates_without_rebinding() {
+        let home = Home::new();
+        legacy(&home.0);
+        assert!(!home.0.join("maintenance.lock").exists());
+        let old = load(&home.0).unwrap();
+        let ca = read(&home.0, "ca.der", 65536).unwrap();
+        // Read and stop selection remain compatible and create no lock file.
+        load_for_stop(&home.0).unwrap();
+        assert!(!home.0.join("maintenance.lock").exists());
+        drop(service(&home.0, &old.config).unwrap());
+        assert!(renew(&home.0, None)
+            .unwrap_err()
+            .contains("explicit --leaf-days"));
+        assert_eq!(load(&home.0).unwrap().config.version, 1);
+        renew(&home.0, Some(2)).unwrap();
+        let new = load(&home.0).unwrap();
+        assert_eq!(new.config.version, 2);
+        assert_eq!(new.config.leaf_lifetime_seconds, Some(2 * 86400));
+        assert_eq!(new.config.credential_ids, old.config.credential_ids);
+        assert_eq!(new.config.namespace, old.config.namespace);
+        assert_eq!(new.config.mailbox, old.config.mailbox);
+        assert_eq!(
+            read(&home.0, "ca.der", 65536).unwrap().as_slice(),
+            ca.as_slice()
+        );
+        // The legacy version check refuses this selection before interpreting
+        // any new credential semantics; wire/CA/mailbox formats stay unchanged.
+        assert_ne!(new.config.version, 1);
+    }
+    #[test]
+    fn interrupted_restore_replays_every_backup_without_consuming_evidence() {
+        for boundary in 0..4 {
+            let home = Home::new();
+            let _lock = maintenance_lock(&home.0).unwrap();
+            let before = snapshot(&home.0);
+            begin_seal(
+                &home.0,
+                &["server.der", "server-key.der", "connection.json"],
+            )
+            .unwrap();
+            for name in [
+                "config.json",
+                "server.der",
+                "server-key.der",
+                "connection.json",
+            ] {
+                rewrite(&home.0, name, b"interrupted mutation").unwrap();
+            }
+            let (_, uid) = owner(&home.0).unwrap();
+            let (_, mut backups) = seal_scratch(&home.0, uid).unwrap();
+            backups.sort();
+            let mut restored = 0;
+            assert!(restore_seal_backups_with(&home.0, &backups, |_| {
+                let at = restored;
+                restored += 1;
+                if at == boundary {
+                    Err("injected recovery interruption".into())
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err());
+            for backup in &backups {
+                assert!(home.0.join(backup).exists());
+            }
+            recover_seal(&home.0).unwrap();
+            recover_seal(&home.0).unwrap();
+            assert_eq!(snapshot(&home.0), before);
+            load(&home.0).unwrap();
+        }
+    }
+    #[test]
+    fn maintenance_busy_precedes_mutation_and_does_not_take_mailbox_custody() {
+        let home = Home::new();
+        let service = service(&home.0, &load(&home.0).unwrap().config).unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let path = home.0.clone();
+        let thread = std::thread::spawn(move || {
+            let _lock = maintenance_lock(&path).unwrap();
+            begin_seal(&path, &["server.der"]).unwrap();
+            ready_tx.send(()).unwrap();
+            done_rx.recv().unwrap();
+            recover_seal(&path).unwrap();
+        });
+        ready_rx.recv().unwrap();
+        let before = snapshot(&home.0);
+        for result in [
+            add_credential(&home.0).map(|_| ()),
+            rotate(&home.0).map(|_| ()),
+            renew(&home.0, None).map(|_| ()),
+            recover(&home.0),
+            credential_lifecycle(&home.0, 1, false).map(|_| ()),
+        ] {
+            assert!(result.unwrap_err().contains("maintenance busy"));
+            assert_eq!(snapshot(&home.0), before);
+        }
+        done_tx.send(()).unwrap();
+        thread.join().unwrap();
+        // Maintenance succeeds while the original service still holds mailbox
+        // writer custody; only the next service open activates this selection.
+        renew(&home.0, None).unwrap();
+        add_credential(&home.0).unwrap();
+        drop(service);
+    }
+    #[test]
+    fn invalid_proposed_manifest_never_publishes_and_torn_commit_rolls_back() {
+        let home = Home::new();
+        let _lock = maintenance_lock(&home.0).unwrap();
+        let before = snapshot(&home.0);
+        let mut config = load(&home.0).unwrap().config;
+        begin_seal(&home.0, &[]).unwrap();
+        seal_files(&home.0).unwrap();
+        config.certificate_expires_at = config.authority_expires_at;
+        assert!(commit_seal(&home.0, &config).is_err());
+        recover_seal(&home.0).unwrap();
+        assert_eq!(snapshot(&home.0), before);
+        begin_seal(&home.0, &[]).unwrap();
+        seal_files(&home.0).unwrap();
+        rewrite(&home.0, "config.json", b"torn config/complete pair").unwrap();
+        recover_seal(&home.0).unwrap();
+        assert_eq!(snapshot(&home.0), before);
+    }
+    #[test]
+    fn missing_recovery_evidence_and_linked_lock_refuse_without_repair() {
+        let home = Home::new();
+        {
+            let _lock = maintenance_lock(&home.0).unwrap();
+            begin_seal(&home.0, &["server.der"]).unwrap();
+            rewrite(&home.0, "server.der", b"unsealed leaf").unwrap();
+            fs::rename(
+                home.0.join("config.json.seal-backup"),
+                home.0.join("retained-config-evidence"),
+            )
+            .unwrap();
+        }
+        let before = snapshot(&home.0);
+        assert!(recover(&home.0)
+            .unwrap_err()
+            .contains("recovery is uncertain"));
+        assert_eq!(snapshot(&home.0), before);
+        fs::rename(
+            home.0.join("retained-config-evidence"),
+            home.0.join("config.json.seal-backup"),
+        )
+        .unwrap();
+        recover(&home.0).unwrap();
+        fs::rename(
+            home.0.join("maintenance.lock"),
+            home.0.join("retained-lock"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            home.0.join("retained-lock"),
+            home.0.join("maintenance.lock"),
+        )
+        .unwrap();
+        let before = fs::read(home.0.join("config.json")).unwrap();
+        assert!(add_credential(&home.0).is_err());
+        assert_eq!(fs::read(home.0.join("config.json")).unwrap(), before);
+        assert!(fs::symlink_metadata(home.0.join("maintenance.lock"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+    #[test]
+    fn invalid_leaf_lifetime_refuses_before_creating_home() {
+        let parent =
+            std::env::temp_dir().join(format!("vhalla-host-invalid-ttl-{}", std::process::id()));
+        fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+        for days in [0, 365 * 5, 3650] {
+            let home = parent.join(format!("home-{days}"));
+            assert!(initialize_with_leaf_lifetime(
+                &home,
+                "127.0.0.1:9473".parse().unwrap(),
+                "ttl.test.invalid",
+                &std::env::current_exe().unwrap(),
+                time::Duration::days(days)
+            )
+            .is_err());
+            let mutated = home.exists();
+            if mutated {
+                fs::remove_dir_all(&home).unwrap();
+            }
+            assert!(!mutated, "invalid lifetime must not create a partial home");
+        }
+        fs::remove_dir_all(parent).unwrap();
+    }
     #[test]
     fn exact_stop_selection_survives_missing_credentials_without_repairing_them() {
         let parent =

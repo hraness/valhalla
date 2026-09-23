@@ -1,7 +1,9 @@
 //! Bounded durable delivery progress; credentials never enter this encoding.
+use vhalla_private_kernel::protocol::{ControlFloor, ControlId};
 use vhalla_private_relay::{codec, RelayItem};
 const MAGIC_V1: &[u8] = b"VHBRDEL\x01";
-const MAGIC: &[u8] = b"VHBRDEL\x02";
+const MAGIC_V2: &[u8] = b"VHBRDEL\x02";
+const MAGIC: &[u8] = b"VHBRDEL\x03";
 pub(crate) const ATTEMPTS: u64 = 4096;
 pub(crate) const WIRE_BYTES: u64 = 1024 * 1024 * 1024;
 pub(crate) const PAGE: usize = 4;
@@ -14,14 +16,18 @@ pub(crate) const CLOCK_REGRESSION: u64 = 24 * 60 * 60;
 pub(crate) const MAX_REFUSED: usize = 64;
 /// Retained relay-delivered bootstrap items awaiting explicit admission.
 pub(crate) const MAX_ADMISSIONS: usize = 8;
+/// Exact retryable ciphertexts retained outside the bounded progress image.
+pub(crate) const MAX_DEFERRED: usize = 8;
 pub(crate) const MAX_PENDING: usize = codec::MAX_REQUEST;
 const REFUSAL_BYTES: usize = 8 + 32 + 1;
 const ADMISSION_BYTES: usize = 8 + 1 + 4 + 32;
 pub(crate) const MAX_STATE: usize = codec::MAX_PAGE_BODY
     + MAX_PENDING
+    + MAX_PENDING
     + 512
     + MAX_REFUSED * REFUSAL_BYTES
-    + MAX_ADMISSIONS * ADMISSION_BYTES;
+    + MAX_ADMISSIONS * ADMISSION_BYTES
+    + MAX_DEFERRED * (ADMISSION_BYTES + 1);
 pub(crate) type Result<T> = core::result::Result<T, ()>;
 
 /// Why delivery is stopped. Only `Backoff` is cleared, by an explicit reopen
@@ -97,9 +103,8 @@ pub(crate) mod refusal {
     /// The item's MLS epoch is older than the retained epoch; its keys are
     /// gone, so these exact bytes can never apply to this device.
     pub const STALE_EPOCH: u8 = 9;
-    /// The item's MLS epoch is newer than the retained epoch. The control that
-    /// would admit it arrives at a later mailbox position and these exact
-    /// bytes can never be refetched once the cursor passes them.
+    /// Historical v2 refusal code. New future-epoch items are retained for retry;
+    /// an old refusal is evidence of a past skip, never invented recovery.
     pub const FUTURE_EPOCH: u8 = 10;
 }
 /// Why the cursor is held before one staged record without ending custody.
@@ -112,6 +117,10 @@ pub(crate) mod blocked {
     pub const TIME: u8 = 2;
     /// Every retained-admission slot is used; discard or use one first.
     pub const ADMISSIONS_FULL: u8 = 3;
+    /// Every exact deferred-ciphertext slot is used. No item is evicted.
+    pub const DEFERRED_FULL: u8 = 4;
+    pub const FUTURE_EPOCH: u8 = 5;
+    pub const RATCHET: u8 = 6;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,6 +135,11 @@ pub(crate) struct Admission {
     pub kind: u8,
     pub len: u32,
     pub digest: [u8; 32],
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Deferred {
+    pub item: Admission,
+    pub reason: u8,
 }
 
 #[derive(Clone)]
@@ -148,6 +162,11 @@ pub(crate) struct State {
     pub blocked: u8,
     pub refused: Vec<Refusal>,
     pub admissions: Vec<Admission>,
+    pub deferred: Vec<Deferred>,
+    /// Full authenticated predecessor of the next independently relayed control.
+    /// None only until the local encrypted-history base has been inspected.
+    pub control_sent: Option<ControlFloor>,
+    pub pending_control: Vec<u8>,
     pub pending: Vec<u8>,
     pub staged: Vec<u8>,
     pub staged_after: u64,
@@ -174,6 +193,9 @@ impl State {
             blocked: 0,
             refused: Vec::new(),
             admissions: Vec::new(),
+            deferred: Vec::new(),
+            control_sent: None,
+            pending_control: Vec::new(),
             pending: Vec::new(),
             staged: Vec::new(),
             staged_after: initial,
@@ -192,11 +214,14 @@ impl State {
             || self.attempts > ATTEMPTS
             || self.wire_bytes > WIRE_BYTES
             || self.failures > MAX_FAILURES
+            || self.blocked > blocked::RATCHET
             || (self.stop == Stop::Refused) != (self.detail != 0)
             || self.refused.len() > MAX_REFUSED
             || self.refused_total < self.refused.len() as u64
             || self.admissions.len() > MAX_ADMISSIONS
+            || self.deferred.len() > MAX_DEFERRED
             || self.pending.len() > MAX_PENDING
+            || self.pending_control.len() > MAX_PENDING
             || self.staged.len() > codec::MAX_PAGE_BODY
         {
             return Err(());
@@ -211,10 +236,41 @@ impl State {
                 return Err(());
             }
         }
+        for pair in self.deferred.windows(2) {
+            if pair[0].item.position >= pair[1].item.position {
+                return Err(());
+            }
+        }
+        for deferred in &self.deferred {
+            let item = &deferred.item;
+            if item.position <= self.initial
+                || item.position > self.cursor
+                || item.len == 0
+                || item.len as usize > MAX_PENDING
+                || !matches!(
+                    deferred.reason,
+                    blocked::CONTROL | blocked::FUTURE_EPOCH | blocked::RATCHET
+                )
+                || self.admissions.iter().any(|a| a.position == item.position)
+                || self.refused.iter().any(|r| r.position == item.position)
+                || !matches!(
+                    vhalla_private_relay::kind_from_byte(item.kind),
+                    Ok(vhalla_private_relay::RelayKind::Control
+                        | vhalla_private_relay::RelayKind::Outbox(
+                            vhalla_private_kernel::OutboxKind::Application
+                                | vhalla_private_kernel::OutboxKind::Removal
+                                | vhalla_private_kernel::OutboxKind::OwnerUpdate
+                                | vhalla_private_kernel::OutboxKind::Succession
+                        ))
+                )
+            {
+                return Err(());
+            }
+        }
         if self
             .refused
             .iter()
-            .any(|r| r.reason == 0 || r.position > self.cursor)
+            .any(|r| r.reason == 0 || r.reason > refusal::FUTURE_EPOCH || r.position > self.cursor)
             || self
                 .admissions
                 .iter()
@@ -222,11 +278,22 @@ impl State {
         {
             return Err(());
         }
-        if !self.pending.is_empty()
-            && RelayItem::decode(&self.pending).map_err(|_| ())?.sequence()
-                != self.sent.checked_add(1).ok_or(())?
-        {
-            return Err(());
+        if !self.pending.is_empty() {
+            let item = RelayItem::decode(&self.pending).map_err(|_| ())?;
+            if item.kind() == vhalla_private_relay::RelayKind::Control
+                || item.sequence() != self.sent.checked_add(1).ok_or(())?
+            {
+                return Err(());
+            }
+        }
+        if !self.pending_control.is_empty() {
+            let after = self.control_sent.ok_or(())?;
+            let item = RelayItem::decode(&self.pending_control).map_err(|_| ())?;
+            if item.kind() != vhalla_private_relay::RelayKind::Control
+                || item.sequence() != after.sequence().checked_add(1).ok_or(())?
+            {
+                return Err(());
+            }
         }
         if self.staged.is_empty() {
             if self.applied != 0 || self.staged_after != self.cursor {
@@ -241,6 +308,32 @@ impl State {
                 return Err(());
             }
         }
+        Ok(())
+    }
+    /// The contiguous resolved prefix stops immediately before the earliest
+    /// retained retryable item, even when later positions already resolved.
+    pub fn resolved(&self) -> u64 {
+        self.deferred
+            .first()
+            .map_or(self.cursor, |d| d.item.position - 1)
+    }
+    pub fn defer(&mut self, item: Admission, reason: u8) -> Result<()> {
+        if let Some(old) = self
+            .deferred
+            .iter()
+            .find(|d| d.item.position == item.position)
+        {
+            return if old.item == item && old.reason == reason {
+                Ok(())
+            } else {
+                Err(())
+            };
+        }
+        if self.deferred.len() >= MAX_DEFERRED {
+            return Err(());
+        }
+        self.deferred.push(Deferred { item, reason });
+        self.deferred.sort_by_key(|d| d.item.position);
         Ok(())
     }
     /// Observe the caller clock. A bounded step back is tolerated by keeping
@@ -315,7 +408,10 @@ impl State {
     /// Record one durably refused staged record. Re-recording the same
     /// position is an exact replay of an interrupted page and adds nothing.
     pub fn refuse(&mut self, position: u64, digest: [u8; 32], reason: u8) -> Result<()> {
-        if reason == 0 || self.admissions.iter().any(|a| a.position == position) {
+        if reason == 0
+            || reason > refusal::FUTURE_EPOCH
+            || self.admissions.iter().any(|a| a.position == position)
+        {
             return Err(());
         }
         if let Some(old) = self.refused.iter().find(|r| r.position == position) {
@@ -333,6 +429,7 @@ impl State {
             digest,
             reason,
         });
+        self.refused.sort_by_key(|r| r.position);
         self.refused_total = self.refused_total.checked_add(1).ok_or(())?;
         Ok(())
     }
@@ -398,7 +495,23 @@ impl State {
             out.extend_from_slice(&a.len.to_be_bytes());
             out.extend_from_slice(&a.digest);
         }
-        for b in [&self.pending, &self.staged] {
+        out.push(self.deferred.len() as u8);
+        for d in &self.deferred {
+            out.extend_from_slice(&d.item.position.to_be_bytes());
+            out.push(d.item.kind);
+            out.extend_from_slice(&d.item.len.to_be_bytes());
+            out.extend_from_slice(&d.item.digest);
+            out.push(d.reason);
+        }
+        match self.control_sent {
+            None => out.push(0),
+            Some(floor) => {
+                out.push(1);
+                out.extend_from_slice(&floor.sequence().to_be_bytes());
+                out.extend_from_slice(&floor.id().map_or([0; 32], |id| *id.as_bytes()));
+            }
+        }
+        for b in [&self.pending, &self.staged, &self.pending_control] {
             out.extend_from_slice(&(b.len() as u32).to_be_bytes());
             out.extend_from_slice(b);
         }
@@ -411,7 +524,8 @@ impl State {
         if raw.starts_with(MAGIC_V1) {
             return Self::decode_v1(raw);
         }
-        if !raw.starts_with(MAGIC) {
+        let legacy = raw.starts_with(MAGIC_V2);
+        if !legacy && !raw.starts_with(MAGIC) {
             return Err(());
         }
         let mut r = Reader {
@@ -452,8 +566,49 @@ impl State {
                 digest: r.array()?,
             });
         }
+        let mut deferred = Vec::new();
+        if !legacy {
+            let count = r.array::<1>()?[0] as usize;
+            if count > MAX_DEFERRED {
+                return Err(());
+            }
+            for _ in 0..count {
+                deferred.push(Deferred {
+                    item: Admission {
+                        position: u64::from_be_bytes(r.array()?),
+                        kind: r.array::<1>()?[0],
+                        len: u32::from_be_bytes(r.array()?),
+                        digest: r.array()?,
+                    },
+                    reason: r.array::<1>()?[0],
+                });
+            }
+        }
+        let control_sent = if legacy {
+            None
+        } else {
+            match r.array::<1>()?[0] {
+                0 => None,
+                1 => {
+                    let sequence = u64::from_be_bytes(r.array()?);
+                    let id = r.array()?;
+                    let id = if id == [0; 32] {
+                        None
+                    } else {
+                        Some(ControlId::from_bytes(id).map_err(|_| ())?)
+                    };
+                    Some(ControlFloor::new(sequence, id).map_err(|_| ())?)
+                }
+                _ => return Err(()),
+            }
+        };
         let pending = r.blob(MAX_PENDING)?;
         let staged = r.blob(codec::MAX_PAGE_BODY)?;
+        let pending_control = if legacy {
+            Vec::new()
+        } else {
+            r.blob(MAX_PENDING)?
+        };
         if r.at != raw.len() {
             return Err(());
         }
@@ -478,6 +633,9 @@ impl State {
             blocked,
             refused,
             admissions,
+            deferred,
+            control_sent,
+            pending_control,
             pending,
             staged,
         };
@@ -528,6 +686,9 @@ impl State {
             blocked: 0,
             refused: Vec::new(),
             admissions: Vec::new(),
+            deferred: Vec::new(),
+            control_sent: None,
+            pending_control: Vec::new(),
             pending,
             staged,
         };

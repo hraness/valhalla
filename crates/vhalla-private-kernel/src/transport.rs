@@ -34,6 +34,15 @@ pub struct CommittedEncryptedControl {
     pub(crate) bytes: Vec<u8>,
 }
 impl CommittedEncryptedControl {
+    /// Authenticated predecessor epoch from the exact retained envelope. This
+    /// local merge key never grants authority to an unverified relay input.
+    pub fn prior_epoch(&self) -> Result<u64> {
+        let envelope = Envelope::decode(&self.bytes)?;
+        if envelope.sequence != self.floor.sequence() {
+            return Err(Error::Policy);
+        }
+        Ok(envelope.prior)
+    }
     /// Full private scope; never use it as a public routing address.
     pub fn scope(&self) -> PrivateRoomScope {
         self.scope

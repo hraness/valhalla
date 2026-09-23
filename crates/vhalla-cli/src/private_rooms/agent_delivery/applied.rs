@@ -1,5 +1,5 @@
 //! Closed host evidence and recoverable, no-clobber publication. No plaintext.
-use super::{files, hex, unhex, OutboxKind, RelayItem, REFUSED};
+use super::{files, hex, unhex, OutboxKind, RelayItem, RelayKind, REFUSED};
 use serde_json::Value;
 use std::{
     io::{Read, Write},
@@ -60,6 +60,7 @@ pub(super) fn validate(
         "locally-received" | "unmatched-receipt-content" | "recipient-device-claim"
             if item.kind() == OutboxKind::Application && !own_echo =>
         {
+            reauthenticate = true;
             fields.push("inbox_sequence");
             number(&value, "inbox_sequence", status.inbox_head)?;
             if state == "locally-received" && emit_acceptance {
@@ -83,11 +84,13 @@ pub(super) fn validate(
             }
         }
         "locally-applied-control"
-            if !own_echo
-                && matches!(
-                    item.kind(),
-                    OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession
-                ) =>
+            if matches!(
+                item.kind(),
+                RelayKind::Control
+                    | RelayKind::Outbox(
+                        OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession
+                    )
+            ) =>
         {
             // Current status is not the original control floor on retry. Use
             // exact retained ciphertext verification instead of a mutable floor
@@ -98,7 +101,7 @@ pub(super) fn validate(
             if !own_echo
                 && matches!(
                     item.kind(),
-                    OutboxKind::ContactInvitation | OutboxKind::ContactRequest
+                    RelayKind::Outbox(OutboxKind::ContactInvitation | OutboxKind::ContactRequest)
                 ) => {}
         // Terminal skips: the exact bytes can never apply here, so the driver
         // recorded the typed refusal and moved the contiguous watermark past
@@ -110,7 +113,10 @@ pub(super) fn validate(
             if !own_echo
                 && matches!(
                     item.kind(),
-                    OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession
+                    RelayKind::Control
+                        | RelayKind::Outbox(
+                            OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession
+                        )
                 ) =>
         {
             fields.push("error");
@@ -119,7 +125,9 @@ pub(super) fn validate(
     }
     if fields.contains(&"error") {
         let reason = value.get("error").and_then(Value::as_str).ok_or(REFUSED)?;
-        if !SKIP_REASONS.contains(&reason) {
+        if !SKIP_REASONS.contains(&reason)
+            || (state == "unverifiable-control" && reason == "policy")
+        {
             return Err(REFUSED.into());
         }
     }
@@ -328,21 +336,36 @@ mod tests {
         let check = |v: &Value, own, emit| {
             validate(&serde_json::to_vec(v).unwrap(), &item, 1, status, own, emit)
         };
-        assert!(!check(&base, false, false).unwrap());
+        assert!(check(&base, false, false).unwrap());
         assert!(check(&base, false, true).is_err());
         assert!(check(&base, true, false).is_err());
         for (key, value) in [
             ("state", json!("unknown")),
             ("position", json!("2")),
+            ("position", json!(1)),
             ("inbox_sequence", json!("3")),
             ("inbox_sequence", json!("0")),
             ("inbox_sequence", json!("02")),
+            ("inbox_sequence", json!(2)),
             ("digest", json!(hex(&[9; 32]))),
             ("extra", json!(true)),
         ] {
             let mut bad = base.clone();
             bad[key] = value;
             assert!(check(&bad, false, false).is_err(), "{key}");
+        }
+        let claim = json!({"digest":hex(&item.digest()),"position":"1","state":"recipient-device-claim","inbox_sequence":"2","outbox_sequence":"3","recipient":hex(&[9; 32]),"recipient_inbox_sequence":"5"});
+        assert!(check(&claim, false, false).unwrap());
+        for (key, number) in [
+            ("inbox_sequence", 2),
+            ("outbox_sequence", 3),
+            ("recipient_inbox_sequence", 5),
+        ] {
+            for noncanonical in [json!(number), json!(format!("0{number}")), Value::Null] {
+                let mut bad = claim.clone();
+                bad[key] = noncanonical;
+                assert!(check(&bad, false, false).is_err(), "{key}");
+            }
         }
         let mut missing = base.clone();
         missing.as_object_mut().unwrap().remove("state");
@@ -365,6 +388,32 @@ mod tests {
         let mut wrong_kind = marker;
         wrong_kind["digest"] = json!(hex(&item.digest()));
         assert!(check(&wrong_kind, false, false).is_err());
+    }
+
+    #[test]
+    fn restored_control_policy_is_a_refusal_while_application_policy_remains_terminal() {
+        let (control, status) = fixture(OutboxKind::OwnerUpdate);
+        let marker = json!({"digest":hex(&control.digest()),"position":"1","state":"unverifiable-control","error":"policy"});
+        assert!(validate(
+            &serde_json::to_vec(&marker).unwrap(),
+            &control,
+            1,
+            status,
+            false,
+            false
+        )
+        .is_err());
+        let (application, status) = fixture(OutboxKind::Application);
+        let marker = json!({"digest":hex(&application.digest()),"position":"1","state":"undecryptable-foreign-or-stale","error":"policy"});
+        assert!(!validate(
+            &serde_json::to_vec(&marker).unwrap(),
+            &application,
+            1,
+            status,
+            false,
+            false
+        )
+        .unwrap());
     }
 
     #[test]

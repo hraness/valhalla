@@ -6,14 +6,14 @@ use super::{
 use crate::{Access, Error, Namespace};
 use vhalla_private_kernel::Context;
 
-/// One page plus one pending ciphertext and bounded controller metadata.
+/// One page, pending application/control ciphertext, and bounded metadata.
 pub const MAX_DELIVERY_BYTES: usize = 5 * 1024 * 1024;
-/// One retained relay-delivered bootstrap item: a complete canonical relay
+/// One retained relay-delivered bootstrap or deferred item: a canonical relay
 /// item frame, bounded by the largest stored artifact plus its framing.
 pub const MAX_RETAINED_BYTES: usize = vhalla_private_kernel::MAX_STORED_RECORD_BYTES + 128;
 
 /// One atomic delivery publication: the exact image compare-and-swap plus at
-/// most one retained bootstrap item added and one discarded in the same
+/// most one exact retained item added and one discarded in the same
 /// IndexedDB transaction. Retained items are never repaired or enumerated
 /// without the image index that names them.
 #[derive(Clone, Copy, Default)]
@@ -22,9 +22,9 @@ pub struct DeliveryWrite<'a> {
     pub expected: Option<&'a [u8]>,
     /// Complete next image.
     pub next: &'a [u8],
-    /// Mailbox position and exact bytes of one bootstrap item to retain.
+    /// Mailbox position and exact bytes of one bootstrap or deferred item to retain.
     pub retain: Option<(u64, &'a [u8])>,
-    /// Mailbox position of one retained bootstrap item to discard.
+    /// Mailbox position of one resolved deferred or explicitly discarded bootstrap item.
     pub discard: Option<u64>,
 }
 
@@ -52,7 +52,7 @@ impl IndexedDelivery {
     pub async fn load(&mut self) -> Result<Option<Vec<u8>>, Error> {
         self.read(self.key.clone(), MAX_DELIVERY_BYTES).await
     }
-    /// Read one retained bootstrap item by its exact mailbox position. Absence
+    /// Read one retained item by its exact mailbox position. Absence
     /// is reported; the caller compares the bytes against its image index.
     pub async fn load_retained(&mut self, position: u64) -> Result<Option<Vec<u8>>, Error> {
         self.read(self.retained_key(position), MAX_RETAINED_BYTES)

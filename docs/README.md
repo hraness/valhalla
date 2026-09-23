@@ -1,9 +1,15 @@
 # Valhalla docs
 
 The current continuation is tracked in the
-[22 September design review](design-review-2026-09-22.md). Its
+[23 September production and formal-assurance plan](production-formal-plan-2026-09-23.md).
+Its [execution record](readiness-execution-2026-09-23.md) separates implemented
+repairs and focused evidence from remaining qualification gates.
+It builds on the [22 September design review](design-review-2026-09-22.md) and
+[subsequent repair review](design-review-2026-09-23.md). The
 [independent-machine qualification plan](operational-qualification.md) separates
 local repair evidence from deployed service acceptance.
+Use the [two-Mac handoff](private-device-qualification.md) for the current
+synthetic qualification setup and evidence checklist.
 
 Valhalla is in development. This is a small guide to the current code and the
 design work behind it; the plans describe proposed behavior as well as accepted
@@ -60,9 +66,9 @@ The real browser now passes local two-room public posting, receipt readback and
 interrupted-send recovery. Durable external effects, independent public operation
 and encrypted private group rooms remain incomplete.
 
-The ledger and journal additionally carry [formal checks](verification.md):
-Kani harnesses over symbolic inputs and a Verus model of the admission
-machine, each with explicitly stated bounds.
+The maintained [formal checks](verification.md) include production Kani harnesses,
+a Verus ledger reference model, finite TLA+ delivery/egress/rotation/publication models
+and real-code conformance tests, each with explicit assumptions and limits.
 
 ## Find the code
 

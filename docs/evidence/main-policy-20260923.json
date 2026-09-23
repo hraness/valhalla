@@ -1,0 +1,182 @@
+{
+  "observed_utc": "2026-09-23T16:47:00.688319+00:00",
+  "repository": "hraness/valhalla",
+  "policy_source_sha256": "634e6725198a710d77b506124d77b7dbf8e02b12fefa9bba3a7f32825d416de2",
+  "ruleset": {
+    "id": 23889123,
+    "name": "Valhalla checked PRs",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "hraness/valhalla",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": [
+          "refs/heads/main"
+        ]
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      },
+      {
+        "type": "pull_request",
+        "parameters": {
+          "required_approving_review_count": 0,
+          "dismiss_stale_reviews_on_push": true,
+          "required_reviewers": [],
+          "require_code_owner_review": false,
+          "dismissal_restriction": {
+            "enabled": false,
+            "allowed_actors": []
+          },
+          "require_last_push_approval": false,
+          "required_review_thread_resolution": true,
+          "require_extra_approval_for_unattributed_changes": true,
+          "allowed_merge_methods": [
+            "merge",
+            "squash",
+            "rebase"
+          ]
+        }
+      },
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "strict_required_status_checks_policy": true,
+          "do_not_enforce_on_create": false,
+          "required_status_checks": [
+            {
+              "context": "check",
+              "integration_id": 15368
+            },
+            {
+              "context": "CodeQL",
+              "integration_id": 57789
+            },
+            {
+              "context": "Analyze (python)",
+              "integration_id": 15368
+            },
+            {
+              "context": "Analyze (actions)",
+              "integration_id": 15368
+            },
+            {
+              "context": "Analyze (c-cpp)",
+              "integration_id": 15368
+            },
+            {
+              "context": "Analyze (rust)",
+              "integration_id": 15368
+            },
+            {
+              "context": "Analyze (javascript-typescript)",
+              "integration_id": 15368
+            }
+          ]
+        }
+      }
+    ],
+    "node_id": "RRS_lACqUmVwb3NpdG9yec5Rg8xjzgFshOM",
+    "created_at": "2026-09-23T12:06:54.579-04:00",
+    "updated_at": "2026-09-23T12:45:59.847-04:00",
+    "bypass_actors": [],
+    "current_user_can_bypass": "never",
+    "_links": {
+      "self": {
+        "href": "https://api.github.com/repos/hraness/valhalla/rulesets/23889123"
+      },
+      "html": {
+        "href": "https://github.com/hraness/valhalla/rules/23889123"
+      }
+    }
+  },
+  "effective_main_rules": [
+    {
+      "type": "deletion",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "hraness/valhalla",
+      "ruleset_id": 23889123
+    },
+    {
+      "type": "non_fast_forward",
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "hraness/valhalla",
+      "ruleset_id": 23889123
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "dismissal_restriction": {
+          "enabled": false,
+          "allowed_actors": []
+        },
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": [
+          "merge",
+          "squash",
+          "rebase"
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "hraness/valhalla",
+      "ruleset_id": 23889123
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "check",
+            "integration_id": 15368
+          },
+          {
+            "context": "CodeQL",
+            "integration_id": 57789
+          },
+          {
+            "context": "Analyze (python)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Analyze (actions)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Analyze (c-cpp)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Analyze (rust)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Analyze (javascript-typescript)",
+            "integration_id": 15368
+          }
+        ]
+      },
+      "ruleset_source_type": "Repository",
+      "ruleset_source": "hraness/valhalla",
+      "ruleset_id": 23889123
+    }
+  ],
+  "main": {
+    "sha": "ba00721c07078f5e5aca3bd879941287a417c0b7",
+    "protected": true
+  }
+}

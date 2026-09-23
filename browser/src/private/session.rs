@@ -105,6 +105,7 @@ fn artifact(value: &CommittedOutbox) -> Artifact {
         operation: value.operation(),
         kind: value.kind(),
         bytes: Some(Zeroizing::new(value.bytes().to_vec())),
+        acceptances: Vec::new(),
     }
 }
 
@@ -386,8 +387,12 @@ impl Session {
                     artifact: Artifact {
                         sequence: item.sequence(),
                         operation: item.operation(),
-                        kind: item.kind(),
+                        kind: match item.kind() {
+                            vhalla_private_relay::RelayKind::Outbox(kind) => kind,
+                            vhalla_private_relay::RelayKind::Control => return Err(Failure::State),
+                        },
                         bytes: Some(Zeroizing::new(item.payload().to_vec())),
+                        acceptances: Vec::new(),
                     },
                 })
             }
@@ -651,11 +656,24 @@ impl Session {
                 let kernel = self.kernel()?;
                 let context = kernel.status().context;
                 let page = kernel.outbox(after, limit).await?;
-                let records = page
-                    .records
-                    .into_iter()
-                    .map(|r| match r {
-                        OutboxEntry::Artifact(a) => artifact(&a),
+                let mut records = Vec::new();
+                for r in page.records {
+                    let entry = match r {
+                        OutboxEntry::Artifact(a) => {
+                            let mut entry = artifact(&a);
+                            if a.kind() == vhalla_private_kernel::OutboxKind::Application {
+                                entry.acceptances = kernel
+                                    .acceptances(a.sequence())
+                                    .await?
+                                    .into_iter()
+                                    .map(|a| DeviceAcceptance {
+                                        recipient: a.recipient(),
+                                        received_sequence: a.received_sequence(),
+                                    })
+                                    .collect();
+                            }
+                            entry
+                        }
                         OutboxEntry::ConfidentialOffer {
                             sequence,
                             operation,
@@ -664,9 +682,11 @@ impl Session {
                             operation,
                             kind: vhalla_private_kernel::OutboxKind::ContactOffer,
                             bytes: None,
+                            acceptances: Vec::new(),
                         },
-                    })
-                    .collect();
+                    };
+                    records.push(entry);
+                }
                 Ok(Response::Outbox {
                     context,
                     head: page.head,
@@ -912,6 +932,7 @@ impl Session {
                             operation,
                             kind: vhalla_private_kernel::OutboxKind::ContactOffer,
                             bytes: None,
+                            acceptances: Vec::new(),
                         },
                     })
                     .collect();

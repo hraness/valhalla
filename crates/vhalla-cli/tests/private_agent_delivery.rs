@@ -36,9 +36,16 @@ struct Fixture {
     path: PathBuf,
     contexts: [Context; 2],
     addr: SocketAddr,
+    max_jobs: usize,
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_capacity(128, 128)
+    }
+    fn with_capacity(max_records: u64, mailbox_items: usize) -> Self {
+        Self::with_queue_capacity(max_records, mailbox_items, 64)
+    }
+    fn with_queue_capacity(max_records: u64, mailbox_items: usize, max_jobs: usize) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let path = std::env::temp_dir().join(format!(
@@ -51,7 +58,7 @@ impl Fixture {
         let contexts = runtime().block_on(async {
             let valid = Validity::new(stamp.as_secs() - 1, stamp.as_secs() + 3600).unwrap();
             let limits = Limits {
-                max_records: 128,
+                max_records,
                 max_record_bytes: 8 * 1024 * 1024,
             };
             let draft =
@@ -81,6 +88,7 @@ impl Fixture {
             path,
             contexts,
             addr,
+            max_jobs,
         };
         let issuer_key = KeyPair::generate().unwrap();
         let mut issuer = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -104,11 +112,11 @@ impl Fixture {
             "relay.json",
             &json!({
                 "max_connections":8, "request_timeout_ms":2000, "window_ms":1000,
-                "requests_per_window":128, "bytes_per_window":134217728,
+                "requests_per_window":mailbox_items.max(128), "bytes_per_window":134217728,
                 "credentials":[{"id":hex(&[8;16]), "namespace":hex(ns().as_bytes()),
                     "token_files":[fixture.p("token")], "put":true, "page":true,
-                    "max_items":64, "max_bytes":8388608, "max_inflight":4,
-                    "requests_per_window":64, "bytes_per_window":67108864}]
+                    "max_items":mailbox_items / 2, "max_bytes":8388608, "max_inflight":4,
+                    "requests_per_window":(mailbox_items / 2).max(64), "bytes_per_window":67108864}]
             }),
         );
         let mut command = fixture.command("relay-mailbox");
@@ -116,7 +124,7 @@ impl Fixture {
             "--namespace",
             &hex(ns().as_bytes()),
             "--max-items",
-            "128",
+            &mailbox_items.to_string(),
             "--max-bytes",
             "16777216",
         ]);
@@ -160,11 +168,11 @@ impl Fixture {
     }
     fn profile(&self, who: usize) -> Value {
         let c = self.contexts[who];
-        json!({"version":1,
+        json!({"version":2,
             "context":{"room":hex(c.scope.room.as_bytes()),"anchor":hex(c.scope.anchor.as_bytes()),"account":hex(c.account.as_bytes()),"device":hex(c.device.as_bytes())},
             "namespace":hex(ns().as_bytes()), "addr":self.addr.to_string(), "tls_name":NAME,
             "ca":self.p("ca.der"),"token":self.p("token"),"state":self.p(&format!("{who}-delivery")),
-            "max_jobs":64,"max_bytes":8388608,"max_attempts":8,
+            "max_jobs":self.max_jobs,"max_bytes":8388608,"max_attempts":8,
             "initial_backoff_secs":5,"max_backoff_secs":30,"emit_acceptance":true})
     }
     fn grant(&self, who: usize, name: &str, through: u64) -> Value {
@@ -290,6 +298,25 @@ impl Fixture {
         .unwrap()
         .driver_checkpoint()
         .unwrap()
+    }
+    fn control_job(
+        &self,
+        who: usize,
+        sequence: u64,
+    ) -> (
+        vhalla_private_native::relay::delivery::JobStatus,
+        vhalla_private_native::relay::delivery::JobEvidence,
+    ) {
+        let queue = DeliveryStore::open(
+            self.p(&format!("{who}-delivery/controls")),
+            self.contexts[who],
+            ns(),
+            self.client().endpoint_id(),
+        )
+        .unwrap();
+        let status = queue.statuses(sequence - 1, 1).unwrap().remove(0);
+        let evidence = queue.evidence(status.id).unwrap();
+        (status, evidence)
     }
 }
 impl Drop for Fixture {
@@ -503,13 +530,12 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
     let first = f.grant(OWNER, "first", 16);
     let mut owner = f.host(OWNER, "first", OWNER);
     let sequence = owner.queue(&first, "synthetic first message", 10);
-    // A refused TCP connect is honest "unreachable", not generic uncertainty.
-    let offline = owner.await_outbox(&first, sequence, |v| v["relay"]["state"] == "unreachable");
-    // Transport outages never spend the finite attempt budget; they are
-    // counted as durable outage evidence instead.
+    // The required owner control encounters the outage first. Applications
+    // remain pending until that exact control has been retained by the relay.
+    let offline = owner.await_outbox(&first, sequence, |v| v["relay"]["state"] == "pending");
     assert_eq!(offline["relay"]["attempts"], 0);
-    assert_eq!(offline["relay"]["uncertain"], true);
-    assert_eq!(offline["relay"]["last_error"], "connect");
+    assert_eq!(offline["relay"]["uncertain"], false);
+    assert_eq!(offline["relay"]["last_error"], Value::Null);
     thread::sleep(Duration::from_millis(1100));
     assert_eq!(
         owner.outbox(&first, sequence)["relay"]["attempts"],
@@ -519,9 +545,20 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
     owner.close();
     let retained_wire = f.ciphertext(OWNER, sequence);
     let (before, before_evidence) = f.job(OWNER, sequence);
-    assert!(before.uncertain);
+    assert!(!before.uncertain);
     assert_eq!(before.attempts, 0);
-    assert_eq!(before_evidence.outages, 1);
+    assert_eq!(before_evidence.outages, 0);
+    let (control, control_evidence) = f.control_job(OWNER, 1);
+    assert!(control.uncertain);
+    assert_eq!(
+        control.last_error,
+        Some(vhalla_private_native::relay::net::NetError::Connect)
+    );
+    assert_eq!(
+        control.attempts, 0,
+        "outages do not spend finite attempt authority"
+    );
+    assert_eq!(control_evidence.outages, 1);
     let mut reused = f.host(OWNER, "first", OWNER);
     reused.refused();
     assert!(f.p("first-claim.json").exists());
@@ -656,9 +693,12 @@ fn denied_tls_token_ends_grant_then_explicit_replacement_retries_exact_ciphertex
     let (before, _) = f.job(OWNER, sequence);
     assert_eq!(before.id, exact_item.digest());
     assert_eq!(before.state, JobState::Pending);
-    assert_eq!(before.attempts, 1);
-    assert_eq!(before.last_error, Some(NetError::Denied));
+    assert_eq!(before.attempts, 0, "required control is attempted first");
+    assert_eq!(before.last_error, None);
     assert!(!before.uncertain);
+    let (control, _) = f.control_job(OWNER, 1);
+    assert_eq!(control.attempts, 1);
+    assert_eq!(control.last_error, Some(NetError::Denied));
     assert_eq!(f.client().page(0, 8).unwrap().head, 0);
     assert_eq!(f.ciphertext(OWNER, sequence), artifact.bytes());
 
@@ -672,14 +712,18 @@ fn denied_tls_token_ends_grant_then_explicit_replacement_retries_exact_ciphertex
     let retained = owner.await_outbox(&replacement, sequence, |v| {
         v["relay"]["state"] == "retained"
     });
-    assert_eq!(retained["relay"]["attempts"], 2);
+    assert_eq!(retained["relay"]["attempts"], 1);
     owner.close();
     assert_eq!(f.job(OWNER, sequence).0.id, before.id);
     assert_eq!(f.ciphertext(OWNER, sequence), artifact.bytes());
     let page = f.client().page(0, 8).unwrap();
-    assert_eq!(page.head, 1);
-    assert_eq!(page.records.len(), 1);
-    assert_eq!(page.records[0].item, exact_item);
+    assert_eq!(page.head, 2);
+    assert_eq!(page.records.len(), 2);
+    assert_eq!(
+        page.records[0].item.kind(),
+        vhalla_private_native::relay::RelayKind::Control
+    );
+    assert_eq!(page.records[1].item, exact_item);
 }
 
 #[test]
@@ -906,4 +950,630 @@ fn malformed_retained_item_records_skip_marker_and_following_delivery_still_appl
         j["state"].as_str(),
         Some("pending" | "uncertain" | "retained" | "stopped")
     )));
+}
+
+#[test]
+fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_regrant() {
+    use vhalla_private_kernel::protocol::Key;
+    use vhalla_private_native::relay::{delivery::JobState, RelayKind, MAX_RELAY_PAGE};
+
+    let f = Fixture::with_capacity(1024, 512);
+    let count = MAX_RELAY_PAGE + 1;
+    let (expected_control, messages) = runtime().block_on(async {
+        let mut owner = RoomSession::open(
+            Identity::open(f.p("0-id")).unwrap(),
+            f.p("0-room"),
+            f.contexts[OWNER],
+        )
+        .await
+        .unwrap();
+        let before = owner.status().unwrap().control_floor;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid = Validity::new(now - 1, now + 1800).unwrap();
+        let identity = Identity::create_new(f.p("2-id")).unwrap();
+        let recipient = Key::from_bytes(identity.public_key()).unwrap();
+        let offer = owner
+            .create_contact_offer(op(200), recipient, valid)
+            .await
+            .unwrap();
+        let mut third = RoomCreation::from_contact(
+            identity,
+            offer.confidential_bytes(),
+            f.contexts[OWNER].account,
+            valid,
+        )
+        .unwrap()
+        .commit(
+            f.p("2-room"),
+            Limits {
+                max_records: 1024,
+                max_record_bytes: 8 * 1024 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+        let request = third
+            .contact_request(op(201), offer.confidential_bytes())
+            .await
+            .unwrap();
+        let welcome = owner
+            .accept_contact(op(202), request.bytes(), valid)
+            .await
+            .unwrap();
+        third.join_contact(welcome.bytes()).await.unwrap();
+        let page = owner.encrypted_controls(before, 1).await.unwrap();
+        let control = RelayItem::from_control(ns(), &page.records[0]).unwrap();
+        let mut messages = Vec::new();
+        for i in 0..count {
+            let draft = third
+                .prepare_message(format!("third member exact message {i}").as_bytes())
+                .unwrap();
+            let artifact = third.send(op((i + 1) as u8), &draft).await.unwrap();
+            messages.push(RelayItem::from_artifact(ns(), &artifact).unwrap());
+        }
+        (control, messages)
+    });
+    let _relay = f.relay();
+    // Transport can reorder independent senders. All application bytes precede
+    // their required control, including one beyond a complete native scan page.
+    for item in &messages {
+        f.client().submit(item).unwrap();
+    }
+    let first = f.grant(MEMBER, "deferred-first", 128);
+    let mut member = f.host(MEMBER, "deferred-first", MEMBER);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let staged = fs::read_dir(f.p("1-delivery/scan/items")).unwrap().count();
+        if staged >= count {
+            break;
+        }
+        assert!(Instant::now() < deadline, "future-epoch page did not stage");
+        assert_eq!(
+            member.call(&first, "private_status", json!({}))["result"]["structuredContent"]
+                ["status"],
+            "live"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    member.close();
+    assert!(
+        f.applied(MEMBER).is_empty(),
+        "future epochs must remain retryable"
+    );
+    assert_eq!(f.driver_checkpoint(MEMBER).1, 0);
+    // Neither a contiguous filename nor a plausible marker beyond a deferred
+    // gap may advance recovery. The second marker has the exact staged digest
+    // but invents reception evidence that does not exist in kernel custody.
+    for position in [1u64, 2] {
+        let marker = if position == 1 {
+            b"{}".to_vec()
+        } else {
+            serde_json::to_vec(&json!({"digest":hex(&messages[1].digest()), "position":"2", "state":"locally-received", "inbox_sequence":"1", "receipt_outbox_sequence":"1"})).unwrap()
+        };
+        let name = format!("1-delivery/applied/{position:016x}.json");
+        f.write(&name, &marker);
+        let grant_name = format!("corrupt-{position}");
+        f.grant(MEMBER, &grant_name, 128);
+        f.host(MEMBER, &grant_name, MEMBER).refused();
+        assert_eq!(
+            fs::read(f.p(&name)).unwrap(),
+            marker,
+            "refusal preserves corrupt evidence"
+        );
+        assert_eq!(f.driver_checkpoint(MEMBER).1, 0);
+        fs::rename(
+            f.p(&name),
+            f.p(&format!("preserved-corrupt-{position}.json")),
+        )
+        .unwrap();
+    }
+
+    // A fresh grant still authorizes only the old roster. The owner's ordinary
+    // configured host publishes its retained control without manual injection.
+    f.grant(MEMBER, "before-admission", 128);
+    let owner_grant = f.grant(OWNER, "publish-admission", 128);
+    let mut owner = f.host(OWNER, "publish-admission", OWNER);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let page = f.client().page(count as u64, 8).unwrap();
+        if page.records.iter().any(|r| r.item == expected_control) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "automatic admission control did not reach relay"
+        );
+        assert_eq!(
+            owner.call(&owner_grant, "private_status", json!({}))["result"]["structuredContent"]
+                ["status"],
+            "live"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    owner.close();
+    let mut member = f.host(MEMBER, "before-admission", MEMBER);
+    member.refused();
+    assert!(f
+        .applied(MEMBER)
+        .iter()
+        .any(|v| v["state"] == "locally-applied-control"));
+    assert!(
+        !f.applied(MEMBER)
+            .iter()
+            .any(|v| v["state"] == "locally-received"),
+        "changed roster must end the previous disclosure grant before plaintext release"
+    );
+    runtime().block_on(async {
+        let room = RoomSession::open(
+            Identity::open(f.p("1-id")).unwrap(),
+            f.p("1-room"),
+            f.contexts[MEMBER],
+        )
+        .await
+        .unwrap();
+        assert_eq!(room.status().unwrap().members, 3);
+        assert_eq!(room.status().unwrap().inbox_head, 0);
+    });
+    let second = f.grant(MEMBER, "after-admission", 128);
+    let mut member = f.host(MEMBER, "after-admission", MEMBER);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let count_received = f
+            .applied(MEMBER)
+            .iter()
+            .filter(|v| v["state"] == "locally-received")
+            .count();
+        if count_received == count {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "deferred messages did not resume: {count_received}/{count}"
+        );
+        let probe = member.call(&second, "private_status", json!({}));
+        assert_eq!(
+            probe["result"]["structuredContent"]["status"], "live",
+            "received={count_received}: {probe}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    let inbox = member.call(&second, "private_inbox", json!({"after":"0","limit":1}));
+    assert_eq!(
+        inbox["result"]["structuredContent"]["records"][0]["text"],
+        "third member exact message 0"
+    );
+    let status = member.call(&second, "private_status", json!({}));
+    let final_outbox: u64 = status["result"]["structuredContent"]["outbox_head"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    member.await_outbox(&second, final_outbox, |v| v["relay"]["state"] == "retained");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let head = f.client().page(0, 1).unwrap().head;
+        if f.applied(MEMBER).len() as u64 == head {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "inbound evidence did not drain before replay snapshot"
+        );
+        let probe = member.call(&second, "private_status", json!({}));
+        assert_eq!(
+            probe["result"]["structuredContent"]["status"], "live",
+            "{probe}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    member.close();
+    assert!(f.driver_checkpoint(MEMBER).1 >= count as u64);
+    let controls = DeliveryStore::open(
+        f.p("1-delivery/controls"),
+        f.contexts[MEMBER],
+        ns(),
+        f.client().endpoint_id(),
+    )
+    .unwrap();
+    let status = controls.job(expected_control.digest()).unwrap().unwrap();
+    assert_eq!(status.state, JobState::Retained);
+    assert_eq!(controls.driver_checkpoint().unwrap().0, 2);
+    assert_eq!(expected_control.kind(), RelayKind::Control);
+    assert_eq!(
+        f.client().page(0, MAX_RELAY_PAGE).unwrap().records[0].item,
+        messages[0],
+        "exact deferred ciphertext is preserved"
+    );
+    let mut command = f.room_command("delivery-status", MEMBER);
+    command
+        .arg("--config")
+        .arg(f.p("1-delivery.json"))
+        .args(["--stream", "control"])
+        .arg("--out")
+        .arg(f.p("controls-status.json"));
+    drop(controls);
+    success(command);
+    let report: Value =
+        serde_json::from_slice(&fs::read(f.p("controls-status.json")).unwrap()).unwrap();
+    assert_eq!(report["stream"], "control");
+    assert_eq!(report["driver"]["outgoing"], "2");
+    assert_eq!(report["jobs"][0]["digest"], hex(&expected_control.digest()));
+    let before = runtime().block_on(async {
+        let room = RoomSession::open(
+            Identity::open(f.p("1-id")).unwrap(),
+            f.p("1-room"),
+            f.contexts[MEMBER],
+        )
+        .await
+        .unwrap();
+        (
+            room.status().unwrap().inbox_head,
+            room.status().unwrap().outbox_head,
+        )
+    });
+    let saved_checkpoint = f.driver_checkpoint(MEMBER);
+    // Each launch reauthenticates from the initial cursor in bounded windows.
+    // Closing after a partial replay and reopening cannot decrease the saved
+    // checkpoint or create another signed acceptance/ciphertext.
+    for (name, rounds) in [("partial-marker-replay", 1), ("complete-marker-replay", 3)] {
+        let grant = f.grant(MEMBER, name, 128);
+        let mut member = f.host(MEMBER, name, MEMBER);
+        for _ in 0..rounds {
+            let status = member.call(&grant, "private_status", json!({}));
+            assert_eq!(
+                status["result"]["structuredContent"]["status"], "live",
+                "{status}"
+            );
+        }
+        member.close();
+        assert!(f.driver_checkpoint(MEMBER).1 >= saved_checkpoint.1);
+        runtime().block_on(async {
+            let room = RoomSession::open(
+                Identity::open(f.p("1-id")).unwrap(),
+                f.p("1-room"),
+                f.contexts[MEMBER],
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                (
+                    room.status().unwrap().inbox_head,
+                    room.status().unwrap().outbox_head
+                ),
+                before
+            );
+        });
+    }
+}
+
+#[test]
+fn pending_old_epoch_application_precedes_own_control_and_new_epoch_at_one_job_capacity() {
+    use vhalla_private_native::relay::RelayKind;
+    let f = Fixture::with_queue_capacity(128, 128, 1);
+    let (old, control, new) = runtime().block_on(async {
+        let mut owner = RoomSession::open(
+            Identity::open(f.p("0-id")).unwrap(),
+            f.p("0-room"),
+            f.contexts[OWNER],
+        )
+        .await
+        .unwrap();
+        let draft = owner
+            .prepare_message(b"old epoch must remain decryptable")
+            .unwrap();
+        let old = owner.send(op(60), &draft).await.unwrap();
+        let before = owner.status().unwrap().control_floor;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        owner
+            .renew_owner(op(61), Validity::new(now - 1, now + 7200).unwrap())
+            .await
+            .unwrap();
+        let control = owner
+            .encrypted_controls(before, 1)
+            .await
+            .unwrap()
+            .records
+            .remove(0);
+        let draft = owner
+            .prepare_message(b"new epoch requires its control")
+            .unwrap();
+        let new = owner.send(op(62), &draft).await.unwrap();
+        assert!(old.application_epoch().unwrap().unwrap() <= control.prior_epoch().unwrap());
+        assert!(new.application_epoch().unwrap().unwrap() > control.prior_epoch().unwrap());
+        (
+            RelayItem::from_artifact(ns(), &old).unwrap(),
+            RelayItem::from_control(ns(), &control).unwrap(),
+            RelayItem::from_artifact(ns(), &new).unwrap(),
+        )
+    });
+    let _relay = f.relay();
+    let grant = f.grant(OWNER, "ordered", 16);
+    let mut owner = f.host(OWNER, "ordered", OWNER);
+    owner.await_outbox(&grant, new.sequence(), |v| {
+        v["relay"]["state"] == "retained"
+    });
+    owner.close();
+    let page = f.client().page(0, 16).unwrap();
+    let position = |item: &RelayItem| {
+        page.records
+            .iter()
+            .position(|record| record.item == *item)
+            .unwrap()
+    };
+    assert!(position(&old) < position(&control));
+    assert!(position(&control) < position(&new));
+    assert_eq!(control.kind(), RelayKind::Control);
+    assert_eq!(f.ciphertext(OWNER, old.sequence()), old.payload());
+    assert_eq!(f.ciphertext(OWNER, new.sequence()), new.payload());
+}
+
+#[test]
+fn acceptance_staging_cannot_leapfrog_a_bounded_outbox_backlog() {
+    let f = Fixture::with_queue_capacity(256, 128, 1);
+    let (pending, incoming) = runtime().block_on(async {
+        let mut owner = RoomSession::open(
+            Identity::open(f.p("0-id")).unwrap(),
+            f.p("0-room"),
+            f.contexts[OWNER],
+        )
+        .await
+        .unwrap();
+        let mut pending = Vec::new();
+        // More than the driver's eight-attempt pass, with only one live job
+        // allowed: the first apply pass runs while earlier output is unstaged.
+        for n in 0..12 {
+            let draft = owner
+                .prepare_message(format!("pending {n}").as_bytes())
+                .unwrap();
+            let artifact = owner.send(op(80 + n), &draft).await.unwrap();
+            pending.push(RelayItem::from_artifact(ns(), &artifact).unwrap());
+        }
+        drop(owner);
+        let mut member = RoomSession::open(
+            Identity::open(f.p("1-id")).unwrap(),
+            f.p("1-room"),
+            f.contexts[MEMBER],
+        )
+        .await
+        .unwrap();
+        let draft = member
+            .prepare_message(b"accept after all older local output")
+            .unwrap();
+        let incoming = member.send(op(70), &draft).await.unwrap();
+        (pending, RelayItem::from_artifact(ns(), &incoming).unwrap())
+    });
+    let _relay = f.relay();
+    f.client().submit(&incoming).unwrap();
+    let grant = f.grant(OWNER, "acceptance-order", 16);
+    let mut owner = f.host(OWNER, "acceptance-order", OWNER);
+    let receipt_sequence = pending.last().unwrap().sequence() + 1;
+    // Waiting on an existing older record gives the first pass time to receive
+    // and durably issue the acceptance; output custody remains sender-ordered.
+    owner.await_outbox(&grant, pending.last().unwrap().sequence(), |v| {
+        v["relay"]["state"] == "retained"
+    });
+    owner.await_outbox(&grant, receipt_sequence, |v| {
+        v["relay"]["state"] == "retained"
+    });
+    owner.close();
+    let receipt = runtime().block_on(async {
+        let mut room = RoomSession::open(
+            Identity::open(f.p("0-id")).unwrap(),
+            f.p("0-room"),
+            f.contexts[OWNER],
+        )
+        .await
+        .unwrap();
+        let page = room.outbox(receipt_sequence - 1, 1).await.unwrap();
+        assert_eq!(
+            page.head, receipt_sequence,
+            "one exact acceptance was committed"
+        );
+        RelayItem::from_artifact(ns(), page.records[0].artifact().unwrap()).unwrap()
+    });
+    let page = f.client().page(0, 64).unwrap();
+    let position = |item: &RelayItem| {
+        page.records
+            .iter()
+            .position(|record| record.item == *item)
+            .unwrap()
+    };
+    let positions: Vec<_> = pending.iter().map(position).collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(
+        positions.last().unwrap() < &position(&receipt),
+        "a newly issued acceptance leapfrogged an older committed application"
+    );
+}
+
+#[test]
+fn upgraded_legacy_tail_job_refuses_but_exact_enqueue_before_checkpoint_recovers() {
+    for tail in [true, false] {
+        let f = Fixture::with_queue_capacity(128, 128, 1);
+        let (old, receipt) = runtime().block_on(async {
+            let mut owner = RoomSession::open(
+                Identity::open(f.p("0-id")).unwrap(),
+                f.p("0-room"),
+                f.contexts[OWNER],
+            )
+            .await
+            .unwrap();
+            let draft = owner
+                .prepare_message(b"older unstaged application")
+                .unwrap();
+            let old = owner.send(op(95), &draft).await.unwrap();
+            let mut member = RoomSession::open(
+                Identity::open(f.p("1-id")).unwrap(),
+                f.p("1-room"),
+                f.contexts[MEMBER],
+            )
+            .await
+            .unwrap();
+            let draft = member.prepare_message(b"receipt predecessor").unwrap();
+            let incoming = member.send(op(96), &draft).await.unwrap();
+            owner.receive(incoming.bytes()).await.unwrap();
+            let receipt = owner
+                .issue_acceptance(op(97), incoming.bytes())
+                .await
+                .unwrap();
+            (
+                RelayItem::from_artifact(ns(), &old).unwrap(),
+                RelayItem::from_artifact(ns(), &receipt).unwrap(),
+            )
+        });
+        let selected = if tail { &receipt } else { &old };
+        let before = {
+            let mut queue = DeliveryStore::open(
+                f.p("0-delivery/jobs"),
+                f.contexts[OWNER],
+                ns(),
+                f.client().endpoint_id(),
+            )
+            .unwrap();
+            let time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let job = queue.enqueue(selected, time).unwrap();
+            assert_eq!(queue.driver_checkpoint().unwrap(), (0, 0));
+            job
+        };
+        let mut legacy = f.profile(OWNER);
+        legacy["version"] = json!(1);
+        f.write_json("0-delivery.json", &legacy);
+        let mut upgrade = f.room_command("delivery-upgrade", OWNER);
+        upgrade.arg("--config").arg(f.p("0-delivery.json"));
+        success(upgrade);
+        let _relay = f.relay();
+        let grant = f.grant(OWNER, "precheckpoint", 8);
+        let mut host = f.host(OWNER, "precheckpoint", OWNER);
+        if tail {
+            host.refused();
+            assert_eq!(f.client().page(0, 8).unwrap().head, 0);
+            let (after, _) = f.job(OWNER, receipt.sequence());
+            assert_eq!(
+                after, before,
+                "refusal preserves exact attempts and retry state"
+            );
+            assert_eq!(f.ciphertext(OWNER, receipt.sequence()), receipt.payload());
+        } else {
+            host.await_outbox(&grant, receipt.sequence(), |v| {
+                v["relay"]["state"] == "retained"
+            });
+            host.close();
+            let page = f.client().page(0, 8).unwrap();
+            let position = |item: &RelayItem| {
+                page.records
+                    .iter()
+                    .position(|record| record.item == *item)
+                    .unwrap()
+            };
+            assert!(position(&old) < position(&receipt));
+        }
+    }
+}
+
+#[test]
+fn selected_control_upgrade_refuses_missing_evidence_and_v1_recovers_preselection() {
+    let f = Fixture::new();
+    let selected = fs::read(f.p("0-delivery.json")).unwrap();
+    let marker = fs::read(f.p("0-delivery/controls.enabled")).unwrap();
+    // Version 2 is already active. Preserve the exact artifacts outside their
+    // selected names: upgrade must not recreate retry budgets or commitments.
+    fs::rename(f.p("0-delivery/controls"), f.p("saved-controls")).unwrap();
+    fs::rename(
+        f.p("0-delivery/controls.enabled"),
+        f.p("saved-controls.enabled"),
+    )
+    .unwrap();
+    let upgrade = || {
+        let mut command = f.room_command("delivery-upgrade", OWNER);
+        command.arg("--config").arg(f.p("0-delivery.json"));
+        command
+    };
+    assert!(!run(upgrade()).status.success());
+    assert!(!f.p("0-delivery/controls").exists());
+    assert!(!f.p("0-delivery/controls.enabled").exists());
+    assert_eq!(fs::read(f.p("0-delivery.json")).unwrap(), selected);
+    fs::rename(f.p("saved-controls"), f.p("0-delivery/controls")).unwrap();
+    assert!(!run(upgrade()).status.success());
+    assert!(!f.p("0-delivery/controls.enabled").exists());
+    assert_eq!(fs::read(f.p("saved-controls.enabled")).unwrap(), marker);
+    // An interrupted preselection migration may legitimately have its empty
+    // additive queue present before the marker and final v2 config publish.
+    let mut legacy = f.profile(OWNER);
+    legacy["version"] = json!(1);
+    f.write_json("0-delivery.json", &legacy);
+    success(upgrade());
+    assert_eq!(
+        fs::read(f.p("0-delivery/controls.enabled")).unwrap(),
+        marker
+    );
+    let activated: Value =
+        serde_json::from_slice(&fs::read(f.p("0-delivery.json")).unwrap()).unwrap();
+    assert_eq!(activated["version"], 2);
+    success(upgrade());
+}
+
+#[test]
+fn explicit_control_upgrade_versions_profile_and_preserves_legacy_queue_evidence() {
+    let f = Fixture::new();
+    let mut legacy = f.profile(OWNER);
+    legacy["version"] = json!(1);
+    f.write_json("0-delivery.json", &legacy);
+    // Reproduce the predecessor shape in this empty synthetic fixture only.
+    fs::remove_dir_all(f.p("0-delivery/controls")).unwrap();
+    fs::remove_file(f.p("0-delivery/controls.enabled")).unwrap();
+    let binding = fs::read(f.p("0-delivery/binding")).unwrap();
+    let before = f.driver_checkpoint(OWNER);
+    f.grant(OWNER, "legacy-refused", 4);
+    f.host(OWNER, "legacy-refused", OWNER).refused();
+    assert!(!f.p("legacy-refused-claim.json").exists());
+    let mut command = f.room_command("delivery-status", OWNER);
+    command
+        .arg("--config")
+        .arg(f.p("0-delivery.json"))
+        .arg("--out")
+        .arg(f.p("legacy-status.json"));
+    success(command);
+    for _ in 0..2 {
+        let mut upgrade = f.room_command("delivery-upgrade", OWNER);
+        upgrade.arg("--config").arg(f.p("0-delivery.json"));
+        success(upgrade);
+    }
+    let selected: Value =
+        serde_json::from_slice(&fs::read(f.p("0-delivery.json")).unwrap()).unwrap();
+    assert_eq!(
+        selected["version"], 2,
+        "old Config::load accepts only v1 and refuses before transport"
+    );
+    assert_eq!(fs::read(f.p("0-delivery/binding")).unwrap(), binding);
+    assert_eq!(f.driver_checkpoint(OWNER), before);
+    let mut resume = f.room_command("delivery-resume", OWNER);
+    resume
+        .arg("--config")
+        .arg(f.p("0-delivery.json"))
+        .args(["--stream", "control"]);
+    let out = run(resume);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_str(
+        std::str::from_utf8(&out.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(report["stream"], "control");
+    assert_eq!(report["resumed"], 0);
 }

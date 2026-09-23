@@ -319,7 +319,7 @@ fn partial_existing_foreign_and_mutated_homes_refuse_without_repair() {
 }
 
 #[test]
-fn add_credential_and_rotate_extend_the_sealed_home_without_rebinding_members() {
+fn add_credential_and_recovery_extend_the_sealed_home_without_rebinding_members() {
     let f = Fixture::new();
     ok(&f.init());
     let ca = fs::read(f.home().join("ca.der")).unwrap();
@@ -350,20 +350,6 @@ fn add_credential_and_rotate_extend_the_sealed_home_without_rebinding_members() 
     assert_eq!(f.client(1).submit(&item).unwrap().position, 1);
     assert_eq!(f.client(3).page(0, 1).unwrap().records[0].item, item);
     server.stop();
-    // Rotation keeps CA, listener, tokens and the old mailbox; only the
-    // opaque namespace and mailbox selection advance.
-    let rotated = run(f.command("rotate"));
-    ok(&rotated);
-    let rotated: Value = serde_json::from_slice(&rotated.stdout).unwrap();
-    assert_eq!(rotated["status"], "rotated");
-    assert_eq!(rotated["mailbox"], "mailbox-2");
-    let connection = f.json("connection.json");
-    let previous = connection["previous_namespace"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert_eq!(connection["mailbox"], "mailbox-2");
-    assert_ne!(connection["namespace"], previous);
     assert_eq!(fs::read(f.home().join("ca.der")).unwrap(), ca);
     for (n, token) in tokens.iter().enumerate() {
         assert_eq!(
@@ -371,30 +357,6 @@ fn add_credential_and_rotate_extend_the_sealed_home_without_rebinding_members() 
             *token
         );
     }
-    assert!(f.home().join("mailbox").is_dir());
-    assert!(f.home().join("mailbox-2").is_dir());
-    // Repeating the command is explicit and monotone: it never reuses or
-    // rewrites an earlier mailbox.
-    let again = run(f.command("rotate"));
-    ok(&again);
-    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
-    assert_eq!(again["mailbox"], "mailbox-3");
-    // The retained tokens still authenticate under the rotated namespace and
-    // the fresh mailbox starts empty; the stale namespace is not admitted.
-    let mut server = f.serve();
-    let page = f.client(1).page(0, 1).unwrap();
-    assert_eq!(page.head, 0);
-    assert!(page.records.is_empty());
-    let stale = TlsRelay::new(
-        f.addr,
-        "local-host.test.invalid",
-        fs::read(f.home().join("ca.der")).unwrap(),
-        RelayToken::from_bytes(f.token(1)).unwrap(),
-        RelayNamespace::from_bytes(unhex(&previous)).unwrap(),
-    )
-    .unwrap();
-    assert!(stale.page(0, 1).is_err());
-    server.stop();
     // A torn sealed mutation recovers to the last sealed snapshot instead of
     // refusing the home or completing half of it.
     let before = fs::read(f.home().join("config.json")).unwrap();
@@ -425,8 +387,190 @@ fn add_credential_and_rotate_extend_the_sealed_home_without_rebinding_members() 
     ok(&status);
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["credentials"], 4);
-    assert_eq!(status["mailbox"], "mailbox-3");
+    assert_eq!(status["mailbox"], "mailbox");
     let _ = (before, before_complete);
+}
+
+#[test]
+fn rotation_refuses_without_mutation_even_when_empty_or_serving() {
+    let f = Fixture::new();
+    ok(&f.init());
+    let before: std::collections::BTreeMap<_, _> = fs::read_dir(f.home())
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| (entry.file_name(), fs::read(entry.path()).unwrap()))
+        .collect();
+    let refused = run(f.command("rotate"));
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("pending or uncertain work"));
+    assert!(!f.home().join("mailbox-2").exists());
+    assert!(!f.home().join("maintenance.lock").exists());
+    for (name, bytes) in &before {
+        assert_eq!(fs::read(f.home().join(name)).unwrap(), *bytes);
+    }
+    let namespace = f.namespace();
+    let mut server = f.serve();
+    assert_eq!(f.client(1).page(0, 1).unwrap().head, 0);
+    assert!(!run(f.command("rotate")).status.success());
+    assert_eq!(f.namespace(), namespace);
+    assert_eq!(f.client(1).page(0, 1).unwrap().head, 0);
+    assert!(!f.home().join("mailbox-2").exists());
+    server.stop();
+}
+
+#[test]
+fn gateway_sigterm_drains_admitted_put_and_restart_reconciles_exact_retention() {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::path::Path;
+
+    fn private(path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    fn gateway(config: &Path, origin: &str) -> Server {
+        let mut server = Server(
+            Command::new(env!("CARGO_BIN_EXE_vhalla"))
+                .args(["private-gateway", "serve"])
+                .arg(config)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = server.0.stdout.take().unwrap();
+        let (send, receive) = mpsc::channel();
+        thread::spawn(move || {
+            let mut line = String::new();
+            let _ = send.send(BufReader::new(stdout).read_line(&mut line).map(|_| line));
+        });
+        let line = receive
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(line.trim(), format!("private-gateway {origin}"));
+        server
+    }
+    fn connect(addr: SocketAddr) -> TcpStream {
+        let socket = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        socket
+    }
+    fn response(socket: &mut TcpStream) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        socket.read_to_end(&mut bytes).unwrap();
+        assert!(bytes.starts_with(b"HTTP/1.1 200"));
+        let body = bytes.windows(4).position(|p| p == b"\r\n\r\n").unwrap() + 4;
+        bytes[body..].to_vec()
+    }
+
+    let f = Fixture::new();
+    ok(&f.init());
+    let mut host = f.serve();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let origin = format!("http://{addr}");
+    let config = f.root.join("gateway.json");
+    let token = f.root.join("browser.token");
+    private(&token, "08".repeat(32).as_bytes());
+    let assets = f.root.join("assets");
+    fs::DirBuilder::new().mode(0o700).create(&assets).unwrap();
+    let ui = b"synthetic gateway lifecycle fixture";
+    fs::write(assets.join("index.html"), ui).unwrap();
+    let digest: String = Sha256::digest(ui)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    fs::write(assets.join("artifact.json"), serde_json::to_vec(&serde_json::json!({
+        "format":1,"purpose":"production","assets":{"index.html":{"bytes":ui.len(),"sha256":digest}}
+    })).unwrap()).unwrap();
+    private(
+        &config,
+        &serde_json::to_vec(&serde_json::json!({
+            "format":1,"listen":addr,"namespace":f.json("connection.json")["namespace"],
+            "browser_token_file":token,"assets_dir":assets,"initial_cursor":"0",
+            "upstream":{"addr":f.addr,"tls_name":"local-host.test.invalid",
+              "tls_ca_file":f.home().join("ca.der"),"token_file":f.home().join("client-1.token")}
+        }))
+        .unwrap(),
+    );
+    let selected = fs::read(&config).unwrap();
+    let item = RelayItem::new(
+        f.namespace(),
+        1,
+        OperationId::from_bytes([51; 16]).unwrap(),
+        OutboxKind::Application,
+        b"retained through real gateway process drain",
+    )
+    .unwrap();
+    let encoded = item.encode().unwrap();
+    // Canonical relay v1 frame: length, PUT tag, exact opaque item.
+    let mut body = ((encoded.len() + 1) as u32).to_be_bytes().to_vec();
+    body.push(1);
+    body.extend(encoded);
+    let header = format!("POST /private-relay/v1 HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nAuthorization: Bearer {}\r\nX-Vhalla-Namespace: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+        "08".repeat(32), f.json("connection.json")["namespace"].as_str().unwrap(), body.len());
+    let mut service = gateway(&config, &origin);
+    let mut put = connect(addr);
+    put.write_all(header.as_bytes()).unwrap();
+    put.write_all(&body[..body.len() - 1]).unwrap();
+    // A later successful request proves the accept loop admitted the first
+    // connection, whose missing final body byte prevents an upstream PUT.
+    let mut probe = connect(addr);
+    probe
+        .write_all(format!("GET / HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
+        .unwrap();
+    assert_eq!(response(&mut probe), ui);
+    assert_eq!(f.client(1).page(0, 1).unwrap().head, 0);
+    let started = Instant::now();
+    rustix::process::kill_process(
+        rustix::process::Pid::from_raw(service.0.id().try_into().unwrap()).unwrap(),
+        rustix::process::Signal::TERM,
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        service.0.try_wait().unwrap().is_none(),
+        "admitted PUT was abandoned"
+    );
+    put.write_all(&body[body.len() - 1..]).unwrap();
+    let retained = response(&mut put);
+    let mut receipt = 42u32.to_be_bytes().to_vec();
+    receipt.push(0); // Successful canonical retention status.
+    receipt.extend(1u64.to_be_bytes());
+    receipt.extend(item.digest());
+    receipt.push(0); // First publication.
+    assert_eq!(retained, receipt);
+    wait(&mut service.0);
+    assert!(service.0.try_wait().unwrap().unwrap().success());
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(fs::read_to_string(f.root.join("events.log"))
+        .unwrap()
+        .contains("\"reason\":\"terminate\""));
+    assert_eq!(f.client(1).page(0, 2).unwrap().records[0].item, item);
+    host.stop();
+    host = f.serve();
+    service = gateway(&config, &origin);
+    let mut retry = connect(addr);
+    retry.write_all(header.as_bytes()).unwrap();
+    retry.write_all(&body).unwrap();
+    *receipt.last_mut().unwrap() = 1;
+    assert_eq!(response(&mut retry), receipt);
+    let page = f.client(1).page(0, 2).unwrap();
+    assert_eq!(page.head, 1);
+    assert_eq!(page.records[0].item, item);
+    assert_eq!(fs::read(&config).unwrap(), selected);
+    service.stop();
+    host.stop();
 }
 
 #[test]
@@ -508,6 +652,116 @@ fn renew_reissues_the_leaf_under_the_retained_ca_without_rebinding() {
     assert!(!run(g.command("renew")).status.success());
     assert_eq!(fs::read(g.home().join("server.der")).unwrap(), leaf_before);
     assert!(moved.exists());
+}
+
+#[test]
+fn revocation_and_replacement_activate_after_restart_without_changing_quota_identity() {
+    let f = Fixture::new();
+    ok(&f.init());
+    let initial = f.json("config.json");
+    let old_token = fs::read(f.home().join("client-1.token")).unwrap();
+    let old_client = f.client(1);
+    let mut server = f.serve();
+    let item = RelayItem::new(
+        f.namespace(),
+        1,
+        OperationId::from_bytes([71; 16]).unwrap(),
+        OutboxKind::Application,
+        b"retained before token revocation",
+    )
+    .unwrap();
+    let first = old_client.submit(&item).unwrap();
+    let mut revoke = f.command("revoke-credential");
+    revoke.arg("1");
+    let result = run(revoke);
+    ok(&result);
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["restart_required"], true);
+    assert_eq!(report["credential_id"], initial["credential_ids"][0]);
+    assert_eq!(
+        f.json("config.json")["credential_ids"],
+        initial["credential_ids"]
+    );
+    assert_eq!(
+        fs::read(f.home().join("client-1.token")).unwrap(),
+        old_token
+    );
+    assert_eq!(
+        old_client.page(0, 1).unwrap().head,
+        first.position,
+        "running service retains startup authority until drain"
+    );
+    server.stop();
+    let mut server = f.serve();
+    assert!(matches!(old_client.page(0, 1), Err(NetError::Denied)));
+    assert_eq!(f.client(2).page(0, 1).unwrap().records[0].item, item);
+    let mut probe = f.command("status");
+    probe.arg("--probe");
+    let probed = run(probe);
+    ok(&probed);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&probed.stdout).unwrap()["probe"]["probed"],
+        true
+    );
+    let mut replace = f.command("replace-credential");
+    replace.arg("1");
+    let result = run(replace);
+    ok(&result);
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["credential_generation"], 2);
+    assert_eq!(report["credential_id"], initial["credential_ids"][0]);
+    let new_client = f.client(1);
+    assert!(
+        matches!(new_client.page(0, 1), Err(NetError::Denied)),
+        "replacement is not admitted before the selected restart"
+    );
+    server.stop();
+    let mut server = f.serve();
+    assert!(matches!(old_client.page(0, 1), Err(NetError::Denied)));
+    let retained = new_client.submit(&item).unwrap();
+    assert!(retained.duplicate);
+    assert_eq!(retained.position, first.position);
+    assert_eq!(retained.digest, first.digest);
+    assert_eq!(
+        f.json("config.json")["credential_ids"],
+        initial["credential_ids"]
+    );
+    let history = f.home().join("client-1.generation-1.token");
+    assert_eq!(fs::read(&history).unwrap(), old_token);
+    assert_eq!(fs::metadata(history).unwrap().mode() & 0o7777, 0o600);
+    assert!(!result
+        .stdout
+        .windows(old_token.len())
+        .any(|bytes| bytes == old_token));
+    server.stop();
+}
+
+#[test]
+fn revoking_all_credentials_is_loadable_and_refuses_new_service_admission() {
+    let f = Fixture::new();
+    ok(&f.init());
+    for index in [1, 2] {
+        let mut revoke = f.command("revoke-credential");
+        revoke.arg(index.to_string());
+        ok(&run(revoke));
+    }
+    let before = fs::read(f.home().join("config.json")).unwrap();
+    let mut repeated = f.command("revoke-credential");
+    repeated.arg("2");
+    ok(&run(repeated));
+    assert_eq!(fs::read(f.home().join("config.json")).unwrap(), before);
+    ok(&run(f.command("status")));
+    let refused = run(f.command("serve"));
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("all transport credentials are revoked")
+    );
+    let mut replacement = f.command("replace-credential");
+    replacement.arg("2");
+    ok(&run(replacement));
+    let mut server = f.serve();
+    assert_eq!(f.client(2).page(0, 1).unwrap().head, 0);
+    server.stop();
 }
 
 #[test]

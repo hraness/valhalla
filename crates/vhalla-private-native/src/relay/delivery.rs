@@ -259,6 +259,19 @@ fn configure(conn: &Connection) -> Result<()> {
     .map_err(|_| Error::Storage)
 }
 impl DeliveryStore {
+    /// Retained immutable resource and retry authority, for explicit additive
+    /// controller upgrades. Opening a queue never changes these limits.
+    pub fn policy(&self) -> (Limits, RetryPolicy) {
+        (self.limits, self.policy)
+    }
+
+    /// Whether every retained job has a checked relay-retention receipt.
+    /// Unknown and stopped jobs prevent a drained transition or dependent send.
+    pub fn is_drained(&self) -> Result<bool> {
+        self.live()?;
+        Ok(self.usage()?.0 == 0)
+    }
+
     /// Create a never-used private directory and bind all immutable policy before use.
     pub fn create_new(
         path: impl AsRef<Path>,
@@ -556,6 +569,28 @@ impl DeliveryStore {
         self.live()?;
         self.find(id)
     }
+    /// Earliest unresolved position, including a stopped or uncertain job.
+    /// Select it in the bounded local table rather than repeatedly paging an
+    /// ever-growing retained prefix under a controller's per-tick deadline.
+    pub fn first_unretained(&self) -> Result<Option<JobStatus>> {
+        self.live()?;
+        let id: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT id FROM jobs WHERE state IN (0,1,3) ORDER BY sequence LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| Error::Corrupt)?;
+        match id {
+            None => Ok(None),
+            Some(id) => self
+                .find(id.try_into().map_err(|_| Error::Corrupt)?)?
+                .map(Some)
+                .ok_or(Error::Corrupt),
+        }
+    }
     /// Durable monotone driver watermarks: the local-outbox sequence already
     /// scanned into this queue and the contiguous applied mailbox position.
     /// Both start at zero for queues that predate the driver table.
@@ -714,6 +749,29 @@ impl DeliveryStore {
         now: u64,
         budget: TickBudget,
     ) -> Result<TickReport> {
+        self.tick_selected(transport, now, budget, None)
+    }
+
+    /// Attempt only one exact retained job while keeping its existing due time,
+    /// finite budget, uncertainty and endpoint binding. Hosts use this to merge
+    /// independent control/outbox streams without reordering committed epochs.
+    pub fn tick_only(
+        &mut self,
+        transport: &mut impl Transport,
+        now: u64,
+        budget: TickBudget,
+        id: [u8; 32],
+    ) -> Result<TickReport> {
+        self.tick_selected(transport, now, budget, Some(id))
+    }
+
+    fn tick_selected(
+        &mut self,
+        transport: &mut impl Transport,
+        now: u64,
+        budget: TickBudget,
+        only: Option<[u8; 32]>,
+    ) -> Result<TickReport> {
         let clock = self.clock(now)?;
         if transport.endpoint_id() != self.endpoint || transport.namespace() != self.namespace {
             return Err(Error::Scope);
@@ -736,11 +794,16 @@ impl DeliveryStore {
             });
         }
         let ids = {
-            let mut stmt=self.conn.prepare("SELECT id FROM jobs WHERE state IN (0,1) AND next_due<=?1 ORDER BY next_due,sequence LIMIT ?2").map_err(|_|Error::Corrupt)?;
+            let mut stmt=self.conn.prepare("SELECT id FROM jobs WHERE state IN (0,1) AND next_due<=?1 AND (?3 IS NULL OR id=?3) ORDER BY next_due,sequence LIMIT ?2").map_err(|_|Error::Corrupt)?;
             let rows = stmt
-                .query_map(params![clock, budget.max_jobs as i64], |r| {
-                    r.get::<_, Vec<u8>>(0)
-                })
+                .query_map(
+                    params![
+                        clock,
+                        budget.max_jobs as i64,
+                        only.as_ref().map(|id| id.as_slice())
+                    ],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
                 .map_err(|_| Error::Corrupt)?;
             let mut ids = Vec::new();
             for id in rows {

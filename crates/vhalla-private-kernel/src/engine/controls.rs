@@ -6,6 +6,50 @@ use crate::{
 };
 
 impl<S: Store> Kernel<S> {
+    /// Verify an exact encrypted control against already committed history.
+    /// This read-only recovery check cannot apply a new control or advance MLS.
+    pub async fn retained_control(&mut self, raw: &[u8]) -> Result<bool> {
+        let sequence = crate::transport::Envelope::decode(raw)?.sequence;
+        let state = self.begin_state().await?;
+        if sequence <= encrypted_base(&state).sequence() || sequence > state.floor.sequence() {
+            return Ok(false);
+        }
+        let page = self.encrypted_controls_from(Some(sequence - 1), 1).await?;
+        Ok(page
+            .records
+            .first()
+            .is_some_and(|control| control.bytes() == raw))
+    }
+
+    /// Resolve a host's durable control-sequence watermark against authenticated
+    /// local history, then read its bounded encrypted suffix. `None` explicitly
+    /// selects this device's retained wire-history base; it never selects a
+    /// relay-supplied checkpoint or grants access before the joining floor.
+    pub async fn encrypted_controls_from(
+        &mut self,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<EncryptedControlPage> {
+        if limit == 0 || limit > MAX_PAGE_RECORDS {
+            return Err(Error::Bounds);
+        }
+        let state = self.begin_state().await?;
+        let base = encrypted_base(&state);
+        let sequence = after.unwrap_or(base.sequence());
+        if sequence < base.sequence() {
+            return Err(Error::Missing);
+        }
+        if sequence > state.floor.sequence() {
+            return Err(Error::Bounds);
+        }
+        let floor = if sequence == base.sequence() {
+            base
+        } else {
+            self.control_at(sequence).await?.floor()?
+        };
+        self.encrypted_controls(floor, limit).await
+    }
+
     /// Read a bounded exact encrypted suffix. The fresh-join transition has only
     /// a locally checked owner proof; its predecessor key is never given to the
     /// new member. This method reports that separate wire-history boundary.

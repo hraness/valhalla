@@ -367,8 +367,9 @@ each unlock. The worker holds it only in memory, and clears the selected file
 input immediately. Browser-managed temporary copies are outside a guarantee of
 complete memory erasure. Keep this profile file `0600` inside a `0700`
 directory and never in Downloads or other shared locations; its capability is
-a bearer credential. Revocation is an explicit host configuration rotation;
-locking a worker does not revoke the shared host capability.
+a bearer credential. Revocation or replacement requires an explicit gateway
+configuration change and drained restart; locking a worker does not revoke the
+shared gateway capability.
 An authorization refusal locks that worker and retains its exact pending job,
 charged attempt and backoff. Explicitly unlock and select a profile carrying the
 current capability to resume; correcting authority never resets finite budgets.
@@ -386,14 +387,33 @@ record is never an excuse to guess a later cursor or silently skip it.
 The canonical decimal initial cursor must be within the mailbox's 4,096-item
 lifetime limit; an oversized cursor refuses before any delivery state is created.
 
-Each **Sync now** reserves its finite attempt before networking, fetches and
-applies at most four incoming records in mailbox order (controls before any
-outbound send, so a renewal elsewhere is seen first), sends at most two local
-outbox entries, and stops after a membership control. It clears any prepared message consent. The worker streams
+Each **Sync now** reserves its finite attempt before networking, fetches one
+page of at most four incoming records, processes inbound work before sending,
+and transmits at most two queued artifacts. Encrypted membership controls have
+their own retained stream: admitting another member automatically forwards the
+control existing members need, while confidential bootstrap admission remains
+explicit. The two outgoing streams merge by authenticated epoch so an earlier
+local application precedes its epoch-changing control and a newer application
+waits for that control. This establishes local source order, not a global order
+across independent devices. Applying a membership change stops at the roster
+review boundary. Every sync clears any prepared message consent. The worker streams
 bounded Fetch replies with a ten-second request deadline, no cookies, redirects,
 referrer or background polling. IndexedDB retains exact pending ciphertext,
-charged attempts/backoff, a staged canonical page and its applied cursor. A new
+charged attempts/backoff, a staged canonical page and its progress. Future-epoch,
+ahead-ratchet and missing-control records enter an eight-item durable deferred
+queue so later prerequisites can still be fetched. Each sync retries that bounded
+queue before and after its incoming page. Status distinguishes fetched progress
+from the contiguous resolved prefix. If all eight slots are occupied, the next
+retryable item stays staged and delivery reports the capacity block; ciphertext
+is never evicted to manufacture progress. This bound does not promise liveness
+for every backlog. Reopening validates each retained item against its indexed
+commitment. Version-1 and version-2 images upgrade without resetting budgets,
+pending work or recorded refusals; older binaries refuse the version-3 image. A new
 worker claims an exact CAS ownership token; stale tabs refuse further progress.
+Deploy the upgraded clients together: independently retained older clients have
+no control-stream capability negotiation and may classify a future-epoch message
+incorrectly before encountering the new control kind. Mixed-version delivery is
+not qualified by the same-custody image upgrade.
 Room publication has its own kernel CAS. These fences do not promise isolation
 from trusted same-origin code or browser storage rollback/eviction.
 
@@ -410,8 +430,14 @@ explicit admission UI, never automatic membership. The sender's status reports
 relay retention; incoming status reports local committed acceptance. Neither
 claims human reading. Normal incoming applications queue a device-signed
 acceptance artifact; receipt messages do not generate receipt loops.
-This browser panel does not yet match and verify peer acceptance artifacts against
-the sender's outbox; it does not present them as remote acceptance evidence.
+The live outbox displays peer claims that the kernel has signature-verified
+against the exact retained ciphertext and the locally accepted roster. Each
+claim names its signing device and claimed durable inbox position. A relay
+receipt alone produces no such claim; a device claim does not prove human
+reading, remote disk durability or globally current membership.
+A recipient can accept a message but return its receipt after the sender has
+advanced epochs; that stale receipt is recorded as refused. An absent claim
+therefore does not establish that the recipient missed the message.
 
 The production browser-to-gateway-to-TLS journey uses synthetic identities and
 actual native services, including durable outage/reload/retry and stale-tab

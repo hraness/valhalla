@@ -100,11 +100,15 @@ pub(super) async fn perform(
                 } else if report.stop != 0 {
                     "Delivery stopped at a retained refusal or finite budget. Preserve its state for inspection; reopening does not reset it."
                 } else if report.blocked == 1 {
-                    "The next incoming record is an owner control that skips past this device's accepted control floor. Apply the missing earlier control in order from a file, then Sync now. Nothing was skipped."
+                    "An encrypted owner control is waiting for its predecessor. Its exact bytes are retained; Sync can fetch a later predecessor, or you can explicitly apply its encrypted file. Nothing was skipped."
                 } else if report.blocked == 2 {
                     "The next incoming record is refused by this device's clock or enrollment validity. Correct the clock or renew the enrollment, then Sync now. Nothing was skipped."
                 } else if report.blocked == 3 {
                     "Every retained-admission slot is used. Download or discard a retained item before syncing again. Nothing was skipped."
+                } else if report.blocked == 4 {
+                    "The bounded deferred queue is full. Exact ciphertext is preserved. Apply the missing encrypted controls or sync after their prerequisites are available; no waiting item was evicted."
+                } else if report.deferred != 0 {
+                    "Exact incoming ciphertext is waiting for a missing control or earlier sender message. Sync can fetch later prerequisites; fetched progress does not mean every earlier item was accepted."
                 } else if report.retry_at != 0 {
                     "The gateway is unavailable or deferred this attempt. Exact ciphertext and retry progress are retained; wait until the displayed time before Sync now."
                 } else {
@@ -578,7 +582,7 @@ pub(super) async fn perform(
             status(
                 app,
                 &format!(
-                    "Request for account {} consumed and encrypted response saved. Transfer this response to that recipient and the next encrypted control to existing members.",
+                    "Request for account {} consumed and encrypted response saved. Transfer the response to that recipient. Sync forwards the encrypted membership control through your configured connection; a control file remains available for explicit transfer.",
                     hex(recipient.as_bytes())
                 ),
                 false,
@@ -635,7 +639,7 @@ pub(super) async fn perform(
             refresh(app, ticket).await?;
             status(
                 app,
-                "Removal and rekey saved. Explicitly distribute this encrypted owner control; old received plaintext cannot be revoked.",
+                "Removal and rekey saved. Sync forwards the encrypted control through your configured connection; old received plaintext cannot be revoked.",
                 false,
             );
         }
@@ -1080,6 +1084,29 @@ async fn outbox(app: &App, ticket: u64, next: bool) -> Result<()> {
             })
             .collect(),
     );
+    let claims = records
+        .iter()
+        .flat_map(|record| {
+            record.acceptances.iter().map(move |claim| {
+                format!(
+                    "Output {} · verified device {} claims acceptance at its inbox position {}",
+                    record.sequence,
+                    hex(claim.recipient.as_bytes()),
+                    claim.received_sequence,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    text(
+        app,
+        "private-outbox-acceptances",
+        &if claims.is_empty() {
+            "No verified device acceptance is available for this page in the current local roster."
+                .to_owned()
+        } else {
+            claims.join("\n")
+        },
+    );
     {
         let mut s = app.borrow_mut();
         s.outbox = records;
@@ -1088,7 +1115,7 @@ async fn outbox(app: &App, ticket: u64, next: bool) -> Result<()> {
     status(
         app,
         &format!(
-            "Retained outbox through local sequence {head}. Select exact ciphertext for retry; secret offers remain metadata-only. No delivery claim."
+            "Retained outbox through local sequence {head}. Device claims below are verified against exact retained ciphertext; relay retention and human reading are separate. Secret offers remain metadata-only."
         ),
         false,
     );
@@ -1580,17 +1607,22 @@ fn delivery_status(app: &App, r: &DeliveryReport) {
         0 => "none",
         1 => "owner control floor gap",
         2 => "clock or enrollment validity",
-        _ => "retained-admission slots full",
+        3 => "retained-admission slots full",
+        4 => "deferred-ciphertext slots full",
+        5 => "waiting for a future-epoch control",
+        _ => "waiting for earlier sender messages",
     };
     text(
         app,
         "private-delivery-status",
         &format!(
-            "Relay-retained outputs: {} · locally accepted incoming records: {}\nOutbox cursor {} · mailbox cursor {} · charged attempts {} · charged bytes {}\nPending: {} · stopped: {} · stop: {} · blocked: {} · retry after Unix second {}\nRefused and skipped records: {} · retained admission items: {}",
+            "Relay-retained outputs: {} · locally accepted incoming records: {}\nOutbox cursor {} · mailbox resolved through {} · fetched through {} · deferred ciphertexts {} · charged attempts {} · charged bytes {}\nPending: {} · stopped: {} · stop: {} · blocked: {} · retry after Unix second {}\nRefused and skipped records: {} · retained admission items: {}",
             r.retained,
             r.received,
             r.sent,
             r.cursor,
+            r.fetched,
+            r.deferred,
             r.attempts,
             r.wire_bytes,
             r.pending,

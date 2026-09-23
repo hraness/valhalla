@@ -1,7 +1,7 @@
 //! Portable canonical opaque relay items. No filesystem, database or sockets.
 #![forbid(unsafe_code)]
 use sha2::{Digest, Sha256};
-use vhalla_private_kernel::{CommittedOutbox, OperationId, OutboxKind};
+use vhalla_private_kernel::{CommittedEncryptedControl, CommittedOutbox, OperationId, OutboxKind};
 /// Shared bounded transport framing.
 pub mod codec;
 /// Canonical item magic and version.
@@ -13,6 +13,35 @@ pub const MAX_RELAY_PAYLOAD: usize = 2 * 128 * 1024 + 4096;
 pub const MAX_RELAY_PAGE: usize = 64;
 /// Maximum retained items in one immutable mailbox and catch-up directory.
 pub const MAX_RELAY_ITEMS: usize = 4096;
+
+/// Transport streams are independent: control floors are not outbox positions.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum RelayKind {
+    /// An ordinary encrypted kernel outbox artifact.
+    Outbox(OutboxKind),
+    /// An exact committed encrypted owner control, including member admission.
+    Control,
+}
+// Keep the established CLI metadata names for tags 1..8. The new stream must
+// not turn an existing `Application` report into `Outbox(Application)`.
+impl core::fmt::Debug for RelayKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Outbox(kind) => core::fmt::Debug::fmt(kind, f),
+            Self::Control => f.write_str("Control"),
+        }
+    }
+}
+impl From<OutboxKind> for RelayKind {
+    fn from(kind: OutboxKind) -> Self {
+        Self::Outbox(kind)
+    }
+}
+impl PartialEq<OutboxKind> for RelayKind {
+    fn eq(&self, other: &OutboxKind) -> bool {
+        *self == Self::Outbox(*other)
+    }
+}
 
 /// Closed failures. No error includes ciphertext, room metadata, or a path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,22 +101,44 @@ pub struct RelayReceipt {
     pub duplicate: bool,
 }
 
-/// One complete encrypted outbox artifact and its opaque relay binding.
+/// One complete encrypted outbox/control artifact and its opaque relay binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayItem {
     namespace: RelayNamespace,
     sequence: u64,
     operation: OperationId,
-    kind: OutboxKind,
+    kind: RelayKind,
     payload: Vec<u8>,
     digest: [u8; 32],
 }
 
 impl RelayItem {
+    /// Carry the original retained control without encrypting again. The opaque
+    /// operation commitment exposes no room or account identifier. Its sequence
+    /// is a control floor, independent of the outbox stream.
+    pub fn from_control(
+        namespace: RelayNamespace,
+        control: &CommittedEncryptedControl,
+    ) -> Result<Self> {
+        let mut hash = Sha256::new();
+        hash.update(b"vhalla/private/relay-control-operation/v1\0");
+        hash.update(control.bytes());
+        let digest: [u8; 32] = hash.finalize().into();
+        let operation =
+            OperationId::from_bytes(digest[..16].try_into().map_err(|_| Error::Bounds)?)
+                .map_err(|_| Error::Bounds)?;
+        Self::new(
+            namespace,
+            control.floor().sequence(),
+            operation,
+            RelayKind::Control,
+            control.bytes(),
+        )
+    }
     /// Convert a committed ordinary artifact into an opaque relay item.
     /// Confidential offers and legacy plaintext bootstrap artifacts are refused.
     pub fn from_artifact(namespace: RelayNamespace, artifact: &CommittedOutbox) -> Result<Self> {
-        if !relay_kind(artifact.kind()) {
+        if !relay_kind(artifact.kind().into()) {
             return Err(Error::Confidential);
         }
         Self::new(
@@ -104,9 +155,10 @@ impl RelayItem {
         namespace: RelayNamespace,
         sequence: u64,
         operation: OperationId,
-        kind: OutboxKind,
+        kind: impl Into<RelayKind>,
         payload: &[u8],
     ) -> Result<Self> {
+        let kind = kind.into();
         if sequence == 0
             || !relay_kind(kind)
             || payload.is_empty()
@@ -134,8 +186,8 @@ impl RelayItem {
         self.namespace
     }
 
-    /// Original sender-local outbox sequence. It is committed metadata only;
-    /// the mailbox never orders or deduplicates on it.
+    /// Original outbox position or control floor, selected by [`Self::kind`].
+    /// It is committed metadata only; the mailbox never orders or deduplicates on it.
     pub fn sequence(&self) -> u64 {
         self.sequence
     }
@@ -146,7 +198,7 @@ impl RelayItem {
     }
 
     /// Closed artifact classification.
-    pub fn kind(&self) -> OutboxKind {
+    pub fn kind(&self) -> RelayKind {
         self.kind
     }
 
@@ -233,20 +285,26 @@ pub struct RelayPage {
     pub records: Vec<PositionedItem>,
 }
 
-fn relay_kind(kind: OutboxKind) -> bool {
+fn relay_kind(kind: RelayKind) -> bool {
     matches!(
         kind,
-        OutboxKind::ContactRequest
-            | OutboxKind::ContactInvitation
-            | OutboxKind::Application
-            | OutboxKind::Removal
-            | OutboxKind::OwnerUpdate
-            | OutboxKind::Succession
+        RelayKind::Control
+            | RelayKind::Outbox(
+                OutboxKind::ContactRequest
+                    | OutboxKind::ContactInvitation
+                    | OutboxKind::Application
+                    | OutboxKind::Removal
+                    | OutboxKind::OwnerUpdate
+                    | OutboxKind::Succession
+            )
     )
 }
 
 /// Stable wire tag for a committed outbox kind.
-pub fn kind_byte(kind: OutboxKind) -> u8 {
+pub fn kind_byte(kind: impl Into<RelayKind>) -> u8 {
+    let RelayKind::Outbox(kind) = kind.into() else {
+        return 9;
+    };
     match kind {
         OutboxKind::ContactOffer => 0,
         OutboxKind::ContactRequest => 1,
@@ -261,7 +319,10 @@ pub fn kind_byte(kind: OutboxKind) -> u8 {
 }
 
 /// Parse the historical wire kind; item admission separately refuses bootstrap.
-pub fn kind_from_byte(byte: u8) -> Result<OutboxKind> {
+pub fn kind_from_byte(byte: u8) -> Result<RelayKind> {
+    if byte == 9 {
+        return Ok(RelayKind::Control);
+    }
     match byte {
         1 => Ok(OutboxKind::ContactRequest),
         2 => Ok(OutboxKind::ContactInvitation),
@@ -273,13 +334,14 @@ pub fn kind_from_byte(byte: u8) -> Result<OutboxKind> {
         8 => Ok(OutboxKind::Succession),
         _ => Err(Error::Confidential),
     }
+    .map(RelayKind::Outbox)
 }
 
 fn digest(
     namespace: RelayNamespace,
     sequence: u64,
     operation: OperationId,
-    kind: OutboxKind,
+    kind: RelayKind,
     payload: &[u8],
 ) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -351,15 +413,60 @@ mod tests {
                 namespace: namespace(),
                 sequence: 1,
                 operation: operation(1),
-                kind,
+                kind: kind.into(),
                 payload: b"private metadata".to_vec(),
-                digest: digest(namespace(), 1, operation(1), kind, b"private metadata"),
+                digest: digest(
+                    namespace(),
+                    1,
+                    operation(1),
+                    kind.into(),
+                    b"private metadata",
+                ),
             };
             assert_eq!(
                 RelayItem::decode(&old.encode().unwrap()),
                 Err(Error::Confidential)
             );
         }
+    }
+
+    #[test]
+    fn control_tag_is_distinct_and_preserves_existing_wire_tags() {
+        assert_eq!(
+            format!("{:?}", RelayKind::Outbox(OutboxKind::Application)),
+            "Application"
+        );
+        assert_eq!(format!("{:?}", RelayKind::Control), "Control");
+        for byte in 1..=8 {
+            assert!(matches!(
+                kind_from_byte(byte).unwrap(),
+                RelayKind::Outbox(_)
+            ));
+            assert_eq!(kind_byte(kind_from_byte(byte).unwrap()), byte);
+        }
+        assert_eq!(kind_from_byte(9).unwrap(), RelayKind::Control);
+        assert!(kind_from_byte(10).is_err());
+        let control = RelayItem::new(
+            namespace(),
+            1,
+            operation(1),
+            RelayKind::Control,
+            b"opaque encrypted control",
+        )
+        .unwrap();
+        assert_eq!(
+            RelayItem::decode(&control.encode().unwrap()).unwrap(),
+            control
+        );
+        let application = RelayItem::new(
+            namespace(),
+            1,
+            operation(1),
+            OutboxKind::Application,
+            control.payload(),
+        )
+        .unwrap();
+        assert_ne!(control.digest(), application.digest());
     }
 }
 

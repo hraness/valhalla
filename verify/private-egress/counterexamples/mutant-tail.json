@@ -1,0 +1,18 @@
+[
+  {
+    "state": 1,
+    "tlc_text": "<Initial predicate>\n/\\ admittedAtCutover = {}\n/\\ control = FALSE\n/\\ retained = {}\n/\\ captured = 1\n/\\ queue = {1}"
+  },
+  {
+    "state": 2,
+    "tlc_text": "<SendItem line 24, col 16 to line 26, col 68 of module PrivateEgress>\n/\\ admittedAtCutover = {}\n/\\ control = FALSE\n/\\ retained = {1}\n/\\ captured = 1\n/\\ queue = {}"
+  },
+  {
+    "state": 3,
+    "tlc_text": "<ReceiptFastPath line 20, col 20 to line 23, col 82 of module PrivateEgress>\n/\\ admittedAtCutover = {}\n/\\ control = FALSE\n/\\ retained = {1}\n/\\ captured = 1\n/\\ queue = {3}"
+  },
+  {
+    "state": 4,
+    "tlc_text": "<SendControl line 29, col 16 to line 32, col 57 of module PrivateEgress>\n/\\ admittedAtCutover = {1}\n/\\ control = TRUE\n/\\ retained = {1}\n/\\ captured = 1\n/\\ queue = {3}"
+  }
+]

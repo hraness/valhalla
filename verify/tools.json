@@ -1,0 +1,14 @@
+{
+  "tlc": {
+    "version": "1.7.4",
+    "url": "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "provenance": "SHA-256 measured from the official release asset on 2026-09-23; that older GitHub asset has no published digest field."
+  },
+  "verus_linux": {
+    "version": "0.2026.09.13.671956e",
+    "url": "https://github.com/verus-lang/verus/releases/download/release/0.2026.09.13.671956e/verus-0.2026.09.13.671956e-x86-linux.zip",
+    "sha256": "08c85b96e0fbbbdcb1b3a9fa8943dce7598c3e7b343680820f649b4e1efda4b4",
+    "provenance": "GitHub official release asset SHA-256 digest."
+  }
+}

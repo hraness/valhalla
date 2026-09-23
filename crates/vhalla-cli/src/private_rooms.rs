@@ -18,6 +18,7 @@ use vhalla_private_kernel::{
 use vhalla_private_native::{
     client::{RoomCreation, RoomSession},
     private_rooms::{Limits, NativePrivateStore},
+    relay::RelayKind,
 };
 
 mod agent;
@@ -31,8 +32,9 @@ mod relay_tls;
 pub const HELP: &str = "vhalla private agent-serve ID STORE --grant PRIVATE_JSON [--delivery PRIVATE_JSON]
 vhalla private agent-launch ID STORE --policy PRIVATE_JSON --session-dir PRIVATE_DIR [--delivery PRIVATE_JSON]
 vhalla private delivery-init ID STORE --config PRIVATE_JSON
-vhalla private delivery-resume ID STORE --config PRIVATE_JSON [--job DIGEST64]
-vhalla private delivery-status ID STORE --config PRIVATE_JSON [--after N] [--limit N] --out FILE
+vhalla private delivery-upgrade ID STORE --config PRIVATE_JSON
+vhalla private delivery-resume ID STORE --config PRIVATE_JSON [--stream outbox|control] [--job DIGEST64]
+vhalla private delivery-status ID STORE --config PRIVATE_JSON [--stream outbox|control] [--after N] [--limit N] --out FILE
 vhalla private agent-grant ID STORE --mode read-only|read-write --disclosure PRIVATE_JSON --receipt NEW_CLAIM --out NEW_GRANT [--lifetime SECONDS --inbox-after N --inbox-through N --follow-inbox true|false --max-messages N --max-body-bytes N --max-read-records N --max-read-bytes N --max-preparations N]
 vhalla private create ID NEW_STORE --not-before UNIX --expires UNIX [--max-records N --max-bytes N]
 vhalla private inspect ID STORE --out PRIVATE_JSON
@@ -98,9 +100,9 @@ impl Args {
         }
         let command = raw[1].to_str().ok_or(HELP)?;
         let allowed: &[&str] = match command {
-            "delivery-init" => &["config"],
-            "delivery-resume" => &["config", "job"],
-            "delivery-status" => &["config", "after", "limit", "out"],
+            "delivery-init" | "delivery-upgrade" => &["config"],
+            "delivery-resume" => &["config", "stream", "job"],
+            "delivery-status" => &["config", "stream", "after", "limit", "out"],
             "agent-grant" => &[
                 "mode",
                 "disclosure",
@@ -248,7 +250,7 @@ impl Args {
                 && !matches!(**name, "tls-ca" | "tls-name")
                 && !(command == "agent-grant"
                     && !matches!(**name, "mode" | "disclosure" | "receipt" | "out"))
-                && !(command == "delivery-status" && matches!(**name, "after" | "limit"))
+                && !(command == "delivery-status" && matches!(**name, "after" | "limit" | "stream"))
                 && !(command == "relay-submit"
                     && matches!(**name, "addr" | "token" | "mailbox" | "namespace"))
                 && !(command == "relay-scan"
@@ -257,7 +259,7 @@ impl Args {
                     && matches!(**name, "after" | "limit" | "addr" | "token" | "mailbox"))
                 && !(command == "relay-pull"
                     && matches!(**name, "limit" | "addr" | "token" | "mailbox"))
-                && !(command == "delivery-resume" && **name == "job")
+                && !(command == "delivery-resume" && matches!(**name, "job" | "stream"))
         }) {
             if !flags.contains_key(*required) {
                 return Err("missing required private option; see private --help".into());
@@ -438,6 +440,10 @@ async fn execute(args: Args) -> Result<(), String> {
             Path::new(args.value("config")?),
             room.status().map_err(|_| REFUSED)?.context,
         )?,
+        "delivery-upgrade" => agent_delivery::upgrade(
+            Path::new(args.value("config")?),
+            room.status().map_err(|_| REFUSED)?.context,
+        )?,
         "delivery-resume" => {
             delivery_resume::execute(&args, room.status().map_err(|_| REFUSED)?.context)?
         }
@@ -591,28 +597,33 @@ async fn execute(args: Args) -> Result<(), String> {
                 return Err("relay item belongs to another explicit namespace".into());
             }
             match item.kind() {
-                OutboxKind::Application => {
+                RelayKind::Outbox(OutboxKind::Application) => {
                     let result = room.receive(item.payload()).await.map_err(|_| REFUSED)?;
                     args.output(result.body())?;
                 }
-                OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
+                RelayKind::Control
+                | RelayKind::Outbox(
+                    OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession,
+                ) => {
                     let result = room
                         .apply_control(item.payload())
                         .await
                         .map_err(|_| REFUSED)?;
                     args.json(json!({"kind": format!("{:?}", item.kind()), "sequence": item.sequence(), "status": status(result), "coverage": "local authenticated control application; not relay acceptance"}))?;
                 }
-                OutboxKind::ContactInvitation => {
+                RelayKind::Outbox(OutboxKind::ContactInvitation) => {
                     let result = room
                         .join_contact(item.payload())
                         .await
                         .map_err(|_| REFUSED)?;
                     args.json(json!({"kind": "ContactInvitation", "sequence": item.sequence(), "status": status(result), "coverage": "local authenticated contact application; not relay acceptance"}))?;
                 }
-                OutboxKind::ContactRequest => {
+                RelayKind::Outbox(OutboxKind::ContactRequest) => {
                     return Err("this relay kind requires its dedicated explicit owner/member command; no generic admission".into());
                 }
-                OutboxKind::ContactOffer | OutboxKind::KeyPackage | OutboxKind::Invitation => {
+                RelayKind::Outbox(
+                    OutboxKind::ContactOffer | OutboxKind::KeyPackage | OutboxKind::Invitation,
+                ) => {
                     return Err("confidential bootstrap artifacts cannot be relayed".into());
                 }
             }
@@ -709,21 +720,26 @@ async fn execute(args: Args) -> Result<(), String> {
                     // Encrypted contact requests need their dedicated command;
                     // legacy plaintext bootstrap kinds never pass relay decoding.
                     let outcome = match item.kind() {
-                        OutboxKind::Application => room.receive(item.payload()).await.map(|_| ()),
-                        OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
-                            room.apply_control(item.payload()).await.map(|_| ())
+                        RelayKind::Outbox(OutboxKind::Application) => {
+                            room.receive(item.payload()).await.map(|_| ())
                         }
-                        OutboxKind::ContactInvitation => {
+                        RelayKind::Control
+                        | RelayKind::Outbox(
+                            OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession,
+                        ) => room.apply_control(item.payload()).await.map(|_| ()),
+                        RelayKind::Outbox(OutboxKind::ContactInvitation) => {
                             room.join_contact(item.payload()).await.map(|_| ())
                         }
-                        OutboxKind::ContactRequest => {
+                        RelayKind::Outbox(OutboxKind::ContactRequest) => {
                             skipped.push(position);
                             done.insert(position);
                             continue;
                         }
-                        OutboxKind::KeyPackage
-                        | OutboxKind::Invitation
-                        | OutboxKind::ContactOffer => {
+                        RelayKind::Outbox(
+                            OutboxKind::KeyPackage
+                            | OutboxKind::Invitation
+                            | OutboxKind::ContactOffer,
+                        ) => {
                             return Err("confidential bootstrap artifacts cannot be relayed".into());
                         }
                     };

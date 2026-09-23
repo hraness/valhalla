@@ -30,8 +30,8 @@ pub mod tls;
 
 use vhalla_private_relay::{kind_byte, kind_from_byte, MAGIC};
 pub use vhalla_private_relay::{
-    Error, PositionedItem, RelayItem, RelayNamespace, RelayPage, RelayReceipt, MAX_RELAY_ITEMS,
-    MAX_RELAY_PAGE, MAX_RELAY_PAYLOAD,
+    Error, PositionedItem, RelayItem, RelayKind, RelayNamespace, RelayPage, RelayReceipt,
+    MAX_RELAY_ITEMS, MAX_RELAY_PAGE, MAX_RELAY_PAYLOAD,
 };
 const MAX_RELAY_DB_BYTES: usize = 2 * 1024 * 1024 * 1024;
 type Result<T> = std::result::Result<T, Error>;

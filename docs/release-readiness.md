@@ -1,6 +1,10 @@
 # Current release readiness
 
-This describes the source implementation on 22 September 2026. A passing local
+The original inventory below describes source on 22 September 2026. The
+[23 September continuation](production-formal-plan-2026-09-23.md) and
+[execution record](readiness-execution-2026-09-23.md) track subsequent repairs,
+the v0.2.3 experimental artifact baseline and remaining promotion gates.
+A passing local
 qualification is not a released artifact or a running public network. The target
 is a small native/browser product with public discoverable rooms and private
 invite-only rooms; optional Clankdar exchange uses the ordinary room protocol.
@@ -25,7 +29,7 @@ and [publisher guide](../crates/vhalla-public-peer/README.md). Tests use fresh
 synthetic keys and local fixtures. Production browser packaging refuses local
 qualification routing. Never deploy its test manifest or fixture peers.
 
-## Private rooms: core implemented, client release unfinished
+## Private rooms: experimental client, promotion unfinished
 
 The workspace now contains the maintained [private kernel and native/browser
 backends](private-rooms.md). The earlier isolated OpenMLS prototype remains
@@ -98,7 +102,8 @@ custody is not a supported recovery path.
 These features remain optional and do not add MLS or SQLite to the default public
 browser dependency graph.
 
-Before a private-room release, complete and qualify:
+Before expanding private-room deployment, reconcile this implementation
+inventory with the current continuation's qualification gates:
 
 - The DOM journey exercises every retained-control edge case: signed-proof
   paging and `.vhproof` download, observation verdicts (retained, unknown

@@ -23,7 +23,7 @@ use vhalla_private_native::{
         delivery::{DeliveryStore, JobState, Limits, RetryPolicy, TickBudget},
         net::{NetError, RelayToken, ScanDirectory, ScanFailure},
         tls::TlsRelay,
-        RelayItem, RelayNamespace, MAX_RELAY_ITEMS, MAX_RELAY_PAGE,
+        RelayItem, RelayKind, RelayNamespace, MAX_RELAY_ITEMS, MAX_RELAY_PAGE,
     },
 };
 
@@ -71,6 +71,9 @@ struct Config {
     emit_acceptance: bool,
     #[serde(default)]
     initial_cursor: u64,
+    /// Exact selected bytes for conditional atomic version publication.
+    #[serde(skip)]
+    encoded: Vec<u8>,
 }
 
 #[derive(Deserialize)]
@@ -85,9 +88,10 @@ impl Config {
     fn load(path: &Path, context: Context) -> Result<(Self, RelayNamespace, TlsRelay), String> {
         let bytes = files::read(path, 16384, false)?;
         let mut c: Self = serde_json::from_slice(&bytes).map_err(|_| REFUSED)?;
-        if c.version != 1 {
+        if ![1, 2].contains(&c.version) {
             return Err(REFUSED.into());
         }
+        c.encoded = bytes.to_vec();
         let key = |s: &str| Key::from_bytes(unhex(s)?).map_err(|_| REFUSED.to_string());
         let selected = Context {
             scope: PrivateRoomScope {
@@ -211,14 +215,7 @@ fn net_error(e: NetError) -> &'static str {
 /// retention is not member acceptance; member claims live in kernel custody
 /// and surface through the session's outbox status.
 pub(super) fn status(args: &super::Args, context: Context) -> Result<(), String> {
-    let (config, namespace, relay) = Config::load(Path::new(args.value("config")?), context)?;
-    let queue = DeliveryStore::open(
-        config.state.join("jobs"),
-        context,
-        namespace,
-        relay.endpoint_id(),
-    )
-    .map_err(|_| REFUSED)?;
+    let (stream, queue) = open_queue(args, context)?;
     let after = if args.flags.contains_key("after") {
         args.number("after")?
     } else {
@@ -238,6 +235,7 @@ pub(super) fn status(args: &super::Args, context: Context) -> Result<(), String>
         .iter()
         .map(|status| {
             json!({
+                "digest": hex(&status.id),
                 "sequence": status.sequence.to_string(),
                 "operation": hex(status.operation.as_bytes()),
                 "state": match status.state {
@@ -255,11 +253,58 @@ pub(super) fn status(args: &super::Args, context: Context) -> Result<(), String>
         })
         .collect();
     args.json(json!({
+        "stream": stream,
         "coverage": "durable local delivery journal; relay retention is not member acceptance or human reading",
         "driver": {"outgoing": outgoing.to_string(), "applied": applied.to_string()},
         "jobs": jobs,
         "evidence": "queue custody only; member acceptance claims are device-signed and surface through the agent session",
     }))
+}
+
+/// Select one existing bound queue without contacting the relay. Control
+/// inspection/re-arm requires the explicit additive upgrade marker, just like
+/// a driver launch; naming a child directory cannot expand delivery authority.
+pub(super) fn open_queue(
+    args: &super::Args,
+    context: Context,
+) -> Result<(&'static str, DeliveryStore), String> {
+    let stream = match args.flags.get("stream").map(|s| s.to_str()) {
+        None | Some(Some("outbox")) => "outbox",
+        Some(Some("control")) => "control",
+        _ => return Err(REFUSED.into()),
+    };
+    let (config, namespace, relay) = Config::load(Path::new(args.value("config")?), context)?;
+    if stream == "control" && config.version != 2 {
+        return Err(
+            "control delivery requires an explicit delivery-upgrade of this legacy profile".into(),
+        );
+    }
+    if *files::read(&config.state.join("binding"), 1024, false)?
+        != binding(context, namespace, &relay, &config)
+    {
+        return Err(REFUSED.into());
+    }
+    if stream == "control"
+        && *files::read(&config.state.join("controls.enabled"), 1024, false)?
+            != control_binding(&config, context, namespace, &relay)
+    {
+        return Err(REFUSED.into());
+    }
+    let queue = DeliveryStore::open(
+        config.state.join(if stream == "control" {
+            "controls"
+        } else {
+            "jobs"
+        }),
+        context,
+        namespace,
+        relay.endpoint_id(),
+    )
+    .map_err(|_| REFUSED)?;
+    if queue.policy() != (config.limits(), config.retry()) {
+        return Err(REFUSED.into());
+    }
+    Ok((stream, queue))
 }
 pub(super) fn initialize(path: &Path, context: Context) -> Result<(), String> {
     let (c, ns, relay) = Config::load(path, context)?;
@@ -293,7 +338,167 @@ pub(super) fn initialize(path: &Path, context: Context) -> Result<(), String> {
         .map_err(|_| REFUSED)?;
     custody::create_private_directory(&c.state.join("applied")).map_err(|_| REFUSED)?;
     files::write(&c.state.join("binding"), &binding(context, ns, &relay, &c))?;
+    enable_controls(&c, context, ns, &relay, true)?;
     directory.sync_all().map_err(|_| REFUSED)?;
+    publish_control_version(path, &c.encoded)?;
+    Ok(())
+}
+
+/// Explicitly add a separate finite control stream to an existing exact driver.
+/// Existing jobs, scans, retries and ratchets are preserved. The new stream has
+/// its own configured queue allowance; this command is the authorization to add it.
+pub(super) fn upgrade(path: &Path, context: Context) -> Result<(), String> {
+    let (c, ns, relay) = Config::load(path, context)?;
+    let (_, uid) = custody::open_private_directory(&c.state).map_err(|_| REFUSED)?;
+    let lock = custody::open_private_file(&c.state.join("lock"), uid, 0).map_err(|_| REFUSED)?;
+    custody::acquire_exclusive(&lock).map_err(|_| REFUSED)?;
+    if *files::read(&c.state.join("binding"), 1024, false)? != binding(context, ns, &relay, &c) {
+        return Err(REFUSED.into());
+    }
+    drop(
+        DeliveryStore::open(c.state.join("jobs"), context, ns, relay.endpoint_id())
+            .map_err(|_| REFUSED)?,
+    );
+    // A selected v2 profile already committed to this control custody. Missing
+    // names are lost evidence, never an interrupted additive initialization.
+    enable_controls(&c, context, ns, &relay, c.version == 1)?;
+    publish_control_version(path, &c.encoded)
+}
+
+/// The selected config is the final activation record. Version 1 remains an
+/// inert legacy selection until all additive stores are complete; version 2
+/// makes older binaries refuse before they can send application jobs. One
+/// atomic rename chooses a complete old or new selection after interruption.
+fn publish_control_version(path: &Path, expected: &[u8]) -> Result<(), String> {
+    publish_control_version_with(path, expected, |_| Ok(()))
+}
+fn publish_control_version_with(
+    path: &Path,
+    expected: &[u8],
+    mut after_boundary: impl FnMut(u8) -> Result<(), String>,
+) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+    let absolute = custody::absolute(path).map_err(|_| REFUSED)?;
+    let parent = absolute
+        .parent()
+        .ok_or(REFUSED)?
+        .canonicalize()
+        .map_err(|_| REFUSED)?;
+    let name = absolute.file_name().ok_or(REFUSED)?;
+    let target = parent.join(name);
+    let (directory, uid) = custody::open_private_directory(&parent).map_err(|_| REFUSED)?;
+    if files::read(&target, 16384, false)?.as_slice() != expected {
+        return Err(REFUSED.into());
+    }
+    let mut value: serde_json::Value = serde_json::from_slice(expected).map_err(|_| REFUSED)?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(REFUSED)?;
+    if ![1, 2].contains(&version) {
+        return Err(REFUSED.into());
+    }
+    value["version"] = json!(2);
+    let next = serde_json::to_vec(&value).map_err(|_| REFUSED)?;
+    if next.len() > 16384 {
+        return Err(REFUSED.into());
+    }
+    let mut scratch = name.to_os_string();
+    scratch.push(".controls-upgrade-tmp");
+    let scratch = parent.join(scratch);
+    let present = custody::private_file_present(&scratch, uid, 16384).map_err(|_| REFUSED)?;
+    if version == 2 {
+        // A previous rename may have returned uncertainty before its barrier.
+        directory.sync_all().map_err(|_| REFUSED)?;
+        if present {
+            let prefix = custody::read_private_file(&scratch, uid, 16384).map_err(|_| REFUSED)?;
+            if !next.starts_with(&prefix) {
+                return Err(REFUSED.into());
+            }
+            directory.sync_all().map_err(|_| REFUSED)?;
+            std::fs::remove_file(&scratch).map_err(|_| REFUSED)?;
+            directory.sync_all().map_err(|_| REFUSED)?;
+        }
+        return Ok(());
+    }
+    let mut file = if present {
+        custody::open_private_file(&scratch, uid, 16384).map_err(|_| REFUSED)?
+    } else {
+        custody::create_private_file(&scratch).map_err(|_| REFUSED)?
+    };
+    let prefix = custody::read_private_file(&scratch, uid, 16384).map_err(|_| REFUSED)?;
+    if !next.starts_with(&prefix) {
+        return Err(REFUSED.into());
+    }
+    file.seek(SeekFrom::End(0)).map_err(|_| REFUSED)?;
+    file.write_all(&next[prefix.len()..])
+        .and_then(|()| file.sync_all())
+        .and_then(|()| directory.sync_all())
+        .map_err(|_| REFUSED)?;
+    if files::read(&scratch, 16384, false)?.as_slice() != next
+        || files::read(&target, 16384, false)?.as_slice() != expected
+    {
+        return Err(REFUSED.into());
+    }
+    after_boundary(0)?;
+    std::fs::rename(&scratch, &target).map_err(|_| REFUSED)?;
+    after_boundary(1)?;
+    directory.sync_all().map_err(|_| REFUSED)?;
+    after_boundary(2)?;
+    if files::read(&target, 16384, false)?.as_slice() != next {
+        return Err(REFUSED.into());
+    }
+    Ok(())
+}
+
+fn control_binding(c: &Config, context: Context, ns: RelayNamespace, relay: &TlsRelay) -> Vec<u8> {
+    let mut bytes = b"VHDELCTRL\x01".to_vec();
+    bytes.extend(binding(context, ns, relay, c));
+    bytes
+}
+
+fn enable_controls(
+    c: &Config,
+    context: Context,
+    ns: RelayNamespace,
+    relay: &TlsRelay,
+    allow_creation: bool,
+) -> Result<(), String> {
+    let path = c.state.join("controls");
+    let marker = c.state.join("controls.enabled");
+    let expected = control_binding(c, context, ns, relay);
+    let marker_present = match marker.symlink_metadata() {
+        Ok(_) => {
+            if *files::read(&marker, 1024, false)? != expected {
+                return Err(REFUSED.into());
+            }
+            true
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => false,
+        Err(_) => return Err(REFUSED.into()),
+    };
+    if !marker_present && !allow_creation {
+        return Err(REFUSED.into());
+    }
+    let queue = match path.symlink_metadata() {
+        Ok(_) => DeliveryStore::open(&path, context, ns, relay.endpoint_id()),
+        Err(e) if e.kind() == ErrorKind::NotFound && !marker_present => DeliveryStore::create_new(
+            &path,
+            context,
+            ns,
+            relay.endpoint_id(),
+            c.limits(),
+            c.retry(),
+        ),
+        _ => return Err(REFUSED.into()),
+    }
+    .map_err(|_| REFUSED)?;
+    if queue.policy() != (c.limits(), c.retry()) {
+        return Err(REFUSED.into());
+    }
+    if !marker_present {
+        files::write(&marker, &expected)?;
+    }
     Ok(())
 }
 
@@ -304,14 +509,20 @@ pub(super) struct Driver {
     namespace: RelayNamespace,
     relay: TlsRelay,
     queue: DeliveryStore,
+    controls: DeliveryStore,
+    control_outgoing: u64,
+    control_boundary_checked: bool,
+    /// Next candidate beyond the contiguous watermark. A deferred prefix must
+    /// not repeatedly consume the whole per-tick budget and hide its parent.
+    apply_next: u64,
     scan: ScanDirectory,
     _directory: File,
     _lock: File,
     /// Local outbox watermark: records up to `outgoing` were considered for
     /// enqueue. Durable via the queue's driver checkpoint.
     outgoing: u64,
-    /// Contiguous applied watermark: every staged mailbox position at or below
-    /// it has a validated marker. Restored from the markers on open.
+    /// Contiguous applied watermark validated in this custody lifetime. Reopen
+    /// starts at the selected initial cursor and verifies durable markers again.
     applied: u64,
     /// Staged positions above the watermark that already carry a marker.
     ahead: BTreeSet<u64>,
@@ -335,6 +546,9 @@ pub(super) struct Driver {
 impl Driver {
     pub(super) fn open(path: &Path, context: Context) -> Result<Self, String> {
         let (config, namespace, relay) = Config::load(path, context)?;
+        if config.version != 2 {
+            return Err("legacy delivery profile requires delivery-upgrade before another agent-serve launch".into());
+        }
         let (directory, uid) =
             custody::open_private_directory(&config.state).map_err(|_| REFUSED)?;
         let lock =
@@ -358,6 +572,22 @@ impl Driver {
             relay.endpoint_id(),
         )
         .map_err(|_| REFUSED)?;
+        if *files::read(&config.state.join("controls.enabled"), 1024, false)?
+            != control_binding(&config, context, namespace, &relay)
+        {
+            return Err(REFUSED.into());
+        }
+        let controls = DeliveryStore::open(
+            config.state.join("controls"),
+            context,
+            namespace,
+            relay.endpoint_id(),
+        )
+        .map_err(|_| REFUSED)?;
+        if controls.policy() != (config.limits(), config.retry()) {
+            return Err(REFUSED.into());
+        }
+        let (control_outgoing, _) = controls.driver_checkpoint().map_err(|_| REFUSED)?;
         let staged_head = scan.cursor();
         let (cp_outgoing, cp_applied) = queue.driver_checkpoint().map_err(|_| REFUSED)?;
         let (applied, ahead) =
@@ -368,6 +598,10 @@ impl Driver {
             namespace,
             relay,
             queue,
+            controls,
+            control_outgoing,
+            control_boundary_checked: false,
+            apply_next: applied.saturating_add(1),
             scan,
             _directory: directory,
             _lock: lock,
@@ -388,7 +622,7 @@ impl Driver {
     /// One bounded host tick between RPCs. Kernel uncertainty ends the grant;
     /// no latch-clearing reopen, ratchet regeneration or budget renewal occurs.
     /// Each stage resumes from durable or staged positions, so a partial pass
-    /// loses no work and a relaunch does not replay completed stages.
+    /// loses no work; relaunch reauthenticates completed stages read-only.
     pub(super) async fn tick(&mut self, rpc: &mut RpcSession) -> Result<(), String> {
         // A configured driver performs grant-scoped work from the first tick,
         // so the one-use claim is reserved before the first effect rather than
@@ -401,12 +635,84 @@ impl Driver {
         // jobs, and rows enqueued before the durable watermark only reach the
         // session view through this pass.
         self.feed(rpc, deadline).await?;
+        self.catch_up_controls(rpc, deadline).await?;
         self.catch_up(rpc, deadline).await?;
-        self.deliver(rpc, deadline).await?;
+        self.deliver_ordered(rpc, deadline).await?;
         self.poll(deadline)?;
         self.apply(rpc, deadline).await?;
         self.save()?;
         rpc.check_release().map_err(|_| REFUSED.to_string())
+    }
+
+    /// Retain exact encrypted owner controls in their own sequence domain.
+    /// A joined member may forward its authenticated suffix; canonical relay
+    /// deduplication makes every forwarder publish identical bytes only once.
+    async fn catch_up_controls(
+        &mut self,
+        rpc: &mut RpcSession,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        loop {
+            if Instant::now() >= deadline {
+                return Ok(());
+            }
+            let page = rpc
+                .host()
+                .encrypted_controls(
+                    (self.control_outgoing != 0).then_some(self.control_outgoing),
+                    OUTBOX_PAGE,
+                )
+                .await
+                .map_err(|_| REFUSED)?;
+            if !self.control_boundary_checked {
+                // A retained watermark above the joining boundary must name
+                // an exact existing queue item. Never interpret a checkpoint
+                // alone as evidence that a control was enqueued or delivered.
+                if self.control_outgoing > page.base.sequence() {
+                    let boundary = rpc
+                        .host()
+                        .encrypted_controls(Some(self.control_outgoing - 1), 1)
+                        .await
+                        .map_err(|_| REFUSED)?;
+                    let control = boundary.records.first().ok_or(REFUSED)?;
+                    if control.floor().sequence() != self.control_outgoing
+                        || self
+                            .controls
+                            .job(
+                                RelayItem::from_control(self.namespace, control)
+                                    .map_err(|_| REFUSED)?
+                                    .digest(),
+                            )
+                            .map_err(|_| REFUSED)?
+                            .is_none()
+                    {
+                        return Err(REFUSED.into());
+                    }
+                }
+                self.control_boundary_checked = true;
+            }
+            if self.control_outgoing == 0 && page.base.sequence() != 0 {
+                self.control_outgoing = page.base.sequence();
+                self.controls
+                    .save_driver_checkpoint(self.control_outgoing, 0, now()?)
+                    .map_err(|_| REFUSED)?;
+            }
+            for control in &page.records {
+                let item = RelayItem::from_control(self.namespace, control).map_err(|_| REFUSED)?;
+                match self.controls.enqueue(&item, now()?) {
+                    Ok(_) => (),
+                    Err(vhalla_private_native::relay::delivery::Error::Capacity) => return Ok(()),
+                    Err(_) => return Err(REFUSED.into()),
+                }
+                self.control_outgoing = control.floor().sequence();
+                self.controls
+                    .save_driver_checkpoint(self.control_outgoing, 0, now()?)
+                    .map_err(|_| REFUSED)?;
+            }
+            if page.records.is_empty() {
+                return Ok(());
+            }
+        }
     }
 
     /// Drain the kernel outbox into the durable queue. Inbound staging never
@@ -512,33 +818,140 @@ impl Driver {
         }
     }
 
-    /// Attempt due relay jobs within the tick budget and deliver each updated
-    /// status to the RPC view.
-    async fn deliver(&mut self, rpc: &mut RpcSession, deadline: Instant) -> Result<(), String> {
-        if Instant::now() >= deadline {
-            return Ok(());
-        }
-        let tick = self
-            .queue
-            .tick(
-                &mut self.relay,
-                now()?,
-                TickBudget {
-                    max_jobs: TICK_JOBS,
-                    max_bytes: TICK_BYTES,
-                    deadline,
-                },
-            )
-            .map_err(|_| REFUSED)?;
-        for status in &tick.jobs {
-            rpc.update_delivery(self.namespace, status)
-                .await
-                .map_err(|_| REFUSED)?;
-            if status.last_error == Some(NetError::Denied) {
-                // The exact job and charged backoff survive for a new explicit
-                // grant with corrected credentials. End this grant before any
-                // further scan or agent output; do not renew its authority.
+    /// Merge both retained streams by authenticated epoch dependencies. Local
+    /// old-epoch applications precede the next control; new-epoch applications
+    /// follow it. A stopped or uncertain predecessor never gets leapfrogged.
+    async fn deliver_ordered(
+        &mut self,
+        rpc: &mut RpcSession,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut bytes = 0usize;
+        for _ in 0..TICK_JOBS {
+            if Instant::now() >= deadline || bytes >= TICK_BYTES {
+                break;
+            }
+            // Retention frees finite live-job capacity. Refill before choosing
+            // the next cross-stream dependency, including max_jobs=1 queues.
+            self.catch_up_controls(rpc, deadline).await?;
+            self.catch_up(rpc, deadline).await?;
+            if Instant::now() >= deadline {
+                break;
+            }
+            let normal = self.queue.first_unretained().map_err(|_| REFUSED)?;
+            // Older controllers could enqueue an acceptance at the tail while
+            // an earlier artifact was still unstaged. Preserve that evidence,
+            // but do not send it across an unproven local ordering boundary.
+            // A normal enqueue-before-checkpoint crash reconciles in catch_up
+            // above, which recognizes the exact item even at queue capacity.
+            if normal
+                .as_ref()
+                .is_some_and(|job| job.sequence > self.outgoing)
+            {
                 return Err(REFUSED.into());
+            }
+            let control = self.controls.first_unretained().map_err(|_| REFUSED)?;
+            let accepted = rpc.host().agent().status().map_err(|_| REFUSED)?.accepted;
+            let use_control = match (&normal, &control) {
+                (None, None) => break,
+                (None, Some(_)) => {
+                    // Catch-up may have stopped at capacity/deadline. The next
+                    // unseen local artifact might still precede this control.
+                    if self.outgoing != accepted.outbox_head {
+                        break;
+                    }
+                    true
+                }
+                (Some(_), None) => {
+                    if self.control_outgoing != accepted.control_floor.sequence() {
+                        break;
+                    }
+                    false
+                }
+                (Some(job), Some(next)) => {
+                    let page = rpc
+                        .host()
+                        .outbox(job.sequence - 1, 1)
+                        .await
+                        .map_err(|_| REFUSED)?;
+                    let artifact = page
+                        .records
+                        .first()
+                        .and_then(|r| r.artifact())
+                        .ok_or(REFUSED)?;
+                    if RelayItem::from_artifact(self.namespace, artifact)
+                        .map_err(|_| REFUSED)?
+                        .digest()
+                        != job.id
+                    {
+                        return Err(REFUSED.into());
+                    }
+                    let page = rpc
+                        .host()
+                        .encrypted_controls(Some(next.sequence - 1), 1)
+                        .await
+                        .map_err(|_| REFUSED)?;
+                    let retained = page.records.first().ok_or(REFUSED)?;
+                    if RelayItem::from_control(self.namespace, retained)
+                        .map_err(|_| REFUSED)?
+                        .digest()
+                        != next.id
+                    {
+                        return Err(REFUSED.into());
+                    }
+                    match artifact.application_epoch().map_err(|_| REFUSED)? {
+                        Some(epoch) => epoch > retained.prior_epoch().map_err(|_| REFUSED)?,
+                        // These are duplicate legacy control artifacts. Publish
+                        // the ordered control suffix before its legacy copy.
+                        None => matches!(
+                            artifact.kind(),
+                            OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession
+                        ),
+                    }
+                }
+            };
+            let job = if use_control {
+                control.as_ref()
+            } else {
+                normal.as_ref()
+            }
+            .ok_or(REFUSED)?;
+            if job.state == JobState::Stopped {
+                break;
+            }
+            let queue = if use_control {
+                &mut self.controls
+            } else {
+                &mut self.queue
+            };
+            let report = queue
+                .tick_only(
+                    &mut self.relay,
+                    now()?,
+                    TickBudget {
+                        max_jobs: 1,
+                        max_bytes: TICK_BYTES - bytes,
+                        deadline,
+                    },
+                    job.id,
+                )
+                .map_err(|_| REFUSED)?;
+            bytes += report.bytes;
+            if report.jobs.is_empty() {
+                break;
+            }
+            for status in &report.jobs {
+                if !use_control {
+                    rpc.update_delivery(self.namespace, status)
+                        .await
+                        .map_err(|_| REFUSED)?;
+                }
+                if status.last_error == Some(NetError::Denied) {
+                    return Err(REFUSED.into());
+                }
+                if status.state != JobState::Retained {
+                    return Ok(());
+                }
             }
         }
         Ok(())
@@ -590,7 +1003,7 @@ impl Driver {
         if position > self.applied {
             self.ahead.insert(position);
         }
-        while self.ahead.contains(&(self.applied + 1)) {
+        while self.ahead.remove(&(self.applied + 1)) {
             self.applied += 1;
         }
     }
@@ -610,6 +1023,15 @@ impl Driver {
     /// consult the kernel sent-index, so an echo is recognized even before the
     /// outbox catch-up reaches it.
     async fn own_echo(&mut self, rpc: &mut RpcSession, item: &RelayItem) -> Result<bool, String> {
+        if item.kind() == RelayKind::Control
+            && self
+                .controls
+                .job(item.digest())
+                .map_err(|_| REFUSED)?
+                .is_some()
+        {
+            return Ok(true);
+        }
         if self
             .queue
             .job(item.digest())
@@ -639,11 +1061,12 @@ impl Driver {
     async fn apply(&mut self, rpc: &mut RpcSession, deadline: Instant) -> Result<(), String> {
         let dir = self.config.state.join("applied");
         let mut done = 0usize;
-        let start = self.applied;
-        for position in (start + 1)..=self.staged_head {
+        let candidates = round_robin(self.applied, self.staged_head, self.apply_next, PAGE);
+        for position in candidates {
             if done >= PAGE || Instant::now() >= deadline {
                 break;
             }
+            self.apply_next = position.saturating_add(1);
             if self.ahead.contains(&position) {
                 continue;
             }
@@ -670,19 +1093,11 @@ impl Driver {
                     self.complete(position);
                     continue;
                 }
-                // Restore claims after restart only by re-reading authenticated
-                // kernel receive evidence and checking the signature below.
-                match self.process(rpc, &item, position, own_echo).await? {
-                    Some(expected) if expected == **bytes => {
-                        self.complete(position);
-                        continue;
-                    }
-                    Some(_) => return Err(REFUSED.into()),
-                    None => {
-                        self.defer(position)?;
-                        continue;
-                    }
-                }
+                // Read-only evidence lookups cannot mint a receipt, receive a
+                // forged marked item or apply a new control during recovery.
+                self.restore_marker(rpc, &item, bytes).await?;
+                self.complete(position);
+                continue;
             }
             match self.process(rpc, &item, position, own_echo).await? {
                 Some(marker) => {
@@ -692,6 +1107,91 @@ impl Driver {
                 }
                 None => self.defer(position)?,
             }
+        }
+        Ok(())
+    }
+
+    async fn restore_marker(
+        &mut self,
+        rpc: &mut RpcSession,
+        item: &RelayItem,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| REFUSED)?;
+        let state = value["state"].as_str().ok_or(REFUSED)?;
+        if state == "locally-applied-control" {
+            if !rpc
+                .host()
+                .retained_control(item.payload())
+                .await
+                .map_err(|_| REFUSED)?
+            {
+                return Err(REFUSED.into());
+            }
+            return Ok(());
+        }
+        let received = rpc
+            .host()
+            .retained_received(item.payload())
+            .await
+            .map_err(|_| REFUSED)?
+            .ok_or(REFUSED)?;
+        if value["inbox_sequence"].as_str() != Some(received.sequence().to_string().as_str()) {
+            return Err(REFUSED.into());
+        }
+        let mut verified = None;
+        if let Some(hash) = MemberAcceptance::claimed_ciphertext(received.body()) {
+            if let Some(original) = rpc.host().original(&hash).await.map_err(|_| REFUSED)? {
+                if let Ok(Some(claim)) =
+                    MemberAcceptance::verify(self.context, &original, &received)
+                {
+                    verified = Some((original.sequence(), claim));
+                }
+            }
+        }
+        match state {
+            "locally-received" if !MemberAcceptance::is_receipt(received.body()) => {
+                if self.config.emit_acceptance {
+                    let sequence = value["receipt_outbox_sequence"]
+                        .as_str()
+                        .ok_or(REFUSED)?
+                        .parse::<u64>()
+                        .map_err(|_| REFUSED)?;
+                    let page = rpc
+                        .host()
+                        .outbox(sequence - 1, 1)
+                        .await
+                        .map_err(|_| REFUSED)?;
+                    let receipt = page
+                        .records
+                        .first()
+                        .and_then(|record| record.artifact())
+                        .ok_or(REFUSED)?;
+                    if receipt.sequence() != sequence
+                        || receipt.kind() != OutboxKind::Application
+                        || receipt.operation()
+                            != acceptance_operation(self.context, item.payload())?
+                    {
+                        return Err(REFUSED.into());
+                    }
+                }
+            }
+            "unmatched-receipt-content"
+                if MemberAcceptance::is_receipt(received.body()) && verified.is_none() => {}
+            "recipient-device-claim" => {
+                let (sequence, claim) = verified.ok_or(REFUSED)?;
+                if value["outbox_sequence"].as_str() != Some(sequence.to_string().as_str())
+                    || value["recipient"] != hex(claim.recipient().as_bytes())
+                    || value["recipient_inbox_sequence"].as_str()
+                        != Some(claim.received_sequence().to_string().as_str())
+                {
+                    return Err(REFUSED.into());
+                }
+                rpc.record_member_acceptance(sequence, claim)
+                    .await
+                    .map_err(|_| REFUSED)?;
+            }
+            _ => return Err(REFUSED.into()),
         }
         Ok(())
     }
@@ -711,7 +1211,11 @@ impl Driver {
             return Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?));
         }
         match item.kind() {
-            OutboxKind::Application => match rpc.host().receive(item.payload()).await {
+            RelayKind::Outbox(OutboxKind::Application) => match rpc
+                .host()
+                .receive(item.payload())
+                .await
+            {
                 Ok(received) => {
                     result["state"] = json!("locally-received");
                     result["inbox_sequence"] = json!(received.sequence().to_string());
@@ -740,14 +1244,7 @@ impl Driver {
                             }
                         }
                     } else if self.config.emit_acceptance {
-                        let mut hash = Sha256::new();
-                        hash.update(b"vhalla/host/receipt-operation/v1\0");
-                        hash.update(self.context.device.as_bytes());
-                        hash.update(MemberAcceptance::ciphertext_commitment(item.payload()));
-                        let digest: [u8; 32] = hash.finalize().into();
-                        let operation =
-                            OperationId::from_bytes(digest[..16].try_into().map_err(|_| REFUSED)?)
-                                .map_err(|_| REFUSED)?;
+                        let operation = acceptance_operation(self.context, item.payload())?;
                         let receipt =
                             match rpc.host().issue_acceptance(operation, item.payload()).await {
                                 Ok(receipt) => receipt,
@@ -760,12 +1257,10 @@ impl Driver {
                                 | Err(ClientError::Agent(AgentError::Clock)) => return Ok(None),
                                 Err(_) => return Err(REFUSED.into()),
                             };
-                        let relay = RelayItem::from_artifact(self.namespace, &receipt)
-                            .map_err(|_| REFUSED)?;
-                        let status = self.queue.enqueue(&relay, now()?).map_err(|_| REFUSED)?;
-                        rpc.update_delivery(self.namespace, &status)
-                            .await
-                            .map_err(|_| REFUSED)?;
+                        // The exact receipt is already durable in the kernel.
+                        // Only monotone outbox catch-up may enqueue it: a tail
+                        // fast path could fill a finite queue while older local
+                        // applications remain unstaged and make them leapfrog.
                         result["receipt_outbox_sequence"] = json!(receipt.sequence().to_string());
                     }
                     Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
@@ -780,24 +1275,25 @@ impl Driver {
                     Outcome::Fatal => Err(REFUSED.into()),
                 },
             },
-            OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
-                match rpc.host().apply_control(item.payload()).await {
-                    Ok(_) => {
-                        result["state"] = json!("locally-applied-control");
+            RelayKind::Control
+            | RelayKind::Outbox(
+                OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession,
+            ) => match rpc.host().apply_control(item.payload()).await {
+                Ok(_) => {
+                    result["state"] = json!("locally-applied-control");
+                    Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
+                }
+                Err(e) => match host_outcome(e, control_outcome) {
+                    Outcome::Skip(reason) => {
+                        result["state"] = json!("unverifiable-control");
+                        result["error"] = json!(reason);
                         Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
                     }
-                    Err(e) => match host_outcome(e, control_outcome) {
-                        Outcome::Skip(reason) => {
-                            result["state"] = json!("unverifiable-control");
-                            result["error"] = json!(reason);
-                            Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
-                        }
-                        Outcome::Retry => Ok(None),
-                        Outcome::Fatal => Err(REFUSED.into()),
-                    },
-                }
-            }
-            OutboxKind::ContactInvitation | OutboxKind::ContactRequest => {
+                    Outcome::Retry => Ok(None),
+                    Outcome::Fatal => Err(REFUSED.into()),
+                },
+            },
+            RelayKind::Outbox(OutboxKind::ContactInvitation | OutboxKind::ContactRequest) => {
                 result["state"] = json!("dedicated-bootstrap-command-required");
                 Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
             }
@@ -807,7 +1303,9 @@ impl Driver {
 
     /// Persist the `(outgoing, applied)` checkpoint when it advanced.
     fn save(&mut self) -> Result<(), String> {
-        let current = (self.outgoing, self.applied);
+        // Reopen revalidates from the initial cursor in bounded passes. Keep
+        // the prior durable checkpoint intact until that replay catches up.
+        let current = (self.outgoing, self.applied.max(self.checkpoint.1));
         if current != self.checkpoint {
             self.queue
                 .save_driver_checkpoint(current.0, current.1, now()?)
@@ -825,6 +1323,31 @@ enum Outcome {
     Skip(&'static str),
     Retry,
     Fatal,
+}
+
+fn acceptance_operation(context: Context, ciphertext: &[u8]) -> Result<OperationId, String> {
+    let mut hash = Sha256::new();
+    hash.update(b"vhalla/host/receipt-operation/v1\0");
+    hash.update(context.device.as_bytes());
+    hash.update(MemberAcceptance::ciphertext_commitment(ciphertext));
+    let digest: [u8; 32] = hash.finalize().into();
+    OperationId::from_bytes(digest[..16].try_into().map_err(|_| REFUSED)?)
+        .map_err(|_| REFUSED.into())
+}
+
+/// One finite circular window; reset after reopen only repeats retained work.
+/// Every staged position is visited even when the earliest PAGE items defer.
+fn round_robin(applied: u64, head: u64, next: u64, limit: usize) -> Vec<u64> {
+    if applied >= head || limit == 0 {
+        return Vec::new();
+    }
+    let first = applied + 1;
+    let start = if (first..=head).contains(&next) {
+        next
+    } else {
+        first
+    };
+    (start..=head).chain(first..start).take(limit).collect()
 }
 
 /// Map a host-session failure through the typed kernel classification.
@@ -864,6 +1387,9 @@ fn application_outcome(e: KernelError) -> Outcome {
 /// Inbound control additionally treats a missing prior floor as terminal: the
 /// retained item predates everything this custody can verify.
 fn control_outcome(e: KernelError) -> Outcome {
+    if e == KernelError::Policy {
+        return Outcome::Fatal;
+    }
     if e == KernelError::Missing {
         return Outcome::Skip("predates_control_floor");
     }
@@ -910,13 +1436,130 @@ fn applied_restore(
     if checkpoint_applied > applied {
         return Err(REFUSED.into());
     }
-    let ahead: BTreeSet<u64> = marked.into_iter().filter(|p| *p > applied).collect();
-    Ok((applied, ahead))
+    // Filenames establish consistency only. Every restored marker must bind
+    // its staged bytes and reauthenticate its semantic claims before progress.
+    Ok((initial_cursor, BTreeSet::new()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_authority_policy_halts_while_forged_ciphertext_stays_terminal() {
+        assert!(matches!(
+            control_outcome(KernelError::Policy),
+            Outcome::Fatal
+        ));
+        assert!(matches!(
+            control_outcome(KernelError::Quarantined),
+            Outcome::Fatal
+        ));
+        assert!(matches!(
+            control_outcome(KernelError::Authentication),
+            Outcome::Skip("authentication")
+        ));
+        assert!(matches!(
+            control_outcome(KernelError::ControlGap),
+            Outcome::Retry
+        ));
+    }
+
+    #[test]
+    fn control_version_publication_recovers_every_atomic_selection_boundary() {
+        use std::os::unix::fs::DirBuilderExt;
+        for boundary in 0..3 {
+            let root = std::env::temp_dir().join(format!(
+                "vhalla-control-config-upgrade-{}-{boundary}",
+                std::process::id()
+            ));
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&root)
+                .unwrap();
+            let path = root.join("delivery.json");
+            let original = b"{\"version\":1,\"retained\":\"unchanged selection\"}";
+            files::write(&path, original).unwrap();
+            assert!(publish_control_version_with(&path, original, |at| {
+                if at == boundary {
+                    Err("injected config publication interruption".into())
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err());
+            let observed = files::read(&path, 16384, false).unwrap();
+            let version = serde_json::from_slice::<serde_json::Value>(&observed).unwrap()
+                ["version"]
+                .as_u64()
+                .unwrap();
+            assert_eq!(version, if boundary == 0 { 1 } else { 2 });
+            publish_control_version(&path, &observed).unwrap();
+            let new = files::read(&path, 16384, false).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&new).unwrap();
+            assert_eq!(value["version"], 2);
+            assert_eq!(value["retained"], "unchanged selection");
+            publish_control_version(&path, &new).unwrap();
+            assert_eq!(
+                files::read(&path, 16384, false).unwrap().as_slice(),
+                new.as_slice()
+            );
+            assert!(!root.join("delivery.json.controls-upgrade-tmp").exists());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn control_version_publication_preserves_foreign_scratch_and_concurrent_selection() {
+        use std::os::unix::fs::DirBuilderExt;
+        let root = std::env::temp_dir().join(format!(
+            "vhalla-control-config-refusal-{}",
+            std::process::id()
+        ));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
+        let path = root.join("delivery.json");
+        let original = b"{\"version\":1}";
+        files::write(&path, original).unwrap();
+        let scratch = root.join("delivery.json.controls-upgrade-tmp");
+        files::write(&scratch, b"foreign evidence").unwrap();
+        assert!(publish_control_version(&path, original).is_err());
+        assert_eq!(
+            files::read(&path, 16384, false).unwrap().as_slice(),
+            original
+        );
+        assert_eq!(
+            files::read(&scratch, 16384, false).unwrap().as_slice(),
+            b"foreign evidence"
+        );
+        std::fs::remove_file(&scratch).unwrap();
+        assert!(publish_control_version(&path, b"{\"version\":1,\"different\":true}").is_err());
+        assert_eq!(
+            files::read(&path, 16384, false).unwrap().as_slice(),
+            original
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deferred_prefix_cannot_hide_later_control_across_bounded_passes() {
+        // The first page is temporarily undecryptable; the enabling control
+        // arrives just past it. Reopen replays work but never classifies it lost.
+        let head = PAGE as u64 + 1;
+        let first = round_robin(0, head, 1, PAGE);
+        assert_eq!(first, (1..head).collect::<Vec<_>>());
+        let second = round_robin(0, head, first.last().unwrap() + 1, PAGE);
+        assert_eq!(second[0], head);
+        let reopened = round_robin(0, head, 1, PAGE);
+        let after_reopen = round_robin(0, head, reopened.last().unwrap() + 1, PAGE);
+        assert_eq!(after_reopen[0], head);
+        // Review/regrant after the control retries every unresolved position.
+        let retried = round_robin(0, head, head + 1, PAGE);
+        assert_eq!(retried, first);
+        assert!(round_robin(head, head, 1, PAGE).is_empty());
+    }
 
     #[test]
     fn retained_scan_never_initializes_missing_namespace_lock_or_items() {
