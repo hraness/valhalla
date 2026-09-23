@@ -45,6 +45,8 @@ pub use vhalla_social::OwnerId;
 /// tests and engine-level integration tests in `vhalla-rooms-node`.
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
+#[cfg(all(test, unix))]
+mod formal_recovery;
 #[cfg(test)]
 mod restore_tests;
 #[cfg(all(test, unix))]
@@ -848,15 +850,6 @@ impl Application {
     }
 }
 
-/// Whether the live states already reflect this batch's claimed results —
-/// the replay skip check. `result_control` is implied: it is a pure
-/// function of the registry authority and archive the other two digests pin.
-#[cfg(unix)]
-fn reflected(app: &Application, batch: &Batch) -> bool {
-    app.registry.digest() == batch.result_registry
-        && *app.social.root().as_bytes() == batch.result_social
-}
-
 /// The engine side of the channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineMsg {
@@ -967,10 +960,10 @@ impl<S: Store> Adapter<S> {
     /// pin records. On first open the genesis archive is published into the
     /// fresh social store and the fresh rooms store pins `Registry::new`;
     /// on reopen both stores load their pinned states and every retained
-    /// committed batch is reconciled in height order — already-reflected
-    /// batches are skipped by digest comparison, unreflected ones are
-    /// re-validated, re-published and re-applied. Any divergence between
-    /// journal order and store state fails closed.
+    /// committed batch is reconciled in height order. A matching snapshot pair
+    /// supplies the already-published prefix; every later batch is re-validated,
+    /// re-published and fully applied. Any divergence between journal order and
+    /// store state fails closed.
     pub fn open_with(
         dir: impl Into<PathBuf>,
         store: S,
@@ -1018,11 +1011,12 @@ impl<S: Store> Adapter<S> {
             rooms.recover()?;
         }
 
-        // Locate the applied prefix: the rooms store trails the journal by at
-        // most the in-flight publish (social commits before rooms), so find
-        // the unique height whose claimed digests match the stored states.
-        // Store state ahead of the journal, or matching no decided batch at
-        // all, is corruption — fail closed.
+        // Locate a reachable published prefix. Roots need not change at each
+        // height, so inferring the two snapshot heights independently can
+        // mistake an unchanged rooms root for a publication that never happened.
+        // Choose the latest jointly compatible prefix: both snapshots match it,
+        // or only social has published the immediately following journal batch.
+        // Include genesis in the same check; it cannot authorize foreign stores.
         let batch_at = |height: u64| -> Result<Batch, AdapterError> {
             let id = journal
                 .at_height(height)?
@@ -1033,60 +1027,37 @@ impl<S: Store> Adapter<S> {
             Batch::decode(bundle.field(3).ok_or(AdapterError::Corrupt)?)
                 .map_err(AdapterError::Apply)
         };
-        let mut rooms_height = 0u64;
-        let mut social_height = 0u64;
-        for height in (1..=recovered.pin.height).rev() {
-            let batch = batch_at(height)?;
-            if rooms_height == 0 && rooms.registry().digest() == batch.result_registry {
-                rooms_height = height;
-            }
-            if social_height == 0 && *social.archive().root().as_bytes() == batch.result_social {
-                social_height = height;
-            }
-            if rooms_height != 0 && social_height != 0 {
+        let rooms_root = rooms.registry().digest();
+        let social_root = *social.archive().root().as_bytes();
+        let mut next_social = None;
+        let mut published_frontier = None;
+        for height in (0..=recovered.pin.height).rev() {
+            let candidate = if height == 0 {
+                genesis_app.frontier()
+            } else {
+                let batch = batch_at(height)?;
+                Frontier {
+                    height,
+                    value: batch.value_id(),
+                    registry: batch.result_registry,
+                    social: batch.result_social,
+                    control: batch.result_control,
+                    time: batch.time,
+                }
+            };
+            if candidate.registry == rooms_root
+                && (candidate.social == social_root || next_social == Some(social_root))
+            {
+                published_frontier = Some(candidate);
                 break;
             }
+            next_social = Some(candidate.social);
         }
-        // Unmatched nonzero stores are only honest at genesis.
-        if rooms_height == 0
-            && recovered.pin.height > 0
-            && rooms.registry().digest() != genesis_app.registry().digest()
-        {
-            return Err(AdapterError::Corrupt);
-        }
-        if social_height == 0
-            && recovered.pin.height > 0
-            && social.archive().root() != genesis_app.social().root()
-        {
-            return Err(AdapterError::Corrupt);
-        }
-        // The publication order bounds the skew: rooms <= social <= rooms + 1.
-        if social_height < rooms_height || social_height > rooms_height + 1 {
-            return Err(AdapterError::Corrupt);
-        }
-        // The frontier the next undecided batch must extend: rebuilt from the
-        // batch that produced the stored rooms state — its claimed result
-        // fields were consensus-verified at commit.
-        let frontier = if rooms_height == 0 {
-            genesis_app.frontier()
-        } else {
-            let batch = batch_at(rooms_height)?;
-            Frontier {
-                height: rooms_height,
-                value: batch.value_id(),
-                registry: batch.result_registry,
-                social: batch.result_social,
-                control: batch.result_control,
-                time: batch.time,
-            }
-        };
+        let frontier = published_frontier.ok_or(AdapterError::Corrupt)?;
         let mut app =
             Application::resume(social.archive().clone(), rooms.registry().clone(), frontier);
-        for height in rooms_height + 1..=recovered.pin.height {
+        for height in frontier.height + 1..=recovered.pin.height {
             let batch = batch_at(height)?;
-            if reflected(&app, &batch) {
-                continue;
-            }
             let checked = app.validate(&batch).map_err(AdapterError::Apply)?;
             Self::publish(&mut social, &mut rooms, &checked)?;
             app.apply_locally(checked);
@@ -1186,21 +1157,11 @@ impl<S: Store> Adapter<S> {
         let Some(batch) = batch else {
             return DecidedOutcome::Withheld;
         };
-        if reflected(&self.app, &batch) {
-            if batch.evidence.is_empty()
-                && batch.records.is_empty()
-                && batch.eligible.is_none()
-                && !batch.games.is_empty()
-            {
-                let checked = match self.app.validate(&batch) {
-                    Ok(checked) => checked,
-                    Err(_) => return DecidedOutcome::Withheld,
-                };
-                self.app.apply_locally(checked);
-                self.prune_pending();
-            }
-            return DecidedOutcome::Acked;
-        }
+        // Equal snapshot roots do not establish application progress: empty,
+        // game-only and other root-preserving batches still change the full
+        // frontier, including height, value, clock and clock-dependent control.
+        // Exact already-applied heights returned above; all others must replay,
+        // publish and apply before any acknowledgement.
         let checked = match self.app.validate(&batch) {
             Ok(checked) => checked,
             // A retained decided batch that no longer validates means durable
@@ -1236,9 +1197,9 @@ impl<S: Store> Adapter<S> {
         self.journal.read_published_range(request)
     }
 
-    /// Drops retained batches that can never validate again: after a
-    /// commit the pinned frontier advanced, so anything not parented on
-    /// it is dead weight. Called wherever the frontier advances.
+    /// Drops candidates not parented on the current frontier. A host that
+    /// retains future batches must revalidate and restore their holds when
+    /// their parents become current. Called wherever the frontier advances.
     fn prune_pending(&mut self) {
         let frontier = self.app.frontier().commitment();
         self.pending

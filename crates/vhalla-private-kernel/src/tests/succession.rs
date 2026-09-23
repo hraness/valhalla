@@ -1,5 +1,395 @@
 use super::*;
 
+fn formal_control_sign(work: &model::Working, claims: OwnerControlClaims) -> SignedOwnerControl {
+    use openmls_traits::signatures::Signer;
+    let unsigned = UnsignedOwnerControl::new(claims).unwrap();
+    unsigned
+        .attach(
+            work.signer()
+                .unwrap()
+                .sign(&unsigned.signing_bytes())
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
+        .unwrap()
+}
+
+/// Real A -> B -> A transitions, retaining both historical carrying controls.
+async fn formal_control_roundtrip(
+    pair: &mut Pair,
+) -> (VerifiedOwnerControl, VerifiedOwnerControl, model::Working) {
+    let (mut successor, disk, secret) = joined_successor(pair, 110).await;
+    let window = validity(pair.now);
+    let grant = grant(pair, successor.status().context.device, window).await;
+    let first = pair.owner.succeed(op(111), grant, pair.now).await.unwrap();
+    successor
+        .apply_control(first.bytes(), pair.now)
+        .await
+        .unwrap();
+    pair.member
+        .apply_control(first.bytes(), pair.now)
+        .await
+        .unwrap();
+    let first_proof = control_proof(pair, first.bytes());
+    let back = successor
+        .succession_request(pair.owner.status().context.device, window)
+        .await
+        .unwrap()
+        .sign(&pair.owner_account)
+        .unwrap();
+    let second = successor.succeed(op(112), back, pair.now).await.unwrap();
+    pair.owner
+        .apply_control(second.bytes(), pair.now)
+        .await
+        .unwrap();
+    pair.member
+        .apply_control(second.bytes(), pair.now)
+        .await
+        .unwrap();
+    let second_proof = control_proof(pair, second.bytes());
+    let former = retained_work(&disk, &secret, successor.status().context);
+    assert_eq!(former.state.successions.len(), 2);
+    (first_proof, second_proof, former)
+}
+
+#[test]
+fn formal_control_two_handoffs_preserve_sequence_bound_observation_authority() {
+    block_on(async {
+        let mut pair = joined().await;
+        let (first, second, former) = formal_control_roundtrip(&mut pair).await;
+        let current = retained_work(
+            &pair.owner_disk,
+            &pair.owner_key,
+            pair.owner.status().context,
+        );
+        let before = pair.member_disk.snapshot();
+        let floor = pair.member.status().control_floor;
+        let epoch = pair.member.status().epoch;
+        let owner = owner_device(
+            &pair.member_disk,
+            &pair.member_key,
+            pair.member.status().context,
+        );
+        assert_ne!(first.claims().owner_device, second.claims().owner_device);
+        assert_eq!(
+            current.state.owner.claims().device,
+            first.claims().owner_device
+        );
+        for proof in [&first, &second] {
+            pair.member
+                .observe_owner_control(&proof.signed().encode(), pair.now)
+                .await
+                .unwrap();
+            assert!(pair.member_disk.snapshot() == before);
+            assert_eq!(pair.member.status().epoch, epoch);
+        }
+        // The device that is owner again cannot claim the middle generation's
+        // carrying sequence. This is a valid signature by the wrong generation.
+        let mut wrong = second.claims().clone();
+        wrong.owner_device = current.state.owner.claims().device;
+        wrong.change = ControlChange::OwnerUpdate;
+        let wrong = formal_control_sign(&current, wrong);
+        assert!(matches!(
+            pair.member
+                .observe_owner_control(&wrong.encode(), pair.now)
+                .await,
+            Err(Error::Policy)
+        ));
+        assert!(!pair.member.needs_reopen());
+        // A valid future owner claim is evidence only: observation cannot admit
+        // its floor, membership, handoff or MLS epoch.
+        let mut future = second.claims().clone();
+        future.owner_device = current.state.owner.claims().device;
+        future.parent = floor;
+        future.prior_epoch = pair.member.status().epoch;
+        future.next_epoch = future.prior_epoch + 1;
+        future.change = ControlChange::OwnerUpdate;
+        let future = formal_control_sign(&current, future);
+        assert!(matches!(
+            pair.member
+                .observe_owner_control(&future.encode(), pair.now)
+                .await,
+            Err(Error::Missing)
+        ));
+        assert!(pair.member_disk.snapshot() == before);
+        assert_eq!(pair.member.status().control_floor, floor);
+        assert_eq!(pair.member.status().epoch, epoch);
+        // The actual historical B signer can establish a conflicting claim at
+        // the second handoff even though the current owner has returned to A.
+        let mut fork = second.claims().clone();
+        fork.change = ControlChange::OwnerUpdate;
+        let fork = formal_control_sign(&former, fork);
+        assert!(matches!(
+            pair.member
+                .observe_owner_control(&fork.encode(), pair.now)
+                .await,
+            Err(Error::Quarantined)
+        ));
+        pair.reopen_member().await;
+        let evidence = pair.member.fork_evidence().await.unwrap().unwrap();
+        assert_eq!(
+            evidence.accepted.sequence(),
+            second.claims().sequence().unwrap()
+        );
+        assert_eq!(evidence.accepted.id(), Some(second.id()));
+        assert_eq!(evidence.conflicting, fork);
+        assert_eq!(pair.member.status().control_floor, floor);
+        assert_eq!(pair.member.status().epoch, epoch);
+        assert_eq!(
+            owner_device(
+                &pair.member_disk,
+                &pair.member_key,
+                pair.member.status().context
+            ),
+            owner
+        );
+        assert!(matches!(
+            pair.member
+                .prepare_message(b"quarantine survives handoff history"),
+            Err(Error::Quarantined)
+        ));
+    });
+}
+
+#[test]
+fn formal_control_handoff_publication_faults_require_reopen_and_exact_retry() {
+    block_on(async {
+        for fault in [Fault::Before, Fault::After, Fault::HangAfter] {
+            let mut pair = joined().await;
+            let (mut successor, _, _) = joined_successor(&mut pair, 120).await;
+            let device = successor.status().context.device;
+            let window = validity(pair.now);
+            let grant = grant(&mut pair, device, window).await;
+            let before = pair.owner_disk.snapshot();
+            let floor = pair.owner.status().control_floor;
+            pair.owner_disk.fault(fault);
+            if matches!(fault, Fault::HangAfter) {
+                let pending = pair.owner.succeed(op(121), grant.clone(), pair.now);
+                futures::pin_mut!(pending);
+                assert!(futures::poll!(pending).is_pending());
+            } else {
+                let result = pair.owner.succeed(op(121), grant.clone(), pair.now).await;
+                match fault {
+                    Fault::Before => assert!(matches!(result, Err(Error::Refused))),
+                    Fault::After => assert!(matches!(result, Err(Error::NeedsReopen))),
+                    _ => unreachable!(),
+                }
+            }
+            assert!(pair.owner.needs_reopen());
+            assert!(matches!(
+                pair.owner.prepare_message(b"no uncertain release"),
+                Err(Error::NeedsReopen)
+            ));
+            if matches!(fault, Fault::Before) {
+                assert!(pair.owner_disk.snapshot() == before);
+            }
+            pair.reopen_owner().await;
+            let committed_before_retry = pair.owner_disk.snapshot();
+            assert_eq!(
+                pair.owner.status().control_floor.sequence(),
+                floor.sequence() + u64::from(!matches!(fault, Fault::Before))
+            );
+            let handoff = pair
+                .owner
+                .succeed(op(121), grant.clone(), pair.now)
+                .await
+                .unwrap();
+            if !matches!(fault, Fault::Before) {
+                assert!(
+                    pair.owner_disk.snapshot() == committed_before_retry,
+                    "uncertain committed output is read back exactly"
+                );
+            }
+            let committed = pair.owner_disk.snapshot();
+            assert_eq!(
+                pair.owner
+                    .succeed(op(121), grant, pair.now)
+                    .await
+                    .unwrap()
+                    .bytes(),
+                handoff.bytes()
+            );
+            assert!(pair.owner_disk.snapshot() == committed);
+            assert_eq!(
+                pair.owner.status().control_floor.sequence(),
+                floor.sequence() + 1
+            );
+            assert_eq!(
+                owner_device(
+                    &pair.owner_disk,
+                    &pair.owner_key,
+                    pair.owner.status().context
+                ),
+                device
+            );
+            assert_eq!(pair.owner.status().phase, Phase::MemberJoined);
+            successor
+                .apply_control(handoff.bytes(), pair.now)
+                .await
+                .unwrap();
+            pair.member
+                .apply_control(handoff.bytes(), pair.now)
+                .await
+                .unwrap();
+            assert_eq!(successor.status().phase, Phase::OwnerJoined);
+            assert_eq!(
+                successor.status().control_floor,
+                pair.member.status().control_floor
+            );
+        }
+    });
+}
+
+#[test]
+fn formal_control_historical_fork_faults_preserve_custody_across_handoff() {
+    block_on(async {
+        for fault in [Fault::Before, Fault::After, Fault::HangAfter] {
+            let mut pair = joined().await;
+            let (mut successor, _, _) = joined_successor(&mut pair, 130).await;
+            let window = validity(pair.now);
+            let grant = grant(&mut pair, successor.status().context.device, window).await;
+            let handoff = pair.owner.succeed(op(131), grant, pair.now).await.unwrap();
+            successor
+                .apply_control(handoff.bytes(), pair.now)
+                .await
+                .unwrap();
+            pair.member
+                .apply_control(handoff.bytes(), pair.now)
+                .await
+                .unwrap();
+            let accepted = control_proof(&pair, handoff.bytes());
+            let fork = conflicting_control(&pair, handoff.bytes());
+            let before = pair.member_disk.snapshot();
+            let floor = pair.member.status().control_floor;
+            let epoch = pair.member.status().epoch;
+            pair.member_disk.fault(fault);
+            if matches!(fault, Fault::HangAfter) {
+                let pending = pair.member.observe_owner_control(&fork, pair.now);
+                futures::pin_mut!(pending);
+                assert!(futures::poll!(pending).is_pending());
+            } else {
+                let result = pair.member.observe_owner_control(&fork, pair.now).await;
+                match fault {
+                    Fault::Before => assert!(matches!(result, Err(Error::Refused))),
+                    Fault::After => assert!(matches!(result, Err(Error::NeedsReopen))),
+                    _ => unreachable!(),
+                }
+            }
+            assert!(pair.member.needs_reopen());
+            let pending = pair.member.pending_fork_evidence().unwrap();
+            assert_eq!(pending.accepted.id(), Some(accepted.id()));
+            assert_eq!(pending.conflicting.encode(), fork);
+            assert!(matches!(
+                pair.member.prepare_message(b"latched observation"),
+                Err(Error::NeedsReopen)
+            ));
+            if matches!(fault, Fault::Before) {
+                assert!(pair.member_disk.snapshot() == before);
+            }
+            pair.reopen_member().await;
+            if matches!(fault, Fault::Before) {
+                // Losing the process can lose a refused observation. Reopening
+                // is not permission to claim that proof was durably published.
+                assert!(!pair.member.status().quarantined);
+                assert!(pair.member.pending_fork_evidence().is_none());
+                assert!(pair.member.fork_evidence().await.unwrap().is_none());
+                assert!(matches!(
+                    pair.member.observe_owner_control(&fork, pair.now).await,
+                    Err(Error::Quarantined)
+                ));
+            }
+            assert!(pair.member.status().quarantined);
+            let evidence = pair.member.fork_evidence().await.unwrap().unwrap();
+            assert_eq!(evidence.accepted.id(), Some(accepted.id()));
+            assert_eq!(evidence.conflicting.encode(), fork);
+            assert_eq!(pair.member.status().control_floor, floor);
+            assert_eq!(pair.member.status().epoch, epoch);
+            assert!(matches!(
+                pair.member
+                    .observe_owner_control(&accepted.signed().encode(), pair.now)
+                    .await,
+                Err(Error::Quarantined)
+            ));
+            pair.reopen_member().await;
+            assert!(pair.member.status().quarantined);
+            assert_eq!(
+                pair.member
+                    .fork_evidence()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .conflicting
+                    .encode(),
+                fork
+            );
+        }
+    });
+}
+
+#[test]
+fn formal_control_late_join_distinguishes_missing_history_from_checkpoint_fork() {
+    block_on(async {
+        let mut pair = joined().await;
+        let (first, second, former) = formal_control_roundtrip(&mut pair).await;
+        let (mut newcomer, disk, secret) = pending_device(&pair, &account()).await;
+        add_device(&mut pair, &mut newcomer, 140).await;
+        assert_eq!(
+            newcomer.status().history_base.sequence(),
+            second.claims().sequence().unwrap()
+        );
+        let current = retained_work(
+            &pair.owner_disk,
+            &pair.owner_key,
+            pair.owner.status().context,
+        );
+        let before = disk.snapshot();
+        let floor = newcomer.status().control_floor;
+        let epoch = newcomer.status().epoch;
+        let owner = owner_device(&disk, &secret, newcomer.status().context);
+        let mut old = first.claims().clone();
+        old.change = ControlChange::OwnerUpdate;
+        let old = formal_control_sign(&current, old);
+        assert!(matches!(
+            newcomer
+                .observe_owner_control(&old.encode(), pair.now)
+                .await,
+            Err(Error::Missing)
+        ));
+        newcomer
+            .observe_owner_control(&second.signed().encode(), pair.now)
+            .await
+            .unwrap();
+        assert!(disk.snapshot() == before);
+        assert!(!newcomer.status().quarantined);
+        assert_eq!(newcomer.status().epoch, epoch);
+        let mut known = second.claims().clone();
+        known.change = ControlChange::OwnerUpdate;
+        let known = formal_control_sign(&former, known);
+        assert!(matches!(
+            newcomer
+                .observe_owner_control(&known.encode(), pair.now)
+                .await,
+            Err(Error::Quarantined)
+        ));
+        newcomer = Kernel::open(disk.clone(), &secret, newcomer.status().context)
+            .await
+            .unwrap();
+        let evidence = newcomer.fork_evidence().await.unwrap().unwrap();
+        assert!(evidence.accepted_from_checkpoint);
+        assert_eq!(evidence.accepted.id(), Some(second.id()));
+        assert_eq!(evidence.conflicting, known);
+        assert_eq!(newcomer.status().control_floor, floor);
+        assert_eq!(newcomer.status().epoch, epoch);
+        assert_eq!(
+            owner_device(&disk, &secret, newcomer.status().context),
+            owner
+        );
+        let checkpoint = checkpoint::Checkpoint::decode(&evidence.accepted_proof).unwrap();
+        assert_eq!(checkpoint.claims().parent, evidence.accepted);
+    });
+}
+
 /// Enroll a second device of the owner account and carry it into the roster as
 /// an ordinary member; returns it ready to accept a succession grant.
 async fn joined_successor(pair: &mut Pair, operation: u64) -> (Kernel<Memory>, Memory, StorageKey) {

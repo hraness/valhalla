@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "scope": "current finite-model counterexample, not an implementation execution",
+  "model_sha256": "682e32a20cdbd92d6a723a6229e8a0abc99f204fe8d9d4bb3027719b7268b770",
+  "config_sha256": "d47490c62a0124401fa12f3fbd06efd3b6ed161fb66c172232792c3f0d498d3c",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "expected": {
+    "kind": "invariant",
+    "property": "AckAfterDurability"
+  },
+  "states": [
+    {
+      "state": 1,
+      "action": "Init",
+      "tlc_text": "<Initial predicate>\ns = [ value |-> \"a\",\n  social |-> 0,\n  journal |-> <<\"none\", \"none\">>,\n  pc |-> \"idle\",\n  journalHead |-> 0,\n  original |-> <<\"none\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"none\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |-> {},\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    },
+    {
+      "state": 2,
+      "action": "NewDecision",
+      "tlc_text": "<NewDecision line 52, col 19 to line 57, col 69 of module RoomsFrontier>\ns = [ value |-> \"a\",\n  social |-> 0,\n  journal |-> <<\"none\", \"none\">>,\n  pc |-> \"journal\",\n  journalHead |-> 0,\n  original |-> <<\"none\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"none\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |-> {},\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    },
+    {
+      "state": 3,
+      "action": "Acknowledge",
+      "tlc_text": "<Acknowledge line 102, col 5 to line 111, col 79 of module RoomsFrontier>\ns = [ value |-> \"a\",\n  social |-> 0,\n  journal |-> <<\"none\", \"none\">>,\n  pc |-> \"respond\",\n  journalHead |-> 0,\n  original |-> <<\"none\", \"none\">>,\n  rooms |-> 0,\n  app |->\n      [ value |-> \"genesis\",\n        height |-> 0,\n        social |-> 0,\n        registry |-> 0,\n        control |-> 0,\n        time |-> 0 ],\n  appSocial |-> 0,\n  appRooms |-> 0,\n  target |-> 1,\n  outcome |-> \"Acked\",\n  recovering |-> FALSE,\n  crashes |-> 0,\n  acks |->\n      { [ value |-> \"a\",\n          height |-> 1,\n          social |-> 0,\n          journalHead |-> 0,\n          rooms |-> 0,\n          app |->\n              [ value |-> \"genesis\",\n                height |-> 0,\n                social |-> 0,\n                registry |-> 0,\n                control |-> 0,\n                time |-> 0 ],\n          appSocial |-> 0,\n          appRooms |-> 0,\n          committedValue |-> \"none\",\n          appliedValue |-> \"genesis\" ] },\n  starts |-> {},\n  reopened |-> {},\n  wal |-> {\"vote\", \"lock\"},\n  releasedWal |-> FALSE ]"
+    }
+  ],
+  "loop": null
+}
