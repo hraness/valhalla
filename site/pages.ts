@@ -9,7 +9,7 @@ export const docKindLabels: Record<DocKind, string> = {
 };
 const code = (value: string) => `<pre><code>${value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</code></pre>`;
 export const documentedRevision = "cf5fc15defb48ec28d34933de282ff646c743bad";
-export const latestRelease = "v0.2.2";
+export const latestRelease = "v0.2.3";
 const source = (path: string, label = "Source guide") => `<a href="https://github.com/hraness/valhalla/blob/${documentedRevision}/${path}">${label} ↗</a>`;
 const note = (title: string, text: string) => `<aside class="doc-note"><strong>${title}</strong><p>${text}</p></aside>`;
 export const docs: DocPage[] = [
