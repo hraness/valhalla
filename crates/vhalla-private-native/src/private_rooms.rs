@@ -125,6 +125,16 @@ pub enum RecordKey {
     Received([u8; 32]),
     /// Nonzero immutable owner control-history sequence.
     Control(u64),
+    /// Full nonzero committed application ciphertext hash to its outbox index.
+    Sent([u8; 32]),
+    /// Verified member receipt for one exact outbox position and recipient
+    /// device; the payload is the receipt's nonzero inbox index.
+    Acceptance {
+        /// Committed local outbox position the receipt acknowledges.
+        outbox: u64,
+        /// Member device that produced the verified receipt.
+        recipient: [u8; 32],
+    },
 }
 impl RecordKey {
     fn encode(self) -> Result<Vec<u8>> {
@@ -137,6 +147,15 @@ impl RecordKey {
             Self::Control(n) => (5, n.to_be_bytes().to_vec()),
             Self::Operation(id) if id != [0; 16] => (3, id.to_vec()),
             Self::Received(hash) if hash != [0; 32] => (4, hash.to_vec()),
+            Self::Sent(hash) if hash != [0; 32] => (6, hash.to_vec()),
+            Self::Acceptance {
+                outbox,
+                recipient,
+            } if outbox != 0 && recipient != [0; 32] => {
+                let mut body = outbox.to_be_bytes().to_vec();
+                body.extend_from_slice(&recipient);
+                (7, body)
+            }
             _ => return Err(Error::Refused),
         };
         let mut raw = vec![tag];
