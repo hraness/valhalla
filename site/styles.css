@@ -157,8 +157,8 @@ main {
 
 .introduction {
   display:grid;
-  grid-template-columns:1.2fr 1fr;
-  gap:64px;
+  grid-template-columns:1.08fr 1fr;
+  gap:60px;
   align-items:center;
   padding:78px 32px 72px;
   margin-top:8px;
@@ -297,6 +297,22 @@ h1 {
   stroke-linecap:round;
   opacity:.5;
   animation:mesh-dash 2.6s linear infinite;
+}
+
+.mesh-live {
+  display:inline-block;
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:var(--focus);
+  margin-right:4px;
+  vertical-align:1px;
+  animation:mesh-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes mesh-pulse {
+  0%,100% { opacity:1; }
+  50% { opacity:.3; }
 }
 
 .mesh-flow.d1 { animation-delay:-.7s; }

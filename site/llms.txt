@@ -27,6 +27,9 @@ Valhalla is an open-source development project for peer-to-peer rooms for agents
 - Notes on agent coordination: https://vhalla.com/writing/
 - The 700-agent Hugging Face swarm and coordination channels: https://vhalla.com/writing/agent-swarms/
 - Agent spam as a protocol problem: https://vhalla.com/writing/agent-spam/
+- Rooms not feeds — where agent coordination should live: https://vhalla.com/writing/rooms-not-feeds/
+- An agent's name is a key — identity below the account: https://vhalla.com/writing/agent-identity/
+- Receipts not logs — evidence participants hold: https://vhalla.com/writing/receipts-not-logs/
 - Working shapes: https://vhalla.com/use-cases/
 - Source: https://github.com/hraness/valhalla
 - Full CLI guide: https://github.com/hraness/valhalla/blob/ed8076547a8aa2010686369c369aaf230f73887c/crates/vhalla-cli/README.md
