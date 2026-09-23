@@ -3,8 +3,9 @@
 Each entry identifies a claim and its limits. Passing one layer does not imply
 the deployed system meets the claim of another layer. Tool download hashes live
 in `tools.json` and the CI workflow; complete model logs and counterexamples are
-retained as CI artifacts. Local evidence for this continuation is recorded in
-`docs/production-formal-plan-2026-09-23.md` as the implementation converges.
+retained as CI artifacts. The original private-room evidence is recorded in
+`docs/production-formal-plan-2026-09-23.md`; the subsequent tool comparison and
+new boundaries are tracked in `kb/plans/valhalla-formal-rigor.md`.
 
 | Claim | Production correspondence | Evidence | Limits |
 | --- | --- | --- | --- |
@@ -15,6 +16,8 @@ retained as CI artifacts. Local evidence for this continuation is recorded in
 | A new acceptance cannot let a local membership control overtake older output | Native monotone outbox capture and sender-local control merge | `private-egress/PrivateEgress.tla`, tail-shortcut counterexample and real TLS bounded-backlog regression | Three already-committed local artifacts, one control and capacity one. Checks staging/egress order; does not prove source artifact creation, global delivery order or remote epoch availability. |
 | Drained generation cutover preserves pending work, spend and receipt scope | Proposed contract in `docs/private-rotation-contract.md` | `private-rotation/PrivateRotation.tla`, two jobs/two generations, separate durable retention/receipt, frozen predecessor head and three counterexamples | Design evidence only until native/browser/host transition implementation is qualified. Does not model distributed global drain discovery, malicious peers, credential revocation or offline-member availability. |
 | Release follows confirmed publication and a final local grant check; drafts retain their roster | `AgentSession::queue`, `authority`, kernel send and storage CAS | `private-publication/PrivatePublication.tla`; existing `agent_pending_cancellation_and_uncertain_commit_conserve_charges`, `agent_authority_expires_or_is_revoked_while_publication_is_pending`, kernel competing-custody tests | Two sessions, one exact operation per session, one roster change, irreversible local revocation. Atomic storage is assumed. Release linearizes at its final grant check; this does not prevent bytes already authorized from arriving later or provide remote instantaneous revocation. No liveness claim. |
+| An operating rooms host preserves reply custody, prepares live values durably and resolves empty requests | `drain_answerable_held`, `prepare_local_parts`, `flush_held`, `run` in rooms-node `unix.rs` | [Held reply model](rooms-held-reply/README.md); `unix::tests::formal_held_reply` drives the real host loop; `seen_failed_preparation_cannot_release_direct_or_held_reply` checks send ordering under a forced write failure | Two requests at one height, one durable batch and one metadata slot. Progress assumes advancing deadlines, fair host polling, live receiver and eventual network drain. No hard wall-clock deadline, shutdown custody, hash-injectivity, Malachite or filesystem theorem. |
+| Sealed host recovery preserves its rollback evidence across repeated interruptions | `recover_seal`, `restore_seal_backups_with`, `remove_seal_scratch` and `load` in private-host `config.rs` | [Host recovery model](host-recovery/README.md), including a counterexample to the former absent-marker cleanup; `formal_host_recovery_*` regressions | Two data files plus config/completion, two interruptions, atomic durable replacement assumed. Separates process-visible unlink from durable absence. No physical APFS power-cut proof, mailbox migration or simultaneous-writer theorem. |
 
 ## Running and interpreting finite-model checks
 
@@ -22,12 +25,32 @@ retained as CI artifacts. Local evidence for this continuation is recorded in
 python3 verify/run_tlc.py --jar /absolute/tla2tools.jar --java /absolute/java --out /new/owned/evidence-directory
 ```
 
+The versioned [`cases.json`](cases.json) inventory declares every model/config,
+expected result, claim, bounds, assumptions and production/contract sources.
+An unlisted model or config, duplicate registration, escaping/symlink path or
+undeclared expected property fails before checking. Source-symbol descriptions
+are review aids, not a mechanically checked refinement relation.
+
 The runner checks the pinned JAR digest before execution, uses one worker and
-fixed fingerprint/seed settings, and records model/config hashes. It requires
-TLC's successful completion for positive cases and the **named invariant**
-violation plus a counterexample for mutants. A syntax failure, missing Java,
-wrong JAR, timeout or killed run is not success. TLC uses fingerprints, so its
-reported collision-probability estimate remains part of the evidence.
+fixed fingerprint/seed settings, and runs copied model/config bytes. Receipts
+bind runner, manifest, tool metadata, models, configurations and listed source
+files; they retain actual commands, elapsed times, state counts and full log
+hashes. A changed input or inventory invalidates the run. A successful receipt
+requires every declared case to complete as expected. Historical saved traces
+are documentation and can never substitute for a missing current trace.
+
+Positive cases require successful completion and state statistics. Invariant
+mutants require the **named invariant**, exit 12 and a structurally complete
+counterexample. TLC 1.7.4 does not name a violated temporal property, so temporal
+mutants must declare exactly one property and return exit 13 with the temporal
+diagnostic and a stuttering/cycle witness. A syntax failure, missing Java,
+wrong JAR, malformed trace, timeout or killed run is not success. TLC uses
+fingerprints, so its reported collision-probability estimate remains part of
+the evidence. Run the runner's boundary tests without downloading tools:
+
+```console
+python3 -m unittest discover -s verify -p 'test_*.py'
+```
 
 The normal delivery run on 23 September explored 1,444 distinct states and
 checked conditional eventual resolution. Capacity one explored eight states
@@ -51,17 +74,67 @@ one-job queue. Receipt issuance now records durable kernel output; only monotone
 catch-up stages that output for transport. This model assumes those source
 artifacts already exist; the integration test supplies that correspondence.
 
+The held reply model adds a liveness counterexample: with deadline resolution
+disabled, the connector can stutter forever awaiting its reply even though no
+producer supplies a batch. The other mutants drop custody, reply before
+retaining exact metadata, and publish a tombstone. Production regressions drive
+actual `run`/oneshot/network channels with a late submission, deadline-only
+resolution and a full metadata budget. The live-value test observes retained
+data when its receiver resumes; the independent forced-write-failure test is
+what rejects sending before synchronous persistence. These tests and source
+review establish correspondence evidence, not automatic trace extraction or
+a Rust refinement proof.
+
+The host model distinguishes process interruption from power loss. It exposed
+the former cleanup sequence: unlink marker, stop before the directory fence,
+retry with no visible marker, delete a backup, then lose power while the marker
+can still reappear. Cleanup now fences the directory even when the marker is
+already absent. A deterministic sync-failure regression checks that this fence
+must succeed before any backup is deleted. The counterexample demonstrates a
+missing ordering guarantee under conservative metadata persistence assumptions;
+it is not a reproduction of physical disk loss. Additional schedules cover
+interrupted restoration, corrupt evidence and whole-snapshot admission.
+
 ## Lean comparison decision
 
-The selected near-term targets are concurrency and recovery, for which TLC can
-produce short operational counterexamples, plus existing Rust admission checks.
-A Lean statement for scalar budget conservation or context preservation would
-duplicate an elementary theorem already expressible in Verus while adding a
-second correspondence problem to Rust. Defer a maintained Lean toolchain for
-this increment. No Lean proof was run or claimed. Reopen the bounded comparison
-when there is a stable target requiring mathematical structure or proof reuse
-that is materially awkward in the existing stack. Require pinned dependencies,
-audited theorem statements/axioms and no `sorry` before accepting Lean evidence.
+The [formal-rigor plan](../kb/plans/valhalla-formal-rigor.md) reassessed the choice
+with parallel source investigations and an actually checked Lean experiment.
+The near-term choice remains TLA+ for concurrency/recovery, with Kani and Verus
+retained for their existing claims. Lean is promising for mathematical results,
+but this increment does not add a required Lean toolchain.
+
+| Approach | Best fit here | Evidence and upkeep | Decision |
+| --- | --- | --- | --- |
+| TLA+/TLC | Reply custody, protocol ordering, interrupted recovery, conditional progress | Finite-state exploration with operational counterexamples; maintain abstraction, bounds, fairness and production regressions | Expand the existing required gate. |
+| Lean | Unbounded mathematical statements such as weighted quorum intersection | Kernel-checked theorem and audited assumptions; an additional toolchain and independently maintained Rust correspondence | Retain the evaluated optional spike; defer required adoption. |
+| Verus | Unbounded Rust-shaped admission invariants | Existing ledger model and sampled production correspondence; reference-model abstraction still needs review | Retain; compare the same theorem here before claiming Lean superiority. |
+| Kani plus Hegel/property tests | Symbolic production decisions and real storage/restart sequences | Kani has tractability and input bounds; tests sample histories and exercise actual adapters | Preserve as complementary evidence. |
+
+The [Lean quorum spike](../prototypes/lean-quorum/README.md) proves that any two
+strict weighted two-thirds quorums on one fixed finite roster overlap in honest
+weight when Byzantine weight is at most one-third. It also proves threshold
+equivalence and arithmetic bounds, and checks concrete witnesses showing why
+strictness and the fault bound matter. Lean 4.34.0 checked the final Std-only
+file in 2.17 seconds locally; its public results use only the recorded standard
+axioms, with no `sorry`, custom axiom or native-evaluation axiom. The installed
+toolchain occupied 2.7 GiB; download and cold CI setup were not measured.
+
+That theorem does not execute Rust or prove consensus safety. Distinct admitted
+signers, signature validity, one agreed roster, locking across rounds and safe
+rotation remain separate obligations. No same-scope Verus implementation was
+timed. The theorem currently needs only finite-sum induction and arithmetic,
+so the experiment demonstrates feasibility without establishing enough distinct
+value to justify another required verification layer. Reopen adoption for a
+stable theorem with substantial reusable mathematics or a supported extraction
+path, an owned Rust correspondence boundary and a demonstrated advantage over
+the equivalent Verus approach. Preserve pinned dependencies, axiom audits and
+the prohibition on unfinished proofs if promoting the spike.
+
+Tool semantics are documented by the [TLA+ tools reference](https://lamport.azurewebsites.net/tla/tools.html),
+[Lean proof validation](https://lean-lang.org/doc/reference/latest/ValidatingProofs/)
+and [Verus guide](https://verus-lang.github.io/verus/guide/). The recommendation
+above is a repository-specific assessment, not a claim that one tool is
+universally stronger.
 
 ## Remaining trust boundaries
 

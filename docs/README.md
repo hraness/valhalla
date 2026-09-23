@@ -11,6 +11,11 @@ local repair evidence from deployed service acceptance.
 Use the [two-Mac handoff](private-device-qualification.md) for the current
 synthetic qualification setup and evidence checklist.
 
+The [formal-rigor plan](../kb/plans/valhalla-formal-rigor.md) records the parallel
+TLA+/Lean assessment, held-reply steel thread and recovery/evidence extensions.
+The maintained [assurance ledger](../verify/README.md) identifies the claims,
+production correspondence and limits of each verification layer.
+
 Valhalla is in development. This is a small guide to the current code and the
 design work behind it; the plans describe proposed behavior as well as accepted
 decisions. Start with the [current release gaps](release-readiness.md),

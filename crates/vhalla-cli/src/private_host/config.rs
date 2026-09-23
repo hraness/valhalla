@@ -564,14 +564,22 @@ fn sealed_config(home: &Path, uid: u32) -> Option<Vec<u8>> {
     (complete.as_slice() == digest(&config).as_bytes()).then_some(config)
 }
 fn remove_seal_scratch(home: &Path, backups: &[String]) -> Result<(), String> {
+    remove_seal_scratch_with(home, backups, fs::File::sync_all)
+}
+fn remove_seal_scratch_with(
+    home: &Path,
+    backups: &[String],
+    mut sync_directory: impl FnMut(&fs::File) -> std::io::Result<()>,
+) -> Result<(), String> {
     let (directory, uid) = owner(home)?;
     let pending = home.join(SEAL_PENDING);
     if custody::private_file_present(&pending, uid, 64).map_err(|_| REFUSED)? {
         fs::remove_file(&pending).map_err(|_| REFUSED)?;
-        // Make marker removal durable before deleting any recovery evidence.
-        // Otherwise a power loss can retain the marker but lose its backups.
-        directory.sync_all().map_err(|_| REFUSED)?;
     }
+    // A previous process can have unlinked the marker without reaching its
+    // directory sync. Visible absence on this retry is not durable absence:
+    // fence it even when no marker was present before deleting any backup.
+    sync_directory(&directory).map_err(|_| REFUSED)?;
     for name in backups {
         // A previous cleanup may have stopped partway through this list.
         match fs::remove_file(home.join(name)) {
@@ -580,7 +588,7 @@ fn remove_seal_scratch(home: &Path, backups: &[String]) -> Result<(), String> {
             Err(_) => return Err(REFUSED.into()),
         }
     }
-    directory.sync_all().map_err(|_| REFUSED.into())
+    sync_directory(&directory).map_err(|_| REFUSED.into())
 }
 /// Restore every backup over its sealed name and recompute `complete` from the
 /// restored config, returning the home to the pre-mutation snapshot.
@@ -1267,5 +1275,164 @@ mod tests {
         );
         assert_eq!(fs::read(&source).unwrap(), changed);
         fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn formal_host_recovery_absent_marker_sync_failure_preserves_every_backup() {
+        let home = Home::new();
+        let _lock = maintenance_lock(&home.0).unwrap();
+        let sealed = snapshot(&home.0);
+        begin_seal(&home.0, &["server.der", "connection.json"]).unwrap();
+        let (_, uid) = owner(&home.0).unwrap();
+        let (_, backups) = seal_scratch(&home.0, uid).unwrap();
+        // This is the visible state a retry can see after process interruption
+        // between unlink and sync. The test checks ordering, not power loss.
+        fs::remove_file(home.0.join(SEAL_PENDING)).unwrap();
+        let before = snapshot(&home.0);
+        let mut syncs = 0;
+        assert!(remove_seal_scratch_with(&home.0, &backups, |_| {
+            syncs += 1;
+            Err(std::io::Error::other("injected directory sync failure"))
+        })
+        .is_err());
+        assert_eq!(syncs, 1);
+        assert_eq!(snapshot(&home.0), before, "no backup may precede the fence");
+        recover_seal(&home.0).unwrap();
+        recover_seal(&home.0).unwrap();
+        assert_eq!(snapshot(&home.0), sealed);
+    }
+
+    #[test]
+    fn formal_host_recovery_two_interruptions_retain_exact_snapshot() {
+        for first in 0..4 {
+            for second in 0..4 {
+                let home = Home::new();
+                let _lock = maintenance_lock(&home.0).unwrap();
+                let sealed = snapshot(&home.0);
+                begin_seal(
+                    &home.0,
+                    &["server.der", "server-key.der", "connection.json"],
+                )
+                .unwrap();
+                for name in [
+                    "config.json",
+                    "server.der",
+                    "server-key.der",
+                    "connection.json",
+                ] {
+                    rewrite(&home.0, name, b"interrupted update").unwrap();
+                }
+                let (_, uid) = owner(&home.0).unwrap();
+                let (_, mut backups) = seal_scratch(&home.0, uid).unwrap();
+                backups.sort();
+                let retained: BTreeMap<_, _> = backups
+                    .iter()
+                    .map(|name| (name.clone(), fs::read(home.0.join(name)).unwrap()))
+                    .collect();
+                for boundary in [first, second] {
+                    let mut restored = 0;
+                    assert!(restore_seal_backups_with(&home.0, &backups, |_| {
+                        let at = restored;
+                        restored += 1;
+                        if at == boundary {
+                            Err("injected repeated recovery interruption".into())
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .is_err());
+                    for (name, bytes) in &retained {
+                        assert_eq!(fs::read(home.0.join(name)).unwrap(), *bytes);
+                    }
+                }
+                recover_seal(&home.0).unwrap();
+                recover_seal(&home.0).unwrap();
+                assert_eq!(snapshot(&home.0), sealed);
+                load(&home.0).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn formal_host_recovery_matching_pair_still_checks_live_commitments() {
+        let home = Home::new();
+        let _lock = maintenance_lock(&home.0).unwrap();
+        let mut config = load(&home.0).unwrap().config;
+        begin_seal(&home.0, &["connection.json"]).unwrap();
+        let new_connection = b"new synthetic connection document";
+        rewrite(&home.0, "connection.json", new_connection).unwrap();
+        let (_, uid) = owner(&home.0).unwrap();
+        assert!(sealed_config(&home.0, uid).is_some());
+        assert!(
+            load(&home.0).is_err(),
+            "the old pair cannot admit mixed files"
+        );
+        config
+            .files
+            .insert("connection.json".into(), digest(new_connection));
+        seal_files(&home.0).unwrap();
+        let bytes = serde_json::to_vec(&config).unwrap();
+        rewrite(&home.0, "config.json", &bytes).unwrap();
+        rewrite(&home.0, "complete", digest(&bytes).as_bytes()).unwrap();
+        load(&home.0).unwrap();
+
+        rewrite(&home.0, "connection.json", b"drifted live file").unwrap();
+        assert!(sealed_config(&home.0, uid).is_some());
+        assert!(load(&home.0).is_err());
+        let before = snapshot(&home.0);
+        assert!(recover_seal(&home.0).is_err());
+        assert_eq!(
+            snapshot(&home.0),
+            before,
+            "refusal retains recovery evidence"
+        );
+
+        rewrite(&home.0, "connection.json", new_connection).unwrap();
+        recover_seal(&home.0).unwrap();
+        assert_eq!(
+            read(&home.0, "config.json", 65536).unwrap().as_slice(),
+            bytes
+        );
+        assert_eq!(seal_scratch(&home.0, uid).unwrap(), (None, Vec::new()));
+        load(&home.0).unwrap();
+    }
+
+    #[test]
+    fn formal_host_recovery_partial_cleanup_retries_without_changing_snapshot() {
+        for removed in 0..=3 {
+            let home = Home::new();
+            let _lock = maintenance_lock(&home.0).unwrap();
+            let sealed = snapshot(&home.0);
+            begin_seal(&home.0, &["server.der", "connection.json"]).unwrap();
+            let (directory, uid) = owner(&home.0).unwrap();
+            let (_, mut backups) = seal_scratch(&home.0, uid).unwrap();
+            backups.sort();
+            fs::remove_file(home.0.join(SEAL_PENDING)).unwrap();
+            directory.sync_all().unwrap();
+            for name in backups.iter().take(removed) {
+                fs::remove_file(home.0.join(name)).unwrap();
+            }
+            recover_seal(&home.0).unwrap();
+            recover_seal(&home.0).unwrap();
+            assert_eq!(snapshot(&home.0), sealed);
+            load(&home.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn formal_host_recovery_corrupt_backup_refuses_before_any_restore() {
+        let home = Home::new();
+        let _lock = maintenance_lock(&home.0).unwrap();
+        begin_seal(&home.0, &["server.der", "connection.json"]).unwrap();
+        for name in ["config.json", "server.der", "connection.json"] {
+            rewrite(&home.0, name, b"interrupted update").unwrap();
+        }
+        let (_, uid) = owner(&home.0).unwrap();
+        let (_, mut backups) = seal_scratch(&home.0, uid).unwrap();
+        backups.sort();
+        rewrite(&home.0, backups.last().unwrap(), b"corrupt backup").unwrap();
+        let before = snapshot(&home.0);
+        assert!(recover_seal(&home.0).is_err());
+        assert_eq!(snapshot(&home.0), before);
     }
 }
