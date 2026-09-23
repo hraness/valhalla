@@ -319,6 +319,117 @@ fn partial_existing_foreign_and_mutated_homes_refuse_without_repair() {
 }
 
 #[test]
+fn add_credential_and_rotate_extend_the_sealed_home_without_rebinding_members() {
+    let f = Fixture::new();
+    ok(&f.init());
+    let ca = fs::read(f.home().join("ca.der")).unwrap();
+    let tokens: Vec<Vec<u8>> = (1..=2)
+        .map(|n| fs::read(f.home().join(format!("client-{n}.token"))).unwrap())
+        .collect();
+    let added = run(f.command("add-credential"));
+    ok(&added);
+    let added: Value = serde_json::from_slice(&added.stdout).unwrap();
+    assert_eq!(added["status"], "credential_added");
+    assert_eq!(added["credential_index"], 3);
+    let minted = f.home().join("client-3.token");
+    assert_eq!(fs::metadata(&minted).unwrap().mode() & 0o7777, 0o600);
+    assert_ne!(f.token(3), f.token(1));
+    assert_ne!(f.token(3), f.token(2));
+    let config = f.json("config.json");
+    assert_eq!(config["credential_ids"].as_array().unwrap().len(), 3);
+    // The minted credential is admitted live under the unchanged namespace.
+    let mut server = f.serve();
+    let item = RelayItem::new(
+        f.namespace(),
+        7,
+        OperationId::from_bytes([9; 16]).unwrap(),
+        OutboxKind::Application,
+        b"credential enrollment evidence",
+    )
+    .unwrap();
+    assert_eq!(f.client(1).submit(&item).unwrap().position, 1);
+    assert_eq!(f.client(3).page(0, 1).unwrap().records[0].item, item);
+    server.stop();
+    // Rotation keeps CA, listener, tokens and the old mailbox; only the
+    // opaque namespace and mailbox selection advance.
+    let rotated = run(f.command("rotate"));
+    ok(&rotated);
+    let rotated: Value = serde_json::from_slice(&rotated.stdout).unwrap();
+    assert_eq!(rotated["status"], "rotated");
+    assert_eq!(rotated["mailbox"], "mailbox-2");
+    let connection = f.json("connection.json");
+    let previous = connection["previous_namespace"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(connection["mailbox"], "mailbox-2");
+    assert_ne!(connection["namespace"], previous);
+    assert_eq!(fs::read(f.home().join("ca.der")).unwrap(), ca);
+    for (n, token) in tokens.iter().enumerate() {
+        assert_eq!(
+            fs::read(f.home().join(format!("client-{}.token", n + 1))).unwrap(),
+            *token
+        );
+    }
+    assert!(f.home().join("mailbox").is_dir());
+    assert!(f.home().join("mailbox-2").is_dir());
+    // Repeating the command is explicit and monotone: it never reuses or
+    // rewrites an earlier mailbox.
+    let again = run(f.command("rotate"));
+    ok(&again);
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["mailbox"], "mailbox-3");
+    // The retained tokens still authenticate under the rotated namespace and
+    // the fresh mailbox starts empty; the stale namespace is not admitted.
+    let mut server = f.serve();
+    let page = f.client(1).page(0, 1).unwrap();
+    assert_eq!(page.head, 0);
+    assert!(page.records.is_empty());
+    let stale = TlsRelay::new(
+        f.addr,
+        "local-host.test.invalid",
+        fs::read(f.home().join("ca.der")).unwrap(),
+        RelayToken::from_bytes(f.token(1)).unwrap(),
+        RelayNamespace::from_bytes(unhex(&previous)).unwrap(),
+    )
+    .unwrap();
+    assert!(stale.page(0, 1).is_err());
+    server.stop();
+    // A torn sealed mutation recovers to the last sealed snapshot instead of
+    // refusing the home or completing half of it.
+    let before = fs::read(f.home().join("config.json")).unwrap();
+    let before_complete = fs::read(f.home().join("complete")).unwrap();
+    for (name, bytes) in [
+        ("config.json.seal-backup", before.as_slice()),
+        ("seal.pending", b"files".as_slice()),
+    ] {
+        let path = f.home().join(name);
+        fs::write(&path, bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    fs::write(f.home().join("config.json"), b"torn").unwrap();
+    let recovered = run(f.command("add-credential"));
+    ok(&recovered);
+    let recovered: Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    assert_eq!(recovered["credential_index"], 4);
+    assert!(!f.home().join("seal.pending").exists());
+    assert!(!f.home().join("config.json.seal-backup").exists());
+    assert_eq!(
+        f.json("config.json")["credential_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    let status = run(f.command("status"));
+    ok(&status);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["credentials"], 4);
+    assert_eq!(status["mailbox"], "mailbox-3");
+    let _ = (before, before_complete);
+}
+
+#[test]
 fn tailcat_template_uses_only_saved_private_key_and_exact_one_port_without_activation() {
     let f = Fixture::new();
     ok(&f.init());

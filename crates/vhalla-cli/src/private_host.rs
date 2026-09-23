@@ -18,7 +18,7 @@ use vhalla_private_native::relay::{
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY]\nvhalla private-host serve|status|install|uninstall HOME\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, two distinct client credentials, explicit macOS LaunchAgent lifecycle. No account keys, automatic update, public listener, or cloud provisioning.";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY]\nvhalla private-host serve|status|install|uninstall HOME\nvhalla private-host add-credential|rotate HOME\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, two or more distinct client credentials, explicit macOS LaunchAgent lifecycle. No account keys, automatic update, public listener, or cloud provisioning.";
 const REFUSED: &str = "local host refused; preserve the exact home, configuration, certificates and mailbox; never reset retained custody";
 
 pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
@@ -82,6 +82,22 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             }
             launchd::tailcat_plist(&config::load(home)?, binary, key, output)
         }
+        Some("add-credential") if args.len() == 3 => {
+            let (index, id) = config::add_credential(home)?;
+            println!(
+                "{}",
+                serde_json::json!({"status":"credential_added","home":config::resolve(home)?,"credential_index":index,"credential_id":id,"credential_file":format!("client-{index}.token")})
+            );
+            Ok(())
+        }
+        Some("rotate") if args.len() == 3 => {
+            let (namespace, mailbox) = config::rotate(home)?;
+            println!(
+                "{}",
+                serde_json::json!({"status":"rotated","home":config::resolve(home)?,"namespace":namespace,"mailbox":mailbox,"connection":config::resolve(home)?.join("connection.json")})
+            );
+            Ok(())
+        }
         Some(action @ ("serve" | "status" | "install" | "uninstall")) if args.len() == 3 => {
             let loaded = if action == "uninstall" {
                 config::load_for_stop(home)?
@@ -94,7 +110,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                     let now = time::OffsetDateTime::now_utc().unix_timestamp();
                     println!(
                         "{}",
-                        serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"service":launchd::status(&loaded)?,"health":"not probed; loaded service is not TLS or retention evidence"})
+                        serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"service":launchd::status(&loaded)?,"health":"not probed; loaded service is not TLS or retention evidence"})
                     );
                     Ok(())
                 }
@@ -140,7 +156,7 @@ fn service(home: &Path, config: &Config) -> Result<Service, String> {
         });
     }
     Service::new(
-        FileStore::open(home.join("mailbox"), namespace).map_err(|_| REFUSED)?,
+        FileStore::open(home.join(&config.mailbox), namespace).map_err(|_| REFUSED)?,
         tls,
         credentials,
         ServiceLimits::default(),
