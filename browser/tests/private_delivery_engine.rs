@@ -16,7 +16,7 @@ mod engine;
 mod model;
 #[allow(dead_code)]
 #[path = "../src/private/wire.rs"]
-mod private_wire;
+pub mod private_wire;
 
 use ed25519_dalek::SigningKey;
 use engine::{Engine, Failure, Host, Summary, TransportError};
