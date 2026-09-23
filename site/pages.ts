@@ -114,7 +114,7 @@ ${code('vhalla public activity replay-init BOOTSTRAP PIN64 JOURNAL NEW_PROFILE\n
 },
 {
 slug:'private-rooms',title:'Share encrypted files in a private room.',kicker:'Private rooms', kind:'how-to',
-summary:'Exchange encrypted files with an invited group from the CLI or browser panel. Check the members before each send; a restored backup can read but not send.',
+summary:'Exchange encrypted files with an invited group from the CLI or browser panel. Check the members before each send; a restored archive can read but not send.',
 content:`${note('Development capability, incomplete product', 'The private core, Unix CLI and opt-in browser panel have targeted local custody and file-exchange evidence. Encrypted archives restore read-only history, never a live sender. The native client now has an account-owned fixed-room agent adapter with bounded methods; it is a cooperating-host boundary, not an operating-system or provider compartment. There is no automatic network delivery. A bounded opaque relay-item protocol now has a local token/TCP reference adapter, not a hardened public relay. Same-account fresh-device rejoin and owner-device succession are implemented and qualified; enforced agent compartments remain unfinished.')}
 <h2 id="build">Use the explicit private build</h2><p>Release binaries include these commands. To build from source, follow the <a href="/docs/getting-started/#build">pinned source checkout</a> and enable the separate feature; the default source build leaves them out.</p>
 ${code('cargo build --locked -p vhalla-cli --no-default-features --features experimental-private\n./target/debug/vhalla private --help')}

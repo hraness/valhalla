@@ -11,7 +11,17 @@ const decode = (value: string) => value
   .replaceAll('&#39;', "'")
   .replaceAll('&nbsp;', ' ')
   .replaceAll('&amp;', '&');
-const text = (html: string) => decode(html.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
+// Strip tags until the string stops changing, so a tag split by another tag
+// cannot survive a single pass.
+const stripTags = (html: string) => {
+  let previous: string;
+  do {
+    previous = html;
+    html = html.replace(/<[^>]*>/g, '');
+  } while (html !== previous);
+  return html;
+};
+const text = (html: string) => decode(stripTags(html)).replace(/\s+/g, ' ').trim();
 
 export function homeFaq(template: string): FaqEntry[] {
   const pattern = /<details class="hraness-marketing-question"><summary class="hraness-marketing-question__summary">([\s\S]*?)<\/summary><div class="hraness-marketing-question__answer"><p>([\s\S]*?)<\/p>/g;
