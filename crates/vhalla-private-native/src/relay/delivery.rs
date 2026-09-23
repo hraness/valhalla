@@ -4,6 +4,14 @@
 //! A tick writes and synchronizes attempt intent before calling the transport.
 //! Reopen preserves uncertain attempts, exact bytes and monotonically observed
 //! caller time. This is local custody, not defense against coherent host rollback.
+//!
+//! Transport-unreachable outcomes (`Connect`, `Timeout`, `Unavailable`) are an
+//! outage, not a refusal: they never spend the finite attempt budget. They are
+//! bounded by the exponential backoff ceiling instead and counted as outage
+//! evidence. Only definitive refusals (`Denied`, `Capacity`) spend attempts,
+//! and permanent refusals stop a job at once. A stopped job can be re-armed
+//! explicitly with [`DeliveryStore::resume`], which keeps every prior attempt
+//! as evidence and never creates a new queue.
 use super::{net::NetError, RelayItem, RelayNamespace, RelayReceipt, MAX_RELAY_ITEMS};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -20,8 +28,13 @@ mod tests;
 const MAX_ITEM_BYTES: usize = super::codec::MAX_PUT_BODY - 32;
 const MAX_TICK_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DATABASE_BYTES: usize = 2 * 1024 * 1024 * 1024;
+/// Largest tolerated wall-clock regression. Within it the committed clock is
+/// held (retries wait a little longer); beyond it the caller time is refused
+/// because the retained clock or the host clock needs operator review.
+pub const MAX_CLOCK_REGRESSION_SECS: u64 = 3600;
 type MetadataRow = (i64, Vec<u8>, Vec<u8>, Vec<u8>, i64, i64, i64, i64, i64, i64);
 type JobRow = (Vec<u8>, Vec<u8>, i64, i64, i64, i64, Option<i64>, i64);
+const EVIDENCE_TABLE: &str = "CREATE TABLE IF NOT EXISTS job_evidence(id BLOB PRIMARY KEY REFERENCES jobs(id),outages INTEGER NOT NULL CHECK(outages>=0),resumes INTEGER NOT NULL CHECK(resumes>=0),spent_attempts INTEGER NOT NULL CHECK(spent_attempts>=0),resumed_at INTEGER NOT NULL CHECK(resumed_at>=0))";
 
 /// Opaque commitment to the explicitly selected transport trust configuration.
 /// It excludes rotating tokens; credential replacement cannot redirect jobs.
@@ -81,15 +94,17 @@ pub trait Transport {
 /// Immutable queue retention limits. Reaching them never deletes existing jobs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
-    /// Maximum retained jobs, including completed/stopped jobs.
+    /// Maximum live jobs (pending, uncertain or stopped). Retained jobs keep
+    /// their evidence but no longer count, so a busy queue never bricks itself;
+    /// `enqueue` at this bound returns the retryable [`Error::Capacity`].
     pub max_jobs: usize,
-    /// Total canonical ciphertext bytes, at most 1 GiB.
+    /// Total canonical ciphertext bytes across every job, at most 1 GiB.
     pub max_bytes: usize,
 }
 /// Immutable finite retry policy in seconds. There is no automatic budget reset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RetryPolicy {
-    /// Maximum persisted attempts for a job, 1..100.
+    /// Maximum budget-charged attempts for a job, 1..100. Outages never charge.
     pub max_attempts: u32,
     /// Initial backoff, 1..3600 seconds.
     pub initial_backoff_secs: u64,
@@ -129,7 +144,8 @@ pub struct JobStatus {
     pub operation: OperationId,
     /// Current local delivery state.
     pub state: JobState,
-    /// Attempt intents durably published before transport.
+    /// Budget-charged attempts: intents whose outcome was a refusal or is still
+    /// unknown. Outage outcomes are reverted here and counted in [`JobEvidence`].
     pub attempts: u32,
     /// Earliest caller UNIX second eligible for retry.
     pub next_due: u64,
@@ -139,6 +155,18 @@ pub struct JobStatus {
     pub position: Option<u64>,
     /// Closed last transport failure, without private data.
     pub last_error: Option<NetError>,
+}
+/// Retained per-job evidence that is never spent or pruned by retries.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JobEvidence {
+    /// Transport-unreachable outcomes observed for this job.
+    pub outages: u32,
+    /// Explicit operator re-arms of a stopped job.
+    pub resumes: u32,
+    /// Attempts consumed before each re-arm, summed.
+    pub spent_attempts: u32,
+    /// Caller UNIX second of the last re-arm, zero when never resumed.
+    pub resumed_at: u64,
 }
 /// One finite tick's updated jobs. A budget stop preserves all remaining work.
 #[derive(Clone, Debug)]
@@ -167,7 +195,8 @@ pub enum Error {
     Storage,
     /// Retained records contradict their commitments or bounds.
     Corrupt,
-    /// Caller time moved behind retained time or exceeds the supported range.
+    /// Caller time moved more than [`MAX_CLOCK_REGRESSION_SECS`] behind the
+    /// retained clock or exceeds the supported range.
     Clock,
     /// This handle had an uncertain write and must be reopened.
     NeedsReopen,
@@ -185,7 +214,7 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct DeliveryStore {
     conn: Connection,
     directory: File,
-    db_guard: File,
+    _db_guard: File,
     _lock: File,
     namespace: RelayNamespace,
     endpoint: EndpointId,
@@ -255,6 +284,8 @@ impl DeliveryStore {
         configure(&conn)?;
         conn.execute_batch("CREATE TABLE meta(id INTEGER PRIMARY KEY CHECK(id=1),format INTEGER NOT NULL CHECK(format=1),context BLOB NOT NULL CHECK(length(context)=128),namespace BLOB NOT NULL CHECK(length(namespace)=32),endpoint BLOB NOT NULL CHECK(length(endpoint)=32),max_jobs INTEGER NOT NULL,max_bytes INTEGER NOT NULL,max_attempts INTEGER NOT NULL,initial_backoff INTEGER NOT NULL,max_backoff INTEGER NOT NULL,clock INTEGER NOT NULL CHECK(clock>=0));
             CREATE TABLE jobs(id BLOB PRIMARY KEY CHECK(length(id)=32),sequence BLOB NOT NULL UNIQUE CHECK(length(sequence)=8),operation BLOB NOT NULL UNIQUE CHECK(length(operation)=16),item BLOB NOT NULL,state INTEGER NOT NULL CHECK(state BETWEEN 0 AND 3),attempts INTEGER NOT NULL CHECK(attempts>=0),next_due INTEGER NOT NULL CHECK(next_due>=0),uncertain INTEGER NOT NULL CHECK(uncertain IN (0,1)),position INTEGER,last_error INTEGER NOT NULL CHECK(last_error BETWEEN 0 AND 9));").map_err(|_|Error::Storage)?;
+        conn.execute_batch(EVIDENCE_TABLE)
+            .map_err(|_| Error::Storage)?;
         conn.execute(
             "INSERT INTO meta VALUES(1,1,?1,?2,?3,?4,?5,?6,?7,?8,0)",
             params![
@@ -272,7 +303,7 @@ impl DeliveryStore {
         let out = Self {
             conn,
             directory,
-            db_guard,
+            _db_guard: db_guard,
             _lock: lock,
             namespace,
             endpoint,
@@ -334,10 +365,17 @@ impl DeliveryStore {
         if clock < 0 {
             return Err(Error::Corrupt);
         }
+        let present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='job_evidence'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|_| Error::Corrupt)?;
         let out = Self {
             conn,
             directory,
-            db_guard,
+            _db_guard: db_guard,
             _lock: lock,
             namespace,
             endpoint,
@@ -345,14 +383,22 @@ impl DeliveryStore {
             policy,
             needs_reopen: false,
         };
+        if present == 0 {
+            // Additive evidence table for queues created before outage
+            // accounting existed. Jobs, bytes, clock and binding are untouched.
+            out.conn
+                .execute_batch(EVIDENCE_TABLE)
+                .map_err(|_| Error::Storage)?;
+            out.sync()?;
+        }
         out.validate()?;
         Ok(out)
     }
+    /// One durability barrier per commit. SQLite already fsyncs the journal and
+    /// database under `synchronous=FULL`; the directory barrier is a whole-device
+    /// flush on Apple hosts and also makes the journal unlink durable.
     fn sync(&self) -> Result<()> {
-        self.db_guard
-            .sync_all()
-            .and_then(|_| self.directory.sync_all())
-            .map_err(|_| Error::Storage)
+        self.directory.sync_all().map_err(|_| Error::Storage)
     }
     fn live(&self) -> Result<()> {
         if self.needs_reopen {
@@ -370,8 +416,18 @@ impl DeliveryStore {
             .conn
             .query_row("SELECT clock FROM meta WHERE id=1", [], |r| r.get(0))
             .map_err(|_| Error::Corrupt)?;
-        if previous < 0 || now < previous as u64 {
-            return Err(Error::Clock);
+        if previous < 0 {
+            return Err(Error::Corrupt);
+        }
+        let previous = previous as u64;
+        if now < previous {
+            // Hold the committed clock through a bounded wall-clock step back;
+            // retries wait slightly longer instead of ending every launch.
+            return if previous - now <= MAX_CLOCK_REGRESSION_SECS {
+                Ok(previous as i64)
+            } else {
+                Err(Error::Clock)
+            };
         }
         Ok(now as i64)
     }
@@ -411,8 +467,7 @@ impl DeliveryStore {
             if self.item(item.digest())? != *item {
                 return Err(Error::Conflict);
             }
-            self.begin()?;
-            self.commit(clock)?;
+            // An exact retry is read-only: no commit or barrier for a no-op.
             return Ok(prior);
         }
         let conflict: bool = self
@@ -430,19 +485,9 @@ impl DeliveryStore {
             return Err(Error::Conflict);
         }
         let bytes = item.encode().map_err(|_| Error::Bounds)?;
-        let (count, total): (i64, i64) = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*),COALESCE(SUM(length(item)),0) FROM jobs",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map_err(|_| Error::Corrupt)?;
-        if count < 0 || total < 0 {
-            return Err(Error::Corrupt);
-        }
-        if count as usize >= self.limits.max_jobs
-            || (total as usize)
+        let (count, total) = self.usage()?;
+        if count >= self.limits.max_jobs
+            || total
                 .checked_add(bytes.len())
                 .is_none_or(|n| n > self.limits.max_bytes)
         {
@@ -489,11 +534,114 @@ impl DeliveryStore {
         }
         Ok(out)
     }
+    /// Live job count (pending, uncertain, stopped) and total retained bytes.
+    fn usage(&self) -> Result<(usize, usize)> {
+        let (count, total): (i64, i64) = self
+            .conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM jobs WHERE state IN (0,1,3)),COALESCE((SELECT SUM(length(item)) FROM jobs),0)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|_| Error::Corrupt)?;
+        if count < 0 || total < 0 {
+            return Err(Error::Corrupt);
+        }
+        Ok((count as usize, total as usize))
+    }
+    /// Live jobs, the live bound, retained bytes and the byte bound, in that
+    /// order, so a host can report a full queue instead of ending its grant.
+    pub fn capacity(&self) -> Result<(usize, usize, usize, usize)> {
+        self.live()?;
+        let (count, total) = self.usage()?;
+        Ok((count, self.limits.max_jobs, total, self.limits.max_bytes))
+    }
+    /// Retained outage/re-arm evidence for one job; absent rows are zero.
+    pub fn evidence(&self, id: [u8; 32]) -> Result<JobEvidence> {
+        self.live()?;
+        if self.find(id)?.is_none() {
+            return Err(Error::Bounds);
+        }
+        self.evidence_row(id)
+    }
+    fn evidence_row(&self, id: [u8; 32]) -> Result<JobEvidence> {
+        let row: Option<(i64, i64, i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT outages,resumes,spent_attempts,resumed_at FROM job_evidence WHERE id=?1",
+                params![id.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(|_| Error::Corrupt)?;
+        let Some((outages, resumes, spent, at)) = row else {
+            return Ok(JobEvidence::default());
+        };
+        Ok(JobEvidence {
+            outages: u32::try_from(outages).map_err(|_| Error::Corrupt)?,
+            resumes: u32::try_from(resumes).map_err(|_| Error::Corrupt)?,
+            spent_attempts: u32::try_from(spent).map_err(|_| Error::Corrupt)?,
+            resumed_at: u64::try_from(at).map_err(|_| Error::Corrupt)?,
+        })
+    }
+    fn record_outage(&self, id: [u8; 32]) -> Result<()> {
+        self.conn.execute("INSERT INTO job_evidence VALUES(?1,1,0,0,0) ON CONFLICT(id) DO UPDATE SET outages=MIN(outages+1,1000000)",params![id.as_slice()]).map_err(|_|Error::Storage)?;
+        Ok(())
+    }
+    /// Explicitly re-arm stopped jobs (all, or one exact job id). Attempts spent
+    /// so far move into retained evidence, prior uncertainty is preserved and
+    /// the exact bytes are retried from a fresh budget. Nothing is pruned; the
+    /// queue must be closed by any driver first because custody is exclusive.
+    pub fn resume(&mut self, only: Option<[u8; 32]>, now: u64) -> Result<Vec<JobStatus>> {
+        let clock = self.clock(now)?;
+        let ids = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM jobs WHERE state=3 ORDER BY sequence")
+                .map_err(|_| Error::Corrupt)?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, Vec<u8>>(0))
+                .map_err(|_| Error::Corrupt)?;
+            let mut ids = Vec::new();
+            for id in rows {
+                let id = <[u8; 32]>::try_from(id.map_err(|_| Error::Corrupt)?)
+                    .map_err(|_| Error::Corrupt)?;
+                if only.is_none_or(|wanted| wanted == id) {
+                    ids.push(id);
+                }
+            }
+            ids
+        };
+        if let Some(wanted) = only {
+            if self.find(wanted)?.is_none() {
+                return Err(Error::Bounds);
+            }
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.begin()?;
+        for id in &ids {
+            let prior = self.find(*id)?.ok_or(Error::Corrupt)?;
+            self.conn.execute("INSERT INTO job_evidence VALUES(?1,0,1,?2,?3) ON CONFLICT(id) DO UPDATE SET resumes=resumes+1,spent_attempts=spent_attempts+?2,resumed_at=?3",params![id.as_slice(),prior.attempts,clock]).map_err(|_|Error::Storage)?;
+            self.conn
+                .execute(
+                    "UPDATE jobs SET state=?1,attempts=0,next_due=?2 WHERE id=?3",
+                    params![i64::from(prior.uncertain), clock, id.as_slice()],
+                )
+                .map_err(|_| Error::Storage)?;
+        }
+        self.commit(clock)?;
+        ids.into_iter()
+            .map(|id| self.find(id)?.ok_or(Error::Corrupt))
+            .collect()
+    }
     /// Run finite due work without sleeping or re-encrypting. The host schedules
     /// another tick after next_due; an expired deadline never starts a new attempt.
     /// Credential denial ends this tick with its charged attempt and backoff
     /// retained. The host must end the current grant before explicitly replacing
     /// credentials; a replacement never renews the original retry budget.
+    /// A tick with nothing due performs no durable write.
     pub fn tick(
         &mut self,
         transport: &mut impl Transport,
@@ -521,8 +669,6 @@ impl DeliveryStore {
                 budget_exhausted: true,
             });
         }
-        self.begin()?;
-        self.commit(clock)?;
         let ids = {
             let mut stmt=self.conn.prepare("SELECT id FROM jobs WHERE state IN (0,1) AND next_due<=?1 ORDER BY next_due,sequence LIMIT ?2").map_err(|_|Error::Corrupt)?;
             let rows = stmt
@@ -573,15 +719,16 @@ impl DeliveryStore {
                 continue;
             }
             let attempt = prior.attempts + 1;
+            // Outages keep growing the backoff without spending the budget.
+            let exponent = prior
+                .attempts
+                .saturating_add(self.evidence_row(id)?.outages);
             let delay = self
                 .policy
                 .initial_backoff_secs
-                .saturating_mul(
-                    1u64.checked_shl(attempt.saturating_sub(1))
-                        .unwrap_or(u64::MAX),
-                )
+                .saturating_mul(1u64.checked_shl(exponent).unwrap_or(u64::MAX))
                 .min(self.policy.max_backoff_secs);
-            let due = now.checked_add(delay).ok_or(Error::Clock)?;
+            let due = (clock as u64).checked_add(delay).ok_or(Error::Clock)?;
             self.begin()?;
             self.conn.execute("UPDATE jobs SET state=1,attempts=?1,next_due=?2,uncertain=1,last_error=0 WHERE id=?3",params![attempt,due as i64,id.as_slice()]).map_err(|_|Error::Storage)?;
             self.commit(clock)?;
@@ -594,25 +741,22 @@ impl DeliveryStore {
             }
             let outcome = transport.submit_until(&item, budget.deadline);
             report.bytes += size;
-            let (state, uncertain, position, error) = match outcome {
+            let (state, uncertain, position, error, outage) = match outcome {
                 Ok(receipt)
                     if receipt.position > 0
                         && receipt.position <= i64::MAX as u64
                         && receipt.digest == id =>
                 {
-                    (2, false, Some(receipt.position as i64), 0)
+                    (2, false, Some(receipt.position as i64), 0, false)
                 }
-                Ok(_) => (3, true, None, error_code(NetError::Malformed)),
+                Ok(_) => (3, true, None, error_code(NetError::Malformed), false),
                 Err(error) => {
-                    let known_refusal = matches!(
+                    let outage = matches!(
                         error,
-                        NetError::Denied
-                            | NetError::Conflict
-                            | NetError::Capacity
-                            | NetError::Bounds
-                            | NetError::Scope
+                        NetError::Connect | NetError::Timeout | NetError::Unavailable
                     );
-                    let uncertain = prior.uncertain || !known_refusal;
+                    // An unreachable relay may still have retained the bytes.
+                    let uncertain = prior.uncertain || outage;
                     let permanent = matches!(
                         error,
                         NetError::Conflict
@@ -621,7 +765,7 @@ impl DeliveryStore {
                             | NetError::Malformed
                     );
                     (
-                        if permanent || attempt >= self.policy.max_attempts {
+                        if permanent || (!outage && attempt >= self.policy.max_attempts) {
                             3
                         } else if uncertain {
                             1
@@ -631,10 +775,22 @@ impl DeliveryStore {
                         uncertain,
                         None,
                         error_code(error),
+                        outage,
                     )
                 }
             };
             self.begin()?;
+            if outage {
+                // The intent was durable, but an outage is not a spent attempt:
+                // revert the charge and retain it as outage evidence instead.
+                self.record_outage(id)?;
+                self.conn
+                    .execute(
+                        "UPDATE jobs SET attempts=?1 WHERE id=?2",
+                        params![prior.attempts, id.as_slice()],
+                    )
+                    .map_err(|_| Error::Storage)?;
+            }
             self.conn
                 .execute(
                     "UPDATE jobs SET state=?1,uncertain=?2,position=?3,last_error=?4 WHERE id=?5",
@@ -702,7 +858,9 @@ impl DeliveryStore {
             || (state == JobState::Retained && uncertain)
             || (state == JobState::Uncertain && !uncertain)
             || (state == JobState::Pending && uncertain)
-            || (attempts == 0 && state != JobState::Pending)
+            || (attempts == 0
+                && state != JobState::Pending
+                && self.evidence_row(id)? == JobEvidence::default())
         {
             return Err(Error::Corrupt);
         }
@@ -719,19 +877,8 @@ impl DeliveryStore {
         }))
     }
     fn validate(&self) -> Result<()> {
-        let (count, total): (i64, i64) = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*),COALESCE(SUM(length(item)),0) FROM jobs",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map_err(|_| Error::Corrupt)?;
-        if count < 0
-            || total < 0
-            || count as usize > self.limits.max_jobs
-            || total as usize > self.limits.max_bytes
-        {
+        let (count, total) = self.usage()?;
+        if count > self.limits.max_jobs || total > self.limits.max_bytes {
             return Err(Error::Corrupt);
         }
         let mut stmt = self

@@ -24,11 +24,13 @@ mod agent;
 mod agent_delivery;
 mod agent_setup;
 mod archive;
+mod delivery_resume;
 mod files;
 mod relay_tls;
 
 pub const HELP: &str = "vhalla private agent-serve ID STORE --grant PRIVATE_JSON [--delivery PRIVATE_JSON]
 vhalla private delivery-init ID STORE --config PRIVATE_JSON
+vhalla private delivery-resume ID STORE --config PRIVATE_JSON [--job DIGEST64]
 vhalla private agent-grant ID STORE --mode read-only|read-write --disclosure PRIVATE_JSON --receipt NEW_CLAIM --out NEW_GRANT [--lifetime SECONDS --inbox-after N --inbox-through N --follow-inbox true|false --max-messages N --max-body-bytes N --max-read-records N --max-read-bytes N --max-preparations N]
 vhalla private create ID NEW_STORE --not-before UNIX --expires UNIX [--max-records N --max-bytes N]
 vhalla private inspect ID STORE --out PRIVATE_JSON
@@ -95,6 +97,7 @@ impl Args {
         let command = raw[1].to_str().ok_or(HELP)?;
         let allowed: &[&str] = match command {
             "delivery-init" => &["config"],
+            "delivery-resume" => &["config", "job"],
             "agent-grant" => &[
                 "mode",
                 "disclosure",
@@ -250,6 +253,7 @@ impl Args {
                     && matches!(**name, "after" | "limit" | "addr" | "token" | "mailbox"))
                 && !(command == "relay-pull"
                     && matches!(**name, "limit" | "addr" | "token" | "mailbox"))
+                && !(command == "delivery-resume" && **name == "job")
         }) {
             if !flags.contains_key(*required) {
                 return Err("missing required private option; see private --help".into());
@@ -427,6 +431,9 @@ async fn execute(args: Args) -> Result<(), String> {
             Path::new(args.value("config")?),
             room.status().map_err(|_| REFUSED)?.context,
         )?,
+        "delivery-resume" => {
+            delivery_resume::execute(&args, room.status().map_err(|_| REFUSED)?.context)?
+        }
         "agent-grant" => agent_setup::execute(&args, &room)?,
         "inspect" => {
             let snapshot = room.membership().await.map_err(|_| REFUSED)?;
