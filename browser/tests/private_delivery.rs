@@ -1,5 +1,8 @@
 //! Durable browser delivery model: finite retries, exact bytes and staged pages.
 #![cfg(feature = "private-rooms")]
+// The shared durable model also carries constants only the sync engine and
+// worker use; this model-level test does not exercise every one.
+#[allow(dead_code)]
 #[path = "../src/private/delivery_model.rs"]
 mod model;
 use model::State;
@@ -27,12 +30,14 @@ fn interrupted_attempt_keeps_exact_pending_bytes_and_charged_backoff() {
     assert!(!reopened.reserve(101, 4096).unwrap());
     assert!(reopened.reserve(102, 4096).unwrap());
     assert_eq!(reopened.attempts, 2);
-    assert!(reopened.reserve(99, 4096).is_err());
+    // A bounded wall-clock step back keeps the retained clock; the attempt
+    // only waits out its deferral instead of corrupting durable progress.
+    assert!(!reopened.reserve(99, 4096).unwrap());
     for at in [200, 500, 1000, 2000, 3000, 4000, 5000, 6000] {
         assert!(reopened.reserve(at, 4096).unwrap());
     }
     assert!(!reopened.reserve(7000, 4096).unwrap());
-    assert!(reopened.stopped);
+    assert!(reopened.stopped());
     let mut again = State::decode(&reopened.encode().unwrap()).unwrap();
     assert!(!again.reserve(8000, 4096).unwrap());
     assert_eq!(again.attempts, 10);
@@ -113,7 +118,7 @@ fn success_and_reopen_never_replenish_lifetime_attempt_or_byte_limits() {
     attempts.success();
     let mut reopened = State::decode(&attempts.encode().unwrap()).unwrap();
     assert!(!reopened.reserve(101, 4096).unwrap());
-    assert!(reopened.stopped);
+    assert!(reopened.stopped());
     assert_eq!(reopened.attempts, model::ATTEMPTS);
 
     let mut bytes = State::new([1; 32], [2; 16], 0, 100);
@@ -122,7 +127,77 @@ fn success_and_reopen_never_replenish_lifetime_attempt_or_byte_limits() {
     bytes.success();
     let mut reopened = State::decode(&bytes.encode().unwrap()).unwrap();
     assert!(!reopened.reserve(101, 1).unwrap());
-    assert!(reopened.stopped);
+    assert!(reopened.stopped());
     assert_eq!(reopened.wire_bytes, model::WIRE_BYTES);
     assert_eq!(reopened.attempts, 1);
+}
+
+#[test]
+fn bounded_clock_regression_is_tolerated_but_a_bogus_clock_is_refused() {
+    let mut s = State::new([1; 32], [2; 16], 0, 100_000);
+    // Exactly one tolerated step back keeps the retained clock.
+    assert!(s.observe(100_000 - model::CLOCK_REGRESSION).is_ok());
+    assert_eq!(s.wall, 100_000);
+    // One further second back is a bogus clock, not a new base.
+    assert!(s.observe(100_000 - model::CLOCK_REGRESSION - 1).is_err());
+    assert_eq!(s.wall, 100_000);
+    // Forward observation still advances and reservations keep working off
+    // the retained clock; a future step does not poison the budget.
+    assert_eq!(s.observe(200_000).unwrap(), 200_000);
+    assert!(s.reserve(300_000, 4096).unwrap());
+    let mut reopened = State::decode(&s.encode().unwrap()).unwrap();
+    assert_eq!(reopened.wall, 300_000);
+    assert!(!reopened.reserve(300_001, 4096).unwrap());
+    assert!(reopened.reserve(300_002, 4096).unwrap());
+}
+
+#[test]
+fn three_hundred_completed_small_exchanges_settle_to_actual_bytes() {
+    let mut s = State::new([1; 32], [2; 16], 0, 100);
+    // The worst-case page reply reservation every PAGE attempt holds.
+    let reserved = 14 + codec::MAX_RESPONSE + 4;
+    for i in 0..300u64 {
+        assert!(s.reserve(100 + i, reserved).unwrap());
+        s.settle(reserved, 14 + 32);
+        s.success();
+    }
+    assert_eq!(s.attempts, 300);
+    // Charging the pessimistic reservation forever would exhaust the 1 GiB
+    // budget around cycle 250; only the exact exchange bytes are retained.
+    assert_eq!(s.wire_bytes, 300 * (14 + 32));
+    assert!(!s.stopped());
+}
+
+#[test]
+fn backoff_pauses_durably_and_only_explicit_resupply_resumes() {
+    let mut s = State::new([1; 32], [2; 16], 0, 100);
+    let mut at = 100;
+    for _ in 0..10 {
+        assert!(s.reserve(at, 4096).unwrap());
+        at = s.retry_at;
+    }
+    // The eleventh attempt sees ten durable consecutive failures and pauses.
+    assert!(!s.reserve(at, 4096).unwrap());
+    assert_eq!(s.stop, model::Stop::Backoff);
+    assert!(s.stopped());
+    let mut reopened = State::decode(&s.encode().unwrap()).unwrap();
+    assert_eq!(reopened.stop, model::Stop::Backoff);
+    assert!(!reopened.reserve(u64::MAX / 2, 4096).unwrap());
+    // An explicit profile resupply clears only the pause; spent attempt and
+    // byte budgets are never replenished.
+    assert!(reopened.resume());
+    assert_eq!(reopened.stop, model::Stop::None);
+    assert_eq!(reopened.attempts, 10);
+    assert_eq!(reopened.wire_bytes, 10 * 4096);
+    assert!(reopened.reserve(u64::MAX / 2, 4096).unwrap());
+    // Terminal stops never resume.
+    let mut exhausted = State::new([1; 32], [2; 16], 0, 100);
+    exhausted.attempts = model::ATTEMPTS;
+    assert!(!exhausted.reserve(100, 1).unwrap());
+    assert_eq!(exhausted.stop, model::Stop::Exhausted);
+    assert!(!exhausted.resume());
+    let mut refused = State::new([1; 32], [2; 16], 0, 100);
+    refused.halt(model::halt::FRAME);
+    assert!(!refused.resume());
+    assert!(refused.encode().is_ok());
 }

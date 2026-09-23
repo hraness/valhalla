@@ -25,12 +25,7 @@ pub(super) fn abort() {
         }
     });
 }
-#[derive(Clone, Copy)]
-pub(super) enum Error {
-    Retry,
-    Authorization,
-    Refused,
-}
+pub(super) use super::engine::TransportError as Error;
 struct Attempt {
     scope: DedicatedWorkerGlobalScope,
     controller: AbortController,

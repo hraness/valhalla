@@ -70,6 +70,7 @@ vhalla-core = { path = "../vhalla-core" }
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", features = ["fixture"] }
 vhalla-rooms-node = { path = "../vhalla-rooms-node" }
 vhalla-social-store = { path = "../vhalla-social-store" }
+hegeltest = "0.46.0"
 
 [[bin]]
 name = "vhalla"

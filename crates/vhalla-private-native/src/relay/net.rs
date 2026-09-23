@@ -380,6 +380,80 @@ fn item_path(items: &Path, position: u64) -> PathBuf {
     items.join(format!("{position:016x}.vhrelay"))
 }
 
+/// Bytes of the durable rescan signature: items-directory modification stamp
+/// (seconds plus nanos), entry count and the durable cursor.
+const SIGNATURE_FILE_BYTES: usize = 32;
+/// Snapshot the last complete custody sweep validated. A match proves the
+/// committed entry set is unchanged, so an idle reopen derives contiguous
+/// positions instead of reopening every retained item. This is derived state,
+/// never evidence: any add, remove, rename or cursor advance changes a covered
+/// field and forces full validation, and file contents stay checked at read().
+fn items_signature(scan: &ScanDirectory) -> std::result::Result<[u8; 32], ScanFailure> {
+    let modified = scan
+        .items
+        .metadata()
+        .and_then(|meta| meta.modified())
+        .map_err(|_| ScanFailure::Storage)?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ScanFailure::Storage)?;
+    let mut entries = 0usize;
+    for entry in fs::read_dir(scan.path.join("items")).map_err(|_| ScanFailure::Storage)? {
+        entry.map_err(|_| ScanFailure::Storage)?;
+        entries += 1;
+        if entries > MAX_RELAY_ITEMS + 2 {
+            return Err(ScanFailure::Capacity);
+        }
+    }
+    let mut signature = [0u8; SIGNATURE_FILE_BYTES];
+    signature[..8].copy_from_slice(&modified.as_secs().to_be_bytes());
+    signature[8..16].copy_from_slice(&u64::from(modified.subsec_nanos()).to_be_bytes());
+    signature[16..24].copy_from_slice(&(entries as u64).to_be_bytes());
+    signature[24..].copy_from_slice(&scan.cursor.to_be_bytes());
+    Ok(signature)
+}
+fn signature_file(
+    directory: &Path,
+    uid: u32,
+) -> std::result::Result<Option<[u8; 32]>, ScanFailure> {
+    let path = directory.join("signature");
+    if !custody::private_file_present(&path, uid, SIGNATURE_FILE_BYTES)
+        .map_err(|_| ScanFailure::Storage)?
+    {
+        return Ok(None);
+    }
+    let raw = custody::read_private_file(&path, uid, SIGNATURE_FILE_BYTES)
+        .map_err(|_| ScanFailure::Storage)?;
+    Ok(raw.try_into().ok())
+}
+fn write_signature(
+    directory: &Path,
+    handle: &File,
+    signature: [u8; 32],
+    uid: u32,
+) -> std::result::Result<(), ScanFailure> {
+    let tmp = directory.join("signature.tmp");
+    match fs::symlink_metadata(&tmp) {
+        Ok(_) => {
+            // Only this holder's bounded scratch may be replaced; a foreign
+            // or oversized file is evidence, not an overwrite target.
+            if !custody::private_file_present(&tmp, uid, SIGNATURE_FILE_BYTES)
+                .map_err(|_| ScanFailure::Storage)?
+            {
+                return Err(ScanFailure::Corrupt);
+            }
+            fs::remove_file(&tmp).map_err(|_| ScanFailure::Storage)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(_) => return Err(ScanFailure::Storage),
+    }
+    let mut file = custody::create_private_file(&tmp).map_err(|_| ScanFailure::Storage)?;
+    file.write_all(&signature)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| ScanFailure::Storage)?;
+    fs::rename(&tmp, directory.join("signature")).map_err(|_| ScanFailure::Storage)?;
+    handle.sync_all().map_err(|_| ScanFailure::Storage)
+}
+
 /// A bounded position-ordered source. Implementations must honor the absolute
 /// deadline across every network read/write, not reset it for partial progress.
 pub trait PageSource {
@@ -591,12 +665,33 @@ impl ScanDirectory {
             .map_err(|_| ScanFailure::Timeout)
     }
 
+    /// The last position durably committed under this guard. Staged items are
+    /// always the contiguous range `initial_cursor + 1..=cursor`; reading it
+    /// performs no filesystem work.
+    pub fn cursor(&self) -> u64 {
+        self.cursor
+    }
+
+    /// Grant this retained guard one fresh absolute operation budget. Long-lived
+    /// callers (a delivery driver between ticks) renew once per bounded use;
+    /// each use is still deadline-bounded and `scan_page_until` only tightens it.
+    pub fn reset_deadline(&mut self) {
+        self.deadline = Instant::now() + SCAN_TIMEOUT;
+    }
+
     /// Return the bounded contiguous committed positions after validating file
     /// custody and sizes. One published item beyond the cursor is permitted as
     /// interruption evidence; only the next scan can reconcile it.
     pub fn positions(&self) -> std::result::Result<Vec<u64>, ScanFailure> {
         self.check_deadline()?;
         validate_cursor_pending(&self.path, self.uid, self.cursor)?;
+        // Idle-rescan fast path: an exact validated signature covers this
+        // entry set and cursor, so committed positions are contiguous by
+        // construction without reopening every file.
+        let signature = items_signature(self)?;
+        if signature_file(&self.path, self.uid)? == Some(signature) {
+            return Ok(((self.initial_cursor + 1)..=self.cursor).collect());
+        }
         let mut positions = Vec::new();
         let mut bytes = 0usize;
         let mut entries = 0usize;
@@ -646,6 +741,10 @@ impl ScanDirectory {
             return Err(ScanFailure::Corrupt);
         }
         positions.retain(|position| *position <= self.cursor);
+        // Publish the validated snapshot so the next idle reopen takes the
+        // fast path. The directory is unchanged since the sweep under this
+        // exclusive guard, so the earlier signature still describes it.
+        write_signature(&self.path, &self.directory, signature, self.uid)?;
         Ok(positions)
     }
 

@@ -63,6 +63,17 @@ are not forcibly interruptible; the service does not claim a hard deadline for
 an unhealthy disk. Storage uncertainty exits with failure and requires an exact
 reopen. Starting a second owner of the same mailbox refuses.
 
+The TLS service bounds pre-authentication work three ways: a fixed worker cap,
+a per-window handshake rate, and a handshake-phase deadline tighter than the
+whole request deadline, so trickling unauthenticated sockets free their slots
+early. Over-limit sockets receive a bounded fatal TLS alert rather than a
+silent drop, and authenticated capacity refusals return an explicit retryable
+status. Each credential's per-window byte budget is billed on the actual
+encoded response size, not a worst-case page reservation. Item publication and
+its per-key quota charge commit in one transaction behind a single post-commit
+durability barrier, and per-key quota lookups are indexed rather than scanning
+retained history.
+
 Stop the foreground process with Ctrl-C before installing the LaunchAgent so it
 can acquire the same mailbox. On macOS, the following commands manage only the
 per-user LaunchAgent whose label is derived from this canonical home:
@@ -87,12 +98,51 @@ No command installs the menubar or changes another service.
 
 The LaunchAgent starts at login, restarts unsuccessful exits with a 30-second
 throttle, and has a 15-second exit grace. It does not promise service before
-login, while logged out, or while the Mac sleeps. Its stdout/stderr go to
-`/dev/null`, avoiding growing logs and accidental credential logging. Foreground
-errors are deliberately coarse and contain no secrets. `status` reports loaded
-service state separately from health: it performs no TLS exchange and never
-opens mailbox writer custody. A loaded process is not successful live
-qualification. Keep a stable executable path; there is no automatic updater.
+login, while logged out, or while the Mac sleeps. Its stdout/stderr go to the
+bounded private `events.log` inside the home, which keeps one rotated
+generation at 256 KiB each and records only short lifecycle lines (starts,
+stops, bind retries, agent install/remove) — never credentials, keys, message
+bodies or peer payloads. A transient `AddrInUse` at startup is retried inside
+a bounded window before the service gives up. Foreground errors are
+deliberately coarse and contain no secrets. `status` reports loaded service
+state separately from health: without `--probe` it performs no TLS exchange
+and never opens mailbox writer custody, so a loaded process is not successful
+live qualification. `status --probe` additionally performs the real pinned-TLS
+authenticated empty-page request against the configured listener and reports
+its outcome; it still proves only the listener path, not retained items or
+recipient acceptance. Keep a stable executable path; there is no automatic
+updater.
+
+## Credentials, rotation and renewal
+
+After the sealed home exists, three maintenance commands change exactly one
+selection at a time. Each runs the same crash-safe sealed manifest protocol as
+`init`: a torn run leaves bounded inert residue or refuses rather than a
+partially modified home, and none of them rebind the listener, mutate the CA,
+or take the mailbox custody lock of a running server.
+
+```sh
+/absolute/vhalla private-host add-credential /private/operator/valhalla-host
+/absolute/vhalla private-host rotate /private/operator/valhalla-host
+/absolute/vhalla private-host renew /private/operator/valhalla-host
+```
+
+- `add-credential` mints one additional `client-N.token` identity under the
+  retained CA and namespace, bounded at 64 enrolled identities. Quota
+  enrollment and live admission take effect at the next service open; an
+  already-running service keeps its fixed credential set until restarted.
+- `rotate` opens a fresh opaque namespace in a new empty `mailbox-N` directory
+  under the retained CA, credentials and listener. The previous mailbox and
+  sealed namespace stay untouched as evidence; `connection.json` republishes
+  the new namespace (and records the previous one) so clients can point a
+  fresh delivery state at it. Rotation never copies or prunes retained items
+  and does not redirect existing queues.
+- `renew` reissues the serving leaf under the retained CA with the operator's
+  chosen leaf lifetime, capped by CA expiry. It refuses when `ca-key.der` is
+  absent or the CA has expired — a new CA is a new host, not a renewal. The
+  binding, namespace, mailbox and credential set are unchanged, so existing
+  client profiles remain valid. `status` reports the new expiry and warns
+  within the renewal window.
 
 ## Explicit Tailcat wiring
 
@@ -179,7 +229,14 @@ the [browser connection guide](../browser/README.md#explicit-local-host-private-
 Select a release only after its feature set and browser archive are published;
 the source instructions do not imply that an older release contains them.
 Start `vhalla private-gateway serve /absolute/private/gateway.json` alongside
-the relay. The gateway receives one relay credential and a separate random
+the relay, or manage its per-user LaunchAgent with `private-gateway install`,
+`status` and `uninstall` on the same canonical config path — the label is
+derived from that path, so a rotated config can never adopt another service.
+`status --probe` performs a bounded loopback HTTP request and checks the 200
+listener shape only; it is not upstream TLS or retention evidence. The gateway
+answers non-loopback peers with `403`, a full worker set with `503`, and an
+exhausted admission window with `429` rather than dropping sockets silently.
+The gateway receives one relay credential and a separate random
 browser capability; the browser receives only its own connection profile and
 capability. Keep its chosen loopback origin stable across sessions.
 
@@ -193,15 +250,15 @@ delivery; reopen the exact retained connection and choose **Sync now** to resume
 
 ## Expiry and qualification boundaries
 
-The leaf is valid for 365 days, the CA for five years, with a five-minute clock
-skew allowance at creation. Status reports leaf expiry; serving an expired or
-not-yet-valid selection refuses. There is no automatic certificate renewal in
-this command. The retained CA key permits a future explicitly reviewed same-CA
-renewal. Preserve the CA, namespace and client endpoint: replacing those changes
-delivery binding. Do not edit committed file hashes or create a new mailbox to
-bypass expiry; certificate publication/renewal requires its own bounded operator
-workflow before expiry. Existing profiles remain compatible with the unchanged
-CA/name/address and retained state.
+The leaf is valid for 365 days (or `--leaf-days`), the CA for five years, with a
+five-minute clock skew allowance at creation. Status reports leaf expiry and
+warns within the renewal window; serving an expired or not-yet-valid selection
+refuses. There is no automatic certificate renewal: `private-host renew`
+reissues the leaf under the retained CA through the bounded operator workflow
+above, before expiry. Preserve the CA, namespace and client endpoint: replacing
+those changes delivery binding. Do not edit committed file hashes or create a
+new mailbox to bypass expiry. Existing profiles remain compatible with the
+unchanged CA/name/address and retained state.
 
 Local tests cover generated custody, distinct credentials, finite certificates,
 TLS retention, wrong credentials, concurrent-owner refusal, read-only status,

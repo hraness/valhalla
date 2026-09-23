@@ -16,6 +16,7 @@ vhalla-rooms = { path = "../vhalla-rooms" }
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
 getrandom = "0.3"
+hegeltest = "0.46.0"
 vhalla-social = { path = "../vhalla-social" }
 
 [lints]

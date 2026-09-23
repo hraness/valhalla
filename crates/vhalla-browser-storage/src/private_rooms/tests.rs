@@ -109,7 +109,18 @@ fn independent_marker_makes_either_missing_published_half_corrupt() {
     altered[0] ^= 1;
     assert!(pair(ctx, data.key(), Some(altered), Some(proof)).is_err());
     let operation = StoredRecord::from_bytes(RecordKey::Received([9; 32]), &[3; 40]).unwrap();
-    assert_eq!(marker(ctx, &operation).len(), MAX_MARKER_BYTES);
+    assert_eq!(marker(ctx, &operation).len(), 238);
+    // The longest RecordKey encoding, Acceptance{outbox, recipient}, produces
+    // the largest marker; read-back bounds must cover it.
+    let acceptance = StoredRecord::from_bytes(
+        RecordKey::Acceptance {
+            outbox: 1,
+            recipient: ctx.account,
+        },
+        &[3; 40],
+    )
+    .unwrap();
+    assert_eq!(marker(ctx, &acceptance).len(), MAX_MARKER_BYTES);
     let (data_key, proof_key) = record_keys(ctx, data.key()).unwrap();
     assert_ne!(data_key, proof_key);
     assert!(data_key.starts_with(&prefix(ctx)));

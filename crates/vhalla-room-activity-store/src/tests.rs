@@ -1,6 +1,7 @@
 use super::*;
 use crate::common;
 use ed25519_dalek::SigningKey;
+use hegel::{generators as gs, HealthCheck, TestCase};
 use std::os::unix::fs::{symlink, DirBuilderExt, PermissionsExt};
 use vhalla_room_activity::{Content, EventClaims, EventId, Text, UnsignedEvent};
 use vhalla_rooms::{Applied, RoomRecordId, RoomUpdate, UpdateAction};
@@ -225,7 +226,6 @@ fn each_publication_interruption_recovers_exact_old_admission_once() {
         Step::IntentSynced,
         Step::IntentRenamed,
         Step::IntentDurable,
-        Step::RecoveryIntentSynced,
         Step::RecordPublished,
         Step::SequenceIndexed,
         Step::AuthorTempDurable,
@@ -271,6 +271,287 @@ fn each_publication_interruption_recovers_exact_old_admission_once() {
         let page = store.read_page(0, 64).unwrap();
         assert_eq!(page.records().len(), 1);
         assert_eq!(page.records()[0].event().encode(), event.encode());
+    }
+}
+
+/// Every interruption point reachable while `recover()` completes a retained
+/// intent — the staged-intent barriers in `recover_inner` and every dependent
+/// write in `finish_intent` — must recover exactly once on the next attempt.
+/// The recovery path never carries the fresh-path durability proof, so it
+/// keeps its full re-sync barrier set.
+#[test]
+fn each_recovery_interruption_recovers_exact_old_admission_once() {
+    for step in [
+        Step::IntentSynced,
+        Step::IntentRenamed,
+        Step::IntentDurable,
+        Step::RecoveryIntentSynced,
+        Step::RecordPublished,
+        Step::SequenceIndexed,
+        Step::AuthorTempDurable,
+        Step::AuthorHeadPublished,
+        Step::HeadTempDurable,
+        Step::HeadPublished,
+        Step::DirectorySynced,
+        Step::IntentRemoved,
+    ] {
+        let temp = Temp::new();
+        let f = Fixture::new();
+        let event = f.event(1, EventId::ZERO, "recover step");
+        let context = f.context();
+        // Leave a complete staged intent: the writer stopped after the full
+        // payload reached disk but before its synchronization.
+        {
+            let mut store = Store::create(temp.path(), f.scope, limits()).unwrap();
+            store.fault = Some(Step::IntentWritten);
+            assert!(matches!(
+                store.append(event.clone(), None, &context, *context.registry_digest()),
+                Err(Error::Indeterminate(_))
+            ));
+        }
+        {
+            let mut store = Store::open(temp.path(), f.scope, limits(), None).unwrap();
+            store.fault = Some(step);
+            assert!(
+                matches!(store.recover(), Err(Error::Indeterminate(_))),
+                "{step:?}"
+            );
+        }
+        {
+            let mut store = Store::open(temp.path(), f.scope, limits(), None).unwrap();
+            if step == Step::IntentRemoved {
+                // The intent was already consumed; its exact durable result
+                // stands and there is nothing left to reconcile.
+                assert!(store.recover().unwrap().is_none());
+            } else {
+                let recovered = store.recover().unwrap().unwrap();
+                assert_eq!(recovered.event().encode(), event.encode());
+                assert!(recovered.reconciled());
+            }
+            assert_eq!(store.pin().count(), 1, "{step:?}");
+            assert!(store.recover().unwrap().is_none());
+            let context = f.context();
+            let retry = store
+                .append(event.clone(), None, &context, *context.registry_digest())
+                .unwrap();
+            assert_eq!(retry.cursor(), 1);
+            assert!(retry.reconciled());
+            let page = store.read_page(0, 64).unwrap();
+            assert_eq!(page.records().len(), 1);
+            assert_eq!(page.records()[0].event().encode(), event.encode());
+        }
+    }
+}
+
+/// A planted fault can only fire where the step executes. A fresh append must
+/// complete without ever running `RecoveryIntentSynced`, proving the
+/// durability proof token elides both re-sync barriers end to end while the
+/// recovery path above still exercises them.
+#[test]
+fn fresh_append_never_reaches_the_recovery_intent_resync() {
+    let temp = Temp::new();
+    let f = Fixture::new();
+    let mut store = Store::create(temp.path(), f.scope, limits()).unwrap();
+    store.fault = Some(Step::RecoveryIntentSynced);
+    let stored = append(&mut store, f.event(1, EventId::ZERO, "no resync"), &f);
+    assert!(!stored.reconciled());
+    assert_eq!(store.pin().count(), 1);
+}
+
+/// Protocol order of `Step` on the fresh append path. `RecoveryIntentSynced`
+/// is absent: it only runs on retained-intent and explicit-recovery paths.
+const FRESH_PATH_STEPS: [Step; 14] = [
+    Step::IntentCreated,
+    Step::IntentPartial,
+    Step::IntentWritten,
+    Step::IntentSynced,
+    Step::IntentRenamed,
+    Step::IntentDurable,
+    Step::RecordPublished,
+    Step::SequenceIndexed,
+    Step::AuthorTempDurable,
+    Step::AuthorHeadPublished,
+    Step::HeadTempDurable,
+    Step::HeadPublished,
+    Step::DirectorySynced,
+    Step::IntentRemoved,
+];
+fn ordinal(step: Step) -> usize {
+    [
+        Step::IntentCreated,
+        Step::IntentPartial,
+        Step::IntentWritten,
+        Step::IntentSynced,
+        Step::IntentRenamed,
+        Step::IntentDurable,
+        Step::RecoveryIntentSynced,
+        Step::RecordPublished,
+        Step::SequenceIndexed,
+        Step::AuthorTempDurable,
+        Step::AuthorHeadPublished,
+        Step::HeadTempDurable,
+        Step::HeadPublished,
+        Step::DirectorySynced,
+        Step::IntentRemoved,
+    ]
+    .iter()
+    .position(|&s| s == step)
+    .unwrap()
+}
+
+/// Interleaved draw of one-event admissions, each crossed with a drawn
+/// single-step interruption on the fresh path and a drawn resolution —
+/// same-bytes retry, explicit `recover()`, or reopen-then-recover. After every
+/// interruption the oracle requires the semantics the deterministic matrices
+/// prove:
+///
+/// * a retained `intent` is byte-identical to the canonical intent the
+///   interrupted append minted — nothing rewrites or substitutes it;
+/// * `recovery_required()`, the in-memory pin, the durable `HEAD` pin, and
+///   `author_head` reflect exactly the protocol step reached;
+/// * every resolution admits the exact old event at most once: a torn staged
+///   intent is discarded and freshly admitted, complete retained evidence
+///   resolves as `reconciled`, and a resolved store is clean.
+#[hegel::test(test_cases = 64, suppress_health_check = [HealthCheck::TooSlow])]
+fn interleaved_faults_preserve_intent_before_effect_semantics(tc: TestCase) {
+    let temp = Temp::new();
+    let f = Fixture::new();
+    let context = f.context();
+    let digest = *context.registry_digest();
+    let author = f.author();
+    let mut pool = Vec::new();
+    let mut previous = EventId::ZERO;
+    for sequence in 1..=4u64 {
+        let event = f.event(sequence, previous, "hegel intent");
+        previous = event.id();
+        pool.push(event);
+    }
+    let mut store = Store::create(temp.path(), f.scope, limits()).unwrap();
+    let mut next = 0usize;
+    let mut head: Option<ChainPosition> = None;
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    for _ in 0..steps {
+        if next >= pool.len() {
+            break;
+        }
+        let event = pool[next].clone();
+        let before = store.pin();
+        let step = FRESH_PATH_STEPS
+            [tc.draw(gs::integers::<usize>().max_value(FRESH_PATH_STEPS.len() - 1))];
+        let kind = tc.draw(gs::integers::<usize>().max_value(2));
+        let ord = ordinal(step);
+
+        store.fault = Some(step);
+        assert!(
+            matches!(
+                store.append(event.clone(), head, &context, digest),
+                Err(Error::Indeterminate(_))
+            ),
+            "{step:?}"
+        );
+
+        // The interruption left exactly the residue its protocol step permits.
+        let intent_at = temp.path().join(INTENT);
+        let staged_at = temp.path().join(INTENT_TEMP);
+        assert_eq!(
+            intent_at.exists(),
+            ord >= ordinal(Step::IntentRenamed) && ord < ordinal(Step::IntentRemoved)
+        );
+        assert_eq!(staged_at.exists(), ord < ordinal(Step::IntentRenamed));
+        assert_eq!(
+            store.recovery_required().unwrap(),
+            ord < ordinal(Step::IntentRemoved)
+        );
+        assert_eq!(
+            store.pin().count() == before.count() + 1,
+            ord >= ordinal(Step::DirectorySynced)
+        );
+        let disk = Pin::decode(&fs::read(temp.path().join(HEAD)).unwrap()).unwrap();
+        assert_eq!(
+            disk.count() == before.count() + 1,
+            ord >= ordinal(Step::HeadPublished)
+        );
+        if ord < ordinal(Step::IntentRemoved) {
+            assert!(matches!(
+                store.author_head(author),
+                Err(Error::RecoveryRequired)
+            ));
+        }
+        if intent_at.exists() {
+            let raw = fs::read(&intent_at).unwrap();
+            let intent = Intent::decode(&raw, f.scope, limits()).unwrap();
+            assert_eq!(intent.encode(), raw, "retained intent was rewritten");
+            assert_eq!(intent.record.event.encode(), event.encode());
+            assert_eq!(intent.expected, before);
+        }
+
+        // The event was durably admitted once the intent payload was complete;
+        // below that the torn staged intent is discarded and never admitted.
+        let admitted = ord >= ordinal(Step::IntentWritten);
+        // A durable HEAD published under this store's lock but not yet folded
+        // into its in-memory pin makes the stale handle refuse — reopening is
+        // the exact retained retry, never a rewrite.
+        let stale = ord == ordinal(Step::HeadPublished);
+        match kind {
+            0 => {
+                let got = store.append(event.clone(), head, &context, digest);
+                let got = if stale {
+                    assert!(matches!(got, Err(Error::Conflict)));
+                    drop(store);
+                    store = Store::open(temp.path(), f.scope, limits(), None).unwrap();
+                    store.append(event.clone(), head, &context, digest).unwrap()
+                } else {
+                    got.unwrap()
+                };
+                assert_eq!(got.event().encode(), event.encode());
+                // A torn staged intent is discarded and freshly admitted;
+                // complete retained evidence resolves as the exact admission.
+                assert_eq!(got.reconciled(), admitted);
+                next += 1;
+            }
+            _ => {
+                if kind == 1 {
+                    let first = store.recover();
+                    if stale {
+                        assert!(matches!(first, Err(Error::Conflict)));
+                    } else {
+                        match first.unwrap() {
+                            Some(got) => {
+                                assert!(admitted, "{step:?}");
+                                assert!(got.reconciled());
+                                assert_eq!(got.event().encode(), event.encode());
+                            }
+                            None => assert!(
+                                !admitted || ord == ordinal(Step::IntentRemoved),
+                                "{step:?}"
+                            ),
+                        }
+                    }
+                }
+                if kind == 2 || stale {
+                    drop(store);
+                    store = Store::open(temp.path(), f.scope, limits(), None).unwrap();
+                }
+                if kind != 1 || stale {
+                    match store.recover().unwrap() {
+                        Some(got) => {
+                            assert!(admitted, "{step:?}");
+                            assert!(got.reconciled());
+                            assert_eq!(got.event().encode(), event.encode());
+                        }
+                        None => {
+                            assert!(!admitted || ord == ordinal(Step::IntentRemoved), "{step:?}")
+                        }
+                    }
+                }
+                if admitted {
+                    next += 1;
+                }
+            }
+        }
+        assert!(!store.recovery_required().unwrap());
+        assert_eq!(store.pin().count(), next as u64);
+        head = store.author_head(author).unwrap();
     }
 }
 

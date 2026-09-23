@@ -73,6 +73,9 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
             create: false,
         },
         Request::DeliverySync,
+        Request::DeliveryAdmissions,
+        Request::DeliveryAdmission { position: 1 },
+        Request::DeliveryDiscard { position: 4096 },
         Request::PrepareMessage(bytes(MAX_BODY_BYTES)),
         Request::Send {
             operation: op(),
@@ -158,7 +161,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Request::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x04".len();
+        let tag = b"VHBRPRIVATE\x05".len();
         changed.truncate(raw.len());
         changed[tag] = 250;
         assert!(Request::decode(&changed).is_err());
@@ -184,7 +187,7 @@ fn archive_route_is_explicit_canonical_and_versioned() {
         ] {
             let raw = request.encode().unwrap();
             assert_eq!(*Request::decode(&raw).unwrap().encode().unwrap(), *raw);
-            let route = b"VHBRPRIVATE\x04".len() + 1 + 128 + 32;
+            let route = b"VHBRPRIVATE\x05".len() + 1 + 128 + 32;
             assert_eq!(raw[route], u8::from(legacy));
             let mut bad = raw.to_vec();
             bad[route] = 2;
@@ -198,7 +201,7 @@ fn archive_route_is_explicit_canonical_and_versioned() {
 
 #[test]
 fn untrusted_lengths_counts_boolean_and_floor_refuse_before_allocation() {
-    let prefix = b"VHBRPRIVATE\x04".len();
+    let prefix = b"VHBRPRIVATE\x05".len();
     let mut raw = Request::PrepareMessage(bytes(1)).encode().unwrap();
     raw[prefix + 1..prefix + 5].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Request::decode(&raw).is_err());
@@ -342,7 +345,7 @@ fn response_collection_count_and_blob_budgets_are_checked_on_raw_input() {
     }
     .encode()
     .unwrap();
-    let at = b"VHBRPRIVATE\x04".len() + 1 + 128 + 8 + 32;
+    let at = b"VHBRPRIVATE\x05".len() + 1 + 128 + 8 + 32;
     raw[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Response::decode(&raw).is_err());
     assert!(Response::decode(&vec![0; MAX_FRAME + 1]).is_err());
@@ -357,6 +360,7 @@ fn status() -> Status {
         context: context(),
         phase: Phase::MemberJoined,
         epoch: 7,
+        clock: 11,
         control_sequence: 3,
         control_floor: floor(3),
         outbox_head: 4,
@@ -378,11 +382,54 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
             retained: 1,
             received: 2,
             attempts: 3,
+            wire_bytes: 5,
             retry_at: 4,
             pending: true,
-            stopped: false,
+            stop: 2,
+            detail: 2,
+            blocked: 1,
+            refused: 6,
+            admissions: 7,
             review: true,
         }),
+        Response::Delivery(DeliveryReport {
+            context: context(),
+            sent: 0,
+            cursor: 0,
+            retained: 0,
+            received: 0,
+            attempts: 0,
+            wire_bytes: 0,
+            retry_at: 0,
+            pending: false,
+            stop: 3,
+            detail: 0,
+            blocked: 0,
+            refused: 0,
+            admissions: 0,
+            review: false,
+        }),
+        Response::Admissions {
+            context: context(),
+            items: vec![
+                AdmissionItem {
+                    position: 1,
+                    kind: OutboxKind::ContactRequest,
+                    len: 102,
+                    digest: [3; 32],
+                },
+                AdmissionItem {
+                    position: 4096,
+                    kind: OutboxKind::ContactInvitation,
+                    len: 266_280,
+                    digest: [4; 32],
+                },
+            ],
+        },
+        Response::Admissions {
+            context: context(),
+            items: Vec::new(),
+        },
         Response::ArchiveBegin {
             context: context(),
             archive_id: [9; 32],
@@ -419,7 +466,7 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x04".len();
+        let tag = b"VHBRPRIVATE\x05".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -562,7 +609,7 @@ fn signed_proofs_and_fork_evidence_verify_at_the_local_boundary() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x04".len();
+        let tag = b"VHBRPRIVATE\x05".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());

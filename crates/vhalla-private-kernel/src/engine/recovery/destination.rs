@@ -132,7 +132,10 @@ impl Progress {
             || p.records > source.header.records
             || p.bytes > source.header.bytes
             || (p.unit == 0) != (magic == b"VHPRDEST1")
-            || p.records != count_before(&source.snapshot, p.unit)?
+            || {
+                let (min, max) = count_range(&source.snapshot, p.unit)?;
+                !(min..=max).contains(&p.records)
+            }
             || p.floor.sequence() != floor_before(&source.snapshot, p.unit)?
             || p.last_floor.sequence() != floor_before(&source.snapshot, p.unit.saturating_sub(1))?
             || (p.unit == 0
@@ -146,12 +149,22 @@ impl Progress {
         Ok(p)
     }
 }
-fn count_before(s: &Snapshot, unit: u64) -> Result<u64> {
+/// Records durably imported after `unit` units: each outbox/inbox unit carries
+/// two to three records and each control unit exactly one, so only a range is
+/// derivable before per-unit content is authenticated.
+fn count_range(s: &Snapshot, unit: u64) -> Result<(u64, u64)> {
     let pairs = s.outbox.checked_add(s.inbox).ok_or(Error::Bounds)?;
-    unit.min(pairs)
+    let pair_units = unit.min(pairs);
+    let controls = unit.saturating_sub(pairs);
+    let min = pair_units
         .checked_mul(2)
-        .and_then(|v| v.checked_add(unit.saturating_sub(pairs)))
-        .ok_or(Error::Bounds)
+        .and_then(|v| v.checked_add(controls))
+        .ok_or(Error::Bounds)?;
+    let max = pair_units
+        .checked_mul(3)
+        .and_then(|v| v.checked_add(controls))
+        .ok_or(Error::Bounds)?;
+    Ok((min, max))
 }
 fn floor_before(s: &Snapshot, unit: u64) -> Result<u64> {
     let pairs = s.outbox.checked_add(s.inbox).ok_or(Error::Bounds)?;
@@ -305,13 +318,15 @@ impl<S: ArchiveStore> ArchiveImport<S> {
             && digest == self.progress.previous
         {
             let floor = records::check(
+                &mut self.store,
                 &self.key,
                 self.source.context,
                 &self.source.snapshot,
                 unit,
                 self.progress.last_floor,
                 &records,
-            )?;
+            )
+            .await?;
             if floor != self.progress.floor {
                 return Err(Error::Conflict);
             }
@@ -337,13 +352,15 @@ impl<S: ArchiveStore> ArchiveImport<S> {
             return Err(Error::Conflict);
         }
         let floor = records::check(
+            &mut self.store,
             &self.key,
             self.source.context,
             &self.source.snapshot,
             unit,
             self.progress.floor,
             &records,
-        )?;
+        )
+        .await?;
         let next = Progress {
             next: self.progress.next.checked_add(1).ok_or(Error::Bounds)?,
             previous: digest,
@@ -458,6 +475,10 @@ pub struct ArchiveView<S: ArchiveStore> {
     key: StorageKey,
     seal: ArchiveSeal,
     image: Image,
+    /// Authenticated decode of exactly `self.image`. The accounting snapshot
+    /// proves the committed image unchanged, so repeat reads never re-verify
+    /// the sealed archive state.
+    cached: Option<State>,
     failed: bool,
 }
 impl<S: ArchiveStore> ArchiveView<S> {
@@ -467,12 +488,13 @@ impl<S: ArchiveStore> ArchiveView<S> {
         let value = store.accounting(seal.context).await.map_err(store_error)?;
         let image = value.image.as_ref().ok_or(Error::Missing)?.clone();
         accounting(&value, Some(&image), seal.header.records, seal.header.bytes)?;
-        archive_state(key, &seal, &image)?;
+        let state = archive_state(key, &seal, &image)?;
         Ok(Self {
             store,
             key: key.duplicate(),
             seal,
             image,
+            cached: Some(state),
             failed: false,
         })
     }
@@ -484,6 +506,9 @@ impl<S: ArchiveStore> ArchiveView<S> {
     pub fn seal(&self) -> &ArchiveSeal {
         &self.seal
     }
+    /// Revalidate the committed image by one atomic accounting snapshot, then
+    /// return its authenticated decoded state. An unchanged image makes the
+    /// previously verified decode authoritative; nothing is re-derived.
     async fn begin(&mut self) -> Result<State> {
         if self.failed {
             return Err(Error::NeedsReopen);
@@ -500,7 +525,12 @@ impl<S: ArchiveStore> ArchiveView<S> {
             self.seal.header.records,
             self.seal.header.bytes,
         )?;
-        archive_state(&self.key, &self.seal, &self.image)
+        if let Some(state) = &self.cached {
+            return Ok(state.clone());
+        }
+        let state = archive_state(&self.key, &self.seal, &self.image)?;
+        self.cached = Some(state.clone());
+        Ok(state)
     }
     async fn check_current(&mut self) -> Result<()> {
         let value = self
@@ -626,8 +656,9 @@ fn archive_state(key: &StorageKey, seal: &ArchiveSeal, image: &Image) -> Result<
     let state = Working::hydrate(State::decode(&clear, seal.context)?)?.capture()?;
     let snapshot = Snapshot::of(&state);
     let encoded = Zeroizing::new(state.encode()?);
+    let (min, max) = snapshot.records_range()?;
     if snapshot.revision != seal.header.revision
-        || snapshot.records()? != seal.header.records
+        || !(min..=max).contains(&seal.header.records)
         || snapshot.units()? != seal.units
         || encoded.as_slice() != clear.as_slice()
     {

@@ -94,6 +94,50 @@ fn three_record_control_transaction_preflights_all_keys_and_preserves_old_encodi
         RecordKey::Outbox(1).encode().unwrap(),
         vec![1, 0, 0, 0, 0, 0, 0, 0, 1]
     );
+    assert_eq!(
+        RecordKey::Sent([9; 32]).encode().unwrap(),
+        [vec![6], vec![9; 32]].concat()
+    );
+    assert!(RecordKey::Sent([0; 32]).encode().is_err());
+    let acceptance = RecordKey::Acceptance {
+        outbox: 1,
+        recipient: [7; 32],
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(acceptance.len(), 33);
+    assert_eq!(acceptance[0], 7);
+    assert_ne!(acceptance[1..], [0; 32]);
+    assert_ne!(
+        RecordKey::Acceptance {
+            outbox: 2,
+            recipient: [7; 32],
+        }
+        .encode()
+        .unwrap(),
+        acceptance
+    );
+    assert_ne!(
+        RecordKey::Acceptance {
+            outbox: 1,
+            recipient: [8; 32],
+        }
+        .encode()
+        .unwrap(),
+        acceptance
+    );
+    assert!(RecordKey::Acceptance {
+        outbox: 0,
+        recipient: [7; 32],
+    }
+    .encode()
+    .is_err());
+    assert!(RecordKey::Acceptance {
+        outbox: 1,
+        recipient: [0; 32],
+    }
+    .encode()
+    .is_err());
     let path = home();
     let ctx = context();
     let mut store = NativePrivateStore::create_new(&path, ctx, limits()).unwrap();
@@ -231,7 +275,7 @@ fn errors_before_and_after_commit_latch_then_reopen_exact_state() {
         Point::RecordInserted,
         Point::StateUpdated,
         Point::Committed,
-        Point::DirectorySynced,
+        Point::Checked,
     ] {
         let path = home();
         let ctx = context();
@@ -253,7 +297,7 @@ fn errors_before_and_after_commit_latch_then_reopen_exact_state() {
         assert_eq!(store.read(ctx, data.key), Err(Error::Uncertain));
         drop(store);
         let mut reopened = NativePrivateStore::open(&path, ctx).unwrap();
-        let committed = matches!(point, Point::Committed | Point::DirectorySynced);
+        let committed = matches!(point, Point::Committed | Point::Checked);
         assert_eq!(
             reopened.load(ctx).unwrap(),
             Some(vec![if committed { 2 } else { 1 }; 40])
@@ -467,7 +511,7 @@ fn crash_child() {
         "record" => Point::RecordInserted,
         "state" => Point::StateUpdated,
         "commit" => Point::Committed,
-        "sync" => Point::DirectorySynced,
+        "checked" => Point::Checked,
         _ => panic!("invalid fixture"),
     };
     let ctx = context();
@@ -493,7 +537,7 @@ fn crash_child() {
 
 #[test]
 fn sigkill_transaction_boundaries_recover_all_or_nothing() {
-    for point in ["begin", "record", "state", "commit", "sync"] {
+    for point in ["begin", "record", "state", "commit", "checked"] {
         let path = home();
         let ctx = context();
         let mut store = NativePrivateStore::create_new(&path, ctx, limits()).unwrap();
@@ -531,7 +575,7 @@ fn sigkill_transaction_boundaries_recover_all_or_nothing() {
         child.kill().unwrap();
         child.wait().unwrap();
         let mut store = NativePrivateStore::open(&path, ctx).unwrap();
-        let committed = matches!(point, "commit" | "sync");
+        let committed = matches!(point, "commit" | "checked");
         assert_eq!(
             store.load(ctx).unwrap(),
             Some(vec![if committed { 2 } else { 1 }; MAX_IMAGE_BYTES])

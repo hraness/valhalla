@@ -21,8 +21,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use vhalla_private_kernel::{
-    storage::Store, CommittedOutbox, Context, InboxPage, Kernel, MessageDraft, OperationId,
-    OutboxEntry, OutboxKind, Phase, Status, MAX_BODY_BYTES, MAX_PAGE_BYTES, MAX_PAGE_RECORDS,
+    storage::Store, CommittedOutbox, Context, InboxPage, Kernel, MemberAcceptance, MessageDraft,
+    OperationId, OutboxEntry, OutboxKind, Phase, Status, MAX_BODY_BYTES, MAX_PAGE_BYTES,
+    MAX_PAGE_RECORDS,
 };
 
 /// A local refusal; none permits replacing missing or uncertain durable state.
@@ -79,12 +80,18 @@ pub struct Budget {
     pub messages: u64,
     /// Total bytes of message bodies that may be queued.
     pub body_bytes: u64,
-    /// Maximum requested inbox/outbox page slots across this session.
+    /// Maximum requested inbox page slots across this session. Outbox metadata
+    /// polls do not consume slots: they carry no plaintext.
     pub read_records: u64,
-    /// Maximum requested plaintext bytes for inbox pages, and bounded internal
-    /// artifact bytes for outbox metadata pages.
+    /// Maximum requested plaintext bytes for inbox pages, plus a fixed
+    /// [`OUTBOX_STATUS_BYTES`] per requested outbox metadata record.
     pub read_bytes: u64,
 }
+
+/// Fixed read-byte charge per requested outbox metadata record. Metadata is a
+/// few dozen bytes; charging the kernel page ceiling instead made a default
+/// grant run out after 64 status polls.
+pub const OUTBOX_STATUS_BYTES: u64 = 256;
 
 /// Host-only revocation authority. Dropping this sole handle revokes the grant;
 /// there is deliberately no clone, renewal or un-revoke operation.
@@ -226,11 +233,8 @@ impl<S: Store> AgentRoomSession<S> {
     ) -> Result<vhalla_private_kernel::OutboxPage> {
         self.host_ready()?;
         self.failed = true;
-        let page = self
-            .kernel
-            .outbox(after, limit)
-            .await
-            .map_err(Error::Kernel)?;
+        let page = self.kernel.outbox(after, limit).await;
+        let page = self.settle(page)?;
         self.failed = false;
         Ok(page)
     }
@@ -243,7 +247,8 @@ impl<S: Store> AgentRoomSession<S> {
         self.host_ready()?;
         let now = self.host_time()?;
         self.failed = true;
-        let received = self.kernel.receive(raw, now).await.map_err(Error::Kernel)?;
+        let received = self.kernel.receive(raw, now).await;
+        let received = self.settle(received)?;
         self.failed = false;
         Ok(received)
     }
@@ -260,8 +265,8 @@ impl<S: Store> AgentRoomSession<S> {
         let receipt = self
             .kernel
             .issue_acceptance(operation, original_ciphertext, now)
-            .await
-            .map_err(Error::Kernel)?;
+            .await;
+        let receipt = self.settle(receipt)?;
         self.failed = false;
         Ok(receipt)
     }
@@ -271,11 +276,8 @@ impl<S: Store> AgentRoomSession<S> {
         self.host_ready()?;
         let now = self.host_time()?;
         self.failed = true;
-        let status = self
-            .kernel
-            .apply_control(raw, now)
-            .await
-            .map_err(Error::Kernel)?;
+        let status = self.kernel.apply_control(raw, now).await;
+        let status = self.settle(status)?;
         if status.context != self.grant.context
             || status.epoch != self.grant.epoch
             || status.roster != self.grant.roster
@@ -291,12 +293,67 @@ impl<S: Store> AgentRoomSession<S> {
         Ok(status)
     }
 
+    /// Host-only durable ciphertext-commitment lookup for this room's own
+    /// committed sends. `Ok(None)` means no committed send carried those exact
+    /// bytes; it never implies the bytes are safe to receive.
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_original(
+        &mut self,
+        ciphertext_hash: &[u8; 32],
+    ) -> Result<Option<CommittedOutbox>> {
+        self.host_ready()?;
+        self.failed = true;
+        let original = self.kernel.original(ciphertext_hash).await;
+        let original = self.settle(original)?;
+        self.failed = false;
+        Ok(original)
+    }
+
+    /// Host-only durable verified member acceptances for one committed outbox
+    /// position, enumerated from the kernel's own receipt index.
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_acceptances(
+        &mut self,
+        outbox_sequence: u64,
+    ) -> Result<Vec<MemberAcceptance>> {
+        self.host_ready()?;
+        self.failed = true;
+        let acceptances = self.kernel.acceptances(outbox_sequence).await;
+        let acceptances = self.settle(acceptances)?;
+        self.failed = false;
+        Ok(acceptances)
+    }
+
     #[cfg(feature = "client")]
     fn host_ready(&self) -> Result<()> {
-        if self.failed || self.kernel.needs_reopen() {
+        if self.latched() {
             return Err(Error::NeedsReopen);
         }
         Ok(())
+    }
+
+    /// Whether a failed or uncertain operation latched this session. The kernel
+    /// is the authority: a refusal it reports as needing no reopen (an explicit
+    /// pre-write bound or scope refusal) does not latch, so one bad argument or
+    /// one undecryptable input cannot end every later call.
+    pub fn latched(&self) -> bool {
+        self.failed || self.kernel.needs_reopen()
+    }
+
+    /// Map one kernel outcome onto the latch. Success keeps `failed` set until
+    /// the caller has rechecked authority; an error latches exactly when the
+    /// kernel itself requires reopening, never for refusals it settled cleanly.
+    fn settle<T>(
+        &mut self,
+        result: std::result::Result<T, vhalla_private_kernel::Error>,
+    ) -> Result<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.failed = self.kernel.needs_reopen();
+                Err(Error::Kernel(error))
+            }
+        }
     }
 
     #[cfg(feature = "client")]
@@ -384,11 +441,8 @@ impl<S: Store> AgentRoomSession<S> {
         self.grant.budget.messages -= 1;
         self.grant.budget.body_bytes -= bytes;
         self.failed = true;
-        let record = self
-            .kernel
-            .send(operation, retained, now)
-            .await
-            .map_err(Error::Kernel)?;
+        let record = self.kernel.send(operation, retained, now).await;
+        let record = self.settle(record)?;
         self.authority()?;
         let status = QueuedStatus::from_committed(&record);
         self.pending = None;
@@ -404,32 +458,44 @@ impl<S: Store> AgentRoomSession<S> {
         if !self.grant.permissions.inbox {
             return Err(Error::Denied);
         }
-        self.charge_page(limit, MAX_BODY_BYTES)?;
+        let charged = self.charge_page(limit, MAX_BODY_BYTES)?;
         self.failed = true;
-        let page = self
-            .kernel
-            .inbox(after, limit)
-            .await
-            .map_err(Error::Kernel)?;
+        let page = self.kernel.inbox(after, limit).await;
+        let page = self.settle(page)?;
         self.authority()?;
+        // Device-to-device acceptance receipts occupy inbox positions but carry
+        // no agent-usable plaintext; the agent only sees them through
+        // `private_outbox_status.member_acceptances`. A successful page returns
+        // their charged slots rather than letting untargeted bookkeeping starve
+        // the standing read allowance.
+        let receipts = page
+            .records
+            .iter()
+            .filter(|record| MemberAcceptance::is_receipt(record.body()))
+            .count() as u64;
+        self.grant.budget.read_records = self.grant.budget.read_records.saturating_add(receipts);
+        self.grant.budget.read_bytes = self
+            .grant
+            .budget
+            .read_bytes
+            .saturating_add(receipts.saturating_mul(MAX_BODY_BYTES as u64).min(charged));
         self.failed = false;
         Ok(page)
     }
 
     /// Read bounded local outbox metadata. Existing ciphertext is read internally
     /// through the kernel's checked page API, then discarded without export.
+    /// Charged at [`OUTBOX_STATUS_BYTES`] per requested record and no slots, so
+    /// polling for delivery evidence does not starve inbox reads.
     pub async fn outbox_status(&mut self, after: u64, limit: usize) -> Result<OutboxStatusPage> {
         self.check()?;
         if !self.grant.permissions.outbox_status {
             return Err(Error::Denied);
         }
-        self.charge_page(limit, MAX_PAGE_BYTES)?;
+        self.charge_metadata(limit)?;
         self.failed = true;
-        let page = self
-            .kernel
-            .outbox(after, limit)
-            .await
-            .map_err(Error::Kernel)?;
+        let page = self.kernel.outbox(after, limit).await;
+        let page = self.settle(page)?;
         self.authority()?;
         let result = OutboxStatusPage {
             head: page.head,
@@ -440,7 +506,22 @@ impl<S: Store> AgentRoomSession<S> {
         Ok(result)
     }
 
-    fn charge_page(&mut self, limit: usize, per_record: usize) -> Result<()> {
+    fn charge_metadata(&mut self, limit: usize) -> Result<()> {
+        if limit == 0 || limit > MAX_PAGE_RECORDS {
+            return Err(Error::Bounds);
+        }
+        let bytes = (limit as u64)
+            .checked_mul(OUTBOX_STATUS_BYTES)
+            .ok_or(Error::Bounds)?;
+        if self.grant.budget.read_bytes < bytes {
+            return Err(Error::Quota);
+        }
+        self.grant.budget.read_bytes -= bytes;
+        Ok(())
+    }
+    /// Charge one bounded plaintext page and return the exact byte charge so a
+    /// successful read can refund rows that carry no agent-usable content.
+    fn charge_page(&mut self, limit: usize, per_record: usize) -> Result<u64> {
         if limit == 0 || limit > MAX_PAGE_RECORDS {
             return Err(Error::Bounds);
         }
@@ -453,7 +534,7 @@ impl<S: Store> AgentRoomSession<S> {
         }
         self.grant.budget.read_records -= limit as u64;
         self.grant.budget.read_bytes -= bytes;
-        Ok(())
+        Ok(bytes)
     }
     fn check(&mut self) -> Result<Status> {
         if self.failed {

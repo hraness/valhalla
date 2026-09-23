@@ -365,7 +365,9 @@ The origin must exactly match this worker's fixed loopback origin. The gateway
 capability is distinct from the host-only relay token and is supplied again on
 each unlock. The worker holds it only in memory, and clears the selected file
 input immediately. Browser-managed temporary copies are outside a guarantee of
-complete memory erasure. Revocation is an explicit host configuration rotation;
+complete memory erasure. Keep this profile file `0600` inside a `0700`
+directory and never in Downloads or other shared locations; its capability is
+a bearer credential. Revocation is an explicit host configuration rotation;
 locking a worker does not revoke the shared host capability.
 An authorization refusal locks that worker and retains its exact pending job,
 charged attempt and backoff. Explicitly unlock and select a profile carrying the
@@ -384,9 +386,10 @@ record is never an excuse to guess a later cursor or silently skip it.
 The canonical decimal initial cursor must be within the mailbox's 4,096-item
 lifetime limit; an oversized cursor refuses before any delivery state is created.
 
-Each **Sync now** reserves its finite attempt before networking, sends at most two
-local outbox entries, fetches at most four incoming records, and stops after a
-membership control. It clears any prepared message consent. The worker streams
+Each **Sync now** reserves its finite attempt before networking, fetches and
+applies at most four incoming records in mailbox order (controls before any
+outbound send, so a renewal elsewhere is seen first), sends at most two local
+outbox entries, and stops after a membership control. It clears any prepared message consent. The worker streams
 bounded Fetch replies with a ten-second request deadline, no cookies, redirects,
 referrer or background polling. IndexedDB retains exact pending ciphertext,
 charged attempts/backoff, a staged canonical page and its applied cursor. A new
@@ -395,8 +398,11 @@ Room publication has its own kernel CAS. These fences do not promise isolation
 from trusted same-origin code or browser storage rollback/eviction.
 
 An outage preserves an uncertain exact send. Reopening never re-encrypts it or
-replenishes the lifetime cap of 4,096 attempts / 1 GiB reserved relay-frame bytes
-(HTTP/TLS headers and browser-engine overhead are additional). Ten
+replenishes the lifetime cap of 4,096 attempts / 1 GiB charged relay-frame bytes
+(HTTP/TLS headers and browser-engine overhead are additional). Every exchange
+reserves its worst-case frame bytes before networking; a completed exchange
+settles to its exact request/reply bytes, while an interrupted or failed
+attempt keeps the full reservation. Ten
 consecutive reserved unsuccessful attempts stop delivery; success clears only
 that consecutive count. Terminal room/storage errors end custody and preserve
 state for inspection. Bootstrap contact artifacts require their dedicated
@@ -412,12 +418,16 @@ actual native services, including durable outage/reload/retry and stale-tab
 checks:
 
 ```sh
-node browser/tools/qualify_private_delivery.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE NEW_OUTPUT_DIR VHALLA_CLI OPENSSL_EXECUTABLE
+node browser/tools/qualify_private_delivery.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE NEW_OUTPUT_DIR VHALLA_CLI OPENSSL_EXECUTABLE [--gateway-port N] [--tls-port M]
 node browser/tools/qualify_private_panel.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE ANOTHER_NEW_OUTPUT_DIR --production
 ```
 
 The harness verifies a packaged **production** artifact and uses no qualification
-entry points. Run it through the repository's browser-auth scheduler lane. Its
+entry points. It binds only `127.0.0.1` loopback addresses: one ephemeral gateway
+HTTP port and one ephemeral relay TLS port by default, or explicit
+`--gateway-port`/`--tls-port` values. An occupied port always refuses and is
+never reused, and the receipt records the selected gateway origin and TLS
+address. Run it through the repository's browser-auth scheduler lane. Its
 same-machine receipt does not substitute for independent-machine Tailcat or
 sleep/wake qualification.
 The second command covers ordinary private UI, archive routes and streaming

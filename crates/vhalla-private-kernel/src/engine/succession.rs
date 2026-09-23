@@ -43,25 +43,23 @@ impl<S: Store> Kernel<S> {
         ) {
             return Err(Error::Policy);
         }
-        let work = self.begin().await?;
-        let enrollment = work
-            .state
+        let state = self.begin_state().await?;
+        let enrollment = state
             .roster
             .iter()
             .find(|e| e.claims().device == successor)
             .ok_or(Error::Policy)?;
-        if work.state.successions.len() >= MAX_SUCCESSIONS {
+        if state.successions.len() >= MAX_SUCCESSIONS {
             return Err(Error::Bounds);
         }
         let request = UnsignedOwnerSuccession::new(OwnerSuccessionClaims {
             scope: self.context.scope,
             account: self.context.account,
-            predecessor: work.state.owner.claims().device,
+            predecessor: state.owner.claims().device,
             successor: enrollment.signed().clone(),
-            sequence: work.state.floor.next_sequence()?,
+            sequence: state.floor.next_sequence()?,
             validity,
         })?;
-        self.needs_reopen = false;
         Ok(request)
     }
 
@@ -92,7 +90,6 @@ impl<S: Store> Kernel<S> {
             )
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         if !work.state.owner_role() {

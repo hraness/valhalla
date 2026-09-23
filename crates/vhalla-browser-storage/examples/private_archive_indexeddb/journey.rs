@@ -320,7 +320,7 @@ async fn source(namespace: Namespace) -> Result<Case, JsValue> {
         .image
         .ok_or_else(|| fail("source image absent"))?;
     ensure(
-        accounting.records == 12,
+        accounting.records == 13,
         "source record/index/control accounting",
     )?;
     let mut export = ArchiveExport::open(store, &key, context)

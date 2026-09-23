@@ -23,7 +23,7 @@ struct ReadOnlyStore {
 
 macro_rules! forbidden_methods {
     () => {
-        fn lock(&self, _: &Path) -> Result<File, JournalError> {
+        fn lock(&self, _: &Path, _: bool) -> Result<File, JournalError> {
             panic!("reader acquired writer lock")
         }
         fn read_pin_tmp(&self, _: &Path) -> Result<Option<Vec<u8>>, JournalError> {

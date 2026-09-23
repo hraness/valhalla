@@ -27,7 +27,7 @@ const headers = JSON.parse(await readFile(join(artifact,'vercel.json'),'utf8')).
 const modules=Object.keys(manifest.assets).filter(n=>/^vhalla-browser-[a-z0-9]+\.js$/.test(n));
 if(modules.length!==1)throw Error('expected one main application module');
 const children=[], pending=new Map(), downloads=new Map(), pages=[];
-let server, socket, signal, sequence=0, chromeLog='', unexpectedNetwork=false, networkWrites=0;
+let server, serverOrigin, socket, signal, sequence=0, chromeLog='', unexpectedNetwork=false, networkWrites=0;
 const facts=[], screenshots=[], files=[];
 const deadline=Date.now()+300000;
 const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
@@ -137,7 +137,7 @@ async function context(name) {
   const page={name,downloads:directory,browserContextId,targetId,sessionId};pages.push(page);
   for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
   await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);
-  await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
+  await call('Page.navigate',{url:serverOrigin},sessionId);
   await wait(()=>evaluate(page,"!!document.getElementById('private-panel') && !!document.getElementById('create') && !document.getElementById('create').disabled"),'private app '+name);
   return page;
 }
@@ -201,7 +201,7 @@ async function reload(page) {
   page.targetId=targetId;page.sessionId=sessionId;
   for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
   await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);
-  await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
+  await call('Page.navigate',{url:serverOrigin},sessionId);
   // A Runtime.evaluate bound to a context dying mid-navigation is dropped
   // without any response; bound each probe so a dropped call retries. On an
   // existing account the app boots to Locked with `create` disabled — `unlock`
@@ -213,7 +213,7 @@ async function reload(page) {
   await evaluate(page,"(async()=>{await qclick('private-open');await qidle();return true;})()");
 }
 async function restartArchive(page) {
-  await call('Page.navigate',{url:'http://127.0.0.1:8790'},page.sessionId);
+  await call('Page.navigate',{url:serverOrigin},page.sessionId);
   await wait(async()=>{try{return await evaluate(page,"!!document.getElementById('unlock')&&!document.getElementById('unlock').disabled");}catch{return false;}},'archive client reload');
   await evaluate(page,`(async()=>{${helpers} qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','archive reload unlock');await qclick('private-enter');await qwait(()=>!qid('private-import-archive').disabled,'archive reload entry');return true;})()`);
 }
@@ -249,7 +249,23 @@ async function task(abortSignal) {
       res.end(await readFile(target));
     }catch{res.writeHead(500);res.end('qualification request refused');}
   });
-  await new Promise((r,j)=>{server.once('error',j);server.listen(8790,'127.0.0.1',r);});
+  // Bind an ephemeral loopback port: a fixed port collides with a host service
+  // and makes the qualification un-runnable beside a maintained gateway. The
+  // local-qualification build instead pins an exact origin allowlist
+  // (browser/src/qualification.rs); prefer the dedicated 8789 qualification
+  // port and fall back to 8790 only when it is free.
+  if(production){
+    await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
+  }else{
+    let port=0;
+    for(const candidate of [8789,8790]){
+      const taken=await new Promise(r=>{const probe=createServer();probe.once('error',()=>r(true));probe.listen(candidate,'127.0.0.1',()=>probe.close(()=>r(false)));});
+      if(!taken){port=candidate;break;}
+    }
+    if(!port)throw Error('no allowed loopback qualification port free');
+    await new Promise((r,j)=>{server.once('error',j);server.listen(port,'127.0.0.1',r);});
+  }
+  serverOrigin='http://127.0.0.1:'+server.address().port;
   signal.throwIfAborted();
   // Backgrounding throttles keep an occluded non-foreground target from
   // producing compositor frames on demand, which leaves Page.captureScreenshot
@@ -271,7 +287,7 @@ async function task(abortSignal) {
       const p=message.params,item=downloads.get(p.guid);if(item)item.state=p.state;
     }else if(message.method==='Network.requestWillBeSent'){
       const url=message.params.request.url;
-      if(!url.startsWith('http://127.0.0.1:8790/')&&!url.startsWith('blob:http://127.0.0.1:8790/')&&url!=='about:blank')unexpectedNetwork=true;
+      if(!url.startsWith(serverOrigin+'/')&&!url.startsWith('blob:'+serverOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;
     }
   };
   const owner=await account('owner'), member=await account('member');
@@ -465,7 +481,7 @@ async function task(abortSignal) {
   await leave(owner);await leave(fresh);
   facts.push('account-authorized succession hands ownership to the enrolled same-account device through one distributed owner control: the predecessor keeps ordinary membership, and the promoted successor issues controls the predecessor applies in order');
   if(unexpectedNetwork||networkWrites)throw Error('unexpected route, network write or unbounded download event');
-  return {passed:true,artifact,purpose:manifest.purpose,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),facts,screenshots,files,networkWrites,contexts:3,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
+  return {passed:true,artifact,purpose:manifest.purpose,artifactManifestSha256:createHash('sha256').update(manifestRaw).digest('hex'),serverOrigin,facts,screenshots,files,networkWrites,contexts:3,profile,scope:'synthetic private DOM file exchange; no external relay, public posting or production data'};
 }
 
 await runQualification({work:task,timeoutMs:300000,

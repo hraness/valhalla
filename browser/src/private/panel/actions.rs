@@ -55,12 +55,21 @@ pub(super) async fn perform(
             let Response::Delivery(report) = reply else {
                 return Err("Unexpected delivery report.".into());
             };
-            app.borrow_mut().delivery_ready = !report.stopped;
+            {
+                let mut s = app.borrow_mut();
+                s.delivery_connected = true;
+                s.delivery_ready = report.stop == 0;
+            }
             delivery_status(app, &report);
+            admissions(app, ticket, &report).await?;
             status(
                 app,
-                "Local gateway selected. Sync now sends exact encrypted outputs and stages a bounded incoming page. No network runs until you choose it.",
-                false,
+                if report.stop != 0 {
+                    "Local gateway selected, but delivery is stopped at a retained refusal or spent budget. Its state is preserved for inspection; reopening does not reset it."
+                } else {
+                    "Local gateway selected. Sync now stages a bounded incoming page, applies it in order and sends exact encrypted outputs. No network runs until you choose it."
+                },
+                report.stop != 0,
             );
         }
         Action::DeliverySync => {
@@ -74,9 +83,10 @@ pub(super) async fn perform(
                 return Err("Unexpected sync report.".into());
             };
             delivery_status(app, &report);
-            if report.stopped {
+            if report.stop != 0 {
                 app.borrow_mut().delivery_ready = false;
             }
+            admissions(app, ticket, &report).await?;
             let Response::Membership(view) = call(app, ticket, Request::Membership).await? else {
                 return Err("Unexpected membership report.".into());
             };
@@ -85,14 +95,59 @@ pub(super) async fn perform(
                 app,
                 if report.review {
                     "An owner control changed membership. Review the current roster before preparing a message or syncing again."
-                } else if report.stopped {
+                } else if report.stop == 3 {
+                    "Ten consecutive attempts failed to reach the gateway or relay. Exact ciphertext and progress are retained. When the local host is reachable again, lock, unlock and open the retained connection with its profile to continue; budgets are not renewed."
+                } else if report.stop != 0 {
                     "Delivery stopped at a retained refusal or finite budget. Preserve its state for inspection; reopening does not reset it."
+                } else if report.blocked == 1 {
+                    "The next incoming record is an owner control that skips past this device's accepted control floor. Apply the missing earlier control in order from a file, then Sync now. Nothing was skipped."
+                } else if report.blocked == 2 {
+                    "The next incoming record is refused by this device's clock or enrollment validity. Correct the clock or renew the enrollment, then Sync now. Nothing was skipped."
+                } else if report.blocked == 3 {
+                    "Every retained-admission slot is used. Download or discard a retained item before syncing again. Nothing was skipped."
                 } else if report.retry_at != 0 {
                     "The gateway is unavailable or deferred this attempt. Exact ciphertext and retry progress are retained; wait until the displayed time before Sync now."
                 } else {
                     "This bounded sync finished. Relay retention and local inbox acceptance are separate; neither means another person read a message."
                 },
-                report.stopped,
+                report.stop != 0,
+            );
+        }
+        Action::AdmissionDownload => {
+            let index = selected(app, "private-admission-select")?;
+            let position = app
+                .borrow()
+                .admissions
+                .get(index)
+                .ok_or("Select a retained admission item.")?
+                .position;
+            let reply = call(app, ticket, Request::DeliveryAdmission { position }).await?;
+            artifact(app, reply)?;
+            status(
+                app,
+                "The exact retained relay-delivered item is shown as local ciphertext. Download it and select that file in the dedicated accept or join input; nothing was applied.",
+                false,
+            );
+        }
+        Action::AdmissionDiscard => {
+            let index = selected(app, "private-admission-select")?;
+            let position = app
+                .borrow()
+                .admissions
+                .get(index)
+                .ok_or("Select a retained admission item.")?
+                .position;
+            let Response::Delivery(report) =
+                call(app, ticket, Request::DeliveryDiscard { position }).await?
+            else {
+                return Err("Unexpected delivery report.".into());
+            };
+            delivery_status(app, &report);
+            admissions(app, ticket, &report).await?;
+            status(
+                app,
+                "The selected retained item was discarded explicitly. It cannot be fetched from the relay again.",
+                false,
             );
         }
         Action::Enter => {
@@ -1504,12 +1559,79 @@ async fn archive_inbox(app: &App, ticket: u64, next: bool) -> Result<()> {
 }
 
 fn delivery_status(app: &App, r: &DeliveryReport) {
+    let stop = match r.stop {
+        0 => "none".to_string(),
+        1 => "spent lifetime budget".to_string(),
+        2 => format!(
+            "retained refusal ({})",
+            match r.detail {
+                1 => "malformed gateway reply",
+                2 => "receipt commitment mismatch",
+                3 => "mailbox page contract",
+                4 => "control conflicts with accepted history",
+                5 => "control claim not authorized",
+                6 => "recorded by an earlier version",
+                _ => "unclassified",
+            }
+        ),
+        _ => "paused after ten consecutive failed attempts".to_string(),
+    };
+    let blocked = match r.blocked {
+        0 => "none",
+        1 => "owner control floor gap",
+        2 => "clock or enrollment validity",
+        _ => "retained-admission slots full",
+    };
     text(
         app,
         "private-delivery-status",
         &format!(
-            "Relay-retained outputs: {} · locally accepted incoming records: {}\nOutbox cursor {} · mailbox cursor {} · charged attempts {}\nPending: {} · stopped: {} · retry after Unix second {}",
-            r.retained, r.received, r.sent, r.cursor, r.attempts, r.pending, r.stopped, r.retry_at
+            "Relay-retained outputs: {} · locally accepted incoming records: {}\nOutbox cursor {} · mailbox cursor {} · charged attempts {} · charged bytes {}\nPending: {} · stopped: {} · stop: {} · blocked: {} · retry after Unix second {}\nRefused and skipped records: {} · retained admission items: {}",
+            r.retained,
+            r.received,
+            r.sent,
+            r.cursor,
+            r.attempts,
+            r.wire_bytes,
+            r.pending,
+            r.stop != 0,
+            stop,
+            blocked,
+            r.retry_at,
+            r.refused,
+            r.admissions
         ),
     );
+}
+/// Refresh the retained-admission listing from the worker; an empty report
+/// clears it without a round-trip.
+async fn admissions(app: &App, ticket: u64, r: &DeliveryReport) -> Result<()> {
+    let items = if r.admissions == 0 {
+        Vec::new()
+    } else {
+        let Response::Admissions { items, .. } =
+            call(app, ticket, Request::DeliveryAdmissions).await?
+        else {
+            return Err("Unexpected retained admission listing.".into());
+        };
+        items
+    };
+    options(
+        app,
+        "private-admission-select",
+        items
+            .iter()
+            .map(|a| {
+                format!(
+                    "mailbox {} · {} · {} bytes · {}",
+                    a.position,
+                    model::encrypted_export(a.kind).map_or("Bootstrap item", |(label, _)| label),
+                    a.len,
+                    label(&a.digest)
+                )
+            })
+            .collect(),
+    );
+    app.borrow_mut().admissions = items;
+    Ok(())
 }

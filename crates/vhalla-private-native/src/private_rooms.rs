@@ -125,6 +125,16 @@ pub enum RecordKey {
     Received([u8; 32]),
     /// Nonzero immutable owner control-history sequence.
     Control(u64),
+    /// Full nonzero committed application ciphertext hash to its outbox index.
+    Sent([u8; 32]),
+    /// Verified member receipt for one exact outbox position and recipient
+    /// device; the payload is the receipt's nonzero inbox index.
+    Acceptance {
+        /// Committed local outbox position the receipt acknowledges.
+        outbox: u64,
+        /// Member device that produced the verified receipt.
+        recipient: [u8; 32],
+    },
 }
 impl RecordKey {
     fn encode(self) -> Result<Vec<u8>> {
@@ -137,6 +147,19 @@ impl RecordKey {
             Self::Control(n) => (5, n.to_be_bytes().to_vec()),
             Self::Operation(id) if id != [0; 16] => (3, id.to_vec()),
             Self::Received(hash) if hash != [0; 32] => (4, hash.to_vec()),
+            Self::Sent(hash) if hash != [0; 32] => (6, hash.to_vec()),
+            Self::Acceptance { outbox, recipient } if outbox != 0 && recipient != [0; 32] => {
+                // The records table admits only 9/17/33-byte keys, so the pair
+                // is committed under one domain-separated 32-byte digest.
+                (
+                    7,
+                    digest(
+                        b"vhalla/private-native/acceptance-key/v1",
+                        &[&outbox.to_be_bytes(), &recipient],
+                    )
+                    .to_vec(),
+                )
+            }
             _ => return Err(Error::Refused),
         };
         let mut raw = vec![tag];
@@ -182,7 +205,7 @@ enum Point {
     RecordInserted,
     StateUpdated,
     Committed,
-    DirectorySynced,
+    Checked,
 }
 
 /// Atomic image and accounting snapshot for explicit bounded archive work.
@@ -368,7 +391,9 @@ impl NativePrivateStore {
         };
         out.validate()?;
         // Reassert completed recovery/previous commit before publishing a usable
-        // handle, including a prior COMMIT followed by an uncertain directory sync.
+        // handle, including a prior COMMIT whose post-transaction state this
+        // caller could not observe. This is the one code-level re-sync the store
+        // keeps: it runs once per open, never per publish.
         out.sync().map_err(|_| Error::Uncertain)?;
         out.poisoned = false;
         Ok(out)
@@ -408,7 +433,11 @@ impl NativePrivateStore {
 
     /// Exact encrypted image CAS and at most three immutable records. Semantic
     /// conflict/refusal rolls back without effects; any uncertain transaction or
-    /// post-COMMIT failure poisons this handle. Success includes readback and sync.
+    /// post-COMMIT failure poisons this handle. Success includes readback; the
+    /// transaction's own `synchronous=EXTRA` + `fullfsync=ON` barriers inside
+    /// COMMIT (journal, database pages and the journal-unlink directory sync,
+    /// each an `F_FULLFSYNC`) already made every byte this commit wrote durable,
+    /// so no code-level device sync follows COMMIT.
     pub fn publish(
         &mut self,
         context: Context,
@@ -489,8 +518,12 @@ impl NativePrivateStore {
             .execute_batch("COMMIT")
             .map_err(|_| Error::Uncertain)?;
         self.hit(Point::Committed)?;
-        self.sync().map_err(|_| Error::Uncertain)?;
-        self.hit(Point::DirectorySynced)?;
+        // COMMIT already issued every F_FULLFSYNC this transaction needs under
+        // EXTRA + fullfsync (verified in `configure`); the removed code-level
+        // `db_guard`/`directory` syncs repeated the same inode and directory.
+        // Custody is still reasserted and the committed state is read back.
+        self.check_files().map_err(|_| Error::Uncertain)?;
+        self.hit(Point::Checked)?;
         if self.meta().map_err(|_| Error::Uncertain)?.image.as_deref() != Some(next) {
             return Err(Error::Uncertain);
         }

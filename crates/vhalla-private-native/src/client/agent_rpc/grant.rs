@@ -187,10 +187,15 @@ impl LaunchGrant {
         self.context
     }
 
-    pub(super) fn consume(
+    /// Validate this grant against exact room custody and construct the local
+    /// grant without writing anything. A claim path that already exists refuses
+    /// here, so a consumed grant never reaches a client handshake; the durable
+    /// claim itself is written by [`Self::claim`] on the first tool call or
+    /// delivery tick.
+    pub(super) fn check(
         &self,
         room: &RoomSession,
-    ) -> Result<(LocalGrant, RevocationHandle), Error> {
+    ) -> Result<(LocalGrant, RevocationHandle, Status), Error> {
         let status = room.status().map_err(|_| Error::Authority)?;
         let now = wall()?;
         let ceiling = if self.follow {
@@ -210,21 +215,37 @@ impl LaunchGrant {
         {
             return Err(Error::Authority);
         }
-        let grant = LocalGrant::for_status(
+        let (grant, authority) = LocalGrant::for_status(
             status,
             Duration::from_secs(self.expires - now),
             self.permissions,
             self.budget,
         )
         .map_err(|_| Error::Authority)?;
-        // An entire allowance is reserved before the first RPC. Never remove,
-        // replace, truncate or reinterpret this file after uncertainty. Exact
-        // process restart refuses even if no request was completed.
+        let (path, _, _) = self.claim_path()?;
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Err(Error::Receipt);
+        }
+        Ok((grant, authority, status))
+    }
+
+    fn claim_path(&self) -> Result<(PathBuf, std::fs::File, u32), Error> {
         let parent = self.receipt.parent().ok_or(Error::Receipt)?;
         let canonical = parent.canonicalize().map_err(|_| Error::Receipt)?;
         let path = canonical.join(self.receipt.file_name().ok_or(Error::Receipt)?);
         let (directory, uid) =
             custody::open_private_directory(&canonical).map_err(|_| Error::Receipt)?;
+        Ok((path, directory, uid))
+    }
+
+    /// Durably reserve the entire allowance. This happens once, immediately
+    /// before the first tool call or delivery-driver tick executes: a
+    /// handshake, tool listing or health probe alone never burns the grant.
+    /// Never remove, replace,
+    /// truncate or reinterpret this file after uncertainty; an exact process
+    /// restart refuses even if no tool call completed.
+    pub(super) fn claim(&self, status: Status) -> Result<(), Error> {
+        let (path, directory, uid) = self.claim_path()?;
         let bytes = serde_json::to_vec(&json!({"format":"vhalla-agent-launch-claim-v1", "grant_id":self.id, "grant_sha256":hex(&self.digest), "authority":"entire grant consumed; never restart or delete to renew", "expires_at":self.expires, "context":context_json(status), "epoch":status.epoch.to_string(), "roster":hex(&status.roster)})).map_err(|_| Error::Receipt)?;
         let mut file = custody::create_private_file(&path).map_err(|_| Error::Receipt)?;
         file.write_all(&bytes)
@@ -236,7 +257,7 @@ impl LaunchGrant {
         {
             return Err(Error::Receipt);
         }
-        Ok(grant)
+        Ok(())
     }
 }
 

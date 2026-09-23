@@ -66,7 +66,6 @@ impl<S: Store> Kernel<S> {
             )
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         let output = make_key_package(&mut work, now)?;
@@ -105,7 +104,6 @@ impl<S: Store> Kernel<S> {
             )
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         self.invite_prepared(
@@ -292,7 +290,6 @@ impl<S: Store> Kernel<S> {
         let id = codec::hash(b"vhalla/private-kernel/join-packet/v1\0", raw);
         let work = self.begin_live().await?;
         if work.state.phase == Phase::MemberJoined && work.state.joined == Some(id) {
-            self.needs_reopen = false;
             return Ok(self.status);
         }
         if work.state.contact.is_some() {
@@ -458,7 +455,6 @@ impl<S: Store> Kernel<S> {
             .retained(operation, request, OutboxKind::Removal, work.state.outbox)
             .await?
         {
-            self.needs_reopen = false;
             return Ok(retained);
         }
         if !work.state.owner_role()
@@ -536,21 +532,25 @@ impl<S: Store> Kernel<S> {
         }
         let work = self.begin_live().await?;
         if now < work.state.clock {
-            return Err(Error::Time);
+            return Err(Error::ClockRegressed);
         }
         if envelope.sequence <= work.state.floor.sequence() {
-            if envelope.sequence <= encrypted_base(&work).sequence() {
+            if envelope.sequence <= encrypted_base(&work.state).sequence() {
                 return Err(Error::Missing);
             }
             let retained = self.control_at(envelope.sequence).await?;
             if retained.envelope.as_deref() != Some(raw) {
                 return Err(Error::Conflict);
             }
-            self.needs_reopen = false;
             return Ok(self.status);
         }
         if work.state.phase != Phase::MemberJoined {
             return Err(Error::Policy);
+        }
+        // A later control than the next floor is a delivery gap, not a forgery:
+        // the driver must apply the missing predecessor(s) and retry these bytes.
+        if envelope.sequence > work.state.floor.next_sequence()? {
+            return Err(Error::ControlGap);
         }
         let packet = transport::open(&work, &envelope)?;
         self.apply_control_packet(work, packet, raw, now).await

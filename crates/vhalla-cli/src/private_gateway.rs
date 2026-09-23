@@ -1,13 +1,19 @@
 //! Loopback UI and browser relay gateway. Never opens a mailbox or identity.
+mod launchd;
+use crate::private_host::events;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    io::Read,
-    net::{SocketAddr, TcpListener},
+    io::{Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 use vhalla_private_native::relay::{
     http::{Assets, BrowserCapability, Gateway, GatewayLimits, MAX_ASSET_BYTES},
@@ -18,6 +24,9 @@ use vhalla_private_native::relay::{
 use zeroize::Zeroizing;
 #[cfg(test)]
 mod tests;
+
+const REFUSED: &str =
+    "private gateway refused; preserve the exact configuration, assets and event log";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -205,18 +214,142 @@ pub(crate) fn load(path: &Path) -> Result<(Gateway, SocketAddr), String> {
     .map_err(|_| "gateway policy refused")?;
     Ok((gateway, config.listen))
 }
+/// Canonical absolute path used for labels, argv and the sibling event log.
+fn resolve(path: &Path) -> Result<PathBuf, String> {
+    let absolute = vhalla_custody::absolute(path).map_err(|_| REFUSED)?;
+    let parent = absolute
+        .parent()
+        .ok_or(REFUSED)?
+        .canonicalize()
+        .map_err(|_| REFUSED)?;
+    let name = absolute.file_name().ok_or(REFUSED)?;
+    if name == "." || name == ".." {
+        return Err(REFUSED.into());
+    }
+    Ok(parent.join(name))
+}
+/// Live check: the loopback listener accepts TCP and answers an exact-origin
+/// GET for the packaged index — never a substitute for upstream TLS evidence.
+fn probe(listen: SocketAddr) -> Result<serde_json::Value, String> {
+    let host = listen.to_string();
+    let listening = TcpStream::connect_timeout(&listen, Duration::from_millis(250)).is_ok();
+    let probed = (|| -> Result<bool, String> {
+        let mut stream =
+            TcpStream::connect_timeout(&listen, Duration::from_secs(2)).map_err(|_| REFUSED)?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(3))))
+            .map_err(|_| REFUSED)?;
+        stream
+            .write_all(
+                format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+            )
+            .map_err(|_| REFUSED)?;
+        let mut head = [0u8; 32];
+        let mut filled = 0;
+        while filled < 13 {
+            let n = stream
+                .read(&mut head[filled..])
+                .map_err(|_| "gateway probe read refused")?;
+            if n == 0 {
+                return Ok(false);
+            }
+            filled += n;
+        }
+        Ok(head.starts_with(b"HTTP/1.1 200"))
+    })();
+    match probed {
+        Ok(ok) => Ok(serde_json::json!({"listening":listening,"probed":ok})),
+        Err(_) => Ok(serde_json::json!({"listening":listening,"probed":false})),
+    }
+}
+/// Bounded bind retry mirrors the host: a restart handoff or brief port hold
+/// must not drop the supervisor into a crash loop. Non-address errors refuse.
+fn bind(address: SocketAddr, log_dir: &Path) -> Result<TcpListener, String> {
+    for attempt in 0..20 {
+        match TcpListener::bind(address) {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                events::append(log_dir, "bind-retry", &[("attempt", &attempt.to_string())])?;
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            Err(_) => return Err("gateway loopback listener bind failed".into()),
+        }
+    }
+    Err("gateway loopback listener bind failed".into())
+}
 pub(crate) fn help() -> &'static str {
-    "vhalla private-gateway serve <absolute-private-config.json>"
+    "vhalla private-gateway serve|status|install|uninstall <absolute-private-config.json> [--probe for status]"
 }
 pub(crate) fn execute(args: &[OsString]) -> Result<(), String> {
-    if args.len() != 2 || args[0] != "serve" {
+    if args.is_empty() {
         return Err(help().into());
     }
-    let (gateway, address) = load(Path::new(&args[1]))?;
-    let listener =
-        TcpListener::bind(address).map_err(|_| "gateway loopback listener bind failed")?;
-    println!("private-gateway {}", gateway.origin());
-    gateway
-        .serve_until(listener, Arc::new(AtomicBool::new(false)))
-        .map_err(|_| "gateway service stopped; preserve configuration and stores".into())
+    match args[0].to_str() {
+        Some("status") if args.len() == 2 || args.len() == 3 => {
+            if args.len() == 3 && args[2] != "--probe" {
+                return Err(help().into());
+            }
+            let config = resolve(Path::new(&args[1]))?;
+            let (gateway, listen) = load(&config)?;
+            let log_dir = config.parent().ok_or(REFUSED)?;
+            let mut report = serde_json::json!({"status":"configured","config":config,"label":launchd::label(&config)?,"listen":listen,"origin":gateway.origin(),"service":launchd::status(&config)?,"log":log_dir.join(crate::private_host::launchd::LOG_NAME),"recent_events":events::tail(log_dir,8)?});
+            if args.len() == 3 {
+                report["probe"] = probe(listen)?;
+            } else {
+                report["health"] =
+                    "not probed; live listener and upstream TLS are separate evidence".into();
+            }
+            println!("{report}");
+            Ok(())
+        }
+        Some("install") if args.len() == 2 => {
+            let config = resolve(Path::new(&args[1]))?;
+            // Never install an agent for configuration that cannot serve.
+            drop(load(&config)?);
+            let result = launchd::install(&config);
+            if result.is_ok() {
+                let _ = events::append(config.parent().ok_or(REFUSED)?, "agent-installed", &[]);
+            }
+            result
+        }
+        Some("uninstall") if args.len() == 2 => {
+            let config = resolve(Path::new(&args[1]))?;
+            let result = launchd::uninstall(&config);
+            if result.is_ok() {
+                let _ = events::append(config.parent().ok_or(REFUSED)?, "agent-uninstalled", &[]);
+            }
+            result
+        }
+        Some("serve") if args.len() == 2 => serve(Path::new(&args[1])),
+        _ => Err(help().into()),
+    }
+}
+fn serve(path: &Path) -> Result<(), String> {
+    let config = resolve(path)?;
+    let (gateway, address) = load(&config)?;
+    let log_dir = config.parent().ok_or(REFUSED)?.to_path_buf();
+    let listener = bind(address, &log_dir)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| REFUSED)?;
+    runtime.block_on(async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate()).map_err(|_| REFUSED)?;
+        let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| REFUSED)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let selected = stop.clone();
+        events::append(&log_dir, "serve-start", &[("listen", &address.to_string())])?;
+        println!("private-gateway {}", gateway.origin());
+        let mut worker =
+            tokio::task::spawn_blocking(move || gateway.serve_until(listener, selected));
+        let (result, reason) = tokio::select! {
+            result = &mut worker => (result.map_err(|_|REFUSED)?,"worker"),
+            _ = terminate.recv() => {stop.store(true,Ordering::Release);(worker.await.map_err(|_|REFUSED)?,"terminate")},
+            _ = interrupt.recv() => {stop.store(true,Ordering::Release);(worker.await.map_err(|_|REFUSED)?,"interrupt")},
+        };
+        let _ = events::append(&log_dir, "serve-stop", &[("reason", reason)]);
+        result.map_err(|_| "gateway service stopped; preserve configuration and stores".into())
+    })
 }

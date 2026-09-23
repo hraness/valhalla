@@ -18,7 +18,7 @@ use web_sys::{
 
 #[cfg(feature = "local-qualification")]
 #[path = "qualification.rs"]
-mod qualification;
+pub(crate) mod qualification;
 
 const DEADLINE_MS: i32 = 15_000;
 

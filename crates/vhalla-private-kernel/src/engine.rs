@@ -23,11 +23,11 @@ mod succession;
 pub use drafts::{MemberDraft, OwnerDraft};
 pub use snapshot::MembershipSnapshot;
 
-fn encrypted_base(work: &Working) -> protocol::ControlFloor {
-    work.state
+fn encrypted_base(state: &State) -> protocol::ControlFloor {
+    state
         .checkpoint
         .as_ref()
-        .map_or(work.state.base, |checkpoint| checkpoint.claims().accepted)
+        .map_or(state.base, |checkpoint| checkpoint.claims().accepted)
 }
 
 /// One private room/device custody session. Operations borrow it exclusively;
@@ -41,6 +41,10 @@ pub struct Kernel<S: Store> {
     status: Status,
     needs_reopen: bool,
     pending_fault: Option<ForkEvidence>,
+    /// Authenticated decode of exactly `self.image`. Repopulated at open and at
+    /// every committed publish, so unchanged-image operations never re-verify
+    /// the sealed state's signatures. Dropped with the session (zeroized).
+    state_cache: Option<State>,
 }
 impl<S: Store> Kernel<S> {
     /// Open only an existing exact room/account/device state with retained custody.
@@ -52,15 +56,17 @@ impl<S: Store> Kernel<S> {
             .await
             .map_err(store_error)?
             .ok_or(Error::Missing)?;
-        let work = decode_work(key, context, &image)?;
+        let (_work, state) = decode_work(key, context, &image)?;
+        let status = state.status();
         Ok(Self {
             store,
             key: key.duplicate(),
             context,
             image,
-            status: work.state.status(),
+            status,
             needs_reopen: false,
             pending_fault: None,
+            state_cache: Some(state),
         })
     }
     /// Last authenticated local status. It does not promise remote delivery or
@@ -79,13 +85,37 @@ impl<S: Store> Kernel<S> {
         self.store
     }
 
+    /// Read-and-compare the committed image, then hydrate. A failure inside
+    /// this await is indeterminate only for the backend read itself, so every
+    /// error here keeps the session latched for an exact reopen.
     async fn begin(&mut self) -> Result<Working> {
         if self.needs_reopen {
             return Err(Error::NeedsReopen);
         }
-        // Set before the first backend await. Dropped futures cannot make the
-        // stale session usable again after an indeterminate write/read outcome.
-        self.needs_reopen = true;
+        match self.load_state().await {
+            Ok(state) => Working::hydrate(state),
+            Err(error) => {
+                self.needs_reopen = true;
+                Err(error)
+            }
+        }
+    }
+    /// Read-and-compare the committed image and return its authenticated
+    /// decoded state without hydrating the OpenMLS provider. Purely local
+    /// reads cost one backend load and no decode on an unchanged image.
+    async fn begin_state(&mut self) -> Result<State> {
+        if self.needs_reopen {
+            return Err(Error::NeedsReopen);
+        }
+        match self.load_state().await {
+            Ok(state) => Ok(state),
+            Err(error) => {
+                self.needs_reopen = true;
+                Err(error)
+            }
+        }
+    }
+    async fn load_state(&mut self) -> Result<State> {
         let observed = self
             .store
             .load(self.context)
@@ -95,23 +125,31 @@ impl<S: Store> Kernel<S> {
         if observed != self.image {
             return Err(Error::Conflict);
         }
-        decode_work(&self.key, self.context, &observed)
+        if let Some(state) = &self.state_cache {
+            return Ok(state.clone());
+        }
+        let state = decode_state(&self.key, self.context, &observed)?;
+        self.state_cache = Some(state.clone());
+        Ok(state)
     }
     async fn begin_live(&mut self) -> Result<Working> {
         let work = self.begin().await?;
         if work.state.fault.is_some() {
-            self.needs_reopen = false;
             return Err(Error::Quarantined);
         }
         Ok(work)
     }
     async fn publish(&mut self, mut work: Working, records: Vec<StoredRecord>) -> Result<()> {
-        if !self.needs_reopen || records.len() > MAX_TRANSACTION_RECORDS {
-            return Err(Error::NeedsReopen);
+        if records.len() > MAX_TRANSACTION_RECORDS {
+            return Err(Error::Bounds);
         }
         work.state.revision = work.state.revision.checked_add(1).ok_or(Error::Bounds)?;
         let state = work.capture()?;
         let next = encode_state(&self.key, self.context, &state)?;
+        // The latch covers exactly the uncertain window: the backend write, its
+        // committed readback and the per-record authentication below. Refusals
+        // reached before this point had no write and never latch the session.
+        self.needs_reopen = true;
         self.store
             .publish(self.context, Some(&self.image), &next, &records)
             .await
@@ -127,7 +165,6 @@ impl<S: Store> Kernel<S> {
         if observed != next {
             return Err(Error::NeedsReopen);
         }
-        let confirmed = decode_work(&self.key, self.context, &observed)?;
         for expected in &records {
             let actual = self
                 .store
@@ -140,8 +177,12 @@ impl<S: Store> Kernel<S> {
             }
             self.decrypt_record(&actual)?;
         }
+        // `observed == next` proves the committed bytes decode to `state`
+        // exactly, so the pre-encode value is the confirmed state: no second
+        // unseal/decode/verify pass is needed after the barrier.
         self.image = observed;
-        self.status = confirmed.state.status();
+        self.status = state.status();
+        self.state_cache = Some(state);
         // The operation still owns the latch until its retained output has been
         // decoded. Failure/cancellation of that final read also requires reopen.
         Ok(())
@@ -272,6 +313,14 @@ impl<S: Store> Kernel<S> {
             self.encrypt_record(RecordKey::Outbox(index), &clear)?,
             self.encrypt_record(RecordKey::Operation(operation), &index.to_be_bytes())?,
         ];
+        // Application sends are the only receipt targets: index ciphertext hash
+        // -> outbox position so an incoming receipt resolves its exact original.
+        if kind == OutboxKind::Application {
+            records.push(self.encrypt_record(
+                RecordKey::Sent(wire_hash(&sent.bytes)),
+                &index.to_be_bytes(),
+            )?);
+        }
         if let Some((control, envelope)) = control {
             records.push(
                 self.encrypt_record(
@@ -308,15 +357,58 @@ impl<S: Store> Kernel<S> {
             body,
         };
         let clear = Zeroizing::new(received.encode()?);
-        let records = vec![
+        let mut records = vec![
             self.encrypt_record(RecordKey::Inbox(index), &clear)?,
             self.encrypt_record(RecordKey::Received(wire_hash(wire)), &index.to_be_bytes())?,
         ];
+        // A verified member receipt for one of our committed application sends
+        // earns a durable sender-side acceptance index in the same transaction;
+        // anything else remains inert inbox content with no acceptance status.
+        if let Some(key) = self
+            .acceptance_key(work.state.outbox, received.committed())
+            .await?
+        {
+            records.push(self.encrypt_record(key, &index.to_be_bytes())?);
+        }
         work.state.inbox = index;
         self.publish(work, records).await?;
         let retained = self.received(wire, index).await?.ok_or(Error::Missing)?;
         self.needs_reopen = false;
         Ok(retained)
+    }
+    /// Resolve a verified member receipt to its durable acceptance index key.
+    /// Framing hints, unknown originals, unverifiable signatures and duplicate
+    /// claims all stay inert; they never produce or overwrite acceptance state.
+    async fn acceptance_key(
+        &mut self,
+        outbox_head: u64,
+        received: ReceivedMessage,
+    ) -> Result<Option<RecordKey>> {
+        let Some(claim) = MemberAcceptance::claimed_ciphertext(received.body()) else {
+            return Ok(None);
+        };
+        let Some(lookup) = self.read_clear(RecordKey::Sent(claim)).await? else {
+            return Ok(None);
+        };
+        let sent = self.sent_at(decode_index(&lookup)?, outbox_head).await?;
+        if sent.kind != OutboxKind::Application {
+            return Ok(None);
+        }
+        let original = sent.committed()?;
+        let Ok(Some(_)) = MemberAcceptance::verify(self.context, &original, &received) else {
+            return Ok(None);
+        };
+        let key = RecordKey::Acceptance {
+            outbox: original.sequence(),
+            recipient: received.sender(),
+        };
+        // The first verified receipt for an exact (original, recipient) pair
+        // wins; a later valid claim stays inert content rather than colliding
+        // on the immutable index key.
+        if self.read_clear(key).await?.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(key))
     }
 
     /// Read a bounded immutable local outbox prefix. `after` is an explicit
@@ -325,8 +417,8 @@ impl<S: Store> Kernel<S> {
         if limit == 0 || limit > MAX_PAGE_RECORDS {
             return Err(Error::Bounds);
         }
-        let work = self.begin().await?;
-        let head = work.state.outbox;
+        let state = self.begin_state().await?;
+        let head = state.outbox;
         if after > head {
             return Err(Error::Bounds);
         }
@@ -347,7 +439,6 @@ impl<S: Store> Kernel<S> {
         if cursor == after && cursor < head {
             return Err(Error::Bounds);
         }
-        self.needs_reopen = false;
         Ok(OutboxPage {
             head,
             next: (cursor < head).then_some(cursor),
@@ -361,8 +452,8 @@ impl<S: Store> Kernel<S> {
         if limit == 0 || limit > MAX_PAGE_RECORDS {
             return Err(Error::Bounds);
         }
-        let work = self.begin().await?;
-        let head = work.state.inbox;
+        let state = self.begin_state().await?;
+        let head = state.inbox;
         if after > head {
             return Err(Error::Bounds);
         }
@@ -392,12 +483,76 @@ impl<S: Store> Kernel<S> {
         if cursor == after && cursor < head {
             return Err(Error::Bounds);
         }
-        self.needs_reopen = false;
         Ok(InboxPage {
             head,
             next: (cursor < head).then_some(cursor),
             records,
         })
+    }
+
+    /// Durable ciphertext-hash -> outbox lookup for sender-side receipt
+    /// handling. Every retained application send is indexed at publication, so
+    /// `Ok(None)` means no committed send carried those exact ciphertext bytes.
+    pub async fn original(
+        &mut self,
+        ciphertext_hash: &[u8; 32],
+    ) -> Result<Option<CommittedOutbox>> {
+        let state = self.begin_state().await?;
+        let Some(lookup) = self.read_clear(RecordKey::Sent(*ciphertext_hash)).await? else {
+            return Ok(None);
+        };
+        let sent = self.sent_at(decode_index(&lookup)?, state.outbox).await?;
+        if sent.kind != OutboxKind::Application {
+            return Ok(None);
+        }
+        Ok(Some(sent.committed()?))
+    }
+
+    /// Verified member acceptances for one exact committed outbox position.
+    /// Only durably received and signature-verified member receipts appear;
+    /// malformed, duplicate or forged receipt bytes stay inert inbox content.
+    /// Members no longer on the current roster are not enumerated.
+    pub async fn acceptances(&mut self, outbox_sequence: u64) -> Result<Vec<MemberAcceptance>> {
+        let state = self.begin_state().await?;
+        if outbox_sequence == 0 || outbox_sequence > state.outbox {
+            return Err(Error::Bounds);
+        }
+        let sent = self.sent_at(outbox_sequence, state.outbox).await?;
+        if sent.kind != OutboxKind::Application {
+            return Err(Error::Bounds);
+        }
+        let original = sent.committed()?;
+        let mut result = Vec::new();
+        for member in &state.roster {
+            let device = member.claims().device;
+            if device == self.context.device {
+                continue;
+            }
+            let key = RecordKey::Acceptance {
+                outbox: outbox_sequence,
+                recipient: device,
+            };
+            let Some(lookup) = self.read_clear(key).await? else {
+                continue;
+            };
+            let index = decode_index(&lookup)?;
+            if index > state.inbox {
+                return Err(Error::Encoding);
+            }
+            let clear = self
+                .read_clear(RecordKey::Inbox(index))
+                .await?
+                .ok_or(Error::Missing)?;
+            let received = Received::decode(&clear)?;
+            if received.sequence != index {
+                return Err(Error::Encoding);
+            }
+            let message = received.committed();
+            if let Some(acceptance) = MemberAcceptance::verify(self.context, &original, &message)? {
+                result.push(acceptance);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -419,15 +574,17 @@ async fn initialize<S: Store>(mut store: S, key: &StorageKey, work: Working) -> 
     if observed != image {
         return Err(Error::NeedsReopen);
     }
-    let work = decode_work(key, context, &observed)?;
+    let (_work, state) = decode_work(key, context, &observed)?;
+    let status = state.status();
     Ok(Kernel {
         store,
         key: key.duplicate(),
         context,
         image: observed,
-        status: work.state.status(),
+        status,
         needs_reopen: false,
         pending_fault: None,
+        state_cache: Some(state),
     })
 }
 fn encode_state(key: &StorageKey, context: Context, state: &State) -> Result<Image> {
@@ -440,9 +597,17 @@ fn encode_state(key: &StorageKey, context: Context, state: &State) -> Result<Ima
         MAX_IMAGE_BYTES,
     )?))
 }
-fn decode_work(key: &StorageKey, context: Context, image: &Image) -> Result<Working> {
+fn decode_state(key: &StorageKey, context: Context, image: &Image) -> Result<State> {
     let clear = codec::unseal(key, context, b"current-state", &image.0, MAX_IMAGE_BYTES)?;
-    Working::hydrate(State::decode(&clear, context)?)
+    State::decode(&clear, context)
+}
+/// Decode and hydrate, returning the pristine decoded state as well: hydration
+/// drains `state.records` into the provider, so only the pre-hydrate copy is a
+/// valid decode cache.
+fn decode_work(key: &StorageKey, context: Context, image: &Image) -> Result<(Working, State)> {
+    let state = decode_state(key, context, image)?;
+    let work = Working::hydrate(state.clone())?;
+    Ok((work, state))
 }
 fn decode_index(bytes: &[u8]) -> Result<u64> {
     let index = u64::from_be_bytes(bytes.try_into().map_err(|_| Error::Encoding)?);

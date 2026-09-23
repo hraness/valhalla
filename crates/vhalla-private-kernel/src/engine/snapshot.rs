@@ -59,21 +59,15 @@ impl<S: Store> Kernel<S> {
     /// Read-only inspection remains available after removal or fork quarantine.
     /// A stale writer, failed read or canceled await requires exact-store reopen.
     pub async fn membership(&mut self) -> Result<MembershipSnapshot> {
-        let work = self.begin().await?;
+        let state = self.begin_state().await?;
         let snapshot = MembershipSnapshot {
-            status: work.state.status(),
-            anchor: work.state.anchor.signed().clone(),
-            local: work.state.local.signed().clone(),
-            owner: work.state.owner.signed().clone(),
-            successions: work.state.successions.clone(),
-            members: work
-                .state
-                .roster
-                .iter()
-                .map(|e| e.signed().clone())
-                .collect(),
+            status: state.status(),
+            anchor: state.anchor.signed().clone(),
+            local: state.local.signed().clone(),
+            owner: state.owner.signed().clone(),
+            successions: state.successions.clone(),
+            members: state.roster.iter().map(|e| e.signed().clone()).collect(),
         };
-        self.needs_reopen = false;
         Ok(snapshot)
     }
 }

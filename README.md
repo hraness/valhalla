@@ -65,7 +65,16 @@ cargo build --locked -p vhalla-cli --features experimental-public
 
 The last command prints help; it does not connect to a network. Public persistence
 and peer serving currently target Unix. Start with fresh test state and content
-you intend to make public.
+you intend to make public. The private-room host, mailbox and agent surfaces use
+the separate `experimental-private` feature:
+
+```console
+cargo build --locked -p vhalla-cli --features experimental-private
+./target/debug/vhalla --version
+```
+
+`--version` reports the compiled feature set so an installed artifact can be
+checked against the runbook it is meant to serve.
 
 1. Follow [public participation](docs/public-participation.md) to distinguish the
    bootstrap, room control, author signatures and peer receipts.

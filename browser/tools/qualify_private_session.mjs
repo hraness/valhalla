@@ -77,7 +77,17 @@ async function task(abortSignal){
       res.end(await readFile(target));
     }catch{res.writeHead(500);res.end('qualification request refused');}
   });
-  await new Promise((r,j)=>{server.once('error',j);server.listen(8790,'127.0.0.1',r);});
+  // The opt-in qualification transport pins an exact local origin list
+  // (browser/src/qualification.rs); 8790 is also the maintained gateway's
+  // production port, so prefer the dedicated qualification port 8789 and only
+  // fall back through the remaining allowed origins when it is occupied.
+  let serverPort=0;
+  for(const port of [8789,8790]){
+    const taken=await new Promise(r=>{const probe=createServer();probe.once('error',()=>r(true));probe.listen(port,'127.0.0.1',()=>probe.close(()=>r(false)));});
+    if(!taken){serverPort=port;break;}
+  }
+  if(!serverPort)throw Error('no allowed loopback qualification port free');
+  await new Promise((r,j)=>{server.once('error',j);server.listen(serverPort,'127.0.0.1',r);});
   signal.throwIfAborted();
   const chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
   children.push(chrome);chrome.stderr.on('data',c=>chromeLog+=c);
@@ -103,7 +113,7 @@ async function task(abortSignal){
     window.qm=await import('/${modules[0]}');
     qassert(typeof qm.qualify_private_session==='function' && typeof qm.qualify_private_cancel==='function','qualification feature exports missing');
   `;
-  await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
+  await call('Page.navigate',{url:`http://127.0.0.1:${serverPort}`},sessionId);
   await wait(()=>evaluate("!!document.getElementById('create')&&!document.getElementById('create').disabled"),'app ready');
   await evaluate(`(async()=>{${helpers}
     qid('password').value=qpassword;qid('create').click();await qwait(()=>qid('identity-state').textContent==='Unlocked','created');
