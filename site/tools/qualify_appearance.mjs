@@ -86,6 +86,10 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
     } catch (cause) {
       const diagnostic = await evaluate(`({visibility:document.visibilityState,focused:document.hasFocus(),
         media:matchMedia('(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) and (forced-colors: none)').matches,
+        features:Object.fromEntries(['(hover: hover)','(hover: none)','(pointer: fine)','(pointer: coarse)',
+          '(pointer: none)','(prefers-reduced-motion: no-preference)','(prefers-reduced-motion: reduce)',
+          '(forced-colors: none)','(forced-colors: active)','(prefers-reduced-transparency: reduce)']
+          .map(query=>[query,matchMedia(query).matches])),
         hit:document.elementFromPoint(${point.x},${point.y})?.tagName,
         inside:!!document.elementFromPoint(${point.x},${point.y})?.closest('.introduction')})`);
       throw Error('trusted hero pointer input: '+JSON.stringify(diagnostic),{cause});
