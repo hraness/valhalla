@@ -245,12 +245,13 @@
     {
       "id": "rooms-held-reply",
       "module": "verify/rooms-held-reply/RoomsHeldReply.tla",
-      "claim": "Held replies retain custody, live replies follow durable preparation, tombstones stay local and each request eventually resolves under the operating-host assumptions.",
+      "claim": "Held replies retain custody, live replies follow durable preparation and confirmed adapter admission, tombstones stay local and each request eventually resolves under the operating-host assumptions.",
       "status": "implementation-correspondence",
-      "bounds": "Two distinct request/metadata slots sharing one height budget; capacity one; one durable value may arrive or remain absent.",
+      "bounds": "Two distinct request/metadata slots sharing one height budget; capacity one; one durable valid candidate may arrive or remain absent, independently of adapter admission.",
       "assumptions": [
         "One sequential connector, live reply receiver, successful storage, continuing host scheduling and draining network.",
-        "No fairness assumption on producer arrival; deadline expiry and host actions are fair. No wall-clock bound, signature, tombstone identity or physical fsync proof."
+        "No fairness assumption on producer arrival; deadline expiry and host actions are fair. No wall-clock bound, signature, tombstone identity or physical fsync proof.",
+        "A live candidate validates at the current frontier; preceding-height pruning is abstracted as absent adapter admission. The three-height runtime regression exercises the pruning transition."
       ],
       "sources": [
         {
@@ -277,6 +278,14 @@
           "symbols": [
             "seen_failed_preparation_cannot_release_direct_or_held_reply",
             "seen_direct_and_held_replies_follow_durable_preparation"
+          ],
+          "role": "regression"
+        },
+        {
+          "path": "crates/vhalla-rooms-node/src/unix/formal_finalized.rs",
+          "symbols": [
+            "local_proposal_restores_exact_candidate_after_earlier_frontier_pruning",
+            "refused_local_metadata_does_not_readmit_a_pruned_candidate"
           ],
           "role": "regression"
         }
@@ -324,6 +333,15 @@
             "property": "AllRequestsAnswered"
           },
           "historical_trace": "verify/rooms-held-reply/counterexamples/mutant-deadline.json"
+        },
+        {
+          "id": "mutant-unadmitted",
+          "config": "verify/rooms-held-reply/mutant-unadmitted.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "AdmittedBeforeReply"
+          },
+          "historical_trace": "verify/rooms-held-reply/counterexamples/mutant-unadmitted.json"
         }
       ]
     },
@@ -409,6 +427,534 @@
             "kind": "invariant",
             "property": "RestartEvidence"
           }
+        }
+      ]
+    },
+    {
+      "id": "rooms-frontier",
+      "module": "verify/rooms-frontier/RoomsFrontier.tla",
+      "claim": "A rooms acknowledgment follows durable ordered publication and complete frontier application; honest interrupted publication reopens, committed identity is immutable, and failed finalization cannot authorize a WAL-reset restart. Successful finalization selects the next-height roster.",
+      "status": "implementation-correspondence",
+      "bounds": "Two heights, two value identities, two process interruptions, four snapshot-root change schedules, one retained height-1 vote/lock set and a roster change at height 2.",
+      "assumptions": [
+        "Journal commits and successful individual snapshot publications are atomic and durable; one sequential owner, verified certificates and deterministic batch replay. No journal, cryptographic or physical fsync proof.",
+        "Roots may repeat for unchanged snapshots; returning to an older distinct root after later changes is outside the configured bound. Recovery considers all compatible joint prefixes, overapproximating the production newest-prefix search.",
+        "The pinned Malachite RestartHeight-to-WAL-reset mapping is an external source assumption. No engine consensus, WAL replay, later-height anti-equivocation or scheduling liveness theorem."
+      ],
+      "sources": [
+        {
+          "path": "crates/vhalla-rooms-consensus/src/lib.rs",
+          "symbols": [
+            "Frontier",
+            "Adapter::open_with",
+            "Adapter::committed_at",
+            "Adapter::reconcile_committed",
+            "Adapter::decide",
+            "Adapter::publish",
+            "Application::apply_locally"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-rooms-consensus/src/formal_recovery.rs",
+          "symbols": [
+            "formal_recovery_empty_clock_batch_redelivery_applies_full_frontier",
+            "formal_recovery_game_batch_redelivery_preserves_order_and_identity",
+            "formal_recovery_changed_snapshots_redeliver_from_each_publication_cut",
+            "formal_recovery_reopen_accepts_social_only_publication_cuts",
+            "formal_recovery_reopen_accepts_changed_and_root_preserving_history",
+            "formal_recovery_reopen_refuses_snapshots_ahead_of_empty_journal",
+            "formal_recovery_reopen_refuses_rooms_ahead_of_social"
+          ],
+          "role": "regression"
+        },
+        {
+          "path": "crates/vhalla-rooms-node/src/unix.rs",
+          "symbols": [
+            "App::decide",
+            "AppMsg::Finalized",
+            "height_params"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-rooms-node/src/unix/formal_finalized.rs",
+          "symbols": [
+            "withheld_finalization_preserves_frontier_and_retries_with_next_roster",
+            "rejected_finalization_preserves_frontier_and_retries_with_next_roster"
+          ],
+          "role": "regression"
+        },
+        {
+          "path": "Cargo.lock",
+          "symbols": [
+            "arc-malachitebft-app-channel",
+            "arc-malachitebft-engine",
+            "72143f6c99a98452b587e1c392bdb80944eb2232"
+          ],
+          "role": "contract"
+        },
+        {
+          "path": "crates/vhalla-rooms-node/src/unix/tests.rs",
+          "symbols": [
+            "mod formal_finalized"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/rooms-frontier/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "root-preserving",
+          "config": "verify/rooms-frontier/root-preserving.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "social-only",
+          "config": "verify/rooms-frontier/social-only.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "two-changing",
+          "config": "verify/rooms-frontier/two-changing.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-roots-only",
+          "config": "verify/rooms-frontier/mutant-roots-only.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "AckHasFullFrontier"
+          },
+          "historical_trace": "verify/rooms-frontier/counterexamples/mutant-roots-only.json"
+        },
+        {
+          "id": "mutant-early-ack",
+          "config": "verify/rooms-frontier/mutant-early-ack.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "AckAfterDurability"
+          },
+          "historical_trace": "verify/rooms-frontier/counterexamples/mutant-early-ack.json"
+        },
+        {
+          "id": "mutant-identity",
+          "config": "verify/rooms-frontier/mutant-identity.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "CommittedIdentity"
+          },
+          "historical_trace": "verify/rooms-frontier/counterexamples/mutant-identity.json"
+        },
+        {
+          "id": "mutant-failed-restart",
+          "config": "verify/rooms-frontier/mutant-failed-restart.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "FailedFinalizationKeepsWal"
+          },
+          "historical_trace": "verify/rooms-frontier/counterexamples/mutant-failed-restart.json"
+        },
+        {
+          "id": "mutant-next-roster",
+          "config": "verify/rooms-frontier/mutant-next-roster.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "NextRoster"
+          },
+          "historical_trace": "verify/rooms-frontier/counterexamples/mutant-next-roster.json"
+        },
+        {
+          "id": "mutant-publication-order",
+          "config": "verify/rooms-frontier/mutant-publication-order.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "PublicationOrder"
+          },
+          "historical_trace": "verify/rooms-frontier/counterexamples/mutant-publication-order.json"
+        },
+        {
+          "id": "mutant-independent-roots",
+          "config": "verify/rooms-frontier/mutant-independent-roots.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "HonestRecovery"
+          },
+          "historical_trace": "verify/rooms-frontier/counterexamples/mutant-independent-roots.json"
+        }
+      ]
+    },
+    {
+      "id": "native-delivery",
+      "module": "verify/native-delivery/NativeDelivery.tla",
+      "claim": "A native sender publishes attempt intent before transport, retries exact bytes at the bound destination, preserves uncertain custody through refusal/reopen/resume, conserves attempt and outage evidence, and marks retention only after checking its exact receipt.",
+      "status": "implementation-correspondence",
+      "bounds": "One job; three foreign binding variants; two attempts per budget; one explicit resume; two classified outages; normal permits one interruption, uncertain-write permits two interruptions and one precommit outcome refusal.",
+      "assumptions": [
+        "Successful local transactions and barriers are atomic and durable. Interrupted unknown attempts remain charged; only durably classified outages restore the charge. No SQLite, filesystem or physical power-loss proof.",
+        "Exact symbolic identities; valid receipts come from the modeled honest selected relay. Positions are finite equivalence-class representatives, including zero and above-i64::MAX cases. No cryptographic/refinement proof.",
+        "Due abstracts eligibility; no backoff arithmetic, wall-clock, multi-job fairness, cancellation, deletion or delivery-liveness claim.",
+        "The failed-outcome action covers only precommit refusal. Postcommit sync/readback failures may retain the outcome and are not modeled; completed publication followed by process interruption is covered separately."
+      ],
+      "sources": [
+        {
+          "path": "crates/vhalla-private-native/src/relay/delivery.rs",
+          "symbols": [
+            "DeliveryStore::enqueue",
+            "DeliveryStore::open",
+            "DeliveryStore::tick_selected",
+            "DeliveryStore::resume",
+            "DeliveryStore::begin",
+            "DeliveryStore::commit"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-native/src/relay/delivery/tests.rs",
+          "symbols": [
+            "exact_job_and_attempt_are_durable_before_transport_and_success_survives_reopen",
+            "denial_preserves_prior_uncertainty_and_original_failure_budget_across_reopen",
+            "failed_receipt_publication_preserves_intent_and_exact_retry",
+            "stopped_jobs_resume_in_place_with_spent_attempts_retained_as_evidence",
+            "hostile_receipt_stops_without_claiming_retention_and_custody_cannot_split"
+          ],
+          "role": "regression"
+        },
+        {
+          "path": "crates/vhalla-private-native/src/relay/tls/tests.rs",
+          "symbols": [
+            "formal_relay_lost_receipt_resume_preserves_custody_and_quota"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/native-delivery/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "uncertain-write",
+          "config": "verify/native-delivery/uncertain-write.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-early-send",
+          "config": "verify/native-delivery/mutant-early-send.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "IntentBeforeTransport"
+          },
+          "historical_trace": "verify/native-delivery/counterexamples/mutant-early-send.json"
+        },
+        {
+          "id": "mutant-retarget",
+          "config": "verify/native-delivery/mutant-retarget.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ExactRetryBinding"
+          },
+          "historical_trace": "verify/native-delivery/counterexamples/mutant-retarget.json"
+        },
+        {
+          "id": "mutant-forget-uncertainty",
+          "config": "verify/native-delivery/mutant-forget-uncertainty.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "UncertaintyPreserved"
+          },
+          "historical_trace": "verify/native-delivery/counterexamples/mutant-forget-uncertainty.json"
+        },
+        {
+          "id": "mutant-reset-spend",
+          "config": "verify/native-delivery/mutant-reset-spend.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "AttemptEvidenceConserved"
+          },
+          "historical_trace": "verify/native-delivery/counterexamples/mutant-reset-spend.json"
+        },
+        {
+          "id": "mutant-unchecked-receipt",
+          "config": "verify/native-delivery/mutant-unchecked-receipt.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "CheckedRetention"
+          },
+          "historical_trace": "verify/native-delivery/counterexamples/mutant-unchecked-receipt.json"
+        },
+        {
+          "id": "mutant-charge-outage",
+          "config": "verify/native-delivery/mutant-charge-outage.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "AttemptEvidenceConserved"
+          },
+          "historical_trace": "verify/native-delivery/counterexamples/mutant-charge-outage.json"
+        }
+      ]
+    },
+    {
+      "id": "relay-quota",
+      "module": "verify/relay-quota/RelayQuota.tla",
+      "claim": "TLS relay item and original-owner quota charges publish together; exact duplicate retries preserve charge and mailbox position; token replacement preserves stable-identity spend; successful receipts follow the durability barrier.",
+      "status": "implementation-correspondence",
+      "bounds": "Two items with one/two abstract payload-byte units, two credential identities, four admitted PUTs, one token replacement and two process interruptions. Normal checks a one-item quota; byte-quota permits two items but only two byte units.",
+      "assumptions": [
+        "One serialized transaction owner. Completed SQLite transactions survive process interruption and successful sync establishes receipt durability; no SQLite, filesystem, physical power-loss or concurrent-writer proof.",
+        "Reopen abstracts successful ledger validation; corrupt/uncharged local inputs remain covered by Rust tests. Token replacement is a drained restart using the same stable credential ID, not generation migration.",
+        "Exact item identities and bounded byte arithmetic. No hash, TLS, request-rate, global-slot, half-capacity-allocation, availability or member-acceptance theorem."
+      ],
+      "sources": [
+        {
+          "path": "crates/vhalla-private-native/src/relay/tls/service.rs",
+          "symbols": [
+            "Service::initialize",
+            "Service::new",
+            "put"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-native/src/relay/mod.rs",
+          "symbols": [
+            "FileStore::open",
+            "FileStore::put_staged",
+            "FileStore::sync"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-native/src/relay/tls.rs",
+          "symbols": [
+            "TlsRelay::submit_until",
+            "TlsRelay::endpoint_id"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-native/src/relay/tls/tests.rs",
+          "symbols": [
+            "formal_relay_lost_receipt_resume_preserves_custody_and_quota",
+            "publication_failure_rolls_back_quota_and_poisoned_service_requires_reopen",
+            "lost_receipt_reopen_retries_exact_ciphertext_at_original_position",
+            "permissions_wrong_token_and_rotation_preserve_durable_quota"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/relay-quota/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "byte-quota",
+          "config": "verify/relay-quota/byte-quota.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-early-charge",
+          "config": "verify/relay-quota/mutant-early-charge.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ItemsChargedTogether"
+          },
+          "historical_trace": "verify/relay-quota/counterexamples/mutant-early-charge.json"
+        },
+        {
+          "id": "mutant-duplicate-charge",
+          "config": "verify/relay-quota/mutant-duplicate-charge.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "RetryKeepsPositionAndCharge"
+          },
+          "historical_trace": "verify/relay-quota/counterexamples/mutant-duplicate-charge.json"
+        },
+        {
+          "id": "mutant-duplicate-position",
+          "config": "verify/relay-quota/mutant-duplicate-position.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "RetryKeepsPositionAndCharge"
+          },
+          "historical_trace": "verify/relay-quota/counterexamples/mutant-duplicate-position.json"
+        },
+        {
+          "id": "mutant-token-reset",
+          "config": "verify/relay-quota/mutant-token-reset.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "StableIdentitySpend"
+          },
+          "historical_trace": "verify/relay-quota/counterexamples/mutant-token-reset.json"
+        },
+        {
+          "id": "mutant-early-receipt",
+          "config": "verify/relay-quota/mutant-early-receipt.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ReceiptAfterDurableRetention"
+          },
+          "historical_trace": "verify/relay-quota/counterexamples/mutant-early-receipt.json"
+        }
+      ]
+    },
+    {
+      "id": "private-control",
+      "module": "verify/private-control/PrivateControl.tla",
+      "claim": "Accepted handoffs preserve sequence-bound historical authority; observations cannot advance floor or owner; uncertain publication retains the live-work latch and committed fork quarantine survives new-process reopen.",
+      "status": "implementation-correspondence",
+      "bounds": "Two owner devices, one foreign signer, four control positions, two handoffs and two process replacements. Late-join starts at floor three with checkpoint two and one retained handoff.",
+      "assumptions": [
+        "Canonical valid signatures, account authority, scope, live validity and exact rostered successor enrollment are assumed; no cryptographic or MLS proof.",
+        "One serialized custodian and atomic state/control/output transactions. Process replacement loses volatile observations but preserves committed images; no filesystem or physical power-loss proof.",
+        "Floor/owner abstraction excludes MLS epoch and membership. Exact output retry is covered by real Kernel tests, not operation IDs in the model. No liveness, global fork discovery, disconnected agreement or recovery-authority claim."
+      ],
+      "sources": [
+        {
+          "path": "crates/vhalla-private-kernel/src/model.rs",
+          "symbols": [
+            "State::owner_device_at"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-kernel/src/engine/succession.rs",
+          "symbols": [
+            "Kernel::succession_request",
+            "Kernel::succeed",
+            "check_grant"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-kernel/src/engine/controls.rs",
+          "symbols": [
+            "Kernel::observe_owner_control",
+            "Kernel::reconcile_control",
+            "Kernel::pending_fork_evidence",
+            "Kernel::fork_evidence"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-kernel/src/engine.rs",
+          "symbols": [
+            "Kernel::begin_live",
+            "Kernel::publish"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-kernel/src/tests/succession.rs",
+          "symbols": [
+            "formal_control_two_handoffs_preserve_sequence_bound_observation_authority",
+            "formal_control_handoff_publication_faults_require_reopen_and_exact_retry",
+            "formal_control_historical_fork_faults_preserve_custody_across_handoff",
+            "formal_control_late_join_distinguishes_missing_history_from_checkpoint_fork"
+          ],
+          "role": "regression"
+        },
+        {
+          "path": "crates/vhalla-private-kernel/src/tests.rs",
+          "symbols": [
+            "Memory::publish",
+            "Fault"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/private-control/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "late-join",
+          "config": "verify/private-control/late-join.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-current-owner",
+          "config": "verify/private-control/mutant-current-owner.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "HistoricalAuthority"
+          },
+          "historical_trace": "verify/private-control/counterexamples/mutant-current-owner.json"
+        },
+        {
+          "id": "mutant-stale-grant",
+          "config": "verify/private-control/mutant-stale-grant.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "PinnedHandoff"
+          },
+          "historical_trace": "verify/private-control/counterexamples/mutant-stale-grant.json"
+        },
+        {
+          "id": "mutant-future-observation",
+          "config": "verify/private-control/mutant-future-observation.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ObservationOnly"
+          },
+          "historical_trace": "verify/private-control/counterexamples/mutant-future-observation.json"
+        },
+        {
+          "id": "mutant-precheckpoint",
+          "config": "verify/private-control/mutant-precheckpoint.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "KnownHistoryFault"
+          },
+          "historical_trace": "verify/private-control/counterexamples/mutant-precheckpoint.json"
+        },
+        {
+          "id": "mutant-uncertainty",
+          "config": "verify/private-control/mutant-uncertainty.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "UncertainCustody"
+          },
+          "historical_trace": "verify/private-control/counterexamples/mutant-uncertainty.json"
+        },
+        {
+          "id": "mutant-clear-quarantine",
+          "config": "verify/private-control/mutant-clear-quarantine.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "PersistentQuarantine"
+          },
+          "historical_trace": "verify/private-control/counterexamples/mutant-clear-quarantine.json"
         }
       ]
     }

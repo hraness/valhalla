@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "scope": "current finite-model counterexample, not an implementation execution",
+  "model_sha256": "fc27ecb2d577390a390dff7c192211e9bae13e78282f9226d42879bae5430fc4",
+  "config_sha256": "c0f4c1323c6c1b4ad69bcfb9b0f8938b2c0bd4cd500f4ac7ba7ed8667f19e5bc",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "expected": {
+    "kind": "invariant",
+    "property": "PinnedHandoff"
+  },
+  "states": [
+    {
+      "state": 1,
+      "action": "Init",
+      "tlc_text": "<Initial predicate>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"idle\",\n  needsReopen |-> FALSE,\n  uncertain |-> FALSE,\n  kind |-> \"none\",\n  pendingFork |-> 0,\n  everFault |-> FALSE,\n  grant |->\n      [ sequence |-> 0,\n        present |-> FALSE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |-> {},\n  observation |->\n      [ sequence |-> 1,\n        present |-> FALSE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"exact\",\n        result |-> \"Exact\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 0 ]"
+    },
+    {
+      "state": 2,
+      "action": "PrepareGrant",
+      "tlc_text": "<PrepareGrant line 46, col 17 to line 49, col 57 of module PrivateControl>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 1,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"none\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"idle\",\n  needsReopen |-> FALSE,\n  uncertain |-> FALSE,\n  kind |-> \"none\",\n  pendingFork |-> 0,\n  everFault |-> FALSE,\n  grant |->\n      [ sequence |-> 2,\n        present |-> TRUE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |-> {},\n  observation |->\n      [ sequence |-> 1,\n        present |-> FALSE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"exact\",\n        result |-> \"Exact\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 0 ]"
+    },
+    {
+      "state": 3,
+      "action": "AdvanceControl",
+      "tlc_text": "<AdvanceControl line 54, col 5 to line 57, col 56 of module PrivateControl>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 2,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"A\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 2,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"A\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"idle\",\n  needsReopen |-> FALSE,\n  uncertain |-> FALSE,\n  kind |-> \"none\",\n  pendingFork |-> 0,\n  everFault |-> FALSE,\n  grant |->\n      [ sequence |-> 2,\n        present |-> TRUE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |-> {},\n  observation |->\n      [ sequence |-> 1,\n        present |-> FALSE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"exact\",\n        result |-> \"Exact\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 0 ]"
+    },
+    {
+      "state": 4,
+      "action": "BeginHandoff",
+      "tlc_text": "<BeginHandoff line 60, col 5 to line 65, col 64 of module PrivateControl>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 2,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"A\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 2,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"A\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"publishing\",\n  needsReopen |-> TRUE,\n  uncertain |-> TRUE,\n  kind |-> \"handoff\",\n  pendingFork |-> 0,\n  everFault |-> FALSE,\n  grant |->\n      [ sequence |-> 2,\n        present |-> TRUE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |-> {},\n  observation |->\n      [ sequence |-> 1,\n        present |-> FALSE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"exact\",\n        result |-> \"Exact\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 0 ]"
+    },
+    {
+      "state": 5,
+      "action": "Publish",
+      "tlc_text": "<Publish line 103, col 5 to line 115, col 25 of module PrivateControl>\ns = [ disk |->\n      [ changes |-> <<\"none\", \"none\", \"B\", \"none\">>,\n        floor |-> 3,\n        owner |-> \"B\",\n        signers |-> <<\"A\", \"A\", \"A\", \"none\">>,\n        fault |-> 0 ],\n  cached |->\n      [ changes |-> <<\"none\", \"none\", \"none\", \"none\">>,\n        floor |-> 2,\n        owner |-> \"A\",\n        signers |-> <<\"A\", \"A\", \"none\", \"none\">>,\n        fault |-> 0 ],\n  pc |-> \"readback\",\n  needsReopen |-> TRUE,\n  uncertain |-> TRUE,\n  kind |-> \"handoff\",\n  pendingFork |-> 0,\n  everFault |-> FALSE,\n  grant |->\n      [ sequence |-> 2,\n        present |-> TRUE,\n        predecessor |-> \"A\",\n        successor |-> \"B\" ],\n  usedGrants |->\n      { [ predecessor |-> \"A\",\n          successor |-> \"B\",\n          signer |-> \"A\",\n          carriedAt |-> 3,\n          grantedAt |-> 2 ] },\n  observation |->\n      [ sequence |-> 1,\n        present |-> FALSE,\n        signer |-> \"A\",\n        expectedOwner |-> \"A\",\n        variant |-> \"exact\",\n        result |-> \"Exact\",\n        base |-> 0,\n        beforeFloor |-> 1,\n        afterFloor |-> 1,\n        beforeOwner |-> \"A\",\n        afterOwner |-> \"A\" ],\n  reopens |-> 0 ]"
+    }
+  ],
+  "loop": null
+}

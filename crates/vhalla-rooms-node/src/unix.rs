@@ -1265,8 +1265,9 @@ impl App {
             );
         }
         let height = certificate.height.as_u64();
-        // The assignment for this height is dead regardless of outcome —
-        // a rejected/withheld decision restarts the height and reassigns.
+        // Discard the live assignment regardless of outcome. Retained batches
+        // and the consensus WAL remain available for explicit recovery; failure
+        // does not authorize resetting the height.
         self.proposals.remove(&height);
         if matches!(outcome, DecidedOutcome::Acked) {
             let id = certificate.value_id;
@@ -2397,11 +2398,36 @@ fn prepare_local_parts(
     proposed: &LocallyProposedValue<RoomContext>,
 ) -> Option<Vec<RoomPart>> {
     let value_id = proposed.value.id;
+    let candidate = {
+        let adapter = app.adapter.lock().unwrap();
+        if proposed.height.as_u64() > adapter.frontier().height {
+            let batch = app.held_by_id.get(&value_id)?.clone();
+            if batch.value_id() != value_id.0
+                || batch.encode().as_slice() != proposed.value.bytes.as_ref()
+                || batch.parent.height.checked_add(1) != Some(proposed.height.as_u64())
+                || adapter.validate(&batch).is_err()
+            {
+                return None;
+            }
+            Some(batch)
+        } else {
+            // A stale held request may be answered from exact committed
+            // history. It needs no new undecided candidate in the adapter.
+            None
+        }
+    };
     let parts = app.build_parts(proposed);
     if let RoomPart::Init(init) = &parts[0] {
         if !app.record_seen(init, value_id) {
             return None;
         }
+    }
+    if let Some(batch) = candidate {
+        // Earlier commits prune future adapter candidates, while the host
+        // retains their exact proposal bytes. Local gossip is not delivered
+        // back through verdict_for, so restore this validated hold explicitly.
+        // Do this only after metadata admission and its durability barrier.
+        app.adapter.lock().unwrap().hold(batch);
     }
     app.parts_cache.insert(value_id, parts.clone());
     Some(parts)
@@ -2643,18 +2669,19 @@ async fn run(
                     }
                 }
                 push_boundary(&app.boundary_latency, certificate.height.as_u64(), t0);
-                let height = certificate.height;
-                // The NEXT height's params may activate a different set —
-                // this is the finalized configuration transition.
-                let params = height_params(app.set_for(height.as_u64() + 1));
                 if matches!(outcome, DecidedOutcome::Acked) {
+                    let height = certificate.height;
+                    // The NEXT height's params may activate a different set —
+                    // this is the finalized configuration transition.
+                    let params = height_params(app.set_for(height.as_u64() + 1));
                     // The saved canonical VC2 quorum remains authoritative;
                     // vote extensions are disabled. Repeated sweeps are safe.
                     app.sweep_decided(certificate.height.as_u64());
                     let _ = reply.send(Next::Start(height.increment(), params));
-                } else {
-                    let _ = reply.send(Next::Restart(height, params));
                 }
+                // Like Decided, every failed or uncertain commit withholds the
+                // reply. Next::Restart resets the current-height engine WAL,
+                // discarding votes and locks needed for safe explicit recovery.
             }
 
             AppMsg::ProcessSyncedValue {
