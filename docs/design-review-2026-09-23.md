@@ -324,7 +324,7 @@ same-fingerprint rlib slots.
 | Browser harnesses: `qualify_private_delivery.mjs` on non-default ports, `qualify_private_panel.mjs`, `qualify_private_session.mjs` with the truncated-archive case | pass: delivery on `--gateway-port 28791 --tls-port 29474` (12 facts, production dist), panel `--production` (12 facts), panel local-qualification on 8789 (13 facts), session on 8789 (archive export/resume/foreign-open facts) |
 | Two-agent steel-thread journey test (`tests/private_steel_thread.rs`, single and Hegel) | pass: linear journey 1/1, Hegel interleaved restart/relaunch 4 cases |
 | Steel-thread benchmark: baseline at `0eee3b6` and after-repair run, with barrier counts per stage and idle-phase count | pass: lane baseline/after documented in docs/performance.md (218.0s→215.8s ack wall at 100 msg, ledger 5→3 kernel publish barriers); integrated-tree 100-msg run 212.4s ack wall, A 137 ticks/B 133 ticks, 60s idle phase, `/private/tmp/valhalla-perf-integrated-100` |
-| Exact-head CI aggregate on the PR head | pending (PR head) |
+| Exact-head CI aggregate on the PR head | pass: run 35836605734 at head `bc8f87e`, all 60 checks successful (includes Linux clippy fix `801472e` and archive accounting update `bc8f87e`; archive IndexedDB qualification re-verified locally in real Chromium, window + dedicated worker, with export/import) |
 
 Use Rust 1.98.1 explicitly on this host and the shared target directory
 `/private/tmp/valhalla-target-shared`; do not create new target directories.
