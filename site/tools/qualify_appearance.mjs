@@ -18,8 +18,8 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
     }
     throw Error('appearance qualification timed out: ' + label);
   };
-  const media = value => call('Emulation.setEmulatedMedia', {
-    features: [{name:'prefers-color-scheme',value}],
+  const media = (value, extra = []) => call('Emulation.setEmulatedMedia', {
+    features: [{name:'prefers-color-scheme',value}, ...extra],
   }, sessionId);
   const assertState = async (theme, selected, stored) => {
     await waitFor(async () => {
@@ -45,6 +45,8 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
   await call('Emulation.setTouchEmulationEnabled',{enabled:false},sessionId);
   await media('dark');
   await navigate('/',1365,950);
+  const desktopMedia = await evaluate("matchMedia('(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) and (forced-colors: none)').matches");
+  if (!desktopMedia) throw Error('Native desktop input configuration did not apply');
   const firstVisit = await assertState('dark','system',null);
   await media('light');
   const liveLight = await assertState('light','system',null);
@@ -78,6 +80,9 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
   const move = async fraction => {
     await call('Page.bringToFront',{},sessionId);
     await waitFor(() => evaluate("document.visibilityState === 'visible'"),'foreground desktop target');
+    // Native media-query change events and their cleanup run asynchronously.
+    // Settle them before sending the new input whose response is being tested.
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     const point = await evaluate(`(() => {const b=document.querySelector('.introduction').getBoundingClientRect();
       return {x:b.left+b.width*${fraction},y:Math.max(1,b.top)+Math.min(b.height,innerHeight-Math.max(1,b.top))*0.3};})()`);
     await call('Input.dispatchMouseEvent',{type:'mouseMoved',...point},sessionId);
@@ -111,7 +116,25 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
   if (after.some(v=>!v) || before[0] === after[0]) throw Error('hero input did not resume after BFcache');
   await media('light');
   const afterBack = await assertState('light','system','system');
-  return {firstVisit,liveLight,liveDark,savedLight,savedDark,restoredSystem,
+  const suppression = [];
+  for (const condition of ['coarse','reduced','forced']) {
+    if (condition === 'coarse') await call('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1},sessionId);
+    else await media('light',[condition==='reduced'
+      ? {name:'prefers-reduced-motion',value:'reduce'} : {name:'forced-colors',value:'active'}]);
+    const query = condition === 'coarse' ? '(pointer: coarse)' : condition === 'reduced'
+      ? '(prefers-reduced-motion: reduce)' : '(forced-colors: active)';
+    if (!await evaluate(`matchMedia(${JSON.stringify(query)}).matches`)) throw Error('Native negative condition missing: '+condition);
+    await waitFor(() => evaluate("!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')"),condition+' resets hero input');
+    await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:240,y:240},sessionId);
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    if (await evaluate("!!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')")) throw Error('Hero input ignored '+condition+' guard');
+    suppression.push(condition);
+    await call('Emulation.setTouchEmulationEnabled',{enabled:false},sessionId);
+    await media('light');
+    try { await move(0.7); }
+    catch (cause) { throw Error('Hero did not resume after '+condition,{cause}); }
+  }
+  return {desktopMedia,suppression,firstVisit,liveLight,liveDark,savedLight,savedDark,restoredSystem,
     bfcache:{token,lifecycle,before,after,afterBack}};
 }
 
