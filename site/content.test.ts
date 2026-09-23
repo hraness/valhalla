@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { readFile, access } from 'node:fs/promises';
-import { docs, documentedRevision } from './pages.ts';
+import { docs, documentedRevision, latestRelease } from './pages.ts';
 import { compare, useCases } from './compare.ts';
 import { writing } from './writing.ts';
 import { renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from './docs.ts';
@@ -110,4 +110,12 @@ test('search and agent guides include every maintained page', async () => {
   expect(sitemap).toContain('<loc>https://vhalla.com/use-cases/</loc>');
   expect(agentGuide).toContain('https://vhalla.com/use-cases/');
   expect(agentGuide).toContain(`/blob/${documentedRevision}/crates/vhalla-cli/README.md`);
+});
+
+test('install.sh serves the documented release and is wired into the build', async () => {
+  const installer=await readFile(new URL('./install.sh', import.meta.url), 'utf8');
+  const build=await readFile(new URL('./build.ts', import.meta.url), 'utf8');
+  expect(installer).toContain(`VERSION="${latestRelease}"`);
+  expect(installer).toContain('sha256');
+  expect(build).toContain('"install.sh"');
 });
