@@ -29,22 +29,24 @@ pub struct Credential {
     pub max_inflight: usize,
     /// Requests admitted in each service work window.
     pub requests_per_window: u32,
-    /// Request bytes plus worst-case response bytes per service work window.
+    /// Request bytes plus actual encoded response bytes per service work window.
     pub bytes_per_window: u64,
 }
 /// Fixed admission limits validated before accepting any connection. Work windows
 /// restart with the service; retained storage quotas survive process restart.
 #[derive(Clone, Copy, Debug)]
 pub struct ServiceLimits {
-    /// Maximum live handshake/request threads; excess sockets close immediately.
+    /// Maximum live handshake/request threads; excess sockets get a bounded
+    /// pre-authentication alert refusal, never a silent drop.
     pub max_connections: usize,
-    /// One absolute handshake + frame + storage admission + response deadline.
+    /// One absolute bound covering handshake, frame read, storage admission,
+    /// and response. The handshake phase is further capped tighter inside it.
     pub request_timeout: Duration,
     /// Finite fixed-window request/byte accounting period.
     pub window: Duration,
     /// Total authenticated requests per window.
     pub requests_per_window: u32,
-    /// Total request plus reserved response bytes per window.
+    /// Total request plus actual encoded response bytes per window.
     pub bytes_per_window: u64,
 }
 impl Default for ServiceLimits {
@@ -73,11 +75,14 @@ struct State {
     keys: BTreeMap<[u8; 16], Work>,
     poisoned: bool,
 }
-/// An explicitly enrolled, single-namespace durable mailbox service. All item
-/// publication and per-key storage charges commit in the same SQLite transaction.
-/// Socket reads/writes never hold the mailbox mutex. Finite credential work and
-/// in-flight caps prevent one authenticated key from using every service slot;
-/// pre-authentication connection floods remain a deployment admission concern.
+/// An explicitly enrolled, single-namespace durable mailbox service. Item
+/// publication and its per-key storage charge commit in one SQLite transaction
+/// behind a single post-commit durability barrier. Socket reads/writes never
+/// hold the mailbox mutex. Finite credential work and in-flight caps prevent
+/// one authenticated key from using every service slot. Pre-authentication
+/// work is bounded three ways: worker count, handshakes per window, and a
+/// handshake-phase deadline tighter than the whole request; over-limit
+/// sockets get a bounded fatal alert instead of a silent drop.
 pub struct Service {
     state: Arc<Mutex<State>>,
     config: Arc<ServerConfig>,
@@ -97,6 +102,7 @@ impl Service {
         store.conn.execute_batch("BEGIN IMMEDIATE;
             CREATE TABLE tls_keys (id BLOB PRIMARY KEY CHECK(length(id)=16), max_items INTEGER NOT NULL, max_bytes INTEGER NOT NULL);
             CREATE TABLE tls_charges (digest BLOB PRIMARY KEY CHECK(length(digest)=32), key_id BLOB NOT NULL REFERENCES tls_keys(id), bytes INTEGER NOT NULL);
+            CREATE INDEX tls_charges_by_key ON tls_charges(key_id);
             CREATE TABLE tls_meta (id INTEGER PRIMARY KEY CHECK(id=1), format INTEGER NOT NULL CHECK(format=1));
             INSERT INTO tls_meta VALUES(1,1);
             COMMIT;").map_err(|_| NetError::Unavailable)?;
@@ -158,6 +164,12 @@ impl Service {
         if format != 1 {
             return Err(NetError::Bounds);
         }
+        // Per-key quota scans must not grow with every retained item. Stores
+        // enrolled before this index existed are repaired once, idempotently.
+        store
+            .conn
+            .execute_batch("CREATE INDEX IF NOT EXISTS tls_charges_by_key ON tls_charges(key_id)")
+            .map_err(|_| NetError::Unavailable)?;
         // A local compatibility writer cannot silently add uncharged items.
         let bad: i64 = store.conn.query_row("SELECT (SELECT COUNT(*) FROM items LEFT JOIN tls_charges ON items.digest=tls_charges.digest WHERE tls_charges.digest IS NULL OR tls_charges.bytes != length(items.payload)) + (SELECT COUNT(*) FROM tls_charges LEFT JOIN items ON items.digest=tls_charges.digest WHERE items.digest IS NULL) + (SELECT COUNT(*) FROM tls_keys WHERE length(id)!=16 OR id=zeroblob(16) OR max_items<1 OR max_bytes<1) + (SELECT COUNT(*) FROM tls_charges LEFT JOIN tls_keys ON tls_charges.key_id=tls_keys.id WHERE tls_keys.id IS NULL OR tls_charges.bytes<1)", [], |r| r.get(0)).map_err(|_| NetError::Unavailable)?;
         let count: i64 = store
@@ -312,7 +324,7 @@ impl Service {
                 handshakes = 0;
             }
             if workers.len() >= max || handshakes >= max_handshakes {
-                drop(stream);
+                refuse(stream);
                 continue;
             }
             // Accepted descriptors need blocking I/O plus DeadlineSocket's
@@ -360,6 +372,22 @@ impl Service {
         }
     }
 }
+/// The TLS handshake phase is bounded tighter than the whole request so a
+/// slowly trickling ClientHello cannot occupy a worker for `request_timeout`.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
+/// Answer an over-limit pre-authentication socket with a bounded fatal
+/// internal_error alert, then release it. A real client reads an explicit
+/// retryable refusal instead of silence; the tight timeouts prevent an
+/// unresponsive peer from stalling the accept loop.
+fn refuse(stream: TcpStream) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(50)));
+    let mut socket = stream;
+    // TLS alert record: fatal internal_error — the only refusal legible to a
+    // client before any negotiated keys exist.
+    let _ = socket.write_all(&[0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x50]);
+}
 fn token_matches(token: &RelayToken, raw: &[u8]) -> bool {
     raw.len() == 32
         && token
@@ -388,7 +416,12 @@ fn serve_one(
     state: Arc<Mutex<State>>,
     deadline: Instant,
 ) -> Result<()> {
-    let mut socket = DeadlineSocket { stream, deadline };
+    // The pre-authentication phase gets a tighter bound than the whole
+    // request; a completed handshake keeps the original absolute deadline.
+    let mut socket = DeadlineSocket {
+        stream,
+        deadline: deadline.min(Instant::now() + HANDSHAKE_TIMEOUT),
+    };
     let expected_protocol = config
         .alpn_protocols
         .first()
@@ -402,6 +435,7 @@ fn serve_one(
     if connection.alpn_protocol() != Some(expected_protocol.as_slice()) {
         return Err(NetError::Scope);
     }
+    socket.deadline = deadline;
     let mut tls = StreamOwned::new(connection, socket);
     let request = read_frame(&mut tls, MAX_REQUEST, deadline)?;
     if request.len() < 33 {
@@ -442,13 +476,10 @@ fn serve_one(
             key.bytes = 0;
         }
     }
-    // PAGE reserves the complete response bound before database read or allocation.
-    let bytes = request.len() as u64
-        + if request[0] == OP_PAGE {
-            MAX_RESPONSE as u64 + 4
-        } else {
-            46
-        };
+    // Admission bills the request frame now; the response is charged on its
+    // actual encoded size after dispatch, so a small PAGE answer does not burn
+    // a worst-case reservation against this work window.
+    let bytes = request.len() as u64 + 4;
     let global_full = s.global.requests >= s.limits.requests_per_window
         || s.global.bytes.saturating_add(bytes) > s.limits.bytes_per_window;
     let key = s.keys.entry(id).or_default();
@@ -485,6 +516,16 @@ fn serve_one(
     }
     drop(s);
     let (code, body) = response?;
+    // Bill the exact response frame now that its size is known. One admitted
+    // response may exceed the window by at most its own bounded size; later
+    // requests see the spent budget and answer capacity.
+    if let Ok(mut s) = state.lock() {
+        let billed = body.len() as u64 + 5;
+        if let Some(key) = s.keys.get_mut(&id) {
+            key.bytes = key.bytes.saturating_add(billed);
+        }
+        s.global.bytes = s.global.bytes.saturating_add(billed);
+    }
     let result = write_frame(&mut tls, code, &body, deadline);
     drop(admitted);
     result
@@ -526,7 +567,7 @@ fn put(state: &mut State, id: [u8; 16], raw: &[u8]) -> Result<(u8, Vec<u8>)> {
                 )
                 .map_err(|_| super::super::Error::Storage)?;
         }
-        store.put(item)
+        store.put_staged(item)
     })();
     match outcome {
         Ok(receipt) => {
