@@ -61,7 +61,9 @@ network and client are still in development.
 
 ## Do's and Don'ts
 
-Keep copy brief, retain the prototype status, and link to source evidence.
-Avoid invented adoption metrics, live activity, install claims, and feature grids.
+Keep copy brief, state the development status once near the top, and link to
+source evidence. Avoid invented adoption metrics, implied live activity, install
+claims the current release does not support, and feature grids. Copy rules are
+in the “Public copy” section of `site/AGENTS.md`.
 This visual pass was inspected locally; an independent finish reviewer was
 unavailable after the parallel workers reached the account usage limit.

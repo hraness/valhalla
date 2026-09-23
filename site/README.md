@@ -1,9 +1,11 @@
 # Valhalla marketing and documentation site
 
-A static home page, fourteen documentation pages, five comparisons and a
-use-cases page for vhalla.com. Documentation follows the Diátaxis split:
-tutorials, how-to guides, reference and explanation. Keep claims aligned with
-the repository README and [promotion status](../kb/plans/valhalla-promotion-gates.md).
+A static home page, a documentation hub with fourteen pages, a comparison hub
+with four comparisons, a writing hub with six notes, and a use-cases page for
+vhalla.com. Documentation follows the Diátaxis split: tutorials, how-to guides,
+reference and explanation. Keep every claim true to the current source and the
+[promotion plan](../kb/plans/valhalla-promotion-gates.md); the copy rules are in
+[`AGENTS.md`](AGENTS.md).
 
 From the repository root, preview locally:
 
@@ -19,18 +21,18 @@ Serif fonts. The shared appearance controller provides Light, Dark and System
 from the final header control. Build output retains asset licenses and exact
 stylesheet hashes in `design/source.json`. Deployment includes the referenced web
 fonts and their licenses, excluding duplicate native-font files and generator-only
-TypeScript font data. The build checks every shared font URL resolves. Product content and layout stay here. `pages.ts` owns the maintained static documentation with each page's Diátaxis kind, `compare.ts` owns the comparison and use-cases pages, `docs.ts` renders the shared grouped navigation and per-page metadata, and `build.ts` writes ordinary HTML paths under `/docs/`, `/compare/` and `/use-cases/`. No framework, analytics, external scripts or runtime content fetching are added. Navigation and code examples remain usable without JavaScript.
+TypeScript font data. The build checks every shared font URL resolves. Product content and layout stay here. `pages.ts` owns the maintained static documentation with each page's Diátaxis kind, `compare.ts` owns the comparison and use-cases pages, `writing.ts` owns the notes, `docs.ts` renders the shared grouped navigation and per-page metadata, `home.ts` builds the home FAQ's structured data from the visible FAQ, and `build.ts` writes ordinary HTML paths under `/docs/`, `/compare/`, `/writing/` and `/use-cases/`. No framework, analytics, external scripts or runtime content fetching are added. Navigation and code examples remain usable without JavaScript.
 The header title and transparent catalog mark use the shared metallic foil
 recipe. The original SVG remains the fallback for unsupported masks and forced
 colors; mask configuration stays in the external stylesheet under the same CSP.
 The pinned shared footer renders an optional paid-support link for Valhalla,
 without a newsletter form or client runtime. `bun run check:site` checks that
-boundary, validates documentation links/security disclosures, and builds every page; `/llms.txt` documents the installed CLI's optional
-support protocol for agents. The CSP still allows no executable inline script;
-it admits each page's checked JSON-LD block by exact SHA-256 hash, which
-`site/metadata.test.ts` keeps in sync with `index.html` and the rendered
-collections. Social previews use the
-committed `social.png` card hashed in `BRAND_ASSETS.md`.
+boundary, validates documentation links/security disclosures, and builds every page; `/llms.txt` points agents to the installed CLI's optional
+support protocol. The CSP still allows no executable inline script;
+it admits each page's checked JSON-LD block by exact SHA-256 hash.
+`bun site/tools/update_csp.ts` rewrites those hashes in `vercel.json`, and
+`site/metadata.test.ts` fails when they drift from the rendered pages. Social
+previews use the committed cards hashed in `BRAND_ASSETS.md`.
 
 `vercel.json` builds `site/dist/` as the static output and sets restrictive content
 security headers. Deploy from the repository root to the Hraness `valhalla`
