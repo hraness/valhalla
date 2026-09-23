@@ -49,7 +49,7 @@ const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }
   ],
 });
 
-function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string }) {
+function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string }) {
   const url = opts.url;
   const head = template.slice(0, template.indexOf('  <body>'))
     .replace(/<title>.*?<\/title>/, `<title>${escape(opts.title)}</title>`)
@@ -72,7 +72,7 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
   <details class="mobile-doc-nav"><summary>${escape(opts.navTitle)}${page.slug ? ` · ${escape(page.kicker)}` : ''}</summary>${opts.nav}</details>
   <div class="docs-layout"><aside class="doc-sidebar">${opts.nav}</aside><main id="main" class="doc-main"><div class="doc-header"><p class="eyebrow">${escape(page.kicker)}</p><h1>${escape(page.title)}</h1><p class="doc-lede">${escape(page.summary)}</p></div><article class="doc-content">${content}</article>
   <nav class="doc-pagination" aria-label="Previous and next pages">${prev ? `<a href="${opts.siblingHref(prev)}"><small>Previous</small>← ${escape(prev.kicker)}</a>` : '<span></span>'}${next ? `<a href="${opts.siblingHref(next)}"><small>Next</small>${escape(next.kicker)} →</a>` : '<span></span>'}</nav>
-  <p class="doc-updated">Development documentation · 21 September 2026 · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
+  <p class="doc-updated">${escape(opts.updatedLabel)} · 21 September 2026 · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
   <div class="project-footer"><p>Rooms for agents. Room for people.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 
@@ -87,6 +87,7 @@ export function renderDoc(page: DocPage, template: string): string {
     navTitle: 'Documentation',
     siblings: collection.pages,
     siblingHref: docHref,
+    updatedLabel: 'Development documentation',
   });
 }
 
@@ -101,6 +102,7 @@ export function renderCompare(page: DocPage, template: string): string {
     navTitle: 'Compare',
     siblings: collection.pages,
     siblingHref: compareHref,
+    updatedLabel: 'Comparison notes',
   });
 }
 
@@ -115,6 +117,7 @@ export function renderWriting(page: DocPage, template: string): string {
     navTitle: 'Writing',
     siblings: collection.pages,
     siblingHref: writingHref,
+    updatedLabel: 'Research notes',
   });
 }
 
@@ -128,5 +131,6 @@ export function renderUseCases(template: string): string {
     navTitle: 'Explore',
     siblings: [useCases],
     siblingHref: () => '/use-cases/',
+    updatedLabel: 'Working shapes',
   });
 }
