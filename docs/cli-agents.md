@@ -61,8 +61,11 @@ present at setup. Following uses an explicit finite ceiling, at most 4,096
 positions beyond the initial head; it never renews read credits. Membership or
 epoch changes end the grant before further agent output is released.
 
-The grant is durably consumed once before exposing tools, even if the process
-later exits cleanly. An automatic reconnect with the same grant refuses. Preserve
+The grant is validated at launch and durably consumed once — immediately before
+the first `tools/call` or, with `--delivery`, the first driver tick — even if
+the process later exits cleanly. Handshakes, tool listings and inventory probes
+alone never burn the grant, but once consumed an automatic reconnect with the
+same grant refuses. Preserve
 the grant claim, room, and queue; reconcile any uncertain operation before
 preparing a **new explicit grant with a new claim path**. Never delete a claim,
 roll back custody, or copy a live device to renew permission. One room and account
@@ -159,7 +162,9 @@ position supplied by trusted admission alongside its authenticated checkpoint;
 never learn it by accepting an unauthenticated relay suggestion. This explicitly
 excludes pre-join history, which the new MLS state may be unable to decrypt.
 The full context and starting position bind the new queue/scan. Changing it on
-retained state refuses; an application error never advances past an unknown item.
+retained state refuses. A staged item the kernel proves can never apply —
+stale, foreign, malformed or otherwise terminally unprocessable — receives a
+durable bounded skip marker so the applied watermark still advances past it.
 
 Initialize a never-used delivery destination once:
 
@@ -173,8 +178,30 @@ host performs bounded ticks between RPCs, using one absolute network budget;
 outage/backpressure preserves exact encrypted jobs with finite persisted retries.
 Incoming pages and locally applied results remain private and durable. Dedicated
 contact bootstrap needs its explicit commands; the driver does not invent join
-authority. Malformed/uncertain kernel input or changed membership ends the grant
-and preserves evidence for operator reconciliation.
+authority.
+
+The driver persists its outgoing and applied watermarks in the durable queue
+and restores applied progress from validated markers, so a relaunched host
+resumes without replaying or re-attempting completed work. Mailbox polling
+adapts from 5 seconds to 30 seconds while idle and repolls immediately when a
+page still has staged work; network errors back off separately (1s to 30s)
+without touching staged evidence. There is no lifetime poll cap: a quiet room
+never silently exhausts its driver's attention. A staged item whose kernel
+outcome stays transient for five minutes, storage or custody uncertainty, or
+changed membership ends the grant and preserves evidence for operator
+reconciliation; terminal item-local failures record a skip marker instead.
+
+Inspect the durable delivery journal without consuming a grant:
+
+```sh
+vhalla private delivery-status /absolute/account /absolute/room \
+  --config /private/config/delivery.json --out /private/config/status.json
+```
+
+The report lists retained job rows (`pending`, `uncertain`, `retained`,
+`stopped`) with charged attempts and the durable driver watermarks. It opens
+queue custody under its own lock, makes no network contact and emits no keys,
+plaintext or ciphertext; run it while no agent holds the profile's custody.
 
 A rejected relay credential ends the current agent process and grant. The exact
 queued item, charged attempt and backoff remain in place; denial does not renew
@@ -185,10 +212,19 @@ ciphertext. Reusing the consumed grant still refuses. Malformed receipts and
 exhausted lifetime retry budgets remain stopped for inspection.
 
 `private_outbox_status` reports local queueing, optional relay retention, and
-verified recipient-device claims separately. A device claim authenticates the
-device's signed assertion about one exact ciphertext after local processing;
-it is not proof of its physical disk, a human reading, current membership or
-independent replication. Ordinary messages cannot promote delivery status.
+verified recipient-device claims separately. Its optional `wait_for` argument
+(at most 25 seconds) turns the call into a long poll that answers on changed
+evidence, timeout, or immediately when no delivery driver could change anything.
+A refused TCP connect reports `unreachable`, distinct from `uncertain`, where
+retained bytes may have reached the relay before the outcome was lost. A device
+claim authenticates the device's signed assertion about one exact ciphertext
+after local processing; it is not proof of its physical disk, a human reading,
+current membership or independent replication. Ordinary messages cannot promote
+delivery status. Device-to-device acceptance receipts are filtered out of
+`private_inbox` records and refund their read slots; they only surface through
+`member_acceptances`. A spec-shaped `notifications/cancelled` naming a pending
+request id drops only that wait; stale or unknown ids are ignored, and room
+content is never cancellation or any other authority.
 
 Queue limits include completed and stopped jobs. Exhaustion never prunes evidence
 or renews a stopped job. Preserve all persistent directories on failure and

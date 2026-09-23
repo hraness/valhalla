@@ -30,6 +30,7 @@ mod relay_tls;
 pub const HELP: &str = "vhalla private agent-serve ID STORE --grant PRIVATE_JSON [--delivery PRIVATE_JSON]
 vhalla private agent-launch ID STORE --policy PRIVATE_JSON --session-dir PRIVATE_DIR [--delivery PRIVATE_JSON]
 vhalla private delivery-init ID STORE --config PRIVATE_JSON
+vhalla private delivery-status ID STORE --config PRIVATE_JSON [--after N] [--limit N] --out FILE
 vhalla private agent-grant ID STORE --mode read-only|read-write --disclosure PRIVATE_JSON --receipt NEW_CLAIM --out NEW_GRANT [--lifetime SECONDS --inbox-after N --inbox-through N --follow-inbox true|false --max-messages N --max-body-bytes N --max-read-records N --max-read-bytes N --max-preparations N]
 vhalla private create ID NEW_STORE --not-before UNIX --expires UNIX [--max-records N --max-bytes N]
 vhalla private inspect ID STORE --out PRIVATE_JSON
@@ -96,6 +97,7 @@ impl Args {
         let command = raw[1].to_str().ok_or(HELP)?;
         let allowed: &[&str] = match command {
             "delivery-init" => &["config"],
+            "delivery-status" => &["config", "after", "limit", "out"],
             "agent-grant" => &[
                 "mode",
                 "disclosure",
@@ -243,6 +245,7 @@ impl Args {
                 && !matches!(**name, "tls-ca" | "tls-name")
                 && !(command == "agent-grant"
                     && !matches!(**name, "mode" | "disclosure" | "receipt" | "out"))
+                && !(command == "delivery-status" && matches!(**name, "after" | "limit"))
                 && !(command == "relay-submit"
                     && matches!(**name, "addr" | "token" | "mailbox" | "namespace"))
                 && !(command == "relay-scan"
@@ -431,6 +434,9 @@ async fn execute(args: Args) -> Result<(), String> {
             Path::new(args.value("config")?),
             room.status().map_err(|_| REFUSED)?.context,
         )?,
+        "delivery-status" => {
+            agent_delivery::status(&args, room.status().map_err(|_| REFUSED)?.context)?
+        }
         "agent-grant" => agent_setup::execute(&args, &room)?,
         "inspect" => {
             let snapshot = room.membership().await.map_err(|_| REFUSED)?;
