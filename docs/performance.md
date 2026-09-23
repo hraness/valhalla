@@ -120,4 +120,49 @@ The multi-second per-stage latencies include the production cadence's poll inter
 
 ## Optimizations landed and after-measurements
 
-Pending after-run recording; this section is updated in the same change that reports them.
+The landed barrier reductions, per the reviewed ledger (counts are `F_FULLFSYNC` equivalents; the private kernel store gets three inside every SQLite `COMMIT` under `synchronous=EXTRA` + `fullfsync=ON` — journal, database pages and the journal-unlink directory sync):
+
+| Path | Before | After | Removed |
+|---|---:|---:|---:|
+| Private kernel store `publish` |5 (3 COMMIT-internal + 2 code-level)|3|2 code-level re-syncs (E-14)|
+| Journal commit, fresh bundle, warm layout |10|6|3 proven-layout + 1 fresh-bundle re-sync (E-15)|
+| Journal commit, retained bundle |11|7|same 4; bundle re-sync retained|
+| Activity append, fresh intent |14 (6 file + 8 dir)|12 (5 file + 7 dir)|2 proven intent re-syncs (E-1)|
+| Activity append, retained/recovery |14|14|0 — conservative re-sync retained|
+| `read_page` signature verifications |2 per record|1 per record|CPU, not a barrier (E-18)|
+| Steel thread per acknowledged message |~56 (estimated)|~48 (estimated)|~8 via 4 kernel publishes × 2 (E-14)|
+
+The E-2 spike under [`prototypes/activity-append-log`](../prototypes/activity-append-log/README.md) measures the proposed append-log format at exactly 2 barriers per append (log sync, then head-slot sync) — versus 12 in the shipped store — with the retained-intent, torn-tail and torn-slot recovery cases covered by 8 tests. Production adoption stays deferred for the reasons that README lists (signed-record framing, bounded open, author-table bound, bounded-history compaction, v1 migration and the full crash matrix).
+
+After-run results, same commands, same host class, optimized tree (`valhalla-perf-opt-*`):
+
+| Steel thread | 100 baseline | 100 after | 1,000 baseline | 1,000 after |
+|---|---:|---:|---:|---:|
+| Calibrated file F_FULLFSYNC p50 |4.740ms|4.637ms|3.985ms|3.931ms|
+| Acknowledged-message wall |218.017s|215.828s|1,710.696s|1,649.404s (−3.6%)|
+| First queue to last acceptance |157.954s|155.746s|1,650.495s|1,589.034s (−3.7%)|
+| Round-trip p50 / p95 / p99 |11.257 /16.854 /17.741s|10.968 /17.600 /18.372s|11.550 /17.228 /19.341s|11.574 /17.480 /19.720s|
+| Driver A files / logical / allocated |408 /508,871 /2,011,136B|408 /508,871 /2,068,480B|4,008 /4,502,876 /19,542,016B|4,008 /4,486,492 /19,542,016B|
+| Driver B files / logical / allocated |408 /495,983 /1,998,848B|408 /495,983 /2,056,192B|4,008 /4,464,108 /19,542,016B|4,008 /4,468,204 /19,542,016B|
+
+| Activity / replay (1,000 ops) | Baseline | After (first run) | After (clean re-run) |
+|---|---:|---:|---:|
+| Activity sign + verify + durable append |64.671s|94.964s (contended)|62.099s (−4.0%)|
+| Activity append p50 / p95 / p99 |64.885 /78.905 /93.976ms|73.117 /226.936 /361.020ms|60.621 /83.847 /104.798ms|
+| Canonical sign/decode/verify only |0.155s|0.252s|0.143s|
+| Journal generate/sign/verify + fsync |52.806s|47.742s|—|
+| Certified disk replay from genesis |183.103ms|168.455ms|—|
+| Simulated native replay budget |complete, 173.707ms|complete, 150.735ms|—|
+| Full verified activity pagination |249.628ms|245.090ms|273.325ms|
+| 100 exact retained retries |64.430ms|46.592ms|61.941ms|
+| 20 reopen + verified author-head reads |18.828ms|16.860ms|26.743ms|
+| Activity allocated regular-file bytes |8,204,288|8,204,288 (2,004 files)|8,204,288 (2,004 files)|
+| Replay allocated regular-file bytes |8,196,096|8,196,096 (2,002 files)|—|
+
+The first activity after-run ran inside a contended window: its p95 roughly tripled while p50 rose only ~13%, and the same batch's later replay and steel runs show ~4.6ms barrier calibration — a signature of external disk pressure during that run, not of extra barriers (the fresh path is statically 12 `sync_all` calls, pinned by tests). The clean re-run confirms: append wall −4.0% and p50 −6.6% while paying ~9% *more* per barrier than the baseline run (60.6ms for 12 barriers ≈ 5.05ms each versus 64.9ms for 14 ≈ 4.64ms each) — removing two barriers is what kept the number ahead despite the dearer barrier unit price. Pagination, exact-retry and reopen-read deltas of a few milliseconds are run-to-run noise on this shared host.
+
+Steel-100 after-run counters: A made 132 ticks / 100 puts / 29 pages / 100 enqueues / 100 receives / 232 outbox reads / 131 scan reopens; B made 128 ticks / 100 puts / 29 pages / 200 enqueues / 100 receives / 100 acceptances / 128 scan reopens. Steel-1,000 after-run counters: A 1,224 ticks / 1,000 puts / 279 pages / 1,000 enqueues / 1,000 receives / 2,000 applied markers / 2,224 outbox reads / 1,223 scan reopens; B 1,204 ticks / 1,000 puts / 279 pages / 2,000 enqueues / 1,000 receives / 1,000 acceptances / 2,000 applied markers / 1,204 scan reopens.
+
+Two earlier steel-1,000 after-runs aborted on a `ScanFailure::Timeout` from the scan guard's 90-second absolute budget under heavy host contention (~800 and ~400 acknowledgements; 447k involuntary context switches). Both preserved their synthetic homes without `metrics.tsv`. The harness treated that transient timeout as fatal; the fix (commit `b88f31c`) ends the tick and retries, matching the production host loop and the timeout policy `scan_page_until` already used. The completed 1,000 run above used the fixed harness; it changes only the failure path, not the measured steady-state stages.
+
+Wall-time deltas are cadence-dominated: the harness polls on production tick boundaries, so removing ~8 barriers (~37ms) per acknowledged message moves the 100-message wall only ~1% — matching the observed 218.0→215.8s. The useful signals are the barrier ledger (static), the journal/activity append phase times (barrier-dominated), and the spike's measured 2-barrier append (p50 9.96ms at ~4.9ms/barrier on this host, 64-record verified page read in 276µs).
