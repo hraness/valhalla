@@ -107,6 +107,10 @@ fn native_key(key: RecordKey) -> Result<native::RecordKey, StoreError> {
         RecordKey::Operation(op) => native::RecordKey::Operation(*op.as_bytes()),
         RecordKey::Received(hash) => native::RecordKey::Received(hash),
         RecordKey::Control(n) => native::RecordKey::Control(n),
+        // The native store has no Sent/Acceptance record vocabulary yet; those
+        // key kinds belong to the relay lane's native store contract. Fail
+        // closed rather than fake a mapping.
+        RecordKey::Sent(_) | RecordKey::Acceptance { .. } => return Err(StoreError::Refused),
     })
 }
 
