@@ -343,6 +343,92 @@ fn inherited_nonblocking_mode_is_cleared_before_large_response_on_every_platform
 }
 
 #[test]
+fn admission_refusals_answer_explicit_statuses_instead_of_dropping() {
+    // 503 while every worker slot is occupied: hold one connection open past
+    // accept so the next accepted socket is refused with a bounded response.
+    let (mut gateway, listener, fake) = fixture(Duration::from_secs(2), false);
+    Arc::get_mut(&mut gateway.0).unwrap().limits.max_connections = 1;
+    let address = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || gateway.serve_until(listener, server_stop));
+    let mut held = TcpStream::connect(address).unwrap();
+    held.write_all(b"GET / HTTP/1.1\r\n").unwrap();
+    let mut refused_503 = Vec::new();
+    for _ in 0..50 {
+        let mut extra = TcpStream::connect(address).unwrap();
+        extra
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        refused_503.clear();
+        if extra.read_to_end(&mut refused_503).is_ok() && refused_503.starts_with(b"HTTP/1.1 503") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    stop.store(true, Ordering::Release);
+    assert!(refused_503.starts_with(b"HTTP/1.1 503"));
+    assert!(std::str::from_utf8(&refused_503)
+        .unwrap()
+        .contains("Connection: close"));
+    drop(held);
+    server.join().unwrap().unwrap();
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    // 429 once the accepted-connection window budget is spent: a one-request
+    // window admits the first connection and refuses the second.
+    let (mut gateway, listener, fake) = fixture(Duration::from_secs(1), false);
+    Arc::get_mut(&mut gateway.0).unwrap().limits.requests = 1;
+    let address = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || gateway.serve_until(listener, server_stop));
+    let mut first = TcpStream::connect(address).unwrap();
+    first
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    first
+        .write_all(format!("GET / HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut response = Vec::new();
+    first.read_to_end(&mut response).unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    let mut refused_429 = Vec::new();
+    for _ in 0..50 {
+        let mut extra = TcpStream::connect(address).unwrap();
+        extra
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        refused_429.clear();
+        if extra.read_to_end(&mut refused_429).is_ok() && refused_429.starts_with(b"HTTP/1.1 429") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    stop.store(true, Ordering::Release);
+    assert!(refused_429.starts_with(b"HTTP/1.1 429"));
+    server.join().unwrap().unwrap();
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    // The refusal writer itself emits a complete bounded close response.
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = probe.local_addr().unwrap();
+    let helper = thread::spawn(move || {
+        let (stream, _) = probe.accept().unwrap();
+        refuse(stream, 403);
+    });
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut response = Vec::new();
+    socket.read_to_end(&mut response).unwrap();
+    helper.join().unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 403"));
+    assert!(std::str::from_utf8(&response)
+        .unwrap()
+        .ends_with("\r\n\r\ntemporarily unavailable"));
+}
+
+#[test]
 fn stalled_large_asset_write_keeps_original_deadline_during_shutdown() {
     let (gateway, listener, fake, body) = large_asset_fixture(Duration::from_millis(100));
     let address = listener.local_addr().unwrap();

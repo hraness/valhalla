@@ -270,11 +270,20 @@ impl Gateway {
                             break;
                         }
                     };
-                    if !peer.ip().is_loopback()
-                        || workers.len() >= self.0.limits.max_connections
-                        || !admitted
-                    {
-                        drop(stream);
+                    // Admission refusals answer with an explicit status instead
+                    // of silently dropping the socket: 403 for a non-loopback
+                    // peer, 503 while every worker slot is occupied, and 429
+                    // once the accepted-connection window budget is spent.
+                    if !peer.ip().is_loopback() {
+                        refuse(stream, 403);
+                        continue;
+                    }
+                    if workers.len() >= self.0.limits.max_connections {
+                        refuse(stream, 503);
+                        continue;
+                    }
+                    if !admitted {
+                        refuse(stream, 429);
                         continue;
                     }
                     let state = self.0.clone();
@@ -310,6 +319,24 @@ impl Gateway {
             Ok(())
         }
     }
+}
+/// Answer an admission refusal with a fixed status on a tightly bounded
+/// socket so the accept loop never stalls on an unresponsive peer.
+fn refuse(stream: TcpStream, status: u16) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(50)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let mut socket = stream;
+    let body = b"temporarily unavailable";
+    let _ = socket
+        .write_all(
+            format!(
+                "HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .and_then(|()| socket.write_all(body));
 }
 fn admit(state: &State, bytes: usize, request: bool) -> Result<bool> {
     let mut budget = state.budget.lock().map_err(|_| NetError::Unavailable)?;
