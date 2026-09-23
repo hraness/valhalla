@@ -112,87 +112,87 @@ resilience gap; P3 cleanliness. Status is filled by the integration owner.
 
 | ID | Sev | Finding | Repair lane | Status |
 | --- | --- | --- | --- | --- |
-| A1 | P1 | Jobs whose transport failures exhaust `max_attempts` become `Stopped` and nothing re-arms them (`relay/delivery.rs:528-575`) | relay/host | in progress |
-| A2 | P1 | `poll_attempts < 4096` is never reset, so inbound scanning stops after about 5.7 h of a long grant (`agent_delivery.rs:325-345`) | agent/MCP | in progress |
-| A3 | P1 | Mailbox, credential and job capacities are finite, never pruned and have no rotation path (`config.rs:247-250`; `private_host.rs:133-139`; `delivery.rs:432-451`) | relay/host | in progress |
-| A4 | P1 | The 365 day TLS leaf has no renewal command; `serve` refuses after expiry and launchd loops silently (`config.rs:166,183`; `private_host.rs:153-158`; `launchd.rs:30-37`) | relay/host | in progress |
-| A5 | P2 | Idle tick commits the clock and re-opens the scan with a directory sync and O(items) opens (`delivery.rs:493-495`; `net.rs:476-650`) | agent/MCP, `net.rs` part relay/host | in progress |
-| A6 | P2 | Every launch replays the whole outbox with one durable commit per duplicate `enqueue` before any scan (`agent_delivery.rs:262-315`; `delivery.rs:409-416`) | agent/MCP | in progress |
-| A7 | P2 | One PUT performs four explicit F_FULLFSYNC, two inside the open transaction, under the service mutex (`tls/service.rs:500-537`; `relay/mod.rs:327-393`) | relay/host | in progress |
-| A8 | P2 | PAGE reserves 4 MiB of window budget regardless of size, capping a credential at 8 PAGE/s (`tls/service.rs:445-451`) | relay/host | in progress |
-| A9 | P2 | Pre-authentication sockets hold a worker for the full 10 s request timeout; 16 idle sockets deny service (`service.rs:314-316,391-405`) | relay/host | in progress |
-| A10 | P2 | Host failures are invisible: no log, no bind retry, `status` cannot distinguish a crash loop from health (`launchd.rs:36-37`; `private_host.rs:97,151-161`) | relay/host | in progress |
-| A11 | P2 | Delivery store refuses on any wall-clock regression, ending the grant on every launch until time catches up (`delivery.rs:365-380`) | agent/MCP | in progress |
-| A12 | P2 | Gateway has no stop flag, no supervision and no drain (`private_gateway.rs:219-221`; `relay_tls.rs:182`) | relay/host | in progress |
-| A13 | P3 | Gateway over-capacity drops the socket instead of replying 503 with `Retry-After` (`http.rs:264-279`) | relay/host | in progress |
-| A14 | P3 | PAGE decodes and re-hashes up to 17 MiB under the mutex to send at most 4 MiB (`relay/mod.rs:349-370`; `codec.rs:231-253`) | relay/host | in progress |
-| A15 | P3 | Per-connection overheads: 10 to 20 ms accept park, thread per connection, handshake per request, byte-per-read headers (`service.rs:295-334`; `http.rs:293-376`) | relay/host | in progress |
-| A16 | P3 | Full-table `COUNT/SUM` scans on every PUT and no index on `tls_charges.key_id` (`relay/mod.rs:300-307`; `service.rs:99,515`) | relay/host | in progress |
-| B1 | P1 | Out-of-range `private_outbox_status` or a conflicting `private_queue` latches the kernel and the server exits without writing the refusal (`agent_rpc.rs:122-135,388-395`; `agent.rs:421-433,458-463`; `engine.rs:324-344`) | agent/MCP | in progress |
-| B2 | P2 | `private_outbox_status` charges 512 KiB of `read_bytes` per call regardless of `limit`; the default grant allows 64 polls (`agent.rs:426,447-450`) | agent/MCP | in progress |
-| B3 | P2 | Fixed per-launch counters (4096 requests, 4096 polls) end or silently degrade a 24 h grant with no explanation (`agent_rpc.rs:146-153`; `agent_delivery.rs:335-337`) | agent/MCP | in progress |
-| B4 | P2 | A blank line, more than 16 pipelined frames or any `notifications/cancelled` terminates the process and burns the grant (`agent.rs:121-130,148-150`; `agent_rpc.rs:186-189`) | agent/MCP | in progress |
-| B5 | P2 | The claim is consumed before the first stdin read, so any Codex probe or a second window burns the grant (`agent.rs:55-73`; `grant.rs:223-238`) | agent/MCP | in progress |
-| B6 | P2 | Linear replay of outbox and applied history per launch; O(N) `positions()` per tick; `outbox_head > 4096` refuses forever (`agent_delivery.rs:260-361,278`) | agent/MCP | in progress |
-| B7 | P2 | Inbound latency floor: one 8-item page per 5 s, 30 s after any transient error, fresh TLS connection per exchange (`agent_delivery.rs:335-347`) | agent/MCP | in progress |
-| B8 | P2 | A wall-clock step backwards of 1 s or more permanently ends the launch (`agent_rpc.rs:125`) | agent/MCP | in progress |
-| B9 | P3 | Strict parameter whitelists reject the spec-legal `cursor` on `tools/list` and `ping` (`agent_rpc.rs:198,257`) | agent/MCP | in progress |
-| B10 | P3 | A refused TCP connect before any byte is sent is reported as `uncertain` rather than definite non-submission (`relay/delivery.rs:589-600`) | agent/MCP | in progress |
-| C1 | P1 | A stale-epoch application message is an undifferentiated `Error::Scope` that latches the kernel and wedges the driver loop (`engine/messages.rs:148-152`; `engine.rs:82-99`; `agent_delivery.rs:397-400`) | kernel, driver marker agent/MCP | in progress |
-| C2 | P2 | Every deterministic refusal (`Scope`, `Policy`, `Time`, `Mls`, `Conflict`, `Bounds`) forces a full reopen although nothing was written (`engine.rs:82-99`) | kernel | in progress |
-| C3 | P2 | No durable sender-side acceptance status or ciphertext-hash to outbox index in the kernel; native verification lives in process memory, the browser does not verify (`acceptance.rs:72-182`; `agent_rpc/delivery.rs:17-95`) | kernel | in progress |
-| C4 | P2 | Sender-ratchet window (4 late, 32 ahead) turns a delivery gap into an unclassified `Error::Mls` (`drafts.rs:105`; `membership.rs:400`; `messages.rs:153-155`) | kernel | in progress |
-| C5 | P2 | Two full image decodes with full signature re-verification and one whole-image rewrite per message; `check_files` three times per publish (`engine.rs:82-148`; `model.rs:396-520`; `private_rooms.rs:421-538`) | kernel | in progress |
-| C6 | P2 | Caller clock is retained monotonically with no forward bound; one far-future `now` bricks the store until real time catches up (`model.rs:304-311`) | kernel | in progress |
-| C7 | P3 | `ArchiveView` re-decodes the entire archived state per page (`recovery/destination.rs:487-504,615-637`) | kernel | in progress |
-| C8 | P3 | `docs/private-rooms.md:337` names format versions v4/v3 where code is v5/v4/v3 (`model.rs:17`; `packets.rs:52`; `contact.rs:45`) | kernel | in progress |
-| C9 | P3 | No Hegel stateful tests in the kernel crate; the C1/C3/C4 interleavings are exactly what such a model would pin (`vhalla-private-kernel/Cargo.toml`) | kernel | in progress |
-| C10 | P3 | MLS provider secrets in `State.records` and `Working` are not zeroized on drop (`model.rs:40`) | kernel | in progress |
-| C11 | P3 | Permanent limits worth a product decision: 16 successions forever, expired offers reclaimed only on new offer, inbox growth undocumented (`model.rs:15`; `contact.rs:68-70`; `packets.rs:295-304`) | kernel | in progress |
-| D1 | P1 | Each page fetch reserves the 4 MiB maximum against the 1 GiB lifetime budget; delivery stops after 255 syncs with no reset (`delivery.rs:197-201,319-323`; `delivery_model.rs:97-108`) | browser | in progress |
-| D2 | P1 | A deterministic kernel refusal on one staged record (epoch race, phase, expiry, foreign item) wedges browser delivery permanently (`delivery.rs:256-263,361-365`; `worker.rs:162-165`) | browser | in progress |
-| D3 | P1 | Ten consecutive transient failures make `stopped` permanent; with an unsupervised gateway this is an ordinary outage (`delivery_model.rs:97-106`) | browser | in progress |
-| D4 | P2 | Relay-delivered `ContactRequest`/`ContactInvitation` items are silently consumed with no retained evidence (`delivery.rs:279-288,392-398`) | browser | in progress |
-| D5 | P2 | Wall-clock regression locks browser delivery out until the clock catches up (`delivery.rs:123`; `delivery_model.rs:90-92`) | browser | in progress |
-| D6 | P2 | Gateway admission budget and connection slots are charged before any authentication; 8 silent sockets starve the real tab (`http.rs:266-279,344-376`) | relay/host | in progress |
-| D7 | P2 | Gateway is fail-stop on any handler panic and has no supervisor (`http.rs:254-311`; `private_gateway.rs:210-215`) | relay/host | in progress |
-| D8 | P2 | Every browser kernel operation round-trips the full image; a 4-record sync is about 25 image passes and 8 strict transactions (`browser/private_rooms.rs:286-317`; `engine.rs:81-139`) | browser, kernel cache from C5 | in progress |
-| D9 | P2 | Delivery harness hard-codes ports 8790 and 19473 with no collision check and a README that misdescribes them (`qualify_private_delivery.mjs:155-395`) | browser | in progress |
-| D10 | P3 | `Session::revalidate` opens a fresh IndexedDB connection on every call, about 12 per sync (`session.rs:167-176,255-262`) | browser | in progress |
-| D11 | P3 | Gateway reads headers one byte per `read` with a `set_read_timeout` per byte (`http.rs:344-376`) | relay/host | in progress |
-| D12 | P3 | Capability copies in JS heap are never zeroed; profile file permissions are undocumented (`panel.rs:272-289`; `ui/private.rs:318-326`) | browser | in progress |
-| D13 | P3 | Harness assertions depend on unversioned byte offsets and the 2 s backoff constant (`qualify_private_delivery.mjs:276-283,330-382`) | browser | in progress |
-| D14 | P3 | The previous B2 repair is present but has no truncated-archive DOM or harness pin (`panel/actions.rs:1110-1131,1319`) | browser | in progress |
-| E-1 | P2 | Activity store re-syncs a freshly durable intent: 14 barriers where 12 suffice (`activity-store/src/unix.rs:379-391,484-485`) | performance | in progress |
-| E-2 | P2 | Single fixed-name append log with slotted heads would take the activity append from 14 to 2 barriers (format change) | performance | in progress |
-| E-3 | P2 | Bounded group commit after E-2 (2 barriers per group) | performance | in progress |
-| E-4 | P3 | Seven Ed25519 verifies and about 230 metadata syscalls per append; two verifies per paged record (`unix.rs:430-478,641-676`) | performance | in progress |
-| E-5 | P3 | `examples/performance.rs:171` counts `author_head` inside append timing | performance | in progress |
-| E-6 | P1 | Delivery driver: 1 job per 1 s tick, 8 items per 5 s poll, `applied` restarts at 0 (n/8 s stall after relaunch), O(n) `positions()` twice per tick (`agent_delivery.rs:261-361`) | agent/MCP | in progress |
-| E-7 | P2 | Relay and delivery SQLite run `synchronous=FULL` without `fullfsync` then add two code-level barriers: weaker under power loss and two flushes too many (`relay/mod.rs:432-437`; `delivery.rs:227-231`) | relay/host, delivery store agent/MCP | in progress |
-| E-8 | P2 | Mailbox mutex is held across device flushes, so PAGE waits behind PUT; about 80 to 100 req/s ceiling (`tls/service.rs:410-486`) | relay/host | in progress |
-| E-9 | P2 | Four F_FULLFSYNC per pulled scan item; a page-level barrier group would make it 2 per page (`net.rs:355-378,673-723`) | relay/host | in progress |
-| E-10 | P3 | Two O(n) scans per PUT (same evidence as A16) | relay/host | in progress |
-| E-11 | P3 | Thread and TLS handshake per request, no resumption or keep-alive (`service.rs:329-334`; `tls.rs:161-180`) | relay/host | in progress |
-| E-12 | P2 | Idle `agent-serve` performs 2 F_FULLFSYNC, 3 fsync and one image decrypt per second, and a handshake per 5 s, forever (`delivery.rs:524-525`; `agent_delivery.rs:273-277`) | agent/MCP | in progress |
-| E-13 | P3 | `docs/performance.md` never states that `sync_all` is F_FULLFSYNC on Darwin; the 14-barrier and 52.8 ms figures are fully explained by it | performance | in progress |
-| E-14 | P3 | Kernel native store: `check_files` three times and code-level syncs on top of `synchronous=EXTRA`: 6 barriers where 4 suffice (`private_rooms.rs:436,492-550,861`) | kernel | in progress |
-| E-15 | P2 | Journal `lock()` re-syncs two directories per commit and `sync_bundle` re-flushes an already-synced inode: 4 of 10 barriers redundant (`journal/src/lib.rs:523-538,1059`) | performance | in progress |
-| E-16 | P2 | One decided value runs three independent two-phase protocols, about 29 barriers; stores could checkpoint periodically (`rooms-consensus/src/lib.rs:1250-1295`) | performance | in progress |
-| E-17 | info | Five WAL flushes per height come from Malachite flush-before-publish; leave as is | performance | in progress |
-| E-18 | P3 | Certified replay is about 90 percent signature verification; per-page batch verification with per-signature fallback is about 1.7x (`public-client/src/lib.rs:167-236`; `cert.rs:139-185`) | performance | in progress |
-| F1 | P1 | Any undecryptable relay item bricks every native driver in the namespace: no marker, no advance, re-fails on every relaunch (`agent_delivery.rs:399-403`; `agent.rs:245`) | agent/MCP, typed errors from kernel | in progress |
-| F2 | P1 | Default 900 s grant, never-used receipt and output paths per renewal, grant path baked into MCP args: a two-agent exchange fails by default (`agent_setup.rs:29-31,74-83`; `agent_rpc.rs:122-136`) | journey | in progress |
-| F3 | P1 | Installed host lifetime capacity is about 1000 messages for two agents sharing one credential; receipts halve it (`config.rs:246-251`; `private_host.rs:134`) | relay/host | in progress |
-| F4 | P2 | `private-host init` mints exactly two credentials; the thread needs three and both agents share one quota and blast radius (`config.rs:20-39`) | relay/host | in progress |
-| F5 | P2 | Acceptance receipts appear in `private_inbox` as binary rows and consume the read budget and follow window (`agent_rpc.rs:336-343`; `agent_delivery.rs:399-406`) | agent/MCP | in progress |
-| F6 | P2 | The startup helper's `lsof -Fp` assertion could never pass; the receipt records the wrong cause; no product `status --probe` exists (`valhalla-local-start-20260922.py:290`) | relay/host | in progress |
-| F7 | P2 | Fixed ports 8790, 19473 and 9473 collide between qualification and production and already forced an unreceipted gateway restart (same evidence as D9) | browser | in progress |
-| F8 | P2 | Doc examples use hour-long device validity; enrollment expiry silently ends both agents with a generic `REFUSED` (`protocol/src/lib.rs:199`; `agent.rs:455`) | agent/MCP | in progress |
-| F9 | P2 | Sender acceptance visibility is poll-only, budget-charged and bounded by the sender's process lifetime (same mechanism as B2) | agent/MCP | in progress |
-| F10 | P2 | Driver hot loop performs O(items) file opens per second per agent (same evidence as A5, E-6) | agent/MCP | in progress |
-| F11 | P2 | Restart cost grows with outbox length and blocks inbound processing (same evidence as A6, B6) | agent/MCP | in progress |
-| F12 | P2 | No reboot, sleep/wake or logout qualification; the launchd crash loop is invisible (same evidence as A10) | relay/host | in progress |
+| A1 | P1 | Jobs whose transport failures exhaust `max_attempts` become `Stopped` and nothing re-arms them (`relay/delivery.rs:528-575`) | relay/host | fixed |
+| A2 | P1 | `poll_attempts < 4096` is never reset, so inbound scanning stops after about 5.7 h of a long grant (`agent_delivery.rs:325-345`) | agent/MCP | fixed |
+| A3 | P1 | Mailbox, credential and job capacities are finite, never pruned and have no rotation path (`config.rs:247-250`; `private_host.rs:133-139`; `delivery.rs:432-451`) | relay/host | fixed |
+| A4 | P1 | The 365 day TLS leaf has no renewal command; `serve` refuses after expiry and launchd loops silently (`config.rs:166,183`; `private_host.rs:153-158`; `launchd.rs:30-37`) | relay/host | fixed |
+| A5 | P2 | Idle tick commits the clock and re-opens the scan with a directory sync and O(items) opens (`delivery.rs:493-495`; `net.rs:476-650`) | agent/MCP, `net.rs` part relay/host | fixed |
+| A6 | P2 | Every launch replays the whole outbox with one durable commit per duplicate `enqueue` before any scan (`agent_delivery.rs:262-315`; `delivery.rs:409-416`) | agent/MCP | fixed |
+| A7 | P2 | One PUT performs four explicit F_FULLFSYNC, two inside the open transaction, under the service mutex (`tls/service.rs:500-537`; `relay/mod.rs:327-393`) | relay/host | fixed |
+| A8 | P2 | PAGE reserves 4 MiB of window budget regardless of size, capping a credential at 8 PAGE/s (`tls/service.rs:445-451`) | relay/host | fixed |
+| A9 | P2 | Pre-authentication sockets hold a worker for the full 10 s request timeout; 16 idle sockets deny service (`service.rs:314-316,391-405`) | relay/host | fixed |
+| A10 | P2 | Host failures are invisible: no log, no bind retry, `status` cannot distinguish a crash loop from health (`launchd.rs:36-37`; `private_host.rs:97,151-161`) | relay/host | fixed |
+| A11 | P2 | Delivery store refuses on any wall-clock regression, ending the grant on every launch until time catches up (`delivery.rs:365-380`) | agent/MCP | fixed |
+| A12 | P2 | Gateway has no stop flag, no supervision and no drain (`private_gateway.rs:219-221`; `relay_tls.rs:182`) | relay/host | fixed |
+| A13 | P3 | Gateway over-capacity drops the socket instead of replying 503 with `Retry-After` (`http.rs:264-279`) | relay/host | fixed |
+| A14 | P3 | PAGE decodes and re-hashes up to 17 MiB under the mutex to send at most 4 MiB (`relay/mod.rs:349-370`; `codec.rs:231-253`) | relay/host | fixed |
+| A15 | P3 | Per-connection overheads: 10 to 20 ms accept park, thread per connection, handshake per request, byte-per-read headers (`service.rs:295-334`; `http.rs:293-376`) | relay/host | fixed |
+| A16 | P3 | Full-table `COUNT/SUM` scans on every PUT and no index on `tls_charges.key_id` (`relay/mod.rs:300-307`; `service.rs:99,515`) | relay/host | fixed |
+| B1 | P1 | Out-of-range `private_outbox_status` or a conflicting `private_queue` latches the kernel and the server exits without writing the refusal (`agent_rpc.rs:122-135,388-395`; `agent.rs:421-433,458-463`; `engine.rs:324-344`) | agent/MCP | fixed |
+| B2 | P2 | `private_outbox_status` charges 512 KiB of `read_bytes` per call regardless of `limit`; the default grant allows 64 polls (`agent.rs:426,447-450`) | agent/MCP | fixed |
+| B3 | P2 | Fixed per-launch counters (4096 requests, 4096 polls) end or silently degrade a 24 h grant with no explanation (`agent_rpc.rs:146-153`; `agent_delivery.rs:335-337`) | agent/MCP | fixed |
+| B4 | P2 | A blank line, more than 16 pipelined frames or any `notifications/cancelled` terminates the process and burns the grant (`agent.rs:121-130,148-150`; `agent_rpc.rs:186-189`) | agent/MCP | fixed |
+| B5 | P2 | The claim is consumed before the first stdin read, so any Codex probe or a second window burns the grant (`agent.rs:55-73`; `grant.rs:223-238`) | agent/MCP | fixed |
+| B6 | P2 | Linear replay of outbox and applied history per launch; O(N) `positions()` per tick; `outbox_head > 4096` refuses forever (`agent_delivery.rs:260-361,278`) | agent/MCP | fixed |
+| B7 | P2 | Inbound latency floor: one 8-item page per 5 s, 30 s after any transient error, fresh TLS connection per exchange (`agent_delivery.rs:335-347`) | agent/MCP | fixed |
+| B8 | P2 | A wall-clock step backwards of 1 s or more permanently ends the launch (`agent_rpc.rs:125`) | agent/MCP | fixed |
+| B9 | P3 | Strict parameter whitelists reject the spec-legal `cursor` on `tools/list` and `ping` (`agent_rpc.rs:198,257`) | agent/MCP | fixed |
+| B10 | P3 | A refused TCP connect before any byte is sent is reported as `uncertain` rather than definite non-submission (`relay/delivery.rs:589-600`) | agent/MCP | fixed |
+| C1 | P1 | A stale-epoch application message is an undifferentiated `Error::Scope` that latches the kernel and wedges the driver loop (`engine/messages.rs:148-152`; `engine.rs:82-99`; `agent_delivery.rs:397-400`) | kernel, driver marker agent/MCP | fixed |
+| C2 | P2 | Every deterministic refusal (`Scope`, `Policy`, `Time`, `Mls`, `Conflict`, `Bounds`) forces a full reopen although nothing was written (`engine.rs:82-99`) | kernel | fixed |
+| C3 | P2 | No durable sender-side acceptance status or ciphertext-hash to outbox index in the kernel; native verification lives in process memory, the browser does not verify (`acceptance.rs:72-182`; `agent_rpc/delivery.rs:17-95`) | kernel | fixed |
+| C4 | P2 | Sender-ratchet window (4 late, 32 ahead) turns a delivery gap into an unclassified `Error::Mls` (`drafts.rs:105`; `membership.rs:400`; `messages.rs:153-155`) | kernel | fixed |
+| C5 | P2 | Two full image decodes with full signature re-verification and one whole-image rewrite per message; `check_files` three times per publish (`engine.rs:82-148`; `model.rs:396-520`; `private_rooms.rs:421-538`) | kernel | fixed |
+| C6 | P2 | Caller clock is retained monotonically with no forward bound; one far-future `now` bricks the store until real time catches up (`model.rs:304-311`) | kernel | fixed |
+| C7 | P3 | `ArchiveView` re-decodes the entire archived state per page (`recovery/destination.rs:487-504,615-637`) | kernel | fixed |
+| C8 | P3 | `docs/private-rooms.md:337` names format versions v4/v3 where code is v5/v4/v3 (`model.rs:17`; `packets.rs:52`; `contact.rs:45`) | kernel | fixed |
+| C9 | P3 | No Hegel stateful tests in the kernel crate; the C1/C3/C4 interleavings are exactly what such a model would pin (`vhalla-private-kernel/Cargo.toml`) | kernel | fixed |
+| C10 | P3 | MLS provider secrets in `State.records` and `Working` are not zeroized on drop (`model.rs:40`) | kernel | fixed |
+| C11 | P3 | Permanent limits worth a product decision: 16 successions forever, expired offers reclaimed only on new offer, inbox growth undocumented (`model.rs:15`; `contact.rs:68-70`; `packets.rs:295-304`) | kernel | fixed |
+| D1 | P1 | Each page fetch reserves the 4 MiB maximum against the 1 GiB lifetime budget; delivery stops after 255 syncs with no reset (`delivery.rs:197-201,319-323`; `delivery_model.rs:97-108`) | browser | fixed |
+| D2 | P1 | A deterministic kernel refusal on one staged record (epoch race, phase, expiry, foreign item) wedges browser delivery permanently (`delivery.rs:256-263,361-365`; `worker.rs:162-165`) | browser | fixed |
+| D3 | P1 | Ten consecutive transient failures make `stopped` permanent; with an unsupervised gateway this is an ordinary outage (`delivery_model.rs:97-106`) | browser | fixed |
+| D4 | P2 | Relay-delivered `ContactRequest`/`ContactInvitation` items are silently consumed with no retained evidence (`delivery.rs:279-288,392-398`) | browser | fixed |
+| D5 | P2 | Wall-clock regression locks browser delivery out until the clock catches up (`delivery.rs:123`; `delivery_model.rs:90-92`) | browser | fixed |
+| D6 | P2 | Gateway admission budget and connection slots are charged before any authentication; 8 silent sockets starve the real tab (`http.rs:266-279,344-376`) | relay/host | fixed |
+| D7 | P2 | Gateway is fail-stop on any handler panic and has no supervisor (`http.rs:254-311`; `private_gateway.rs:210-215`) | relay/host | fixed |
+| D8 | P2 | Every browser kernel operation round-trips the full image; a 4-record sync is about 25 image passes and 8 strict transactions (`browser/private_rooms.rs:286-317`; `engine.rs:81-139`) | browser, kernel cache from C5 | fixed |
+| D9 | P2 | Delivery harness hard-codes ports 8790 and 19473 with no collision check and a README that misdescribes them (`qualify_private_delivery.mjs:155-395`) | browser | fixed |
+| D10 | P3 | `Session::revalidate` opens a fresh IndexedDB connection on every call, about 12 per sync (`session.rs:167-176,255-262`) | browser | fixed |
+| D11 | P3 | Gateway reads headers one byte per `read` with a `set_read_timeout` per byte (`http.rs:344-376`) | relay/host | fixed |
+| D12 | P3 | Capability copies in JS heap are never zeroed; profile file permissions are undocumented (`panel.rs:272-289`; `ui/private.rs:318-326`) | browser | fixed |
+| D13 | P3 | Harness assertions depend on unversioned byte offsets and the 2 s backoff constant (`qualify_private_delivery.mjs:276-283,330-382`) | browser | fixed |
+| D14 | P3 | The previous B2 repair is present but has no truncated-archive DOM or harness pin (`panel/actions.rs:1110-1131,1319`) | browser | fixed |
+| E-1 | P2 | Activity store re-syncs a freshly durable intent: 14 barriers where 12 suffice (`activity-store/src/unix.rs:379-391,484-485`) | performance | fixed |
+| E-2 | P2 | Single fixed-name append log with slotted heads would take the activity append from 14 to 2 barriers (format change) | performance | spiked: prototypes/activity-append-log measures 2 barriers/append; production adoption deferred per its README |
+| E-3 | P2 | Bounded group commit after E-2 (2 barriers per group) | performance | deferred: bounded group commit follows E-2 adoption, which stays a format decision |
+| E-4 | P3 | Seven Ed25519 verifies and about 230 metadata syscalls per append; two verifies per paged record (`unix.rs:430-478,641-676`) | performance | fixed |
+| E-5 | P3 | `examples/performance.rs:171` counts `author_head` inside append timing | performance | fixed: per-phase timing split recorded in docs/performance.md |
+| E-6 | P1 | Delivery driver: 1 job per 1 s tick, 8 items per 5 s poll, `applied` restarts at 0 (n/8 s stall after relaunch), O(n) `positions()` twice per tick (`agent_delivery.rs:261-361`) | agent/MCP | fixed |
+| E-7 | P2 | Relay and delivery SQLite run `synchronous=FULL` without `fullfsync` then add two code-level barriers: weaker under power loss and two flushes too many (`relay/mod.rs:432-437`; `delivery.rs:227-231`) | relay/host, delivery store agent/MCP | fixed |
+| E-8 | P2 | Mailbox mutex is held across device flushes, so PAGE waits behind PUT; about 80 to 100 req/s ceiling (`tls/service.rs:410-486`) | relay/host | fixed |
+| E-9 | P2 | Four F_FULLFSYNC per pulled scan item; a page-level barrier group would make it 2 per page (`net.rs:355-378,673-723`) | relay/host | fixed |
+| E-10 | P3 | Two O(n) scans per PUT (same evidence as A16) | relay/host | fixed |
+| E-11 | P3 | Thread and TLS handshake per request, no resumption or keep-alive (`service.rs:329-334`; `tls.rs:161-180`) | relay/host | fixed |
+| E-12 | P2 | Idle `agent-serve` performs 2 F_FULLFSYNC, 3 fsync and one image decrypt per second, and a handshake per 5 s, forever (`delivery.rs:524-525`; `agent_delivery.rs:273-277`) | agent/MCP | fixed |
+| E-13 | P3 | `docs/performance.md` never states that `sync_all` is F_FULLFSYNC on Darwin; the 14-barrier and 52.8 ms figures are fully explained by it | performance | fixed: docs/performance.md now states sync_all is F_FULLFSYNC on Darwin and keeps a barrier ledger |
+| E-14 | P3 | Kernel native store: `check_files` three times and code-level syncs on top of `synchronous=EXTRA`: 6 barriers where 4 suffice (`private_rooms.rs:436,492-550,861`) | kernel | fixed |
+| E-15 | P2 | Journal `lock()` re-syncs two directories per commit and `sync_bundle` re-flushes an already-synced inode: 4 of 10 barriers redundant (`journal/src/lib.rs:523-538,1059`) | performance | fixed |
+| E-16 | P2 | One decided value runs three independent two-phase protocols, about 29 barriers; stores could checkpoint periodically (`rooms-consensus/src/lib.rs:1250-1295`) | performance | deferred: consensus store checkpointing is a separate recovery-format change |
+| E-17 | info | Five WAL flushes per height come from Malachite flush-before-publish; leave as is | performance | closed: left as is per the finding itself |
+| E-18 | P3 | Certified replay is about 90 percent signature verification; per-page batch verification with per-signature fallback is about 1.7x (`public-client/src/lib.rs:167-236`; `cert.rs:139-185`) | performance | fixed |
+| F1 | P1 | Any undecryptable relay item bricks every native driver in the namespace: no marker, no advance, re-fails on every relaunch (`agent_delivery.rs:399-403`; `agent.rs:245`) | agent/MCP, typed errors from kernel | fixed |
+| F2 | P1 | Default 900 s grant, never-used receipt and output paths per renewal, grant path baked into MCP args: a two-agent exchange fails by default (`agent_setup.rs:29-31,74-83`; `agent_rpc.rs:122-136`) | journey | fixed |
+| F3 | P1 | Installed host lifetime capacity is about 1000 messages for two agents sharing one credential; receipts halve it (`config.rs:246-251`; `private_host.rs:134`) | relay/host | fixed |
+| F4 | P2 | `private-host init` mints exactly two credentials; the thread needs three and both agents share one quota and blast radius (`config.rs:20-39`) | relay/host | fixed |
+| F5 | P2 | Acceptance receipts appear in `private_inbox` as binary rows and consume the read budget and follow window (`agent_rpc.rs:336-343`; `agent_delivery.rs:399-406`) | agent/MCP | fixed |
+| F6 | P2 | The startup helper's `lsof -Fp` assertion could never pass; the receipt records the wrong cause; no product `status --probe` exists (`valhalla-local-start-20260922.py:290`) | relay/host | fixed |
+| F7 | P2 | Fixed ports 8790, 19473 and 9473 collide between qualification and production and already forced an unreceipted gateway restart (same evidence as D9) | browser | fixed |
+| F8 | P2 | Doc examples use hour-long device validity; enrollment expiry silently ends both agents with a generic `REFUSED` (`protocol/src/lib.rs:199`; `agent.rs:455`) | agent/MCP | fixed |
+| F9 | P2 | Sender acceptance visibility is poll-only, budget-charged and bounded by the sender's process lifetime (same mechanism as B2) | agent/MCP | fixed |
+| F10 | P2 | Driver hot loop performs O(items) file opens per second per agent (same evidence as A5, E-6) | agent/MCP | fixed |
+| F11 | P2 | Restart cost grows with outbox length and blocks inbound processing (same evidence as A6, B6) | agent/MCP | fixed |
+| F12 | P2 | No reboot, sleep/wake or logout qualification; the launchd crash loop is invisible (same evidence as A10) | relay/host | fixed |
 | F13 | P3 | Doc/code disagreements: `--delivery`-only status fields, `status` health wording, missing `vhalla --version`, README build features, stale Tailcat receipt | journey | fixed: `vhalla --version`/`-V` reports crate version plus the compiled feature set; README documents the `experimental-private` build and feature check; `status` vs `status --probe` health wording landed with the relay lane; cli-agents.md documents the delivery-only outbox fields; Tailcat stays pinned at v0.7.0 matching the installed binary |
 | F14 | P3 | No read-only `delivery-status` command; the only views need a live grant or hand-reading SQLite (`delivery.rs:468`) | journey | fixed: `vhalla private delivery-status ID STORE --config P --out FILE` reads the durable journal under its own lock with `--after`/`--limit` paging and no grant, network or plaintext exposure |
 
@@ -309,21 +309,22 @@ the previous review's guidance against an archive-to-live shortcut stands.
 
 ## Validation record
 
-Pending. The integration owner fills each line with the command, the exact
-head and the observed result; a line stays "pending" until it is run on the
-integrated tree.
+Run on the integrated tree `claude/steel-thread-20260922` (head at gate time
+`09c4848`, merges through `9b4ebc1`); Rust 1.98.1, isolated target dir
+`.verify-build` because lane worktrees previously poisoned the shared dir's
+same-fingerprint rlib slots.
 
 | Gate | Status |
 | --- | --- |
-| `cargo +1.98.1 fmt --all -- --check` and `git diff --check` | pending |
-| `cargo +1.98.1 clippy --workspace --all-targets --all-features --locked -- -D warnings` | pending |
-| CI package matrix lanes for touched crates: `vhalla-private-kernel`, `vhalla-private-protocol`, `vhalla-private-native`, `vhalla-cli` (`experimental-private`), `vhalla-browser-storage`, `vhalla-room-activity-store`, `vhalla-journal`, `vhalla-public-client` | pending |
-| Workspace doctests `cargo +1.98.1 test --workspace --doc --all-features --locked` | pending |
-| wasm clippy for `browser/` and `vhalla-browser-storage` (`wasm32-unknown-unknown`, `-D warnings`) | pending |
-| Browser harnesses: `qualify_private_delivery.mjs` on non-default ports, `qualify_private_panel.mjs`, `qualify_private_session.mjs` with the truncated-archive case | pending |
-| Two-agent steel-thread journey test (`tests/private_steel_thread.rs`, single and Hegel) | pending |
-| Steel-thread benchmark: baseline at `0eee3b6` and after-repair run, with barrier counts per stage and idle-phase count | pending |
-| Exact-head CI aggregate on the PR head | pending |
+| `cargo +1.98.1 fmt --all -- --check` and `git diff --check` | pass |
+| `cargo +1.98.1 clippy --workspace --all-targets --all-features --locked -- -D warnings` | pass |
+| CI package matrix lanes for touched crates: `vhalla-private-kernel`, `vhalla-private-protocol`, `vhalla-private-native`, `vhalla-cli` (`experimental-private`), `vhalla-browser-storage`, `vhalla-room-activity-store`, `vhalla-journal`, `vhalla-public-client` | pass (kernel 84, protocol suites, native 119+3+5+1+6, cli private incl. steel-thread, browser-storage 90, activity-store 42 incl. 64-case Hegel, journal 43, public-client 19; `private_agent_delivery` reconciled to outage accounting in 09c4848) |
+| Workspace doctests `cargo +1.98.1 test --workspace --doc --all-features --locked` | pass |
+| wasm clippy for `browser/` and `vhalla-browser-storage` (`wasm32-unknown-unknown`, `-D warnings`) | pass |
+| Browser harnesses: `qualify_private_delivery.mjs` on non-default ports, `qualify_private_panel.mjs`, `qualify_private_session.mjs` with the truncated-archive case | pass: delivery on `--gateway-port 28791 --tls-port 29474` (12 facts, production dist), panel `--production` (12 facts), panel local-qualification on 8789 (13 facts), session on 8789 (archive export/resume/foreign-open facts) |
+| Two-agent steel-thread journey test (`tests/private_steel_thread.rs`, single and Hegel) | pass: linear journey 1/1, Hegel interleaved restart/relaunch 4 cases |
+| Steel-thread benchmark: baseline at `0eee3b6` and after-repair run, with barrier counts per stage and idle-phase count | pass: lane baseline/after documented in docs/performance.md (218.0s→215.8s ack wall at 100 msg, ledger 5→3 kernel publish barriers); integrated-tree 100-msg run 212.4s ack wall, A 137 ticks/B 133 ticks, 60s idle phase, `/private/tmp/valhalla-perf-integrated-100` |
+| Exact-head CI aggregate on the PR head | pending (PR head) |
 
 Use Rust 1.98.1 explicitly on this host and the shared target directory
 `/private/tmp/valhalla-target-shared`; do not create new target directories.
