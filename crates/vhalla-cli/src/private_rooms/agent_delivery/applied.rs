@@ -264,6 +264,7 @@ mod tests {
             context,
             phase: Phase::MemberJoined,
             epoch: 1,
+            clock: 0,
             control_sequence: 0,
             control_floor: floor,
             outbox_head: 3,

@@ -395,7 +395,10 @@ impl Journey {
         &self,
         who: Who,
         sequence: u64,
-    ) -> vhalla_private_native::relay::delivery::JobStatus {
+    ) -> (
+        vhalla_private_native::relay::delivery::JobStatus,
+        vhalla_private_native::relay::delivery::JobEvidence,
+    ) {
         let context = self.json(&self.agent_path(who, "inspect.json"))["status"].clone();
         let context = vhalla_private_kernel::Context {
             scope: vhalla_private_kernel::protocol::PrivateRoomScope {
@@ -424,7 +427,7 @@ impl Journey {
             self.relay_client(self.host_token(who)).endpoint_id(),
         )
         .unwrap();
-        queue
+        let job = queue
             .statuses(sequence - 1, 1)
             .unwrap()
             .into_iter()
@@ -434,7 +437,9 @@ impl Journey {
                     "{} outbox sequence {sequence} has no durable delivery job",
                     who.dir()
                 )
-            })
+            });
+        let evidence = queue.evidence(job.id).unwrap();
+        (job, evidence)
     }
     fn applied_states(&self, who: Who) -> Vec<String> {
         // Only committed markers; a `.pending` sibling may exist mid-publish.
@@ -963,11 +968,13 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
     host.stop();
     assert!(TcpStream::connect(journey.addr).is_err());
     let third = agent_a.queue("steel thread 3: queued while the host was down", 0x30);
+    // A1/A11 semantics: an outage records uncertain outage evidence without
+    // spending the finite attempt budget.
     let offline = agent_a.await_outbox(third, "an offline delivery attempt", |v| {
-        v["relay"]["attempts"].as_u64().is_some_and(|n| n >= 1)
+        v["relay"]["uncertain"] == true && v["relay"]["last_error"] == "connect"
     });
     assert_ne!(offline["relay"]["state"], "retained", "{offline}");
-    assert_eq!(offline["relay"]["attempts"], 1, "{offline}");
+    assert_eq!(offline["relay"]["attempts"], 0, "{offline}");
     assert_eq!(offline["member_acceptances"], json!([]));
     let budget_a = agent_a.status()["remaining"].clone();
     let budget_b = agent_b.status()["remaining"].clone();
@@ -986,12 +993,13 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
     }
     agent_a.close();
     agent_b.close();
-    let durable = journey.delivery_job(Who::A, third);
+    let (durable, durable_evidence) = journey.delivery_job(Who::A, third);
     assert!(
         matches!(durable.state, JobState::Pending | JobState::Uncertain),
         "{durable:?}"
     );
-    assert_eq!(durable.attempts, 1);
+    assert_eq!(durable.attempts, 0, "{durable:?}");
+    assert_eq!(durable_evidence.outages, 1, "{durable_evidence:?}");
     assert_eq!(durable.position, None);
     let mut host = journey.host_serve();
     // The consumed one-use grants refuse to relaunch; fresh grants do.
@@ -1024,7 +1032,7 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
     agent_b.close();
     // The queue store is exclusively locked by a live driver; read the durable
     // job only after both relaunched agents have exited.
-    let retained_job = journey.delivery_job(Who::A, third);
+    let (retained_job, _) = journey.delivery_job(Who::A, third);
     assert_eq!(retained_job.id, durable.id, "restart retries the exact job");
     assert_eq!(retained_job.state, JobState::Retained, "{retained_job:?}");
     assert_eq!(retained_job.position, Some(7), "{retained_job:?}");
