@@ -318,3 +318,29 @@ private rooms or establish a public network. Verify the deployed artifact and
 live HTTPS paths separately, retaining the prior deployment for rollback.
 
 Report vulnerabilities through the verified private channel in [SECURITY.md](../SECURITY.md).
+
+## v0.2.3 release and local deployment record
+
+Tag `v0.2.3` on merge commit `cf5fc15` (PR #91) passed the complete release
+workflow at run 35839680596: full `rust.yml` validation, CLI artifacts for
+`aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`, the macOS menubar
+artifact, and the exact production browser bundle qualified by validation.
+`publish_release.py` verified all eight assets (four archives plus checksum
+sidecars) including downloaded-byte re-verification before publishing.
+
+The local deployment replaced the v0.2.1-era binary at
+`~/.local/libexec/valhalla/vhalla` (prior binary retained as
+`vhalla.v0.2.1.bak`). `private-host` restarted on the new artifact and its
+`status --probe` reports a pinned-TLS authenticated page check on
+`127.0.0.1:9473`, valid leaf certificate and two credentials. The
+`private-gateway` LaunchAgent plist predated this software's emitted shapes
+(foreign pretty-printed XML), so custody correctly refused status; the
+operator path preserved the file, booted out the foreign agent and ran
+`private-gateway install`, which wrote the emitted plist bound to the
+same label and redirected launchd output into `events.log`. The gateway
+now serves the verified `valhalla-browser-v0.2.3` production artifact on
+`http://127.0.0.1:8790` and `status --probe` reports a live listener.
+An authenticated `OP_PAGE` exchange through the gateway to the host
+mailbox returned `STATUS_OK` end to end; the production mailbox head
+remains 0 and no synthetic traffic was admitted. The pinned Tailcat
+v0.7.0 overlay service was not changed.
