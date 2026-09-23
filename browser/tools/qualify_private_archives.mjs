@@ -75,7 +75,16 @@ export async function qualifyArchives({owner,fresh,output,evaluate,invoke,setFil
     await new Promise((resolve,reject)=>{const r=indexedDB.open(destination,1);r.onupgradeneeded=()=>r.result.createObjectStore('images');r.onerror=()=>reject(Error('legacy fixture open'));r.onsuccess=()=>{const db=r.result,tx=db.transaction('images','readwrite',{durability:'strict'}),store=tx.objectStore('images');for(const [key,value]of values)store.add(value,key);tx.oncomplete=()=>{db.close();resolve()};tx.onabort=()=>{db.close();reject(Error('legacy fixture conflict'))};};});return true;
   }`,[aDb,legacy]);
   if(await inspect(a,true)!==aCount)throw Error('legacy snapshot changed');
-  await importFile(b);await close();
+  // A mid-page truncation fails the stream parse after earlier pages were
+  // already retained: custody locks with the exact-file resume instruction,
+  // and the complete original resumes at its durable cursor.
+  const truncated=join(output,'archive-truncated-mid-page.vharchive');
+  await writeFile(truncated,b.raw.subarray(0,b.raw.length-100),{mode:0o600});
+  await setFile(fresh,'private-archive-file',truncated);
+  await evaluate(fresh,"(async()=>{await qclick('private-import-archive');await qwait(()=>qid('private-workspace').hidden&&qid('identity-state').textContent!=='Private custody','truncated import did not close custody');qassert(qid('private-status').textContent.includes('Preserve the complete original archive'),'truncated import lost the resume instruction');qassert(qid('private-archive-file').value==='','truncated file survived lock');return true;})()");
+  const bRetained=await invoke(fresh,`async function(name){if(!(await indexedDB.databases()).some(db=>db.name===name))return 0;return await new Promise((resolve,reject)=>{const r=indexedDB.open(name);r.onerror=()=>reject(Error('retained import'));r.onsuccess=()=>{const db=r.result,tx=db.transaction('images','readonly'),count=tx.objectStore('images').count();tx.oncomplete=()=>{db.close();resolve(count.result)};tx.onabort=()=>{db.close();reject(Error('retained read'))};};});}`,[bDb]);
+  if(bRetained<=2)throw Error('truncated import left no durable resume cursor');
+  await enter();await importFile(b);await close();
   const bCount=await inspect(b);
   if(bCount<=aCount || await inspect(a)!==aCount || await inspect(a,true)!==aCount)throw Error('snapshots did not coexist');
   facts.push('Production archive routes authenticate full source before catalog/destination access; malformed context/ID create no database; interrupted A resumes; newer B coexists and explicit legacy A stays readable');
