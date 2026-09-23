@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use vhalla_identity::Identity;
-use vhalla_private_kernel::{protocol::Validity, Context, OperationId};
+use vhalla_private_kernel::{protocol::Validity, Context, OperationId, OutboxKind};
 use vhalla_private_native::{
     client::{RoomCreation, RoomSession},
     private_rooms::Limits,
@@ -271,6 +271,17 @@ impl Fixture {
                 .to_vec()
         })
     }
+    fn driver_checkpoint(&self, who: usize) -> (u64, u64) {
+        DeliveryStore::open(
+            self.p(&format!("{who}-delivery/jobs")),
+            self.contexts[who],
+            ns(),
+            self.client().endpoint_id(),
+        )
+        .unwrap()
+        .driver_checkpoint()
+        .unwrap()
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -350,13 +361,25 @@ impl Host {
         value["sequence"].as_str().unwrap().parse().unwrap()
     }
     fn outbox(&mut self, grant: &Value, sequence: u64) -> Value {
+        self.outbox_wait(grant, sequence, 0)
+    }
+    fn outbox_wait(&mut self, grant: &Value, sequence: u64, wait_for: u64) -> Value {
         let response = self.call(
             grant,
             "private_outbox_status",
-            json!({"after":(sequence-1).to_string(),"limit":1}),
+            json!({"after":(sequence-1).to_string(),"limit":1,"wait_for":wait_for}),
         );
         let record = response["result"]["structuredContent"]["records"][0].clone();
         assert!(record.is_object(), "{response}");
+        if wait_for > 0 {
+            assert!(
+                matches!(
+                    response["result"]["structuredContent"]["wait"].as_str(),
+                    Some("changed" | "timeout")
+                ),
+                "{response}"
+            );
+        }
         record
     }
     fn await_outbox(
@@ -366,8 +389,8 @@ impl Host {
         predicate: impl Fn(&Value) -> bool,
     ) -> Value {
         let deadline = Instant::now() + Duration::from_secs(20);
+        let mut value = self.outbox(grant, sequence);
         loop {
-            let value = self.outbox(grant, sequence);
             if predicate(&value) {
                 return value;
             }
@@ -375,7 +398,8 @@ impl Host {
                 Instant::now() < deadline,
                 "delivery state did not converge: {value}"
             );
-            thread::sleep(Duration::from_millis(500));
+            // Long-poll: the server answers as soon as delivery evidence changes.
+            value = self.outbox_wait(grant, sequence, 3);
         }
     }
     fn close(&mut self) {
@@ -390,10 +414,18 @@ impl Host {
     fn refused(&mut self) {
         wait_exit(&mut self.child);
         assert!(!self.child.try_wait().unwrap().unwrap().success());
-        assert!(self
-            .responses
-            .recv_timeout(Duration::from_millis(100))
-            .is_err());
+        // A refused launch may emit one bounded closing notice so a client sees
+        // why the stream ended; it is never a data response and nothing more
+        // may follow it.
+        if let Ok(line) = self.responses.recv_timeout(Duration::from_millis(500)) {
+            let notice: Value = serde_json::from_str(&line).expect("closing frame is MCP JSON");
+            assert_eq!(notice["method"], "notifications/message", "{notice}");
+            assert_eq!(notice["params"]["data"]["status"], "closed", "{notice}");
+            assert!(self
+                .responses
+                .recv_timeout(Duration::from_millis(100))
+                .is_err());
+        }
     }
     fn stderr(&mut self) -> String {
         let mut text = String::new();
@@ -462,9 +494,11 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
     let first = f.grant(OWNER, "first", 16);
     let mut owner = f.host(OWNER, "first", OWNER);
     let sequence = owner.queue(&first, "synthetic first message", 10);
-    let offline = owner.await_outbox(&first, sequence, |v| v["relay"]["state"] == "uncertain");
+    // A refused TCP connect is honest "unreachable", not generic uncertainty.
+    let offline = owner.await_outbox(&first, sequence, |v| v["relay"]["state"] == "unreachable");
     assert_eq!(offline["relay"]["attempts"], 1);
     assert_eq!(offline["relay"]["uncertain"], true);
+    assert_eq!(offline["relay"]["last_error"], "connect");
     thread::sleep(Duration::from_millis(1100));
     assert_eq!(
         owner.outbox(&first, sequence)["relay"]["attempts"],
@@ -685,9 +719,12 @@ fn authenticated_removal_releases_stdio_custody_without_disclosing_more_agent_ou
     let _relay = f.relay();
     let grant = f.grant(MEMBER, "removed", 4);
     let mut member = f.host(MEMBER, "removed", MEMBER);
+    let probe = member.call(&grant, "private_status", json!({}));
     assert_eq!(
-        member.call(&grant, "private_status", json!({}))["result"]["structuredContent"]["status"],
-        "live"
+        probe["result"]["structuredContent"]["status"],
+        "live",
+        "{probe} stderr={}",
+        member.stderr()
     );
     let removal = runtime().block_on(async {
         let mut owner = RoomSession::open(
@@ -720,4 +757,140 @@ fn authenticated_removal_releases_stdio_custody_without_disclosing_more_agent_ou
             vhalla_private_kernel::Phase::Removed
         );
     });
+}
+
+#[test]
+fn malformed_retained_item_records_skip_marker_and_following_delivery_still_applies() {
+    let f = Fixture::new();
+    let artifact = runtime().block_on(async {
+        let mut room = RoomSession::open(
+            Identity::open(f.p("0-id")).unwrap(),
+            f.p("0-room"),
+            f.contexts[OWNER],
+        )
+        .await
+        .unwrap();
+        room.send(
+            op(30),
+            &room
+                .prepare_message(b"real message behind a foreign item")
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    });
+    let _relay = f.relay();
+    // Position 1 is undecryptable garbage no room member can ever process; the
+    // real committed output lands right behind it at position 2.
+    f.client()
+        .submit(
+            &RelayItem::new(
+                ns(),
+                1,
+                op(98),
+                OutboxKind::Application,
+                b"this is not a valid MLS private-room artifact",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    f.client()
+        .submit(&RelayItem::from_artifact(ns(), &artifact).unwrap())
+        .unwrap();
+    let grant = f.grant(MEMBER, "unstuck", 8);
+    let mut member = f.host(MEMBER, "unstuck", MEMBER);
+    // The driver marks the foreign position terminally skipped instead of
+    // wedging the contiguous applied watermark or ending the launch.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let markers = loop {
+        let markers = f.applied(MEMBER);
+        if markers
+            .iter()
+            .any(|v| v["state"] == "undecryptable-foreign-or-stale")
+            && markers.iter().any(|v| v["state"] == "locally-received")
+        {
+            break markers;
+        }
+        if Instant::now() >= deadline {
+            let detail = if member.child.try_wait().unwrap().is_some() {
+                member.stderr()
+            } else {
+                "host still running".to_owned()
+            };
+            panic!("driver did not advance past the foreign item: {markers:?}\n{detail}");
+        }
+        thread::sleep(Duration::from_millis(300));
+    };
+    let skip = markers
+        .iter()
+        .find(|v| v["state"] == "undecryptable-foreign-or-stale")
+        .unwrap();
+    assert!(
+        [
+            "stale_epoch",
+            "ratchet_gap_past",
+            "foreign_scope",
+            "authentication",
+            "malformed_encoding",
+            "unprocessable_mls",
+            "bounds",
+            "policy",
+            "predates_control_floor",
+        ]
+        .contains(&skip["error"].as_str().unwrap()),
+        "skip reasons stay inside the closed set: {skip}"
+    );
+    assert_eq!(skip["position"], "1");
+    // The launch stays live and the valid message behind the skip is received.
+    assert_eq!(
+        member.call(&grant, "private_status", json!({}))["result"]["structuredContent"]["status"],
+        "live"
+    );
+    let inbox = member.call(&grant, "private_inbox", json!({"after":"0","limit":4}));
+    assert!(
+        inbox["result"]["structuredContent"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["text"] == "real message behind a foreign item"),
+        "{inbox}"
+    );
+    assert!(!inbox.to_string().contains("not a valid MLS"));
+    // The member emitted a signed acceptance receipt for the received message:
+    // it is a durable queue row (the member's own outbox sequence 2), and the
+    // driver delivers it like any other job. Waiting for retention guarantees
+    // the outgoing watermark covered the receipt before the launch ended.
+    member.await_outbox(&grant, 2, |v| v["relay"]["state"] == "retained");
+    member.close();
+    // The durable checkpoint retains both watermarks across the launch end.
+    let (outgoing, applied) = f.driver_checkpoint(MEMBER);
+    assert!(applied >= 2, "applied watermark survived relaunch evidence");
+    assert!(outgoing >= 2, "outgoing covered the emitted receipt");
+    // The read-only journal reports the same durable state without a grant.
+    let mut status = f.room_command("delivery-status", MEMBER);
+    status
+        .arg("--config")
+        .arg(f.p("1-delivery.json"))
+        .arg("--out")
+        .arg(f.p("status.json"));
+    success(status);
+    let report: Value = serde_json::from_slice(&fs::read(f.p("status.json")).unwrap()).unwrap();
+    assert_eq!(report["driver"]["applied"], applied.to_string());
+    // The member's own outbox was scanned: the emitted acceptance receipt is
+    // a durable queue row (its key package is a confidential offer, never a
+    // relay job).
+    assert_eq!(
+        report["driver"]["outgoing"],
+        outgoing.to_string(),
+        "{report}"
+    );
+    let jobs = report["jobs"].as_array().unwrap();
+    assert!(
+        !jobs.is_empty(),
+        "emitted receipt is a durable queue row: {report}"
+    );
+    assert!(jobs.iter().all(|j| matches!(
+        j["state"].as_str(),
+        Some("pending" | "uncertain" | "retained" | "stopped")
+    )));
 }

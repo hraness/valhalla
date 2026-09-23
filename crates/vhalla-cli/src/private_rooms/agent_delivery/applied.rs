@@ -10,6 +10,21 @@ use vhalla_private_kernel::Status;
 
 const MAX_BYTES: usize = 2048;
 
+/// Closed kernel-refusal classes a driver may durably record on a skipped
+/// item. They name why these exact bytes can never apply here; transient gap
+/// and storage-uncertainty classes are deliberately absent.
+const SKIP_REASONS: &[&str] = &[
+    "stale_epoch",
+    "ratchet_gap_past",
+    "foreign_scope",
+    "authentication",
+    "malformed_encoding",
+    "unprocessable_mls",
+    "bounds",
+    "policy",
+    "predates_control_floor",
+];
+
 fn number(value: &Value, key: &str, head: u64) -> Result<u64, String> {
     let text = value.get(key).and_then(Value::as_str).ok_or(REFUSED)?;
     let n: u64 = text.parse().map_err(|_| REFUSED)?;
@@ -85,7 +100,28 @@ pub(super) fn validate(
                     item.kind(),
                     OutboxKind::ContactInvitation | OutboxKind::ContactRequest
                 ) => {}
+        // Terminal skips: the exact bytes can never apply here, so the driver
+        // recorded the typed refusal and moved the contiguous watermark past
+        // them. No kernel re-run is meaningful; the marker is the evidence.
+        "undecryptable-foreign-or-stale" if !own_echo && item.kind() == OutboxKind::Application => {
+            fields.push("error");
+        }
+        "unverifiable-control"
+            if !own_echo
+                && matches!(
+                    item.kind(),
+                    OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession
+                ) =>
+        {
+            fields.push("error");
+        }
         _ => return Err(REFUSED.into()),
+    }
+    if fields.contains(&"error") {
+        let reason = value.get("error").and_then(Value::as_str).ok_or(REFUSED)?;
+        if !SKIP_REASONS.contains(&reason) {
+            return Err(REFUSED.into());
+        }
     }
     if fields.len() != object.len() || fields.iter().any(|key| !object.contains_key(*key)) {
         return Err(REFUSED.into());
@@ -264,7 +300,7 @@ mod tests {
             context,
             phase: Phase::MemberJoined,
             epoch: 1,
-            clock: 0,
+            clock: 1,
             control_sequence: 0,
             control_floor: floor,
             outbox_head: 3,
@@ -329,5 +365,65 @@ mod tests {
         let mut wrong_kind = marker;
         wrong_kind["digest"] = json!(hex(&item.digest()));
         assert!(check(&wrong_kind, false, false).is_err());
+    }
+
+    #[test]
+    fn terminal_skip_markers_are_closed_and_never_reauthenticate() {
+        let (item, status) = fixture(OutboxKind::Application);
+        let check = |v: &Value, own, emit| {
+            validate(&serde_json::to_vec(v).unwrap(), &item, 1, status, own, emit)
+        };
+        for reason in SKIP_REASONS {
+            let marker = json!({"digest":hex(&item.digest()),"position":"1","state":"undecryptable-foreign-or-stale","error":reason});
+            assert!(
+                !check(&marker, false, false).unwrap(),
+                "skip reason {reason}"
+            );
+        }
+        for (key, value) in [
+            ("error", json!("kernel_lied")),
+            ("error", json!("transient_retry")),
+            ("error", json!(1)),
+        ] {
+            let mut bad = json!({"digest":hex(&item.digest()),"position":"1","state":"undecryptable-foreign-or-stale","error":"stale_epoch"});
+            bad[key] = value;
+            assert!(check(&bad, false, false).is_err(), "{key}");
+        }
+        let mut missing = json!({"digest":hex(&item.digest()),"position":"1","state":"undecryptable-foreign-or-stale"});
+        assert!(check(&missing, false, false).is_err());
+        missing["error"] = json!("stale_epoch");
+        missing["extra"] = json!(true);
+        assert!(check(&missing, false, false).is_err());
+        // An own echo can never carry a skip state, and a skip cannot stand in
+        // for a state that carries kernel authority.
+        let own = json!({"digest":hex(&item.digest()),"position":"1","state":"undecryptable-foreign-or-stale","error":"stale_epoch"});
+        assert!(check(&own, true, false).is_err());
+        let wrong_state = json!({"digest":hex(&item.digest()),"position":"1","state":"locally-received","error":"stale_epoch","inbox_sequence":"2"});
+        assert!(check(&wrong_state, false, false).is_err());
+        // Control skips only fit control kinds, and application skips only
+        // fit application items.
+        let (control, _) = fixture(OutboxKind::OwnerUpdate);
+        let marker = json!({"digest":hex(&control.digest()),"position":"1","state":"unverifiable-control","error":"predates_control_floor"});
+        assert!(!validate(
+            &serde_json::to_vec(&marker).unwrap(),
+            &control,
+            1,
+            status,
+            false,
+            false
+        )
+        .unwrap());
+        let app_item_on_control_state = json!({"digest":hex(&item.digest()),"position":"1","state":"unverifiable-control","error":"predates_control_floor"});
+        assert!(check(&app_item_on_control_state, false, false).is_err());
+        let app_skip_on_control = json!({"digest":hex(&control.digest()),"position":"1","state":"undecryptable-foreign-or-stale","error":"stale_epoch"});
+        assert!(validate(
+            &serde_json::to_vec(&app_skip_on_control).unwrap(),
+            &control,
+            1,
+            status,
+            false,
+            false
+        )
+        .is_err());
     }
 }

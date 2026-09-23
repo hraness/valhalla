@@ -637,6 +637,37 @@ fn item_budget_continues_fair_due_order_and_retained_tampering_refuses() {
 }
 
 #[test]
+fn driver_checkpoint_is_monotone_durable_and_never_regresses() {
+    let f = Fixture::new();
+    let mut store = f.create();
+    assert_eq!(store.driver_checkpoint().unwrap(), (0, 0));
+    // A fresh durable queue accepts the first watermarks without a row of its
+    // own, and a no-op save stays free of clock writes.
+    store.save_driver_checkpoint(3, 2, 100).unwrap();
+    assert_eq!(store.driver_checkpoint().unwrap(), (3, 2));
+    store.save_driver_checkpoint(3, 2, 100).unwrap();
+    assert_eq!(store.driver_checkpoint().unwrap(), (3, 2));
+    store.save_driver_checkpoint(5, 4, 101).unwrap();
+    assert_eq!(store.driver_checkpoint().unwrap(), (5, 4));
+    // Regression is a caller bug, never a state repair.
+    assert_eq!(
+        store.save_driver_checkpoint(4, 4, 102).err(),
+        Some(Error::Bounds)
+    );
+    assert_eq!(
+        store.save_driver_checkpoint(5, 3, 102).err(),
+        Some(Error::Bounds)
+    );
+    assert_eq!(store.driver_checkpoint().unwrap(), (5, 4));
+    drop(store);
+    // Watermarks survive reopen and resume the driver's outgoing/applied scan.
+    let mut store = f.open();
+    assert_eq!(store.driver_checkpoint().unwrap(), (5, 4));
+    store.save_driver_checkpoint(6, 6, 103).unwrap();
+    assert_eq!(store.driver_checkpoint().unwrap(), (6, 6));
+}
+
+#[test]
 fn high_attempt_backoff_saturates_instead_of_wrapping_to_immediate_retry() {
     let f = Fixture::new();
     let mut retry = policy();

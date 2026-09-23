@@ -96,7 +96,7 @@ fn three_record_control_transaction_preflights_all_keys_and_preserves_old_encodi
     );
     assert_eq!(
         RecordKey::Sent([9; 32]).encode().unwrap(),
-        vec![vec![6], vec![9; 32]].concat()
+        [vec![6], vec![9; 32]].concat()
     );
     assert!(RecordKey::Sent([0; 32]).encode().is_err());
     let acceptance = RecordKey::Acceptance {

@@ -665,6 +665,20 @@ impl ScanDirectory {
             .map_err(|_| ScanFailure::Timeout)
     }
 
+    /// The last position durably committed under this guard. Staged items are
+    /// always the contiguous range `initial_cursor + 1..=cursor`; reading it
+    /// performs no filesystem work.
+    pub fn cursor(&self) -> u64 {
+        self.cursor
+    }
+
+    /// Grant this retained guard one fresh absolute operation budget. Long-lived
+    /// callers (a delivery driver between ticks) renew once per bounded use;
+    /// each use is still deadline-bounded and `scan_page_until` only tightens it.
+    pub fn reset_deadline(&mut self) {
+        self.deadline = Instant::now() + SCAN_TIMEOUT;
+    }
+
     /// Return the bounded contiguous committed positions after validating file
     /// custody and sizes. One published item beyond the cursor is permitted as
     /// interruption evidence; only the next scan can reconcile it.

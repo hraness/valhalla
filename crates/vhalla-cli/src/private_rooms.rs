@@ -29,8 +29,10 @@ mod files;
 mod relay_tls;
 
 pub const HELP: &str = "vhalla private agent-serve ID STORE --grant PRIVATE_JSON [--delivery PRIVATE_JSON]
+vhalla private agent-launch ID STORE --policy PRIVATE_JSON --session-dir PRIVATE_DIR [--delivery PRIVATE_JSON]
 vhalla private delivery-init ID STORE --config PRIVATE_JSON
 vhalla private delivery-resume ID STORE --config PRIVATE_JSON [--job DIGEST64]
+vhalla private delivery-status ID STORE --config PRIVATE_JSON [--after N] [--limit N] --out FILE
 vhalla private agent-grant ID STORE --mode read-only|read-write --disclosure PRIVATE_JSON --receipt NEW_CLAIM --out NEW_GRANT [--lifetime SECONDS --inbox-after N --inbox-through N --follow-inbox true|false --max-messages N --max-body-bytes N --max-read-records N --max-read-bytes N --max-preparations N]
 vhalla private create ID NEW_STORE --not-before UNIX --expires UNIX [--max-records N --max-bytes N]
 vhalla private inspect ID STORE --out PRIVATE_JSON
@@ -98,6 +100,7 @@ impl Args {
         let allowed: &[&str] = match command {
             "delivery-init" => &["config"],
             "delivery-resume" => &["config", "job"],
+            "delivery-status" => &["config", "after", "limit", "out"],
             "agent-grant" => &[
                 "mode",
                 "disclosure",
@@ -245,6 +248,7 @@ impl Args {
                 && !matches!(**name, "tls-ca" | "tls-name")
                 && !(command == "agent-grant"
                     && !matches!(**name, "mode" | "disclosure" | "receipt" | "out"))
+                && !(command == "delivery-status" && matches!(**name, "after" | "limit"))
                 && !(command == "relay-submit"
                     && matches!(**name, "addr" | "token" | "mailbox" | "namespace"))
                 && !(command == "relay-scan"
@@ -343,6 +347,9 @@ pub fn run(raw: &[OsString]) -> Result<(), String> {
     if raw.get(1).is_some_and(|value| value == "agent-serve") {
         return agent::run(raw);
     }
+    if raw.get(1).is_some_and(|value| value == "agent-launch") {
+        return agent_setup::launch(raw);
+    }
     if raw.len() == 2 && matches!(raw[1].to_str(), Some("--help" | "-h")) {
         println!("{HELP}");
         return Ok(());
@@ -433,6 +440,9 @@ async fn execute(args: Args) -> Result<(), String> {
         )?,
         "delivery-resume" => {
             delivery_resume::execute(&args, room.status().map_err(|_| REFUSED)?.context)?
+        }
+        "delivery-status" => {
+            agent_delivery::status(&args, room.status().map_err(|_| REFUSED)?.context)?
         }
         "agent-grant" => agent_setup::execute(&args, &room)?,
         "inspect" => {

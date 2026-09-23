@@ -595,6 +595,7 @@ struct Agent<'a> {
     next_id: u64,
     inbox_cursor: u64,
     inbox: Vec<Value>,
+    notices: Vec<Value>,
 }
 impl<'a> Agent<'a> {
     fn spawn(
@@ -638,6 +639,7 @@ impl<'a> Agent<'a> {
             next_id: 1,
             inbox_cursor: 0,
             inbox: Vec::new(),
+            notices: Vec::new(),
         }
     }
     fn line(&mut self, context: &str) -> String {
@@ -665,10 +667,18 @@ impl<'a> Agent<'a> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
-        let response: Value = serde_json::from_str(&self.line(method))
-            .expect("agent stdout carries only MCP JSON lines");
-        assert_eq!(response["id"], json!(id), "{response}");
-        response
+        loop {
+            let frame: Value = serde_json::from_str(&self.line(method))
+                .expect("agent stdout carries only MCP JSON lines");
+            match frame.get("id") {
+                Some(value) if *value == json!(id) => return frame,
+                // Async session notices (for example the closing revocation
+                // frame) carry no request id; retain them for diagnostics and
+                // keep waiting for the actual response.
+                None if frame.get("method").is_some() => self.notices.push(frame),
+                _ => panic!("out-of-order or foreign MCP response: {frame}"),
+            }
+        }
     }
     /// The documented client handshake: initialize, initialized, tools/list.
     fn initialize(&mut self) {
@@ -811,9 +821,9 @@ impl<'a> Agent<'a> {
     fn status(&mut self) -> Value {
         self.call("private_status", json!({}))
     }
-    /// Records returned so far whose body is a device receipt. Receipts
-    /// currently land in the agent-visible inbox as binary records (review F5;
-    /// documented expectation until the inbox filters them).
+    /// Records returned so far whose body is a device receipt. F5 repair:
+    /// receipts are filtered from the agent-visible inbox and only surface
+    /// through `member_acceptances`; this must stay empty.
     fn receipt_records(&self) -> Vec<&Value> {
         self.inbox
             .iter()
@@ -947,13 +957,13 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
         accepted["member_acceptances"][0]["received_sequence"],
         answered["sequence"]
     );
-    // Review F5 documented expectation: the recipient's signed device receipt
-    // is itself an application record and currently lands in the sender's
-    // agent-visible inbox as a binary record alongside real replies.
+    // F5 repair: the recipient's signed device receipt is an application
+    // record but never lands in the agent-visible inbox; it surfaces only
+    // through private_outbox_status.member_acceptances (asserted above).
     assert_eq!(
         agent_a.receipt_records().len(),
-        1,
-        "A's inbox currently retains B's device receipt as a binary record"
+        0,
+        "receipts are filtered from the agent inbox"
     );
     // Relay-eligible kinds include the confidential admission artifacts, so the
     // mailbox also carries A's ContactInvitation and B's ContactRequest ahead
@@ -1014,12 +1024,12 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
         delivered["member_acceptances"][0]["received_sequence"],
         after_restart["sequence"]
     );
-    // Review F5 documented expectation again: A's own device receipt for B's
-    // earlier reply also landed in B's inbox before this message.
+    // F5 repair again: A's own device receipt for B's earlier reply stays out
+    // of B's agent-visible inbox.
     assert_eq!(
         agent_b.receipt_records().len(),
-        1,
-        "B's inbox currently retains A's device receipt as a binary record"
+        0,
+        "receipts are filtered from the agent inbox"
     );
     // Earlier claims are restored from retained evidence, not re-delivered.
     agent_a.await_acceptance(first);

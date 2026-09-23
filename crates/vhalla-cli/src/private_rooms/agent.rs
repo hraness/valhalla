@@ -36,13 +36,20 @@ pub(super) fn run(raw: &[OsString]) -> Result<(), String> {
     {
         return Err(HELP.into());
     }
+    serve_paths(
+        Path::new(&raw[2]),
+        Path::new(&raw[3]),
+        Path::new(&raw[5]),
+        (raw.len() == 8).then(|| Path::new(&raw[7])),
+    )
+}
+
+/// Refuse anything but actual stdio peers: never print plaintext to a terminal
+/// or silently reuse the ordinary CLI's success banner / file redirection.
+pub(super) fn stdio_is_piped() -> Result<(), String> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let input = stdin.as_fd();
-    let output = stdout.as_fd();
-    // Actual stdio peers only: never print plaintext to a terminal or silently
-    // reuse the ordinary CLI's success banner / unbounded file redirection.
-    for fd in [input, output] {
+    for fd in [stdin.as_fd(), stdout.as_fd()] {
         if !matches!(
             FileType::from_raw_mode(fstat(fd).map_err(|_| REFUSED)?.st_mode),
             FileType::Fifo | FileType::Socket
@@ -50,29 +57,79 @@ pub(super) fn run(raw: &[OsString]) -> Result<(), String> {
             return Err(HELP.into());
         }
     }
+    Ok(())
+}
+
+/// Serve one explicitly prepared grant over the current process's stdio.
+pub(super) fn serve_paths(
+    identity: &Path,
+    store: &Path,
+    grant: &Path,
+    delivery_profile: Option<&Path>,
+) -> Result<(), String> {
+    stdio_is_piped()?;
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let input = stdin.as_fd();
+    let output = stdout.as_fd();
     let _input_flags = Nonblocking::new(input)?;
     let _output_flags = Nonblocking::new(output)?;
-    let bytes = files::read(Path::new(&raw[5]), MAX_GRANT_BYTES, false)?;
+    let bytes = files::read(grant, MAX_GRANT_BYTES, false)?;
     let launch = LaunchGrant::decode(&bytes).map_err(|_| REFUSED)?;
     let context = launch.context();
-    let identity = Identity::open(Path::new(&raw[2])).map_err(|_| REFUSED)?;
+    let identity = Identity::open(identity).map_err(|_| REFUSED)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .map_err(|_| REFUSED)?;
     let room = runtime
-        .block_on(RoomSession::open(identity, Path::new(&raw[3]), context))
+        .block_on(RoomSession::open(identity, store, context))
         .map_err(|_| REFUSED)?;
     // Open the independently selected host profile before consuming a grant.
     // This performs no network effect and refuses absent/foreign state.
-    let mut delivery = if raw.len() == 8 {
-        Some(Driver::open(Path::new(&raw[7]), context)?)
-    } else {
-        None
+    let mut delivery = match delivery_profile {
+        Some(profile) => Some(Driver::open(profile, context)?),
+        None => None,
     };
     let mut rpc = RpcSession::new(room, launch).map_err(|_| REFUSED)?;
     let result = serve(&runtime, &mut rpc, input, output, &mut delivery);
     rpc.revoke();
+    if result.is_err() {
+        // Custody is already destroyed. The final frame carries only the closed
+        // reason, so a client sees why the stream ends instead of a dead server.
+        let frame = rpc
+            .take_final_frame()
+            .unwrap_or_else(|| rpc.closing_notice());
+        write_final(output, &frame);
+    }
     result
+}
+
+/// Best-effort bounded write of one closing frame after custody is gone. It
+/// never renews authority, retries a partial data reply or blocks past a few
+/// seconds; a peer that already went away simply loses the notice.
+fn write_final(output: BorrowedFd<'_>, frame: &[u8]) {
+    let mut bytes = frame.to_vec();
+    bytes.push(b'\n');
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut offset = 0;
+    while offset < bytes.len() && Instant::now() < deadline {
+        match write(output, &bytes[offset..]) {
+            Ok(0) => return,
+            Ok(n) => offset += n,
+            Err(Errno::INTR) => continue,
+            Err(Errno::AGAIN) => {
+                let mut fds = [PollFd::from_borrowed_fd(output, PollFlags::OUT)];
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let Ok(timeout) = Timespec::try_from(remaining) else {
+                    return;
+                };
+                if poll(&mut fds, Some(&timeout)).is_err() {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
 }
 
 struct Nonblocking<'a> {
@@ -92,9 +149,18 @@ impl Drop for Nonblocking<'_> {
     }
 }
 
+/// Bounded buffered complete frames. A peer may legitimately pipeline a batch
+/// of requests; a full queue applies backpressure by leaving input unread in
+/// the pipe rather than failing.
+const MAX_READY: usize = 64;
+
 #[derive(Default)]
 struct Frames {
     pending: Vec<u8>,
+    /// Bytes already read but not yet framed because `ready` was full. At most
+    /// one read buffer can ever sit here, so bursts apply backpressure in the
+    /// pipe instead of failing or dropping framed input.
+    spill: VecDeque<u8>,
     ready: VecDeque<Vec<u8>>,
     eof: bool,
     partial_deadline: Option<Instant>,
@@ -110,43 +176,58 @@ impl Frames {
         let mut buffer = [0; 4096];
         loop {
             self.check_deadline()?;
-            let received = read(input, &mut buffer);
-            self.check_deadline()?;
-            match received {
-                Ok(0) => {
-                    self.eof = true;
+            if self.spill.is_empty() {
+                if self.ready.len() >= MAX_READY {
+                    // Safe backpressure: complete frames wait in `ready`; the
+                    // rest of the burst stays in the pipe until answered.
                     return Ok(());
                 }
-                Ok(n) => {
-                    for byte in &buffer[..n] {
-                        if *byte == b'\n' {
-                            // Readiness and a final read do not extend the
-                            // deadline if this process was descheduled.
-                            self.check_deadline()?;
-                            if self.pending.is_empty() || self.ready.len() >= 16 {
-                                return Err(REFUSED.into());
-                            }
-                            self.ready.push_back(std::mem::take(&mut self.pending));
-                            self.partial_deadline = None;
-                        } else {
-                            if self.pending.len() >= MAX_REQUEST_BYTES {
-                                return Err(REFUSED.into());
-                            }
-                            if self.pending.is_empty() {
-                                self.partial_deadline = Some(Instant::now() + IO_DEADLINE);
-                            }
-                            self.pending.push(*byte);
-                        }
+                match read(input, &mut buffer) {
+                    Ok(0) => {
+                        self.eof = true;
+                        return Ok(());
                     }
+                    Ok(n) => self.spill.extend(&buffer[..n]),
+                    Err(Errno::INTR) => continue,
+                    Err(Errno::AGAIN) => return Ok(()),
+                    Err(_) => return Err(REFUSED.into()),
                 }
-                Err(Errno::INTR) => continue,
-                Err(Errno::AGAIN) => return Ok(()),
-                Err(_) => return Err(REFUSED.into()),
+                self.check_deadline()?;
+            }
+            while let Some(byte) = self.spill.pop_front() {
+                if byte == b'\n' {
+                    // Readiness and a final read do not extend the deadline if
+                    // this process was descheduled.
+                    self.check_deadline()?;
+                    // Blank lines carry no frame; MCP permits ignoring them
+                    // instead of failing the transport.
+                    if self.pending.is_empty() {
+                        continue;
+                    }
+                    if self.ready.len() >= MAX_READY {
+                        self.spill.push_front(b'\n');
+                        return Ok(());
+                    }
+                    self.ready.push_back(std::mem::take(&mut self.pending));
+                    self.partial_deadline = None;
+                } else {
+                    if self.pending.len() >= MAX_REQUEST_BYTES {
+                        return Err(REFUSED.into());
+                    }
+                    if self.pending.is_empty() {
+                        self.partial_deadline = Some(Instant::now() + IO_DEADLINE);
+                    }
+                    self.pending.push(byte);
+                }
             }
         }
     }
-    fn cancelled(&self) -> bool {
-        self.ready.iter().any(|raw| is_cancellation(raw))
+    /// Remove the first buffered cancellation notification, if any. A cancel
+    /// never has a reply of its own and must not end the session; the session
+    /// itself decides whether its target is still pending.
+    fn take_cancellation(&mut self) -> Option<Vec<u8>> {
+        let index = self.ready.iter().position(|raw| is_cancellation(raw))?;
+        self.ready.remove(index)
     }
     fn deadline(&self, grant: Instant) -> Instant {
         self.partial_deadline
@@ -166,14 +247,14 @@ fn serve(
     loop {
         rpc.check_release().map_err(|_| REFUSED)?;
         frames.drain(input)?;
-        if frames.eof || frames.cancelled() {
+        if frames.eof {
             return Ok(());
         }
         if frames.pending.is_empty() && Instant::now() >= next_tick {
             if let Some(driver) = delivery {
                 runtime.block_on(driver.tick(rpc))?;
                 frames.drain(input)?;
-                if frames.eof || frames.cancelled() {
+                if frames.eof {
                     return Ok(());
                 }
                 rpc.check_release().map_err(|_| REFUSED)?;
@@ -181,13 +262,19 @@ fn serve(
             next_tick = Instant::now() + Duration::from_secs(1);
         }
         if let Some(raw) = frames.ready.pop_front() {
+            let mut response = runtime.block_on(rpc.handle(&raw)).map_err(|_| REFUSED)?;
+            if response.is_none() && rpc.waiting().is_some() {
+                response =
+                    wait_for_change(runtime, rpc, &mut frames, input, delivery, &mut next_tick)?;
+            }
             let deadline = (Instant::now() + IO_DEADLINE).min(rpc.deadline());
-            let response = runtime.block_on(rpc.handle(&raw)).map_err(|_| REFUSED)?;
-            // Native custody I/O may complete inside one synchronous poll. A
-            // buffered cancellation/EOF or expired deadline still withholds its
-            // result, and the consumed receipt forbids blind effect retries.
+            // Native custody I/O may complete inside one synchronous poll. An
+            // EOF or expired deadline still withholds its result, and the
+            // consumed receipt forbids blind effect retries. A buffered
+            // cancellation is only a notification: the session itself decides
+            // whether its target is still owed a reply.
             frames.drain(input)?;
-            if frames.eof || frames.cancelled() {
+            if frames.eof {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -209,6 +296,54 @@ fn serve(
     }
 }
 
+/// Serve a `private_outbox_status` long-poll: keep host delivery ticking and
+/// answer as soon as the session reports a change, its deadline passes, or
+/// no driver exists to change anything. EOF withholds the reply; a buffered
+/// cancellation is handed to the session, which only clears a wait whose
+/// exact request id it names and ignores every other target.
+fn wait_for_change(
+    runtime: &tokio::runtime::Runtime,
+    rpc: &mut RpcSession,
+    frames: &mut Frames,
+    input: BorrowedFd<'_>,
+    delivery: &mut Option<Driver>,
+    next_tick: &mut Instant,
+) -> Result<Option<Vec<u8>>, String> {
+    loop {
+        frames.drain(input)?;
+        if frames.eof {
+            return Ok(None);
+        }
+        while let Some(raw) = frames.take_cancellation() {
+            // Cancellation notifications never carry a reply; a match clears
+            // the pending wait so the loop returns with no frame.
+            let _ = runtime.block_on(rpc.handle(&raw)).map_err(|_| REFUSED)?;
+        }
+        if let Some(driver) = delivery {
+            if Instant::now() >= *next_tick {
+                runtime.block_on(driver.tick(rpc))?;
+                *next_tick = Instant::now() + Duration::from_secs(1);
+                continue;
+            }
+        }
+        if let Some(frame) = runtime
+            .block_on(rpc.resume(delivery.is_none()))
+            .map_err(|_| REFUSED)?
+        {
+            return Ok(Some(frame));
+        }
+        let Some(deadline) = rpc.waiting() else {
+            return Ok(None);
+        };
+        let deadline = deadline.min(rpc.deadline());
+        if delivery.is_some() {
+            wait_ready(input, None, deadline.min(*next_tick), true)?;
+        } else {
+            wait_ready(input, None, deadline, true)?;
+        }
+    }
+}
+
 fn send(
     rpc: &mut RpcSession,
     frames: &mut Frames,
@@ -221,7 +356,7 @@ fn send(
     while offset < bytes.len() {
         rpc.check_release().map_err(|_| REFUSED)?;
         frames.drain(input)?;
-        if frames.eof || frames.cancelled() {
+        if frames.eof {
             return Err(REFUSED.into());
         }
         let deadline = frames.deadline(deadline);
@@ -315,5 +450,70 @@ mod tests {
             br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#
         ));
         assert!(!is_cancellation(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"body":"notifications/cancelled"}}}"#));
+    }
+
+    #[test]
+    fn blank_lines_are_ignored() {
+        let (mut peer, input) = UnixStream::pair().unwrap();
+        input.set_nonblocking(true).unwrap();
+        peer.write_all(b"\n\n\n").unwrap();
+        let mut frames = Frames::default();
+        frames.drain(input.as_fd()).unwrap();
+        assert!(frames.ready.is_empty());
+        assert!(frames.pending.is_empty());
+        assert!(!frames.eof);
+    }
+
+    #[test]
+    fn pipelined_frames_beyond_sixteen_are_buffered() {
+        let (mut peer, input) = UnixStream::pair().unwrap();
+        input.set_nonblocking(true).unwrap();
+        let mut data = Vec::new();
+        for _ in 0..20 {
+            data.extend_from_slice(br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#);
+            data.push(b'\n');
+        }
+        peer.write_all(&data).unwrap();
+        let mut frames = Frames::default();
+        frames.drain(input.as_fd()).unwrap();
+        assert_eq!(frames.ready.len(), 20);
+        assert!(!frames.eof);
+    }
+
+    #[test]
+    fn a_full_ready_queue_applies_backpressure_without_losing_frames() {
+        let (mut peer, input) = UnixStream::pair().unwrap();
+        input.set_nonblocking(true).unwrap();
+        let mut data = Vec::new();
+        for _ in 0..(MAX_READY + 5) {
+            data.extend_from_slice(b"{}");
+            data.push(b'\n');
+        }
+        peer.write_all(&data).unwrap();
+        let mut frames = Frames::default();
+        frames.drain(input.as_fd()).unwrap();
+        assert_eq!(frames.ready.len(), MAX_READY);
+        // Answering one frame frees a slot; the withheld bytes frame the next
+        // request instead of being dropped or failing the transport.
+        frames.ready.pop_front();
+        frames.drain(input.as_fd()).unwrap();
+        assert_eq!(frames.ready.len(), MAX_READY);
+    }
+
+    #[test]
+    fn buffered_cancellation_is_consumed_not_fatal() {
+        let (mut peer, input) = UnixStream::pair().unwrap();
+        input.set_nonblocking(true).unwrap();
+        peer.write_all(
+            br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#,
+        )
+        .unwrap();
+        peer.write_all(b"\n").unwrap();
+        let mut frames = Frames::default();
+        frames.drain(input.as_fd()).unwrap();
+        assert_eq!(frames.ready.len(), 1);
+        assert!(frames.take_cancellation().is_some());
+        assert!(frames.take_cancellation().is_none());
+        assert!(!frames.eof);
     }
 }
