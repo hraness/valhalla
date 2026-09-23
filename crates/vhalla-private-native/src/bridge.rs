@@ -107,6 +107,11 @@ fn native_key(key: RecordKey) -> Result<native::RecordKey, StoreError> {
         RecordKey::Operation(op) => native::RecordKey::Operation(*op.as_bytes()),
         RecordKey::Received(hash) => native::RecordKey::Received(hash),
         RecordKey::Control(n) => native::RecordKey::Control(n),
+        RecordKey::Sent(hash) => native::RecordKey::Sent(hash),
+        RecordKey::Acceptance { outbox, recipient } => native::RecordKey::Acceptance {
+            outbox,
+            recipient: *recipient.as_bytes(),
+        },
     })
 }
 

@@ -125,6 +125,15 @@ pub enum RecordKey {
     Received([u8; 32]),
     /// Nonzero immutable owner control-history sequence.
     Control(u64),
+    /// Full nonzero committed application ciphertext hash to outbox index.
+    Sent([u8; 32]),
+    /// Verified member receipt for one exact nonzero outbox position.
+    Acceptance {
+        /// Committed local outbox position the receipt acknowledges.
+        outbox: u64,
+        /// Full member device key that produced the verified receipt.
+        recipient: [u8; 32],
+    },
 }
 impl RecordKey {
     fn encode(self) -> Result<Vec<u8>> {
@@ -136,7 +145,25 @@ impl RecordKey {
             Self::Inbox(n) => (2, n.to_be_bytes().to_vec()),
             Self::Control(n) => (5, n.to_be_bytes().to_vec()),
             Self::Operation(id) if id != [0; 16] => (3, id.to_vec()),
-            Self::Received(hash) if hash != [0; 32] => (4, hash.to_vec()),
+            Self::Received(hash) | Self::Sent(hash) if hash != [0; 32] => (
+                if matches!(self, Self::Received(_)) {
+                    4
+                } else {
+                    6
+                },
+                hash.to_vec(),
+            ),
+            // The records table only admits 9/17/33-byte keys, so the typed
+            // pair collapses into a fixed commitment; exact-key lookups are
+            // deterministic and every existing database stays valid.
+            Self::Acceptance { outbox, recipient } if outbox != 0 => (
+                7,
+                digest(
+                    b"vhalla/private-native/acceptance-key/v1",
+                    &[&outbox.to_be_bytes(), &recipient],
+                )
+                .to_vec(),
+            ),
             _ => return Err(Error::Refused),
         };
         let mut raw = vec![tag];
