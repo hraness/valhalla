@@ -18,7 +18,7 @@ thread_local! {
 fn allowed() -> Result<(), String> {
     let window = web_sys::window().ok_or("Window required")?;
     let origin = window.location().origin().map_err(|_| "origin")?;
-    if origin != "http://127.0.0.1:8790" {
+    if !crate::transport::qualification::allows_page_origin(&origin) {
         return Err("qualification requires exact isolated loopback origin".into());
     }
     Ok(())

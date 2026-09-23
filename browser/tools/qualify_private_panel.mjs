@@ -250,8 +250,21 @@ async function task(abortSignal) {
     }catch{res.writeHead(500);res.end('qualification request refused');}
   });
   // Bind an ephemeral loopback port: a fixed port collides with a host service
-  // and makes the qualification un-runnable beside a maintained gateway.
-  await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
+  // and makes the qualification un-runnable beside a maintained gateway. The
+  // local-qualification build instead pins an exact origin allowlist
+  // (browser/src/qualification.rs); prefer the dedicated 8789 qualification
+  // port and fall back to 8790 only when it is free.
+  if(production){
+    await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
+  }else{
+    let port=0;
+    for(const candidate of [8789,8790]){
+      const taken=await new Promise(r=>{const probe=createServer();probe.once('error',()=>r(true));probe.listen(candidate,'127.0.0.1',()=>probe.close(()=>r(false)));});
+      if(!taken){port=candidate;break;}
+    }
+    if(!port)throw Error('no allowed loopback qualification port free');
+    await new Promise((r,j)=>{server.once('error',j);server.listen(port,'127.0.0.1',r);});
+  }
   serverOrigin='http://127.0.0.1:'+server.address().port;
   signal.throwIfAborted();
   // Backgrounding throttles keep an occluded non-foreground target from

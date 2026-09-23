@@ -234,7 +234,14 @@ impl Fixture {
         )
         .unwrap()
     }
-    fn job(&self, who: usize, sequence: u64) -> vhalla_private_native::relay::delivery::JobStatus {
+    fn job(
+        &self,
+        who: usize,
+        sequence: u64,
+    ) -> (
+        vhalla_private_native::relay::delivery::JobStatus,
+        vhalla_private_native::relay::delivery::JobEvidence,
+    ) {
         let queue = DeliveryStore::open(
             self.p(&format!("{who}-delivery/jobs")),
             self.contexts[who],
@@ -242,12 +249,14 @@ impl Fixture {
             self.client().endpoint_id(),
         )
         .unwrap();
-        queue
+        let status = queue
             .statuses(sequence - 1, 1)
             .unwrap()
             .into_iter()
             .next()
-            .unwrap()
+            .unwrap();
+        let evidence = queue.evidence(status.id).unwrap();
+        (status, evidence)
     }
     fn applied(&self, who: usize) -> Vec<Value> {
         fs::read_dir(self.p(&format!("{who}-delivery/applied")))
@@ -496,24 +505,28 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
     let sequence = owner.queue(&first, "synthetic first message", 10);
     // A refused TCP connect is honest "unreachable", not generic uncertainty.
     let offline = owner.await_outbox(&first, sequence, |v| v["relay"]["state"] == "unreachable");
-    assert_eq!(offline["relay"]["attempts"], 1);
+    // Transport outages never spend the finite attempt budget; they are
+    // counted as durable outage evidence instead.
+    assert_eq!(offline["relay"]["attempts"], 0);
     assert_eq!(offline["relay"]["uncertain"], true);
     assert_eq!(offline["relay"]["last_error"], "connect");
     thread::sleep(Duration::from_millis(1100));
     assert_eq!(
         owner.outbox(&first, sequence)["relay"]["attempts"],
-        1,
+        0,
         "offline attempts must respect backoff"
     );
     owner.close();
     let retained_wire = f.ciphertext(OWNER, sequence);
-    let before = f.job(OWNER, sequence);
+    let (before, before_evidence) = f.job(OWNER, sequence);
     assert!(before.uncertain);
+    assert_eq!(before.attempts, 0);
+    assert_eq!(before_evidence.outages, 1);
     let mut reused = f.host(OWNER, "first", OWNER);
     reused.refused();
     assert!(f.p("first-claim.json").exists());
     assert_eq!(
-        f.job(OWNER, sequence),
+        f.job(OWNER, sequence).0,
         before,
         "old launch refusal must not advance durable attempts"
     );
@@ -590,7 +603,7 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
         retained_wire,
         "restart retransmits exact committed ciphertext"
     );
-    assert_eq!(f.job(OWNER, sequence).id, before.id);
+    assert_eq!(f.job(OWNER, sequence).0.id, before.id);
     assert!(f
         .applied(OWNER)
         .iter()
@@ -640,7 +653,7 @@ fn denied_tls_token_ends_grant_then_explicit_replacement_retries_exact_ciphertex
     let mut denied = f.host(OWNER, "denied", OWNER);
     denied.refused();
     assert!(f.p("denied-claim.json").exists());
-    let before = f.job(OWNER, sequence);
+    let (before, _) = f.job(OWNER, sequence);
     assert_eq!(before.id, exact_item.digest());
     assert_eq!(before.state, JobState::Pending);
     assert_eq!(before.attempts, 1);
@@ -653,7 +666,7 @@ fn denied_tls_token_ends_grant_then_explicit_replacement_retries_exact_ciphertex
     f.write_json("0-delivery.json", &f.profile(OWNER));
     let mut reused = f.host(OWNER, "denied", OWNER);
     reused.refused();
-    assert_eq!(f.job(OWNER, sequence), before);
+    assert_eq!(f.job(OWNER, sequence).0, before);
     let replacement = f.grant(OWNER, "replacement", 4);
     let mut owner = f.host(OWNER, "replacement", OWNER);
     let retained = owner.await_outbox(&replacement, sequence, |v| {
@@ -661,7 +674,7 @@ fn denied_tls_token_ends_grant_then_explicit_replacement_retries_exact_ciphertex
     });
     assert_eq!(retained["relay"]["attempts"], 2);
     owner.close();
-    assert_eq!(f.job(OWNER, sequence).id, before.id);
+    assert_eq!(f.job(OWNER, sequence).0.id, before.id);
     assert_eq!(f.ciphertext(OWNER, sequence), artifact.bytes());
     let page = f.client().page(0, 8).unwrap();
     assert_eq!(page.head, 1);
