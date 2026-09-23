@@ -67,6 +67,37 @@ pub struct AgentHostSession {
     agent: OwnedAgentRoomSession,
 }
 impl AgentHostSession {
+    /// Read-only exact reception evidence for durable driver-marker recovery.
+    pub async fn retained_received(&mut self, raw: &[u8]) -> Result<Option<ReceivedMessage>> {
+        self.agent
+            .live()?
+            .host_retained_received(raw)
+            .await
+            .map_err(Error::Agent)
+    }
+    /// Read-only exact control evidence; never applies a new owner transition.
+    pub async fn retained_control(&mut self, raw: &[u8]) -> Result<bool> {
+        self.agent
+            .live()?
+            .host_retained_control(raw)
+            .await
+            .map_err(Error::Agent)
+    }
+    /// Host-only exact encrypted control suffix, including admission controls.
+    /// `None` selects authenticated retained history, never a remote checkpoint.
+    /// This grants no membership mutation and is never registered as an MCP tool.
+    pub async fn encrypted_controls(
+        &mut self,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<vhalla_private_kernel::EncryptedControlPage> {
+        self.agent
+            .live()?
+            .host_encrypted_controls(after, limit)
+            .await
+            .map_err(Error::Agent)
+    }
+
     /// Borrow only the fixed-room agent surface.
     pub fn agent(&mut self) -> &mut OwnedAgentRoomSession {
         &mut self.agent

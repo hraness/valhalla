@@ -5,6 +5,7 @@ use std::{
     collections::BTreeMap,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -175,6 +176,7 @@ struct State {
     upstream: Arc<dyn Upstream>,
     assets: Assets,
     budget: Mutex<Budget>,
+    unhealthy: AtomicBool,
 }
 /// Bounded host-owned HTTP gateway, independent from room/identity custody.
 pub struct Gateway(Arc<State>);
@@ -232,6 +234,7 @@ impl Gateway {
                 requests: 0,
                 bytes: 0,
             }),
+            unhealthy: AtomicBool::new(false),
         })))
     }
     /// Stable browser origin, always numeric loopback HTTP.
@@ -241,24 +244,34 @@ impl Gateway {
     /// Stop admission on the host's flag, drain finite deadline-bound workers,
     /// and close the listener. There are no detached gateway threads.
     pub fn serve_until(self, listener: TcpListener, stop: Arc<AtomicBool>) -> Result<()> {
+        self.serve_with(listener, stop, handle_tracked)
+    }
+    fn serve_with(
+        self,
+        listener: TcpListener,
+        stop: Arc<AtomicBool>,
+        handler: impl Fn(&State, TcpStream, &mut bool) -> Result<()> + Send + Sync + 'static,
+    ) -> Result<()> {
         if listener.local_addr().map_err(|_| NetError::Unavailable)? != self.0.address {
             return Err(NetError::Scope);
         }
         listener
             .set_nonblocking(true)
             .map_err(|_| NetError::Unavailable)?;
-        let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
+        let mut workers: Vec<thread::JoinHandle<bool>> = Vec::new();
+        let handler = Arc::new(handler);
         let mut failed = false;
         while !stop.load(Ordering::Acquire) {
             let mut index = 0;
             while index < workers.len() {
                 if workers[index].is_finished() {
-                    failed |= workers.swap_remove(index).join().is_err();
+                    failed |= workers.swap_remove(index).join().unwrap_or(true);
                 } else {
                     index += 1;
                 }
             }
-            if failed {
+            if failed || self.0.unhealthy.load(Ordering::Acquire) {
+                failed = true;
                 break;
             }
             match listener.accept() {
@@ -287,10 +300,13 @@ impl Gateway {
                         continue;
                     }
                     let state = self.0.clone();
+                    let handler = handler.clone();
                     match thread::Builder::new()
                         .name("private-gateway".into())
                         .spawn(move || {
-                            let _ = handle(&state, stream);
+                            connection_with(&state, stream, |state, stream, uncertain| {
+                                handler(state, stream, uncertain)
+                            })
                         }) {
                         Ok(worker) => workers.push(worker),
                         Err(_) => {
@@ -311,14 +327,41 @@ impl Gateway {
         }
         drop(listener);
         for worker in workers {
-            failed |= worker.join().is_err();
+            failed |= worker.join().unwrap_or(true);
         }
+        failed |= self.0.unhealthy.load(Ordering::Acquire);
         if failed {
             Err(NetError::Unavailable)
         } else {
             Ok(())
         }
     }
+}
+/// Catch only unwinding failures whose shared-state boundary can be audited.
+/// Configuration/assets are immutable; budget mutation is mutex-protected.
+/// A panic inside the upstream client may taint its shared TLS internals, so
+/// that boundary stays fail-closed even when the admission mutex is healthy.
+/// New shared mutable state requires an explicit addition to this audit.
+/// Returning true tells the owner to stop admission and drain its workers.
+fn connection_with(
+    state: &State,
+    stream: TcpStream,
+    handle: impl FnOnce(&State, TcpStream, &mut bool) -> Result<()>,
+) -> bool {
+    let mut upstream_uncertain = false;
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        handle(state, stream, &mut upstream_uncertain)
+    }));
+    // Local request buffers and the socket are dropped on unwind. No failed
+    // request is reported as successful and no retained work is acknowledged.
+    let unhealthy = upstream_uncertain || state.budget.is_poisoned();
+    if unhealthy {
+        state.unhealthy.store(true, Ordering::Release);
+    }
+    // Do not retain or log the payload: it may contain request material.
+    // The process-wide panic hook is owned by the embedding executable.
+    drop(outcome);
+    unhealthy
 }
 /// Answer an admission refusal with a fixed status on a tightly bounded
 /// socket so the accept loop never stalls on an unresponsive peer.
@@ -339,6 +382,9 @@ fn refuse(stream: TcpStream, status: u16) {
         .and_then(|()| socket.write_all(body));
 }
 fn admit(state: &State, bytes: usize, request: bool) -> Result<bool> {
+    if state.unhealthy.load(Ordering::Acquire) {
+        return Err(NetError::Unavailable);
+    }
     let mut budget = state.budget.lock().map_err(|_| NetError::Unavailable)?;
     if budget.start.elapsed() >= state.limits.window {
         *budget = Budget {
@@ -443,7 +489,11 @@ fn response(socket: &mut Socket, status: u16, mime: &str, body: &[u8]) -> Result
         .and_then(|_| socket.write_all(body))
         .map_err(|_| NetError::Timeout)
 }
+#[cfg(test)]
 fn handle(state: &State, stream: TcpStream) -> Result<()> {
+    handle_tracked(state, stream, &mut false)
+}
+fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut bool) -> Result<()> {
     // BSD/macOS accept inherits the listener's nonblocking mode. Our deadline
     // adapter uses blocking I/O with a freshly bounded timeout per operation;
     // otherwise write_all can stop at a full send buffer and truncate assets.
@@ -543,7 +593,10 @@ fn handle(state: &State, stream: TcpStream) -> Result<()> {
         }
         _ => return response(&mut socket, 400, "text/plain", b"request refused"),
     }
-    let (status, body) = match state.upstream.exchange(op, body, socket.deadline) {
+    *upstream_uncertain = true;
+    let exchange = state.upstream.exchange(op, body, socket.deadline);
+    *upstream_uncertain = false;
+    let (status, body) = match exchange {
         Ok(body) => (STATUS_OK, body),
         Err(error) => (
             match error {

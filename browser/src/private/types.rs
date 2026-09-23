@@ -306,6 +306,17 @@ pub struct Artifact {
     pub kind: OutboxKind,
     /// None only for secret issuance. Never an empty ciphertext substitute.
     pub bytes: Option<Bytes>,
+    /// Verified claims by devices still in the locally accepted roster. Empty
+    /// unless requested from the live outbox; never evidence of human reading.
+    pub acceptances: Vec<DeviceAcceptance>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A kernel-verified device claim bound to the enclosing exact outbox artifact.
+pub struct DeviceAcceptance {
+    /// Signing recipient still enumerated by the locally accepted roster.
+    pub recipient: Key,
+    /// Recipient's claimed durable inbox position; never a human-read marker.
+    pub received_sequence: u64,
 }
 /// Already committed application message; its body remains inert untrusted content.
 pub struct Inbound {
@@ -360,6 +371,10 @@ pub struct DeliveryReport {
     pub sent: u64,
     /// Last applied or explicitly classified mailbox position.
     pub cursor: u64,
+    /// Last mailbox position either resolved or retained as exact deferred bytes.
+    pub fetched: u64,
+    /// Exact incoming ciphertexts waiting for a later prerequisite, at most eight.
+    pub deferred: u64,
     /// Exact outgoing items acknowledged retained by the relay.
     pub retained: u64,
     /// Incoming application records committed locally (including receipt records).
@@ -380,7 +395,8 @@ pub struct DeliveryReport {
     pub detail: u8,
     /// Nonzero while the cursor is held before one record that cannot apply
     /// yet: 1 owner control gap/authority, 2 clock or validity, 3 every
-    /// retained-admission slot is used.
+    /// retained-admission slot is used, 4 deferred slots full, 5 future epoch,
+    /// 6 sender-ratchet gap.
     pub blocked: u8,
     /// Lifetime count of staged records durably refused and skipped.
     pub refused: u64,

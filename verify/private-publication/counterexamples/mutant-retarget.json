@@ -1,0 +1,22 @@
+[
+  {
+    "state": 1,
+    "tlc_text": "<Initial predicate>\n/\\ authorizedAtRelease = (a :> TRUE @@ b :> TRUE)\n/\\ revision = 0\n/\\ storedRoster = (a :> 0 @@ b :> 0)\n/\\ revoked = FALSE\n/\\ stored = {}\n/\\ phase = (a :> \"idle\" @@ b :> \"idle\")\n/\\ confirmed = {}\n/\\ draftRoster = (a :> 0 @@ b :> 0)\n/\\ roster = 0\n/\\ expected = (a :> 0 @@ b :> 0)\n/\\ released = {}"
+  },
+  {
+    "state": 2,
+    "tlc_text": "<Prepare line 19, col 15 to line 24, col 71 of module PrivatePublication>\n/\\ authorizedAtRelease = (a :> TRUE @@ b :> TRUE)\n/\\ revision = 0\n/\\ storedRoster = (a :> 0 @@ b :> 0)\n/\\ revoked = FALSE\n/\\ stored = {}\n/\\ phase = (a :> \"draft\" @@ b :> \"idle\")\n/\\ confirmed = {}\n/\\ draftRoster = (a :> 0 @@ b :> 0)\n/\\ roster = 0\n/\\ expected = (a :> 0 @@ b :> 0)\n/\\ released = {}"
+  },
+  {
+    "state": 3,
+    "tlc_text": "<Start line 25, col 13 to line 29, col 48 of module PrivatePublication>\n/\\ authorizedAtRelease = (a :> TRUE @@ b :> TRUE)\n/\\ revision = 0\n/\\ storedRoster = (a :> 0 @@ b :> 0)\n/\\ revoked = FALSE\n/\\ stored = {}\n/\\ phase = (a :> \"waiting\" @@ b :> \"idle\")\n/\\ confirmed = {}\n/\\ draftRoster = (a :> 0 @@ b :> 0)\n/\\ roster = 0\n/\\ expected = (a :> 0 @@ b :> 0)\n/\\ released = {}"
+  },
+  {
+    "state": 4,
+    "tlc_text": "<ChangeRoster line 70, col 17 to line 73, col 52 of module PrivatePublication>\n/\\ authorizedAtRelease = (a :> TRUE @@ b :> TRUE)\n/\\ revision = 1\n/\\ storedRoster = (a :> 0 @@ b :> 0)\n/\\ revoked = FALSE\n/\\ stored = {}\n/\\ phase = (a :> \"waiting\" @@ b :> \"idle\")\n/\\ confirmed = {}\n/\\ draftRoster = (a :> 0 @@ b :> 0)\n/\\ roster = 1\n/\\ expected = (a :> 0 @@ b :> 0)\n/\\ released = {}"
+  },
+  {
+    "state": 5,
+    "tlc_text": "<Publish line 32, col 15 to line 40, col 71 of module PrivatePublication>\n/\\ authorizedAtRelease = (a :> TRUE @@ b :> TRUE)\n/\\ revision = 2\n/\\ storedRoster = (a :> 1 @@ b :> 0)\n/\\ revoked = FALSE\n/\\ stored = {a}\n/\\ phase = (a :> \"readback\" @@ b :> \"idle\")\n/\\ confirmed = {}\n/\\ draftRoster = (a :> 0 @@ b :> 0)\n/\\ roster = 1\n/\\ expected = (a :> 0 @@ b :> 0)\n/\\ released = {}"
+  }
+]

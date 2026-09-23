@@ -161,7 +161,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Request::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x05".len();
+        let tag = b"VHBRPRIVATE\x06".len();
         changed.truncate(raw.len());
         changed[tag] = 250;
         assert!(Request::decode(&changed).is_err());
@@ -187,7 +187,7 @@ fn archive_route_is_explicit_canonical_and_versioned() {
         ] {
             let raw = request.encode().unwrap();
             assert_eq!(*Request::decode(&raw).unwrap().encode().unwrap(), *raw);
-            let route = b"VHBRPRIVATE\x05".len() + 1 + 128 + 32;
+            let route = b"VHBRPRIVATE\x06".len() + 1 + 128 + 32;
             assert_eq!(raw[route], u8::from(legacy));
             let mut bad = raw.to_vec();
             bad[route] = 2;
@@ -201,7 +201,7 @@ fn archive_route_is_explicit_canonical_and_versioned() {
 
 #[test]
 fn untrusted_lengths_counts_boolean_and_floor_refuse_before_allocation() {
-    let prefix = b"VHBRPRIVATE\x05".len();
+    let prefix = b"VHBRPRIVATE\x06".len();
     let mut raw = Request::PrepareMessage(bytes(1)).encode().unwrap();
     raw[prefix + 1..prefix + 5].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Request::decode(&raw).is_err());
@@ -288,6 +288,7 @@ fn response_secret_metadata_cannot_be_substituted_with_artifact_bytes() {
             operation: op(),
             kind: OutboxKind::ContactOffer,
             bytes: None,
+            acceptances: Vec::new(),
         }],
     };
     let raw = secret.encode().unwrap();
@@ -301,6 +302,7 @@ fn response_secret_metadata_cannot_be_substituted_with_artifact_bytes() {
             operation: op(),
             kind: OutboxKind::ContactOffer,
             bytes: Some(bytes(1)),
+            acceptances: Vec::new(),
         },
     };
     assert!(fake.encode().is_err());
@@ -311,6 +313,7 @@ fn response_secret_metadata_cannot_be_substituted_with_artifact_bytes() {
             operation: op(),
             kind: OutboxKind::Application,
             bytes: None,
+            acceptances: Vec::new(),
         },
     };
     assert!(absent.encode().is_err());
@@ -321,6 +324,64 @@ fn response_secret_metadata_cannot_be_substituted_with_artifact_bytes() {
     trailing.push(0);
     assert!(Response::decode(&trailing).is_err());
     assert!(Request::decode(&raw).is_err());
+}
+
+#[test]
+fn verified_device_claims_round_trip_without_allowing_duplicates_or_empty_positions() {
+    let response = |claims| Response::Artifact {
+        context: context(),
+        artifact: Artifact {
+            sequence: 7,
+            operation: op(),
+            kind: OutboxKind::Application,
+            bytes: Some(bytes(23)),
+            acceptances: claims,
+        },
+    };
+    let claim = DeviceAcceptance {
+        recipient: key(),
+        received_sequence: 9,
+    };
+    let encoded = response(vec![claim]).encode().unwrap();
+    let decoded = Response::decode(&encoded).unwrap();
+    assert_eq!(decoded.encode().unwrap(), encoded);
+    assert!(
+        matches!(decoded, Response::Artifact { artifact, .. } if artifact.acceptances == vec![claim])
+    );
+    assert!(response(vec![claim, claim]).encode().is_err());
+    assert!(response(vec![DeviceAcceptance {
+        received_sequence: 0,
+        ..claim
+    }])
+    .encode()
+    .is_err());
+    assert!(response(vec![claim; 17]).encode().is_err());
+    let mut unexpected = Artifact {
+        sequence: 7,
+        operation: op(),
+        kind: OutboxKind::Removal,
+        bytes: Some(bytes(23)),
+        acceptances: vec![claim],
+    };
+    assert!(Response::Artifact {
+        context: context(),
+        artifact: unexpected
+    }
+    .encode()
+    .is_err());
+    unexpected = Artifact {
+        sequence: 7,
+        operation: op(),
+        kind: OutboxKind::ContactOffer,
+        bytes: None,
+        acceptances: vec![claim],
+    };
+    assert!(Response::Artifact {
+        context: context(),
+        artifact: unexpected
+    }
+    .encode()
+    .is_err());
 }
 
 #[test]
@@ -345,7 +406,7 @@ fn response_collection_count_and_blob_budgets_are_checked_on_raw_input() {
     }
     .encode()
     .unwrap();
-    let at = b"VHBRPRIVATE\x05".len() + 1 + 128 + 8 + 32;
+    let at = b"VHBRPRIVATE\x06".len() + 1 + 128 + 8 + 32;
     raw[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Response::decode(&raw).is_err());
     assert!(Response::decode(&vec![0; MAX_FRAME + 1]).is_err());
@@ -379,6 +440,8 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
             context: context(),
             sent: u64::MAX,
             cursor: u64::MAX,
+            fetched: u64::MAX,
+            deferred: 0,
             retained: 1,
             received: 2,
             attempts: 3,
@@ -396,6 +459,8 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
             context: context(),
             sent: 0,
             cursor: 0,
+            fetched: 0,
+            deferred: 0,
             retained: 0,
             received: 0,
             attempts: 0,
@@ -466,7 +531,7 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x05".len();
+        let tag = b"VHBRPRIVATE\x06".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -609,7 +674,7 @@ fn signed_proofs_and_fork_evidence_verify_at_the_local_boundary() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x05".len();
+        let tag = b"VHBRPRIVATE\x06".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -796,6 +861,7 @@ fn succession_artifact_round_trip_carries_the_owner_control_kind() {
                 operation: op(),
                 kind,
                 bytes: Some(bytes(23)),
+                acceptances: Vec::new(),
             },
         };
         let raw = response.encode().unwrap();

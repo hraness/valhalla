@@ -6,8 +6,14 @@ loopback browser gateway use the same implementation. It has no filesystem,
 SQLite, socket or Unix API. Its kernel dependency provides the existing portable
 outbox classifications and committed-artifact types.
 
-The item magic, field order, kind tags and SHA-256 commitment are unchanged.
+The item magic, field order, existing kind tags 1–8 and SHA-256 commitment are unchanged.
 `wire_tests` freezes a complete pre-extraction item and PAGE request vector.
+Kind 9 adds exact encrypted membership controls through
+`RelayItem::from_control` using authenticated committed kernel history. Its
+control-floor sequence and domain-separated operation identity are distinct
+from outbox sequences. Older decoders refuse the unknown kind; they cannot
+silently reinterpret it. Native delivery requires explicit profile upgrade,
+and browser worker IPC version 6 refuses stale peers.
 Legacy plaintext bootstrap and confidential contact offers remain inadmissible.
 A relay position/receipt means retention only; it is neither MLS membership nor
 an authenticated member acceptance receipt.

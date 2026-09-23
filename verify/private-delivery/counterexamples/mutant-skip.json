@@ -1,0 +1,14 @@
+[
+  {
+    "state": 1,
+    "tlc_text": "<Initial predicate>\n/\\ pending = (browser :> {})\n/\\ online = (browser :> TRUE)\n/\\ effects = (browser :> <<0, 0, 0>>)\n/\\ applied = (browser :> {})\n/\\ crashes = (browser :> 0)\n/\\ staged = (browser :> 0)\n/\\ cursor = (browser :> 0)"
+  },
+  {
+    "state": 2,
+    "tlc_text": "<Fetch line 23, col 13 to line 26, col 79 of module PrivateDelivery>\n/\\ pending = (browser :> {})\n/\\ online = (browser :> TRUE)\n/\\ effects = (browser :> <<0, 0, 0>>)\n/\\ applied = (browser :> {})\n/\\ crashes = (browser :> 0)\n/\\ staged = (browser :> 1)\n/\\ cursor = (browser :> 0)"
+  },
+  {
+    "state": 3,
+    "tlc_text": "<PublishFetch line 30, col 5 to line 36, col 54 of module PrivateDelivery>\n/\\ pending = (browser :> {})\n/\\ online = (browser :> TRUE)\n/\\ effects = (browser :> <<0, 0, 0>>)\n/\\ applied = (browser :> {})\n/\\ crashes = (browser :> 0)\n/\\ staged = (browser :> 0)\n/\\ cursor = (browser :> 1)"
+  }
+]

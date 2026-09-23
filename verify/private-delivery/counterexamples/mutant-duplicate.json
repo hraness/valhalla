@@ -1,0 +1,30 @@
+[
+  {
+    "state": 1,
+    "tlc_text": "<Initial predicate>\n/\\ pending = (native :> {})\n/\\ online = (native :> TRUE)\n/\\ effects = (native :> <<0, 0, 0>>)\n/\\ applied = (native :> {})\n/\\ crashes = (native :> 0)\n/\\ staged = (native :> 0)\n/\\ cursor = (native :> 0)"
+  },
+  {
+    "state": 2,
+    "tlc_text": "<Fetch line 23, col 13 to line 26, col 79 of module PrivateDelivery>\n/\\ pending = (native :> {})\n/\\ online = (native :> TRUE)\n/\\ effects = (native :> <<0, 0, 0>>)\n/\\ applied = (native :> {})\n/\\ crashes = (native :> 0)\n/\\ staged = (native :> 1)\n/\\ cursor = (native :> 0)"
+  },
+  {
+    "state": 3,
+    "tlc_text": "<PublishFetch line 30, col 5 to line 36, col 54 of module PrivateDelivery>\n/\\ pending = (native :> {1})\n/\\ online = (native :> TRUE)\n/\\ effects = (native :> <<0, 0, 0>>)\n/\\ applied = (native :> {})\n/\\ crashes = (native :> 0)\n/\\ staged = (native :> 0)\n/\\ cursor = (native :> 1)"
+  },
+  {
+    "state": 4,
+    "tlc_text": "<Fetch line 23, col 13 to line 26, col 79 of module PrivateDelivery>\n/\\ pending = (native :> {1})\n/\\ online = (native :> TRUE)\n/\\ effects = (native :> <<0, 0, 0>>)\n/\\ applied = (native :> {})\n/\\ crashes = (native :> 0)\n/\\ staged = (native :> 2)\n/\\ cursor = (native :> 1)"
+  },
+  {
+    "state": 5,
+    "tlc_text": "<PublishFetch line 30, col 5 to line 36, col 54 of module PrivateDelivery>\n/\\ pending = (native :> {1, 2})\n/\\ online = (native :> TRUE)\n/\\ effects = (native :> <<0, 0, 0>>)\n/\\ applied = (native :> {})\n/\\ crashes = (native :> 0)\n/\\ staged = (native :> 0)\n/\\ cursor = (native :> 2)"
+  },
+  {
+    "state": 6,
+    "tlc_text": "<Apply line 40, col 5 to line 44, col 52 of module PrivateDelivery>\n/\\ pending = (native :> {1})\n/\\ online = (native :> TRUE)\n/\\ effects = (native :> <<0, 1, 0>>)\n/\\ applied = (native :> {2})\n/\\ crashes = (native :> 0)\n/\\ staged = (native :> 0)\n/\\ cursor = (native :> 2)"
+  },
+  {
+    "state": 7,
+    "tlc_text": "<Replay line 48, col 5 to line 51, col 70 of module PrivateDelivery>\n/\\ pending = (native :> {1})\n/\\ online = (native :> TRUE)\n/\\ effects = (native :> <<0, 2, 0>>)\n/\\ applied = (native :> {2})\n/\\ crashes = (native :> 0)\n/\\ staged = (native :> 0)\n/\\ cursor = (native :> 2)"
+  }
+]

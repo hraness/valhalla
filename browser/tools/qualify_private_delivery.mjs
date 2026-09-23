@@ -194,7 +194,7 @@ async function send(page,body) {
   return download(page,'private-download-output','vhmsg');
 }
 async function leave(page) {
-  await evaluate(page,"(async()=>{await qclick('private-leave');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'new locked worker');qassert(qid('private-workspace').hidden,'private workspace survives lock');qassert(qid('private-message').value==='','private message survived lock');for(const field of document.querySelectorAll('#private-panel input'))qassert(field.type==='checkbox'?!field.checked:field.value==='','private input survived lock: '+field.id);for(const id of ['private-consent','private-inbox-content','private-membership-details','private-secret-label'])qassert(qid(id).textContent==='','private view survived lock: '+id);qassert(qaURLs.size===0,'download URL survived lock');qassert(!qid('activity-heading').closest('.activity').hidden,'public activity remains hidden');for(const id of ['activity-text','puzzle-artifact','puzzle-part'])qassert(qid(id).value==='','private text carried into public composer');return true;})()");
+  await evaluate(page,"(async()=>{await qclick('private-leave');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'new locked worker');qassert(qid('private-workspace').hidden,'private workspace survives lock');qassert(qid('private-message').value==='','private message survived lock');for(const field of document.querySelectorAll('#private-panel input'))qassert(field.type==='checkbox'?!field.checked:field.value==='','private input survived lock: '+field.id);for(const id of ['private-consent','private-inbox-content','private-outbox-acceptances','private-membership-details','private-secret-label'])qassert(qid(id).textContent==='','private view survived lock: '+id);qassert(qaURLs.size===0,'download URL survived lock');qassert(!qid('activity-heading').closest('.activity').hidden,'public activity remains hidden');for(const id of ['activity-text','puzzle-artifact','puzzle-part'])qassert(qid(id).value==='','private text carried into public composer');return true;})()");
 }
 async function reopen(page) {
   await evaluate(page,"(async()=>{qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','explicit unlock');await qclick('private-enter');await qwait(()=>!qid('private-open').disabled,'new private entry');return true;})()");
@@ -308,10 +308,11 @@ async function connect(page,path,create=false) {
   await evaluate(page,`(async()=>{await qclick('${create?'private-delivery-create':'private-delivery-open'}');await qidle();qassert(qid('private-delivery-profile').value==='','profile capability selection survived');qassert(!qid('private-delivery-sync').disabled,'delivery not ready');return true;})()`);
 }
 async function sync(page) {return evaluate(page,"(async()=>{await qclick('private-delivery-sync');await qidle();return qid('private-delivery-status').textContent;})()");}
+function refusals(report) {const match=report.match(/Refused and skipped records: ([0-9]+)/);if(!match)throw Error('missing delivery refusal count');return Number(match[1]);}
 async function sendRetainedPreview(page) {
   return evaluate(page,`(async()=>{
     qassert(qaDraft instanceof Uint8Array,'captured actual disclosure preview');
-    const expected=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(5));
+    const expected=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(6));
     qassert(expected.length===12&&expected.every((v,i)=>qaDraft[i]===v)&&qaDraft[12]===104,'actual private wire version');
     const frame=new Uint8Array(qaDraft.length+16);frame.set(expected);frame[12]=8;
     frame.set(crypto.getRandomValues(new Uint8Array(16)),13);frame.set(qaDraft.subarray(13),29);
@@ -340,14 +341,17 @@ function sameRetained(before,after,label) {
   if(a.length!==b.length||!a.subarray(56,96).equals(b.subarray(56,96))||!a.subarray(104).equals(b.subarray(104))||b.readBigUInt64BE(96)<a.readBigUInt64BE(96))throw Error(label);
 }
 function chargedPending(before,after,committed,stopCode=0) {
-  // Versioned delivery image v2: 8-byte magic, 32-byte binding, 16-byte owner,
+  // Versioned delivery image v3: 8-byte magic, 32-byte binding, 16-byte owner,
   // thirteen u64 counters, stop/detail/blocked bytes, a refused-record ring,
-  // a retained-admission index, then canonical pending and staged RelayItems.
+  // retained-admission and deferred indices, optional full control watermark,
+  // then canonical pending, staged and pending-control ciphertext.
   // These assertions inspect the exact persisted effect independently of the
   // UI report (the worker is dead).
-  if(after.subarray(0,8).toString()!=='VHBRDEL'+String.fromCharCode(2))throw Error('delivery image is not the v2 format');
+  if(after.subarray(0,8).toString()!=='VHBRDEL'+String.fromCharCode(3))throw Error('delivery image is not the v3 format');
   if(after[160]!==stopCode||after.readBigUInt64BE(80)!==before.readBigUInt64BE(80)+1n||after.readBigUInt64BE(88)<=before.readBigUInt64BE(88)||after.readBigUInt64BE(112)!==before.readBigUInt64BE(112)+1n||after.readBigUInt64BE(104)<=after.readBigUInt64BE(96))throw Error('credential refusal reset or stopped finite progress');
   let at=164+after[163]*41;at+=1+after[at]*45;
+  at+=1+after[at]*46;
+  const hasControlFloor=after[at++];if(hasControlFloor>1)throw Error('noncanonical control watermark');if(hasControlFloor)at+=40;
   const length=after.readUInt32BE(at),item=after.subarray(at+4,at+4+length);
   if(length<102||item.subarray(0,9).toString()!=='VHPRELAY'+String.fromCharCode(1)||!item.subarray(70,70+item.readUInt32BE(66)).equals(committed))throw Error('credential refusal lost exact committed ciphertext');
 }
@@ -381,7 +385,28 @@ async function task(abortSignal) {
   facts.push('new member starts at explicit trusted admission checkpoint, excluding undecryptable prejoin history; browser profiles bind that immutable cursor');
   await send(owner,'SYNTHETIC_GATEWAY_TLS_MESSAGE');await sync(owner);await sync(member);
   await evaluate(member,"(async()=>{await qclick('private-inbox');await qidle();qassert(qid('private-inbox-content').textContent.includes('SYNTHETIC_GATEWAY_TLS_MESSAGE'),'network message absent');qassert(!qid('private-inbox-content').textContent.includes('SYNTHETIC_PREJOIN_HISTORY'),'prejoin history leaked');return true;})()");
-  await sync(member);await sync(owner);facts.push('production browser worker sends exact ciphertext through HTTP gateway and authenticated TLS relay, receiver commits locally and queues signed acceptance without receipt loops');
+  await sync(member);await sync(owner);
+  await evaluate(owner,"(async()=>{await qclick('private-outbox');await qidle();qassert(/verified device [0-9a-f]{64} claims acceptance at its inbox position [1-9]/.test(qid('private-outbox-acceptances').textContent),'verified device acceptance absent from outbox UI');return true;})()");
+  facts.push('production browser worker sends exact ciphertext through HTTP gateway and authenticated TLS relay; receiver commits and queues signed acceptance without receipt loops; sender UI exposes the verified device claim without a human-read assertion');
+  // Admit C while existing member B is offline. The owner must automatically
+  // relay the separate encrypted membership control, not only C's invitation.
+  // Keep an older committed owner message queued across that membership change.
+  await send(owner,'SYNTHETIC_BEFORE_THIRD_MEMBER');
+  const third=await account('third');
+  await invoke(owner,`async function(recipient){qset('private-recipient',recipient);await qclick('private-offer');await qidle();return true;}`,[third.publicKey]);
+  const thirdOffer=await download(owner,'private-download-secret','vhoffer');await enter(third);await setFile(third,'private-offer-file',thirdOffer.path);
+  await invoke(third,`async function(owner){qset('private-owner',owner);await qclick('private-review-offer');return true;}`,[owner.publicKey]);await retainCreation(third);
+  await evaluate(third,"(async()=>{await qclick('private-request');await qidle();return true;})()");const thirdRequest=await download(third,'private-download-output','vhrequest');
+  await setFile(owner,'private-request-file',thirdRequest.path);await evaluate(owner,"(async()=>{await qclick('private-accept');await qidle();return true;})()");const thirdResponse=await download(owner,'private-download-output','vhjoin');
+  await setFile(third,'private-join-file',thirdResponse.path);await evaluate(third,"(async()=>{await qclick('private-join');await qidle();return true;})()");
+  await sync(owner);await sync(owner);
+  await send(owner,'SYNTHETIC_AFTER_THIRD_MEMBER');await sync(owner);
+  await sync(member);
+  if(!/Review the current roster/.test(await evaluate(member,"qid('private-status').textContent")))throw Error('existing member did not receive the third-member admission control');
+  await sync(member);await sync(member);
+  await evaluate(member,"(async()=>{await qclick('private-inbox');await qidle();qassert(qid('private-inbox-content').textContent.includes('SYNTHETIC_BEFORE_THIRD_MEMBER'),'membership control overtook the older committed owner message');qassert(qid('private-inbox-content').textContent.includes('SYNTHETIC_AFTER_THIRD_MEMBER'),'existing member missed new-epoch content after third-member admission');return true;})()");
+  const beforeRenewRefused=refusals(await sync(owner));
+  facts.push('third device joins confidentially while the existing member is offline; the maintained delivery path preserves the older committed owner message before its encrypted admission control, then accepts new-epoch content without a manual control file');
   // An owner renewal publishes a membership control that advances the epoch.
   // A member ciphertext committed before applying that control is stale: it is
   // durably refused per record, skipped at the mailbox cursor, and delivery
@@ -395,7 +420,7 @@ async function task(abortSignal) {
   if(!/Review the current roster/.test(await evaluate(member,"qid('private-status').textContent")))throw Error('member sync after owner renewal did not stop at the review boundary');
   await sync(member);
   const refusedReport=await sync(owner);
-  if(!/Refused and skipped records: [1-9]/.test(refusedReport))throw Error('stale member record was not durably refused and skipped: '+refusedReport);
+  if(refusals(refusedReport)<=beforeRenewRefused)throw Error('stale member record added no durable refusal: '+refusedReport);
   await send(member,'SYNTHETIC_POST_RENEW');await sync(member);await sync(owner);
   await evaluate(owner,"(async()=>{await qclick('private-inbox');await qidle();qassert(qid('private-inbox-content').textContent.includes('SYNTHETIC_POST_RENEW'),'post-renewal message absent');return true;})()");
   await sync(owner);await sync(member);

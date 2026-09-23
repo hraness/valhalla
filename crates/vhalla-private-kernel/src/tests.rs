@@ -973,6 +973,59 @@ async fn add_device(pair: &mut Pair, member: &mut Kernel<Memory>, operation: u64
 }
 
 #[test]
+fn committed_control_stream_replays_third_member_admission_without_reencrypting() {
+    block_on(async {
+        let mut pair = joined().await;
+        let prior = pair.member.status().control_sequence;
+        let (mut third, _, _) = pending_device(&pair, &account()).await;
+        let expected = add_device(&mut pair, &mut third, 911).await;
+        let image = pair.owner_disk.snapshot();
+        let page = pair
+            .owner
+            .encrypted_controls_from(Some(prior), 1)
+            .await
+            .unwrap();
+        assert_eq!(page.records[0].bytes(), expected);
+        assert!(pair.owner_disk.snapshot() == image);
+        pair.reopen_owner().await;
+        let retry = pair
+            .owner
+            .encrypted_controls_from(Some(prior), 1)
+            .await
+            .unwrap();
+        assert_eq!(retry.records[0].bytes(), expected);
+        let message = third
+            .test_send(op(912), b"third member after admission", pair.now)
+            .await
+            .unwrap();
+        assert!(matches!(
+            pair.member.receive(message.bytes(), pair.now).await,
+            Err(Error::FutureEpoch)
+        ));
+        pair.member
+            .apply_control(retry.records[0].bytes(), pair.now)
+            .await
+            .unwrap();
+        pair.reopen_member().await;
+        assert_eq!(
+            pair.member
+                .receive(message.bytes(), pair.now)
+                .await
+                .unwrap()
+                .body(),
+            b"third member after admission"
+        );
+        let own_suffix = third.encrypted_controls_from(None, 1).await.unwrap();
+        assert_eq!(own_suffix.base, third.status().control_floor);
+        assert!(own_suffix.records.is_empty());
+        assert!(matches!(
+            third.encrypted_controls_from(Some(prior), 1).await,
+            Err(Error::Missing)
+        ));
+    });
+}
+
+#[test]
 fn four_devices_late_join_ordered_catchup_and_explicit_new_device_rejoin() {
     block_on(async {
         let mut pair = joined().await;

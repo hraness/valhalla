@@ -170,6 +170,8 @@ struct Device {
     mailbox: Rc<RefCell<Mailbox>>,
     clock: Rc<Cell<u64>>,
     skew: u64,
+    /// Fail one exact retained-item transaction before or after its commit.
+    retention_fault: u8,
 }
 impl Host for Device {
     type Store = Mem;
@@ -203,6 +205,19 @@ impl Host for Device {
         if self.image.as_deref() != expected {
             return Err(Failure::Storage);
         }
+        let fault = if retain.is_some() {
+            std::mem::take(&mut self.retention_fault)
+        } else {
+            0
+        };
+        if fault == 1 {
+            return Err(Failure::Storage);
+        }
+        if retain.is_some_and(|(position, _)| self.retained.contains_key(&position))
+            || discard.is_some_and(|position| !self.retained.contains_key(&position))
+        {
+            return Err(Failure::Storage);
+        }
         if let Some((position, bytes)) = retain {
             if self.retained.insert(position, bytes.to_vec()).is_some() {
                 return Err(Failure::Storage);
@@ -215,6 +230,9 @@ impl Host for Device {
         }
         self.image = Some(next.to_vec());
         self.image_writes += 1;
+        if fault == 2 {
+            return Err(Failure::Storage);
+        }
         Ok(())
     }
     async fn load_retained(&mut self, position: u64) -> engine::Result<Option<Vec<u8>>> {
@@ -497,6 +515,7 @@ async fn build() -> World {
         mailbox: mailbox.clone(),
         clock: clock.clone(),
         skew: 0,
+        retention_fault: 0,
     };
     let mut member = Device {
         kernel: Some(member_kernel),
@@ -508,11 +527,26 @@ async fn build() -> World {
         mailbox: mailbox.clone(),
         clock: clock.clone(),
         skew: 0,
+        retention_fault: 0,
     };
-    let owner_engine = Engine::open(&mut owner, namespace, [9; 32], [7; 16], 0, true)
+    let _owner_engine = Engine::open(&mut owner, namespace, [9; 32], [7; 16], 0, true)
         .await
         .unwrap();
-    let member_engine = Engine::open(&mut member, namespace, [9; 32], [7; 16], 0, true)
+    let _member_engine = Engine::open(&mut member, namespace, [9; 32], [7; 16], 0, true)
+        .await
+        .unwrap();
+    // This delivery fixture begins after the bootstrap control was explicitly
+    // exchanged by the invitation above. Pin that shared initial full floor;
+    // subsequent additions/renewals must use the independent control stream.
+    for device in [&mut owner, &mut member] {
+        let mut state = model::State::decode(device.image.as_ref().unwrap()).unwrap();
+        state.control_sent = Some(device.kernel.as_ref().unwrap().status().control_floor);
+        device.image = Some(state.encode().unwrap());
+    }
+    let owner_engine = Engine::open(&mut owner, namespace, [9; 32], [7; 16], 0, false)
+        .await
+        .unwrap();
+    let member_engine = Engine::open(&mut member, namespace, [9; 32], [7; 16], 0, false)
         .await
         .unwrap();
     World {
@@ -530,6 +564,439 @@ async fn build() -> World {
     }
 }
 
+/// A future-epoch message precedes the control that admits it. Keep its exact
+/// bytes across a worker restart, fetch the later control, then apply once.
+#[test]
+fn future_message_before_control_survives_restart_and_is_applied_once() {
+    block_on(async {
+        let mut world = build().await;
+        world.renew().await;
+        world.send(0).await;
+        world.sync(0).await;
+        world.mailbox.borrow_mut().items.swap(0, 1);
+        let exact = world.mailbox.borrow().items[0].encode().unwrap();
+        let first = world.sync(1).await.unwrap();
+        assert!(first.review);
+        assert_eq!(first.refused, 0, "future ciphertext is retryable");
+        assert_eq!(first.received, 0);
+        assert_eq!(first.cursor, 0, "unresolved position remains visible");
+        assert_eq!(world.member.retained.get(&1), Some(&exact));
+        let context = world.member.kernel.as_ref().unwrap().status().context;
+        world.member.reopen_kernel(context).await.unwrap();
+        world.member_engine = Engine::open(
+            &mut world.member,
+            world.namespace,
+            [9; 32],
+            [8; 16],
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        let second = world.sync(1).await.unwrap();
+        assert_eq!(second.received, 1);
+        assert_eq!(second.refused, 0);
+        assert_eq!(second.cursor, 2);
+        assert!(!world.member.retained.contains_key(&1));
+        let again = world.sync(1).await.unwrap();
+        assert_eq!(again.received, 1, "retained replay cannot double-accept");
+    });
+}
+
+/// Arrange one genuine future-epoch message without its control. Its bytes must
+/// remain retryable; forwarding that control is a separate test concern.
+async fn future_only(world: &mut World) -> Vec<u8> {
+    world.renew().await;
+    world.send(0).await;
+    let kernel = world.owner.kernel.as_mut().unwrap();
+    let head = kernel.status().outbox_head;
+    let page = kernel.outbox(head - 1, 1).await.unwrap();
+    let item =
+        RelayItem::from_artifact(world.namespace, page.records[0].artifact().unwrap()).unwrap();
+    let raw = item.encode().unwrap();
+    world.mailbox.borrow_mut().items.push(item);
+    raw
+}
+
+#[test]
+fn deferred_ciphertext_and_cursor_publish_atomically_across_uncertain_completion() {
+    block_on(async {
+        for fault in [1, 2] {
+            let mut world = build().await;
+            let exact = future_only(&mut world).await;
+            world.member.retention_fault = fault;
+            assert!(world.member_engine.sync(&mut world.member).await.is_err());
+            let persisted = model::State::decode(world.member.image.as_ref().unwrap()).unwrap();
+            if fault == 1 {
+                assert_eq!(persisted.cursor, 0);
+                assert!(persisted.deferred.is_empty());
+                assert!(world.member.retained.is_empty());
+            } else {
+                assert_eq!(persisted.cursor, 1);
+                assert_eq!(persisted.resolved(), 0);
+                assert_eq!(world.member.retained.get(&1), Some(&exact));
+            }
+            world.member_engine = Engine::open(
+                &mut world.member,
+                world.namespace,
+                [9; 32],
+                [8; 16],
+                0,
+                false,
+            )
+            .await
+            .unwrap();
+            let summary = world.sync(1).await.unwrap();
+            assert_eq!(summary.cursor, 0);
+            assert_eq!(summary.fetched, 1);
+            assert_eq!(summary.deferred, 1);
+            assert_eq!(summary.refused, 0);
+            assert_eq!(world.member.retained.get(&1), Some(&exact));
+        }
+    });
+}
+
+#[test]
+fn missing_or_changed_deferred_bytes_refuse_reopen_without_repair() {
+    block_on(async {
+        for missing in [true, false] {
+            let mut world = build().await;
+            future_only(&mut world).await;
+            world.sync(1).await;
+            let image = world.member.image.clone();
+            if missing {
+                world.member.retained.remove(&1);
+            } else {
+                world.member.retained.get_mut(&1).unwrap()[40] ^= 1;
+            }
+            assert!(Engine::open(
+                &mut world.member,
+                world.namespace,
+                [9; 32],
+                [8; 16],
+                0,
+                false
+            )
+            .await
+            .is_err());
+            assert_eq!(
+                world.member.image, image,
+                "reopen never repairs a missing publication half"
+            );
+        }
+    });
+}
+
+#[test]
+fn stale_engine_cannot_overwrite_another_workers_deferred_progress() {
+    block_on(async {
+        let mut world = build().await;
+        let exact = future_only(&mut world).await;
+        let mut newer = Engine::open(
+            &mut world.member,
+            world.namespace,
+            [9; 32],
+            [8; 16],
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        newer.sync(&mut world.member).await.unwrap();
+        let image = world.member.image.clone();
+        assert!(world.member_engine.sync(&mut world.member).await.is_err());
+        assert_eq!(world.member.image, image);
+        assert_eq!(world.member.retained.get(&1), Some(&exact));
+    });
+}
+
+#[test]
+fn full_deferred_queue_holds_ninth_item_without_skipping_or_eviction() {
+    block_on(async {
+        let mut world = build().await;
+        future_only(&mut world).await;
+        for _ in 1..=model::MAX_DEFERRED {
+            world.send(0).await;
+            let kernel = world.owner.kernel.as_mut().unwrap();
+            let head = kernel.status().outbox_head;
+            let page = kernel.outbox(head - 1, 1).await.unwrap();
+            world.mailbox.borrow_mut().items.push(
+                RelayItem::from_artifact(world.namespace, page.records[0].artifact().unwrap())
+                    .unwrap(),
+            );
+        }
+        for _ in 0..3 {
+            world.sync(1).await;
+        }
+        let summary = world.member_engine.summary(false);
+        assert_eq!(summary.blocked, model::blocked::DEFERRED_FULL);
+        assert_eq!(summary.cursor, 0);
+        assert_eq!(summary.fetched, model::MAX_DEFERRED as u64);
+        assert_eq!(summary.deferred, model::MAX_DEFERRED as u64);
+        assert_eq!(summary.refused, 0);
+        assert_eq!(world.member.retained.len(), model::MAX_DEFERRED);
+        let state = model::State::decode(world.member.image.as_ref().unwrap()).unwrap();
+        let staged = codec::decode_page(&state.staged, state.staged_after, model::PAGE).unwrap();
+        assert_eq!(staged.records[state.applied as usize].position, 9);
+    });
+}
+
+async fn admit_third(world: &mut World) -> Kernel<Mem> {
+    let now = world.clock.get();
+    let third_account = account(7);
+    let view = world
+        .owner
+        .kernel
+        .as_mut()
+        .unwrap()
+        .membership()
+        .await
+        .unwrap();
+    let validity = Validity::new(now - 30, now + 7200).unwrap();
+    let draft = MemberDraft::new(
+        view.status().context.scope,
+        view.anchor().clone(),
+        view.owner().clone(),
+        device_key(&third_account),
+        validity,
+        now,
+    )
+    .unwrap();
+    let enrollment = draft.enrollment_request().sign(&third_account).unwrap();
+    let third_key = StorageKey::from_secret([13; 32]).unwrap();
+    let mut third = draft
+        .initialize(Mem::default(), &third_key, enrollment, now)
+        .await
+        .unwrap();
+    let issue = world.operation();
+    let offer = world
+        .owner
+        .kernel
+        .as_mut()
+        .unwrap()
+        .create_contact_offer(issue, device_key(&third_account), validity, now)
+        .await
+        .unwrap();
+    let request = third
+        .contact_request(op(1), offer.confidential_bytes(), now)
+        .await
+        .unwrap();
+    let admit = world.operation();
+    let response = world
+        .owner
+        .kernel
+        .as_mut()
+        .unwrap()
+        .accept_contact(admit, request.bytes(), validity, now)
+        .await
+        .unwrap();
+    third.join_contact(response.bytes(), now).await.unwrap();
+    third
+}
+
+#[test]
+fn confidential_third_member_admission_relays_control_to_existing_offline_member() {
+    block_on(async {
+        let mut world = build().await;
+        let third = admit_third(&mut world).await;
+        world.send(0).await;
+        world.sync(0).await;
+        world.sync(0).await;
+        let control = world
+            .mailbox
+            .borrow()
+            .items
+            .iter()
+            .position(|item| item.kind() == vhalla_private_relay::RelayKind::Control)
+            .unwrap();
+        let message = world
+            .mailbox
+            .borrow()
+            .items
+            .iter()
+            .position(|item| item.kind() == OutboxKind::Application)
+            .unwrap();
+        world.mailbox.borrow_mut().items.swap(control, message);
+        let first = world.sync(1).await.unwrap();
+        assert!(first.review);
+        assert_eq!(first.deferred, 1);
+        assert_eq!(world.member.kernel.as_ref().unwrap().status().members, 3);
+        world.member_engine = Engine::open(
+            &mut world.member,
+            world.namespace,
+            [9; 32],
+            [8; 16],
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        let second = world.sync(1).await.unwrap();
+        assert_eq!(second.received, 1);
+        assert_eq!(second.deferred, 0);
+        assert_eq!(second.refused, 0);
+        assert_eq!(
+            third.status().roster,
+            world.member.kernel.as_ref().unwrap().status().roster
+        );
+    });
+}
+
+#[test]
+fn committed_old_message_precedes_own_membership_control_and_new_message() {
+    block_on(async {
+        let mut world = build().await;
+        world.send(0).await;
+        let _third = admit_third(&mut world).await;
+        world.send(0).await;
+        for _ in 0..4 {
+            world.sync(0).await;
+        }
+        let kinds: Vec<_> = world
+            .mailbox
+            .borrow()
+            .items
+            .iter()
+            .map(|item| item.kind())
+            .collect();
+        let messages: Vec<_> = kinds
+            .iter()
+            .enumerate()
+            .filter_map(|(at, kind)| (*kind == OutboxKind::Application).then_some(at))
+            .collect();
+        let control = kinds
+            .iter()
+            .position(|kind| *kind == vhalla_private_relay::RelayKind::Control)
+            .unwrap();
+        assert_eq!(messages.len(), 2);
+        assert!(
+            messages[0] < control,
+            "membership control overtook earlier committed application"
+        );
+        assert!(
+            control < messages[1],
+            "new-epoch application overtook its required control"
+        );
+        let first = world.sync(1).await.unwrap();
+        assert!(first.review);
+        assert_eq!(first.received, 1);
+        assert_eq!(first.refused, 0);
+        world.member_engine = Engine::open(
+            &mut world.member,
+            world.namespace,
+            [9; 32],
+            [8; 16],
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        let second = world.sync(1).await.unwrap();
+        assert_eq!(second.received, 2);
+        assert_eq!(second.refused, 0);
+        assert_eq!(second.deferred, 0);
+        assert_eq!(world.member.kernel.as_ref().unwrap().status().members, 3);
+    });
+}
+
+#[test]
+fn later_control_does_not_block_fetching_its_predecessor() {
+    block_on(async {
+        let mut world = build().await;
+        world.renew().await;
+        world.renew().await;
+        world.sync(0).await;
+        assert_eq!(world.mailbox.borrow().items.len(), 2);
+        world.mailbox.borrow_mut().items.swap(0, 1);
+        let first = world.sync(1).await.unwrap();
+        assert!(first.review);
+        assert_eq!(first.deferred, 1);
+        assert_eq!(first.cursor, 0);
+        assert_eq!(first.fetched, 2);
+        let second = world.sync(1).await.unwrap();
+        assert!(second.review);
+        assert_eq!(second.deferred, 0);
+        assert_eq!(second.cursor, 2);
+        assert_eq!(
+            world.member.kernel.as_ref().unwrap().status().control_floor,
+            world.owner.kernel.as_ref().unwrap().status().control_floor
+        );
+    });
+}
+
+#[test]
+fn ahead_sender_ratchet_is_retained_until_an_earlier_message_arrives() {
+    block_on(async {
+        let mut world = build().await;
+        let mut sent = Vec::new();
+        for _ in 0..34 {
+            world.send(0).await;
+            let kernel = world.owner.kernel.as_mut().unwrap();
+            let head = kernel.status().outbox_head;
+            let page = kernel.outbox(head - 1, 1).await.unwrap();
+            sent.push(
+                RelayItem::from_artifact(world.namespace, page.records[0].artifact().unwrap())
+                    .unwrap(),
+            );
+        }
+        world.mailbox.borrow_mut().items.push(sent[33].clone());
+        let first = world.sync(1).await.unwrap();
+        assert_eq!(first.deferred, 1);
+        assert_eq!(first.blocked, model::blocked::RATCHET);
+        assert_eq!(first.refused, 0);
+        world.mailbox.borrow_mut().items.push(sent[0].clone());
+        let second = world.sync(1).await.unwrap();
+        assert_eq!(second.deferred, 0);
+        assert_eq!(second.received, 2);
+        assert_eq!(second.refused, 0);
+        assert_eq!(world.member.kernel.as_ref().unwrap().status().inbox_head, 2);
+    });
+}
+
+#[test]
+fn relay_retention_never_fabricates_member_acceptance_and_verified_claims_survive_reopen() {
+    block_on(async {
+        let mut world = build().await;
+        world.send(0).await;
+        let output = world.owner.kernel.as_ref().unwrap().status().outbox_head;
+        world.sync(0).await;
+        assert!(world
+            .owner
+            .kernel
+            .as_mut()
+            .unwrap()
+            .acceptances(output)
+            .await
+            .unwrap()
+            .is_empty());
+        world.sync(1).await;
+        world.sync(0).await;
+        let claims = world
+            .owner
+            .kernel
+            .as_mut()
+            .unwrap()
+            .acceptances(output)
+            .await
+            .unwrap();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].recipient(), world.member_device);
+        let context = world.owner.kernel.as_ref().unwrap().status().context;
+        world.owner.reopen_kernel(context).await.unwrap();
+        assert_eq!(
+            world
+                .owner
+                .kernel
+                .as_mut()
+                .unwrap()
+                .acceptances(output)
+                .await
+                .unwrap(),
+            claims
+        );
+    });
+}
+
 /// A member artifact composed at epoch N reaches the owner's mailbox after an
 /// owner renewal moved the room to N+1: the classic Renew/send race. The
 /// stale record must be durably refused, skipped and reported while the
@@ -545,7 +1012,9 @@ fn stale_member_message_after_owner_renewal_is_recorded_and_delivery_continues()
                              // and composes a fresh message at the new epoch.
         assert!(world.sync(1).await.unwrap().review);
         world.send(1).await;
-        // Both member artifacts publish: the stale ciphertext, then the fresh.
+        // Forwarding the exact retained control consumes one bounded outgoing
+        // slot (the relay deduplicates it). Then publish both member artifacts.
+        world.sync(1).await;
         world.sync(1).await;
         assert_eq!(world.mailbox.borrow().head(), 3);
         let summary = world.sync(0).await.unwrap();

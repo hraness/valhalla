@@ -24,6 +24,26 @@ Lifecycle commands take the same canonical absolute config path:
   `serve-start`/`bind-retry`/`serve-stop` to the bounded `events.log` beside
   the config, and drains SIGTERM/SIGINT before exit.
 
+An unwinding connection-local handler panic closes that request without a
+success response. The gateway continues only when the shared admission budget
+is unpoisoned and the panic occurred outside the upstream TLS exchange. Failed
+requests retain their admission charges; isolation does not reset limits.
+A poisoned shared budget, a panic during upstream exchange, an unexpected
+worker failure or inability to spawn a worker stops admission and drains the
+already-admitted workers under their original deadlines, then exits with
+failure. The gateway never repairs or clears poisoned state in place. Ordinary
+upstream timeout/unavailable responses remain request failures and may have an
+uncertain retention outcome; clients retry the same committed ciphertext.
+A connection failure after upstream publication likewise does not prove that
+the PUT was absent, even when the gateway isolates the failed handler.
+This boundary covers unwinding panics, not process aborts or unhealthy-disk
+guarantees. Core fault tests exercise the shutdown flag. The CLI lifecycle
+regression sends real SIGTERM while an admitted HTTP PUT is waiting for its
+final body byte, completes that request through the real TLS host during drain,
+then restarts both processes and checks exact duplicate retention at the same
+origin. It uses synthetic local custody and assets; it does not inject a signal
+inside an upstream filesystem barrier or qualify launchd supervision.
+
 The bounded 0600 configuration file and credential/CA files must have 0700 parent
 directories. All paths are absolute. Unknown fields refuse. Example structure
 (values below are placeholders, never usable credentials):

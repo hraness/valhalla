@@ -115,15 +115,35 @@ updater.
 
 ## Credentials, rotation and renewal
 
-After the sealed home exists, three maintenance commands change exactly one
-selection at a time. Each runs the same crash-safe sealed manifest protocol as
-`init`: a torn run leaves bounded inert residue or refuses rather than a
-partially modified home, and none of them rebind the listener, mutate the CA,
-or take the mailbox custody lock of a running server.
+After the sealed home exists, maintenance changes one selection at a time.
+An owner-private `maintenance.lock` serializes mutation, recovery and startup
+selection independently of mailbox writer custody. A competing operation reports
+`maintenance busy` before changing selection or scratch files. Keep this stable
+lock file; never unlink or replace it to bypass a busy result. Read-only status
+neither creates nor acquires this lock; a concurrent torn update may make status
+refuse until maintenance or recovery completes.
+
+Each mutation retains a sealed byte-exact snapshot. Recovery copies backups
+without consuming them, so interruption during recovery is repeatable. The
+recovery marker is durably removed before backup cleanup. `recover` replays only
+that retained evidence, and refuses missing or inconsistent evidence without
+inventing state. It does not renew certificates or mint credentials. None of
+these commands rebind the listener or mutate the CA. Renewal and credential
+maintenance can run while the service owns the mailbox.
+
+Every successful maintenance command reports `restart_required: true`. Its
+selection takes effect only when the previous service has drained and a new
+service opens the home. Until then, an existing process continues using its
+startup certificate and credentials, including a token marked revoked on disk.
+For urgent transport revocation, first stop the exact host service, revoke the
+selected credential, then restart and verify denial with the old token. Room
+membership removal and relay transport-token revocation are separate actions.
 
 ```sh
 /absolute/vhalla private-host add-credential /private/operator/valhalla-host
-/absolute/vhalla private-host rotate /private/operator/valhalla-host
+/absolute/vhalla private-host revoke-credential /private/operator/valhalla-host 2
+/absolute/vhalla private-host replace-credential /private/operator/valhalla-host 2
+/absolute/vhalla private-host recover /private/operator/valhalla-host
 /absolute/vhalla private-host renew /private/operator/valhalla-host
 ```
 
@@ -131,18 +151,49 @@ or take the mailbox custody lock of a running server.
   retained CA and namespace, bounded at 64 enrolled identities. Quota
   enrollment and live admission take effect at the next service open; an
   already-running service keeps its fixed credential set until restarted.
-- `rotate` opens a fresh opaque namespace in a new empty `mailbox-N` directory
-  under the retained CA, credentials and listener. The previous mailbox and
-  sealed namespace stay untouched as evidence; `connection.json` republishes
-  the new namespace (and records the previous one) so clients can point a
-  fresh delivery state at it. Rotation never copies or prunes retained items
-  and does not redirect existing queues.
+- `revoke-credential HOME INDEX` marks that enrolled identity inactive; repeated
+  revocation is idempotent. Its token, stable quota identity and retained mailbox
+  stay intact. Revoking every credential is allowed; subsequent serving refuses
+  until an explicit add or replacement supplies an active credential.
+- `replace-credential HOME INDEX` mints a new token for the same identity and
+  increments its generation. It explicitly reactivates a revoked identity.
+  Previously spent quota remains charged to that identity. The old token is
+  retained as sealed owner-private `client-N.generation-G.token` evidence and
+  is never admitted alongside the replacement. There is no automatic overlap
+  or fallback. Retained history is bounded at 64 replacements across a home;
+  exhaustion requires a reviewed migration, never deleting evidence. Transfer
+  the new current token through the same trusted private channel as enrollment.
+- `rotate` refuses without changing the home. A new namespace does not move
+  retained or uncertain client work, even when this relay is empty or stopped.
+  Live generation transitions remain gated until durable fencing, controller
+  drain/recovery, preserved receipt context and aggregate capacity accounting
+  are implemented and qualified. Preserve the existing namespace and queues;
+  do not point a recreated delivery state at an empty mailbox to bypass limits.
 - `renew` reissues the serving leaf under the retained CA with the operator's
-  chosen leaf lifetime, capped by CA expiry. It refuses when `ca-key.der` is
+  persisted leaf lifetime, capped strictly before CA expiry. It refuses when `ca-key.der` is
   absent or the CA has expired — a new CA is a new host, not a renewal. The
   binding, namespace, mailbox and credential set are unchanged, so existing
   client profiles remain valid. `status` reports the new expiry and warns
-  within the renewal window.
+  within the renewal window. Repeated renewals keep the same duration rather
+  than adding elapsed host age. `renew --leaf-days N` explicitly changes it.
+
+New homes use sealed configuration version 2. Version-1 homes created by v0.2.3
+still load, serve and uninstall without migration. Their original renewal
+lifetime cannot safely be inferred from an already-renewed expiry, so the first
+renewal requires explicit `--leaf-days N`; this stores that policy in version 2.
+Before the first mutation, finish any older maintenance command and use the
+updated executable for all subsequent maintenance. v0.2.3 maintenance commands
+do not participate in the new lock; mixed-version concurrent maintenance is
+unsupported. A previously running service still follows the restart activation
+rule above.
+Revoke or replacement also upgrades to version 2, leaving an unknown legacy
+lifetime unset until explicit renewal. Add-only maintenance retains a version-1
+manifest. Migration preserves CA, namespace, tokens (except selected replacement),
+mailbox, stable quota IDs and launchd selection. Old binaries reject version 2;
+do not edit the version or restore an old manifest to downgrade, since doing so
+could resurrect revoked authority. Use a compatible binary or a reviewed
+state-preserving migration. Recovery of an interrupted upgrade selects the
+complete old or new sealed snapshot, including credential authority.
 
 ## Explicit Tailcat wiring
 
@@ -250,8 +301,10 @@ delivery; reopen the exact retained connection and choose **Sync now** to resume
 
 ## Expiry and qualification boundaries
 
-The leaf is valid for 365 days (or `--leaf-days`), the CA for five years, with a
-five-minute clock skew allowance at creation. Status reports leaf expiry and
+The leaf is valid for 365 days (or `--leaf-days 1-1824`), the CA for five years, with a
+five-minute clock skew allowance at creation. A requested leaf duration must be
+shorter than the actual five-year CA interval; invalid initialization refuses
+before creating the home. Status reports leaf expiry and
 warns within the renewal window; serving an expired or not-yet-valid selection
 refuses. There is no automatic certificate renewal: `private-host renew`
 reissues the leaf under the retained CA through the bounded operator workflow

@@ -11,6 +11,14 @@ use crate::{
 };
 
 impl<S: Store> Kernel<S> {
+    /// Read authenticated reception evidence for exact bytes without receiving
+    /// again. Recovery markers cannot create plaintext or advance a ratchet.
+    pub async fn retained_received(&mut self, raw: &[u8]) -> Result<Option<ReceivedMessage>> {
+        bounded_wire(raw)?;
+        let state = self.begin_state().await?;
+        self.received(raw, state.inbox).await
+    }
+
     /// Bind an explicit message release to the currently observed private room,
     /// author, epoch and complete roster. The send transaction rechecks every
     /// binding against retained state before encrypting. This method performs no

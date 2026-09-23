@@ -19,7 +19,7 @@ use vhalla_private_native::relay::{
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-3650]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|renew HOME\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, two or more distinct client credentials, explicit macOS LaunchAgent lifecycle. No account keys, automatic update, public listener, or cloud provisioning.";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, distinct client credentials, explicit macOS LaunchAgent lifecycle. Maintenance activates at the next drained service restart. No account keys, automatic update, public listener, or cloud provisioning.";
 const REFUSED: &str = "local host refused; preserve the exact home, configuration, certificates and mailbox; never reset retained custody";
 /// Status marks the leaf for explicit operator renewal inside this window.
 const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
@@ -57,7 +57,10 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                     }
                     "--leaf-days" => {
                         leaf_days = pair[1].to_str().ok_or(HELP)?.parse().map_err(|_| HELP)?;
-                        if !(1..=3650).contains(&leaf_days) {
+                        if !leaf_days
+                            .checked_mul(86400)
+                            .is_some_and(config::valid_leaf_lifetime)
+                        {
                             return Err(HELP.into());
                         }
                     }
@@ -102,27 +105,49 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             let (index, id) = config::add_credential(home)?;
             println!(
                 "{}",
-                serde_json::json!({"status":"credential_added","home":config::resolve(home)?,"credential_index":index,"credential_id":id,"credential_file":format!("client-{index}.token")})
+                serde_json::json!({"status":"credential_added","home":config::resolve(home)?,"credential_index":index,"credential_id":id,"credential_file":format!("client-{index}.token"),"restart_required":true})
+            );
+            Ok(())
+        }
+        Some("recover") if args.len() == 3 => {
+            config::recover(home)?;
+            println!(
+                "{}",
+                serde_json::json!({"status":"recovered","home":config::resolve(home)?,"restart_required":true})
             );
             Ok(())
         }
         Some("rotate") if args.len() == 3 => {
-            let (namespace, mailbox) = config::rotate(home)?;
+            Err("mailbox rotation is unavailable until a drained generation transition is qualified; clients may retain pending or uncertain work even when this mailbox is empty; the host home is unchanged, preserve its namespace and all client queues".into())
+        }
+        Some("renew") if args.len() == 3 || (args.len() == 5 && args[3] == "--leaf-days") => {
+            let days = if args.len() == 5 {
+                Some(args[4].to_str().ok_or(HELP)?.parse().map_err(|_| HELP)?)
+            } else {
+                None
+            };
+            let expires = config::renew(home, days)?;
             println!(
                 "{}",
-                serde_json::json!({"status":"rotated","home":config::resolve(home)?,"namespace":namespace,"mailbox":mailbox,"connection":config::resolve(home)?.join("connection.json")})
+                serde_json::json!({"status":"renewed","home":config::resolve(home)?,"certificate_expires_at":expires,"restart_required":true})
             );
             Ok(())
         }
-        Some("renew") if args.len() == 3 => {
-            let expires = config::renew(home)?;
+        Some(action @ ("revoke-credential" | "replace-credential")) if args.len() == 4 => {
+            let index: usize = args[3].to_str().ok_or(HELP)?.parse().map_err(|_| HELP)?;
+            let (id, generation) =
+                config::credential_lifecycle(home, index, action == "replace-credential")?;
             println!(
                 "{}",
-                serde_json::json!({"status":"renewed","home":config::resolve(home)?,"certificate_expires_at":expires})
+                serde_json::json!({"status":if action == "replace-credential" {"credential_replaced"} else {"credential_revoked"},"home":config::resolve(home)?,"credential_index":index,"credential_id":id,"credential_generation":generation,"restart_required":true,"activation":"next service open after draining the previous service"})
             );
             Ok(())
         }
-        Some(action @ ("serve" | "status" | "install" | "uninstall"))
+        Some("serve") if args.len() == 3 => {
+            let maintenance = config::maintenance_lock(home)?;
+            serve(config::load(home)?, maintenance)
+        }
+        Some(action @ ("status" | "install" | "uninstall"))
             if args.len() == 3 || (action == "status" && args.len() == 4) =>
         {
             let probing = action == "status" && args.len() == 4;
@@ -135,10 +160,17 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                 config::load(home)?
             };
             match action {
-                "serve" => serve(loaded),
                 "status" => {
                     let now = time::OffsetDateTime::now_utc().unix_timestamp();
                     let mut report = serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"log":loaded.home.join(launchd::LOG_NAME),"recent_events":events::tail(&loaded.home,8)?});
+                    report["active_credentials"] = (loaded.config.credential_ids.len()
+                        - loaded.config.revoked_credential_ids.len())
+                    .into();
+                    report["revoked_credentials"] =
+                        loaded.config.revoked_credential_ids.len().into();
+                    report["configuration_version"] = loaded.config.version.into();
+                    report["leaf_lifetime_seconds"] = loaded.config.leaf_lifetime_seconds.into();
+                    report["activation"] = "configured selection; an already-running service retains its startup selection until drained and restarted".into();
                     if probing {
                         report["probe"] = probe(&loaded)?;
                     } else {
@@ -179,6 +211,9 @@ fn service(home: &Path, config: &Config) -> Result<Service, String> {
     .map_err(|_| REFUSED)?;
     let mut credentials = Vec::new();
     for (index, id) in config.credential_ids.iter().enumerate() {
+        if config.revoked_credential_ids.contains(id) {
+            continue;
+        }
         let raw = config::read_bound(home, config, &format!("client-{}.token", index + 1), 65)?;
         let token = std::str::from_utf8(&raw).map_err(|_| REFUSED)?;
         credentials.push(Credential {
@@ -201,6 +236,9 @@ fn service(home: &Path, config: &Config) -> Result<Service, String> {
             bytes_per_window: 32 * 1024 * 1024,
         });
     }
+    if credentials.is_empty() {
+        return Err("all transport credentials are revoked; explicitly replace or add a credential before serving".into());
+    }
     Service::new(
         FileStore::open(home.join(&config.mailbox), namespace).map_err(|_| REFUSED)?,
         tls,
@@ -215,7 +253,20 @@ fn service(home: &Path, config: &Config) -> Result<Service, String> {
 fn probe(loaded: &Loaded) -> Result<serde_json::Value, String> {
     use std::time::{Duration, Instant};
     let ca = config::read_bound(&loaded.home, &loaded.config, "ca.der", 65536)?;
-    let raw = config::read_bound(&loaded.home, &loaded.config, "client-1.token", 65)?;
+    let Some(index) = loaded
+        .config
+        .credential_ids
+        .iter()
+        .position(|id| !loaded.config.revoked_credential_ids.contains(id))
+    else {
+        return Ok(serde_json::json!({"probed":false,"error":"no_active_credential"}));
+    };
+    let raw = config::read_bound(
+        &loaded.home,
+        &loaded.config,
+        &format!("client-{}.token", index + 1),
+        65,
+    )?;
     let text = std::str::from_utf8(&raw).map_err(|_| REFUSED)?;
     let token = RelayToken::from_bytes(config::decode_hex::<32>(text.trim_end_matches('\n'))?)
         .map_err(|_| REFUSED)?;
@@ -257,7 +308,7 @@ fn net_error_name(error: &vhalla_private_native::relay::net::NetError) -> &'stat
     }
 }
 
-fn serve(loaded: Loaded) -> Result<(), String> {
+fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     if now < loaded.config.created_at - 300 || now >= loaded.config.certificate_expires_at {
         return Err(
@@ -266,6 +317,7 @@ fn serve(loaded: Loaded) -> Result<(), String> {
         );
     }
     let service = service(&loaded.home, &loaded.config)?;
+    drop(maintenance);
     // Mailbox custody is held before the bounded bind retry so a restart
     // handoff cannot let a second owner take the store mid-recovery.
     let mut listener = None;

@@ -1,0 +1,48 @@
+{
+  "scope": "Synthetic same-machine qualification; no independent-device, Tailcat, human-read or physical-durability claim.",
+  "artifact_manifest_sha256": "31075ce2fa8be1d9dd64ebdca5dd64759ee9d7f1d4634b4045ab9072b6e0de00",
+  "evidence_directory": "/private/tmp/valhalla-browser-readiness-20260923-h8aq_6fa",
+  "gates": [
+    {
+      "name": "panel-1",
+      "receipt_sha256": "b84d207e164bf375667ddb1ec759f4fcdf8e6e7135aeebb0a8522ed646b57346",
+      "passed": true,
+      "facts": [
+        "keyboard entry, fresh owner, real locator download and explicit retention gate",
+        "two independent accounts joined through actual confidential offer and encrypted request/response files",
+        "bidirectional messages, inert imported markup and exact retained ciphertext retry",
+        "ordered renewal control invalidates exact consent; unsignaled text edit and ordinary secret export refused before queue",
+        "same-account fresh device restored from encrypted backup, admitted by self-targeted offer, no pre-join history, bidirectional exchange",
+        "owner removal control excludes a device and rekeys; removed member retains read-only state but cannot send; signed proofs observe as unknown then retained with no fabricated fork evidence",
+        "lock clears plaintext/files/views/URLs, requires new unlock, exact locator reopen retains ciphertext",
+        "production member applies the ordered removal envelope under the real clock before owner succession",
+        "Production archive routes authenticate full source before catalog/destination access; malformed context/ID create no database; interrupted A resumes; newer B coexists and explicit legacy A stays readable",
+        "Four durable origin-wide reservations enforce a global cap before destination creation; quota refusal and read-only opens of missing new/legacy snapshots preserve the database set, exact prior snapshots and legacy data",
+        "Production streaming export wrote 50458 bytes in 44 bounded chunks through a real browser writable file; canceled picker starts no export; injected write quota, explicit lock and a late createWritable handle abort without replacing prior file; Blob fallback exercised separately",
+        "account-authorized succession hands ownership to the enrolled same-account device through one distributed owner control: the predecessor keeps ordinary membership, and the promoted successor issues controls the predecessor applies in order"
+      ],
+      "scope": "synthetic private DOM file exchange; no external relay, public posting or production data"
+    },
+    {
+      "name": "delivery-1",
+      "receipt_sha256": "cc345b72cd3ee9a3a7bf8002e183c84705a6ab97dbd5b8383d85ab7c6c335824",
+      "passed": true,
+      "facts": [
+        "oversized initial cursor refuses before creating a durable delivery profile",
+        "new member starts at explicit trusted admission checkpoint, excluding undecryptable prejoin history; browser profiles bind that immutable cursor",
+        "production browser worker sends exact ciphertext through HTTP gateway and authenticated TLS relay; receiver commits and queues signed acceptance without receipt loops; sender UI exposes the verified device claim without a human-read assertion",
+        "third device joins confidentially while the existing member is offline; the maintained delivery path preserves the older committed owner message before its encrypted admission control, then accepts new-epoch content without a manual control file",
+        "owner renewal publishes a control before member sync; the stale-epoch member record is durably refused and skipped at the cursor while the epoch-fresh message behind it still delivers",
+        "a real valid Send IPC control succeeds, but an otherwise valid retained consent fails inside worker custody after same-roster Sync; no panel-only guard is relied on",
+        "relay outage, real document teardown, same-profile reopen and exact retry preserve ciphertext and counters and retain the output once",
+        "wrong gateway capability locks the worker without discarding exact pending ciphertext or charged attempts/backoff; explicit reopen with corrected authority resumes once and does not renew lifetime budgets",
+        "canonical upstream authorization denial locks custody with exact charged progress retained; operator repairs host token and explicit browser reopen resumes once without resetting credits",
+        "changed profile initial cursor refuses without replacing retained state; capability is absent from durable delivery bytes",
+        "second-tab CAS ownership invalidates the prior worker before another sync; the new worker retains exact existing counters",
+        "lock during a real gateway TLS handshake terminates worker Fetch; delayed failure cannot restore UI or alter charged progress, and explicit reopen resumes exact queued ciphertext",
+        "a well-framed HTTP200 receipt with a corrupt commitment durably stops before worker termination; exact pending bytes and charged credits survive, and reopen or forced Sync cannot resume network work"
+      ],
+      "scope": "production browser private custody \u2192 maintained local HTTP gateway \u2192 real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim"
+    }
+  ]
+}

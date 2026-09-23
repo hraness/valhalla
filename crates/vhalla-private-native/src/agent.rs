@@ -223,6 +223,41 @@ pub struct AgentRoomSession<S: Store> {
     test_tick: Option<std::rc::Rc<std::cell::Cell<Instant>>>,
 }
 impl<S: Store> AgentRoomSession<S> {
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_retained_received(
+        &mut self,
+        raw: &[u8],
+    ) -> Result<Option<vhalla_private_kernel::ReceivedMessage>> {
+        self.host_ready()?;
+        self.failed = true;
+        let result = self.kernel.retained_received(raw).await;
+        let result = self.settle(result)?;
+        self.failed = false;
+        Ok(result)
+    }
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_retained_control(&mut self, raw: &[u8]) -> Result<bool> {
+        self.host_ready()?;
+        self.failed = true;
+        let result = self.kernel.retained_control(raw).await;
+        let result = self.settle(result)?;
+        self.failed = false;
+        Ok(result)
+    }
+    #[cfg(feature = "client")]
+    pub(crate) async fn host_encrypted_controls(
+        &mut self,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<vhalla_private_kernel::EncryptedControlPage> {
+        self.host_ready()?;
+        self.failed = true;
+        let page = self.kernel.encrypted_controls_from(after, limit).await;
+        let page = self.settle(page)?;
+        self.failed = false;
+        Ok(page)
+    }
+
     // Trusted host delivery operates the same kernel/custody owner. These are
     // never registered as agent methods and never grant network or export rights.
     #[cfg(feature = "client")]

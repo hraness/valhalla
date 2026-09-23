@@ -12,3 +12,6 @@ site/dist/
 
 # Hegel property-test example database (local cache)
 .hegel/
+
+# Python verification and policy-check caches
+__pycache__/

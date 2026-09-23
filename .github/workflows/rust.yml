@@ -18,6 +18,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  main-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Audit public checked-PR enforcement
+        run: python3 .github/scripts/check_main_policy.py --public-view
+        env:
+          GH_TOKEN: ${{ github.token }}
+  formal:
+    uses: ./.github/workflows/verification.yml
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -315,7 +328,7 @@ jobs:
 
   check:
     if: always()
-    needs: [quality, workspace-tests, workspace-aux, browser-artifact, prototype-checks, kani-spent, desktop, site, security]
+    needs: [quality, workspace-tests, workspace-aux, browser-artifact, prototype-checks, kani-spent, formal, main-policy, desktop, site, security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -330,6 +343,8 @@ jobs:
           DESKTOP: ${{ needs.desktop.result }}
           SITE: ${{ needs.site.result }}
           SECURITY: ${{ needs.security.result }}
+          FORMAL: ${{ needs.formal.result }}
+          MAIN_POLICY: ${{ needs.main-policy.result }}
         run: |
           test "$QUALITY" = success
           test "$WORKSPACE_TESTS" = success
@@ -340,6 +355,8 @@ jobs:
           test "$DESKTOP" = success
           test "$SITE" = success
           test "$SECURITY" = success
+          test "$FORMAL" = success
+          test "$MAIN_POLICY" = success
   list-prototypes:
     runs-on: ubuntu-latest
     timeout-minutes: 5

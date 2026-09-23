@@ -1,0 +1,207 @@
+{
+  "tool": {
+    "version": "1.7.4",
+    "url": "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "provenance": "SHA-256 measured from the official release asset on 2026-09-23; that older GitHub asset has no published digest field."
+  },
+  "java": "openjdk version \"21.0.12.1\" 2026-08-18 LTS\nOpenJDK Runtime Environment Temurin-21.0.12.1+1 (build 21.0.12.1+1-LTS)\nOpenJDK 64-Bit Server VM Temurin-21.0.12.1+1 (build 21.0.12.1+1-LTS, mixed mode, sharing)",
+  "scope": "finite model, not implementation proof",
+  "cases": [
+    {
+      "suite": "private-delivery",
+      "case": "normal",
+      "verdict": "pass",
+      "exit_code": 0,
+      "expected_violation": null,
+      "model_sha256": "f68322c7ac6d5f65e47e729b1a8128a6334d8fa5c9e07e8995ce1173dcd38ca6",
+      "config_sha256": "7045bcf404ed0b0acf188e824f96bcf349d4c83f100303a4f40fd59e1e4b6ce9",
+      "states": [
+        "6385",
+        "1444"
+      ]
+    },
+    {
+      "suite": "private-delivery",
+      "case": "capacity",
+      "verdict": "pass",
+      "exit_code": 0,
+      "expected_violation": null,
+      "model_sha256": "f68322c7ac6d5f65e47e729b1a8128a6334d8fa5c9e07e8995ce1173dcd38ca6",
+      "config_sha256": "1ec8f8827e4c831c5e99cc4f6fdf4e9eb823462909e69b20f9e634cb08c87d83",
+      "states": [
+        "10",
+        "8"
+      ]
+    },
+    {
+      "suite": "private-delivery",
+      "case": "mutant-skip",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "NoLostWork",
+      "model_sha256": "f68322c7ac6d5f65e47e729b1a8128a6334d8fa5c9e07e8995ce1173dcd38ca6",
+      "config_sha256": "e5e67adeff131c06bd062a6837dac377216ff7e0c6b63db2f192c0ddae3bacd4",
+      "states": [
+        "4",
+        "4"
+      ]
+    },
+    {
+      "suite": "private-delivery",
+      "case": "mutant-crash",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "NoLostWork",
+      "model_sha256": "f68322c7ac6d5f65e47e729b1a8128a6334d8fa5c9e07e8995ce1173dcd38ca6",
+      "config_sha256": "ca1004aefe60ed2742af157c032aa926d41e11fe1b2569acbee2eeadf9258297",
+      "states": [
+        "8",
+        "7"
+      ]
+    },
+    {
+      "suite": "private-delivery",
+      "case": "mutant-duplicate",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "ExactlyOnce",
+      "model_sha256": "f68322c7ac6d5f65e47e729b1a8128a6334d8fa5c9e07e8995ce1173dcd38ca6",
+      "config_sha256": "41be94bbb01dcaf5c8f63b9163715494b637a89d5f8ce99a357661e06a4800dc",
+      "states": [
+        "24",
+        "19"
+      ]
+    },
+    {
+      "suite": "private-rotation",
+      "case": "normal",
+      "verdict": "pass",
+      "exit_code": 0,
+      "expected_violation": null,
+      "model_sha256": "0625997df8aa4ae0c090c5806c2205c11ef005fb706f4d13c585e5efad75573c",
+      "config_sha256": "d40d76b7304934af6717bc163eba63e5e8b280e1d097a120cee459a2ec511272",
+      "states": [
+        "107",
+        "61"
+      ]
+    },
+    {
+      "suite": "private-rotation",
+      "case": "mutant-orphan",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "NoOrphans",
+      "model_sha256": "0625997df8aa4ae0c090c5806c2205c11ef005fb706f4d13c585e5efad75573c",
+      "config_sha256": "170bf5967eddd156250131efd49dfe95db58a7b21d7d0f9c68eab10138dc0ee2",
+      "states": [
+        "31",
+        "23"
+      ]
+    },
+    {
+      "suite": "private-rotation",
+      "case": "mutant-budget",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "PreservedSpend",
+      "model_sha256": "0625997df8aa4ae0c090c5806c2205c11ef005fb706f4d13c585e5efad75573c",
+      "config_sha256": "77548d5ef0822df08e48efbb886b21802fdc10e431693c8c0b8c8f606a62c3ba",
+      "states": [
+        "69",
+        "42"
+      ]
+    },
+    {
+      "suite": "private-rotation",
+      "case": "mutant-receipt",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "BoundReceipts",
+      "model_sha256": "0625997df8aa4ae0c090c5806c2205c11ef005fb706f4d13c585e5efad75573c",
+      "config_sha256": "3a15f3e38af3d7bf9ea220f7fe5b82c69f122213bd09afed4e8c241aa06d97a6",
+      "states": [
+        "69",
+        "42"
+      ]
+    },
+    {
+      "suite": "private-publication",
+      "case": "normal",
+      "verdict": "pass",
+      "exit_code": 0,
+      "expected_violation": null,
+      "model_sha256": "62559a9ffc00875f0867540e2056425c3e6ded5e57addd82eba6a4899e48c1e6",
+      "config_sha256": "952cc9f704fbd1957ababda80d4a77d36f74b865d3253c4e5d15e2d46e8e3dc6",
+      "states": [
+        "2011",
+        "688"
+      ]
+    },
+    {
+      "suite": "private-publication",
+      "case": "mutant-early",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "ConfirmedOutput",
+      "model_sha256": "62559a9ffc00875f0867540e2056425c3e6ded5e57addd82eba6a4899e48c1e6",
+      "config_sha256": "ea74238725aeadf558e12c309fbde2c956e158f99ef714e93a91bfd3dddd7e11",
+      "states": [
+        "22",
+        "19"
+      ]
+    },
+    {
+      "suite": "private-publication",
+      "case": "mutant-retarget",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "DraftBinding",
+      "model_sha256": "62559a9ffc00875f0867540e2056425c3e6ded5e57addd82eba6a4899e48c1e6",
+      "config_sha256": "f3f30cf18d506d9f5d6d75c62a4d929dd419fabe170254f193a8fd9c533af4d9",
+      "states": [
+        "41",
+        "31"
+      ]
+    },
+    {
+      "suite": "private-publication",
+      "case": "mutant-revoked",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "AuthorizedOutput",
+      "model_sha256": "62559a9ffc00875f0867540e2056425c3e6ded5e57addd82eba6a4899e48c1e6",
+      "config_sha256": "f79839bcee4af6cb131e53a1a3f2b8762a26711a1493885d7309ffeaf689e939",
+      "states": [
+        "156",
+        "103"
+      ]
+    },
+    {
+      "suite": "private-egress",
+      "case": "normal",
+      "verdict": "pass",
+      "exit_code": 0,
+      "expected_violation": null,
+      "model_sha256": "5c6127ffd6f05a7b38753a30dc6f5c7577a469d2ded209921cc2e6fe52ce2429",
+      "config_sha256": "f888335425bf715dce3b346764b812069a5f58a238393270f77c4641becda3d6",
+      "states": [
+        "8",
+        "7"
+      ]
+    },
+    {
+      "suite": "private-egress",
+      "case": "mutant-tail",
+      "verdict": "pass",
+      "exit_code": 12,
+      "expected_violation": "OldBeforeControl",
+      "model_sha256": "5c6127ffd6f05a7b38753a30dc6f5c7577a469d2ded209921cc2e6fe52ce2429",
+      "config_sha256": "db158d1de9fcd55e09ac4af5dc34b18b84f240480e6b722db28d5e5639d524fd",
+      "states": [
+        "6",
+        "6"
+      ]
+    }
+  ]
+}

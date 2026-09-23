@@ -173,20 +173,57 @@ vhalla private delivery-init /absolute/account /absolute/room \
   --config /private/config/delivery.json
 ```
 
+Initialization publishes a version-2 selected profile after the control queue
+is durable. To opt an existing version-1 delivery state into encrypted-control
+forwarding, stop its agent and use the same account, room and profile:
+
+```sh
+vhalla private delivery-upgrade /absolute/account /absolute/room \
+  --config /private/config/delivery.json
+```
+
+The upgrade is additive and recoverable: it retains the original queue, exact
+ciphertexts, watermarks and attempts, then atomically advances the selected
+profile version. An old binary refuses that version before networking. Never
+restore an old profile to bypass this refusal. The new control queue has the
+same configured finite limits as the outbox queue, independently: total retained
+item bytes across both are bounded by twice `max_bytes`, plus storage metadata
+and incoming evidence. Inspect available storage before this explicit upgrade.
+Repeating an upgrade on an already selected v2 profile validates its existing
+control evidence; it refuses a missing queue or activation marker. Preserve
+those files for reconciliation rather than recreating them.
+
 Add `--delivery /private/config/delivery.json` to the MCP server's command. The
 host performs bounded ticks between RPCs, using one absolute network budget.
-Transient outage, connect, timeout and relay-capacity outcomes keep a job live
-through the outage with its own backoff — they never spend the finite
-definitive-refusal retry budget, so a long relay outage cannot silently consume
-a job's attempts. Only durable definitive outcomes (retained receipt, denial,
-conflict, or a malformed/unexpected response) consume attempts or stop a job.
+Transient connect, timeout and unavailable outcomes keep a job live with its
+own backoff without spending the finite definitive-refusal retry budget.
+A definite remote relay-capacity refusal does charge an attempt and eventually
+stops at that configured limit, as do other definitive outcomes such as denial,
+conflict or malformed responses. Local queue capacity instead defers enqueue
+while preserving committed work. None of these outcomes creates new allowance.
 Incoming pages and locally applied results remain private and durable. Dedicated
 contact bootstrap needs its explicit commands; the driver does not invent join
 authority.
 
+Existing members automatically forward only exact encrypted owner controls
+from authenticated retained history to this explicitly selected pinned relay.
+The two outgoing streams merge by authenticated epoch: older local applications
+precede their owner's next control; newer applications wait for their required
+controls. Independent remote membership changes can still make unsent old-epoch
+traffic stale. A real membership change invalidates the current grant and
+requires a fresh roster-bound grant; exact duplicate controls do not.
+Acceptance issuance commits to the same durable outbox and waits for monotone
+capture before transport. A legacy queue containing an unresolved item beyond
+its captured frontier refuses before networking, preserving bytes and attempts
+for reconciliation. A normal interrupted enqueue of the next item can still
+reconcile exactly and continue.
+
 The driver persists its outgoing and applied watermarks in the durable queue
-and restores applied progress from validated markers, so a relaunched host
-resumes without replaying or re-attempting completed work. Mailbox polling
+and revalidates restored applied markers in bounded passes against exact staged
+items and authenticated kernel history. It preserves the old durable checkpoint
+while verification catches up; marker filenames alone never justify progress.
+Revalidation does not encrypt a replacement, issue a new acceptance or apply an
+unseen control. Mailbox polling
 adapts from 5 seconds to 30 seconds while idle and repolls immediately when a
 page still has staged work; network errors back off separately (1s to 30s)
 without touching staged evidence. There is no lifetime poll cap: a quiet room
@@ -206,6 +243,8 @@ The report lists retained job rows (`pending`, `uncertain`, `retained`,
 `stopped`) with charged attempts and the durable driver watermarks. It opens
 queue custody under its own lock, makes no network contact and emits no keys,
 plaintext or ciphertext; run it while no agent holds the profile's custody.
+Add `--stream control` to inspect the separate encrypted-control queue;
+`--stream outbox` is the default. Both reports retain their own charged work.
 
 A rejected relay credential ends the current agent process and grant. The exact
 queued item, charged attempt and backoff remain in place; denial does not renew
@@ -219,7 +258,7 @@ A stopped job is re-armed explicitly, never implicitly:
 
 ```sh
 vhalla private delivery-resume /absolute/account /absolute/room \
-  --config /private/config/delivery.json [--job DIGEST64]
+  --config /private/config/delivery.json [--stream outbox|control] [--job DIGEST64]
 ```
 
 Without `--job` it re-arms every stopped job in the queue; with it, exactly one
@@ -243,8 +282,9 @@ delivery status. Device-to-device acceptance receipts are filtered out of
 request id drops only that wait; stale or unknown ids are ignored, and room
 content is never cancellation or any other authority.
 
-Queue limits include completed and stopped jobs. Exhaustion never prunes evidence
-or renews a stopped job. Preserve all persistent directories on failure and
+The live-job count includes pending, uncertain and stopped jobs. Retained jobs
+remain in history and consume the lifetime retained-byte allowance. Exhaustion
+never prunes evidence or renews a stopped job. Preserve all persistent directories on failure and
 restart; an archive, empty replacement queue, or new claim cannot safely erase
 uncertain prior effects. Coherent rollback by the privileged host is outside this
 local custody model.

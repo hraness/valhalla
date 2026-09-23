@@ -23,7 +23,7 @@ pub enum CodecError {
     InvalidFrame,
 }
 type Result<T> = std::result::Result<T, CodecError>;
-const MAGIC: &[u8] = b"VHBRPRIVATE\x05";
+const MAGIC: &[u8] = b"VHBRPRIVATE\x06";
 struct Writer(Vec<u8>);
 impl Drop for Writer {
     fn drop(&mut self) {
@@ -159,6 +159,21 @@ impl Writer {
         self.byte(u8::from(a.bytes.is_some()))?;
         if let Some(b) = &a.bytes {
             self.blob(b, MAX_ARTIFACT)?;
+        }
+        if a.acceptances.len() > MAX_MEMBERS
+            || (a.kind != OutboxKind::Application && !a.acceptances.is_empty())
+        {
+            return Err(CodecError::InvalidFrame);
+        }
+        self.byte(a.acceptances.len() as u8)?;
+        let mut recipients = Vec::new();
+        for acceptance in &a.acceptances {
+            if acceptance.received_sequence == 0 || recipients.contains(&acceptance.recipient) {
+                return Err(CodecError::InvalidFrame);
+            }
+            recipients.push(acceptance.recipient);
+            self.key(acceptance.recipient)?;
+            self.number(acceptance.received_sequence)?;
         }
         Ok(())
     }
@@ -358,11 +373,28 @@ impl<'a> Reader<'a> {
         if sequence == 0 || (kind == OutboxKind::ContactOffer) != bytes.is_none() {
             return Err(CodecError::InvalidFrame);
         }
+        let count = self.byte()? as usize;
+        if count > MAX_MEMBERS || (kind != OutboxKind::Application && count != 0) {
+            return Err(CodecError::InvalidFrame);
+        }
+        let mut acceptances = Vec::<DeviceAcceptance>::with_capacity(count);
+        for _ in 0..count {
+            let recipient = self.key()?;
+            let received_sequence = self.number()?;
+            if received_sequence == 0 || acceptances.iter().any(|a| a.recipient == recipient) {
+                return Err(CodecError::InvalidFrame);
+            }
+            acceptances.push(DeviceAcceptance {
+                recipient,
+                received_sequence,
+            });
+        }
         Ok(Artifact {
             sequence,
             operation,
             kind,
             bytes,
+            acceptances,
         })
     }
     fn inbound(&mut self) -> Result<Inbound> {
@@ -761,6 +793,8 @@ impl Response {
                 for n in [
                     v.sent,
                     v.cursor,
+                    v.fetched,
+                    v.deferred,
                     v.retained,
                     v.received,
                     v.attempts,
@@ -771,7 +805,12 @@ impl Response {
                 ] {
                     w.number(n)?;
                 }
-                if v.stop > 3 || (v.stop == 2) != (v.detail != 0) || v.blocked > 3 {
+                if v.stop > 3
+                    || (v.stop == 2) != (v.detail != 0)
+                    || v.blocked > 6
+                    || v.deferred > 8
+                    || v.cursor > v.fetched
+                {
                     return Err(CodecError::InvalidFrame);
                 }
                 for b in [
@@ -972,6 +1011,8 @@ impl Response {
                 let context = r.context()?;
                 let sent = r.number()?;
                 let cursor = r.number()?;
+                let fetched = r.number()?;
+                let deferred = r.number()?;
                 let retained = r.number()?;
                 let received = r.number()?;
                 let attempts = r.number()?;
@@ -986,7 +1027,9 @@ impl Response {
                 let review = r.boolean()?;
                 if stop > 3
                     || (stop == 2) != (detail != 0)
-                    || blocked > 3
+                    || blocked > 6
+                    || deferred > 8
+                    || cursor > fetched
                     || admissions > MAX_ADMISSION_ITEMS as u64
                 {
                     return Err(CodecError::InvalidFrame);
@@ -995,6 +1038,8 @@ impl Response {
                     context,
                     sent,
                     cursor,
+                    fetched,
+                    deferred,
                     retained,
                     received,
                     attempts,

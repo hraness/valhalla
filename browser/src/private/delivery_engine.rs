@@ -4,10 +4,12 @@ use super::model::{self, blocked, halt, refusal, State};
 use core::future::Future;
 use sha2::{Digest, Sha256};
 use vhalla_private_kernel::{
-    storage::Store, Context, Error as KernelError, Kernel, MemberAcceptance, OperationId,
-    OutboxKind, Phase,
+    protocol::ControlFloor, storage::Store, Context, Error as KernelError, Kernel,
+    MemberAcceptance, OperationId, OutboxKind, Phase,
 };
-use vhalla_private_relay::{codec, kind_byte, PositionedItem, RelayItem, RelayNamespace};
+use vhalla_private_relay::{
+    codec, kind_byte, PositionedItem, RelayItem, RelayKind, RelayNamespace,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Failure {
@@ -60,7 +62,7 @@ pub trait Host {
     /// Read the current delivery image.
     fn load(&mut self) -> impl Future<Output = Result<Option<Vec<u8>>>>;
     /// Publish the next image over the exact expected one, retaining and/or
-    /// discarding one bootstrap item in the same transaction.
+    /// discarding one bootstrap or deferred ciphertext in the same transaction.
     fn publish(
         &mut self,
         expected: Option<&[u8]>,
@@ -68,7 +70,7 @@ pub trait Host {
         retain: Option<(u64, &[u8])>,
         discard: Option<u64>,
     ) -> impl Future<Output = Result<()>>;
-    /// Read one retained bootstrap item by mailbox position.
+    /// Read one retained bootstrap or deferred item by mailbox position.
     fn load_retained(&mut self, position: u64) -> impl Future<Output = Result<Option<Vec<u8>>>>;
     /// One bounded request/response exchange of an already framed relay op.
     fn exchange(
@@ -83,6 +85,8 @@ pub trait Host {
 pub struct Summary {
     pub sent: u64,
     pub cursor: u64,
+    pub fetched: u64,
+    pub deferred: u64,
     pub retained: u64,
     pub received: u64,
     pub attempts: u64,
@@ -110,6 +114,8 @@ enum Verdict {
     Skip(u8),
     /// Hold the cursor before this record without ending custody.
     Block(u8),
+    /// Preserve exact ciphertext durably and continue fetching prerequisites.
+    Defer(u8),
     /// The record is equivocation or authority evidence: stop delivery at a
     /// durable, reported reason rather than trusting this mailbox further.
     Stop(u8),
@@ -122,8 +128,10 @@ enum Verdict {
 fn classify_receive(error: KernelError) -> Verdict {
     match error {
         KernelError::StaleEpoch => Verdict::Skip(refusal::STALE_EPOCH),
-        KernelError::FutureEpoch => Verdict::Skip(refusal::FUTURE_EPOCH),
-        KernelError::RatchetGap { .. } => Verdict::Skip(refusal::RATCHET),
+        KernelError::FutureEpoch => Verdict::Defer(blocked::FUTURE_EPOCH),
+        KernelError::ControlGap => Verdict::Defer(blocked::CONTROL),
+        KernelError::RatchetGap { past: false } => Verdict::Defer(blocked::RATCHET),
+        KernelError::RatchetGap { past: true } => Verdict::Skip(refusal::RATCHET),
         KernelError::Scope => Verdict::Skip(refusal::SCOPE),
         KernelError::Mls => Verdict::Skip(refusal::RATCHET),
         KernelError::Encoding => Verdict::Skip(refusal::MALFORMED),
@@ -134,17 +142,18 @@ fn classify_receive(error: KernelError) -> Verdict {
         _ => Verdict::Fatal,
     }
 }
-/// Owner-control refusals. A floor gap or clock condition is transient and
-/// holds the cursor; an equivocating or unauthorized authority claim stops
-/// delivery durably; every other typed verdict is a record that can never
-/// apply here and is skipped with evidence.
+/// Owner-control refusals. Floor gaps retain exact bytes while fetching later
+/// prerequisites; a clock condition holds the fetched cursor. An equivocating
+/// or unauthorized authority claim stops delivery durably; every other typed
+/// verdict is a record that can never apply here and is skipped with evidence.
 fn classify_control(error: KernelError) -> Verdict {
     match error {
         KernelError::Missing => Verdict::Skip(refusal::BELOW_BASE),
-        KernelError::ControlGap => Verdict::Block(blocked::CONTROL),
+        KernelError::ControlGap => Verdict::Defer(blocked::CONTROL),
         KernelError::StaleEpoch => Verdict::Skip(refusal::STALE_EPOCH),
-        KernelError::FutureEpoch => Verdict::Skip(refusal::FUTURE_EPOCH),
-        KernelError::RatchetGap { .. } => Verdict::Skip(refusal::RATCHET),
+        KernelError::FutureEpoch => Verdict::Defer(blocked::FUTURE_EPOCH),
+        KernelError::RatchetGap { past: false } => Verdict::Defer(blocked::RATCHET),
+        KernelError::RatchetGap { past: true } => Verdict::Skip(refusal::RATCHET),
         KernelError::Scope => Verdict::Skip(refusal::SCOPE),
         KernelError::Encoding => Verdict::Skip(refusal::MALFORMED),
         KernelError::Bounds => Verdict::Skip(refusal::BOUNDS),
@@ -200,6 +209,16 @@ impl Engine {
         if state.binding != bound || state.initial != initial {
             return Err(Failure::State);
         }
+        // A cursor is permitted to pass deferred bytes only while their exact
+        // indexed evidence exists. Missing/corrupt halves refuse reopening.
+        for entry in state
+            .deferred
+            .iter()
+            .map(|d| &d.item)
+            .chain(&state.admissions)
+        {
+            Self::read_retained(host, namespace, entry).await?;
+        }
         state.observe(now).map_err(|_| Failure::State)?;
         if !create {
             state.resume();
@@ -216,16 +235,25 @@ impl Engine {
     pub fn summary(&self, review: bool) -> Summary {
         Summary {
             sent: self.state.sent,
-            cursor: self.state.cursor,
+            cursor: self.state.resolved(),
+            fetched: self.state.cursor,
+            deferred: self.state.deferred.len() as u64,
             retained: self.state.retained,
             received: self.state.received,
             attempts: self.state.attempts,
             wire_bytes: self.state.wire_bytes,
             retry_at: self.state.retry_at,
-            pending: !self.state.pending.is_empty() || !self.state.staged.is_empty(),
+            pending: !self.state.pending.is_empty()
+                || !self.state.pending_control.is_empty()
+                || !self.state.staged.is_empty()
+                || !self.state.deferred.is_empty(),
             stop: self.state.stop.code(),
             detail: self.state.detail,
-            blocked: self.state.blocked,
+            blocked: if self.state.blocked != 0 {
+                self.state.blocked
+            } else {
+                self.state.deferred.first().map_or(0, |d| d.reason)
+            },
             refused: self.state.refused_total,
             admissions: self.state.admissions.len() as u64,
             review,
@@ -238,7 +266,10 @@ impl Engine {
             .filter_map(|a| {
                 Some(Admission {
                     position: a.position,
-                    kind: vhalla_private_relay::kind_from_byte(a.kind).ok()?,
+                    kind: match vhalla_private_relay::kind_from_byte(a.kind).ok()? {
+                        RelayKind::Outbox(kind) => kind,
+                        RelayKind::Control => return None,
+                    },
                     len: a.len,
                     digest: a.digest,
                 })
@@ -255,15 +286,22 @@ impl Engine {
             .find(|a| a.position == position)
             .cloned()
             .ok_or(Failure::State)?;
+        Self::read_retained(host, self.namespace, &entry).await
+    }
+    async fn read_retained<H: Host>(
+        host: &mut H,
+        namespace: RelayNamespace,
+        entry: &model::Admission,
+    ) -> Result<RelayItem> {
         let raw = host
-            .load_retained(position)
+            .load_retained(entry.position)
             .await?
             .ok_or(Failure::Storage)?;
         let item = RelayItem::decode(&raw).map_err(|_| Failure::Storage)?;
         if raw.len() as u32 != entry.len
             || item.digest() != entry.digest
             || kind_byte(item.kind()) != entry.kind
-            || item.namespace() != self.namespace
+            || item.namespace() != namespace
         {
             return Err(Failure::Storage);
         }
@@ -365,6 +403,23 @@ impl Engine {
         }
     }
     async fn own_item<H: Host>(host: &mut H, item: &RelayItem) -> Result<bool> {
+        if item.kind() == RelayKind::Control {
+            let head = host.kernel()?.status().control_floor;
+            if item.sequence() > head.sequence() {
+                return Ok(false);
+            }
+            let base = host.kernel()?.encrypted_controls(head, 1).await?.base;
+            if item.sequence() <= base.sequence() {
+                return Ok(false);
+            }
+            let page = host
+                .kernel()?
+                .encrypted_controls_from(Some(item.sequence() - 1), 1)
+                .await?;
+            return Ok(page.records.first().is_some_and(|control| {
+                RelayItem::from_control(item.namespace(), control).is_ok_and(|own| own == *item)
+            }));
+        }
         if item.sequence() > host.kernel()?.status().outbox_head {
             return Ok(false);
         }
@@ -376,41 +431,112 @@ impl Engine {
             .is_some_and(|v| {
                 v.sequence() == item.sequence()
                     && v.operation() == item.operation()
-                    && v.kind() == item.kind()
+                    && RelayKind::Outbox(v.kind()) == item.kind()
                     && v.bytes() == item.payload()
             }))
     }
     /// Stage the next relay-bound outbox entry as exact pending ciphertext
-    /// before any network effect, advancing past at most one non-relay entry.
+    /// before any network effect, advancing over a bounded page of non-relay entries.
     /// Secret bootstrap entries advance only this local enumeration; they
     /// never enter network bytes.
     async fn stage_pending<H: Host>(&mut self, host: &mut H) -> Result<bool> {
         if !self.state.pending.is_empty() {
             return Ok(true);
         }
-        let page = host.kernel()?.outbox(self.state.sent, 1).await?;
-        let Some(entry) = page.records.first() else {
+        let page = host.kernel()?.outbox(self.state.sent, model::PAGE).await?;
+        if page.records.is_empty() {
             return Ok(false);
-        };
-        if let Some(artifact) = entry.artifact().filter(|a| {
-            matches!(
-                a.kind(),
-                OutboxKind::Application
-                    | OutboxKind::Removal
-                    | OutboxKind::OwnerUpdate
-                    | OutboxKind::Succession
-                    | OutboxKind::ContactRequest
-                    | OutboxKind::ContactInvitation
-            )
-        }) {
-            self.state.pending = RelayItem::from_artifact(self.namespace, artifact)
-                .and_then(|v| v.encode())
-                .map_err(|_| Failure::Invalid)?;
-        } else {
-            self.state.sent = entry.sequence();
+        }
+        for entry in &page.records {
+            if let Some(artifact) = entry.artifact().filter(|a| {
+                matches!(
+                    a.kind(),
+                    OutboxKind::Application
+                        | OutboxKind::ContactRequest
+                        | OutboxKind::ContactInvitation
+                )
+            }) {
+                self.state.pending = RelayItem::from_artifact(self.namespace, artifact)
+                    .and_then(|v| v.encode())
+                    .map_err(|_| Failure::Invalid)?;
+                break;
+            } else {
+                self.state.sent = entry.sequence();
+            }
         }
         self.save(host, None, None).await?;
         Ok(!self.state.pending.is_empty())
+    }
+    /// Controls have a separate full-floor watermark: a contact invitation's
+    /// member control is not an outbox record. Never replace its exact bytes
+    /// with a plaintext proof or manufacture a second membership operation.
+    async fn stage_control<H: Host>(&mut self, host: &mut H) -> Result<bool> {
+        if !self.state.pending_control.is_empty() {
+            return Ok(true);
+        }
+        let after = match self.state.control_sent {
+            Some(after) => after,
+            None => {
+                let head = host.kernel()?.status().control_floor;
+                let base = host.kernel()?.encrypted_controls(head, 1).await?.base;
+                self.state.control_sent = Some(base);
+                self.save(host, None, None).await?;
+                base
+            }
+        };
+        let page = host.kernel()?.encrypted_controls(after, 1).await?;
+        let Some(control) = page.records.first() else {
+            return Ok(false);
+        };
+        self.state.pending_control = RelayItem::from_control(self.namespace, control)
+            .and_then(|item| item.encode())
+            .map_err(|_| Failure::Invalid)?;
+        self.save(host, None, None).await?;
+        Ok(true)
+    }
+    /// Merge authenticated local streams by epoch. An older committed message
+    /// must reach the relay before the control retiring its epoch, while a
+    /// newer message waits for its prerequisite control. This cannot establish
+    /// a total order across independently publishing devices.
+    async fn pending_control_order<H: Host>(
+        &mut self,
+        host: &mut H,
+        item: &RelayItem,
+    ) -> Result<(ControlFloor, bool)> {
+        let after = self.state.control_sent.ok_or(Failure::State)?;
+        let page = host.kernel()?.encrypted_controls(after, 1).await?;
+        let control = page.records.first().ok_or(Failure::State)?;
+        let expected =
+            RelayItem::from_control(self.namespace, control).map_err(|_| Failure::State)?;
+        if expected != *item {
+            return Err(Failure::State);
+        }
+        let floor = control.floor();
+        let prior = control.prior_epoch()?;
+        if self.state.pending.is_empty() {
+            return Ok((floor, true));
+        }
+        let pending = RelayItem::decode(&self.state.pending).map_err(|_| Failure::Storage)?;
+        let page = host.kernel()?.outbox(self.state.sent, 1).await?;
+        let artifact = page
+            .records
+            .first()
+            .and_then(|entry| entry.artifact())
+            .ok_or(Failure::State)?;
+        let expected =
+            RelayItem::from_artifact(self.namespace, artifact).map_err(|_| Failure::State)?;
+        if expected != pending {
+            return Err(Failure::State);
+        }
+        // Version-2 pending controls may still exist. Drain their independent
+        // authenticated history first so an old copy cannot leapfrog a parent.
+        let control_first = match artifact.kind() {
+            OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => true,
+            _ => artifact
+                .application_epoch()?
+                .is_some_and(|epoch| epoch > prior),
+        };
+        Ok((floor, control_first))
     }
     /// One explicit bounded sync. Inbound controls are fetched and applied
     /// before outbound items are sent, so a control issued elsewhere is seen
@@ -434,19 +560,47 @@ impl Engine {
         if self.state.stopped() {
             return Ok(self.summary(false));
         }
+        if let Some(summary) = self.retry_deferred(host, context).await? {
+            return Ok(summary);
+        }
         // Exact pending ciphertext is retained before the first network effect.
         self.stage_pending(host).await?;
+        self.stage_control(host).await?;
         if let Some(summary) = self.inbound(host, context).await? {
+            return Ok(summary);
+        }
+        if let Some(summary) = self.retry_deferred(host, context).await? {
             return Ok(summary);
         }
         // At most two outgoing items per user gesture.
         for _ in 0..2 {
-            if !self.stage_pending(host).await? {
-                if self.state.pending.is_empty()
-                    && host.kernel()?.status().outbox_head > self.state.sent
-                {
+            let pending = self.stage_pending(host).await?;
+            if !pending && host.kernel()?.status().outbox_head > self.state.sent {
+                // A bounded page contained only non-relay entries. Do not
+                // advance a control past an application we have not inspected.
+                continue;
+            }
+            if self.stage_control(host).await? {
+                let raw = self.state.pending_control.clone();
+                let item = RelayItem::decode(&raw).map_err(|_| Failure::Storage)?;
+                let (floor, control_first) = self.pending_control_order(host, &item).await?;
+                if control_first {
+                    let Some(reply) = self.exchange(host, codec::OP_PUT, &raw, 46).await? else {
+                        return Ok(self.summary(false));
+                    };
+                    if codec::decode_receipt(&reply, &item).is_err() {
+                        return self.halt(host, halt::RECEIPT).await;
+                    }
+                    self.state.control_sent = Some(floor);
+                    self.state.pending_control.clear();
+                    self.state.retained =
+                        self.state.retained.checked_add(1).ok_or(Failure::State)?;
+                    self.state.success();
+                    self.save(host, None, None).await?;
                     continue;
                 }
+            }
+            if !pending {
                 break;
             }
             let item = RelayItem::decode(&self.state.pending).map_err(|_| Failure::Storage)?;
@@ -467,6 +621,49 @@ impl Engine {
             self.save(host, None, None).await?;
         }
         Ok(self.summary(false))
+    }
+    /// At most one pass over the bounded queue per call. A deferred item may
+    /// become applicable after another item in this pass; the next bounded sync
+    /// retries it again. Never evict ciphertext to create capacity.
+    async fn retry_deferred<H: Host>(
+        &mut self,
+        host: &mut H,
+        context: Context,
+    ) -> Result<Option<Summary>> {
+        for deferred in self.state.deferred.clone() {
+            self.fence(host).await?;
+            host.revalidate().await?;
+            let item = Self::read_retained(host, self.namespace, &deferred.item).await?;
+            let record = PositionedItem {
+                position: deferred.item.position,
+                item,
+            };
+            match self.apply(host, context, &record).await? {
+                Outcome::Deferred(_) => continue,
+                Outcome::Blocked(reason) => {
+                    self.state.blocked = reason;
+                    self.save(host, None, None).await?;
+                    return Ok(Some(self.summary(false)));
+                }
+                Outcome::Stop(detail) => {
+                    self.state.halt(detail);
+                    self.save(host, None, None).await?;
+                    return Ok(Some(self.summary(false)));
+                }
+                Outcome::Retain => return Err(Failure::State),
+                outcome => {
+                    self.state
+                        .deferred
+                        .retain(|d| d.item.position != record.position);
+                    self.state.blocked = 0;
+                    self.save(host, None, Some(record.position)).await?;
+                    if matches!(outcome, Outcome::Review) {
+                        return Ok(Some(self.summary(true)));
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
     /// Fetch one bounded page when nothing is staged, then apply staged
     /// records in order. Returns a summary when the sync must end early.
@@ -531,6 +728,26 @@ impl Engine {
                         record.item.encode().map_err(|_| Failure::Invalid)?,
                     ))
                 }
+                Outcome::Deferred(reason) => {
+                    if self.state.deferred.len() >= model::MAX_DEFERRED {
+                        self.state.blocked = blocked::DEFERRED_FULL;
+                        self.save(host, None, None).await?;
+                        return Ok(Some(self.summary(false)));
+                    }
+                    let encoded = record.item.encode().map_err(|_| Failure::Invalid)?;
+                    self.state
+                        .defer(
+                            model::Admission {
+                                position: record.position,
+                                kind: kind_byte(record.item.kind()),
+                                len: encoded.len() as u32,
+                                digest: record.item.digest(),
+                            },
+                            reason,
+                        )
+                        .map_err(|_| Failure::State)?;
+                    retain = Some((record.position, encoded));
+                }
                 Outcome::Blocked(reason) => {
                     if self.state.blocked != reason {
                         self.state.blocked = reason;
@@ -583,7 +800,7 @@ impl Engine {
         // Only a kernel that was actually consulted needs reopening in place.
         let mut touched = false;
         let result = match record.item.kind() {
-            OutboxKind::Application => {
+            RelayKind::Outbox(OutboxKind::Application) => {
                 if !joined {
                     Err(Verdict::Skip(refusal::PHASE))
                 } else {
@@ -591,26 +808,34 @@ impl Engine {
                     self.receive(host, context, record, now).await
                 }
             }
-            OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession => {
+            RelayKind::Control
+            | RelayKind::Outbox(
+                OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession,
+            ) => {
                 if phase != Phase::MemberJoined {
                     // Owner devices author controls; a mailbox control is
                     // never applied to the device that holds owner authority.
                     Err(Verdict::Skip(refusal::PHASE))
                 } else {
                     touched = true;
+                    let before = host.kernel()?.status().control_floor;
                     match host
                         .kernel()?
                         .apply_control(record.item.payload(), now)
                         .await
                     {
-                        Ok(_) => Ok(Outcome::Review),
+                        Ok(status) => Ok(if status.control_floor != before {
+                            Outcome::Review
+                        } else {
+                            Outcome::Applied
+                        }),
                         Err(e) => Err(classify_control(e)),
                     }
                 }
             }
             // Canonical encrypted bootstrap artifacts require dedicated,
             // user-selected admission; retain them for that explicit path.
-            OutboxKind::ContactRequest | OutboxKind::ContactInvitation => {
+            RelayKind::Outbox(OutboxKind::ContactRequest | OutboxKind::ContactInvitation) => {
                 let encoded = record.item.encode().map_err(|_| Failure::Invalid)?;
                 let admission = model::Admission {
                     position: record.position,
@@ -651,6 +876,12 @@ impl Engine {
                     host.reopen_kernel(context).await?;
                 }
                 Ok(Outcome::Blocked(reason))
+            }
+            Err(Verdict::Defer(reason)) => {
+                if touched {
+                    host.reopen_kernel(context).await?;
+                }
+                Ok(Outcome::Deferred(reason))
             }
             Err(Verdict::Stop(detail)) => {
                 if touched {
@@ -694,5 +925,31 @@ enum Outcome {
     Review,
     Retain,
     Blocked(u8),
+    Deferred(u8),
     Stop(u8),
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    #[test]
+    fn future_epoch_and_ahead_ratchet_are_retryable_but_past_is_terminal() {
+        assert!(matches!(
+            classify_receive(KernelError::FutureEpoch),
+            Verdict::Defer(blocked::FUTURE_EPOCH)
+        ));
+        assert!(matches!(
+            classify_receive(KernelError::RatchetGap { past: false }),
+            Verdict::Defer(blocked::RATCHET)
+        ));
+        assert!(matches!(
+            classify_receive(KernelError::RatchetGap { past: true }),
+            Verdict::Skip(refusal::RATCHET)
+        ));
+        assert!(matches!(
+            classify_control(KernelError::ControlGap),
+            Verdict::Defer(blocked::CONTROL)
+        ));
+    }
 }

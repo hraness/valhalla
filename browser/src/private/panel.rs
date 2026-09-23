@@ -383,6 +383,7 @@ pub fn clear_sensitive_state() {
         "private-output-label",
         "private-secret-label",
         "private-inbox-content",
+        "private-outbox-acceptances",
         "private-control-select",
         "private-proof-select",
         "private-evidence",

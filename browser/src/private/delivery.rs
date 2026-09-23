@@ -218,6 +218,8 @@ impl Delivery {
             context,
             sent: s.sent,
             cursor: s.cursor,
+            fetched: s.fetched,
+            deferred: s.deferred,
             retained: s.retained,
             received: s.received,
             attempts: s.attempts,

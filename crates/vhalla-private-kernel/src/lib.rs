@@ -258,6 +258,20 @@ pub struct CommittedOutbox {
     pub(crate) bytes: Vec<u8>,
 }
 impl CommittedOutbox {
+    /// MLS epoch of an authenticated retained application artifact. This is
+    /// local scheduling metadata, not a claim that a remote item is trusted.
+    /// Control delivery must not overtake an earlier-epoch pending application.
+    pub fn application_epoch(&self) -> Result<Option<u64>> {
+        if self.kind != OutboxKind::Application {
+            return Ok(None);
+        }
+        use tls_codec::Deserialize as _;
+        let message = openmls::prelude::MlsMessageIn::tls_deserialize_exact(&self.bytes)
+            .map_err(|_| Error::Encoding)?
+            .try_into_protocol_message()
+            .map_err(|_| Error::Encoding)?;
+        Ok(Some(message.epoch().as_u64()))
+    }
     /// Local immutable outbox position; does not acknowledge receipt by a peer.
     pub fn sequence(&self) -> u64 {
         self.sequence

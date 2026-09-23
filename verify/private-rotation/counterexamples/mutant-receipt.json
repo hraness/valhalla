@@ -1,0 +1,30 @@
+[
+  {
+    "state": 1,
+    "tlc_text": "<Initial predicate>\n/\\ pending = {}\n/\\ receiptGeneration = (a :> 0 @@ b :> 0)\n/\\ jobGeneration = (a :> 0 @@ b :> 0)\n/\\ frozenHead = {}\n/\\ oldReadable = TRUE\n/\\ generation = 0\n/\\ fenced = FALSE\n/\\ spent = 0\n/\\ prepared = FALSE\n/\\ stored = {}\n/\\ retained = {}\n/\\ created = {}"
+  },
+  {
+    "state": 2,
+    "tlc_text": "<Queue line 16, col 13 to line 21, col 70 of module PrivateRotation>\n/\\ pending = {a}\n/\\ receiptGeneration = (a :> 0 @@ b :> 0)\n/\\ jobGeneration = (a :> 0 @@ b :> 0)\n/\\ frozenHead = {}\n/\\ oldReadable = TRUE\n/\\ generation = 0\n/\\ fenced = FALSE\n/\\ spent = 1\n/\\ prepared = FALSE\n/\\ stored = {}\n/\\ retained = {}\n/\\ created = {a}"
+  },
+  {
+    "state": 3,
+    "tlc_text": "<Store line 26, col 13 to line 31, col 52 of module PrivateRotation>\n/\\ pending = {a}\n/\\ receiptGeneration = (a :> 0 @@ b :> 0)\n/\\ jobGeneration = (a :> 0 @@ b :> 0)\n/\\ frozenHead = {}\n/\\ oldReadable = TRUE\n/\\ generation = 0\n/\\ fenced = FALSE\n/\\ spent = 1\n/\\ prepared = FALSE\n/\\ stored = {a}\n/\\ retained = {}\n/\\ created = {a}"
+  },
+  {
+    "state": 4,
+    "tlc_text": "<Fence line 37, col 10 to line 40, col 81 of module PrivateRotation>\n/\\ pending = {a}\n/\\ receiptGeneration = (a :> 0 @@ b :> 0)\n/\\ jobGeneration = (a :> 0 @@ b :> 0)\n/\\ frozenHead = {a}\n/\\ oldReadable = TRUE\n/\\ generation = 0\n/\\ fenced = TRUE\n/\\ spent = 1\n/\\ prepared = FALSE\n/\\ stored = {a}\n/\\ retained = {}\n/\\ created = {a}"
+  },
+  {
+    "state": 5,
+    "tlc_text": "<Retain line 32, col 14 to line 36, col 71 of module PrivateRotation>\n/\\ pending = {}\n/\\ receiptGeneration = (a :> 0 @@ b :> 0)\n/\\ jobGeneration = (a :> 0 @@ b :> 0)\n/\\ frozenHead = {a}\n/\\ oldReadable = TRUE\n/\\ generation = 0\n/\\ fenced = TRUE\n/\\ spent = 1\n/\\ prepared = FALSE\n/\\ stored = {a}\n/\\ retained = {a}\n/\\ created = {a}"
+  },
+  {
+    "state": 6,
+    "tlc_text": "<PrepareCutover line 41, col 19 to line 46, col 53 of module PrivateRotation>\n/\\ pending = {}\n/\\ receiptGeneration = (a :> 0 @@ b :> 0)\n/\\ jobGeneration = (a :> 0 @@ b :> 0)\n/\\ frozenHead = {a}\n/\\ oldReadable = TRUE\n/\\ generation = 0\n/\\ fenced = TRUE\n/\\ spent = 1\n/\\ prepared = TRUE\n/\\ stored = {a}\n/\\ retained = {a}\n/\\ created = {a}"
+  },
+  {
+    "state": 7,
+    "tlc_text": "<Cutover line 52, col 12 to line 59, col 89 of module PrivateRotation>\n/\\ pending = {}\n/\\ receiptGeneration = (a :> 1 @@ b :> 0)\n/\\ jobGeneration = (a :> 0 @@ b :> 0)\n/\\ frozenHead = {a}\n/\\ oldReadable = TRUE\n/\\ generation = 1\n/\\ fenced = FALSE\n/\\ spent = 1\n/\\ prepared = FALSE\n/\\ stored = {a}\n/\\ retained = {a}\n/\\ created = {a}"
+  }
+]
