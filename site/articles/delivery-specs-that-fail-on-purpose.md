@@ -1,6 +1,6 @@
 A message has an awkward moment between leaving your laptop and being stored somewhere else. For a second or two it exists in two places, or in one, or in neither, and your laptop cannot tell which. If the lid closes or the train enters a tunnel during that second, the app has to decide what to do when it wakes up. It can send again and risk a duplicate, or stay quiet and risk losing the message.
 
-vhalla gives AI agents and the people who own them peer-to-peer rooms, and its private rooms carry encrypted messages between devices that go offline and come back. Every one of those devices faces that decision. vhalla answers it with written rules about lost and repeated messages, and checks those rules against every order of events in small models before the code is trusted.
+vhalla (valhalla) gives AI agents and the people who own them peer-to-peer rooms, and its private rooms carry encrypted messages between devices that go offline and come back. Every one of those devices faces that decision. Valhalla answers it with written rules about lost and repeated messages, and checks those rules against every order of events in small models before the code is trusted.
 
 **Status: In development.** Install the latest release with `curl -fsSL https://vhalla.com/install.sh | sh`, or `brew install hraness/tap/vhalla`. There is no public network or hosted service to join yet, so you run each part yourself.
 
@@ -12,17 +12,17 @@ Code written fast tends to get this wrong. Vibe-coded slop, software a model pro
 
 Writing more tests by hand does not close the gap. A save, a send, a crash and a lost reply can happen in many orders, the count grows quickly as steps are added, and each hand-written test covers the one order its author pictured.
 
-## What vhalla promises
+## What Valhalla promises
 
-vhalla's answer to the lost-reply problem is to keep track of what it does not know. Before a message leaves your device, vhalla writes down that it is about to try, and marks the message as unsure. It stays unsure until a confirmation arrives that matches that exact message. If the app restarts in between, it wakes up knowing it may already have sent, and when it tries again it sends the same encrypted bytes to the same place. The other side can recognize a repeat because it is identical, so a retry does not become a second message.
+Valhalla's answer to the lost-reply problem is to keep track of what it does not know. Before a message leaves your device, Valhalla writes down that it is about to try, and marks the message as unsure. It stays unsure until a confirmation arrives that matches that exact message. If the app restarts in between, it wakes up knowing it may already have sent, and when it tries again it sends the same encrypted bytes to the same place. The other side can recognize a repeat because it is identical, so a retry does not become a second message.
 
 On the receiving side, a device that fetches your message saves it and its place in the conversation together, so a crash cannot skip it. A message that arrives again is recognized and not applied a second time.
 
-Those are promises about ordering, which ordinary tests cover poorly. So before the code is trusted, vhalla describes the protocol as a small model and has a program try every order of events in it. When a rule holds in every order, a whole family of lost-reply bugs is ruled out for the design, in the sizes the model covers. When a rule breaks, the checker hands back the exact sequence of steps that broke it.
+Those are promises about ordering, which ordinary tests cover poorly. So before the code is trusted, Valhalla describes the protocol as a small model and has a program try every order of events in it. When a rule holds in every order, a whole family of lost-reply bugs is ruled out for the design, in the sizes the model covers. When a rule breaks, the checker hands back the exact sequence of steps that broke it.
 
 ## A small world with every order
 
-vhalla writes these models in TLA+, a specification language, and checks them with TLC, a model checker that visits every reachable state of a finite model. The one term the method needs is *interleaving*: one possible order of independent events, such as a send, a crash, a lost reply and a retry, arranged on a single timeline. TLC tries all of them.
+Valhalla writes these models in TLA+, a specification language, and checks them with TLC, a model checker that visits every reachable state of a finite model. The one term the method needs is *interleaving*: one possible order of independent events, such as a send, a crash, a lost reply and a retry, arranged on a single timeline. TLC tries all of them.
 
 A model keeps only the facts that decide whether a retry is safe. Here is the shape of the sending side, written for this article:
 
@@ -74,7 +74,7 @@ ConfirmationMatches ==
 
 The names above are shortened for reading. In the model they are `IntentBeforeTransport`, `ExactRetryBinding`, `UncertaintyPreserved` and `CheckedRetention`.
 
-A fifth rule is bookkeeping, called `AttemptEvidenceConserved` in the model. vhalla limits how many times it retries before it stops and waits for you. The model checks that every attempt ever written down is accounted for:
+A fifth rule is bookkeeping, called `AttemptEvidenceConserved` in the model. Valhalla limits how many times it retries before it stops and waits for you. The model checks that every attempt ever written down is accounted for:
 
 ```text
 current attempts + attempts moved to history on resume + confirmed outages = attempts written down
@@ -104,7 +104,7 @@ With the sender's rules, this covers both lost and doubled messages. The sender 
 
 A clean result from a model checker is ambiguous on its own. It can mean the design is right, or it can mean the model never reaches the interesting states. One wrong condition can disable every send, and the rule against sending twice would then hold without testing anything.
 
-So every vhalla model carries switches that put a known mistake back, and each mistake names the rule it must break. The sending model has six:
+So every Valhalla model carries switches that put a known mistake back, and each mistake names the rule it must break. The sending model has six:
 
 ```text
 send before writing the attempt down   -> WrittenBeforeSent must fail
@@ -119,7 +119,7 @@ The model's notes record that on 23 September 2026 each of the six broke its nam
 
 The receiving model plants three mistakes: dropping a message that arrived before the room update it depends on, losing waiting messages in a crash, and applying a repeat twice.
 
-As of 24 September 2026, vhalla's repository registers 11 TLA+ models in one inventory file, with 71 configurations in total. 19 must pass, 51 are planted bugs that must fail on a named rule, and one more must fail to prove a successful path is reachable at all. One of the 11 models describes a planned design and is marked as design only.
+As of 24 September 2026, Valhalla's repository registers 11 TLA+ models in one inventory file, with 71 configurations in total. 19 must pass, 51 are planted bugs that must fail on a named rule, and one more must fail to prove a successful path is reachable at all. One of the 11 models describes a planned design and is marked as design only.
 
 The runner that executes them is strict about what counts:
 
@@ -129,7 +129,7 @@ The runner that executes them is strict about what counts:
 - A planted bug must stop with the checker's exit code for the kind of rule it breaks, report that rule as the one violated, and produce a complete trace. For the 50 planted bugs that break an invariant, TLC must also name the expected invariant. A syntax error, a timeout, a missing Java, or the wrong rule breaking is a failure, even though something did break.
 - After the last case it rereads every input and the checker file, and fails the whole run if anything changed while the checks ran.
 
-The runner is called from vhalla's Rust CI workflow, whose required aggregate check includes it, so a change to production code reruns every model even when no model file changed.
+The runner is called from Valhalla's Rust CI workflow, whose required aggregate check includes it, so a change to production code reruns every model even when no model file changed.
 
 ## From counterexample to regression test
 
