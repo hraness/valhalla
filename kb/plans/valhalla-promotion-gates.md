@@ -26,7 +26,7 @@ Platonik adapter, `vhalla-game-platonik`, the `platonik-core` dependency and
 `vhalla game replay` were removed on 2026-09-22. The standalone `vhalla-witness`
 VM and engine-independent consensus tags remain. Clankdar puzzle exchange is
 the selected optional consumer, with no membership or tool authority attached
-to a solve.
+to a solve. Private rooms are deployed only on machines participants control, a laptop or a server, with no Hraness-hosted relay or browser gateway; [[plans/valhalla-private-rooms-native-only|the native-only plan]] records that decision and the server-host work it implies.
 
 Private MLS integration now has a maintained kernel, durable encrypted native
 and browser state, authenticated TLS relay delivery and a bounded MCP interface
