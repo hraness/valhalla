@@ -1,6 +1,7 @@
 import { docs, docKindLabels, type DocPage, type DocKind } from './pages.ts';
 import { compare, useCases } from './compare.ts';
 import { writing } from './writing.ts';
+import { socialCardAlt } from './social-cards.ts';
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const KIND_ORDER: DocKind[] = ['tutorial', 'how-to', 'reference', 'explanation'];
 const docHub = docs.find(page => !page.slug)!;
@@ -20,9 +21,9 @@ type Collection = {
 };
 
 export const collections: Record<string, Collection> = {
-  docs: { base: '/docs/', label: 'Documentation', pages: orderedDocs, href: docHref, titleSuffix: ' — vhalla documentation', articleType: 'TechArticle', ogImage: 'og-docs.png' },
-  compare: { base: '/compare/', label: 'Compare', pages: compare, href: compareHref, titleSuffix: ' — vhalla', articleType: 'Article', ogImage: 'og-compare.png' },
-  writing: { base: '/writing/', label: 'Writing', pages: writing, href: writingHref, titleSuffix: ' — vhalla', articleType: 'Article', ogImage: 'og-writing.png' },
+  docs: { base: '/docs/', label: 'Documentation', pages: orderedDocs, href: docHref, titleSuffix: ' · vhalla documentation', articleType: 'TechArticle', ogImage: 'og-docs.png' },
+  compare: { base: '/compare/', label: 'Compare', pages: compare, href: compareHref, titleSuffix: ' · vhalla', articleType: 'Article', ogImage: 'og-compare.png' },
+  writing: { base: '/writing/', label: 'Writing', pages: writing, href: writingHref, titleSuffix: ' · vhalla', articleType: 'Article', ogImage: 'og-writing.png' },
 };
 
 const docsNav = (current: DocPage) => {
@@ -42,6 +43,8 @@ const exploreNav = (current: DocPage) =>
   `<nav aria-label="Explore"><p class="nav-label">Explore</p><a href="/docs/">Documentation</a><a href="/compare/">Compare</a><a href="/writing/">Writing</a><a href="/use-cases/"${current === useCases ? ' aria-current="page"' : ''}>Use cases</a><a href="/docs/status/">Readiness</a><a class="nav-source" href="https://github.com/hraness/valhalla">View source ↗</a></nav>`;
 
 const org = { '@type': 'Organization', name: 'Hraness', url: 'https://hraness.com' };
+// Share titles drop a heading's closing period before the site name.
+const shareTitle = (page: DocPage) => `${page.title.replace(/\.$/, '')} · vhalla`;
 const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }[], type: string) => JSON.stringify({
   '@context': 'https://schema.org',
   '@graph': [
@@ -56,13 +59,15 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
     .replace('data-hraness-pattern="cells"', 'data-hraness-pattern="none"')
     .replace(/<title>.*?<\/title>/, `<title>${escape(opts.title)}</title>`)
     .replace(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${escape(page.summary)}">`)
-    .replace(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${escape(page.title)} — vhalla">`)
+    .replace(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${escape(shareTitle(page))}">`)
     .replace(/<meta property="og:description" content="[^"]*">/, `<meta property="og:description" content="${escape(page.summary)}">`)
     .replace(/<meta property="og:url" content="[^"]*">/, `<meta property="og:url" content="${url}">`)
     .replace(/<meta property="og:image" content="[^"]*">/, `<meta property="og:image" content="https://vhalla.com/${opts.ogImage}">`)
-    .replace(/<meta name="twitter:title" content="[^"]*">/, `<meta name="twitter:title" content="${escape(page.title)} — vhalla">`)
+    .replace(/<meta name="twitter:title" content="[^"]*">/, `<meta name="twitter:title" content="${escape(shareTitle(page))}">`)
     .replace(/<meta name="twitter:description" content="[^"]*">/, `<meta name="twitter:description" content="${escape(page.summary)}">`)
     .replace(/<meta name="twitter:image" content="[^"]*">/, `<meta name="twitter:image" content="https://vhalla.com/${opts.ogImage}">`)
+    .replace(/<meta property="og:image:alt" content="[^"]*">/, `<meta property="og:image:alt" content="${escape(socialCardAlt(opts.ogImage))}">`)
+    .replace(/<meta name="twitter:image:alt" content="[^"]*">/, `<meta name="twitter:image:alt" content="${escape(socialCardAlt(opts.ogImage))}">`)
     .replace(/<link rel="canonical" href="[^"]*">/, `<link rel="canonical" href="${url}">`)
     .replace(/\s*<script type="application\/ld\+json">.*?<\/script>/, `\n    <script type="application/ld+json">${jsonLd(page, url, opts.trail, opts.articleType)}</script>`);
   const header = template.match(/<header class="masthead[\s\S]*?<\/header>\n/)?.[0];
@@ -76,7 +81,7 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
   <details class="mobile-doc-nav"><summary>${escape(opts.navTitle)}${page.slug ? ` · ${escape(page.kicker)}` : ''}</summary>${opts.nav}</details>
   <div class="docs-layout"><aside class="doc-sidebar">${opts.nav}</aside><main id="main" class="doc-main"><div class="doc-header"><p class="eyebrow">${escape(page.kicker)}</p><h1>${escape(page.title)}</h1><p class="doc-lede">${escape(page.summary)}</p></div><article class="doc-content">${content}</article>
   <nav class="doc-pagination" aria-label="Previous and next pages">${prev ? `<a href="${opts.siblingHref(prev)}"><small>Previous</small>← ${escape(prev.kicker)}</a>` : '<span></span>'}${next ? `<a href="${opts.siblingHref(next)}"><small>Next</small>${escape(next.kicker)} →</a>` : '<span></span>'}</nav>
-  <p class="doc-updated">${escape(opts.updatedLabel)} · 21 September 2026 · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
+  <p class="doc-updated">${escape(opts.updatedLabel)} · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
   <div class="project-footer"><p>Rooms for agents. Room for people.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 
@@ -131,14 +136,14 @@ export function renderWriting(page: DocPage, template: string): string {
 export function renderUseCases(template: string): string {
   return render(useCases, template, {
     url: 'https://vhalla.com/use-cases/',
-    title: useCases.metaTitle ?? `${useCases.kicker} — vhalla`,
+    title: useCases.metaTitle ?? `${useCases.kicker} · vhalla`,
     articleType: 'Article',
     trail: [{ name: 'vhalla', url: 'https://vhalla.com/' }, { name: 'Use cases', url: 'https://vhalla.com/use-cases/' }],
     nav: exploreNav(useCases),
     navTitle: 'Explore',
     siblings: [useCases],
     siblingHref: () => '/use-cases/',
-    updatedLabel: 'Working shapes',
+    updatedLabel: 'Use cases',
     ogImage: 'og-usecases.png',
   });
 }

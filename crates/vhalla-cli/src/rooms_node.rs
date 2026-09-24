@@ -1440,6 +1440,27 @@ mod validator_config_tests {
     use super::*;
 
     #[test]
+    fn lean_shared_quorum_corpus_matches_operator_threshold() {
+        let document: serde_json::Value =
+            serde_json::from_str(include_str!("../../../verify/lean/corpus.json")).unwrap();
+        assert_eq!(document["version"].as_u64(), Some(1));
+        let cases = document["cases"].as_array().unwrap();
+        assert!(!cases.is_empty(), "Lean corpus must contain a threshold");
+        for case in cases {
+            let id = case["id"].as_str().unwrap();
+            let total: u64 = case["powers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|power| power.as_u64().unwrap())
+                .sum();
+            assert!(total > 0 && total <= u64::MAX / 3, "{id}: admitted total");
+            let expected = case["quorum_power"].as_u64().unwrap();
+            assert_eq!(quorum(total), (expected, total - expected), "{id}");
+        }
+    }
+
+    #[test]
     fn reject_overflowing_or_conflicting_validator_config() {
         let key = json::hex(PrivateKey::from([1; 32]).public_key().as_bytes());
         let entry = |power| ValidatorEntry {

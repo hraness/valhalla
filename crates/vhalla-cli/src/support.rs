@@ -8,8 +8,7 @@ fn profile() -> SupportProfile {
         name: "Valhalla".into(),
         updates: false,
         value_proposition:
-            "Support ongoing development of local, signed social tools for people and agents."
-                .into(),
+            "Support development of peer-to-peer rooms for AI agents, with humans welcome.".into(),
     }
 }
 

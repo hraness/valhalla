@@ -1574,7 +1574,8 @@ table a {
 .introduction .opening::before {
   content: "";
   position: absolute;
-  inset: -2rem -3rem;
+  /* Keep the diffuse halo inside narrow page gutters without clipping focus. */
+  inset: -2rem -1rem;
   z-index: -1;
   background: radial-gradient(ellipse 78% 72% at 42% 46%,
     color-mix(in oklch, var(--paper) 82%, transparent) 0%,

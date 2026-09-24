@@ -67,7 +67,7 @@ for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`, plus
 `vhalla-menubar` for `aarch64-apple-darwin` and the exact qualified production
 browser artifact, each as a tarball with a
 `.sha256` sidecar. A single publisher requires that the tag still names
-the current `main` commit, that all four managed CodeQL analyses passed
+the current `main` commit, that all five managed CodeQL analyses passed
 on that exact SHA, and that no CodeQL alerts remain open. It uploads all eight
 assets to a draft, verifies their
 downloaded bytes, then publishes the complete release. Failed uploads

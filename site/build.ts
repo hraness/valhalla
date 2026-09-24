@@ -7,6 +7,7 @@ import { docs } from "./pages.ts";
 import { compare } from "./compare.ts";
 import { renderDoc, renderCompare, renderUseCases, renderWriting } from "./docs.ts";
 import { writing } from "./writing.ts";
+import { renderHome } from "./home.ts";
 const root = import.meta.dir;
 const output = resolve(root, "dist");
 const kit = dirname(fileURLToPath(import.meta.resolve("@hraness/design-kit/paper-theme.css")));
@@ -16,7 +17,7 @@ for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "o
 const html = await readFile(resolve(root, "index.html"), "utf8");
 const footerMarker = "<!-- hraness-site-footer -->";
 if (html.split(footerMarker).length !== 2) throw new Error("Expected one shared footer slot.");
-await writeFile(resolve(output, "index.html"), html.replace(footerMarker, supportFooter()));
+await writeFile(resolve(output, "index.html"), renderHome(html).replace(footerMarker, supportFooter()));
 for (const page of docs) {
   const target = resolve(output, "docs", page.slug);
   await mkdir(target, { recursive: true });
