@@ -957,6 +957,158 @@
           "historical_trace": "verify/private-control/counterexamples/mutant-clear-quarantine.json"
         }
       ]
+    },
+    {
+      "id": "private-admission",
+      "module": "verify/private-admission/PrivateAdmission.tla",
+      "claim": "Retained-request admission consumes worker-local review permission before confirmation checks; exact consent, ciphertext, current membership, captured validity and storage custody bind accepted admission.",
+      "status": "implementation-correspondence",
+      "bounds": "Two worker lifetimes, two reviews, two item identities, one intervening request, one membership-field change, one competing publication and three clock values. A separate expected-failing invariant witnesses successful admission.",
+      "assumptions": [
+        "Authenticated request/offer decoding, distinct nonzero worker session nonces and exact symbolic bytes/digests abstract cryptography.",
+        "Broker requests are serialized; failed or overlapping work terminates custody. Session retained lookup precedes Admission permission consumption.",
+        "Atomic storage CAS and authenticated kernel readback are assumed, not proved. Validity is checked against captured confirm time, not physical publication time. No liveness claim."
+      ],
+      "sources": [
+        {
+          "path": "browser/src/private/admission.rs",
+          "symbols": [
+            "Admission::review",
+            "Admission::before",
+            "Admission::confirm"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "browser/src/private/session.rs",
+          "symbols": [
+            "Session::execute",
+            "Session::execute_selected"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "browser/src/private/worker.rs",
+          "symbols": [
+            "Broker::dispatch",
+            "Broker::current",
+            "Broker::dead"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "browser/src/private/types.rs",
+          "symbols": [
+            "AdmissionConsent"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "crates/vhalla-private-kernel/src/engine.rs",
+          "symbols": [
+            "Kernel::load_state",
+            "Kernel::publish"
+          ],
+          "role": "production"
+        },
+        {
+          "path": "browser/tests/private_delivery_engine.rs",
+          "symbols": [
+            "admission_review_is_read_only_and_confirm_consumes_exact_request_once",
+            "admission_modified_confirmation_or_retained_item_cannot_rebind_review",
+            "admission_sync_read_and_reload_invalidate_worker_held_consent",
+            "admission_membership_change_after_review_requires_fresh_consent",
+            "admission_wrong_recipient_and_expired_offer_never_publish",
+            "admission_refused_confirmation_consumes_permission_before_retry",
+            "admission_failed_second_review_invalidates_prior_permission",
+            "admission_cancellation_during_membership_load_cannot_reuse_permission",
+            "admission_competing_custody_refuses_without_restoring_consumed_permission",
+            "admission_rival_publication_after_membership_snapshot_refuses_final_cas"
+          ],
+          "role": "regression"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/private-admission/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "witness-admitted",
+          "config": "verify/private-admission/witness-admitted.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "NoSuccessfulAdmission"
+          }
+        },
+        {
+          "id": "mutant-intervene",
+          "config": "verify/private-admission/mutant-intervene.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ConsentLifetime"
+          }
+        },
+        {
+          "id": "mutant-reload",
+          "config": "verify/private-admission/mutant-reload.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ConsentLifetime"
+          }
+        },
+        {
+          "id": "mutant-consume",
+          "config": "verify/private-admission/mutant-consume.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ConsumedBeforeCheck"
+          }
+        },
+        {
+          "id": "mutant-packet",
+          "config": "verify/private-admission/mutant-packet.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ExactReview"
+          }
+        },
+        {
+          "id": "mutant-ciphertext",
+          "config": "verify/private-admission/mutant-ciphertext.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ExactReview"
+          }
+        },
+        {
+          "id": "mutant-membership",
+          "config": "verify/private-admission/mutant-membership.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "CurrentMembership"
+          }
+        },
+        {
+          "id": "mutant-expiry",
+          "config": "verify/private-admission/mutant-expiry.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "LiveAtConfirmation"
+          }
+        },
+        {
+          "id": "mutant-custody",
+          "config": "verify/private-admission/mutant-custody.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ExclusivePublication"
+          }
+        }
+      ]
     }
   ]
 }

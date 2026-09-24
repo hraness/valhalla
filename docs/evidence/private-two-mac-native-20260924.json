@@ -1,0 +1,101 @@
+{
+  "schema": "valhalla.private-two-device-summary.v1",
+  "status": "native-subset-pass",
+  "run_id": "two-mac-native-20260924-r2",
+  "scope": "four synthetic applications over two physical Macs and Tailcat; no browser, sleep, reboot, soak, production or route-type claim",
+  "started_utc": "2026-09-24T04:15:04.122475+00:00",
+  "finished_utc": "2026-09-24T04:16:16.037919+00:00",
+  "elapsed_seconds": 71.915,
+  "source_receipt_sha256": "6f7159b8d77fe3db07b06017471c284de671d684efe2e69073524a5ce0b57983",
+  "ai_review_receipt_sha256": "c73ff63d7f0af209be249dca0cdc9c540fa83f5ad73e1bb18fabd38569606a2e",
+  "native_source_commit": "1cff4f5fc202b1a1a987d6ae52672188956774b0",
+  "native_binary_sha256": "ac18f7dbeefa147b19d983710c2c722795a25acd1dbfd1c3d23643a39ee32bad",
+  "tailcat_version": "0.7.0",
+  "tailcat_binary_sha256": "93b99d61b485ee91d779eb8edf1d035a1413dc39c763a003ccfea00116782919",
+  "coordinator_sha256": "dca7e0ec2cab53298905a626d3ac6c3480f4f5993d9d00c44137d7d945bbf61f",
+  "route": "Two physical arm64 Macs on one LAN over Tailcat. Direct versus DERP unobserved.",
+  "messages": [
+    {
+      "case": "online-a-to-b",
+      "sender": "a",
+      "recipient": "b",
+      "ciphertext_digest": "4f977d57ab4c36f4001b3275b5203b0e014fb2bd1441c78c4d08142cb952a7c5",
+      "outbox_sequence": 3,
+      "relay_position": 4,
+      "inbox_sequence": 1,
+      "queue_reply_to_receiver_observed_seconds": 2.329,
+      "queue_reply_to_claim_observed_seconds": 5.331
+    },
+    {
+      "case": "online-b-to-a",
+      "sender": "b",
+      "recipient": "a",
+      "ciphertext_digest": "53d460e7e05d15bf4966f7d865c0496e91bd278ae33c227ab6231ce94f3f92a4",
+      "outbox_sequence": 3,
+      "relay_position": 6,
+      "inbox_sequence": 2,
+      "queue_reply_to_receiver_observed_seconds": 10.779,
+      "queue_reply_to_claim_observed_seconds": 21.311
+    },
+    {
+      "case": "offline-a-to-b-1",
+      "sender": "a",
+      "recipient": "b",
+      "ciphertext_digest": "1f69744418488d209841b05fba6725ffdf2f47e4922dfb5571ab061d0e02d476",
+      "outbox_sequence": 5,
+      "relay_position": 8,
+      "inbox_sequence": 3,
+      "queue_reply_to_receiver_observed_seconds": 6.162,
+      "queue_reply_to_claim_observed_seconds": 19.275
+    },
+    {
+      "case": "offline-a-to-b-2",
+      "sender": "a",
+      "recipient": "b",
+      "ciphertext_digest": "f0765c5dc9a891f477b0a61c3359baee3c8a77ac1496f21ff4720961d0913d28",
+      "outbox_sequence": 6,
+      "relay_position": 9,
+      "inbox_sequence": 4,
+      "queue_reply_to_receiver_observed_seconds": 5.138,
+      "queue_reply_to_claim_observed_seconds": 18.251
+    }
+  ],
+  "checks": [
+    "Each unique synthetic body and operation matches the original prepare and sole queue request",
+    "Queue results, sender device, exact receiver body and inbox sequence match the retained receipt",
+    "Each certain relay retention position agrees across raw MCP, stopped-owner delivery snapshot and mailbox diagnostic",
+    "Each application operation occurs once in the mailbox diagnostic with Application kind and the exact retained ciphertext digest",
+    "Each signed reception claim names exactly the intended recipient device and the observed inbox sequence",
+    "Both offline messages were queued after B generation 1 closed, retained before B generation 2 launched, and had no B claim while B was stopped",
+    "B generation 2 re-read the original online message at its unchanged inbox sequence and recovered both offline messages"
+  ],
+  "custody_and_grants": {
+    "distinctApplicationAccounts": 2,
+    "distinctDeviceKeys": 2,
+    "sharedRoomAndAnchor": true,
+    "accountKeysBoundToContexts": true,
+    "retainedOwnerInspectionHasExactlyExpectedTwoMembers": true,
+    "ownerAndAnchorOwnerMatchA": true,
+    "allLaunchAndFinalStatusesMatchReviewedContextEpochRosterAndPhase": true,
+    "distinctLaunchGrants": 3,
+    "aGenerations": 1,
+    "bGenerations": 2,
+    "bGeneration2StartedAfterGeneration1Cleanup": true,
+    "budgetsNonnegative": true
+  },
+  "raw_mcp_responses_audited": 296,
+  "cleanup": {
+    "confirmed": true,
+    "errors": [],
+    "forced": false,
+    "tailcat_server": "Requested SIGTERM, observed -15 after participant cleanup; controlled termination, no graceful drain claim"
+  },
+  "limits": [
+    "No browser execution in this run",
+    "No independent relay-only or forward-only fault",
+    "No internet or DERP classification",
+    "No sleep/logout/reboot or installed-service qualification",
+    "No real-duration soak, throughput or percentile claim",
+    "Original native build, not the newer source candidate"
+  ]
+}

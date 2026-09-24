@@ -11,7 +11,9 @@ recovery and browser qualification. PR98 added six maintained TLA+ suites with
 26 cases and repaired a host recovery fence exposed by a counterexample. PR99
 closed that formal plan. Kani checks production spent-nonce logic; Verus checks
 a ledger reference implementation with sampled Rust correspondence. The Lean
-weighted-quorum experiment is checked but is not a required production proof.
+weighted-certificate proofs now have a maintained required CI check and signed
+Rust conformance cases. Their theorem applies to one fixed roster and signing
+context under honest non-equivocation; it does not prove cross-round consensus.
 See [formal rigor](../kb/plans/valhalla-formal-rigor.md) for exact claims and limits.
 
 During this continuation, PR102 expanded the maintained inventory to ten TLA+
@@ -45,12 +47,17 @@ independent production regression for each useful counterexample.
    WASM build and real browser journey. Build an exact native candidate, run a
    small smoke fixture, then the bounded load, quiet and offline scenarios.
    Retain unsuccessful evidence as well as successful evidence.
-4. **In progress — independent review and delivery.** Review the converged diff,
-   repair findings, run the required current-head aggregate CI gate, and record
-   PR/merge and artifact identities. No test waiver from earlier receipts.
-5. **Pending external qualification.** Bind the second-Mac instructions to the
-   qualified candidate. Run separate-machine pinned-relay/Tailcat and
-   sleep/wake/reboot qualification when that machine is identified and ready.
+4. **Complete — independent review and delivery.** PR101 merged as `4b08106`
+   after its current-head checks passed. Its original browser and native
+   component identities remain separate from subsequent source changes.
+5. **Partial — independent-device qualification.** Two physical Macs completed
+   native bidirectional delivery and stopped-member catch-up under a fresh
+   grant. The [portable result](evidence/private-two-mac-native-20260924.json)
+   binds the original native build and four exact application deliveries.
+   A separate [production browser journey on Mac B](evidence/private-browser-mac-b-20260924.json)
+   passed all 15 UI observations and confirmed owned process-group cleanup.
+   Its browser identities and relay ran together on Mac B; cross-device browser
+   transport, installed lifecycle and a real-duration soak remain open.
 
 ## Frozen admission contract
 
@@ -93,7 +100,9 @@ under five seconds is distinct from correctness and may fail honestly.
   passed correctness with no missed slots and 4.27-second acceptance p95.
   Investigate wakeup or bounded long-polling before promising the same latency
   after idle; preserve explicit authority and resource limits.
-- Independent-device and remote-path qualification is not yet run.
+- Native delivery and offline catch-up passed across two physical Macs on one
+  LAN. The Tailcat path was not classified as direct or DERP; browser and
+  separate transport-fault cases remain unrun.
 - A sparse 24-hour soak requires a real elapsed run and explicit grant handoffs.
   A 24-hour 1 Hz run and 10,000-message single-mailbox run exceed current bounds.
 - Mailbox/credential rotation is modeled and gated; seamless migration is not

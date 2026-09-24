@@ -1,0 +1,44 @@
+{
+  "schema": "valhalla.browser-independent-hardware-ui.v1",
+  "status": "pass",
+  "scope": "Production browser UI, gateway and TLS relay on Mac B; separate from cross-device application transport",
+  "native_source_commit": "1cff4f5fc202b1a1a987d6ae52672188956774b0",
+  "native_binary_sha256": "ac18f7dbeefa147b19d983710c2c722795a25acd1dbfd1c3d23643a39ee32bad",
+  "browser_source_tree": "b8f52e1c813b6f8bc1fd912896dd0dc66a6ac62b",
+  "browser_manifest_sha256": "f97c15531c203c36daa72cd4dfd816cb3e164a42d076d7ccff21c13b581f4978",
+  "helper_manifest_sha256": "198852a3352b36ceec9e4f4cc51f0c710cf962a3d8acdfe2eb39dba25fbff42b",
+  "remote_receipt_sha256": "d3b8463b6f4d6ee6f77128ac5d1938693c0114652c6a320756da11e0afa9eabc",
+  "facts": [
+    "oversized initial cursor refuses before creating a durable delivery profile",
+    "owner reviews exact full room/account/device/expiry and relay-retained request commitment, then explicitly confirms without downloading/reimporting the request; recipient still joins through the existing file flow",
+    "new member starts at explicit trusted admission checkpoint, excluding undecryptable prejoin history; browser profiles bind that immutable cursor",
+    "production browser worker sends exact ciphertext through HTTP gateway and authenticated TLS relay; receiver commits and queues signed acceptance without receipt loops; sender UI exposes the verified device claim without a human-read assertion",
+    "same-roster Sync invalidates actual retained admission consent inside worker custody; explicit reopen and fresh review permit the exact pending device admission",
+    "third device joins confidentially while the existing member is offline; the maintained delivery path preserves the older committed owner message before its encrypted admission control, then accepts new-epoch content without a manual control file",
+    "owner renewal publishes a control before member sync; the stale-epoch member record is durably refused and skipped at the cursor while the epoch-fresh message behind it still delivers",
+    "a real valid Send IPC control succeeds, but an otherwise valid retained consent fails inside worker custody after same-roster Sync; no panel-only guard is relied on",
+    "relay outage, real document teardown, same-profile reopen and exact retry preserve ciphertext and counters and retain the output once",
+    "wrong gateway capability locks the worker without discarding exact pending ciphertext or charged attempts/backoff; explicit reopen with corrected authority resumes once and does not renew lifetime budgets",
+    "canonical upstream authorization denial locks custody with exact charged progress retained; operator repairs host token and explicit browser reopen resumes once without resetting credits",
+    "changed profile initial cursor refuses without replacing retained state; capability is absent from durable delivery bytes",
+    "second-tab CAS ownership invalidates the prior worker before another sync; the new worker retains exact existing counters",
+    "lock during a real gateway TLS handshake terminates worker Fetch; delayed failure cannot restore UI or alter charged progress, and explicit reopen resumes exact queued ciphertext",
+    "a well-framed HTTP200 receipt with a corrupt commitment durably stops before worker termination; exact pending bytes and charged credits survive, and reopen or forced Sync cannot resume network work"
+  ],
+  "cleanup": {
+    "passed": true,
+    "owned_guardians": 32,
+    "all_groups_absent": true,
+    "forced": false,
+    "ports_free": [
+      8790,
+      10474
+    ]
+  },
+  "limits": [
+    "No cross-device browser/native transport in this run",
+    "No browser-process profile restart (document and worker restart only)",
+    "No HTTPS hosted-origin path or install-free private transport",
+    "No sleep/logout/reboot or soak"
+  ]
+}

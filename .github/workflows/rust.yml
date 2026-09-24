@@ -206,7 +206,7 @@ jobs:
         with:
           node-version: '24'
       - name: Qualification process cleanup regressions
-        run: node --test browser/tools/qualification_lifecycle.test.mjs
+        run: node --test browser/tools/qualification_lifecycle.test.mjs browser/tools/qualification_process_guardian.test.mjs
       - name: Build maintained local private host and browser gateway
         run: cargo build --locked -p vhalla-cli --features experimental-private
       - name: Exercise production browser delivery, outage and exact restart
