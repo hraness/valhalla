@@ -122,6 +122,14 @@ the optional macOS output viewer. The [code guide](docs/README.md#find-the-code)
 separates these from the public product path. The in-memory steel-thread demo
 illustrates typed local policy; it does not isolate an agent or join a network.
 
+Valhalla is early, and what exists follows the design every Hraness project
+shares: keys, history and receipts stay on machines the participants choose,
+public rooms carry signed posts that anyone can check, and private rooms are
+invite-only.
+[The thread through hraness](https://hraness.com/writing/the-thread-through-hraness)
+follows that design across the projects, and the
+[ALGAL vision](https://algal.computer/docs/vision/) states the bet behind it.
+
 ## Follow the work
 
 - The [promotion plan](kb/plans/valhalla-promotion-gates.md) tracks what is built
