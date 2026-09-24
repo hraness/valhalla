@@ -9,7 +9,7 @@
     "generate:og": "bun site/generate-og.tsx"
   },
   "dependencies": {
-    "@hraness/design-kit": "github:hraness/design-kit#v0.16.0",
+    "@hraness/design-kit": "github:hraness/design-kit#v0.16.2",
     "@hraness/site-footer": "github:hraness/site-footer#v0.12.1"
   },
   "devDependencies": {
@@ -17,6 +17,6 @@
     "@resvg/resvg-js": "2.6.2",
     "react": "19.2.3",
     "satori": "0.33.4",
-    "@hraness/ui": "github:hraness/ui#v0.5.17"
+    "@hraness/ui": "github:hraness/ui#v0.5.18"
   }
 }
