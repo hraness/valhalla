@@ -20,6 +20,8 @@ export type Article = {
   links: ArticleLink[];
   admission: ArticleAdmission;
   bodyHtml: string;
+  /** Second-level headings in order, with their rendered ids and plain source text. */
+  headings: { id: string; label: string }[];
 };
 
 const admissionFor = (slug: string): ArticleAdmission => {
@@ -28,9 +30,17 @@ const admissionFor = (slug: string): ArticleAdmission => {
   return admission;
 };
 
-const markdown = (slug: string) => Bun.markdown.html(readFileSync(new URL(`./articles/${slug}.md`, import.meta.url), 'utf8'), { headings: { ids: true } });
+/** Renders a body and pairs each `## ` heading's source text with the id the renderer gave it. */
+const markdown = (slug: string) => {
+  const source = readFileSync(new URL(`./articles/${slug}.md`, import.meta.url), 'utf8');
+  const bodyHtml = Bun.markdown.html(source, { headings: { ids: true } });
+  const ids = [...bodyHtml.matchAll(/<h2 id="([^"]+)">/g)].map(match => match[1]!);
+  const labels = [...source.replace(/^```[\s\S]*?^```/gm, '').matchAll(/^## (.+)$/gm)].map(match => match[1]!.trim());
+  if (ids.length !== labels.length) throw new Error(`Heading mismatch in site/articles/${slug}.md`);
+  return { bodyHtml, headings: ids.map((id, index) => ({ id, label: labels[index]! })) };
+};
 
-const article = (fields: Omit<Article, 'admission' | 'bodyHtml'>): Article => ({ ...fields, admission: admissionFor(fields.slug), bodyHtml: markdown(fields.slug) });
+const article = (fields: Omit<Article, 'admission' | 'bodyHtml' | 'headings'>): Article => ({ ...fields, admission: admissionFor(fields.slug), ...markdown(fields.slug) });
 
 // Further-reading links to hraness.com reference pages are added only once
 // those pages return 200 (see each record's refreshTriggers).

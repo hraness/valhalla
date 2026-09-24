@@ -231,8 +231,7 @@ export function renderArticle(article: Article, template: string): string {
     ...(indexable ? {} : { robots: 'noindex, follow' }),
     extraHead: `${articleHead}\n${feedLinks}\n    <meta property="article:published_time" content="${dayStart(article.published)}">`,
   });
-  const headings = [...article.bodyHtml.matchAll(/<h2 id="([^"]+)">(.+?)<\/h2>/g)];
-  const toc = headings.length >= 4 ? headings.slice(0, 8).map(match => ({ href: `#${match[1]}` as `#${string}`, label: match[2]!.replace(/<[^>]+>/g, '').replaceAll('&amp;', '&').replaceAll('&quot;', '"').replaceAll('&#39;', "'") })) : [];
+  const toc = article.headings.length >= 4 ? article.headings.slice(0, 8).map(heading => ({ href: `#${heading.id}` as `#${string}`, label: heading.label })) : [];
   const body = article.bodyHtml.replaceAll('<table>', '<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable table"><table>').replaceAll('</table>', '</table></div>');
   const main = renderArticleHtml({
     heading: article.title,
