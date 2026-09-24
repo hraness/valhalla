@@ -245,19 +245,33 @@ mod shape_tests {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn agent_status(_: &AgentSpec) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({"supported":false,"loaded":false,"installed":false}))
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn agent_install(_: &AgentSpec) -> Result<(), String> {
     Err("LaunchAgent installation requires macOS; use foreground serve on this platform".into())
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn agent_uninstall(_: &AgentSpec) -> Result<(), String> {
     Err("LaunchAgent removal requires macOS".into())
 }
-#[cfg(not(target_os = "macos"))]
+// Linux hosts are supervised by a per-user systemd unit through the same
+// exact-identity custody rules; see `systemd.rs`.
+#[cfg(target_os = "linux")]
+pub(super) fn status(loaded: &Loaded) -> Result<serde_json::Value, String> {
+    super::systemd::status(loaded)
+}
+#[cfg(target_os = "linux")]
+pub(super) fn install(loaded: &Loaded) -> Result<(), String> {
+    super::systemd::install(loaded)
+}
+#[cfg(target_os = "linux")]
+pub(super) fn uninstall(loaded: &Loaded) -> Result<(), String> {
+    super::systemd::uninstall(loaded)
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(super) fn status(_: &Loaded) -> Result<serde_json::Value, String> {
     agent_status(&AgentSpec {
         label: String::new(),
@@ -265,7 +279,7 @@ pub(super) fn status(_: &Loaded) -> Result<serde_json::Value, String> {
         alternates: Vec::new(),
     })
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(super) fn install(_: &Loaded) -> Result<(), String> {
     agent_install(&AgentSpec {
         label: String::new(),
@@ -273,7 +287,7 @@ pub(super) fn install(_: &Loaded) -> Result<(), String> {
         alternates: Vec::new(),
     })
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(super) fn uninstall(_: &Loaded) -> Result<(), String> {
     agent_uninstall(&AgentSpec {
         label: String::new(),
