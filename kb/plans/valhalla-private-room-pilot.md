@@ -224,8 +224,10 @@ or Dioxus requirements.
 
 - **Status:** In progress. PR #115 carries the branch and left draft at
   `e985a80`; every local gate and the four real-Chrome qualifications passed
-  on `8047ffd` and again on `c84f585` after current main (PR112, PR117) was
-  merged in (implementation log). Delivery follows `docs/main-policy.md`
+  on `8047ffd`, again on `c84f585` after current main (PR112, PR117) was
+  merged in, and the Chrome qualifications and native pilot again on
+  `b51d60b` after PR119 and the CodeQL-driven driver conversion
+  (implementation log). Delivery follows `docs/main-policy.md`
   (current-head required checks, independent agent review recorded in the PR
   body, CodeQL, conditional merge). The second-machine cases stay deferred by
   the owner until the connection is ready; sleep/logout/reboot and the sparse
@@ -608,3 +610,26 @@ or Dioxus requirements.
   pilot is the local exercise of the resolved serve path with retained
   generations; CI's browser job ran delivery, mixed pilot and panel on the
   same head.
+- Main moved a third time (PR119 records the native-only deployment
+  decision, docs and plans only); merged clean as `3f1cf59`. CodeQL then
+  held PR #115 on two "improper code sanitization" findings (alerts 459 and
+  462) in the delivery driver: page code assembled as a string with
+  `JSON.stringify`-interpolated values (the download button id and the
+  snapshot key suffix). Every input at those sites is a driver constant, but
+  the pattern is wrong and the drivers already carry an argument-passing
+  helper over `Runtime.callFunctionOn`; `b51d60b` makes the three
+  interpolating sites in the delivery driver and the two in the panel driver
+  pass the button id, input id, key suffix and expected count as call
+  arguments, so no page code is built from data. Rust inputs are unchanged
+  since `c84f585`, so the cargo lanes stand; the Node suites (38) and the
+  five Python suites passed on the converted drivers, and the four
+  real-Chrome qualifications were rerun on them (22:53–22:58 UTC, every
+  step exit 0, driver hash `6caf30cf…` as committed): delivery (16 facts, 32
+  owned children stopped), `--mixed-pilot` (3 facts, 44 stopped, refused
+  send at declared exit 1, three `direct-child` receipts),
+  `--generation-pilot` (3 facts, generation 1 at head 18 across three
+  controllers, 82 stopped) and panel `--production` (12 facts) on the same
+  bundle and CLI (`546ddef6…`, `34cadd40…`), Chrome's closure observed
+  through its log file in each. The deterministic `agent-launch` pilot
+  passed 9/9 from a git-checkout receipt for `b51d60b` on the clean
+  committed tree (35 owned children, none forced).
