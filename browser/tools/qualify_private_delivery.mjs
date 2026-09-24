@@ -361,7 +361,7 @@ async function httpsRedirectProbe(page) {
   // the capability and namespace, rather than an unrelated cross-origin block.
   const beforeHead=await head(),message=await send(page,'SYNTHETIC_HTTPS_REDIRECT_RETRY');
   const before=Buffer.from(await snapshot(page));await stopChild(gateway);
-  let redirects=0,targetRequests=0,badRequest=false;
+  let redirects=0,targetRequests=0,badRequest=false,challengedOperation;
   signal.throwIfAborted();hostile=fixtureHttpServer((request,response)=>{
     if(request.url==='/credential-redirect-target'){targetRequests++;request.resume();response.writeHead(403);response.end();return;}
     if(request.method!=='POST'||request.url!=='/private-relay/v1'||request.headers.origin!==gatewayOrigin||request.headers.authorization!=='Bearer '+browserCapability||request.headers['x-vhalla-namespace']!==namespace){badRequest=true;request.resume();response.writeHead(403);response.end();return;}
@@ -369,7 +369,13 @@ async function httpsRedirectProbe(page) {
     request.on('data',chunk=>{bytes+=chunk.length;if(bytes>300000){badRequest=true;request.destroy();return;}chunks.push(chunk);});
     request.on('end',()=>{
       const frame=Buffer.concat(chunks);
-      if(frame[4]!==1||!frame.includes(message.raw)){badRequest=true;response.writeHead(400);response.end();return;}
+      // Sync stages pending ciphertext before fetching its inbound page. Test
+      // the first authenticated Fetch whether that is PAGE or the exact PUT.
+      const framed=frame.length>=5&&frame.readUInt32BE(0)===frame.length-4;
+      const pageRequest=framed&&frame[4]===2&&frame.length===15&&frame.readBigUInt64BE(5)<=4096n&&frame.readUInt16BE(13)>=1&&frame.readUInt16BE(13)<=4;
+      const exactPut=framed&&frame[4]===1&&frame.includes(message.raw);
+      if(!pageRequest&&!exactPut){badRequest=true;response.writeHead(400);response.end();return;}
+      challengedOperation=pageRequest?'PAGE':'PUT';
       redirects++;response.writeHead(307,{location:gatewayOrigin+'/credential-redirect-target','content-length':0,'cache-control':'no-store'});response.end();
     });
   });
@@ -381,7 +387,7 @@ async function httpsRedirectProbe(page) {
   if(await head()!==beforeHead)throw Error('redirect challenge retained an item');
   await backoffWait(retained);await sync(page);
   if(await head()!==beforeHead+1)throw Error('redirect recovery lost or duplicated ciphertext');
-  httpsChecks.redirect={status:307,redirectResponses:redirects,targetRequests,capabilityAndNamespaceForwarded:false,chargedPendingPreserved:true,exactRetryRetainedOnce:true};
+  httpsChecks.redirect={status:307,challengedOperation,redirectResponses:redirects,targetRequests,capabilityAndNamespaceForwarded:false,chargedPendingPreserved:true,exactRetryRetainedOnce:true};
 }
 async function connect(page,path,create=false) {
   await setFile(page,'private-delivery-profile',path);
