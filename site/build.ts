@@ -5,7 +5,9 @@ import { createHash } from "node:crypto";
 import { supportFooter } from "./support-footer.ts";
 import { docs } from "./pages.ts";
 import { compare } from "./compare.ts";
-import { renderDoc, renderCompare, renderUseCases, renderWriting } from "./docs.ts";
+import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting } from "./docs.ts";
+import { articles } from "./articles.ts";
+import { renderAtomFeed, renderLlms, renderSitemap } from "./discovery.ts";
 import { writing } from "./writing.ts";
 import { renderHome } from "./home.ts";
 const root = import.meta.dir;
@@ -13,7 +15,9 @@ const output = resolve(root, "dist");
 const kit = dirname(fileURLToPath(import.meta.resolve("@hraness/design-kit/paper-theme.css")));
 await rm(output, { recursive: true, force: true });
 await mkdir(resolve(output, "design"), { recursive: true });
-for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "og-docs.png", "og-compare.png", "og-writing.png", "og-usecases.png", "robots.txt", "sitemap.xml", "llms.txt", "install.sh", "valhalla-mark.svg"]) await cp(resolve(root, name), resolve(output, name));
+for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "og-docs.png", "og-compare.png", "og-writing.png", "og-usecases.png", "robots.txt", "install.sh", "valhalla-mark.svg"]) await cp(resolve(root, name), resolve(output, name));
+await writeFile(resolve(output, "sitemap.xml"), renderSitemap(await readFile(resolve(root, "sitemap.xml"), "utf8")));
+await writeFile(resolve(output, "llms.txt"), renderLlms(await readFile(resolve(root, "llms.txt"), "utf8")));
 const html = await readFile(resolve(root, "index.html"), "utf8");
 const footerMarker = "<!-- hraness-site-footer -->";
 if (html.split(footerMarker).length !== 2) throw new Error("Expected one shared footer slot.");
@@ -39,12 +43,20 @@ for (const page of writing) {
   if (rendered.split(footerMarker).length !== 2) throw new Error(`Expected one footer slot: writing/${page.slug}`);
   await writeFile(resolve(target, "index.html"), rendered.replace(footerMarker, supportFooter()));
 }
+for (const article of articles) {
+  const target = resolve(output, "writing", article.slug);
+  await mkdir(target, { recursive: true });
+  const rendered = renderArticle(article, html);
+  if (rendered.split(footerMarker).length !== 2) throw new Error(`Expected one footer slot: writing/${article.slug}`);
+  await writeFile(resolve(target, "index.html"), rendered.replace(footerMarker, supportFooter()));
+}
+await writeFile(resolve(output, "writing", "feed.xml"), renderAtomFeed());
 await mkdir(resolve(output, "use-cases"), { recursive: true });
 const useCasesHtml = renderUseCases(html);
 if (useCasesHtml.split(footerMarker).length !== 2) throw new Error("Expected one footer slot: use-cases");
 await writeFile(resolve(output, "use-cases", "index.html"), useCasesHtml.replace(footerMarker, supportFooter()));
 await cp(fileURLToPath(import.meta.resolve("@hraness/site-footer/stylex.css")), resolve(output, "footer.css"));
-const files = ["paper-theme.css", "palette-bridge.css", "palette-system.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css"];
+const files = ["paper-theme.css", "palette-bridge.css", "palette-system.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css", "plain-site.css", "plain-publication.css"];
 for (const name of files) await cp(resolve(kit, name), resolve(output, "design", name));
 // Keep the exact web fonts and license/provenance files, not native OTF copies
 // or the embedded TypeScript font data used only by social-card generators.
@@ -65,4 +77,4 @@ const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts"), r
 if (!result.success) throw new AggregateError(result.logs, "Script bundle failed");
 const pkg = JSON.parse(await readFile(resolve(kit, "../package.json"), "utf8"));
 await writeFile(resolve(output, "design/source.json"), JSON.stringify({ package: pkg.name, version: pkg.version, files: Object.fromEntries(await Promise.all(files.map(async name => [name, createHash("sha256").update(await readFile(resolve(output, "design", name))).digest("hex")]))) }, null, 2));
-console.log(`Built Vhalla home, ${docs.length} documentation pages, ${compare.length} comparisons, ${writing.length} writing pages and use cases with ${pkg.name}@${pkg.version}.`);
+console.log(`Built Vhalla home, ${docs.length} documentation pages, ${compare.length} comparisons, ${writing.length} writing pages, ${articles.length} articles and use cases with ${pkg.name}@${pkg.version}.`);
