@@ -410,17 +410,25 @@ mod mac {
         }
         Ok(true)
     }
+    /// One read of the installed template: `None` when absent, `Some(true)`
+    /// for the exact current shape, `Some(false)` for an admissible earlier
+    /// shape. Foreign content refuses. Decisions derive from these bytes, never
+    /// from a second read.
+    fn installed_shape(spec: &AgentSpec, path: &Path) -> Result<Option<bool>, String> {
+        let uid = rustix::process::geteuid().as_raw();
+        if !custody::private_file_present(path, uid, 65536).map_err(|_| REFUSED)? {
+            return Ok(None);
+        }
+        let bytes = custody::read_private_file(path, uid, 65536).map_err(|_| REFUSED)?;
+        if !ours(spec, &bytes) {
+            return Err("refusing a foreign or changed LaunchAgent at the selected label".into());
+        }
+        Ok(Some(bytes == spec.plist.as_bytes()))
+    }
     /// Whether the installed template is the exact current shape rather than
     /// an admissible earlier one. Absent or foreign files are not exact.
     fn exact(spec: &AgentSpec, path: &Path) -> Result<bool, String> {
-        let uid = rustix::process::geteuid().as_raw();
-        if !custody::private_file_present(path, uid, 65536).map_err(|_| REFUSED)? {
-            return Ok(false);
-        }
-        Ok(
-            custody::read_private_file(path, uid, 65536).map_err(|_| REFUSED)?
-                == spec.plist.as_bytes(),
-        )
+        Ok(installed_shape(spec, path)? == Some(true))
     }
     // Only the exact service-not-found response proves absence. IPC errors,
     // unavailable domains, permissions failures and signals preserve custody.
@@ -450,6 +458,9 @@ mod mac {
     pub(crate) fn agent_status(spec: &AgentSpec) -> Result<serde_json::Value, String> {
         let path = destination(spec, false)?;
         let installed = expected(spec, &path)?;
+        // An earlier emitted shape is still ours, but launchd is then using its
+        // older output redirection: `uninstall` and `install` refresh it.
+        let current = installed && exact(spec, &path)?;
         let reply = loaded(spec)?;
         let state = field(&reply.stdout, "state").unwrap_or("unavailable");
         let pid = field(&reply.stdout, "pid").and_then(|v| v.parse::<u64>().ok());
@@ -459,7 +470,7 @@ mod mac {
         let restart_loop_suspected =
             reply.success && pid.is_none() && last_exit.is_some_and(|code| code != 0);
         Ok(
-            serde_json::json!({"supported":true,"installed":installed,"loaded":reply.success,"launch_agent":path,"state":state,"pid":pid,"last_exit_code":last_exit,"restart_loop_suspected":restart_loop_suspected}),
+            serde_json::json!({"supported":true,"installed":installed,"launch_agent_current":current,"loaded":reply.success,"launch_agent":path,"state":state,"pid":pid,"last_exit_code":last_exit,"restart_loop_suspected":restart_loop_suspected}),
         )
     }
     pub(crate) fn agent_install(spec: &AgentSpec) -> Result<(), String> {
@@ -483,11 +494,12 @@ mod mac {
         // An installed earlier emitted shape is ours but outdated. The label is
         // proven unloaded, so replace it with the exact current shape before
         // bootstrap; the file that bootstraps is always the one this software
-        // emits now.
-        if expected(spec, &path)? && !exact(spec, &path)? {
+        // emits now. Removal and the decision to remove use the same bytes.
+        let installed = installed_shape(spec, &path)?;
+        if installed == Some(false) {
             fs::remove_file(&path).map_err(|_| REFUSED)?;
         }
-        if !expected(spec, &path)? {
+        if installed != Some(true) {
             use std::io::Write;
             let mut file = custody::create_private_file(&path).map_err(|_| REFUSED)?;
             file.write_all(spec.plist.as_bytes())

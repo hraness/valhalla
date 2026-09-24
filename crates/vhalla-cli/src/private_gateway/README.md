@@ -29,7 +29,10 @@ Lifecycle commands take the same canonical absolute config path:
   coarse errors go to `supervisor.log` under launchd; `serve` rotates that file
   into one earlier generation once it exceeds 256 KiB and records the rotation
   as an event, so supervisor output can neither fill the event log nor keep a
-  restarting service from starting.
+  restarting service from starting. The launch that rotated keeps writing into
+  `supervisor.log.1`; a fresh `supervisor.log` fills from the next launch.
+  `status` reports `launch_agent_current: false` while an installed plist is
+  an earlier shape of ours; `uninstall` then `install` refreshes it.
 
 An unwinding connection-local handler panic closes that request without a
 success response. The gateway continues only when the shared admission budget

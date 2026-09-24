@@ -329,9 +329,9 @@ fn serve(path: &Path) -> Result<(), String> {
     let config = resolve(path)?;
     let (gateway, address) = load(&config)?;
     let log_dir = config.parent().ok_or(REFUSED)?.to_path_buf();
-    // Launchd output is bounded separately from structured events and never
-    // refuses startup; a rotation or refusal is itself recorded as an event.
-    let _ = events::bound_supervisor_output(&log_dir);
+    // Launchd output is bounded separately from structured events and cannot
+    // refuse startup; a rotation or refusal is itself recorded as an event.
+    events::bound_supervisor_output(&log_dir);
     let listener = bind(address, &log_dir)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

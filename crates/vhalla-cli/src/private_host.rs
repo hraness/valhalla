@@ -318,9 +318,9 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
     }
     let service = service(&loaded.home, &loaded.config)?;
     drop(maintenance);
-    // Launchd output is bounded separately from structured events and never
-    // refuses startup; a rotation or refusal is itself recorded as an event.
-    let _ = events::bound_supervisor_output(&loaded.home);
+    // Launchd output is bounded separately from structured events and cannot
+    // refuse startup; a rotation or refusal is itself recorded as an event.
+    events::bound_supervisor_output(&loaded.home);
     // Mailbox custody is held before the bounded bind retry so a restart
     // handoff cannot let a second owner take the store mid-recovery.
     let mut listener = None;
