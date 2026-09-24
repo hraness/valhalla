@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "module": "Quorum",
+  "namespace": "Valhalla.Quorum",
+  "theorems": [
+    "overlap_bound",
+    "faulty_overlap_bound",
+    "strict_quorums_have_honest_overlap",
+    "threshold_exact",
+    "multiplication_safe",
+    "nonstrict_threshold_admits_no_honest_overlap",
+    "excess_faults_admit_no_honest_overlap",
+    "Identity.filtered_weight_le",
+    "Identity.distinct_known_signer_weight",
+    "Identity.known_distinct_signers_bounded",
+    "Identity.overlap_bound",
+    "Identity.faulty_overlap_bound",
+    "Identity.selected_positive_witness",
+    "Identity.strict_quorums_have_honest_signer",
+    "Identity.same_context_certificate_value_unique",
+    "Identity.dropping_non_equivocation_allows_conflict",
+    "Identity.dropping_same_context_allows_distinct_values",
+    "indexed_roster_roundtrip",
+    "fixture_accept_exact",
+    "fixture_signer_weight_bounded",
+    "fixture_admits_identity_certificate",
+    "small_corpus_sizes_checked",
+    "boundary_fixture_results_checked",
+    "weighted_steel_thread_checked"
+  ],
+  "correspondence_sources": [
+    ".github/workflows/verification.yml",
+    "Cargo.toml",
+    "Cargo.lock",
+    "crates/vhalla-rooms-node/Cargo.toml",
+    "crates/vhalla-rooms-node/src/context.rs",
+    "crates/vhalla-rooms-node/src/context/tests.rs",
+    "crates/vhalla-rooms-node/src/context/lean_quorum_tests.rs",
+    "crates/vhalla-rooms-node/src/cert.rs",
+    "crates/vhalla-cli/Cargo.toml",
+    "crates/vhalla-cli/src/rooms_node.rs"
+  ]
+}
