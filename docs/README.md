@@ -1,10 +1,13 @@
 # Valhalla docs
 
-The current continuation is tracked in the
-[23 September production and formal-assurance plan](production-formal-plan-2026-09-23.md).
-Its [execution record](readiness-execution-2026-09-23.md) separates implemented
-repairs and focused evidence from remaining qualification gates.
-It builds on the [22 September design review](design-review-2026-09-22.md) and
+The current work is tracked in the
+[private-room pilot plan](../kb/plans/valhalla-private-room-pilot.md): responsive
+delivery, recipient joining, agent/browser collaboration, drained mailbox
+rollover and owner recovery. The [mailbox generation guide](private-generations.md)
+describes the implemented maintenance commands and their local test status.
+The earlier [production and formal-assurance plan](production-formal-plan-2026-09-23.md)
+and its [execution record](readiness-execution-2026-09-23.md) preserve their original
+repair and test evidence. They build on the [22 September design review](design-review-2026-09-22.md) and
 [subsequent repair review](design-review-2026-09-23.md). The
 [independent-machine qualification plan](operational-qualification.md) separates
 local repair evidence from deployed service acceptance.
@@ -68,8 +71,10 @@ peers; this is not a qualified public-network service. Start with the
 
 Signed framing is now v2 and rejects the earlier unversioned format. Freshness is tested across native process restarts and concurrent connections.
 The real browser now passes local two-room public posting, receipt readback and
-interrupted-send recovery. Durable external effects, independent public operation
-and encrypted private group rooms remain incomplete.
+interrupted-send recovery. Durable external effects and independent public
+operation remain incomplete. Encrypted private rooms are opt-in; use the
+[private-room guide](private-rooms.md) for implemented behavior and the remaining
+operating limits.
 
 The maintained [formal checks](verification.md) include production Kani harnesses,
 a Verus ledger reference model, finite TLA+ delivery/egress/rotation/publication models

@@ -217,14 +217,14 @@ async function restartArchive(page) {
   await wait(async()=>{try{return await evaluate(page,"!!document.getElementById('unlock')&&!document.getElementById('unlock').disabled");}catch{return false;}},'archive client reload');
   await evaluate(page,`(async()=>{${helpers} qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','archive reload unlock');await qclick('private-enter');await qwait(()=>!qid('private-import-archive').disabled,'archive reload entry');return true;})()`);
 }
-async function screenshot(page,width) {
+async function screenshot(page,width,focus='private-room-title',label='private-panel') {
   // An occluded background target may never produce a compositor frame, which
   // leaves captureScreenshot unanswered; foreground the target first, and if a
   // capture is still dropped retry once on a fresh overlay. A detached session
   // surfaces through the Runtime.evaluate probe instead of hanging silently.
   await call('Page.bringToFront',{},page.sessionId);
   await call('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false},page.sessionId);
-  const bounds=await evaluate(page,"(()=>{qshow('private-room-title');const panel=qid('private-panel');qassert(document.documentElement.scrollWidth<=innerWidth+1,'horizontal document overflow');for(const e of panel.querySelectorAll('button,input,textarea,select,pre')){if(!e.getClientRects().length)continue;const r=e.getBoundingClientRect();qassert(r.left>=-1&&r.right<=innerWidth+1,'private control overflow: '+e.id);}return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth};})()");
+  const bounds=await invoke(page,`function(focus){qshow(focus);const panel=qid('private-panel');qassert(document.documentElement.scrollWidth<=innerWidth+1,'horizontal document overflow');for(const e of panel.querySelectorAll('button,input,textarea,select,pre')){if(!e.getClientRects().length)continue;const r=e.getBoundingClientRect();qassert(r.left>=-1&&r.right<=innerWidth+1,'private control overflow: '+e.id);}return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth};}`,[focus]);
   let data;
   try{({data}=await Promise.race([call('Page.captureScreenshot',{format:'png'},page.sessionId),new Promise((_,j)=>setTimeout(()=>j(Error('capture stall')),15000))]));}
   catch(e){if(e.message!=='capture stall')throw e;
@@ -232,7 +232,7 @@ async function screenshot(page,width) {
     await call('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false},page.sessionId);
     await evaluate(page,'1');
     ({data}=await call('Page.captureScreenshot',{format:'png'},page.sessionId));}
-  const path=join(output,'private-panel-'+width+'.png');await writeFile(path,Buffer.from(data,'base64'));screenshots.push({...bounds,file:path});
+  const path=join(output,label+'-'+width+'.png');await writeFile(path,Buffer.from(data,'base64'));screenshots.push({...bounds,file:path});
 }
 async function task(abortSignal) {
   signal=abortSignal;
@@ -383,7 +383,10 @@ async function task(abortSignal) {
   await setFile(member,'private-control-file',addition.path);
   await evaluate(member,"(async()=>{await qclick('private-apply-control');await qidle();return true;})()");
   const memberDevice=await invoke(owner,`async function(account){await qclick('private-refresh');await qidle();const match=qid('private-membership-details').textContent.match(new RegExp('Account '+account+'\\\\nDevice ([0-9a-f]{64})'));qassert(match,'member device absent from owner roster');return match[1];}`,[member.publicKey]);
-  await invoke(owner,`async function(device){qset('private-remove-device',device);await qclick('private-remove');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'owner roster did not shrink');return true;}`,[memberDevice]);
+  await invoke(owner,`async function(account,device){qset('private-remove-device',device);qassert(qid('private-remove').disabled,'removal usable without review');await qclick('private-remove-review');await qidle();const review=qid('private-owner-consent').textContent;qassert(review.includes(account)&&review.includes(device)&&review.includes('Review removal and rekey')&&review.includes('Epoch ')&&review.includes('Roster ')&&review.includes('Control floor ')&&review.includes('expires at'),'removal review omitted exact target or current membership');return true;}`,[member.publicKey,memberDevice]);
+  for(const width of [1280,390])await screenshot(owner,width,'private-owner-consent','private-removal-review');
+  await call('Emulation.clearDeviceMetricsOverride',{},owner.sessionId);
+  await evaluate(owner,"(async()=>{await qclick('private-remove');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'owner roster did not shrink');qassert(qid('private-remove').disabled,'removal review remained reusable');return true;})()");
   await wait(()=>evaluate(owner,'qaURLs.size<8'),'owner download slot');
   const removal=await download(owner,'private-download-output','vhcontrol');
   // Signed-control inspection: the owner exports the removal's plaintext
@@ -467,10 +470,13 @@ async function task(abortSignal) {
   // successor issues controls after the handoff floor.
   await reopen(owner);await reopen(fresh);
   const freshDevice=await evaluate(fresh,`(async()=>{await qclick('private-refresh');await qidle();const m=qid('private-membership-details').textContent.match(/Device ([0-9a-f]{64})/);qassert(m,'fresh device key absent');return m[1];})()`);
-  await invoke(owner,`async function(device){qset('private-succeed-device',device);await qclick('private-succeed');qassert(qid('private-succeed-device').disabled,'successor input is editable during mutation');await qidle();qassert(qid('private-secret-output').hidden&&qid('private-download-secret').disabled,'succession retained a stale offer');qassert(qid('private-remove').disabled&&qid('private-renew').disabled&&qid('private-succeed').disabled&&qid('private-offer').disabled,'predecessor kept owner actions');qassert(!qid('private-prepare-message').disabled,'predecessor lost ordinary membership');return true;}`,[freshDevice]);
+  await invoke(owner,`async function(account,device){qset('private-succeed-device',device);qassert(qid('private-succeed').disabled,'handoff usable without review');await qclick('private-succeed-review');await qidle();const review=qid('private-owner-consent').textContent;qassert(review.includes(account)&&review.includes(device)&&review.includes('Review ownership handoff')&&review.includes('Epoch ')&&review.includes('Roster ')&&review.includes('Control floor ')&&review.includes('expires at'),'handoff review omitted exact target or current membership');return true;}`,[fresh.publicKey,freshDevice]);
+  for(const width of [1280,390])await screenshot(owner,width,'private-owner-consent','private-handoff-review');
+  await call('Emulation.clearDeviceMetricsOverride',{},owner.sessionId);
+  await evaluate(owner,"(async()=>{await qclick('private-succeed');qassert(qid('private-succeed-device').disabled,'successor input is editable during mutation');await qidle();qassert(qid('private-secret-output').hidden&&qid('private-download-secret').disabled,'succession retained a stale offer');qassert(qid('private-remove-review').disabled&&qid('private-remove').disabled&&qid('private-renew').disabled&&qid('private-succeed-review').disabled&&qid('private-succeed').disabled&&qid('private-offer').disabled,'predecessor kept owner actions');qassert(!qid('private-prepare-message').disabled,'predecessor lost ordinary membership');return true;})()");
   const handoff=await download(owner,'private-download-output','vhcontrol');
   await setFile(fresh,'private-control-file',handoff.path);
-  await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'succession churned the roster');qassert(!qid('private-remove').disabled&&!qid('private-renew').disabled&&!qid('private-succeed').disabled&&!qid('private-offer').disabled,'successor lacks owner actions');return true;})()");
+  await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'succession churned the roster');qassert(!qid('private-remove-review').disabled&&!qid('private-renew').disabled&&!qid('private-succeed-review').disabled&&!qid('private-offer').disabled,'successor lacks owner review actions');qassert(qid('private-remove').disabled&&qid('private-succeed').disabled,'successor inherited a predecessor consent');return true;})()");
   // The promoted successor issues the next owner control; the demoted
   // predecessor applies it in floor order like any member.
   await evaluate(fresh,"(async()=>{await qclick('private-renew');await qidle();return true;})()");

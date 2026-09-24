@@ -4,7 +4,7 @@
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -20,11 +20,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use vhalla_identity::Identity;
-use vhalla_private_kernel::{protocol::Validity, Context, OperationId, OutboxKind};
+use vhalla_private_kernel::{Context, OperationId, OutboxKind, protocol::Validity};
 use vhalla_private_native::{
     client::{RoomCreation, RoomSession},
     private_rooms::Limits,
-    relay::{delivery::DeliveryStore, net::RelayToken, tls::TlsRelay, RelayItem, RelayNamespace},
+    relay::{RelayItem, RelayNamespace, delivery::DeliveryStore, net::RelayToken, tls::TlsRelay},
 };
 
 const NAME: &str = "agent-relay.integration.invalid";
@@ -269,7 +269,14 @@ impl Fixture {
     fn applied(&self, who: usize) -> Vec<Value> {
         fs::read_dir(self.p(&format!("{who}-delivery/applied")))
             .unwrap()
-            .map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).unwrap()).unwrap())
+            .filter_map(|e| {
+                let path = e.unwrap().path();
+                if path.extension().and_then(|v| v.to_str()) == Some("pending") {
+                    return None;
+                }
+                assert_eq!(path.extension().and_then(|v| v.to_str()), Some("json"));
+                Some(serde_json::from_slice(&fs::read(path).unwrap()).unwrap())
+            })
             .collect()
     }
     fn ciphertext(&self, who: usize, sequence: u64) -> Vec<u8> {
@@ -399,6 +406,18 @@ impl Host {
     fn outbox(&mut self, grant: &Value, sequence: u64) -> Value {
         self.outbox_wait(grant, sequence, 0)
     }
+    fn outbox_head(&mut self, grant: &Value) -> u64 {
+        let status = self.call(grant, "private_status", json!({}));
+        assert_eq!(
+            status["result"]["structuredContent"]["status"], "live",
+            "{status}"
+        );
+        status["result"]["structuredContent"]["outbox_head"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
     fn outbox_wait(&mut self, grant: &Value, sequence: u64, wait_for: u64) -> Value {
         let response = self.call(
             grant,
@@ -457,10 +476,11 @@ impl Host {
             let notice: Value = serde_json::from_str(&line).expect("closing frame is MCP JSON");
             assert_eq!(notice["method"], "notifications/message", "{notice}");
             assert_eq!(notice["params"]["data"]["status"], "closed", "{notice}");
-            assert!(self
-                .responses
-                .recv_timeout(Duration::from_millis(100))
-                .is_err());
+            assert!(
+                self.responses
+                    .recv_timeout(Duration::from_millis(100))
+                    .is_err()
+            );
         }
     }
     fn stderr(&mut self) -> String {
@@ -601,8 +621,7 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
             .is_some_and(|a| a.len() == 1)
     });
     assert_eq!(
-        member.call(&member_grant, "private_status", json!({}))["result"]["structuredContent"]
-            ["inbox_head"],
+        member.call(&member_grant, "private_status", json!({}))["result"]["structuredContent"]["inbox_head"],
         "2",
         "host delivery may retain later messages while the agent disclosure ceiling stays fixed"
     );
@@ -641,14 +660,16 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
         "restart retransmits exact committed ciphertext"
     );
     assert_eq!(f.job(OWNER, sequence).0.id, before.id);
-    assert!(f
-        .applied(OWNER)
-        .iter()
-        .any(|v| v["state"] == "exact-local-outbox-echo"));
-    assert!(f
-        .applied(OWNER)
-        .iter()
-        .any(|v| v["state"] == "recipient-device-claim"));
+    assert!(
+        f.applied(OWNER)
+            .iter()
+            .any(|v| v["state"] == "exact-local-outbox-echo")
+    );
+    assert!(
+        f.applied(OWNER)
+            .iter()
+            .any(|v| v["state"] == "recipient-device-claim")
+    );
     // A fresh explicit grant restores the signed claim from retained receive evidence.
     let third = f.grant(OWNER, "third", 16);
     let mut owner = f.host(OWNER, "third", OWNER);
@@ -768,6 +789,125 @@ fn foreign_delivery_profile_refuses_before_consuming_grant_or_mutating_queue() {
     init.arg("--config").arg(f.p("0-delivery.json"));
     assert!(!run(init).status.success());
     assert_eq!(fs::read(f.p("0-delivery/binding")).unwrap(), binding);
+}
+
+#[test]
+fn drained_controller_pause_blocks_new_authoring_and_stale_driver_without_losing_history() {
+    use vhalla_private_native::client::generation::ControllerPauseReceipt;
+    let f = Fixture::new();
+    let _relay = f.relay();
+    let owner_grant = f.grant(OWNER, "pause-owner", 32);
+    let member_grant = f.grant(MEMBER, "pause-member", 32);
+    let mut owner = f.host(OWNER, "pause-owner", OWNER);
+    let mut member = f.host(MEMBER, "pause-member", MEMBER);
+    let sequence = owner.queue(&owner_grant, "retained before generation pause", 244);
+    owner.await_outbox(&owner_grant, sequence, |v| {
+        v["member_acceptances"]
+            .as_array()
+            .is_some_and(|a| a.len() == 1)
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let (head, a_head, b_head) = loop {
+        let head = f.client().page(0, 1).unwrap().head;
+        let a_head = owner.outbox_head(&owner_grant);
+        let b_head = member.outbox_head(&member_grant);
+        let mut drained = true;
+        // Final markers are published by rename only after authenticated local
+        // application. Observe those and the public MCP retention evidence
+        // while each driver holds its exclusive queue lock.
+        for (who, host, grant, outbox_head) in [
+            (OWNER, &mut owner, &owner_grant, a_head),
+            (MEMBER, &mut member, &member_grant, b_head),
+        ] {
+            let mut positions: Vec<u64> = f
+                .applied(who)
+                .iter()
+                .map(|v| v["position"].as_str().unwrap().parse().unwrap())
+                .collect();
+            positions.sort_unstable();
+            drained &= positions == (1..=head).collect::<Vec<_>>();
+            for sequence in 1..=outbox_head {
+                let record = host.outbox(grant, sequence);
+                match record["kind"].as_str().unwrap() {
+                    "key_package" | "invitation" | "contact_offer" => (),
+                    _ => {
+                        drained &= record["relay"]["state"] == "retained"
+                            && record["relay"]["uncertain"] == false
+                    }
+                }
+            }
+        }
+        if drained
+            && owner.outbox_head(&owner_grant) == a_head
+            && member.outbox_head(&member_grant) == b_head
+            && f.client().page(0, 1).unwrap().head == head
+        {
+            break (head, a_head, b_head);
+        }
+        assert!(Instant::now() < deadline, "predecessor did not drain");
+        thread::sleep(Duration::from_millis(100));
+    };
+    owner.close();
+    member.close();
+    assert_eq!(f.driver_checkpoint(OWNER), (a_head, head));
+    assert_eq!(f.driver_checkpoint(MEMBER), (b_head, head));
+    let ciphertext = f.ciphertext(OWNER, sequence);
+    f.grant(OWNER, "paused-stale", 32);
+    let mut wrong = f.room_command("delivery-pause", OWNER);
+    wrong
+        .arg("--config")
+        .arg(f.p("0-delivery.json"))
+        .args([
+            "--transition",
+            &hex(&[231; 32]),
+            "--head",
+            &(head + 1).to_string(),
+        ])
+        .arg("--out")
+        .arg(f.p("wrong-pause.receipt"));
+    assert!(!wrong.output().unwrap().status.success());
+    assert!(!f.p("0-room/delivery-generations").exists());
+    for who in [OWNER, MEMBER] {
+        let mut pause = f.room_command("delivery-pause", who);
+        pause
+            .arg("--config")
+            .arg(f.p(&format!("{who}-delivery.json")))
+            .args([
+                "--transition",
+                &hex(&[231; 32]),
+                "--head",
+                &head.to_string(),
+            ])
+            .arg("--out")
+            .arg(f.p(&format!("{who}-pause.receipt")));
+        success(pause);
+        let receipt = ControllerPauseReceipt::decode(
+            &fs::read(f.p(&format!("{who}-pause.receipt"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt.context, f.contexts[who]);
+        assert_eq!(receipt.terminal_head, head);
+        assert_eq!(
+            fs::read(f.p(&format!("{who}-delivery/generation.pause"))).unwrap(),
+            receipt.encode().unwrap()
+        );
+    }
+    f.host(OWNER, "paused-stale", OWNER).refused();
+    assert!(!f.p("paused-stale-claim.json").exists());
+    assert_eq!(f.ciphertext(OWNER, sequence), ciphertext);
+    runtime().block_on(async {
+        let mut room = RoomSession::open(
+            Identity::open(f.p("0-id")).unwrap(),
+            f.p("0-room"),
+            f.contexts[OWNER],
+        )
+        .await
+        .unwrap();
+        assert!(room.prepare_message(b"cannot author while paused").is_err());
+        let original = room.outbox(sequence - 1, 1).await.unwrap();
+        assert_eq!(original.records[0].artifact().unwrap().bytes(), ciphertext);
+    });
+    assert_eq!(f.client().page(0, 1).unwrap().head, head);
 }
 
 #[test]
@@ -955,7 +1095,7 @@ fn malformed_retained_item_records_skip_marker_and_following_delivery_still_appl
 #[test]
 fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_regrant() {
     use vhalla_private_kernel::protocol::Key;
-    use vhalla_private_native::relay::{delivery::JobState, RelayKind, MAX_RELAY_PAGE};
+    use vhalla_private_native::relay::{MAX_RELAY_PAGE, RelayKind, delivery::JobState};
 
     let f = Fixture::with_capacity(1024, 512);
     let count = MAX_RELAY_PAGE + 1;
@@ -1032,8 +1172,7 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
         }
         assert!(Instant::now() < deadline, "future-epoch page did not stage");
         assert_eq!(
-            member.call(&first, "private_status", json!({}))["result"]["structuredContent"]
-                ["status"],
+            member.call(&first, "private_status", json!({}))["result"]["structuredContent"]["status"],
             "live"
         );
         thread::sleep(Duration::from_millis(50));
@@ -1087,8 +1226,7 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
             "automatic admission control did not reach relay"
         );
         assert_eq!(
-            owner.call(&owner_grant, "private_status", json!({}))["result"]["structuredContent"]
-                ["status"],
+            owner.call(&owner_grant, "private_status", json!({}))["result"]["structuredContent"]["status"],
             "live"
         );
         thread::sleep(Duration::from_millis(50));
@@ -1096,10 +1234,11 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
     owner.close();
     let mut member = f.host(MEMBER, "before-admission", MEMBER);
     member.refused();
-    assert!(f
-        .applied(MEMBER)
-        .iter()
-        .any(|v| v["state"] == "locally-applied-control"));
+    assert!(
+        f.applied(MEMBER)
+            .iter()
+            .any(|v| v["state"] == "locally-applied-control")
+    );
     assert!(
         !f.applied(MEMBER)
             .iter()
@@ -1353,11 +1492,22 @@ fn acceptance_staging_cannot_leapfrog_a_bounded_outbox_backlog() {
     let grant = f.grant(OWNER, "acceptance-order", 16);
     let mut owner = f.host(OWNER, "acceptance-order", OWNER);
     let receipt_sequence = pending.last().unwrap().sequence() + 1;
-    // Waiting on an existing older record gives the first pass time to receive
-    // and durably issue the acceptance; output custody remains sender-ordered.
+    // Retention of the backlog does not imply the separate inbound apply pass
+    // has already issued its acceptance. Await the authenticated local head
+    // before querying that future record; output order remains the assertion.
     owner.await_outbox(&grant, pending.last().unwrap().sequence(), |v| {
         v["relay"]["state"] == "retained"
     });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let head = owner.outbox_head(&grant);
+        assert!(head <= receipt_sequence, "unexpected additional acceptance");
+        if head == receipt_sequence {
+            break;
+        }
+        assert!(Instant::now() < deadline, "acceptance was not committed");
+        thread::sleep(Duration::from_millis(100));
+    }
     owner.await_outbox(&grant, receipt_sequence, |v| {
         v["relay"]["state"] == "retained"
     });

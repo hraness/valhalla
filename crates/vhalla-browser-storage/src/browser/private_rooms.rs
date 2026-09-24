@@ -34,8 +34,14 @@ pub struct IndexedPrivateStore {
     inner: IndexedStorage,
     context: Context,
     limits: Limits,
+    generation: Option<model::DeliveryGeneration>,
 }
 impl IndexedPrivateStore {
+    /// Selector captured when this exact kernel handle opened. Read-only
+    /// history remains available after a cutover; writes compare it atomically.
+    pub fn generation(&self) -> Option<model::DeliveryGeneration> {
+        self.generation
+    }
     /// Open an exact reserved archive destination or initialize a wholly absent
     /// prefix atomically. Errors are never interpreted as absence; orphan or
     /// conflicting evidence is preserved. Call only after archive reservation.
@@ -53,6 +59,7 @@ impl IndexedPrivateStore {
             inner: IndexedStorage::open(namespace).await.map_err(error)?,
             context,
             limits,
+            generation: None,
         };
         out.run(true, move |tx| {
             tx.read(
@@ -85,6 +92,7 @@ impl IndexedPrivateStore {
             inner: IndexedStorage::open(namespace).await.map_err(error)?,
             context,
             limits,
+            generation: None,
         };
         out.run(true, move |tx| {
             pristine(tx, context, false, move |tx| {
@@ -102,10 +110,12 @@ impl IndexedPrivateStore {
         let mut inner = IndexedStorage::open_existing(namespace)
             .await
             .map_err(error)?;
-        let limits = run(&mut inner, false, move |tx| {
-            read_meta(tx, context, None, |tx, limits, _| {
-                *tx.result.borrow_mut() = Some(Ok(limits));
-                Ok(())
+        let (limits, generation) = run(&mut inner, false, move |tx| {
+            super::private_delivery::read_generation(tx, context, move |tx, generation| {
+                read_meta(tx, context, None, move |tx, limits, _| {
+                    *tx.result.borrow_mut() = Some(Ok((limits, generation)));
+                    Ok(())
+                })
             })
         })
         .await?;
@@ -113,6 +123,7 @@ impl IndexedPrivateStore {
             inner,
             context,
             limits,
+            generation,
         })
     }
     /// Any canceled/failed transaction requires a new handle and reconciliation.
@@ -202,35 +213,38 @@ impl Store for IndexedPrivateStore {
         let next = next.clone();
         let records = records.to_vec();
         let limits = self.limits;
+        let generation = self.generation;
         self.run(true, move |tx| {
-            read_meta(tx, context, Some(limits), move |tx, _, state| {
-                read_offered(
-                    tx,
-                    context,
-                    records,
-                    Vec::new(),
-                    move |tx, records, retained| {
-                        let after = model::prepare(
-                            limits,
-                            state.as_ref(),
-                            expected.as_ref(),
-                            &next,
-                            &records,
-                            &retained,
-                        )?;
-                        for record in &records {
-                            let (data, proof) = model::record_keys(context, record.key())?;
-                            tx.add(&data, record.as_bytes())?;
-                            tx.add(&proof, &model::marker(context, record))?;
-                        }
-                        tx.put(
-                            &format!("{}state", model::prefix(context)),
-                            &after.encode(context),
-                        )?;
-                        *tx.result.borrow_mut() = Some(Ok(()));
-                        Ok(())
-                    },
-                )
+            super::private_delivery::check_generation(tx, context, generation, true, move |tx| {
+                read_meta(tx, context, Some(limits), move |tx, _, state| {
+                    read_offered(
+                        tx,
+                        context,
+                        records,
+                        Vec::new(),
+                        move |tx, records, retained| {
+                            let after = model::prepare(
+                                limits,
+                                state.as_ref(),
+                                expected.as_ref(),
+                                &next,
+                                &records,
+                                &retained,
+                            )?;
+                            for record in &records {
+                                let (data, proof) = model::record_keys(context, record.key())?;
+                                tx.add(&data, record.as_bytes())?;
+                                tx.add(&proof, &model::marker(context, record))?;
+                            }
+                            tx.put(
+                                &format!("{}state", model::prefix(context)),
+                                &after.encode(context),
+                            )?;
+                            *tx.result.borrow_mut() = Some(Ok(()));
+                            Ok(())
+                        },
+                    )
+                })
             })
         })
         .await

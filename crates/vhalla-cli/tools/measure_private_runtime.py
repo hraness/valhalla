@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import signal
 import socket
 import sqlite3
@@ -36,6 +37,8 @@ CLEANUP_SECONDS = 60
 GRANT = {"lifetime": 900, "max-preparations": 110, "max-messages": 110,
          "max-body-bytes": 1048576, "max-read-records": 256, "max-read-bytes": 33554432}
 PRIVATE_OK = b"private operation completed; consult the retained result for delivery status\n"
+QUIET_SECONDS = 90
+IDLE_MEASURE_SECONDS = 30
 
 
 class MeasurementError(RuntimeError):
@@ -113,14 +116,40 @@ def native_fingerprint(source):
     return digest.hexdigest()
 
 
+def frozen_fingerprint(source, inputs):
+    """Verify the entire immutable source capture, including unexpected files."""
+    require(isinstance(inputs, dict) and 0 < len(inputs) <= 10000, "invalid frozen source inventory")
+    actual = {}
+    for path in source.rglob("*"):
+        require(not path.is_symlink(), "frozen source contains a symlink")
+        if path.is_file():
+            actual[str(path.relative_to(source))] = sha256(path)
+    require(actual == inputs, "frozen source differs from captured inputs")
+    digest = hashlib.sha256()
+    for name, checksum in sorted(actual.items()):
+        digest.update(name.encode() + b"\0" + bytes.fromhex(checksum))
+    return digest.hexdigest()
+
+
 def admit_candidate(cli, provenance, source):
     value = json.loads(provenance.read_text())
     require(value.get("passed") is True, "candidate provenance does not report passed")
-    require(value.get("source_clean_at_build") is True, "candidate build was not clean")
-    head = git(source, "rev-parse", "HEAD")
-    tree = git(source, "rev-parse", "HEAD^{tree}")
-    require(value.get("source_commit") == head, "candidate source_commit differs from checkout HEAD")
-    require(value.get("source_tree") == tree, "candidate source_tree differs from checkout tree")
+    frozen = value.get("kind") == "frozen-source-v1"
+    if frozen:
+        head, tree = value.get("source_commit"), value.get("source_tree")
+        require(all(isinstance(x, str) and re.fullmatch(r"[0-9a-f]{40}", x) for x in (head, tree)),
+                "frozen source needs exact base commit and tree")
+        require(type(value.get("source_clean_at_build")) is bool, "frozen source needs clean/modified status")
+        require(value["source_clean_at_build"] or re.fullmatch(r"[0-9a-f]{64}", value.get("source_patch_sha256", "")),
+                "modified frozen source needs exact patch identity")
+        inputs = frozen_fingerprint(source, value.get("source_inputs"))
+    else:
+        require(value.get("source_clean_at_build") is True, "candidate build was not clean")
+        head = git(source, "rev-parse", "HEAD")
+        tree = git(source, "rev-parse", "HEAD^{tree}")
+        require(value.get("source_commit") == head, "candidate source_commit differs from checkout HEAD")
+        require(value.get("source_tree") == tree, "candidate source_tree differs from checkout tree")
+        inputs = native_fingerprint(source)
     require(value.get("lockfile_sha256") == sha256(source / "Cargo.lock"), "candidate Cargo.lock differs")
     digest = sha256(cli)
     require(value.get("artifact", {}).get("sha256") == digest, "candidate binary SHA256 differs")
@@ -128,9 +157,93 @@ def admit_candidate(cli, provenance, source):
     return {"source_commit": head, "source_tree": tree, "cli": str(cli), "cli_sha256": digest,
             "provenance": str(provenance), "provenance_sha256": sha256(provenance),
             "lockfile_sha256": sha256(source / "Cargo.lock"),
-            "native_inputs_sha256": native_fingerprint(source),
+            "native_inputs_sha256": inputs, "source_kind": "frozen-source-v1" if frozen else "git-checkout",
+            "source_clean_at_build": value["source_clean_at_build"],
+            "source_patch_sha256": value.get("source_patch_sha256"),
+            "source_identity_scope": "base commit/tree plus complete source inventory" if frozen else "clean commit/tree",
             "runner_sha256": sha256(Path(__file__)), "python": sys.version,
             "platform": platform.platform(), "machine": platform.machine()}
+
+
+def cpu_seconds(text):
+    match = re.fullmatch(r"(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)", text)
+    require(match is not None, "CPU sampler time format changed")
+    days, hours, minutes, seconds = match.groups()
+    return int(days or 0) * 86400 + int(hours or 0) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+class TrafficMeter:
+    """Bounded byte-transparent loopback forwarding; never decrypts TLS."""
+    def __init__(self, target):
+        self.target = target
+        self.server = None
+        self.tasks = set()
+        self.counts = {"connections": 0, "completed": 0, "failed": 0, "refused": 0,
+                       "upstream_bytes": 0, "downstream_bytes": 0}
+
+    async def start(self):
+        self.server = await asyncio.start_server(self.accept, "127.0.0.1", 0)
+        return f"127.0.0.1:{self.server.sockets[0].getsockname()[1]}"
+
+    def snapshot(self):
+        return {"monotonic_ns": time.monotonic_ns(), **self.counts, "inflight": len(self.tasks)}
+
+    async def accept(self, reader, writer):
+        self.counts["connections"] += 1
+        if len(self.tasks) >= 8:
+            self.counts["refused"] += 1
+            writer.close()
+            await writer.wait_closed()
+            return
+        task = asyncio.current_task()
+        self.tasks.add(task)
+        upstream = None
+        try:
+            async with asyncio.timeout(12):
+                remote, upstream = await asyncio.open_connection(*self.target)
+                async def copy(source, destination, field):
+                    total = 0
+                    while data := await source.read(65536):
+                        total += len(data)
+                        require(total <= 32 * 1024 * 1024, "meter connection byte bound exceeded")
+                        self.counts[field] += len(data)
+                        destination.write(data)
+                        await destination.drain()
+                    if destination.can_write_eof():
+                        destination.write_eof()
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(copy(reader, upstream, "upstream_bytes"))
+                    group.create_task(copy(remote, writer, "downstream_bytes"))
+                self.counts["completed"] += 1
+        except (Exception, asyncio.CancelledError):
+            self.counts["failed"] += 1
+        finally:
+            for stream in (upstream, writer):
+                if stream is not None:
+                    stream.close()
+                    try:
+                        await asyncio.wait_for(stream.wait_closed(), 1)
+                    except (Exception, asyncio.CancelledError):
+                        pass
+            self.tasks.remove(task)
+
+    async def close(self, force=False):
+        if self.server:
+            self.server.close()
+        pending = list(self.tasks)
+        if force:
+            for task in pending:
+                task.cancel()
+        if pending:
+            try:
+                await asyncio.wait_for(asyncio.gather(*pending), 15)
+            finally:
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+        if self.server:
+            await self.server.wait_closed()
 
 
 class Log:
@@ -293,6 +406,9 @@ class Fixture:
         self.cleanup = []
         self.command_index = 0
         self.last_observation_ns = None
+        self.meters = {}
+        self.idle_start = None
+        self.idle_end = None
 
     def env(self):
         return {**os.environ, "HRANESS_SUPPORT": "off", "XDG_STATE_HOME": str(self.root / "xdg-state")}
@@ -373,6 +489,9 @@ class Fixture:
         await self.private("join", "b", response=response)
         for index, who in enumerate(("a", "b"), 1):
             home = self.root / who
+            meter = TrafficMeter(("127.0.0.1", port))
+            self.meters[who] = meter
+            client_addr = await meter.start()
             await self.private("inspect", who, out=home / "inspect.json")
             context = json.loads((home / "inspect.json").read_text())["status"]
             self.contexts[who] = {k: context[k] for k in ("room", "anchor", "account", "device")}
@@ -380,7 +499,7 @@ class Fixture:
                 (home / name).write_bytes((host / origin).read_bytes())
                 os.chmod(home / name, 0o600)
             write_json(home / "delivery.json", {"version": 1, "context": self.contexts[who],
-                "namespace": self.connection["namespace"], "addr": self.addr, "tls_name": "runtime.test.invalid",
+                "namespace": self.connection["namespace"], "addr": client_addr, "tls_name": "runtime.test.invalid",
                 "ca": str(home / "ca.der"), "token": str(home / "token.hex"), "state": str(home / "delivery-state"),
                 "max_jobs": 1024, "max_bytes": 67108864, "max_attempts": 20, "initial_backoff_secs": 5,
                 "max_backoff_secs": 300, "emit_acceptance": True, "initial_cursor": 0})
@@ -502,6 +621,9 @@ class Fixture:
         if self.monitor_task and self.monitor_task.done():
             self.monitor_task.result()
             require(self.monitor_stop, "observation task stopped unexpectedly")
+        if self.resource_task and self.resource_task.done():
+            self.resource_task.result()
+            raise MeasurementError("resource sampler stopped unexpectedly")
 
     async def wait_until(self, predicate, seconds):
         deadline = time.monotonic() + seconds
@@ -525,7 +647,14 @@ class Fixture:
         count = SCENARIOS[self.scenario]
         if self.scenario == "quiet":
             self.quiet_start_ns = time.monotonic_ns()
-            await asyncio.sleep(90)
+            await asyncio.sleep(QUIET_SECONDS - IDLE_MEASURE_SECONDS)
+            self.monitor_check()
+            self.idle_start = {who: meter.snapshot() for who, meter in self.meters.items()}
+            self.idle_observer_cpu_start = time.process_time()
+            await asyncio.sleep(IDLE_MEASURE_SECONDS)
+            self.monitor_check()
+            self.idle_observer_cpu_end = time.process_time()
+            self.idle_end = {who: meter.snapshot() for who, meter in self.meters.items()}
             self.quiet_end_ns = time.monotonic_ns()
         if self.scenario == "offline":
             await self.close_agent("b")
@@ -595,20 +724,22 @@ class Fixture:
             active = {str(c.process.pid): c for c in self.children if c.process.returncode is None
                       and (c is self.host or c.label.startswith("agent-"))}
             if active:
-                process = await asyncio.create_subprocess_exec("/bin/ps", "-o", "pid=,lstart=,rss=", "-p", ",".join(active),
+                process = await asyncio.create_subprocess_exec("/bin/ps", "-o", "pid=,lstart=,rss=,time=", "-p", ",".join(active),
                                       stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 try:
                     output, error = await asyncio.wait_for(process.communicate(), 5)
+                except TimeoutError as error:
+                    raise MeasurementError("owned-process resource sampler exceeded its 5-second deadline") from error
                 finally:
                     if process.returncode is None:
                         process.kill()
                         await process.wait()
                 require(process.returncode in (0, 1) and not error, "RSS sampler failed")
-                sample = {"monotonic_ns": time.monotonic_ns(), "rss_bytes": {}, "process_start_identity": {}}
+                sample = {"monotonic_ns": time.monotonic_ns(), "rss_bytes": {}, "cpu_seconds": {}, "process_start_identity": {}}
                 for line in output.decode().splitlines():
                     parts = line.split()
-                    require(len(parts) == 7, "RSS sampler start identity format changed")
-                    pid, rss, identity = parts[0], parts[-1], " ".join(parts[1:-1])
+                    require(len(parts) == 8, "resource sampler start identity format changed")
+                    pid, rss, identity = parts[0], parts[-2], " ".join(parts[1:-2])
                     require(pid in active, "RSS sampler returned unowned PID")
                     child = active[pid]
                     if child.process.returncode is not None:
@@ -616,6 +747,7 @@ class Fixture:
                     require(child.sampled_start_identity in (None, identity), "owned PID start identity changed")
                     child.sampled_start_identity = identity
                     sample["rss_bytes"][child.label] = int(rss) * 1024
+                    sample["cpu_seconds"][child.label] = cpu_seconds(parts[-1])
                     sample["process_start_identity"][child.label] = {"pid": int(pid), "lstart": identity}
                 self.samples.append(sample)
                 require(len(self.samples) <= 1200, "resource sample bound exceeded")
@@ -646,6 +778,7 @@ class Fixture:
             for task in tasks:
                 if not task.done():
                     task.cancel()
+            tasks += [asyncio.create_task(meter.close(force=True)) for meter in self.meters.values()]
             if tasks:
                 try:
                     await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
@@ -666,23 +799,28 @@ class Fixture:
             try:
                 await self.close_agent(who)
             except Exception as error:
-                errors.append(str(error))
+                errors.append(f"{type(error).__name__}: {error}")
         # Include children created before an initialization/command failed.
         for child in reversed(self.children):
             try:
                 await child.close(host=child is self.host)
             except Exception as error:
-                errors.append(str(error))
+                errors.append(f"{type(error).__name__}: {error}")
         if self.host:
             try:
                 await self.host_stdout
             except Exception as error:
-                errors.append(str(error))
+                errors.append(f"{type(error).__name__}: {error}")
         if self.resource_task:
             self.resource_task.cancel()
             result = await asyncio.gather(self.resource_task, return_exceptions=True)
             if isinstance(result[0], Exception) and not isinstance(result[0], asyncio.CancelledError):
-                errors.append(str(result[0]))
+                errors.append(f"{type(result[0]).__name__}: {result[0]}")
+        for meter in self.meters.values():
+            try:
+                await meter.close()
+            except Exception as error:
+                errors.append(f"traffic meter cleanup: {error}")
         require(not errors, "; ".join(errors))
 
     def mailbox_report(self):
@@ -711,7 +849,9 @@ class Fixture:
         result = {"messages": sorted(self.messages.values(), key=lambda m: m["index"]), "count": len(self.messages),
                   "expected_count": SCENARIOS[self.scenario], "checkpoints": self.checkpoints, "reopens": self.reopens,
                   "grants": self.budgets, "cleanup": self.cleanup, "rss_samples": self.samples,
-                  "rss_scope": "1s samples of owned CLI PIDs; observed maximum is a lower bound, not lifetime maximum RSS"}
+                  "rss_scope": "1s samples of owned CLI PIDs; observed maximum is a lower bound, not lifetime maximum RSS",
+                  "traffic": {who: meter.snapshot() for who, meter in self.meters.items()},
+                  "traffic_scope": "byte-transparent per-client loopback TCP; end-to-end pinned TLS; one connection per current exchange; bytes include TLS overhead"}
         result["measurement_ended_ns"] = ended
         result["last_delivery_observation_ns"] = self.last_observation_ns
         result["offers"] = self.offers
@@ -744,6 +884,31 @@ class Fixture:
         result["acceptance_p95_under_5s"] = (acceptance["observed_count"] == SCENARIOS[self.scenario]
                                             and acceptance["percentiles"]["p95"] < 5000)
         result["quiet_ns"] = (getattr(self, "quiet_end_ns", 0) - getattr(self, "quiet_start_ns", 0))
+        result["idle_window"] = None
+        if self.idle_start is not None and self.idle_end is not None:
+            start = max(value["monotonic_ns"] for value in self.idle_start.values())
+            end = min(value["monotonic_ns"] for value in self.idle_end.values())
+            window = {"start_ns": start, "end_ns": end, "seconds": (end - start) / 1e9, "clients": {}, "processes": {}}
+            window["observer_cpu_seconds"] = self.idle_observer_cpu_end - self.idle_observer_cpu_start
+            window["observer_cpu_scope"] = "Python observer and byte-transparent meters; excludes ps subprocess CPU"
+            for who in self.idle_start:
+                before, after = self.idle_start[who], self.idle_end[who]
+                counters = {name: after[name] - before[name] for name in TrafficMeter(("", 0)).counts}
+                window["clients"][who] = {**counters, "connections_per_minute": counters["connections"] * 60 / window["seconds"],
+                                           "inflight_before": before["inflight"], "inflight_after": after["inflight"]}
+            within = [sample for sample in self.samples if start <= sample["monotonic_ns"] <= end]
+            labels = set().union(*(sample["cpu_seconds"] for sample in within)) if within else set()
+            for label in sorted(labels):
+                selected = [sample for sample in within if label in sample["cpu_seconds"]]
+                require(len({json.dumps(sample["process_start_identity"][label], sort_keys=True) for sample in selected}) == 1,
+                        "idle CPU samples span different process identities")
+                if len(selected) >= 2:
+                    span = (selected[-1]["monotonic_ns"] - selected[0]["monotonic_ns"]) / 1e9
+                    delta = selected[-1]["cpu_seconds"][label] - selected[0]["cpu_seconds"][label]
+                    require(span > 0 and delta >= 0, "idle CPU sample regressed")
+                    window["processes"][label] = {"cpu_seconds": delta, "sample_span_seconds": span,
+                        "one_core_percent": delta * 100 / span, "rss_max_bytes": max(sample["rss_bytes"][label] for sample in selected)}
+            result["idle_window"] = window
         result["observed_rss_max_bytes_by_process"] = {}
         for sample in self.samples:
             for label, value in sample["rss_bytes"].items():
@@ -777,6 +942,21 @@ async def run_scenario(cli, root, scenario):
     return receipt
 
 
+def quiet_summary(results, expected):
+    samples = []
+    for result in results:
+        for message in result["messages"]:
+            if "claim_observed_ns" in message:
+                samples.append((message["claim_observed_ns"] - message["queue_request_ns"]) / 1e6)
+    complete = len(results) == expected and all(result["correctness_passed"] for result in results)
+    distribution = percentiles(samples)
+    return {"expected_samples": expected, "completed_fixtures": len(results), "observed_samples": len(samples),
+            "acceptance_ms": samples, "percentiles_ms": distribution, "maximum_ms": max(samples, default=None),
+            "all_correctness_passed": complete, "acceptance_p95_under_5s": complete and len(samples) == expected
+                and distribution["p95"] < 5000,
+            "scope": "independent fresh fixtures after 90s without application traffic; finite local observation, not an SLA"}
+
+
 async def main_async(args):
     os.umask(0o077)
     # Remain in the scheduler's process group. Catchable group cancellation
@@ -790,20 +970,31 @@ async def main_async(args):
     root.mkdir(mode=0o700, parents=False)
     receipt = {"schema": 1, "passed": False, "evidence": str(root), "scenarios": [],
                "scope": "synthetic loopback native process measurement; no browser, two-Mac, soak or power-loss claim",
-               "started_unix_ns": time.time_ns(), "scenario_contract": {"counts": SCENARIOS, "load_hz": 1,
+               "started_unix_ns": time.time_ns(), "runner_pid": os.getpid(), "scenario_contract": {"counts": SCENARIOS, "load_hz": 1,
                    "body_bytes": 128, "outstanding_window": WINDOW, "drain_seconds": DRAIN_SECONDS,
-                   "quiet_seconds": 90, "observation_poll_seconds": POLL_SECONDS, "grant_limits": GRANT}}
+                   "quiet_seconds": QUIET_SECONDS, "quiet_samples": args.quiet_samples,
+                   "idle_measure_seconds": IDLE_MEASURE_SECONDS,
+                   "observation_poll_seconds": POLL_SECONDS, "grant_limits": GRANT}}
+    quiet_results = []
     try:
         receipt["candidate"] = admit_candidate(cli, provenance, source)
         write_json(root / "receipt.json", receipt)
         names = ["load", "quiet", "offline"] if args.scenario == "all" else [args.scenario]
-        for name in names:
-            result = await run_scenario(cli, root / name, name)
-            receipt["scenarios"].append({"scenario": name, "receipt": f"{name}/receipt.json",
+        cases = [(name, f"quiet-{index + 1:02}" if name == "quiet" and args.quiet_samples > 1 else name)
+                 for name in names for index in range(args.quiet_samples if name == "quiet" else 1)]
+        for name, directory in cases:
+            result = await run_scenario(cli, root / directory, name)
+            if name == "quiet":
+                quiet_results.append(result)
+                receipt["quiet_summary"] = quiet_summary(quiet_results, args.quiet_samples)
+            receipt["scenarios"].append({"scenario": name, "receipt": f"{directory}/receipt.json",
                 "correctness_passed": result["correctness_passed"], "receiver_p95_under_5s": result["receiver_p95_under_5s"],
                 "acceptance_p95_under_5s": result["acceptance_p95_under_5s"], "counts": result["counts"],
                 "missed_1hz_slots": result["missed_1hz_slots"]})
-            require(result["correctness_passed"], f"{name} failed; preserved {root / name / 'receipt.json'}")
+            write_json(root / "receipt.json", receipt)
+            print(json.dumps({"scenario": directory, "correctness_passed": result["correctness_passed"],
+                              "acceptance_ms": result["queue_to_acceptance_observation_ms"]}), flush=True)
+            require(result["correctness_passed"], f"{directory} failed; preserved {root / directory / 'receipt.json'}")
         require(admit_candidate(cli, provenance, source) == receipt["candidate"], "candidate/source changed during measurement")
         receipt["passed"] = True
     except (Exception, asyncio.CancelledError) as error:
@@ -820,6 +1011,7 @@ def main():
     for name in ("cli", "provenance", "source", "out"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--scenario", choices=[*SCENARIOS, "all"], required=True)
+    parser.add_argument("--quiet-samples", type=int, choices=range(1, 21), default=1)
     args = parser.parse_args()
     try:
         return asyncio.run(main_async(args))

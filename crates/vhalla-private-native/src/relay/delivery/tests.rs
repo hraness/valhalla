@@ -5,8 +5,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use vhalla_private_kernel::{
-    protocol::{AnchorId, Key, PrivateRoomScope, RoomId},
     OutboxKind,
+    protocol::{AnchorId, Key, PrivateRoomScope, RoomId},
 };
 fn context() -> Context {
     Context {
@@ -151,6 +151,58 @@ fn receipt(n: u8, duplicate: bool) -> std::result::Result<RelayReceipt, NetError
         duplicate,
     })
 }
+
+#[test]
+fn generation_carries_spend_and_blocks_replaying_predecessor_jobs() {
+    let predecessor = Fixture::new();
+    let mut old = predecessor.create();
+    old.enqueue(&item(1), 100).unwrap();
+    assert_eq!(old.drained_snapshot(), Err(Error::Conflict));
+    let mut transport = Fake::new(&predecessor, vec![receipt(1, false)]);
+    old.tick(&mut transport, 100, budget()).unwrap();
+    old.save_driver_checkpoint(1, 7, 101).unwrap();
+    let prior = old.drained_snapshot().unwrap();
+    assert_eq!(prior.retained_jobs, 1);
+    assert_eq!(prior.charged_attempts, 1);
+    assert_eq!(
+        prior.canonical_bytes,
+        item(1).encode().unwrap().len() as u64
+    );
+    let successor = Fixture::new();
+    let mut next = successor.create();
+    next.initialize_successor(1, prior, [9; 32], 102).unwrap();
+    assert_eq!(next.driver_checkpoint().unwrap(), (1, 0));
+    assert_eq!(next.capacity().unwrap().2, prior.canonical_bytes as usize);
+    assert_eq!(next.enqueue(&item(1), 102), Err(Error::Conflict));
+    next.initialize_successor(1, prior, [9; 32], 102).unwrap();
+    assert_eq!(
+        next.initialize_successor(1, prior, [10; 32], 102),
+        Err(Error::Conflict)
+    );
+    drop(next);
+    let mut next = successor.open();
+    let second = next.drained_snapshot().unwrap();
+    assert_eq!(second.canonical_bytes, prior.canonical_bytes);
+    assert_eq!(second.retained_jobs, prior.retained_jobs);
+    assert_eq!(second.charged_attempts, prior.charged_attempts);
+    assert_eq!(second.applied, 0);
+    next.enqueue(&item(2), 103).unwrap();
+    let mut transport = Fake::new(&successor, vec![receipt(2, false)]);
+    next.tick(&mut transport, 103, budget()).unwrap();
+    next.save_driver_checkpoint(2, 3, 103).unwrap();
+    let second = next.drained_snapshot().unwrap();
+    assert_eq!(second.retained_jobs, 2);
+    assert_eq!(second.charged_attempts, 2);
+    let third = Fixture::new();
+    let mut third = third.create();
+    third
+        .initialize_successor(2, second, [11; 32], 104)
+        .unwrap();
+    assert_eq!(
+        third.drained_snapshot().unwrap().canonical_bytes,
+        second.canonical_bytes
+    );
+}
 #[test]
 fn exact_job_and_attempt_are_durable_before_transport_and_success_survives_reopen() {
     let f = Fixture::new();
@@ -164,11 +216,13 @@ fn exact_job_and_attempt_are_durable_before_transport_and_success_survives_reope
     drop(store);
     let mut store = f.open();
     assert_eq!(store.enqueue(&item(1), 101).unwrap(), report.jobs[0]);
-    assert!(store
-        .tick(&mut transport, 101, budget())
-        .unwrap()
-        .jobs
-        .is_empty());
+    assert!(
+        store
+            .tick(&mut transport, 101, budget())
+            .unwrap()
+            .jobs
+            .is_empty()
+    );
     assert_eq!(transport.calls.len(), 1);
 }
 #[test]
@@ -183,16 +237,20 @@ fn uncertain_retry_waits_for_backoff_reopens_exact_bytes_and_rejects_clock_rollb
     drop(store);
     let mut store = f.open();
     // A bounded step back holds the committed clock; nothing is due yet.
-    assert!(store
-        .tick(&mut transport, 99, budget())
-        .unwrap()
-        .jobs
-        .is_empty());
-    assert!(store
-        .tick(&mut transport, 101, budget())
-        .unwrap()
-        .jobs
-        .is_empty());
+    assert!(
+        store
+            .tick(&mut transport, 99, budget())
+            .unwrap()
+            .jobs
+            .is_empty()
+    );
+    assert!(
+        store
+            .tick(&mut transport, 101, budget())
+            .unwrap()
+            .jobs
+            .is_empty()
+    );
     let second = store.tick(&mut transport, 102, budget()).unwrap();
     assert_eq!(second.jobs[0].state, JobState::Retained);
     // The timeout was an outage, so only the successful attempt was charged.
@@ -220,11 +278,13 @@ fn clock_step_back_holds_committed_clock_and_refuses_beyond_bound() {
             .err(),
         Some(Error::Clock)
     );
-    assert!(store
-        .tick(&mut transport, 10_000 - MAX_CLOCK_REGRESSION_SECS, budget())
-        .unwrap()
-        .jobs
-        .is_empty());
+    assert!(
+        store
+            .tick(&mut transport, 10_000 - MAX_CLOCK_REGRESSION_SECS, budget())
+            .unwrap()
+            .jobs
+            .is_empty()
+    );
     drop(store);
     let mut store = f.open();
     assert_eq!(
@@ -297,16 +357,20 @@ fn denial_preserves_prior_uncertainty_and_original_failure_budget_across_reopen(
     assert_eq!(stopped.jobs[0].next_due, 116);
     drop(store);
     let mut store = f.open();
-    assert!(store
-        .tick(&mut transport, 200, budget())
-        .unwrap()
-        .jobs
-        .is_empty());
+    assert!(
+        store
+            .tick(&mut transport, 200, budget())
+            .unwrap()
+            .jobs
+            .is_empty()
+    );
     assert_eq!(transport.calls.len(), 4);
-    assert!(transport
-        .calls
-        .iter()
-        .all(|raw| *raw == item(1).encode().unwrap()));
+    assert!(
+        transport
+            .calls
+            .iter()
+            .all(|raw| *raw == item(1).encode().unwrap())
+    );
 }
 
 #[test]
@@ -374,11 +438,13 @@ fn long_outage_never_stops_a_job_and_backoff_saturates_at_the_ceiling() {
         assert!(report.jobs[0].next_due - now <= policy().max_backoff_secs);
         now = report.jobs[0].next_due;
         // Ticks before the due time perform no transport call.
-        assert!(store
-            .tick(&mut transport, now - 1, budget())
-            .unwrap()
-            .jobs
-            .is_empty());
+        assert!(
+            store
+                .tick(&mut transport, now - 1, budget())
+                .unwrap()
+                .jobs
+                .is_empty()
+        );
     }
     assert_eq!(store.evidence(item(1).digest()).unwrap().outages, 12);
     let recovered = store.tick(&mut transport, now, budget()).unwrap();
@@ -466,11 +532,13 @@ fn retained_jobs_leave_the_live_bound_and_idle_ticks_write_nothing() {
         .unwrap();
     let mut idle = Fake::new(&f, vec![]);
     for now in 200..260 {
-        assert!(store
-            .tick(&mut idle, now, budget())
-            .unwrap()
-            .jobs
-            .is_empty());
+        assert!(
+            store
+                .tick(&mut idle, now, budget())
+                .unwrap()
+                .jobs
+                .is_empty()
+        );
     }
     assert_eq!(committed(), 101, "idle ticks must not commit the clock");
     drop(store);
@@ -687,9 +755,11 @@ fn high_attempt_backoff_saturates_instead_of_wrapping_to_immediate_retry() {
     assert_eq!(report.jobs[0].attempts, 63);
     assert_eq!(store.evidence(report.jobs[0].id).unwrap().outages, 1);
     assert_eq!(report.jobs[0].next_due, 105);
-    assert!(store
-        .tick(&mut transport, 100, budget())
-        .unwrap()
-        .jobs
-        .is_empty());
+    assert!(
+        store
+            .tick(&mut transport, 100, budget())
+            .unwrap()
+            .jobs
+            .is_empty()
+    );
 }

@@ -1,6 +1,30 @@
 use super::*;
 use crate::contact::{Frame, Offer};
 
+#[test]
+fn authenticated_image_is_exact_read_only_and_refuses_stale_custody() {
+    block_on(async {
+        let mut pair = fresh().await;
+        let before = pair.owner_disk.snapshot();
+        let selected = pair.owner.authenticated_image().await.unwrap();
+        assert!(selected == before.0);
+        assert!(pair.owner_disk.snapshot() == before);
+        let context = pair.owner.status().context;
+        let mut stale = Kernel::open(pair.owner_disk.clone(), &pair.owner_key, context)
+            .await
+            .unwrap();
+        offer(&mut pair).await;
+        let current = pair.owner_disk.snapshot();
+        assert!(matches!(
+            stale.authenticated_image().await,
+            Err(Error::Conflict)
+        ));
+        assert!(stale.needs_reopen());
+        assert!(pair.owner_disk.snapshot() == current);
+        assert!(pair.owner.authenticated_image().await.unwrap() == current.0);
+    });
+}
+
 async fn offer(pair: &mut Pair) -> ConfidentialContactOffer {
     pair.owner
         .create_contact_offer(
@@ -34,6 +58,200 @@ fn member_work(pair: &Pair) -> model::Working {
         &pair.member_key,
         pair.member.status().context,
     )
+}
+
+#[test]
+fn contact_response_inspection_preserves_pending_key_package_and_matches_committed_join() {
+    block_on(async {
+        let mut pair = fresh().await;
+        let (_, request) = request(&mut pair).await;
+        let response = pair
+            .owner
+            .accept_contact(op(101), request.bytes(), validity(pair.now), pair.now)
+            .await
+            .unwrap();
+        let before = pair.member_disk.snapshot();
+        let pending = pair.member.status();
+        assert!(!pair
+            .member
+            .contact_response_committed(response.bytes())
+            .await
+            .unwrap());
+        let review = pair
+            .member
+            .inspect_contact_response(response.bytes(), pair.now)
+            .await
+            .unwrap();
+        assert_eq!(review.pending(), pending);
+        assert_eq!(
+            review.request(),
+            crate::contact::request_hash(request.bytes())
+        );
+        assert_eq!(
+            review.response(),
+            crate::contact::response_hash(response.bytes())
+        );
+        assert_eq!(review.proposed().status().phase, Phase::MemberJoined);
+        assert_eq!(
+            review.proposed().status().roster,
+            pair.owner.status().roster
+        );
+        assert_eq!(
+            review.proposed().status().control_floor,
+            pair.owner.status().control_floor
+        );
+        assert_eq!(review.proposed().members().len(), 2);
+        assert_eq!(pair.member.status(), pending);
+        assert!(pair.member_disk.snapshot() == before);
+        assert!(!pair.member.needs_reopen());
+        // An isolated Welcome can be staged repeatedly without consuming the
+        // durable KeyPackage or requiring a reopen between read-only reviews.
+        let again = pair
+            .member
+            .inspect_contact_response(response.bytes(), pair.now)
+            .await
+            .unwrap();
+        assert_eq!(again.proposed().status(), review.proposed().status());
+        assert!(pair.member_disk.snapshot() == before);
+        let joined = pair
+            .member
+            .join_contact(response.bytes(), pair.now)
+            .await
+            .unwrap();
+        assert_eq!(joined, review.proposed().status());
+        let after = pair.member_disk.snapshot();
+        assert!(pair
+            .member
+            .contact_response_committed(response.bytes())
+            .await
+            .unwrap());
+        assert!(pair.member_disk.snapshot() == after);
+        let message = pair
+            .owner
+            .test_send(op(102), b"after inspection", pair.now)
+            .await
+            .unwrap();
+        assert_eq!(
+            pair.member
+                .receive(message.bytes(), pair.now)
+                .await
+                .unwrap()
+                .body(),
+            b"after inspection"
+        );
+    });
+}
+
+#[test]
+fn contact_response_failed_inspection_does_not_mutate_or_consume_the_pending_request() {
+    block_on(async {
+        let mut pair = fresh().await;
+        let (secret, request) = request(&mut pair).await;
+        let response = pair
+            .owner
+            .accept_contact(op(101), request.bytes(), validity(pair.now), pair.now)
+            .await
+            .unwrap();
+        let offer = Offer::decode(secret.confidential_bytes()).unwrap();
+        let request_hash = crate::contact::request_hash(request.bytes());
+        let frame = Frame::decode(response.bytes()).unwrap();
+        let clear = offer.open(&frame, Some(request_hash)).unwrap();
+        let mut modified_outer = response.bytes().to_vec();
+        *modified_outer.last_mut().unwrap() ^= 1;
+        let wrong_request = offer.seal(Some([9; 32]), &clear).unwrap();
+        let mut modified_checkpoint = clear.clone();
+        *modified_checkpoint.last_mut().unwrap() ^= 1;
+        let bad_signature = offer
+            .seal(Some(request_hash), &modified_checkpoint)
+            .unwrap();
+        // Even possession of the confidential response key cannot authorize an
+        // unrelated Welcome under the retained signed checkpoint.
+        let mut packet = crate::packets::InvitePacket::decode(&clear).unwrap();
+        *packet.welcome.last_mut().unwrap() ^= 1;
+        let bad_welcome = offer
+            .seal(Some(request_hash), &packet.encode().unwrap())
+            .unwrap();
+        let before = pair.member_disk.snapshot();
+        for bytes in [
+            request.bytes(),
+            modified_outer.as_slice(),
+            wrong_request.as_slice(),
+            bad_signature.as_slice(),
+            bad_welcome.as_slice(),
+        ] {
+            assert!(pair
+                .member
+                .inspect_contact_response(bytes, pair.now)
+                .await
+                .is_err());
+            assert!(pair.member_disk.snapshot() == before);
+            assert!(!pair.member.needs_reopen());
+        }
+        assert!(matches!(
+            pair.member
+                .inspect_contact_response(response.bytes(), pair.now + 10_000)
+                .await,
+            Err(Error::Time)
+        ));
+        assert!(pair.member_disk.snapshot() == before);
+        assert!(!pair.member.needs_reopen());
+        pair.member
+            .inspect_contact_response(response.bytes(), pair.now)
+            .await
+            .unwrap();
+        pair.member
+            .join_contact(response.bytes(), pair.now)
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn contact_response_reconciliation_remains_read_only_after_removal() {
+    block_on(async {
+        let mut pair = fresh().await;
+        let (_, request) = request(&mut pair).await;
+        let response = pair
+            .owner
+            .accept_contact(op(101), request.bytes(), validity(pair.now), pair.now)
+            .await
+            .unwrap();
+        let before = pair.member_disk.snapshot();
+        assert!(!pair
+            .member
+            .contact_response_committed(response.bytes())
+            .await
+            .unwrap());
+        assert!(pair.member_disk.snapshot() == before);
+        pair.member
+            .join_contact(response.bytes(), pair.now)
+            .await
+            .unwrap();
+        let removal = pair
+            .owner
+            .remove(op(102), pair.member.status().context.device, pair.now)
+            .await
+            .unwrap();
+        pair.member
+            .apply_control(removal.bytes(), pair.now)
+            .await
+            .unwrap();
+        pair.reopen_member().await;
+        let removed = pair.member_disk.snapshot();
+        assert!(pair
+            .member
+            .contact_response_committed(response.bytes())
+            .await
+            .unwrap());
+        assert!(pair.member_disk.snapshot() == removed);
+        assert_eq!(pair.member.status().phase, Phase::Removed);
+        assert!(pair
+            .member
+            .inspect_contact_response(response.bytes(), pair.now)
+            .await
+            .is_err());
+        assert!(pair.member_disk.snapshot() == removed);
+    });
 }
 
 #[test]

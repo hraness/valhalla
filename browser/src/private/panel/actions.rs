@@ -54,6 +54,233 @@ pub(super) async fn perform(
     selected_file: Option<js_sys::Promise>,
 ) -> Result<()> {
     match action {
+        Action::RemoveReview | Action::SucceedReview => {
+            let succession = action == Action::SucceedReview;
+            let device = key(&input(
+                app,
+                if succession {
+                    "private-succeed-device"
+                } else {
+                    "private-remove-device"
+                },
+            )
+            .value())?;
+            let Response::OwnerReview(consent) = call(
+                app,
+                ticket,
+                Request::ReviewOwnerAction { device, succession },
+            )
+            .await?
+            else {
+                return Err("Unexpected owner review.".into());
+            };
+            let target = consent.target.claims();
+            text(app, "private-owner-consent", &format!("{}\n{}\nEpoch {}\nRoster {}\nControl floor {}\nSelected account {}\nSelected device {}\nEnrollment expires {} UTC seconds\n{}\nThis review expires at {} UTC seconds and ends on any other room action.", if succession { "Review ownership handoff" } else { "Review removal and rekey" }, metadata(consent.status.context), consent.status.epoch, hex(&consent.status.roster), consent.status.control_floor.sequence(), hex(target.account.as_bytes()), hex(target.device.as_bytes()), target.validity.expires_at(), if succession { "This device gives owner authority to the selected enrolled device of the same account. This device remains an ordinary member. The handoff is final once saved." } else { "The selected device loses future room access. Retained messages and plaintext it already received cannot be revoked." }, consent.validity.expires_at()));
+            app.borrow_mut().owner_consent = Some(consent);
+            status(
+                app,
+                "Review the selected device and current membership, then confirm this action.",
+                false,
+            );
+        }
+        Action::GenerationDrain | Action::GenerationRestart => {
+            let value = input(app, "private-generation-transition").value();
+            let transition = hex32(&value)?;
+            let raw_head = input(app, "private-generation-head").value();
+            let head: u64 = raw_head
+                .parse()
+                .map_err(|_| "Enter the agreed terminal position.")?;
+            if head.to_string() != raw_head || head > vhalla_private_relay::MAX_RELAY_ITEMS as u64 {
+                return Err("Enter a canonical terminal position between 0 and 4096.".into());
+            }
+            let Response::Generation(report) = call(
+                app,
+                ticket,
+                Request::DeliveryDrain {
+                    transition,
+                    head,
+                    restart: action == Action::GenerationRestart,
+                },
+            )
+            .await?
+            else {
+                return Err("Unexpected generation report.".into());
+            };
+            let spend = format!(
+                "Lifetime connection attempts: {} / {}\nLifetime charged bytes: {} / {}",
+                report.attempts, report.attempt_ceiling, report.wire_bytes, report.byte_ceiling
+            );
+            if report.receipt.is_empty() {
+                text(app, "private-generation-status", &format!("Checked {} of {} positions for mailbox generation {}. Continue checking pages.\n{spend}", report.scanned, report.head, report.generation));
+                status(
+                    app,
+                    "Drain page checked. Continue until the complete mailbox is verified.",
+                    false,
+                );
+            } else {
+                app.borrow_mut().pause_receipt = Some(report.receipt);
+                app.borrow_mut().delivery_paused = true;
+                input(app, "private-generation-attempts")
+                    .set_value(&report.attempt_ceiling.to_string());
+                text(app, "private-generation-status", &format!("Generation {} paused through position {}. Download the private receipt for the host operator. Room history stays readable; this device cannot send, sync or change membership until the reviewed successor is selected.\n{spend}", report.generation, report.head));
+                status(
+                    app,
+                    "This device is paused. Download its private receipt for the host operator.",
+                    false,
+                );
+            }
+        }
+        Action::GenerationReceipt => {
+            let bytes = app
+                .borrow()
+                .pause_receipt
+                .clone()
+                .ok_or("Complete the drain scan before downloading its receipt.")?;
+            download(app, "private-controller.vhpause", &bytes)?;
+        }
+        Action::GenerationReview => {
+            let profile = file(app, ticket, "private-generation-profile", 4096).await?;
+            input(app, "private-generation-profile").set_value("");
+            let fence = file(app, ticket, "private-generation-fence", 16384).await?;
+            let raw = input(app, "private-generation-attempts").value();
+            let attempt_ceiling: u64 = raw
+                .parse()
+                .map_err(|_| "Enter the finite cumulative attempt allowance.")?;
+            if attempt_ceiling.to_string() != raw {
+                return Err("Enter a canonical attempt allowance.".into());
+            }
+            let Response::GenerationReview(consent) = call(
+                app,
+                ticket,
+                Request::ReviewGeneration {
+                    profile,
+                    fence,
+                    attempt_ceiling,
+                },
+            )
+            .await?
+            else {
+                return Err("Unexpected generation review.".into());
+            };
+            text(app, "private-generation-consent", &format!("Use mailbox generation {} at this same browser address\n{}\nTransition {}\nNext namespace {}\nProfile {}\nHost fence {}\nYour paused receipt {}\nCumulative attempts {}\nLifetime byte ceiling {}\nSpent allowances and room encryption state remain unchanged. Review expires at {} UTC seconds.", consent.generation, metadata(consent.context), hex(&consent.transition), hex(&consent.namespace), hex(&consent.binding), hex(&consent.fence), hex(&consent.receipt), consent.attempt_ceiling, consent.byte_ceiling, consent.validity.expires_at()));
+            app.borrow_mut().generation_consent = Some(consent);
+            status(
+                app,
+                "Review the exact next mailbox and retained allowance, then confirm its use.",
+                false,
+            );
+        }
+        Action::GenerationConfirm => {
+            let consent = app
+                .borrow_mut()
+                .generation_consent
+                .take()
+                .ok_or("Review the exact next mailbox first.")?;
+            let Response::Delivery(report) =
+                call(app, ticket, Request::ConfirmGeneration { consent }).await?
+            else {
+                return Err("Unexpected successor report.".into());
+            };
+            {
+                let mut state = app.borrow_mut();
+                state.delivery_paused = false;
+                state.delivery_ready = report.stop == 0;
+            }
+            delivery_status(app, &report);
+            text(app, "private-generation-consent", "");
+            text(app, "private-generation-status", "The reviewed mailbox is selected. Prior records and spend are retained; incoming sync starts at position zero. Keep both generation profiles and the host fence.");
+            status(
+                app,
+                "Next mailbox selected. Sync now to continue this room.",
+                false,
+            );
+        }
+        Action::JoinReview => {
+            let index = selected(app, "private-admission-select")?;
+            let item = *app
+                .borrow()
+                .admissions
+                .get(index)
+                .ok_or("Select an invitation to review.")?;
+            if item.kind != vhalla_private_kernel::OutboxKind::ContactInvitation {
+                return Err("Select an invitation response for this device.".into());
+            }
+            let Response::JoinReview(consent) = call(
+                app,
+                ticket,
+                Request::ReviewJoinResponse {
+                    position: item.position,
+                },
+            )
+            .await?
+            else {
+                return Err("Unexpected invitation review.".into());
+            };
+            if consent.position != item.position || consent.digest != item.digest {
+                return Err("The selected invitation changed. Review it again.".into());
+            }
+            let proposed = &consent.proposed;
+            let members = proposed
+                .members
+                .iter()
+                .map(|m| {
+                    format!(
+                        "Account {}\nDevice {}",
+                        hex(m.claims().account.as_bytes()),
+                        hex(m.claims().device.as_bytes())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            text(app, "private-join-consent", &format!(
+                "Review this room before joining\n{}\nOwner account {}\nOwner device {}\nYour account {}\nYour device {}\nJoining epoch {}\n{} devices in this group\n\n{}\n\nConfirming joins this device to the displayed group. Earlier messages remain unavailable. This review expires in five minutes or when the invitation expires, whichever comes first.",
+                metadata(consent.pending.context), hex(proposed.owner.claims().account.as_bytes()),
+                hex(proposed.owner.claims().device.as_bytes()), hex(consent.pending.context.account.as_bytes()),
+                hex(consent.pending.context.device.as_bytes()), proposed.status.epoch, proposed.members.len(), members));
+            text(app, "private-join-commitments", &format!(
+                "Roster {}\nControl floor {}\nRequest {}\nResponse {}\nRetained item {}\nReview expires at {} UTC seconds",
+                hex(&proposed.status.roster), proposed.status.control_floor.sequence(), hex(&consent.request),
+                hex(&consent.response), hex(&consent.digest), consent.validity.expires_at()));
+            app.borrow_mut().join_consent = Some(consent);
+            status(app, "Invitation verified. Check the room, owner and group, then choose Join reviewed room.", false);
+        }
+        Action::JoinConfirm => {
+            let consent = app
+                .borrow_mut()
+                .join_consent
+                .take()
+                .ok_or("Review the invitation before joining.")?;
+            let index = selected(app, "private-admission-select")?;
+            {
+                let state = app.borrow();
+                let item = state
+                    .admissions
+                    .get(index)
+                    .ok_or("The invitation selection changed.")?;
+                if item.position != consent.position
+                    || item.digest != consent.digest
+                    || state
+                        .room
+                        .as_ref()
+                        .is_none_or(|m| m.status != consent.pending)
+                {
+                    return Err(
+                        "The reviewed invitation or device changed. Review it again.".into(),
+                    );
+                }
+            }
+            let Response::Membership(view) =
+                call(app, ticket, Request::ConfirmJoinResponse { consent }).await?
+            else {
+                return Err("Unexpected joined room report.".into());
+            };
+            membership(app, view);
+            app.borrow_mut().admissions.clear();
+            text(app, "private-admission-select", "");
+            text(app, "private-join-consent", "");
+            text(app, "private-join-commitments", "");
+            status(app, "You joined the reviewed room. Sync now checks the retained mailbox and receives messages available to this device.", false);
+        }
         Action::AdmissionReview => {
             {
                 let mut s = app.borrow_mut();
@@ -74,7 +301,7 @@ pub(super) async fn perform(
                     .get(index)
                     .ok_or("Select a retained join request.")?;
                 if item.kind != vhalla_private_kernel::OutboxKind::ContactRequest {
-                    return Err("Select an encrypted request. Join responses still use the dedicated file input.".into());
+                    return Err("Select an encrypted request. Recipients review invitation responses separately.".into());
                 }
                 (item.position, item.digest)
             };
@@ -99,7 +326,7 @@ pub(super) async fn perform(
                 return Err("The retained request selection changed. Review again.".into());
             }
             text(app, "private-admission-consent", &format!(
-                "Review before admitting this device\n{}\nRecipient account {}\nRecipient device {}\nCurrent epoch {}\nCurrent roster {}\nControl floor {}\nRequest at mailbox {}\nRequest commitment {}\nInvitation expires at {} UTC seconds\nConfirming adds this exact device to the displayed room and saves its encrypted join response. The recipient must still complete the file-based join step.",
+                "Review before admitting this device\n{}\nRecipient account {}\nRecipient device {}\nCurrent epoch {}\nCurrent roster {}\nControl floor {}\nRequest at mailbox {}\nRequest commitment {}\nInvitation expires at {} UTC seconds\nConfirming adds this exact device to the displayed room and saves its encrypted invitation response. Sync sends the response so the recipient can review and join.",
                 metadata(consent.context), hex(consent.recipient.as_bytes()), hex(consent.device.as_bytes()),
                 consent.epoch, hex(&consent.roster), consent.control_floor.sequence(), consent.position,
                 hex(&consent.digest), consent.validity.expires_at(),
@@ -147,7 +374,7 @@ pub(super) async fn perform(
             )?;
             text(app, "private-admission-consent", "");
             refresh(app, ticket).await?;
-            status(app, "The reviewed device was admitted and its encrypted response saved. Transfer the response to that recipient to complete joining. Sync forwards the membership change to existing members; the retained request remains available as evidence until you explicitly discard it.", false);
+            status(app, "The reviewed device was admitted. Sync sends its invitation response and updates existing members. The recipient must review and confirm joining; the retained request stays available until you explicitly discard it.", false);
         }
         Action::DeliveryCreate | Action::DeliveryOpen => {
             let profile = file(app, ticket, "private-delivery-profile", 4096).await?;
@@ -169,18 +396,23 @@ pub(super) async fn perform(
             {
                 let mut s = app.borrow_mut();
                 s.delivery_connected = true;
-                s.delivery_ready = report.stop == 0;
+                s.delivery_ready = report.stop == 0 || report.stop == 4;
+                s.delivery_paused = report.stop == 4;
             }
             delivery_status(app, &report);
             admissions(app, ticket, &report).await?;
             status(
                 app,
-                if report.stop != 0 {
+                if report.stop == 4 {
+                    "This controller is durably paused for a mailbox change. Read history or review the exact successor below. Reopening cannot unpause the predecessor."
+                } else if report.stop != 0 {
                     "Local gateway selected, but delivery is stopped at a retained refusal or spent budget. Its state is preserved for inspection; reopening does not reset it."
+                } else if report.prejoin {
+                    "Connection selected. Sync sends your encrypted request and looks for a matching invitation. Joining requires a separate review and confirmation."
                 } else {
                     "Local gateway selected. Sync now stages a bounded incoming page, applies it in order and sends exact encrypted outputs. No network runs until you choose it."
                 },
-                report.stop != 0,
+                report.stop != 0 && report.stop != 4,
             );
         }
         Action::DeliverySync => {
@@ -204,7 +436,11 @@ pub(super) async fn perform(
             membership(app, view);
             status(
                 app,
-                if report.review {
+                if report.prejoin && report.admissions != 0 {
+                    "Your invitation is ready to review. Check the room, owner and group before joining."
+                } else if report.prejoin && report.stop == 0 && report.blocked == 0 {
+                    "Invitation search finished for this page. Sync again to continue or check for the owner's response. You have not joined yet."
+                } else if report.review {
                     "An owner control changed membership. Review the current roster before preparing a message or syncing again."
                 } else if report.stop == 3 {
                     "Ten consecutive attempts failed to reach the gateway or relay. Exact ciphertext and progress are retained. When the local host is reachable again, lock, unlock and open the retained connection with its profile to continue; budgets are not renewed."
@@ -261,7 +497,7 @@ pub(super) async fn perform(
             admissions(app, ticket, &report).await?;
             status(
                 app,
-                "The selected retained item was discarded explicitly. It cannot be fetched from the relay again.",
+                "The selected local copy was discarded. The retained mailbox is unchanged.",
                 false,
             );
         }
@@ -709,6 +945,21 @@ pub(super) async fn perform(
         }
         Action::Remove => {
             let device = key(&input(app, "private-remove-device").value())?;
+            let consent = app
+                .borrow_mut()
+                .owner_consent
+                .take()
+                .ok_or("Review the exact device removal first.")?;
+            if consent.succession
+                || consent.target.claims().device != device
+                || app
+                    .borrow()
+                    .room
+                    .as_ref()
+                    .is_none_or(|m| m.status != consent.status)
+            {
+                return Err("The reviewed device or membership changed. Review it again.".into());
+            }
             // Validate the selected full key against this displayed roster before worker mutation.
             {
                 let s = app.borrow();
@@ -778,6 +1029,21 @@ pub(super) async fn perform(
         }
         Action::Succeed => {
             let successor = key(&input(app, "private-succeed-device").value())?;
+            let consent = app
+                .borrow_mut()
+                .owner_consent
+                .take()
+                .ok_or("Review the exact ownership handoff first.")?;
+            if !consent.succession
+                || consent.target.claims().device != successor
+                || app
+                    .borrow()
+                    .room
+                    .as_ref()
+                    .is_none_or(|m| m.status != consent.status)
+            {
+                return Err("The reviewed device or membership changed. Review it again.".into());
+            }
             let validity = {
                 let s = app.borrow();
                 let m = s.room.as_ref().ok_or("No selected room.")?;
@@ -1698,6 +1964,7 @@ fn delivery_status(app: &App, r: &DeliveryReport) {
                 _ => "unclassified",
             }
         ),
+        4 => "paused for an explicit mailbox change".to_string(),
         _ => "paused after ten consecutive failed attempts".to_string(),
     };
     let blocked = match r.blocked {
@@ -1709,6 +1976,14 @@ fn delivery_status(app: &App, r: &DeliveryReport) {
         5 => "waiting for a future-epoch control",
         _ => "waiting for earlier sender messages",
     };
+    if r.prejoin {
+        text(app, "private-delivery-status", &format!(
+            "Invitation search checked {} mailbox items. {}\nEncrypted requests retained by relay: {} · charged attempts {} · charged bytes {}\nPending: {} · stopped: {} · blocked: {} · retry after Unix second {}",
+            r.discovery_cursor,
+            if r.admissions != 0 { "Invitation ready for your review." } else { "Sync again to check for an invitation." },
+            r.retained, r.attempts, r.wire_bytes, r.pending, stop, blocked, r.retry_at));
+        return;
+    }
     text(
         app,
         "private-delivery-status",

@@ -1,8 +1,11 @@
 # Private runtime readiness continuation
 
-This continuation starts from `1cff4f5fc202b1a1a987d6ae52672188956774b0`.
-Private rooms remain opt-in. Local qualification is not independent-device or
-production activation evidence.
+This continuation started from `1cff4f5fc202b1a1a987d6ae52672188956774b0`
+and merged in PR101 at `4b08106`. The implementation and local measurements
+below describe that delivered change. The active follow-on work is the
+[private-room pilot plan](../kb/plans/valhalla-private-room-pilot.md).
+Independent-device qualification is deferred while the user prepares the
+connection. Private rooms remain opt-in.
 
 ## Existing foundation
 
@@ -11,7 +14,10 @@ recovery and browser qualification. PR98 added six maintained TLA+ suites with
 26 cases and repaired a host recovery fence exposed by a counterexample. PR99
 closed that formal plan. Kani checks production spent-nonce logic; Verus checks
 a ledger reference implementation with sampled Rust correspondence. The Lean
-weighted-quorum experiment is checked but is not a required production proof.
+weighted-certificate trial became a required CI check in PR105. It checks 24
+theorems and a shared conformance corpus consumed by both Rust verifiers; it
+does not prove their complete implementations. See the
+[Lean trial](../kb/plans/valhalla-lean-assurance-trial.md).
 See [formal rigor](../kb/plans/valhalla-formal-rigor.md) for exact claims and limits.
 
 During this continuation, PR102 expanded the maintained inventory to ten TLA+
@@ -45,9 +51,9 @@ independent production regression for each useful counterexample.
    WASM build and real browser journey. Build an exact native candidate, run a
    small smoke fixture, then the bounded load, quiet and offline scenarios.
    Retain unsuccessful evidence as well as successful evidence.
-4. **In progress — independent review and delivery.** Review the converged diff,
-   repair findings, run the required current-head aggregate CI gate, and record
-   PR/merge and artifact identities. No test waiver from earlier receipts.
+4. **Complete — independent review and source delivery.** PR101 merged after
+   its current-head checks and independent review. Release artifact identity
+   and operational tests remain separate from source delivery.
 5. **Pending external qualification.** Bind the second-Mac instructions to the
    qualified candidate. Run separate-machine pinned-relay/Tailcat and
    sleep/wake/reboot qualification when that machine is identified and ready.
@@ -86,21 +92,25 @@ monotonic observations, sampled RSS and disk allocation. Observation timestamps
 are bounds, not invented internal event times. An exploratory acceptance p95
 under five seconds is distinct from correctness and may fail honestly.
 
-## Remaining production decisions and gates
+## Follow-on work and remaining operating tests
 
-- Quiet-arrival latency remains a measured gap: after 90 seconds idle, one
+- PR101 established the quiet-arrival baseline: after 90 seconds idle, one
   message took 28.67 seconds to observed acceptance. The 100-message 1 Hz run
   passed correctness with no missed slots and 4.27-second acceptance p95.
-  Investigate wakeup or bounded long-polling before promising the same latency
-  after idle; preserve explicit authority and resource limits.
+  The pilot implements a shorter idle polling interval. Its repeated comparison
+  must include idle connections, bytes, CPU and memory before claiming an
+  improvement; the original numbers remain evidence for the PR101 binary.
 - Independent-device and remote-path qualification is not yet run.
 - A sparse 24-hour soak requires a real elapsed run and explicit grant handoffs.
   A 24-hour 1 Hz run and 10,000-message single-mailbox run exceed current bounds.
-- Mailbox/credential rotation is modeled and gated; seamless migration is not
-  implemented. Preserve capacity refusals and retained recovery evidence.
-- Recipient-side retained response review/prejoin delivery remains a separate
-  scoped contract. Device transfer, rollback resistance and browser background
-  persistence retain their documented limitations.
+- [Drained mailbox rollover](private-generations.md) is implemented in the active
+  pilot. Joined browser/native testing and delivery are still tracked there.
+  Offline undrained migration remains unsupported; preserve capacity refusals
+  and all transition records.
+- Recipient-side retained response review and prejoin transport are implemented
+  in the pilot and awaiting its production browser journey. Device transfer,
+  rollback resistance and browser background persistence retain their documented
+  limitations.
 - Production activation needs relevant operational evidence and exact artifact
   identity; finite proofs and local passing tests alone do not establish it.
 
@@ -127,5 +137,5 @@ and sender reopens. All claims were observed within 12.00 seconds after the
 first recipient reopen. The runner's 18 contract tests passed.
 See [runtime measurements](performance.md#actual-private-cli-process-measurement)
 for the frozen runner, candidate and completed workload results. Required
-current-head CI, final delivery status and independent-device gates remain
-separate from these local checks.
+current-head CI and source delivery completed in PR101. Published artifact
+identity and independent-device results remain separate from these local checks.

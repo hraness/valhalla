@@ -12,8 +12,8 @@
 //! and permanent refusals stop a job at once. A stopped job can be re-armed
 //! explicitly with [`DeliveryStore::resume`], which keeps every prior attempt
 //! as evidence and never creates a new queue.
-use super::{net::NetError, RelayItem, RelayNamespace, RelayReceipt, MAX_RELAY_ITEMS};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use super::{MAX_RELAY_ITEMS, RelayItem, RelayNamespace, RelayReceipt, net::NetError};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
@@ -23,6 +23,8 @@ use std::{
 };
 use vhalla_custody as custody;
 use vhalla_private_kernel::{Context, OperationId};
+mod generation;
+pub use generation::SuccessorSeed;
 #[cfg(test)]
 mod tests;
 const MAX_ITEM_BYTES: usize = super::codec::MAX_PUT_BODY - 32;
@@ -167,6 +169,28 @@ pub struct JobEvidence {
     pub spent_attempts: u32,
     /// Caller UNIX second of the last re-arm, zero when never resumed.
     pub resumed_at: u64,
+}
+
+/// Cumulative, drained queue evidence carried across mailbox generations.
+/// Counts include every predecessor; the commitment retains exact job evidence.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LedgerSnapshot {
+    /// Authenticated local stream boundary already considered by this driver.
+    pub outgoing: u64,
+    /// Contiguous authenticated incoming boundary (zero for control queues).
+    pub applied: u64,
+    /// Number of retained jobs, including predecessor generations.
+    pub retained_jobs: u64,
+    /// Lifetime canonical item bytes, including predecessor generations.
+    pub canonical_bytes: u64,
+    /// Charged attempts, including every explicit re-arm's spent attempts.
+    pub charged_attempts: u64,
+    /// Retained transport-outage observations.
+    pub outages: u64,
+    /// Explicit operator re-arms; rollover never creates a re-arm.
+    pub resumes: u64,
+    /// Domain-separated commitment to the complete ordered queue evidence.
+    pub commitment: [u8; 32],
 }
 /// One finite tick's updated jobs. A budget stop preserves all remaining work.
 #[derive(Clone, Debug)]
@@ -360,7 +384,7 @@ impl DeliveryStore {
         .map_err(|_| Error::Storage)?;
         configure(&conn)?;
         let (format,stored_context,stored_ns,stored_endpoint,max_jobs,max_bytes,max_attempts,initial,max_backoff,clock):MetadataRow=conn.query_row("SELECT format,context,namespace,endpoint,max_jobs,max_bytes,max_attempts,initial_backoff,max_backoff,clock FROM meta WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?))).map_err(|_|Error::Corrupt)?;
-        if format != 1
+        if ![1, 2].contains(&format)
             || stored_context != context_bytes(context)
             || stored_ns != namespace.as_bytes()
             || stored_endpoint != endpoint.as_bytes()
@@ -406,6 +430,7 @@ impl DeliveryStore {
                 .map_err(|_| Error::Storage)?;
             out.sync()?;
         }
+        out.lineage()?;
         out.validate()?;
         // Format-1 queues predate the driver watermark table. Add the table
         // and its zero row under the same commit barrier; job/meta bytes and
@@ -497,6 +522,12 @@ impl DeliveryStore {
             // per already-enqueued job. The retained clock is unchanged because
             // no durable fact was published.
             return Ok(prior);
+        }
+        if self
+            .predecessor_baseline()?
+            .is_some_and(|(outgoing, _)| item.sequence() <= outgoing)
+        {
+            return Err(Error::Conflict);
         }
         let conflict: bool = self
             .conn
@@ -611,6 +642,7 @@ impl DeliveryStore {
             u64::try_from(applied).map_err(|_| Error::Corrupt)?,
         ))
     }
+
     /// Advance the durable driver watermarks. They may only move forward; a
     /// lower value than retained is a caller bug, never a state repair.
     pub fn save_driver_checkpoint(&mut self, outgoing: u64, applied: u64, now: u64) -> Result<()> {
@@ -648,7 +680,14 @@ impl DeliveryStore {
         if count < 0 || total < 0 {
             return Err(Error::Corrupt);
         }
-        Ok((count as usize, total as usize))
+        let prior = self
+            .lineage()?
+            .map_or(0, |(_, prior, _)| prior.canonical_bytes);
+        let total = (total as u64).checked_add(prior).ok_or(Error::Corrupt)?;
+        Ok((
+            count as usize,
+            usize::try_from(total).map_err(|_| Error::Corrupt)?,
+        ))
     }
     /// Live jobs, the live bound, retained bytes and the byte bound, in that
     /// order, so a host can report a full queue instead of ending its grant.

@@ -25,6 +25,9 @@ use vhalla_private_kernel::{
 #[cfg(feature = "client")]
 pub mod agent;
 
+/// Private drained mailbox-generation evidence and controller maintenance.
+pub mod generation;
+
 /// Bounded, fixed-grant MCP adapter for cooperating native agent hosts.
 #[cfg(feature = "agent-rpc")]
 pub mod agent_rpc;
@@ -244,6 +247,7 @@ impl RoomCreation {
             custody: Some(Custody {
                 kernel,
                 identity: self.identity,
+                delivery_paused: false,
             }),
         })
     }
@@ -253,6 +257,7 @@ struct Custody {
     // Drop the room key/state/store before releasing the account custody lock.
     kernel: Kernel<KernelStore>,
     identity: Identity,
+    delivery_paused: bool,
 }
 
 /// One exact room/device with account and kernel custody owned together.
@@ -271,9 +276,14 @@ impl RoomSession {
     ) -> Result<Self> {
         let key = identity.private_storage_key(context)?;
         let store = KernelStore::open(path, context)?;
+        let delivery_paused = store.delivery_is_paused()?;
         let kernel = Kernel::open(store, &key, context).await?;
         Ok(Self {
-            custody: Some(Custody { kernel, identity }),
+            custody: Some(Custody {
+                kernel,
+                identity,
+                delivery_paused,
+            }),
         })
     }
 
@@ -313,6 +323,9 @@ impl RoomSession {
     /// Prepare the exact user-selected content for the current room and roster.
     /// No membership change may silently renew this disclosure decision.
     pub fn prepare_message(&self, body: &[u8]) -> Result<MessageDraft> {
+        if self.live()?.delivery_paused {
+            return Err(StoreError::Refused.into());
+        }
         Ok(self.live()?.kernel.prepare_message(body)?)
     }
 

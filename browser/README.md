@@ -448,10 +448,20 @@ if custody closes, unlock and reopen before reviewing again. Successful
 admission saves the encrypted response and leaves the original retained
 request until explicit discard; it does not automatically admit another item.
 
-This flow removes the owner's request download/reimport step. A browser
-awaiting its first welcome still cannot connect or sync. Confidential offer
-handoff and recipient response file import remain explicit; prejoin transport
-and response review need a separate contract. The sender's status reports
+After importing a confidential offer, a recipient can create a relay connection
+with starting cursor zero, publish its encrypted request, and discover the
+matching response. Review shows the room, owner, recipient device, proposed
+members, validity and request/response commitments. Confirmation joins only
+that response. Any intervening action or expired review requires another
+review. Reload recovers a committed join from its saved intent; it cannot reuse
+lost consent to authorize an uncommitted join.
+
+The discovery cursor is separate from normal delivery. After joining, ordinary
+delivery starts at zero, preserving messages queued after admission but before
+the response reached the relay. Earlier plaintext remains unavailable. A saved
+prejoin connection prevents manual response-file import from bypassing this
+flow. Devices without a connection can still use the explicit file exchange.
+The sender's status reports
 relay retention; incoming status reports local committed acceptance. Neither
 claims human reading. Normal incoming applications queue a device-signed
 acceptance artifact; receipt messages do not generate receipt loops.
@@ -470,6 +480,7 @@ checks:
 
 ```sh
 node browser/tools/qualify_private_delivery.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE NEW_OUTPUT_DIR VHALLA_CLI OPENSSL_EXECUTABLE [--gateway-port N] [--tls-port M]
+node browser/tools/qualify_private_delivery.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE NEW_MIXED_OUTPUT_DIR VHALLA_CLI OPENSSL_EXECUTABLE --mixed-pilot
 node browser/tools/qualify_private_panel.mjs PRODUCTION_PRIVATE_DIST CHROMIUM_EXECUTABLE ANOTHER_NEW_OUTPUT_DIR --production
 ```
 
@@ -481,7 +492,14 @@ never reused, and the receipt records the selected gateway origin and TLS
 address. Run it through the repository's browser-auth scheduler lane. Its
 same-machine receipt does not substitute for independent-machine Tailcat or
 sleep/wake qualification.
-The second command covers ordinary private UI, archive routes and streaming
+The mixed pilot uses a browser owner and two deterministic native MCP agents
+to compute, verify and review a synthetic result. It closes the agents,
+removes a device, reopens the browser and grants the remaining agent a new
+session for completion. It checks original ciphertext, grants, inbox positions
+and signed device acceptances. Its explicit admission/control-file transfers
+are separate from the relay recipient-join check in the default journey.
+
+The panel command covers ordinary private UI, archive routes and streaming
 export on the same production artifact. Without `--production`, that driver
 requires a local-qualification artifact and additionally exercises injected
 fork and expired-clock cases; those entry points never enter the production build.

@@ -34,10 +34,17 @@ const IDS: &[(&str, Action)] = &[
     ("private-delivery-create", Action::DeliveryCreate),
     ("private-delivery-open", Action::DeliveryOpen),
     ("private-delivery-sync", Action::DeliverySync),
+    ("private-generation-drain", Action::GenerationDrain),
+    ("private-generation-restart", Action::GenerationRestart),
+    ("private-generation-receipt", Action::GenerationReceipt),
+    ("private-generation-review", Action::GenerationReview),
+    ("private-generation-confirm", Action::GenerationConfirm),
     ("private-admission-download", Action::AdmissionDownload),
     ("private-admission-discard", Action::AdmissionDiscard),
     ("private-admission-review", Action::AdmissionReview),
     ("private-admission-confirm", Action::AdmissionConfirm),
+    ("private-join-review", Action::JoinReview),
+    ("private-join-confirm", Action::JoinConfirm),
     ("private-prepare-message", Action::Prepare),
     ("private-save-message", Action::Send),
     ("private-download-output", Action::Download),
@@ -57,8 +64,10 @@ const IDS: &[(&str, Action)] = &[
     ("private-observe", Action::Observe),
     ("private-fork-evidence", Action::ForkEvidence),
     ("private-remove", Action::Remove),
+    ("private-remove-review", Action::RemoveReview),
     ("private-renew", Action::Renew),
     ("private-succeed", Action::Succeed),
+    ("private-succeed-review", Action::SucceedReview),
     ("private-outbox", Action::Outbox),
     ("private-outbox-next", Action::OutboxNext),
     ("private-download-outbox", Action::DownloadOutbox),
@@ -79,6 +88,11 @@ const IDS: &[(&str, Action)] = &[
 ];
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
+    GenerationDrain,
+    GenerationRestart,
+    GenerationReceipt,
+    GenerationReview,
+    GenerationConfirm,
     DeliveryCreate,
     DeliveryOpen,
     DeliverySync,
@@ -109,8 +123,10 @@ enum Action {
     Observe,
     ForkEvidence,
     Remove,
+    RemoveReview,
     Renew,
     Succeed,
+    SucceedReview,
     Outbox,
     OutboxNext,
     DownloadOutbox,
@@ -129,6 +145,8 @@ enum Action {
     AdmissionDiscard,
     AdmissionReview,
     AdmissionConfirm,
+    JoinReview,
+    JoinConfirm,
 }
 struct Secret {
     operation: OperationId,
@@ -162,6 +180,11 @@ struct State {
     delivery_ready: bool,
     admissions: Vec<AdmissionItem>,
     admission_consent: Option<Box<AdmissionConsent>>,
+    join_consent: Option<Box<JoinConsent>>,
+    generation_consent: Option<Box<GenerationConsent>>,
+    owner_consent: Option<Box<OwnerConsent>>,
+    pause_receipt: Option<Bytes>,
+    delivery_paused: bool,
     archive_sink: Option<Rc<archive_save::Sink>>,
     downloads: Vec<(String, usize)>,
     handlers: Vec<Closure<dyn FnMut(Event)>>,
@@ -222,6 +245,9 @@ fn label(raw: &[u8]) -> String {
     format!("{}…", hex(&raw[..6]))
 }
 fn key(value: &str) -> Result<Key> {
+    Key::from_bytes(hex32(value)?).map_err(|_| "Invalid or weak key.".into())
+}
+fn hex32(value: &str) -> Result<[u8; 32]> {
     if value.len() != 64
         || !value
             .bytes()
@@ -234,7 +260,10 @@ fn key(value: &str) -> Result<Key> {
         *out = u8::from_str_radix(std::str::from_utf8(pair).map_err(|_| "Invalid key.")?, 16)
             .map_err(|_| "Invalid key.")?;
     }
-    Key::from_bytes(raw).map_err(|_| "Invalid or weak key.".into())
+    if raw == [0; 32] {
+        return Err("Enter a nonzero full identifier.".into());
+    }
+    Ok(raw)
 }
 fn now() -> Result<u64> {
     let time = js_sys::Date::now();
@@ -366,6 +395,11 @@ pub fn clear_sensitive_state() {
         s.delivery_ready = false;
         s.admissions.clear();
         s.admission_consent = None;
+        s.join_consent = None;
+        s.generation_consent = None;
+        s.owner_consent = None;
+        s.pause_receipt = None;
+        s.delivery_paused = false;
         if let Some(sink) = s.archive_sink.take() {
             sink.abort();
         }
@@ -381,6 +415,11 @@ pub fn clear_sensitive_state() {
     area(&app).set_value("");
     for id in [
         "private-delivery-status",
+        "private-generation-status",
+        "private-generation-consent",
+        "private-owner-consent",
+        "private-device-list",
+        "private-owner-targets",
         "private-prepared-details",
         "private-room-title",
         "private-membership-summary",
@@ -396,6 +435,8 @@ pub fn clear_sensitive_state() {
         "private-outbox-select",
         "private-admission-select",
         "private-admission-consent",
+        "private-join-consent",
+        "private-join-commitments",
         "private-archive-title",
         "private-archive-summary",
         "private-archive-details",
@@ -438,7 +479,11 @@ fn render(app: &App) {
     let room = s.room.is_some();
     let prepared = s.prepared.is_some();
     let archived = s.archive.is_some();
-    let ready = joined(&s);
+    let ready = joined(&s) && !s.delivery_paused;
+    let awaiting = s
+        .room
+        .as_ref()
+        .is_some_and(|m| m.status.phase == Phase::AwaitingWelcome && !m.status.quarantined);
     let is_owner = owner(&s);
     let admission_select = s
         .document
@@ -455,6 +500,10 @@ fn render(app: &App) {
     let retained = input_unborrowed(&s.document, "private-locator-retained").checked();
     for (id, action) in IDS {
         let enabled = match action {
+            Action::GenerationDrain | Action::GenerationRestart => active && s.delivery_ready,
+            Action::GenerationReceipt => active && s.pause_receipt.is_some(),
+            Action::GenerationReview => active && s.delivery_ready && s.delivery_paused,
+            Action::GenerationConfirm => active && s.generation_consent.is_some(),
             Action::Enter => idle && !s.entered,
             Action::Leave => s.entered,
             // An open archive view must be closed explicitly before any live
@@ -473,18 +522,35 @@ fn render(app: &App) {
                     })
             }
             Action::Secret => active && s.secret.is_some(),
-            Action::Join | Action::Request => {
+            Action::Join => active && awaiting && !s.delivery_ready,
+            Action::Request => {
                 active
                     && s.room
                         .as_ref()
                         .is_some_and(|m| m.status.phase == Phase::AwaitingWelcome)
             }
-            Action::Offer | Action::Accept | Action::Remove | Action::Renew | Action::Succeed => {
-                active && is_owner
+            Action::Offer
+            | Action::Accept
+            | Action::RemoveReview
+            | Action::Renew
+            | Action::SucceedReview => active && is_owner && ready,
+            Action::Remove => {
+                active
+                    && is_owner
+                    && ready
+                    && s.owner_consent.as_ref().is_some_and(|c| !c.succession)
+            }
+            Action::Succeed => {
+                active
+                    && is_owner
+                    && ready
+                    && s.owner_consent.as_ref().is_some_and(|c| c.succession)
             }
             Action::Receive | Action::Apply => active && ready,
-            Action::DeliveryCreate | Action::DeliveryOpen => active && ready && !s.delivery_ready,
-            Action::DeliverySync => active && ready && s.delivery_ready,
+            Action::DeliveryCreate | Action::DeliveryOpen => {
+                active && (ready || awaiting) && !s.delivery_ready
+            }
+            Action::DeliverySync => active && (ready || awaiting) && s.delivery_ready,
             Action::AdmissionDownload | Action::AdmissionDiscard => {
                 active && s.delivery_connected && !s.admissions.is_empty()
             }
@@ -492,6 +558,10 @@ fn render(app: &App) {
                 active && is_owner && s.delivery_connected && request_selected
             }
             Action::AdmissionConfirm => active && is_owner && s.admission_consent.is_some(),
+            Action::JoinReview => {
+                active && awaiting && s.delivery_connected && !s.admissions.is_empty()
+            }
+            Action::JoinConfirm => active && awaiting && s.join_consent.is_some(),
             Action::ControlsNext => active && s.controls_next.is_some(),
             Action::ProofsNext => active && s.proofs_next.is_some(),
             Action::DownloadProof => active && !s.proofs.is_empty(),
@@ -616,6 +686,58 @@ fn membership(app: &App, view: Box<Membership>) {
             hex(c.device.as_bytes()),
             c.validity.expires_at()
         ));
+    }
+    text(app, "private-device-list", "");
+    text(app, "private-owner-targets", "");
+    for member in &view.members {
+        let claims = member.claims();
+        let role = if claims.device == view.owner.claims().device {
+            "Current owner"
+        } else {
+            "Member"
+        };
+        let local = if claims.device == status.context.device {
+            " · this device"
+        } else {
+            ""
+        };
+        let expiry = if now().is_ok_and(|n| n > claims.validity.expires_at()) {
+            "Expired"
+        } else {
+            "Valid until"
+        };
+        let description = app
+            .borrow()
+            .document
+            .create_element("pre")
+            .expect("device details");
+        description.set_class_name("artifact-preview");
+        description.set_text_content(Some(&format!(
+            "{role}{local}\nAccount {}\nDevice {}\n{expiry} {} UTC seconds",
+            hex(claims.account.as_bytes()),
+            hex(claims.device.as_bytes()),
+            claims.validity.expires_at()
+        )));
+        element(app, "private-device-list")
+            .append_child(&description)
+            .expect("device list");
+        if claims.device != view.owner.claims().device {
+            let option = app
+                .borrow()
+                .document
+                .create_element("option")
+                .expect("device choice");
+            option
+                .set_attribute("value", &hex(claims.device.as_bytes()))
+                .expect("device key");
+            option.set_text_content(Some(&format!(
+                "{role}{local} · account {}",
+                hex(claims.account.as_bytes())
+            )));
+            element(app, "private-owner-targets")
+                .append_child(&option)
+                .expect("device choices");
+        }
     }
     for grant in &view.successions {
         let c = grant.claims();
@@ -815,10 +937,29 @@ fn action(app: &App, selected: Action) {
         if selected != Action::AdmissionConfirm {
             s.admission_consent = None;
         }
+        if selected != Action::JoinConfirm {
+            s.join_consent = None;
+        }
+        if selected != Action::GenerationConfirm {
+            s.generation_consent = None;
+        }
+        if !matches!(selected, Action::Remove | Action::Succeed) {
+            s.owner_consent = None;
+        }
         next
     };
     if selected != Action::AdmissionConfirm {
         text(app, "private-admission-consent", "");
+    }
+    if selected != Action::JoinConfirm {
+        text(app, "private-join-consent", "");
+        text(app, "private-join-commitments", "");
+    }
+    if selected != Action::GenerationConfirm {
+        text(app, "private-generation-consent", "");
+    }
+    if !matches!(selected, Action::Remove | Action::Succeed) {
+        text(app, "private-owner-consent", "");
     }
     status(
         app,
@@ -940,6 +1081,11 @@ pub fn start() {
         delivery_ready: false,
         admissions: Vec::new(),
         admission_consent: None,
+        join_consent: None,
+        generation_consent: None,
+        owner_consent: None,
+        pause_receipt: None,
+        delivery_paused: false,
         archive_sink: None,
         downloads: Vec::new(),
         handlers: Vec::new(),
@@ -979,6 +1125,44 @@ pub fn start() {
         .expect("private draft handler");
     app.borrow_mut().handlers.push(edit);
     for id in [
+        "private-remove-device",
+        "private-succeed-device",
+        "private-generation-transition",
+        "private-generation-head",
+        "private-generation-fence",
+        "private-generation-profile",
+        "private-generation-attempts",
+    ] {
+        let weak = Rc::downgrade(&app);
+        let changed = Closure::wrap(Box::new(move |_: Event| {
+            if let Some(app) = weak.upgrade() {
+                {
+                    let mut state = app.borrow_mut();
+                    state.owner_consent = None;
+                    state.generation_consent = None;
+                }
+                text(
+                    &app,
+                    "private-owner-consent",
+                    "Selection changed. Review the exact device again.",
+                );
+                text(
+                    &app,
+                    "private-generation-consent",
+                    "Selection changed. Review the next mailbox again.",
+                );
+                render(&app);
+            }
+        }) as Box<dyn FnMut(Event)>);
+        element(&app, id)
+            .add_event_listener_with_callback("input", changed.as_ref().unchecked_ref())
+            .expect("private authority selection handler");
+        element(&app, id)
+            .add_event_listener_with_callback("change", changed.as_ref().unchecked_ref())
+            .expect("private authority file handler");
+        app.borrow_mut().handlers.push(changed);
+    }
+    for id in [
         "private-recipient",
         "private-resume-offer-file",
         "private-admission-select",
@@ -986,7 +1170,17 @@ pub fn start() {
         let weak = Rc::downgrade(&app);
         let changed = Closure::wrap(Box::new(move |_: Event| {
             if let Some(app) = weak.upgrade() {
-                app.borrow_mut().admission_consent = None;
+                {
+                    let mut state = app.borrow_mut();
+                    state.admission_consent = None;
+                    state.join_consent = None;
+                }
+                text(
+                    &app,
+                    "private-join-consent",
+                    "Selection changed. Review the invitation again before joining.",
+                );
+                text(&app, "private-join-commitments", "");
                 text(
                     &app,
                     "private-admission-consent",

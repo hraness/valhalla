@@ -206,11 +206,13 @@ jobs:
         with:
           node-version: '24'
       - name: Qualification process cleanup regressions
-        run: node --test browser/tools/qualification_lifecycle.test.mjs
+        run: node --test browser/tools/qualification_lifecycle.test.mjs browser/tools/private_mixed_pilot.test.mjs browser/tools/private_generation_pilot.test.mjs
       - name: Build maintained local private host and browser gateway
         run: cargo build --locked -p vhalla-cli --features experimental-private
       - name: Exercise production browser delivery, outage and exact restart
         run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-delivery-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)"
+      - name: Complete private work with a browser and two native agents
+        run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-mixed-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)" --mixed-pilot
       - name: Exercise production private panel and archive recovery
         run: node browser/tools/qualify_private_panel.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-production-panel-results" --production
       - name: Install exact browser bindings for runtime qualification

@@ -1,6 +1,6 @@
 //! Independently configured trusted host delivery; never an agent tool.
 use super::{files, hex, now, unhex};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -35,10 +35,9 @@ const PAGE: usize = MAX_RELAY_PAGE;
 /// loop until an empty page, so catch-up still converges in one tick budget.
 const OUTBOX_PAGE: usize = vhalla_private_kernel::MAX_PAGE_RECORDS;
 const TICK: Duration = Duration::from_secs(2);
-/// Idle mailbox poll backoff: a quiet room backs off 5s -> 30s; any staged or
-/// applied work resets it. Relay delivery attempts keep their own due times.
-const IDLE_BASE: Duration = Duration::from_secs(5);
-const IDLE_MAX: Duration = Duration::from_secs(30);
+/// Poll healthy quiet rooms at the controller's one-second tick cadence.
+/// Network failures and relay delivery attempts retain separate backoffs.
+const IDLE_POLL: Duration = Duration::from_secs(1);
 /// Network-error backoff for relay scans, independent of the idle cadence.
 const ERR_BASE: Duration = Duration::from_secs(1);
 const ERR_MAX: Duration = Duration::from_secs(30);
@@ -51,8 +50,9 @@ const TICK_BYTES: usize = 4 * 1024 * 1024;
 const PENDING_MAX: Duration = Duration::from_secs(300);
 
 mod applied;
+pub(super) mod generation;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     version: u32,
@@ -71,12 +71,14 @@ struct Config {
     emit_acceptance: bool,
     #[serde(default)]
     initial_cursor: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lineage: Option<generation::Lineage>,
     /// Exact selected bytes for conditional atomic version publication.
     #[serde(skip)]
     encoded: Vec<u8>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ContextConfig {
     room: String,
@@ -88,10 +90,11 @@ impl Config {
     fn load(path: &Path, context: Context) -> Result<(Self, RelayNamespace, TlsRelay), String> {
         let bytes = files::read(path, 16384, false)?;
         let mut c: Self = serde_json::from_slice(&bytes).map_err(|_| REFUSED)?;
-        if ![1, 2].contains(&c.version) {
+        if ![1, 2, 3].contains(&c.version) || (c.version == 3) != c.lineage.is_some() {
             return Err(REFUSED.into());
         }
         c.encoded = bytes.to_vec();
+        generation::check_selection(path, &c)?;
         let key = |s: &str| Key::from_bytes(unhex(s)?).map_err(|_| REFUSED.to_string());
         let selected = Context {
             scope: PrivateRoomScope {
@@ -274,7 +277,7 @@ pub(super) fn open_queue(
         _ => return Err(REFUSED.into()),
     };
     let (config, namespace, relay) = Config::load(Path::new(args.value("config")?), context)?;
-    if stream == "control" && config.version != 2 {
+    if stream == "control" && ![2, 3].contains(&config.version) {
         return Err(
             "control delivery requires an explicit delivery-upgrade of this legacy profile".into(),
         );
@@ -539,14 +542,14 @@ pub(super) struct Driver {
     /// kernel custody and the queue.
     boundary_checked: bool,
     next_poll: Instant,
-    idle: Duration,
     err: Duration,
     scan_full: bool,
 }
 impl Driver {
     pub(super) fn open(path: &Path, context: Context) -> Result<Self, String> {
         let (config, namespace, relay) = Config::load(path, context)?;
-        if config.version != 2 {
+        generation::check_active(&config)?;
+        if ![2, 3].contains(&config.version) {
             return Err("legacy delivery profile requires delivery-upgrade before another agent-serve launch".into());
         }
         let (directory, uid) =
@@ -587,6 +590,7 @@ impl Driver {
         if controls.policy() != (config.limits(), config.retry()) {
             return Err(REFUSED.into());
         }
+        generation::verify_baselines(&config, context, &queue, &controls)?;
         let (control_outgoing, _) = controls.driver_checkpoint().map_err(|_| REFUSED)?;
         let staged_head = scan.cursor();
         let (cp_outgoing, cp_applied) = queue.driver_checkpoint().map_err(|_| REFUSED)?;
@@ -614,7 +618,6 @@ impl Driver {
             checkpoint: (cp_outgoing, cp_applied),
             boundary_checked: cp_outgoing == 0,
             next_poll: Instant::now(),
-            idle: IDLE_BASE,
             err: ERR_BASE,
             scan_full: false,
         })
@@ -668,7 +671,13 @@ impl Driver {
                 // A retained watermark above the joining boundary must name
                 // an exact existing queue item. Never interpret a checkpoint
                 // alone as evidence that a control was enqueued or delivered.
-                if self.control_outgoing > page.base.sequence() {
+                if self.control_outgoing > page.base.sequence()
+                    && !self
+                        .controls
+                        .predecessor_baseline()
+                        .map_err(|_| REFUSED)?
+                        .is_some_and(|(head, _)| self.control_outgoing == head)
+                {
                     let boundary = rpc
                         .host()
                         .encrypted_controls(Some(self.control_outgoing - 1), 1)
@@ -771,7 +780,13 @@ impl Driver {
     /// watermark must already have a durable job. The queue publishes jobs
     /// before the checkpoint advances, so a gap means torn or foreign state.
     async fn boundary(&mut self, rpc: &mut RpcSession) -> Result<(), String> {
-        if self.outgoing == 0 {
+        if self.outgoing == 0
+            || self
+                .queue
+                .predecessor_baseline()
+                .map_err(|_| REFUSED)?
+                .is_some_and(|(head, _)| self.outgoing == head)
+        {
             return Ok(());
         }
         let page = rpc
@@ -957,9 +972,9 @@ impl Driver {
         Ok(())
     }
 
-    /// Poll the relay mailbox under the adaptive cadence. A nonempty page or a
+    /// Poll the relay mailbox under the bounded cadence. A nonempty page or a
     /// cursor still behind the observed head repolls on the next tick; a quiet
-    /// room backs off; network errors back off independently without touching
+    /// room waits one second; network errors back off independently without touching
     /// staged evidence. No lifetime attempt cap: only the current pass counts.
     fn poll(&mut self, deadline: Instant) -> Result<(), String> {
         if self.scan_full || Instant::now() < self.next_poll {
@@ -970,10 +985,8 @@ impl Driver {
                 self.staged_head = self.scan.cursor();
                 if report.scanned > 0 || self.staged_head < report.head {
                     self.next_poll = Instant::now();
-                    self.idle = IDLE_BASE;
                 } else {
-                    self.idle = (self.idle * 2).min(IDLE_MAX);
-                    self.next_poll = Instant::now() + self.idle;
+                    self.next_poll = Instant::now() + IDLE_POLL;
                 }
                 self.err = ERR_BASE;
             }

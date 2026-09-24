@@ -165,10 +165,11 @@ membership removal and relay transport-token revocation are separate actions.
   the new current token through the same trusted private channel as enrollment.
 - `rotate` refuses without changing the home. A new namespace does not move
   retained or uncertain client work, even when this relay is empty or stopped.
-  Live generation transitions remain gated until durable fencing, controller
-  drain/recovery, preserved receipt context and aggregate capacity accounting
-  are implemented and qualified. Preserve the existing namespace and queues;
-  do not point a recreated delivery state at an empty mailbox to bypass limits.
+  The separate staged `generation-*` commands require every controller to drain
+  and pause, an exact private inventory, a conditional permanent fence and
+  preserved cumulative allowances. Follow the
+  [mailbox maintenance guide](private-generations.md). Preserve the existing
+  namespace and queues; never recreate delivery state to bypass limits.
 - `renew` reissues the serving leaf under the retained CA with the operator's
   persisted leaf lifetime, capped strictly before CA expiry. It refuses when `ca-key.der` is
   absent or the CA has expired — a new CA is a new host, not a renewal. The
@@ -194,6 +195,14 @@ do not edit the version or restore an old manifest to downgrade, since doing so
 could resurrect revoked authority. Use a compatible binary or a reviewed
 state-preserving migration. Recovery of an interrupted upgrade selects the
 complete old or new sealed snapshot, including credential authority.
+
+A completed mailbox transition selects configuration version 3 and keeps every
+predecessor's namespace, mailbox, listener and enrolled credential IDs. The host
+serves all retained generations on their saved ports, at most 16. Later-added
+credentials belong only to the newer mailbox; replacement and revocation apply
+to the same stable identity wherever it was enrolled. Each retained generation
+needs an active enrolled credential to serve. The Tailcat template below
+forwards one port and does not configure these additional routes.
 
 ## Explicit Tailcat wiring
 

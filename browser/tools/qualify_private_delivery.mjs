@@ -3,6 +3,8 @@
 import {trackChild, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
 import {stopChild, stopServer} from './qualification_lifecycle.mjs';
 import {createServer} from 'node:http';
+import {runMixedPilot} from './private_mixed_pilot.mjs';
+import {drainMixedGeneration, transitionMixedGeneration} from './private_generation_pilot.mjs';
 import {spawn} from 'node:child_process';
 import {createConnection, createServer as createTcpServer} from 'node:net';
 import {createHash} from 'node:crypto';
@@ -10,16 +12,23 @@ import {readFile, writeFile, mkdir, mkdtemp, chmod, open} from 'node:fs/promises
 import {resolve, join} from 'node:path';
 
 const [artifactArg, chromeExecutable, outputArg, cliArg, opensslArg, ...flags] = process.argv.slice(2);
-if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M]');
+if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M] [--mixed-pilot] [--generation-pilot]');
 const options={};
 for(let i=0;i<flags.length;i++){
   const flag=flags[i];
+  if(flag==='--generation-pilot'){if(options.generationPilot)throw Error('duplicate generation-pilot flag');options.generationPilot=true;continue;}
+  if(flag==='--mixed-pilot'){if(options.mixedPilot)throw Error('duplicate mixed-pilot flag');options.mixedPilot=true;continue;}
   if(flag!=='--gateway-port'&&flag!=='--tls-port')throw Error('unknown flag: '+flag);
   const value=flags[++i];
   if(!/^[0-9]+$/.test(value??''))throw Error(flag+' requires a decimal loopback port');
   options[flag]=Number(value);
 }
+options.mixedPilot ||= options.generationPilot;
 const artifact = resolve(artifactArg), output = resolve(outputArg);
+const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
+const driverPaths={driver:new URL(import.meta.url),lifecycle:new URL('./qualification_lifecycle.mjs',import.meta.url),mixedPilot:new URL('./private_mixed_pilot.mjs',import.meta.url),generationPilot:new URL('./private_generation_pilot.mjs',import.meta.url)};
+const driverHashes=Object.fromEntries(await Promise.all(Object.entries(driverPaths).map(async([name,path])=>[name,sha256(await readFile(path))])));
+const cliSha256=sha256(await readFile(resolve(cliArg)));
 await mkdir(output, {recursive:false, mode:0o700});
 const profile = await mkdtemp(join(output,'profile-'));
 const manifestRaw = await readFile(join(artifact,'artifact.json'));
@@ -61,7 +70,7 @@ window.qaURLs=new Set(); window.qaInjected=false;
 // Harness-only IPC observation of the synthetic worker. Capture only a bounded
 // disclosure preview, never credentials or identity commands. A valid Send
 // control below proves that the stale-preview probe uses the actual wire ABI.
-window.qaDraft=null;window.qaAdmission=null;window.qaContactArtifact=null;window.qaProbe='';window.qaProbeActive=false;
+window.qaInbox=null;window.qaDraft=null;window.qaAdmission=null;window.qaJoin=null;window.qaMembership=null;window.qaContactArtifact=null;window.qaProbe='';window.qaProbeActive=false;
 const NativeWorker=window.Worker;
 window.Worker=new Proxy(NativeWorker,{construct(Type,args,NewType){
   const worker=Reflect.construct(Type,args,NewType);window.qaWorker=worker;
@@ -71,8 +80,11 @@ window.Worker=new Proxy(NativeWorker,{construct(Type,args,NewType){
       const raw=data[2];
       if(raw.length>13&&raw.length<270336&&raw[12]===104)window.qaDraft=raw.slice();
       if(raw.length>13&&raw.length<270336&&raw[12]===122)window.qaAdmission=raw.slice();
+      if(raw.length>13&&raw.length<270336&&raw[12]===123)window.qaJoin=raw.slice();
+      if(raw.length>149&&raw.length<270336&&raw[12]===110)window.qaInbox=raw.slice();
+      if(raw.length>141&&raw.length<270336&&raw[12]===103)window.qaMembership=raw.slice();
       if(raw.length>171&&raw.length<270336&&raw[12]===105&&raw[165]===2)window.qaContactArtifact=raw.slice();
-      if(qaProbeActive&&raw[12]===105){qaProbe='accepted';qaProbeActive=false;}
+      if(qaProbeActive&&(raw[12]===105||raw[12]===103)){qaProbe='accepted';qaProbeActive=false;}
     }else if(qaProbeActive&&data[0]==='private-error'){qaProbe='refused';qaProbeActive=false;}
   });return worker;
 }});
@@ -196,7 +208,7 @@ async function send(page,body) {
   return download(page,'private-download-output','vhmsg');
 }
 async function leave(page) {
-  await evaluate(page,"(async()=>{await qclick('private-leave');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'new locked worker');qassert(qid('private-workspace').hidden,'private workspace survives lock');qassert(qid('private-message').value==='','private message survived lock');for(const field of document.querySelectorAll('#private-panel input'))qassert(field.type==='checkbox'?!field.checked:field.value==='','private input survived lock: '+field.id);for(const id of ['private-consent','private-admission-consent','private-inbox-content','private-outbox-acceptances','private-membership-details','private-secret-label'])qassert(qid(id).textContent==='','private view survived lock: '+id);qassert(qaURLs.size===0,'download URL survived lock');qassert(!qid('activity-heading').closest('.activity').hidden,'public activity remains hidden');for(const id of ['activity-text','puzzle-artifact','puzzle-part'])qassert(qid(id).value==='','private text carried into public composer');return true;})()");
+  await evaluate(page,"(async()=>{await qclick('private-leave');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'new locked worker');qassert(qid('private-workspace').hidden,'private workspace survives lock');qassert(qid('private-message').value==='','private message survived lock');for(const field of document.querySelectorAll('#private-panel input'))qassert(field.type==='checkbox'?!field.checked:field.value==='','private input survived lock: '+field.id);for(const id of ['private-consent','private-admission-consent','private-join-consent','private-join-commitments','private-inbox-content','private-outbox-acceptances','private-membership-details','private-secret-label'])qassert(qid(id).textContent==='','private view survived lock: '+id);qassert(qaURLs.size===0,'download URL survived lock');qassert(!qid('activity-heading').closest('.activity').hidden,'public activity remains hidden');for(const id of ['activity-text','puzzle-artifact','puzzle-part'])qassert(qid(id).value==='','private text carried into public composer');return true;})()");
 }
 async function reopen(page) {
   await evaluate(page,"(async()=>{qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','explicit unlock');await qclick('private-enter');await qwait(()=>!qid('private-open').disabled,'new private entry');return true;})()");
@@ -226,7 +238,8 @@ async function reload(page) {
   await evaluate(page,"(async()=>{await qclick('private-open');await qidle();return true;})()");
 }
 const cli=resolve(cliArg), openssl=resolve(opensslArg);
-const namespace='31'.repeat(32), relayToken='42'.repeat(32), browserCapability='53'.repeat(32);
+let namespace='31'.repeat(32), relayToken='42'.repeat(32), browserCapability='53'.repeat(32);
+const hostHome=join(output,'generation-host');
 async function probeRefused(port) {
   await new Promise((resolve,reject)=>{
     const socket=createConnection({host:'127.0.0.1',port});
@@ -253,7 +266,7 @@ async function resolvePort(explicit,label) {
 const gatewayPort=await resolvePort(options['--gateway-port'],'gateway');
 const tlsPort=await resolvePort(options['--tls-port'],'relay TLS');
 const gatewayOrigin=`http://127.0.0.1:${gatewayPort}`;
-const tlsAddress=`127.0.0.1:${tlsPort}`;
+let tlsAddress=`127.0.0.1:${tlsPort}`;
 // Collision-refusal self-check: resolvePort must never accept an occupied port.
 {
   const occupied=createTcpServer();
@@ -267,10 +280,10 @@ let relay, gateway, blackhole, hostile, fixtureSerial=0;
 const blackholeSockets=new Set();
 const serviceLogs=[];
 async function privateFile(name,content) {const path=join(output,name);await writeFile(path,content,{mode:0o600,flag:'wx'});return path;}
-async function command(executable,args) {
+async function command(executable,args,expectedExit=0) {
   signal.throwIfAborted();const process=trackChild(spawn(executable,args,{stdio:['ignore','pipe','pipe']}));children.push(process);
   let stdout='',stderr='';process.stdout.on('data',v=>stdout=(stdout+v).slice(-1048576));process.stderr.on('data',v=>stderr=(stderr+v).slice(-1048576));
-  let timer;try {await Promise.race([new Promise((r,j)=>{process.once('error',j);process.once('exit',code=>code===0?r():j(Error('fixture command refused: '+stderr)));}),new Promise((_,j)=>{timer=setTimeout(()=>j(Error('fixture command deadline')),20000);})]);}finally{clearTimeout(timer);if(!childStopped(process))await stopChild(process);}
+  let timer;try {await Promise.race([new Promise((r,j)=>{process.once('error',j);process.once('exit',code=>code===expectedExit?r():j(Error('fixture command exited '+code+' (expected '+expectedExit+'): '+stderr)));}),new Promise((_,j)=>{timer=setTimeout(()=>j(Error('fixture command deadline')),20000);})]);}finally{clearTimeout(timer);if(!childStopped(process))await stopChild(process);}
   return {stdout,stderr};
 }
 async function child(args,ready) {
@@ -280,8 +293,20 @@ async function child(args,ready) {
   await wait(()=>{if(childStopped(process))throw Error('fixture service exited: '+record.stderr);return record.stdout.includes(ready);},ready);return process;
 }
 async function gatewayStart() {gateway=await child(['private-gateway','serve',join(output,'gateway.json')],'private-gateway '+gatewayOrigin);}
-async function relayStart() {relay=await child(['private','relay-tls-serve',join(output,'mailbox'),'--namespace',namespace,'--config',join(output,'tls.json'),'--cert',join(output,'server.der'),'--key',join(output,'server-key.der'),'--listen',tlsAddress],'relay-tls-serve '+tlsAddress);}
+async function relayStart() {if(options.generationPilot){relay=await child(['private-host','serve',hostHome],'\"status\":\"listening\"');return;}relay=await child(['private','relay-tls-serve',join(output,'mailbox'),'--namespace',namespace,'--config',join(output,'tls.json'),'--cert',join(output,'server.der'),'--key',join(output,'server-key.der'),'--listen',tlsAddress],'relay-tls-serve '+tlsAddress);}
 async function fixture() {
+  if(options.generationPilot) {
+    await command(cli,['private-host','init',hostHome,'--listen',tlsAddress,'--tls-name','relay.test','--executable',cli]);
+    await command(cli,['private-host','add-credential',hostHome]);
+    const config=JSON.parse(await readFile(join(hostHome,'config.json'),'utf8'));
+    if(config.credential_ids.length!==3)throw Error('generation fixture credential inventory');
+    namespace=config.namespace;relayToken=(await readFile(join(hostHome,'client-1.token'),'utf8')).trim();
+    await privateFile('ca.der',await readFile(join(hostHome,'ca.der')));
+    await privateFile('relay-token',relayToken);await privateFile('gateway-upstream-token',relayToken);await privateFile('browser-token',browserCapability);
+    await privateFile('gateway.json',JSON.stringify({format:1,listen:'127.0.0.1:'+gatewayPort,namespace,browser_token_file:join(output,'browser-token'),
+      upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')},assets_dir:artifact,initial_cursor:'0'}));
+    await relayStart();await gatewayStart();return;
+  }
   const caKey=join(output,'ca-key.pem'),caPem=join(output,'ca.pem'),serverKey=join(output,'server-key.pem'),csr=join(output,'server.csr'),serverPem=join(output,'server.pem');
   // Generate named-curve P-256 keys: an explicit-parameter EC encoding is
   // refused by the rustls server/client credential checks.
@@ -304,6 +329,23 @@ async function fixture() {
   await privateFile('gateway.json',JSON.stringify({format:1,listen:'127.0.0.1:'+gatewayPort,namespace,browser_token_file:join(output,'browser-token'),upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')},assets_dir:artifact,initial_cursor:'0'}));
   await relayStart();await gatewayStart();
 }
+async function nativeCredential(role) {
+  const index={analyst:2,reviewer:3}[role.name];if(!index)throw Error('unexpected generation controller');
+  const config=JSON.parse(await readFile(join(hostHome,'config.json'),'utf8'));
+  return {id:config.credential_ids[index-1],token:await privateFile('mixed-'+role.name+'-token',await readFile(join(hostHome,'client-'+index+'.token')))};
+}
+async function activateGeneration(next) {
+  if(!options.generationPilot)throw Error('generation fixture is not selected');
+  if(next.namespace===namespace||next.tlsAddress===tlsAddress||next.capability===browserCapability)throw Error('successor fixture repeats predecessor');
+  await stopChild(gateway);
+  const retained={namespace,browser_token_file:join(output,'browser-token'),upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')}};
+  const capability=await privateFile('successor-browser-token',next.capability);
+  namespace=next.namespace;tlsAddress=next.tlsAddress;browserCapability=next.capability;
+  await writeFile(join(output,'gateway.json'),JSON.stringify({format:2,listen:'127.0.0.1:'+gatewayPort,namespace,browser_token_file:capability,
+    upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')},
+    retained:[retained],assets_dir:artifact,initial_cursor:'0'}),{mode:0o600});
+  await gatewayStart();
+}
 async function profileFile(initial,overrides={}) {return privateFile('profile-'+(++fixtureSerial)+'.json',JSON.stringify({format:1,origin:gatewayOrigin,namespace,capability:browserCapability,initial_cursor:String(initial),...overrides}));}
 async function connect(page,path,create=false) {
   await setFile(page,'private-delivery-profile',path);
@@ -314,7 +356,7 @@ function refusals(report) {const match=report.match(/Refused and skipped records
 async function sendRetainedPreview(page) {
   return evaluate(page,`(async()=>{
     qassert(qaDraft instanceof Uint8Array,'captured actual disclosure preview');
-    const expected=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(7));
+    const expected=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(8));
     qassert(expected.length===12&&expected.every((v,i)=>qaDraft[i]===v)&&qaDraft[12]===104,'actual private wire version');
     const frame=new Uint8Array(qaDraft.length+16);frame.set(expected);frame[12]=8;
     frame.set(crypto.getRandomValues(new Uint8Array(16)),13);frame.set(qaDraft.subarray(13),29);
@@ -322,12 +364,11 @@ async function sendRetainedPreview(page) {
     await qwait(()=>qaProbe!=='','worker verdict for actual retained preview');return qaProbe;
   })()`);
 }
-// AwaitingWelcome has no browser delivery authority. This synthetic adapter
-// transports the already committed encrypted request with its exact public
-// outbox metadata; it neither opens a signer nor enables prejoin browser sync.
-async function submitRequest(page,downloaded) {
+// Decode the actual worker output without opening a signer. The first member
+// retains the file-exchange fallback; the third uses the browser prejoin driver.
+async function requestItem(page,downloaded) {
   const raw=Buffer.from(await evaluate(page,"Array.from(qaContactArtifact??[])"));
-  const magic=Buffer.from('VHBRPRIVATE\x07');
+  const magic=Buffer.from('VHBRPRIVATE\x08');
   if(!raw.subarray(0,12).equals(magic)||raw[12]!==105||raw[165]!==2||raw[166]!==1)throw Error('actual contact request ABI');
   const length=raw.readUInt32BE(167),payload=raw.subarray(171,171+length);
   if(length===0||length>266240||raw.length!==172+length||raw.at(-1)!==0||!payload.equals(downloaded.raw))throw Error('retained request differs from actual worker artifact');
@@ -336,11 +377,29 @@ async function submitRequest(page,downloaded) {
   const ns=Buffer.from(namespace,'hex'),size=Buffer.alloc(4);size.writeUInt32BE(length);
   const digest=createHash('sha256').update('vhalla/private/relay-item/v1').update(ns).update(sequence).update(operation).update(kind).update(payload).digest();
   const item=Buffer.concat([Buffer.from('VHPRELAY\x01'),ns,sequence,operation,kind,size,payload,digest]);
-  const n=++fixtureSerial,path=await privateFile('request-'+n+'.relay',item),receipt=join(output,'request-'+n+'.json');
+  return {item,digest:digest.toString('hex'),context:raw.subarray(13,141)};
+}
+async function submitRequest(page,downloaded) {
+  const request=await requestItem(page,downloaded);
+  const n=++fixtureSerial,path=await privateFile('request-'+n+'.relay',request.item),receipt=join(output,'request-'+n+'.json');
   await command(cli,['private','relay-submit',path,'--namespace',namespace,'--addr',tlsAddress,'--token',join(output,'relay-token'),'--tls-ca',join(output,'ca.der'),'--tls-name','relay.test','--out',receipt]);
   const retained=JSON.parse(await readFile(receipt,'utf8'));
   if(!Number.isSafeInteger(retained.position)||retained.position<1)throw Error('request retention position');
-  return {position:retained.position,digest:digest.toString('hex'),context:raw.subarray(13,141)};
+  return {...request,position:retained.position};
+}
+async function observedRequest(page,downloaded) {
+  const request=await requestItem(page,downloaded),n=++fixtureSerial;
+  const directory=join(output,'prejoin-scan-'+n),report=join(output,'prejoin-scan-'+n+'.json');
+  await command(cli,['private','relay-scan',directory,'--namespace',namespace,'--addr',tlsAddress,'--token',join(output,'relay-token'),'--tls-ca',join(output,'ca.der'),'--tls-name','relay.test','--limit','64','--out',report]);
+  const scan=JSON.parse(await readFile(report,'utf8'));
+  if(scan.head>64||scan.cursor!==scan.head)throw Error('prejoin observation exceeds one bounded page');
+  const positions=[];
+  for(let position=1;position<=scan.head;position++){
+    const raw=await readFile(join(directory,'items',position.toString(16).padStart(16,'0')+'.vhrelay'));
+    if(raw.equals(request.item))positions.push(position);
+  }
+  if(positions.length!==1)throw Error('browser did not publish its exact prejoin request once');
+  return {...request,position:positions[0]};
 }
 async function reviewRequest(owner,member,offer,request) {
   const ownerLocator=await readFile(owner.locator);
@@ -358,6 +417,7 @@ async function reviewRequest(owner,member,offer,request) {
     qassert(text.includes('expires at')&&!qid('private-admission-confirm').disabled,'review lacks expiry or usable confirmation');
     return true;
   }`,[member.publicKey,request.position,request.digest,expectedScope]);
+  await call('Page.bringToFront',{},owner.sessionId);
   await evaluate(owner,"qshow('private-admission-consent');true");
   const screenshot=await call('Page.captureScreenshot',{format:'png'},owner.sessionId);
   const name='admission-review-'+request.position+'-'+(++fixtureSerial)+'.png';
@@ -365,13 +425,73 @@ async function reviewRequest(owner,member,offer,request) {
 }
 async function staleAdmissionProbe(page) {
   return evaluate(page,`(async()=>{
-    const consent=qaAdmission,magic=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(7));
+    const consent=qaAdmission,magic=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(8));
     qassert(consent instanceof Uint8Array&&consent[12]===122&&magic.every((v,i)=>consent[i]===v),'captured actual admission review');
     const frame=new Uint8Array(consent.length+16);frame.set(magic);frame[12]=42;
     frame.set(crypto.getRandomValues(new Uint8Array(16)),13);frame.set(consent.subarray(13),29);
     qaProbe='';qaProbeActive=true;qaWorker.postMessage(['private',new Uint8Array(16).fill(253),frame]);
     await qwait(()=>qaProbe!=='','stale admission worker verdict');return qaProbe;
   })()`);
+}
+async function reviewJoin(recipient,owner,member) {
+  for(let pass=0;pass<16;pass++){
+    await sync(recipient);
+    if(await evaluate(recipient,"!qid('private-join-review').disabled"))break;
+  }
+  const locator=await readFile(recipient.locator);
+  const scope=[8,40,72,104].map(offset=>locator.subarray(offset,offset+32).toString('hex'));
+  await invoke(recipient,`async function(scope,accounts){
+    const select=qid('private-admission-select');
+    qassert(select.options.length===1,'discovery did not retain one matching invitation');
+    qset('private-admission-select',select.options[0].value,'change');
+    await qclick('private-join-review');await qidle();
+    const text=qid('private-join-consent').textContent,details=qid('private-join-commitments').textContent;
+    qassert(scope.every(key=>text.includes(key))&&accounts.every(key=>text.includes(key)),'join review omitted room/device/owner/roster');
+    qassert(text.includes('3 devices')&&details.includes('Roster ')&&details.includes('Request ')&&details.includes('Response ')&&/Review expires at [0-9]+ UTC seconds/.test(details),'join review lacks group or commitments');
+    qassert(!qid('private-join-confirm').disabled,'review confirmation not usable');return true;
+  }`,[scope,[owner.publicKey,member.publicKey,recipient.publicKey]]);
+}
+async function staleJoinProbe(page) {
+  return evaluate(page,`(async()=>{
+    const consent=qaJoin,magic=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(8));
+    qassert(consent instanceof Uint8Array&&consent[12]===123&&magic.every((v,i)=>consent[i]===v),'captured actual join review');
+    const frame=consent.slice();frame[12]=44;
+    qaProbe='';qaProbeActive=true;qaWorker.postMessage(['private',new Uint8Array(16).fill(252),frame]);
+    await qwait(()=>qaProbe!=='','stale join worker verdict');return qaProbe;
+  })()`);
+}
+async function captureJoinReview(page) {
+  await call('Page.bringToFront',{},page.sessionId);
+  for(const width of [1280,390]) {
+    await call('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false},page.sessionId);
+    await evaluate(page,"qshow('private-join-consent');qassert(document.documentElement.scrollWidth<=innerWidth+1,'join review overflows viewport');true");
+    const screenshot=await call('Page.captureScreenshot',{format:'png'},page.sessionId);
+    const name='join-review-'+width+'.png';
+    await privateFile(name,Buffer.from(screenshot.data,'base64'));screenshots.push(name);
+  }
+  await call('Emulation.clearDeviceMetricsOverride',{},page.sessionId);
+}
+async function captureReview(page,focus,label) {
+  await call('Page.bringToFront',{},page.sessionId);
+  for(const width of [1280,390]) {
+    await call('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false},page.sessionId);
+    await invoke(page,`function(focus){qshow(focus);qassert(document.documentElement.scrollWidth<=innerWidth+1,'review overflows viewport');}`,[focus]);
+    const screenshot=await call('Page.captureScreenshot',{format:'png'},page.sessionId);
+    const name=label+'-'+width+'.png';await privateFile(name,Buffer.from(screenshot.data,'base64'));screenshots.push(name);
+  }
+  await call('Emulation.clearDeviceMetricsOverride',{},page.sessionId);
+}
+async function fileJoinBypassProbe(page,response) {
+  return invoke(page,`async function(bytes){
+    qassert(qaMembership instanceof Uint8Array&&qaMembership[141]===2,'recipient must still await invitation');
+    const before=qaMembership.slice(),magic=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(8));
+    const frame=new Uint8Array(17+bytes.length);frame.set(magic);frame[12]=12;
+    new DataView(frame.buffer).setUint32(13,bytes.length,false);frame.set(bytes,17);
+    qaProbe='';qaProbeActive=true;qaWorker.postMessage(['private',new Uint8Array(16).fill(251),frame]);
+    await qwait(()=>qaProbe!=='','file join bypass verdict');qassert(qaProbe==='refused','file join bypassed durable prejoin intent');
+    qassert(before.length===qaMembership.length&&before.every((v,i)=>qaMembership[i]===v),'refused file join published membership');
+    return true;
+  }`,[[...response.raw]]);
 }
 async function head() {
   const n=++fixtureSerial,path=join(output,'scan-'+n+'.json');
@@ -394,13 +514,13 @@ function sameRetained(before,after,label) {
   if(a.length!==b.length||!a.subarray(56,96).equals(b.subarray(56,96))||!a.subarray(104).equals(b.subarray(104))||b.readBigUInt64BE(96)<a.readBigUInt64BE(96))throw Error(label);
 }
 function chargedPending(before,after,committed,stopCode=0) {
-  // Versioned delivery image v3: 8-byte magic, 32-byte binding, 16-byte owner,
+  // Versioned delivery images v4/v5 share this prefix: 8-byte magic, 32-byte binding, 16-byte owner,
   // thirteen u64 counters, stop/detail/blocked bytes, a refused-record ring,
   // retained-admission and deferred indices, optional full control watermark,
   // then canonical pending, staged and pending-control ciphertext.
   // These assertions inspect the exact persisted effect independently of the
   // UI report (the worker is dead).
-  if(after.subarray(0,8).toString()!=='VHBRDEL'+String.fromCharCode(3))throw Error('delivery image is not the v3 format');
+  if(after.subarray(0,7).toString()!=='VHBRDEL'||![4,5].includes(after[7]))throw Error('delivery image is not a supported v4/v5 format');
   if(after[160]!==stopCode||after.readBigUInt64BE(80)!==before.readBigUInt64BE(80)+1n||after.readBigUInt64BE(88)<=before.readBigUInt64BE(88)||after.readBigUInt64BE(112)!==before.readBigUInt64BE(112)+1n||after.readBigUInt64BE(104)<=after.readBigUInt64BE(96))throw Error('credential refusal reset or stopped finite progress');
   let at=164+after[163]*41;at+=1+after[at]*45;
   at+=1+after[at]*46;
@@ -408,8 +528,27 @@ function chargedPending(before,after,committed,stopCode=0) {
   const length=after.readUInt32BE(at),item=after.subarray(at+4,at+4+length);
   if(length<102||item.subarray(0,9).toString()!=='VHPRELAY'+String.fromCharCode(1)||!item.subarray(70,70+item.readUInt32BE(66)).equals(committed))throw Error('credential refusal lost exact committed ciphertext');
 }
-async function snapshot(page, expected=1) {
-  return evaluate(page,`(async()=>{const names=await indexedDB.databases();let found=[];for(const info of names){const db=await new Promise((r,j)=>{const q=indexedDB.open(info.name);q.onsuccess=()=>r(q.result);q.onerror=()=>j(Error('read database'));});try{if(!db.objectStoreNames.contains('images'))continue;const rows=await new Promise((r,j)=>{const tx=db.transaction('images','readonly'),s=tx.objectStore('images'),q=s.openCursor(),rows=[];q.onsuccess=()=>{const c=q.result;if(c){if(String(c.key).endsWith('delivery-v1'))rows.push([...c.value]);c.continue();}else r(rows);};q.onerror=()=>j(Error('read delivery'));});found.push(...rows);}finally{db.close();}}qassert(found.length===${expected},'expected delivery image count');return found[0]??[];})()`);
+async function snapshot(page, expected=1, generation=0) {
+  if(!Number.isInteger(generation)||generation<0||generation>=16)throw Error('snapshot generation bound');
+  const suffix=generation===0?'delivery-v1':'delivery-generations-v1/'+String(generation).padStart(2,'0')+'/image';
+  return evaluate(page,`(async()=>{const names=await indexedDB.databases();let found=[];for(const info of names){const db=await new Promise((r,j)=>{const q=indexedDB.open(info.name);q.onsuccess=()=>r(q.result);q.onerror=()=>j(Error('read database'));});try{if(!db.objectStoreNames.contains('images'))continue;const rows=await new Promise((r,j)=>{const tx=db.transaction('images','readonly'),s=tx.objectStore('images'),q=s.openCursor(),rows=[];q.onsuccess=()=>{const c=q.result;if(c){if(String(c.key).endsWith(${JSON.stringify(suffix)}))rows.push([...c.value]);c.continue();}else r(rows);};q.onerror=()=>j(Error('read delivery'));});found.push(...rows);}finally{db.close();}}qassert(found.length===${expected},'expected delivery image count');return found[0]??[];})()`);
+}
+async function finish(extra={}) {
+  if(unexpectedNetwork)throw Error('unexpected non-loopback page route');
+  if(!manifestRaw.equals(await readFile(join(artifact,'artifact.json')))||cliSha256!==sha256(await readFile(resolve(cliArg))))throw Error('qualification artifact identity changed');
+  for(const [name,path] of Object.entries(driverPaths))if(driverHashes[name]!==sha256(await readFile(path)))throw Error('qualification driver changed: '+name);
+  for(const [name,item] of Object.entries(manifest.assets))if(sha256(await readFile(join(artifact,name)))!==item.sha256)throw Error('artifact changed during qualification: '+name);
+  const digest=v=>createHash('sha256').update(v).digest('hex');
+  return {...extra,passed:true,artifact,artifactManifestSha256:digest(manifestRaw),cliSha256,driverHashes,gatewayOrigin,tlsAddress,namespaceSha256:digest(namespace),relayTokenSha256:digest(relayToken),browserCapabilitySha256:digest(browserCapability),facts,files,screenshots,profile,scope:'production browser private custody → maintained local HTTP gateway → real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim'};
+}
+async function removeMember(page,account,device) {
+  await invoke(page,`async function(account,device){
+    qassert(qid('private-membership-details').textContent.includes(account)&&qid('private-membership-details').textContent.includes(device),'removal target is not in reviewed membership');
+    qset('private-remove-device',device);await qclick('private-remove-review');await qidle();
+    const review=qid('private-owner-consent').textContent;qassert(review.includes(account)&&review.includes(device),'owner review omitted selected account/device');
+  }`,[account,device]);
+  await captureReview(page,'private-owner-consent','owner-removal-review');
+  await evaluate(page,"(async()=>{await qclick('private-remove');await qidle();})()");
 }
 async function task(abortSignal) {
   signal=abortSignal;await fixture();
@@ -418,6 +557,17 @@ async function task(abortSignal) {
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
   socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith(gatewayOrigin+'/')&&!url.startsWith('blob:'+gatewayOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
+  if(options.mixedPilot) {
+    const result=await runMixedPilot({account,enter,evaluate,invoke,setFile,download,retainCreation,
+      connect,profileFile,sync,head,command,privateFile,send,reload,leave,wait,removeMember,captureReview,
+      cli,output,namespace,tlsAddress,gatewayOrigin,browserCapability,children,signal,
+      generationPilot:!!options.generationPilot,hostHome,
+      nativeCredential:options.generationPilot?nativeCredential:undefined,
+      drainGeneration:options.generationPilot?drainMixedGeneration:undefined,
+      transitionGeneration:options.generationPilot?transitionMixedGeneration:undefined,
+      snapshot,choosePort:ephemeralPort,stopHost:()=>stopChild(relay),startHost:relayStart,activateGeneration});
+    facts.push(...result.facts);return finish({mixedPilot:result.mixedPilot});
+  }
   const owner=await account('owner'),member=await account('member');
   await enter(owner,true);await evaluate(owner,"qclick('private-create')");await retainCreation(owner);
   await send(owner,'SYNTHETIC_PREJOIN_HISTORY');
@@ -453,7 +603,8 @@ async function task(abortSignal) {
   const thirdOffer=await download(owner,'private-download-secret','vhoffer');await enter(third);await setFile(third,'private-offer-file',thirdOffer.path);
   await invoke(third,`async function(owner){qset('private-owner',owner);await qclick('private-review-offer');return true;}`,[owner.publicKey]);await retainCreation(third);
   await evaluate(third,"(async()=>{await qclick('private-request');await qidle();return true;})()");const thirdRequest=await download(third,'private-download-output','vhrequest');
-  const retainedThird=await submitRequest(third,thirdRequest);await sync(owner);
+  third.deliveryProfile=await profileFile(0);await connect(third,third.deliveryProfile,true);await sync(third);
+  const retainedThird=await observedRequest(third,thirdRequest);await sync(owner);
   await reviewRequest(owner,third,thirdOffer,retainedThird);await sync(owner);
   await evaluate(owner,"qassert(qid('private-admission-confirm').disabled,'Sync left admission confirmation enabled');true");
   if(await staleAdmissionProbe(owner)!=='refused')throw Error('worker reused admission consent after Sync');
@@ -462,9 +613,22 @@ async function task(abortSignal) {
   await reviewRequest(owner,third,thirdOffer,retainedThird);
   await evaluate(owner,"(async()=>{await qclick('private-admission-confirm');await qidle();return true;})()");const thirdResponse=await download(owner,'private-download-output','vhjoin');
   facts.push('same-roster Sync invalidates actual retained admission consent inside worker custody; explicit reopen and fresh review permit the exact pending device admission');
-  await setFile(third,'private-join-file',thirdResponse.path);await evaluate(third,"(async()=>{await qclick('private-join');await qidle();return true;})()");
   await sync(owner);await sync(owner);
+  await reviewJoin(third,owner,member);await sync(third);
+  await evaluate(third,"qassert(qid('private-join-confirm').disabled,'Sync left join confirmation enabled');true");
+  if(await staleJoinProbe(third)!=='refused')throw Error('worker reused join consent after Sync');
+  await reload(third);await fileJoinBypassProbe(third,thirdResponse);
+  await reload(third);await evaluate(third,"qassert(qaMembership[141]===2,'file join changed durable pending membership');true");
+  await connect(third,third.deliveryProfile);await reviewJoin(third,owner,member);
+  await captureJoinReview(third);
+  const beforeJoin=Buffer.from(await snapshot(third));
+  await evaluate(third,"(async()=>{qassert(qid('private-join-file').value==='','recipient imported response manually');await qclick('private-join-confirm');await qidle();qassert(qid('private-join-confirm').disabled,'join consent remained usable');return true;})()");
+  const afterJoin=Buffer.from(await snapshot(third));
+  if(afterJoin.readBigUInt64BE(72)!==0n||afterJoin.readBigUInt64BE(80)<beforeJoin.readBigUInt64BE(80)||afterJoin.readBigUInt64BE(88)<beforeJoin.readBigUInt64BE(88))throw Error('join advanced live cursor or reset accounting');
+  facts.push('recipient publishes its exact request through prejoin sync, reviews an authenticated invitation after multipage discovery, refuses stale consent after sync/reload, then joins explicitly with live replay at zero and preserved connection spend');
   await send(owner,'SYNTHETIC_AFTER_THIRD_MEMBER');await sync(owner);
+  for(let pass=0;pass<16;pass++)await sync(third);
+  await evaluate(third,"(async()=>{await qclick('private-inbox');await qidle();const text=qid('private-inbox-content').textContent;qassert(text.includes('SYNTHETIC_AFTER_THIRD_MEMBER'),'late join missed current-epoch message');qassert(!text.includes('SYNTHETIC_PREJOIN_HISTORY')&&!text.includes('SYNTHETIC_GATEWAY_TLS_MESSAGE')&&!text.includes('SYNTHETIC_BEFORE_THIRD_MEMBER'),'late join exposed prior plaintext');return true;})()");
   await sync(member);
   if(!/Review the current roster/.test(await evaluate(member,"qid('private-status').textContent")))throw Error('existing member did not receive the third-member admission control');
   await sync(member);await sync(member);
@@ -581,8 +745,6 @@ async function task(abortSignal) {
   if(await head()!==hostileHead)throw Error('reopen or forced Sync reset durable hostile-response stop');
   facts.push('a well-framed HTTP200 receipt with a corrupt commitment durably stops before worker termination; exact pending bytes and charged credits survive, and reopen or forced Sync cannot resume network work');
   await leave(twin);await leave(member);
-  if(unexpectedNetwork)throw Error('unexpected non-loopback page route');
-  const digest=v=>createHash('sha256').update(v).digest('hex');
-  return {passed:true,artifact,artifactManifestSha256:digest(manifestRaw),gatewayOrigin,tlsAddress,namespaceSha256:digest(namespace),relayTokenSha256:digest(relayToken),browserCapabilitySha256:digest(browserCapability),facts,files,screenshots,profile,scope:'production browser private custody → maintained local HTTP gateway → real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim'};
+  return finish();
 }
 await runQualification({work:task,timeoutMs:360000,cleanup:async()=>{try{for(const socket of blackholeSockets)socket.destroy();if(blackhole){await new Promise(r=>blackhole.close(r));blackhole=undefined;}await cleanupOwned({children,server:hostile,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));await writeFile(join(output,'network-failure.txt'),fatalNetwork);}},publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));}});

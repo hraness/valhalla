@@ -1,6 +1,7 @@
 //! Explicit local opaque-relay hosting. No account or room custody lives here.
 mod config;
 pub(crate) mod events;
+mod generation;
 pub(crate) mod launchd;
 
 use config::{Config, Loaded};
@@ -19,7 +20,7 @@ use vhalla_private_native::relay::{
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, distinct client credentials, explicit macOS LaunchAgent lifecycle. Maintenance activates at the next drained service restart. No account keys, automatic update, public listener, or cloud provisioning.";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, distinct client credentials, explicit macOS LaunchAgent lifecycle. Maintenance activates at the next drained service restart. No account keys, automatic update, public listener, or cloud provisioning.";
 const REFUSED: &str = "local host refused; preserve the exact home, configuration, certificates and mailbox; never reset retained custody";
 /// Status marks the leaf for explicit operator renewal inside this window.
 const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
@@ -117,6 +118,24 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             );
             Ok(())
         }
+        Some("generation-inspect") if args.len() == 5 && args[3] == "--out" => {
+            generation::inspect(Path::new(&args[2]), Path::new(&args[4]))?;
+            println!(
+                "{}",
+                serde_json::json!({"status":"generation_receipt_inspected","output":Path::new(&args[4])})
+            );
+            Ok(())
+        }
+        Some(action @ ("generation-check" | "generation-prepare")) if args.len() == 7 && args[3] == "--plan" && args[5] == "--receipts" => {
+            generation::check(home, Path::new(&args[4]), Path::new(&args[6]), action == "generation-prepare")?;
+            println!("{}", serde_json::json!({"status": if action == "generation-check" {"generation_checked"} else {"generation_prepared"}, "private_evidence":"retained in the exact host home"}));
+            Ok(())
+        }
+        Some(action @ ("generation-fence" | "generation-cutover" | "generation-recover")) if args.len() == 3 => {
+            if action == "generation-fence" { generation::fence(home)?; } else { generation::cutover(home)?; }
+            println!("{}", serde_json::json!({"status": if action == "generation-fence" {"generation_fenced"} else {"generation_selected"}, "restart_required":true, "private_evidence":"retained in the exact host home"}));
+            Ok(())
+        }
         Some("rotate") if args.len() == 3 => {
             Err("mailbox rotation is unavailable until a drained generation transition is qualified; clients may retain pending or uncertain work even when this mailbox is empty; the host home is unchanged, preserve its namespace and all client queues".into())
         }
@@ -202,6 +221,10 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
 }
 
 fn service(home: &Path, config: &Config) -> Result<Service, String> {
+    service_ids(home, config, &config.credential_ids)
+}
+
+fn service_ids(home: &Path, config: &Config, allowed: &[String]) -> Result<Service, String> {
     let namespace =
         RelayNamespace::from_bytes(config::decode_hex(&config.namespace)?).map_err(|_| REFUSED)?;
     let tls = tls::server_config(
@@ -211,7 +234,7 @@ fn service(home: &Path, config: &Config) -> Result<Service, String> {
     .map_err(|_| REFUSED)?;
     let mut credentials = Vec::new();
     for (index, id) in config.credential_ids.iter().enumerate() {
-        if config.revoked_credential_ids.contains(id) {
+        if config.revoked_credential_ids.contains(id) || !allowed.contains(id) {
             continue;
         }
         let raw = config::read_bound(home, config, &format!("client-{}.token", index + 1), 65)?;
@@ -237,7 +260,7 @@ fn service(home: &Path, config: &Config) -> Result<Service, String> {
         });
     }
     if credentials.is_empty() {
-        return Err("all transport credentials are revoked; explicitly replace or add a credential before serving".into());
+        return Err("all transport credentials are revoked for this generation; explicitly replace an enrolled credential before serving".into());
     }
     Service::new(
         FileStore::open(home.join(&config.mailbox), namespace).map_err(|_| REFUSED)?,
@@ -316,51 +339,70 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
                 .into(),
         );
     }
-    let service = service(&loaded.home, &loaded.config)?;
-    drop(maintenance);
-    // Mailbox custody is held before the bounded bind retry so a restart
-    // handoff cannot let a second owner take the store mid-recovery.
-    let mut listener = None;
-    for attempt in 0..20 {
-        match TcpListener::bind(loaded.config.listen) {
-            Ok(bound) => {
-                listener = Some(bound);
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-                events::append(
-                    &loaded.home,
-                    "bind-retry",
-                    &[("attempt", &attempt.to_string())],
-                )?;
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-            Err(_) => return Err("local relay bind refused".into()),
-        }
+    let mut services = vec![(loaded.config.listen, service(&loaded.home, &loaded.config)?)];
+    for retained in &loaded.config.retained_generations {
+        let mut selection = loaded.config.clone();
+        selection.namespace = retained.namespace.clone();
+        selection.mailbox = retained.mailbox.clone();
+        selection.listen = retained.listen;
+        generation::validate_retained(&loaded.home, retained)?;
+        services.push((
+            retained.listen,
+            service_ids(&loaded.home, &selection, &retained.credential_ids)?,
+        ));
     }
-    let Some(listener) = listener else {
-        return Err("local relay bind refused".into());
-    };
+    // At most sixteen generations, each with sixteen connection workers and
+    // its existing finite per-window budgets: 256 simultaneous workers total.
+    // Acquire every store before binding any listener, then keep them together.
+    let mut bound = Vec::new();
+    for (address, service) in services {
+        let mut listener = None;
+        for attempt in 0..20 {
+            match TcpListener::bind(address) {
+                Ok(value) => {
+                    listener = Some(value);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    events::append(
+                        &loaded.home,
+                        "bind-retry",
+                        &[("attempt", &attempt.to_string())],
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                Err(_) => return Err("local relay bind refused".into()),
+            }
+        }
+        bound.push((service, listener.ok_or("local relay bind refused")?));
+    }
+    drop(maintenance);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| REFUSED)?;
     runtime.block_on(async {
-        use tokio::signal::unix::{signal,SignalKind};
-        let mut terminate=signal(SignalKind::terminate()).map_err(|_|REFUSED)?;
-        let mut interrupt=signal(SignalKind::interrupt()).map_err(|_|REFUSED)?;
-        let stop=Arc::new(AtomicBool::new(false));
-        let selected=stop.clone();
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate()).map_err(|_| REFUSED)?;
+        let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| REFUSED)?;
+        let stop = Arc::new(AtomicBool::new(false));
         events::append(&loaded.home,"serve-start",&[("listen",&loaded.config.listen.to_string())])?;
-        println!("{}",serde_json::json!({"status":"listening","listen":loaded.config.listen,"label":loaded.config.label}));
-        let mut worker=tokio::task::spawn_blocking(move||service.serve_until(listener,None,selected));
-        let outcome=tokio::select! {
-            result=&mut worker => (result.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned()),"worker"),
-            _=terminate.recv() => {stop.store(true,Ordering::Release);(worker.await.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned()),"terminate")},
-            _=interrupt.recv() => {stop.store(true,Ordering::Release);(worker.await.map_err(|_|REFUSED)?.map_err(|_|REFUSED.to_owned()),"interrupt")},
+        let mut workers = tokio::task::JoinSet::new();
+        for (service, listener) in bound {
+            let selected = stop.clone();
+            workers.spawn_blocking(move || service.serve_until(listener, None, selected));
+        }
+        println!("{}",serde_json::json!({"status":"listening","listen":loaded.config.listen,"label":loaded.config.label,"generations":workers.len()}));
+        let (mut result, reason) = tokio::select! {
+            first = workers.join_next() => (match first { Some(Ok(Ok(()))) => Ok(()), _ => Err(REFUSED.to_owned()) }, "worker"),
+            _ = terminate.recv() => (Ok(()), "terminate"),
+            _ = interrupt.recv() => (Ok(()), "interrupt"),
         };
-        let (result,reason)=outcome;
-        let _=events::append(&loaded.home,"serve-stop",&[("reason",reason),("ok",if result.is_ok(){"true"}else{"false"})]);
+        stop.store(true, Ordering::Release);
+        while let Some(joined) = workers.join_next().await {
+            if !matches!(joined, Ok(Ok(()))) { result = Err(REFUSED.to_owned()); }
+        }
+        let _ = events::append(&loaded.home,"serve-stop",&[("reason",reason),("ok",if result.is_ok(){"true"}else{"false"})]);
         result
     })
 }

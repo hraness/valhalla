@@ -51,8 +51,22 @@ fn default_mailbox() -> String {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct RetainedGeneration {
+    pub generation: u64,
+    pub namespace: String,
+    pub mailbox: String,
+    pub listen: SocketAddr,
+    pub credential_ids: Vec<String>,
+    pub transition: String,
+    pub intent_sha256: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Config {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained_generations: Vec<RetainedGeneration>,
     pub label: String,
     pub listen: SocketAddr,
     pub tls_name: String,
@@ -201,7 +215,7 @@ fn random<const N: usize>() -> Result<Zeroizing<[u8; N]>, String> {
     }
     Ok(bytes)
 }
-fn digest(bytes: &[u8]) -> String {
+pub(super) fn digest(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
 fn label(home: &Path) -> Result<String, String> {
@@ -303,6 +317,7 @@ pub(super) fn initialize_with_leaf_lifetime(
     .map_err(|_| "invalid TLS trust/name selection")?;
     let mut config = Config {
         version: 2,
+        retained_generations: Vec::new(),
         label: label(&home)?,
         listen,
         tls_name: name.to_owned(),
@@ -402,7 +417,7 @@ pub(super) fn load_for_stop(path: &Path) -> Result<Loaded, String> {
 /// Validate proposed manifests before publication, using the same structural
 /// constraints as readers. File commitments are checked separately.
 fn validate_config(home: &Path, config: &Config) -> Result<(), String> {
-    if ![1, 2].contains(&config.version)
+    if ![1, 2, 3].contains(&config.version)
         || config.label != label(&resolve(home)?)?
         || !super::loopback(config.listen)
         || config.listen.port() == 0
@@ -418,7 +433,7 @@ fn validate_config(home: &Path, config: &Config) -> Result<(), String> {
             && (!config.credential_generations.is_empty()
                 || !config.revoked_credential_ids.is_empty()
                 || config.leaf_lifetime_seconds.is_some()))
-        || (config.version == 2
+        || (config.version >= 2
             && (config.credential_generations.len() != config.credential_ids.len()
                 || config
                     .credential_generations
@@ -437,6 +452,7 @@ fn validate_config(home: &Path, config: &Config) -> Result<(), String> {
     {
         return Err(REFUSED.into());
     }
+    super::generation::validate_selection(config)?;
     RelayNamespace::from_bytes(decode_hex(&config.namespace)?).map_err(|_| REFUSED)?;
     let expected = expected_files(config);
     if config.files.len() != expected.len()
@@ -483,7 +499,7 @@ pub(super) fn load(path: &Path) -> Result<Loaded, String> {
 
 /// The client-facing document a member copies into a delivery profile. It
 /// carries no token and no private path outside the home.
-fn connection_document(
+pub(super) fn connection_document(
     home: &Path,
     config: &Config,
     previous: Option<&str>,
@@ -636,7 +652,7 @@ fn restore_seal_backups_with(
 /// Recover the last fully sealed snapshot after an interrupted mutation.
 /// Runs before every mutating command so a torn update is always re-runnable;
 /// read paths stay strict and still refuse a torn home.
-fn recover_seal(home: &Path) -> Result<(), String> {
+pub(super) fn recover_seal(home: &Path) -> Result<(), String> {
     let (_, uid) = owner(home)?;
     let (pending, backups) = seal_scratch(home, uid)?;
     let consistent = sealed_config(home, uid);
@@ -717,6 +733,7 @@ pub(super) fn commit_seal(home: &Path, config: &Config) -> Result<(), String> {
 /// it, so a crash leaves inert residue rather than a dangling commitment.
 pub(super) fn add_credential(home: &Path) -> Result<(usize, String), String> {
     let _maintenance = maintenance_lock(home)?;
+    super::generation::require_idle(home)?;
     recover_seal(home)?;
     let loaded = load(home)?;
     if loaded.config.credential_ids.len() >= 64 {
@@ -735,7 +752,7 @@ pub(super) fn add_credential(home: &Path) -> Result<(usize, String), String> {
     let mut config = loaded.config.clone();
     let id = hex(random::<16>()?.as_ref());
     config.credential_ids.push(id.clone());
-    if config.version == 2 {
+    if config.version >= 2 {
         config.credential_generations.push(1);
     }
     config
@@ -810,7 +827,7 @@ fn rotate(home: &Path) -> Result<(String, String), String> {
 pub(super) fn renew(home: &Path, leaf_days: Option<i64>) -> Result<i64, String> {
     renew_at(home, leaf_days, time::OffsetDateTime::now_utc())
 }
-fn upgrade_config(config: &mut Config) {
+pub(super) fn upgrade_config(config: &mut Config) {
     if config.version == 1 {
         config.version = 2;
         config.credential_generations = vec![1; config.credential_ids.len()];
@@ -818,6 +835,7 @@ fn upgrade_config(config: &mut Config) {
 }
 fn renew_at(home: &Path, leaf_days: Option<i64>, now: time::OffsetDateTime) -> Result<i64, String> {
     let _maintenance = maintenance_lock(home)?;
+    super::generation::require_idle(home)?;
     recover_seal(home)?;
     let loaded = load(home)?;
     let lifetime = match leaf_days {
@@ -916,6 +934,7 @@ pub(super) fn credential_lifecycle(
     replace: bool,
 ) -> Result<(String, u32), String> {
     let _maintenance = maintenance_lock(home)?;
+    super::generation::require_idle(home)?;
     recover_seal(home)?;
     let loaded = load(home)?;
     let offset = index

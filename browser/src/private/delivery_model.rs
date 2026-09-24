@@ -1,9 +1,13 @@
 //! Bounded durable delivery progress; credentials never enter this encoding.
 use vhalla_private_kernel::protocol::{ControlFloor, ControlId};
 use vhalla_private_relay::{codec, RelayItem};
+#[path = "generation.rs"]
+pub(crate) mod generation;
 const MAGIC_V1: &[u8] = b"VHBRDEL\x01";
 const MAGIC_V2: &[u8] = b"VHBRDEL\x02";
-const MAGIC: &[u8] = b"VHBRDEL\x03";
+const MAGIC_V3: &[u8] = b"VHBRDEL\x03";
+const MAGIC_V4: &[u8] = b"VHBRDEL\x04";
+const MAGIC: &[u8] = b"VHBRDEL\x05";
 pub(crate) const ATTEMPTS: u64 = 4096;
 pub(crate) const WIRE_BYTES: u64 = 1024 * 1024 * 1024;
 pub(crate) const PAGE: usize = 4;
@@ -21,13 +25,17 @@ pub(crate) const MAX_DEFERRED: usize = 8;
 pub(crate) const MAX_PENDING: usize = codec::MAX_REQUEST;
 const REFUSAL_BYTES: usize = 8 + 32 + 1;
 const ADMISSION_BYTES: usize = 8 + 1 + 4 + 32;
+// Discovery and ordinary delivery never retain a staged page simultaneously.
+// Keep the complete opaque image under the existing IndexedDB storage bound.
 pub(crate) const MAX_STATE: usize = codec::MAX_PAGE_BODY
     + MAX_PENDING
     + MAX_PENDING
     + 512
     + MAX_REFUSED * REFUSAL_BYTES
     + MAX_ADMISSIONS * ADMISSION_BYTES
-    + MAX_DEFERRED * (ADMISSION_BYTES + 1);
+    + MAX_DEFERRED * (ADMISSION_BYTES + 1)
+    + vhalla_private_relay::MAX_RELAY_ITEMS * 32
+    + 1024;
 pub(crate) type Result<T> = core::result::Result<T, ()>;
 
 /// Why delivery is stopped. Only `Backoff` is cleared, by an explicit reopen
@@ -142,6 +150,184 @@ pub(crate) struct Deferred {
     pub reason: u8,
 }
 
+/// A zero-based search for this pending device's authenticated response.
+/// Discovery is not resolved live history and cannot advance `State::cursor`.
+/// The single candidate remains retained after completion for exact recovery.
+#[derive(Clone, Default)]
+pub(crate) struct Discovery {
+    pub cursor: u64,
+    pub staged: Vec<u8>,
+    pub staged_after: u64,
+    pub applied: u64,
+    pub response: Option<Admission>,
+    pub intent: bool,
+    pub complete: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct Audit {
+    pub transition: [u8; 32],
+    pub head: u64,
+    pub digests: Vec<[u8; 32]>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Successor {
+    pub namespace: [u8; 32],
+    pub binding: [u8; 32],
+    pub fence: [u8; 32],
+    pub byte_ceiling: u64,
+    pub attempt_ceiling: u64,
+}
+#[derive(Clone)]
+pub(crate) struct Lineage {
+    pub generation: u64,
+    pub original: [u8; 32],
+    pub prior: [u8; 32],
+    pub byte_ceiling: u64,
+    pub attempt_ceiling: u64,
+    pub audit: Option<Audit>,
+    pub pause: Option<generation::Receipt>,
+    pub intent: Option<Successor>,
+}
+impl Lineage {
+    fn new(binding: [u8; 32]) -> Self {
+        Self {
+            generation: 0,
+            original: binding,
+            prior: [0; 32],
+            byte_ceiling: WIRE_BYTES,
+            attempt_ceiling: ATTEMPTS,
+            audit: None,
+            pause: None,
+            intent: None,
+        }
+    }
+    fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        out.extend(self.generation.to_be_bytes());
+        out.extend(self.original);
+        out.extend(self.prior);
+        out.extend(self.byte_ceiling.to_be_bytes());
+        out.extend(self.attempt_ceiling.to_be_bytes());
+        match &self.audit {
+            None => out.push(0),
+            Some(audit) => {
+                out.push(1);
+                out.extend(audit.transition);
+                out.extend(audit.head.to_be_bytes());
+                out.extend((audit.digests.len() as u64).to_be_bytes());
+                for digest in &audit.digests {
+                    out.extend(digest);
+                }
+            }
+        }
+        match &self.pause {
+            None => out.push(0),
+            Some(pause) => {
+                out.push(1);
+                out.extend(pause.encode()?);
+            }
+        }
+        match self.intent {
+            None => out.push(0),
+            Some(next) => {
+                out.push(1);
+                out.extend(next.namespace);
+                out.extend(next.binding);
+                out.extend(next.fence);
+                out.extend(next.byte_ceiling.to_be_bytes());
+                out.extend(next.attempt_ceiling.to_be_bytes());
+            }
+        }
+        Ok(())
+    }
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let mut value = Self {
+            generation: u64::from_be_bytes(r.array()?),
+            original: r.array()?,
+            prior: r.array()?,
+            byte_ceiling: u64::from_be_bytes(r.array()?),
+            attempt_ceiling: u64::from_be_bytes(r.array()?),
+            audit: None,
+            pause: None,
+            intent: None,
+        };
+        if r.boolean()? {
+            let transition = r.array()?;
+            let head = u64::from_be_bytes(r.array()?);
+            let count = u64::from_be_bytes(r.array()?);
+            if count > vhalla_private_relay::MAX_RELAY_ITEMS as u64 {
+                return Err(());
+            }
+            let mut digests = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                digests.push(r.array()?);
+            }
+            value.audit = Some(Audit {
+                transition,
+                head,
+                digests,
+            });
+        }
+        if r.boolean()? {
+            value.pause = Some(generation::Receipt::decode(
+                &r.array::<{ generation::RECEIPT_BYTES }>()?,
+            )?);
+        }
+        if r.boolean()? {
+            value.intent = Some(Successor {
+                namespace: r.array()?,
+                binding: r.array()?,
+                fence: r.array()?,
+                byte_ceiling: u64::from_be_bytes(r.array()?),
+                attempt_ceiling: u64::from_be_bytes(r.array()?),
+            });
+        }
+        Ok(value)
+    }
+}
+impl Discovery {
+    fn check(&self) -> Result<()> {
+        if self.cursor > vhalla_private_relay::MAX_RELAY_ITEMS as u64
+            || self.staged.len() > codec::MAX_PAGE_BODY
+            || (self.intent && self.response.is_none())
+            || (self.complete && !self.intent)
+            || (self.complete && !self.staged.is_empty())
+        {
+            return Err(());
+        }
+        if let Some(response) = &self.response {
+            if response.position == 0
+                || response.position > self.cursor
+                || response.len == 0
+                || response.len as usize > MAX_PENDING
+                || response.digest == [0; 32]
+                || !matches!(
+                    vhalla_private_relay::kind_from_byte(response.kind),
+                    Ok(vhalla_private_relay::RelayKind::Outbox(
+                        vhalla_private_kernel::OutboxKind::ContactInvitation
+                    ))
+                )
+            {
+                return Err(());
+            }
+        }
+        if self.staged.is_empty() {
+            if self.applied != 0 || self.staged_after != self.cursor {
+                return Err(());
+            }
+        } else {
+            let page = codec::decode_page(&self.staged, self.staged_after, PAGE).map_err(|_| ())?;
+            if page.head < self.staged_after
+                || self.applied >= page.records.len() as u64
+                || self.cursor != self.staged_after.checked_add(self.applied).ok_or(())?
+            {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct State {
     pub binding: [u8; 32],
@@ -171,8 +357,40 @@ pub(crate) struct State {
     pub staged: Vec<u8>,
     pub staged_after: u64,
     pub applied: u64,
+    pub discovery: Option<Discovery>,
+    pub lineage: Lineage,
 }
 impl State {
+    /// Old clients could create a connection before joining, but could not
+    /// sync it. Only that unambiguous zero-progress state may become discovery.
+    /// Charged attempts, bytes, clocks, backoff and stops are preserved.
+    pub fn start_discovery(&mut self) -> Result<()> {
+        if self.discovery.is_some()
+            || self.initial != 0
+            || self.cursor != 0
+            || self.staged_after != 0
+            || self.applied != 0
+            || self.sent != 0
+            || self.retained != 0
+            || self.received != 0
+            || self.refused_total != 0
+            || self.control_sent.is_some()
+            || !self.pending.is_empty()
+            || !self.pending_control.is_empty()
+            || !self.staged.is_empty()
+            || !self.admissions.is_empty()
+            || !self.deferred.is_empty()
+            || !self.refused.is_empty()
+            || self.blocked != 0
+        {
+            return Err(());
+        }
+        self.discovery = Some(Discovery::default());
+        self.check()
+    }
+    pub fn legacy(raw: &[u8]) -> bool {
+        raw.starts_with(MAGIC_V1) || raw.starts_with(MAGIC_V2) || raw.starts_with(MAGIC_V3)
+    }
     pub fn new(binding: [u8; 32], owner: [u8; 16], initial: u64, wall: u64) -> Self {
         Self {
             binding,
@@ -200,19 +418,147 @@ impl State {
             staged: Vec::new(),
             staged_after: initial,
             applied: 0,
+            discovery: None,
+            lineage: Lineage::new(binding),
         }
     }
     pub fn stopped(&self) -> bool {
-        self.stop != Stop::None
+        self.stop != Stop::None || self.lineage.pause.is_some()
+    }
+    pub fn drained(&self) -> bool {
+        self.pending.is_empty()
+            && self.pending_control.is_empty()
+            && self.staged.is_empty()
+            && self.deferred.is_empty()
+            && self.admissions.is_empty()
+            && self.blocked == 0
+            && self.applied == 0
+            && self.staged_after == self.cursor
+            && self.stop == Stop::None
+            && self.failures == 0
+            && self.retry_at == 0
+            && self.discovery.as_ref().is_none_or(|d| d.complete)
+    }
+    pub fn accounting(&self) -> generation::Accounting {
+        generation::Accounting {
+            attempts: self.attempts,
+            wire_bytes: self.wire_bytes,
+            retained: self.retained,
+            received: self.received,
+            refused_total: self.refused_total,
+            byte_ceiling: self.lineage.byte_ceiling,
+            attempt_ceiling: self.lineage.attempt_ceiling,
+        }
+    }
+    /// Derive only the explicitly recorded successor. Historical outgoing
+    /// heads and lifetime charges survive; incoming positions belong to the
+    /// new namespace and begin at zero. The host archives this exact intent.
+    pub fn successor(&self) -> Result<Self> {
+        self.check()?;
+        let pause = self.lineage.pause.as_ref().ok_or(())?;
+        let selected = self.lineage.intent.ok_or(())?;
+        let mut next = self.clone();
+        next.binding = selected.binding;
+        next.initial = 0;
+        next.cursor = 0;
+        next.staged_after = 0;
+        next.refused.clear();
+        next.discovery = None;
+        next.lineage.generation += 1;
+        next.lineage.prior = pause.commitment()?;
+        next.lineage.pause = None;
+        next.lineage.intent = None;
+        next.lineage.attempt_ceiling = selected.attempt_ceiling;
+        next.lineage.byte_ceiling = selected.byte_ceiling;
+        next.check()?;
+        Ok(next)
     }
     pub fn check(&self) -> Result<()> {
+        let line = &self.lineage;
+        if line.generation >= generation::MAX_GENERATIONS
+            || line.original == [0; 32]
+            || (line.generation == 0) != (line.prior == [0; 32])
+            || (line.generation == 0 && line.original != self.binding)
+            || !(WIRE_BYTES..=generation::MAX_BYTES).contains(&line.byte_ceiling)
+            || !(ATTEMPTS..=generation::MAX_ATTEMPTS).contains(&line.attempt_ceiling)
+            || (line.pause.is_some() && line.audit.is_some())
+            || (line.intent.is_some() && line.pause.is_none())
+        {
+            return Err(());
+        }
+        if let Some(audit) = &line.audit {
+            if audit.transition == [0; 32]
+                || audit.head > vhalla_private_relay::MAX_RELAY_ITEMS as u64
+                || audit.digests.len() as u64 > audit.head
+                || audit.digests.contains(&[0; 32])
+            {
+                return Err(());
+            }
+        }
+        if let Some(pause) = &line.pause {
+            pause.encode()?;
+            if pause.binding != self.binding
+                || pause.original_binding != line.original
+                || pause.prior != line.prior
+                || pause.generation != line.generation
+                || pause.head != self.cursor
+                || pause.outbox != self.sent
+                || pause.controls != self.control_sent.ok_or(())?.sequence()
+                || pause.accounting != self.accounting()
+                || !self.drained()
+            {
+                return Err(());
+            }
+        }
+        if let Some(next) = line.intent {
+            if next.namespace == [0; 32]
+                || next.binding == [0; 32]
+                || next.fence == [0; 32]
+                || next.binding == self.binding
+                || next.namespace == line.pause.as_ref().ok_or(())?.namespace
+                || !(line.byte_ceiling..=generation::MAX_BYTES).contains(&next.byte_ceiling)
+                || !(line.attempt_ceiling..=generation::MAX_ATTEMPTS)
+                    .contains(&next.attempt_ceiling)
+                || line.generation + 1 >= generation::MAX_GENERATIONS
+            {
+                return Err(());
+            }
+        }
+        if let Some(discovery) = &self.discovery {
+            discovery.check()?;
+            if self.initial != 0
+                || (!discovery.complete
+                    && (self.cursor != 0
+                        || self.staged_after != 0
+                        || self.applied != 0
+                        || !self.staged.is_empty()
+                        || !self.pending_control.is_empty()
+                        || self.control_sent.is_some()
+                        || !self.admissions.is_empty()
+                        || !self.deferred.is_empty()
+                        || !self.refused.is_empty()
+                        || self.refused_total != 0
+                        || self.received != 0))
+            {
+                return Err(());
+            }
+            if !discovery.complete
+                && !self.pending.is_empty()
+                && RelayItem::decode(&self.pending).map_err(|_| ())?.kind()
+                    != vhalla_private_relay::RelayKind::Outbox(
+                        vhalla_private_kernel::OutboxKind::ContactRequest,
+                    )
+            {
+                return Err(());
+            }
+        }
         if self.binding == [0; 32]
             || self.owner == [0; 16]
             || self.initial > vhalla_private_relay::MAX_RELAY_ITEMS as u64
             || self.cursor > vhalla_private_relay::MAX_RELAY_ITEMS as u64
             || self.cursor < self.initial
-            || self.attempts > ATTEMPTS
-            || self.wire_bytes > WIRE_BYTES
+            || self.attempts > line.attempt_ceiling
+            || self.wire_bytes > line.byte_ceiling
             || self.failures > MAX_FAILURES
             || self.blocked > blocked::RATCHET
             || (self.stop == Stop::Refused) != (self.detail != 0)
@@ -360,11 +706,11 @@ impl State {
             self.stop = Stop::Backoff;
             return Ok(false);
         }
-        if self.attempts >= ATTEMPTS
+        if self.attempts >= self.lineage.attempt_ceiling
             || self
                 .wire_bytes
                 .checked_add(max_bytes as u64)
-                .is_none_or(|v| v > WIRE_BYTES)
+                .is_none_or(|v| v > self.lineage.byte_ceiling)
         {
             self.stop = Stop::Exhausted;
             return Ok(false);
@@ -515,6 +861,33 @@ impl State {
             out.extend_from_slice(&(b.len() as u32).to_be_bytes());
             out.extend_from_slice(b);
         }
+        match &self.discovery {
+            None => out.push(0),
+            Some(d) => {
+                out.push(1);
+                for n in [d.cursor, d.staged_after, d.applied] {
+                    out.extend_from_slice(&n.to_be_bytes());
+                }
+                out.push(u8::from(d.intent));
+                out.push(u8::from(d.complete));
+                match &d.response {
+                    None => out.push(0),
+                    Some(a) => {
+                        out.push(1);
+                        out.extend_from_slice(&a.position.to_be_bytes());
+                        out.push(a.kind);
+                        out.extend_from_slice(&a.len.to_be_bytes());
+                        out.extend_from_slice(&a.digest);
+                    }
+                }
+                out.extend_from_slice(&(d.staged.len() as u32).to_be_bytes());
+                out.extend_from_slice(&d.staged);
+            }
+        }
+        self.lineage.encode(&mut out)?;
+        if out.len() > MAX_STATE {
+            return Err(());
+        }
         Ok(out)
     }
     pub fn decode(raw: &[u8]) -> Result<Self> {
@@ -525,7 +898,8 @@ impl State {
             return Self::decode_v1(raw);
         }
         let legacy = raw.starts_with(MAGIC_V2);
-        if !legacy && !raw.starts_with(MAGIC) {
+        let current = raw.starts_with(MAGIC) || raw.starts_with(MAGIC_V4);
+        if !legacy && !current && !raw.starts_with(MAGIC_V3) {
             return Err(());
         }
         let mut r = Reader {
@@ -609,6 +983,45 @@ impl State {
         } else {
             r.blob(MAX_PENDING)?
         };
+        let discovery = if current {
+            match r.array::<1>()?[0] {
+                0 => None,
+                1 => {
+                    let cursor = u64::from_be_bytes(r.array()?);
+                    let staged_after = u64::from_be_bytes(r.array()?);
+                    let applied = u64::from_be_bytes(r.array()?);
+                    let intent = r.boolean()?;
+                    let complete = r.boolean()?;
+                    let response = match r.array::<1>()?[0] {
+                        0 => None,
+                        1 => Some(Admission {
+                            position: u64::from_be_bytes(r.array()?),
+                            kind: r.array::<1>()?[0],
+                            len: u32::from_be_bytes(r.array()?),
+                            digest: r.array()?,
+                        }),
+                        _ => return Err(()),
+                    };
+                    Some(Discovery {
+                        cursor,
+                        staged_after,
+                        applied,
+                        response,
+                        intent,
+                        complete,
+                        staged: r.blob(codec::MAX_PAGE_BODY)?,
+                    })
+                }
+                _ => return Err(()),
+            }
+        } else {
+            None
+        };
+        let lineage = if raw.starts_with(MAGIC) {
+            Lineage::decode(&mut r)?
+        } else {
+            Lineage::new(binding)
+        };
         if r.at != raw.len() {
             return Err(());
         }
@@ -638,6 +1051,8 @@ impl State {
             pending_control,
             pending,
             staged,
+            discovery,
+            lineage,
         };
         out.check()?;
         Ok(out)
@@ -691,6 +1106,8 @@ impl State {
             pending_control: Vec::new(),
             pending,
             staged,
+            discovery: None,
+            lineage: Lineage::new(binding),
         };
         out.check()?;
         Ok(out)
@@ -701,6 +1118,13 @@ struct Reader<'a> {
     at: usize,
 }
 impl Reader<'_> {
+    fn boolean(&mut self) -> Result<bool> {
+        match self.array::<1>()?[0] {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(()),
+        }
+    }
     fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         let end = self.at.checked_add(N).ok_or(())?;
         let v = self
