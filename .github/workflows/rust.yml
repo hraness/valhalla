@@ -52,6 +52,8 @@ jobs:
         run: python3 -m unittest discover -s prototypes/device-recovery-policy -p 'test_*.py'
       - name: Fixed-room disclosure broker model
         run: python3 -m unittest discover -s prototypes/agent-compartment -p 'test_*.py'
+      - name: Private runtime measurement contracts
+        run: python3 -m unittest discover -s crates/vhalla-cli/tools -p 'test_*.py'
 
   workspace-tests:
     name: Workspace tests (${{ matrix.name }})

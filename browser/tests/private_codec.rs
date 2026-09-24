@@ -47,6 +47,21 @@ fn consent(body: usize) -> Consent {
         body: bytes(body),
     }
 }
+fn admission_consent() -> AdmissionConsent {
+    AdmissionConsent {
+        session: [8; 16],
+        id: 1,
+        context: context(),
+        epoch: 7,
+        roster: [4; 32],
+        control_floor: floor(3),
+        position: 1,
+        digest: [6; 32],
+        recipient: key(),
+        device: key(),
+        validity: validity(),
+    }
+}
 
 #[test]
 fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
@@ -76,6 +91,15 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         Request::DeliveryAdmissions,
         Request::DeliveryAdmission { position: 1 },
         Request::DeliveryDiscard { position: 4096 },
+        Request::ReviewAdmission {
+            position: 4096,
+            recipient: key(),
+            offer: bytes(MAX_OFFER),
+        },
+        Request::ConfirmAdmission {
+            operation: op(),
+            consent: Box::new(admission_consent()),
+        },
         Request::PrepareMessage(bytes(MAX_BODY_BYTES)),
         Request::Send {
             operation: op(),
@@ -161,7 +185,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Request::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x06".len();
+        let tag = b"VHBRPRIVATE\x07".len();
         changed.truncate(raw.len());
         changed[tag] = 250;
         assert!(Request::decode(&changed).is_err());
@@ -187,7 +211,7 @@ fn archive_route_is_explicit_canonical_and_versioned() {
         ] {
             let raw = request.encode().unwrap();
             assert_eq!(*Request::decode(&raw).unwrap().encode().unwrap(), *raw);
-            let route = b"VHBRPRIVATE\x06".len() + 1 + 128 + 32;
+            let route = b"VHBRPRIVATE\x07".len() + 1 + 128 + 32;
             assert_eq!(raw[route], u8::from(legacy));
             let mut bad = raw.to_vec();
             bad[route] = 2;
@@ -201,7 +225,7 @@ fn archive_route_is_explicit_canonical_and_versioned() {
 
 #[test]
 fn untrusted_lengths_counts_boolean_and_floor_refuse_before_allocation() {
-    let prefix = b"VHBRPRIVATE\x06".len();
+    let prefix = b"VHBRPRIVATE\x07".len();
     let mut raw = Request::PrepareMessage(bytes(1)).encode().unwrap();
     raw[prefix + 1..prefix + 5].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Request::decode(&raw).is_err());
@@ -406,7 +430,7 @@ fn response_collection_count_and_blob_budgets_are_checked_on_raw_input() {
     }
     .encode()
     .unwrap();
-    let at = b"VHBRPRIVATE\x06".len() + 1 + 128 + 8 + 32;
+    let at = b"VHBRPRIVATE\x07".len() + 1 + 128 + 8 + 32;
     raw[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Response::decode(&raw).is_err());
     assert!(Response::decode(&vec![0; MAX_FRAME + 1]).is_err());
@@ -436,6 +460,7 @@ fn status() -> Status {
 #[test]
 fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
     let responses = vec![
+        Response::AdmissionReview(Box::new(admission_consent())),
         Response::Delivery(DeliveryReport {
             context: context(),
             sent: u64::MAX,
@@ -531,7 +556,7 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x06".len();
+        let tag = b"VHBRPRIVATE\x07".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -674,7 +699,7 @@ fn signed_proofs_and_fork_evidence_verify_at_the_local_boundary() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x06".len();
+        let tag = b"VHBRPRIVATE\x07".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -1009,5 +1034,37 @@ fn membership_view_round_trips_and_verifies_the_succession_chain() {
         assert!(Response::Membership(Box::new(view))
             .encode()
             .map_or(true, |raw| { Response::decode(&raw).is_err() }));
+    }
+}
+
+#[test]
+fn admission_frames_refuse_old_worker_version_and_invalid_review_bindings() {
+    let review = Response::AdmissionReview(Box::new(admission_consent()));
+    let mut old = review.encode().unwrap().to_vec();
+    old[b"VHBRPRIVATE".len()] = 6;
+    assert!(Response::decode(&old).is_err());
+    let command = Request::ConfirmAdmission {
+        operation: op(),
+        consent: Box::new(admission_consent()),
+    };
+    let mut old = command.encode().unwrap().to_vec();
+    old[b"VHBRPRIVATE".len()] = 6;
+    assert!(Request::decode(&old).is_err());
+    for field in 0..3 {
+        let mut bad = admission_consent();
+        match field {
+            0 => bad.session = [0; 16],
+            1 => bad.id = 0,
+            _ => bad.position = 0,
+        }
+        assert!(Response::AdmissionReview(Box::new(bad.clone()))
+            .encode()
+            .is_err());
+        assert!(Request::ConfirmAdmission {
+            operation: op(),
+            consent: Box::new(bad)
+        }
+        .encode()
+        .is_err());
     }
 }

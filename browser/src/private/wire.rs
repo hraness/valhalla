@@ -23,7 +23,7 @@ pub enum CodecError {
     InvalidFrame,
 }
 type Result<T> = std::result::Result<T, CodecError>;
-const MAGIC: &[u8] = b"VHBRPRIVATE\x06";
+const MAGIC: &[u8] = b"VHBRPRIVATE\x07";
 struct Writer(Vec<u8>);
 impl Drop for Writer {
     fn drop(&mut self) {
@@ -126,6 +126,22 @@ impl Writer {
         self.number(c.epoch)?;
         self.put(&c.roster)?;
         self.blob(&c.body, MAX_BODY_BYTES)
+    }
+    fn admission(&mut self, c: &AdmissionConsent) -> Result<()> {
+        if c.id == 0 || c.session == [0; 16] {
+            return Err(CodecError::InvalidFrame);
+        }
+        self.put(&c.session)?;
+        self.number(c.id)?;
+        self.context(c.context)?;
+        self.number(c.epoch)?;
+        self.put(&c.roster)?;
+        self.floor(c.control_floor)?;
+        self.position(c.position)?;
+        self.put(&c.digest)?;
+        self.key(c.recipient)?;
+        self.key(c.device)?;
+        self.validity(c.validity)
     }
     fn status(&mut self, s: Status) -> Result<()> {
         self.context(s.context)?;
@@ -321,6 +337,26 @@ impl<'a> Reader<'a> {
             body: self.blob(MAX_BODY_BYTES)?,
         })
     }
+    fn admission(&mut self) -> Result<AdmissionConsent> {
+        let session = self.array()?;
+        let id = self.number()?;
+        if id == 0 || session == [0; 16] {
+            return Err(CodecError::InvalidFrame);
+        }
+        Ok(AdmissionConsent {
+            session,
+            id,
+            context: self.context()?,
+            epoch: self.number()?,
+            roster: self.array()?,
+            control_floor: self.floor()?,
+            position: self.position()?,
+            digest: self.array()?,
+            recipient: self.key()?,
+            device: self.key()?,
+            validity: self.validity()?,
+        })
+    }
     fn status(&mut self) -> Result<Status> {
         let context = self.context()?;
         let phase = phase(self.byte()?)?;
@@ -511,6 +547,8 @@ impl Request {
             Self::DeliveryAdmissions => 38,
             Self::DeliveryAdmission { .. } => 39,
             Self::DeliveryDiscard { .. } => 40,
+            Self::ReviewAdmission { .. } => 41,
+            Self::ConfirmAdmission { .. } => 42,
         };
         let mut w = Writer::new(tag);
         match self {
@@ -631,6 +669,19 @@ impl Request {
             Self::DeliveryAdmission { position } | Self::DeliveryDiscard { position } => {
                 w.position(*position)?;
             }
+            Self::ReviewAdmission {
+                position,
+                recipient,
+                offer,
+            } => {
+                w.position(*position)?;
+                w.key(*recipient)?;
+                w.blob(offer, MAX_OFFER)?;
+            }
+            Self::ConfirmAdmission { operation, consent } => {
+                w.op(*operation)?;
+                w.admission(consent)?;
+            }
         }
         Ok(w.finish())
     }
@@ -746,6 +797,15 @@ impl Request {
             40 => Self::DeliveryDiscard {
                 position: r.position()?,
             },
+            41 => Self::ReviewAdmission {
+                position: r.position()?,
+                recipient: r.key()?,
+                offer: r.blob(MAX_OFFER)?,
+            },
+            42 => Self::ConfirmAdmission {
+                operation: r.op()?,
+                consent: Box::new(r.admission()?),
+            },
             35 => Self::Succeed {
                 operation: r.op()?,
                 successor: r.key()?,
@@ -768,6 +828,7 @@ impl Response {
             Self::Prepared(_) => 102,
             Self::Membership(_) => 103,
             Self::Draft(_) => 104,
+            Self::AdmissionReview(_) => 122,
             Self::Artifact { .. } => 105,
             Self::Offer { .. } => 106,
             Self::Received { .. } => 107,
@@ -788,6 +849,7 @@ impl Response {
         let mut w = Writer::new(tag);
         match self {
             Self::Entered(k) => w.key(*k)?,
+            Self::AdmissionReview(c) => w.admission(c)?,
             Self::Delivery(v) => {
                 w.context(v.context)?;
                 for n in [
@@ -1007,6 +1069,7 @@ impl Response {
         let mut r = Reader::new(raw)?;
         let out = match r.byte()? {
             101 => Self::Entered(r.key()?),
+            122 => Self::AdmissionReview(Box::new(r.admission()?)),
             120 => {
                 let context = r.context()?;
                 let sent = r.number()?;

@@ -1,4 +1,6 @@
 //! One account plus one selected private room, owned only by the existing worker.
+#[path = "admission.rs"]
+mod admission;
 #[path = "delivery.rs"]
 mod delivery;
 pub(super) fn abort_delivery() {
@@ -20,6 +22,7 @@ use vhalla_private_kernel::{
     storage::ArchiveStore,
     CommittedOutbox, Context, Kernel, MemberDraft, MessageDraft, OutboxEntry, OwnerDraft, Phase,
 };
+use wasm_bindgen::JsCast;
 use zeroize::Zeroizing;
 
 pub use delivery::engine::Failure;
@@ -83,6 +86,7 @@ pub struct Session {
     delivery: Option<delivery::Delivery>,
     creation: Option<Creation>,
     message: Option<PendingMessage>,
+    admission: admission::Admission,
     archive: Option<Archive>,
     identity: UnlockedIdentity,
     saved: IdentitySnapshot,
@@ -136,11 +140,20 @@ impl Session {
         {
             return Err(Failure::IdentityChanged);
         }
+        let mut admission_session = [0; 16];
+        js_sys::global()
+            .dyn_into::<web_sys::DedicatedWorkerGlobalScope>()
+            .map_err(|_| Failure::Invalid)?
+            .crypto()
+            .map_err(|_| Failure::Invalid)?
+            .get_random_values_with_u8_array(&mut admission_session)
+            .map_err(|_| Failure::Invalid)?;
         Ok(Self {
             kernel: None,
             delivery: None,
             creation: None,
             message: None,
+            admission: admission::Admission::new(admission_session)?,
             archive: None,
             identity,
             saved,
@@ -244,6 +257,7 @@ impl Session {
     }
 
     async fn execute_selected(&mut self, request: Request) -> Result<Response> {
+        self.admission.before(&request);
         let time = now()?;
         match request {
             Request::Enter { .. } => Err(Failure::State),
@@ -394,6 +408,52 @@ impl Session {
                         bytes: Some(Zeroizing::new(item.payload().to_vec())),
                         acceptances: Vec::new(),
                     },
+                })
+            }
+            Request::ReviewAdmission {
+                position,
+                recipient,
+                offer,
+            } => {
+                self.message = None;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let item = delivery.retained(self, position).await;
+                self.delivery = Some(delivery);
+                let item = item?;
+                self.kernel()?;
+                let consent = self
+                    .admission
+                    .review(
+                        self.kernel.as_mut().ok_or(Failure::State)?,
+                        position,
+                        &item,
+                        &offer,
+                        recipient,
+                        now()?,
+                    )
+                    .await?;
+                Ok(Response::AdmissionReview(Box::new(consent)))
+            }
+            Request::ConfirmAdmission { operation, consent } => {
+                self.message = None;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let item = delivery.retained(self, consent.position).await;
+                self.delivery = Some(delivery);
+                let item = item?;
+                self.kernel()?;
+                let output = self
+                    .admission
+                    .confirm(
+                        self.kernel.as_mut().ok_or(Failure::State)?,
+                        operation,
+                        &consent,
+                        &item,
+                        now()?,
+                    )
+                    .await?;
+                Ok(Response::Artifact {
+                    context: consent.context,
+                    artifact: artifact(&output),
                 })
             }
             Request::DeliveryDiscard { position } => {

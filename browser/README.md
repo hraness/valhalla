@@ -280,8 +280,10 @@ falls back to it. Existing legacy state retains its prior limits, independently
 of the new catalog. Catalog integrity follows the existing trusted-origin storage
 model; coherent deletion or rollback is not externally fenced.
 `ArchiveImportBegin`/`ArchiveImportFeed`/`ArchiveImportFinish` retain an exact durable
-receiving cursor. Worker wire version 4 carries the explicit route and refuses
-older frames. `ArchiveOpen` reopens a
+receiving cursor. Worker wire version 4 introduced the explicit archive route.
+The current local worker protocol is version 7, which adds retained-request
+admission review and confirmation; it refuses older frames. This IPC upgrade
+does not change retained room, archive or delivery images. `ArchiveOpen` reopens a
 finished archive for read-only membership, inbox and redacted-outbox inspection
 plus explicit ciphertext downloads. Header fields are unauthenticated hints;
 foreign accounts refuse before import begins; malformed containers, oversized
@@ -425,8 +427,31 @@ settles to its exact request/reply bytes, while an interrupted or failed
 attempt keeps the full reservation. Ten
 consecutive reserved unsuccessful attempts stop delivery; success clears only
 that consecutive count. Terminal room/storage errors end custody and preserve
-state for inspection. Bootstrap contact artifacts require their dedicated
-explicit admission UI, never automatic membership. The sender's status reports
+state for inspection. Bootstrap contact artifacts require explicit admission,
+never automatic membership. An owner can select a retained encrypted join
+request, enter its full recipient account and select the original confidential
+offer (or use the matching offer still held in this unlocked panel). **Review
+selected join request** authenticates the request and shows the full room,
+owner account/device, recipient account/device, current roster and epoch,
+request commitment and capped invitation expiry. It does not consume the offer
+or change membership. **Admit this reviewed device** separately confirms that
+exact review; the worker rereads retained bytes and rechecks current membership
+before invoking the existing kernel admission operation. The offer remains
+confidential and is never included in a relay request.
+
+Review permission exists only in the unlocked worker, is single-use and is
+bound to that worker session. An intervening worker operation, including a
+membership read or same-roster sync, invalidates it. Changing the selected
+recipient, offer file or retained item also clears the panel's confirmation.
+Lock/reload requires a fresh review. A refusal preserves retained evidence;
+if custody closes, unlock and reopen before reviewing again. Successful
+admission saves the encrypted response and leaves the original retained
+request until explicit discard; it does not automatically admit another item.
+
+This flow removes the owner's request download/reimport step. A browser
+awaiting its first welcome still cannot connect or sync. Confidential offer
+handoff and recipient response file import remain explicit; prejoin transport
+and response review need a separate contract. The sender's status reports
 relay retention; incoming status reports local committed acceptance. Neither
 claims human reading. Normal incoming applications queue a device-signed
 acceptance artifact; receipt messages do not generate receipt loops.

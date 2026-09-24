@@ -31,6 +31,22 @@ fn inbox_text(message: &Inbound) -> String {
         String::from_utf8_lossy(&message.body)
     )
 }
+async fn selected_offer(app: &App, ticket: u64, recipient: Key) -> Result<Bytes> {
+    // Explicit original file takes precedence over the last live offer.
+    if input(app, "private-resume-offer-file")
+        .files()
+        .is_some_and(|files| files.length() != 0)
+    {
+        file(app, ticket, "private-resume-offer-file", MAX_OFFER).await
+    } else {
+        let s = app.borrow();
+        let retained = s.secret.as_ref().ok_or("Reselect the original confidential offer and its recipient account before reviewing this request.")?;
+        if retained.recipient != recipient {
+            return Err("The selected recipient differs from the live offer. Choose the correct original offer file explicitly.".into());
+        }
+        Ok(retained.bytes.clone())
+    }
+}
 pub(super) async fn perform(
     app: &App,
     ticket: u64,
@@ -38,6 +54,101 @@ pub(super) async fn perform(
     selected_file: Option<js_sys::Promise>,
 ) -> Result<()> {
     match action {
+        Action::AdmissionReview => {
+            {
+                let mut s = app.borrow_mut();
+                s.consent = None;
+                s.intent = None;
+            }
+            text(
+                app,
+                "private-consent",
+                "Review the message again after completing admission review.",
+            );
+            let recipient = key(&input(app, "private-recipient").value())?;
+            let index = selected(app, "private-admission-select")?;
+            let (position, digest) = {
+                let s = app.borrow();
+                let item = s
+                    .admissions
+                    .get(index)
+                    .ok_or("Select a retained join request.")?;
+                if item.kind != vhalla_private_kernel::OutboxKind::ContactRequest {
+                    return Err("Select an encrypted request. Join responses still use the dedicated file input.".into());
+                }
+                (item.position, item.digest)
+            };
+            let offer = selected_offer(app, ticket, recipient).await?;
+            let Response::AdmissionReview(consent) = call(
+                app,
+                ticket,
+                Request::ReviewAdmission {
+                    position,
+                    recipient,
+                    offer,
+                },
+            )
+            .await?
+            else {
+                return Err("Unexpected admission review report.".into());
+            };
+            if consent.position != position
+                || consent.digest != digest
+                || consent.recipient != recipient
+            {
+                return Err("The retained request selection changed. Review again.".into());
+            }
+            text(app, "private-admission-consent", &format!(
+                "Review before admitting this device\n{}\nRecipient account {}\nRecipient device {}\nCurrent epoch {}\nCurrent roster {}\nControl floor {}\nRequest at mailbox {}\nRequest commitment {}\nInvitation expires at {} UTC seconds\nConfirming adds this exact device to the displayed room and saves its encrypted join response. The recipient must still complete the file-based join step.",
+                metadata(consent.context), hex(consent.recipient.as_bytes()), hex(consent.device.as_bytes()),
+                consent.epoch, hex(&consent.roster), consent.control_floor.sequence(), consent.position,
+                hex(&consent.digest), consent.validity.expires_at(),
+            ));
+            app.borrow_mut().admission_consent = Some(consent);
+            status(app, "Request verified for review. Check the complete account, device and room, then confirm explicitly. No membership change has been made.", false);
+        }
+        Action::AdmissionConfirm => {
+            let consent = app
+                .borrow_mut()
+                .admission_consent
+                .take()
+                .ok_or("Review the selected request before confirming admission.")?;
+            let recipient = key(&input(app, "private-recipient").value())?;
+            let index = selected(app, "private-admission-select")?;
+            {
+                let s = app.borrow();
+                let item = s
+                    .admissions
+                    .get(index)
+                    .ok_or("The retained request selection changed.")?;
+                let room = s.room.as_ref().ok_or("Open the owner room first.")?;
+                if recipient != consent.recipient
+                    || item.position != consent.position
+                    || item.digest != consent.digest
+                    || room.status.context != consent.context
+                    || room.status.epoch != consent.epoch
+                    || room.status.roster != consent.roster
+                    || room.status.control_floor != consent.control_floor
+                {
+                    return Err("The reviewed room, roster or request changed. Review again before admitting a device.".into());
+                }
+            }
+            artifact(
+                app,
+                call(
+                    app,
+                    ticket,
+                    Request::ConfirmAdmission {
+                        operation: operation()?,
+                        consent,
+                    },
+                )
+                .await?,
+            )?;
+            text(app, "private-admission-consent", "");
+            refresh(app, ticket).await?;
+            status(app, "The reviewed device was admitted and its encrypted response saved. Transfer the response to that recipient to complete joining. Sync forwards the membership change to existing members; the retained request remains available as evidence until you explicitly discard it.", false);
+        }
         Action::DeliveryCreate | Action::DeliveryOpen => {
             let profile = file(app, ticket, "private-delivery-profile", 4096).await?;
             // The capability-bearing selection is immediately cleared; the
@@ -509,21 +620,7 @@ pub(super) async fn perform(
         Action::Accept => {
             let recipient = key(&input(app, "private-recipient").value())?;
             let raw = file(app, ticket, "private-request-file", MAX_ARTIFACT).await?;
-            // An explicit original file takes precedence over the last live
-            // offer. With no file, do not ignore a changed recipient field.
-            let selected_file = input(app, "private-resume-offer-file")
-                .files()
-                .is_some_and(|files| files.length() != 0);
-            let offer = if selected_file {
-                file(app, ticket, "private-resume-offer-file", MAX_OFFER).await?
-            } else {
-                let s = app.borrow();
-                let retained = s.secret.as_ref().ok_or("Reselect the original confidential offer and its recipient account before accepting this request.")?;
-                if retained.recipient != recipient {
-                    return Err("The selected recipient differs from the live offer. Choose the correct original offer file explicitly.".into());
-                }
-                retained.bytes.clone()
-            };
+            let offer = selected_offer(app, ticket, recipient).await?;
             let (context, owner) = {
                 let s = app.borrow();
                 let view = s.room.as_ref().ok_or("Open the owner room first.")?;
