@@ -186,15 +186,19 @@ unwinding bounds; Verus proves reference transition discipline; TLC checks its
 chosen finite protocol abstraction. Tests and live evidence cover different
 parts of the argument and must not be relabeled as mathematical proofs.
 
-## Evaluated Lean experiment
+## Lean weighted-certificate proofs
 
-The optional [weighted-quorum spike](../prototypes/lean-quorum/README.md) contains
-a checked, unbounded theorem over finite weighted rosters, arithmetic lemmas,
-and witnesses showing why strict quorum and the Byzantine-weight bound matter.
-Its Lean 4.34.0 source uses only `Std` and reports its transitive axioms. It does
-not prove Rust correspondence, cross-round locking or validator rotation.
+The [Lean trial](../verify/lean/README.md) proves weighted quorum intersection
+for arbitrary finite rosters, connects distinct signer lists to roster
+membership, and derives certificate value equality under honest
+non-equivocation in one signing context. Lean 4.34.0 checks the `Std`-only
+proofs; the runner verifies the distribution digest, theorem inventory and
+transitive axioms before reporting success.
 
 The [tool comparison](../verify/README.md#lean-comparison-decision) recommends
-expanding the existing TLA+ gate and retaining Kani/Verus. Lean remains a
-reproducible optional experiment until a stable theorem and owned implementation
-boundary justify the extra toolchain; no required Lean CI layer was added.
+TLA+ for protocol interleavings, with Lean, Kani and Verus assigned their own
+claims. The called formal workflow requires the Lean check. Generated Lean
+cases also run through both Rust certificate verifiers with genuine signatures
+and through the CLI threshold helper. This finite comparison tests their
+correspondence; cryptography, cross-round locking and validator rotation need
+separate evidence. See the proof README for commands, assumptions and costs.

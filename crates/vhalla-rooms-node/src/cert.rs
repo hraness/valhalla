@@ -2,7 +2,8 @@
 //! node runs before a `Decided`/`Finalized` certificate may enter the
 //! durable commit boundary.
 //!
-//! Mirrors the `room-cert-ack` evidence: non-Nil round, bounded signature
+//! Mirrors the `room-cert-ack` evidence: a non-Nil round below the reserved
+//! `u32::MAX` encoding, bounded signature
 //! count, unique known signers, each commit signature verified over the
 //! canonical precommit preimage (`RV1`), and strictly-greater-than
 //! two-thirds distinct voting power. The certificate is canonicalized to
@@ -30,6 +31,8 @@ pub enum CertError {
     InvalidValidatorSet,
     /// The certificate decided a Nil round.
     NilRound,
+    /// The round uses the canonical certificate's reserved Nil encoding.
+    ReservedRound,
     /// More signatures than the bound.
     TooManySignatures,
     /// The same validator signed twice.
@@ -84,6 +87,11 @@ pub fn verify_commit_certificate(
         .map_err(|_| CertError::InvalidValidatorSet)?;
     if certificate.round == Round::Nil {
         return Err(CertError::NilRound);
+    }
+    // VC2 reserves 0xffffffff for Nil. Admitting Some(u32::MAX) here would
+    // produce accepted bytes that the canonical consumer cannot replay.
+    if certificate.round == Round::Some(u32::MAX) {
+        return Err(CertError::ReservedRound);
     }
     if certificate.commit_signatures.is_empty()
         || certificate.commit_signatures.len() > MAX_CERT_SIGNATURES

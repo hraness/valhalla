@@ -8,11 +8,14 @@ retained as CI artifacts. The original private-room evidence is recorded in
 new boundaries are tracked in `kb/plans/valhalla-formal-rigor.md`. Additional
 shipping protocols are covered by the
 [protocol expansion](../kb/plans/valhalla-protocol-formal-expansion.md).
+The [Lean trial](../kb/plans/valhalla-lean-assurance-trial.md) connects
+weighted-certificate theorems to signed Rust conformance cases.
 
 | Claim | Production correspondence | Evidence | Limits |
 | --- | --- | --- | --- |
 | Spent-nonce decisions fail closed | `crates/vhalla-native/src/spent.rs` validator, serializer and admission | Kani 0.68.0 in the required Rust gate; full-capacity and restart tests | Symbolic length/admission inputs and entry-byte partitions; codec rounds at 0–2 entries. No BTreeSet/concurrency/filesystem theorem. |
 | Linear ledger admission preserves invariants | `vhalla-ledger::Ledger::append` and its caches | `ledger.rs` Verus theorem; sampled `crates/vhalla-ledger/tests/model_conformance.rs` compares vector projection against production maps and snapshot reopen | Verus IDs are abstract; hashing is outside the model. The independently maintained executable projection is testing, not a refinement proof or automatically extracted model. |
+| Distinct weighted quorums share an honest signer; certificates in one signing context agree under honest non-equivocation | `RoomValidatorSet::validate`, both certificate verifiers in rooms-node `cert.rs`, and CLI `quorum` | [Lean weighted-certificate proofs](lean/README.md), audited theorem inventory, generated corpus consumed by both authenticated Rust verifiers | Unbounded mathematics on one fixed roster; assumes authenticated signatures, at most one-third faulty weight and honest non-equivocation in the same context. Rust correspondence is finite testing. Cross-round locking, rotation and cryptography remain separate obligations. |
 | Fetched retryable traffic remains recoverable | Browser `Engine` strict image+retained-item publication, `deferred` metadata and kernel receive/control paths; native staged scan and applied markers | `private-delivery/PrivateDelivery.tla`, positive safety/liveness and capacity-only configs; `browser/tests/private_delivery_engine.rs` future/control/restart regression | Two clients, three identities, finite crash budget. Assumes valid authority, successful atomic storage, eventual transport and sufficient capacity for liveness. No crypto or physical-fsync proof. |
 | Duplicate replay cannot repeat an application effect | Kernel exact receive and retained artifact identity | `ExactlyOnce`, mutant-duplicate, kernel and delivery regression tests | The model abstracts exact identity as an integer; byte/signature binding needs real-code tests. |
 | A new acceptance cannot let a local membership control overtake older output | Native monotone outbox capture and sender-local control merge | `private-egress/PrivateEgress.tla`, tail-shortcut counterexample and real TLS bounded-backlog regression | Three already-committed local artifacts, one control and capacity one. Checks staging/egress order; does not prove source artifact creation, global delivery order or remote epoch availability. |
@@ -147,38 +150,32 @@ lost with the process from a committed fault whose completion was lost.
 
 ## Lean comparison decision
 
-The [formal-rigor plan](../kb/plans/valhalla-formal-rigor.md) reassessed the choice
-with parallel source investigations and an actually checked Lean experiment.
-The near-term choice remains TLA+ for concurrency/recovery, with Kani and Verus
-retained for their existing claims. Lean is promising for mathematical results,
-but this increment does not add a required Lean toolchain.
+Lean has a maintained trial for weighted certificates, alongside TLA+ for
+protocol interleavings and recovery. The
+[initial assessment](../kb/plans/valhalla-formal-rigor.md) kept its small Lean
+experiment optional. The [subsequent trial](lean/README.md) adds an identity-aware
+proof, authenticated Rust conformance tests and a required CI check so its
+usefulness and upkeep can be evaluated in the repository.
 
 | Approach | Best fit here | Evidence and upkeep | Decision |
 | --- | --- | --- | --- |
 | TLA+/TLC | Reply custody, protocol ordering, interrupted recovery, conditional progress | Finite-state exploration with operational counterexamples; maintain abstraction, bounds, fairness and production regressions | Expand the existing required gate. |
-| Lean | Unbounded mathematical statements such as weighted quorum intersection | Kernel-checked theorem and audited assumptions; an additional toolchain and independently maintained Rust correspondence | Retain the evaluated optional spike; defer required adoption. |
+| Lean | Unbounded mathematical statements about weighted signers and certificate agreement in one context | Kernel-checked theorems, audited assumptions and generated cases tested against Rust; separate toolchain and correspondence upkeep | Maintain the narrow weighted-certificate trial in required CI. |
 | Verus | Unbounded Rust-shaped admission invariants | Existing ledger model and sampled production correspondence; reference-model abstraction still needs review | Retain; compare the same theorem here before claiming Lean superiority. |
 | Kani plus Hegel/property tests | Symbolic production decisions and real storage/restart sequences | Kani has tractability and input bounds; tests sample histories and exercise actual adapters | Preserve as complementary evidence. |
 
-The [Lean quorum spike](../prototypes/lean-quorum/README.md) proves that any two
-strict weighted two-thirds quorums on one fixed finite roster overlap in honest
-weight when Byzantine weight is at most one-third. It also proves threshold
-equivalence and arithmetic bounds, and checks concrete witnesses showing why
-strictness and the fault bound matter. Lean 4.34.0 checked the final Std-only
-file in 2.17 seconds locally; its public results use only the recorded standard
-axioms, with no `sorry`, custom axiom or native-evaluation axiom. The installed
-toolchain occupied 2.7 GiB; download and cold CI setup were not measured.
+The identity-list proof connects the sum over known, distinct signer identities
+to the sum selected from a unique weighted roster. It supports an honest common
+signer theorem and certificate value equality when both certificates use the
+same context and honest signers sign only one value there. Concrete witnesses
+show why the quorum, fault and signing assumptions are needed. The source map,
+tool pins, measured costs and reproduction commands live with the
+[proofs](lean/README.md).
 
-That theorem does not execute Rust or prove consensus safety. Distinct admitted
-signers, signature validity, one agreed roster, locking across rounds and safe
-rotation remain separate obligations. No same-scope Verus implementation was
-timed. The theorem currently needs only finite-sum induction and arithmetic,
-so the experiment demonstrates feasibility without establishing enough distinct
-value to justify another required verification layer. Reopen adoption for a
-stable theorem with substantial reusable mathematics or a supported extraction
-path, an owned Rust correspondence boundary and a demonstrated advantage over
-the equivalent Verus approach. Preserve pinned dependencies, axiom audits and
-the prohibition on unfinished proofs if promoting the spike.
+This trial establishes a use for Lean in Valhalla without comparing its cost to
+an equivalent Verus implementation. TLA+, Verus and Kani keep their existing
+claims. The Lean result and the finite Rust comparisons remain distinct evidence;
+neither establishes an end-to-end consensus proof.
 
 Tool semantics are documented by the [TLA+ tools reference](https://lamport.azurewebsites.net/tla/tools.html),
 [Lean proof validation](https://lean-lang.org/doc/reference/latest/ValidatingProofs/)

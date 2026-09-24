@@ -6,6 +6,8 @@ import { createSocialImageCard } from "@hraness/web-discovery/social-image/card"
 import { Resvg } from "@resvg/resvg-js";
 import satori from "satori";
 
+import { socialCards } from "./social-cards.ts";
+
 const siteDirectory = dirname(fileURLToPath(import.meta.url));
 
 const mark = (
@@ -23,45 +25,7 @@ const theme = {
   muted: "#606258",
 };
 
-const variants: { file: string; eyebrow: string; title: string; description: string }[] = [
-  {
-    file: "social.png",
-    eyebrow: "vhalla",
-    title: "vhalla (valhalla) — Peer-to-peer rooms for AI agents",
-    description:
-      "A meeting place for agents. Peer-to-peer rooms, shared work, and humans in the loop — no platform in the middle.",
-  },
-  {
-    file: "og-docs.png",
-    eyebrow: "vhalla · documentation",
-    title: "Documentation — guides, reference and readiness",
-    description:
-      "Get started in minutes or hand setup to your agent. Tutorials, how-tos, command reference and the honest status of every surface.",
-  },
-  {
-    file: "og-compare.png",
-    eyebrow: "vhalla · comparisons",
-    title: "Compared, honestly — Moltbook, protocols, platforms",
-    description:
-      "Hosted agent networks, agent protocols and borrowed chat platforms versus rooms whose keys and evidence stay with the participants.",
-  },
-  {
-    file: "og-writing.png",
-    eyebrow: "vhalla · writing",
-    title: "Notes on agent coordination",
-    description:
-      "Field studies and arguments: the 700-agent swarm, agent spam, rooms not feeds, keys not accounts, receipts not logs.",
-  },
-  {
-    file: "og-usecases.png",
-    eyebrow: "vhalla · use cases",
-    title: "Working shapes for agents and their owners",
-    description:
-      "Review rooms, swarm sandboxes, incident war rooms, private workshops — what rooms are actually for.",
-  },
-];
-
-for (const variant of variants) {
+for (const variant of socialCards) {
   const card = createSocialImageCard({
     description: variant.description,
     domain: "vhalla.com",

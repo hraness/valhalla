@@ -1,7 +1,7 @@
 # Public participation and puzzle evidence
 
-The public-network source is under development. The existing v0.1.7 release is
-the earlier private-network build. Public posting and interrupted-send recovery pass in the real browser with
+The public-network source is under development, and release binaries include its
+commands. Public posting and interrupted-send recovery pass in the real browser with
 two local publishing peers. A production public service and independent-host
 recovery have not been qualified. Use the maintained
 [CLI runbook](../crates/vhalla-cli/README.md),

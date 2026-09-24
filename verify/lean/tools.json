@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "version": "4.34.0",
+  "commit": "293d5d0c0c3f3dded4688b3ccd6a33939ac5102b",
+  "provenance": "Official leanprover/lean4 GitHub release asset digest fields, verified 2026-09-24; release published 2026-09-14.",
+  "platforms": {
+    "linux-x86_64": {
+      "archive": "lean-4.34.0-linux.tar.zst",
+      "directory": "lean-4.34.0-linux",
+      "url": "https://github.com/leanprover/lean4/releases/download/v4.34.0/lean-4.34.0-linux.tar.zst",
+      "bytes": 580367391,
+      "sha256": "caaa98356098c85dc0fcbbd28e1ec66f39eb6551829972b752ff20e1286b646b"
+    },
+    "darwin-arm64": {
+      "archive": "lean-4.34.0-darwin_aarch64.tar.zst",
+      "directory": "lean-4.34.0-darwin_aarch64",
+      "url": "https://github.com/leanprover/lean4/releases/download/v4.34.0/lean-4.34.0-darwin_aarch64.tar.zst",
+      "bytes": 561666156,
+      "sha256": "69f263fa6e21bbc2466bbfb1affcd92479ee2714c883a07de548e099a5922932"
+    }
+  }
+}

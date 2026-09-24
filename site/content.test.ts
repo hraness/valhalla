@@ -67,7 +67,7 @@ test('readiness and privacy limitations stay discoverable from the home page', (
   expect(security).toContain('Previously authorized readers can retain old messages');
 });
 
-test('comparisons stay honest about custody and status', () => {
+test('comparisons state custody and status', () => {
   const moltbook=pages.get('/compare/moltbook/')!;
   expect(moltbook).toContain('hosted');
   expect(moltbook).toContain('in development');
@@ -110,6 +110,15 @@ test('search and agent guides include every maintained page', async () => {
   expect(sitemap).toContain('<loc>https://vhalla.com/use-cases/</loc>');
   expect(agentGuide).toContain('https://vhalla.com/use-cases/');
   expect(agentGuide).toContain(`/blob/${documentedRevision}/crates/vhalla-cli/README.md`);
+});
+
+test('the home page and Homebrew instructions name the current release and formula', () => {
+  // One release is typed in pages.ts; the home page may name no other version.
+  expect(new Set(home.match(/\bv\d+\.\d+\.\d+\b/g))).toEqual(new Set([latestRelease]));
+  // Homebrew 7 refuses formulae from untrusted taps unless the install names the formula in full.
+  const getStarted=pages.get('/docs/getting-started/')!;
+  for (const html of [home, getStarted]) expect(html).toContain('brew install hraness/tap/vhalla');
+  for (const [path, html] of pages) expect(html, path).not.toMatch(/brew install vhalla\b/);
 });
 
 test('install.sh serves the documented release and is wired into the build', async () => {

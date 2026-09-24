@@ -6689,6 +6689,7 @@ dependencies = [
  "hegeltest",
  "libp2p-identity 0.2.14",
  "ractor",
+ "serde_json",
  "sha3 0.10.9",
  "tokio",
  "tracing",
