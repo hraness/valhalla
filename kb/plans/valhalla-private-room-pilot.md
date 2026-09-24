@@ -638,3 +638,7 @@ or Dioxus requirements.
   push; merged clean as `a56d90c`. Nothing under `crates/`, `browser/`,
   `verify/` or `.github/` changed on main since `c84f585`, so the local
   evidence above stands and CI runs on the merged head.
+- PR120 (unprefixed scheduler references in prototype and vault docs)
+  landed while CI ran on `068996c`, which had passed all 73 checks; merged
+  clean as `a6dba4e`, again with no source change on main. The ruleset's
+  strict up-to-date rule means CI reruns on the merged head.
