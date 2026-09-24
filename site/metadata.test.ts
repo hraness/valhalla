@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { docs } from "./pages.ts";
 import { compare, useCases } from "./compare.ts";
 import { writing } from "./writing.ts";
-import { renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from "./docs.ts";
+import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from "./docs.ts";
+import { articles, articleHref } from "./articles.ts";
 import { homeFaq, renderHome } from "./home.ts";
 import { socialCardAlt } from "./social-cards.ts";
 
@@ -19,7 +20,7 @@ const csp = (): string => {
   return header.value;
 };
 
-const pages = new Map([["/", home], ...docs.map(page => [docHref(page), renderDoc(page, index)]), ...compare.map(page => [compareHref(page), renderCompare(page, index)]), ...writing.map(page => [writingHref(page), renderWriting(page, index)]), ["/use-cases/", renderUseCases(index)]]);
+const pages = new Map([["/", home], ...docs.map(page => [docHref(page), renderDoc(page, index)]), ...compare.map(page => [compareHref(page), renderCompare(page, index)]), ...writing.map(page => [writingHref(page), renderWriting(page, index)]), ...articles.map(article => [articleHref(article), renderArticle(article, index)]), ["/use-cases/", renderUseCases(index)]]);
 
 test("page metadata is complete and consistent", () => {
   expect(index).toContain('<link rel="canonical" href="https://vhalla.com/">');

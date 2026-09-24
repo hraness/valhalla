@@ -3,9 +3,12 @@ import { readFile, access } from 'node:fs/promises';
 import { docs, documentedRevision, latestRelease } from './pages.ts';
 import { compare, useCases } from './compare.ts';
 import { writing } from './writing.ts';
-import { renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from './docs.ts';
+import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from './docs.ts';
+import { articles, articleHref, indexableArticles } from './articles.ts';
+import { articleEvidenceRevision } from './article-admissions.ts';
+import { renderLlms, renderSitemap } from './discovery.ts';
 const home = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-const pages = new Map([['/', home], ...docs.map(page=>[docHref(page), renderDoc(page, home)]), ...compare.map(page=>[compareHref(page), renderCompare(page, home)]), ...writing.map(page=>[writingHref(page), renderWriting(page, home)]), ['/use-cases/', renderUseCases(home)]]);
+const pages = new Map([['/', home], ...docs.map(page=>[docHref(page), renderDoc(page, home)]), ...compare.map(page=>[compareHref(page), renderCompare(page, home)]), ...writing.map(page=>[writingHref(page), renderWriting(page, home)]), ...articles.map(article=>[articleHref(article), renderArticle(article, home)]), ['/use-cases/', renderUseCases(home)]]);
 
 test('every local page destination and section resolves', () => {
   for (const [path, html] of pages) {
@@ -82,7 +85,8 @@ test('repository source links name retained files at the documented immutable re
   expect(documentedRevision).toMatch(/^[0-9a-f]{40}$/);
   const checked=new Set<string>();
   for(const html of pages.values()) for(const match of html.matchAll(/href="https:\/\/github.com\/hraness\/valhalla\/blob\/([^/]+)\/([^"#]+)[^"]*"/g)) {
-    expect(match[1]).toBe(documentedRevision);
+    // Articles cite the revision they were fact-checked against; every other page cites the documented one.
+    expect([documentedRevision, articleEvidenceRevision]).toContain(match[1]);
     if(checked.has(match[2])) continue;
     checked.add(match[2]);
     await access(new URL(`../${match[2]}`,import.meta.url));
@@ -93,8 +97,8 @@ test('repository source links name retained files at the documented immutable re
 
 
 test('search and agent guides include every maintained page', async () => {
-  const sitemap=await readFile(new URL('./sitemap.xml', import.meta.url), 'utf8');
-  const agentGuide=await readFile(new URL('./llms.txt', import.meta.url), 'utf8');
+  const sitemap=renderSitemap(await readFile(new URL('./sitemap.xml', import.meta.url), 'utf8'));
+  const agentGuide=renderLlms(await readFile(new URL('./llms.txt', import.meta.url), 'utf8'));
   for(const page of docs) {
     expect(sitemap).toContain(`<loc>https://vhalla.com${docHref(page)}</loc>`);
     expect(agentGuide).toContain(`https://vhalla.com${docHref(page)}`);
@@ -106,6 +110,10 @@ test('search and agent guides include every maintained page', async () => {
   for(const page of writing) {
     expect(sitemap).toContain(`<loc>https://vhalla.com${writingHref(page)}</loc>`);
     expect(agentGuide).toContain(`https://vhalla.com${writingHref(page)}`);
+  }
+  for(const article of indexableArticles) {
+    expect(sitemap).toContain(`<loc>https://vhalla.com${articleHref(article)}</loc><lastmod>${article.updated ?? article.published}</lastmod>`);
+    expect(agentGuide).toContain(`https://vhalla.com${articleHref(article)}`);
   }
   expect(sitemap).toContain('<loc>https://vhalla.com/use-cases/</loc>');
   expect(agentGuide).toContain('https://vhalla.com/use-cases/');
