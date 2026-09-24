@@ -21,7 +21,7 @@ original provenance, plus the runner hash; it never relabels an older build as a
 new commit. Both source and artifact are checked again after measurement.
 
 ```sh
-/Users/benguo/.bun/bin/hra-host-run --mode=heavy --lane=compute \
+/Users/benguo/.bun/bin/host-run --mode=heavy --lane=compute \
   --label=valhalla-private-runtime-smoke -- \
   /opt/homebrew/bin/python3 crates/vhalla-cli/tools/measure_private_runtime.py \
   --cli /ABSOLUTE/CANDIDATE/vhalla \
@@ -153,7 +153,7 @@ From the repository root, build the two examples once with the same toolchain:
 ```sh
 CARGO_BIN="$HOME/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo"
 RUSTC_BIN="$HOME/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc"
-"$HOME/.bun/bin/hra-host-run" --mode=heavy --lane=compute --label=valhalla-performance-build -- \
+"$HOME/.bun/bin/host-run" --mode=heavy --lane=compute --label=valhalla-performance-build -- \
   "$CARGO_BIN" --config "build.rustc=\"$RUSTC_BIN\"" build --release --locked \
   -p vhalla-room-activity-store -p vhalla-public-client \
   --example performance --example replay_performance

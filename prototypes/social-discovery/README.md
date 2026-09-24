@@ -73,7 +73,7 @@ Following and Discover must remain separate modes.
 cargo fmt --manifest-path prototypes/social-discovery/Cargo.toml -- --check
 cargo test --manifest-path prototypes/social-discovery/Cargo.toml --locked --offline
 cargo clippy --manifest-path prototypes/social-discovery/Cargo.toml --all-targets --locked --offline -- -D warnings
-/Users/bg/.bun/bin/hra-host-run --mode=shared --lane=compute --label=valhalla-discovery-measure -- /bin/sh /Users/bg/Documents/Codex/valhalla/prototypes/social-discovery/measure.sh
+/Users/bg/.bun/bin/host-run --mode=shared --lane=compute --label=valhalla-discovery-measure -- /bin/sh /Users/bg/Documents/Codex/valhalla/prototypes/social-discovery/measure.sh
 ```
 
 Native benchmarks belong inside the host scheduler. `measure.sh` uses macOS
