@@ -43,6 +43,33 @@ impl Consent {
     }
 }
 
+/// Authenticated admission metadata; a session-held review, never portable authority.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AdmissionConsent {
+    /// Random nonzero worker-session binding; not retained across lock or reload.
+    pub session: [u8; 16],
+    /// Nonzero identifier within this unlocked worker session.
+    pub id: u64,
+    /// Exact owner room, account and device selected for admission.
+    pub context: Context,
+    /// Current MLS epoch reviewed before admission.
+    pub epoch: u64,
+    /// Exact current roster commitment.
+    pub roster: [u8; 32],
+    /// Exact current authenticated control floor.
+    pub control_floor: ControlFloor,
+    /// Retained request's mailbox position.
+    pub position: u64,
+    /// Commitment to the complete retained relay item.
+    pub digest: [u8; 32],
+    /// Independently selected recipient account, verified against its signed request.
+    pub recipient: Key,
+    /// Exact requesting device, verified against its signed enrollment.
+    pub device: Key,
+    /// Invitation interval capped by the offer and recipient enrollment.
+    pub validity: Validity,
+}
+
 /// Caller-selected operations only. No generic signature, arbitrary route or storage key.
 pub enum Request {
     /// Irreversibly select private mode and revalidate the saved account pair.
@@ -76,6 +103,22 @@ pub enum Request {
     DeliveryAdmission {
         /// Exact mailbox position named by the retained listing.
         position: u64,
+    },
+    /// Review one retained request without exporting or consuming it.
+    ReviewAdmission {
+        /// Exact position selected from the retained admission list.
+        position: u64,
+        /// Independently selected full recipient account.
+        recipient: Key,
+        /// Original confidential offer; never sent to the relay.
+        offer: Bytes,
+    },
+    /// Consume one unchanged, session-held admission review exactly once.
+    ConfirmAdmission {
+        /// Stable operation identifier for the existing kernel admission path.
+        operation: OperationId,
+        /// Complete metadata shown by the review step.
+        consent: Box<AdmissionConsent>,
     },
     /// Discard one retained bootstrap item explicitly; nothing else changes.
     DeliveryDiscard {
@@ -438,6 +481,8 @@ pub enum Response {
     Membership(Box<Membership>),
     /// Exact preview of one worker-retained message draft.
     Draft(Box<Consent>),
+    /// Authenticated retained request awaiting explicit owner confirmation.
+    AdmissionReview(Box<AdmissionConsent>),
     /// Locally committed artifact; no network delivery is implied.
     Artifact {
         /// Complete context of the selected local room/device.
@@ -589,6 +634,7 @@ impl Response {
             Self::Prepared(p) => Some(p.context),
             Self::Membership(m) => Some(m.status.context),
             Self::Draft(d) => Some(d.context),
+            Self::AdmissionReview(d) => Some(d.context),
             Self::Artifact { context, .. }
             | Self::Offer { context, .. }
             | Self::Received { context, .. }
@@ -625,6 +671,8 @@ pub enum ReplyKind {
     Membership,
     /// Retained disclosure preview.
     Draft,
+    /// Session-held review of a retained encrypted admission request.
+    AdmissionReview,
     /// Committed ordinary outbox artifact.
     Artifact,
     /// Explicit confidential offer output.
@@ -661,6 +709,8 @@ impl Request {
     /// Expected closed response kind used by the generation-checked UI broker.
     pub fn reply_kind(&self) -> ReplyKind {
         match self {
+            Self::ReviewAdmission { .. } => ReplyKind::AdmissionReview,
+            Self::ConfirmAdmission { .. } => ReplyKind::Artifact,
             Self::Enter { .. } => ReplyKind::Entered,
             Self::DeliveryConnect { .. } | Self::DeliverySync | Self::DeliveryDiscard { .. } => {
                 ReplyKind::Delivery
@@ -706,6 +756,7 @@ impl Response {
     /// Closed report kind for exact request/response correlation.
     pub fn kind(&self) -> ReplyKind {
         match self {
+            Self::AdmissionReview(_) => ReplyKind::AdmissionReview,
             Self::Entered(_) => ReplyKind::Entered,
             Self::Delivery(_) => ReplyKind::Delivery,
             Self::Admissions { .. } => ReplyKind::Admissions,

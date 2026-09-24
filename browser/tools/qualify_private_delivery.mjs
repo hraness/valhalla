@@ -34,7 +34,7 @@ const modules=Object.keys(manifest.assets).filter(n=>/^vhalla-browser-[a-z0-9]+\
 if(modules.length!==1)throw Error('expected one main application module');
 const children=[], pending=new Map(), downloads=new Map(), pages=[];
 let socket, signal, sequence=0, chromeLog='', unexpectedNetwork=false, fatalNetwork='';
-const facts=[], files=[];
+const facts=[], files=[], screenshots=[];
 const deadline=Date.now()+360000;
 const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{
   signal.throwIfAborted();
@@ -61,7 +61,7 @@ window.qaURLs=new Set(); window.qaInjected=false;
 // Harness-only IPC observation of the synthetic worker. Capture only a bounded
 // disclosure preview, never credentials or identity commands. A valid Send
 // control below proves that the stale-preview probe uses the actual wire ABI.
-window.qaDraft=null;window.qaProbe='';window.qaProbeActive=false;
+window.qaDraft=null;window.qaAdmission=null;window.qaContactArtifact=null;window.qaProbe='';window.qaProbeActive=false;
 const NativeWorker=window.Worker;
 window.Worker=new Proxy(NativeWorker,{construct(Type,args,NewType){
   const worker=Reflect.construct(Type,args,NewType);window.qaWorker=worker;
@@ -70,6 +70,8 @@ window.Worker=new Proxy(NativeWorker,{construct(Type,args,NewType){
     if(data[0]==='private-reply'&&data[2] instanceof Uint8Array){
       const raw=data[2];
       if(raw.length>13&&raw.length<270336&&raw[12]===104)window.qaDraft=raw.slice();
+      if(raw.length>13&&raw.length<270336&&raw[12]===122)window.qaAdmission=raw.slice();
+      if(raw.length>171&&raw.length<270336&&raw[12]===105&&raw[165]===2)window.qaContactArtifact=raw.slice();
       if(qaProbeActive&&raw[12]===105){qaProbe='accepted';qaProbeActive=false;}
     }else if(qaProbeActive&&data[0]==='private-error'){qaProbe='refused';qaProbeActive=false;}
   });return worker;
@@ -194,7 +196,7 @@ async function send(page,body) {
   return download(page,'private-download-output','vhmsg');
 }
 async function leave(page) {
-  await evaluate(page,"(async()=>{await qclick('private-leave');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'new locked worker');qassert(qid('private-workspace').hidden,'private workspace survives lock');qassert(qid('private-message').value==='','private message survived lock');for(const field of document.querySelectorAll('#private-panel input'))qassert(field.type==='checkbox'?!field.checked:field.value==='','private input survived lock: '+field.id);for(const id of ['private-consent','private-inbox-content','private-outbox-acceptances','private-membership-details','private-secret-label'])qassert(qid(id).textContent==='','private view survived lock: '+id);qassert(qaURLs.size===0,'download URL survived lock');qassert(!qid('activity-heading').closest('.activity').hidden,'public activity remains hidden');for(const id of ['activity-text','puzzle-artifact','puzzle-part'])qassert(qid(id).value==='','private text carried into public composer');return true;})()");
+  await evaluate(page,"(async()=>{await qclick('private-leave');await qwait(()=>qid('identity-state').textContent==='Locked'&&!qid('unlock').disabled,'new locked worker');qassert(qid('private-workspace').hidden,'private workspace survives lock');qassert(qid('private-message').value==='','private message survived lock');for(const field of document.querySelectorAll('#private-panel input'))qassert(field.type==='checkbox'?!field.checked:field.value==='','private input survived lock: '+field.id);for(const id of ['private-consent','private-admission-consent','private-inbox-content','private-outbox-acceptances','private-membership-details','private-secret-label'])qassert(qid(id).textContent==='','private view survived lock: '+id);qassert(qaURLs.size===0,'download URL survived lock');qassert(!qid('activity-heading').closest('.activity').hidden,'public activity remains hidden');for(const id of ['activity-text','puzzle-artifact','puzzle-part'])qassert(qid(id).value==='','private text carried into public composer');return true;})()");
 }
 async function reopen(page) {
   await evaluate(page,"(async()=>{qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','explicit unlock');await qclick('private-enter');await qwait(()=>!qid('private-open').disabled,'new private entry');return true;})()");
@@ -312,12 +314,63 @@ function refusals(report) {const match=report.match(/Refused and skipped records
 async function sendRetainedPreview(page) {
   return evaluate(page,`(async()=>{
     qassert(qaDraft instanceof Uint8Array,'captured actual disclosure preview');
-    const expected=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(6));
+    const expected=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(7));
     qassert(expected.length===12&&expected.every((v,i)=>qaDraft[i]===v)&&qaDraft[12]===104,'actual private wire version');
     const frame=new Uint8Array(qaDraft.length+16);frame.set(expected);frame[12]=8;
     frame.set(crypto.getRandomValues(new Uint8Array(16)),13);frame.set(qaDraft.subarray(13),29);
     qaProbe='';qaProbeActive=true;qaWorker.postMessage(['private',new Uint8Array(16).fill(254),frame]);
     await qwait(()=>qaProbe!=='','worker verdict for actual retained preview');return qaProbe;
+  })()`);
+}
+// AwaitingWelcome has no browser delivery authority. This synthetic adapter
+// transports the already committed encrypted request with its exact public
+// outbox metadata; it neither opens a signer nor enables prejoin browser sync.
+async function submitRequest(page,downloaded) {
+  const raw=Buffer.from(await evaluate(page,"Array.from(qaContactArtifact??[])"));
+  const magic=Buffer.from('VHBRPRIVATE\x07');
+  if(!raw.subarray(0,12).equals(magic)||raw[12]!==105||raw[165]!==2||raw[166]!==1)throw Error('actual contact request ABI');
+  const length=raw.readUInt32BE(167),payload=raw.subarray(171,171+length);
+  if(length===0||length>266240||raw.length!==172+length||raw.at(-1)!==0||!payload.equals(downloaded.raw))throw Error('retained request differs from actual worker artifact');
+  const sequence=raw.subarray(141,149),operation=raw.subarray(149,165),kind=Buffer.from([1]);
+  if(sequence.readBigUInt64BE()===0n)throw Error('zero request sequence');
+  const ns=Buffer.from(namespace,'hex'),size=Buffer.alloc(4);size.writeUInt32BE(length);
+  const digest=createHash('sha256').update('vhalla/private/relay-item/v1').update(ns).update(sequence).update(operation).update(kind).update(payload).digest();
+  const item=Buffer.concat([Buffer.from('VHPRELAY\x01'),ns,sequence,operation,kind,size,payload,digest]);
+  const n=++fixtureSerial,path=await privateFile('request-'+n+'.relay',item),receipt=join(output,'request-'+n+'.json');
+  await command(cli,['private','relay-submit',path,'--namespace',namespace,'--addr',tlsAddress,'--token',join(output,'relay-token'),'--tls-ca',join(output,'ca.der'),'--tls-name','relay.test','--out',receipt]);
+  const retained=JSON.parse(await readFile(receipt,'utf8'));
+  if(!Number.isSafeInteger(retained.position)||retained.position<1)throw Error('request retention position');
+  return {position:retained.position,digest:digest.toString('hex'),context:raw.subarray(13,141)};
+}
+async function reviewRequest(owner,member,offer,request) {
+  const ownerLocator=await readFile(owner.locator);
+  if(ownerLocator.length!==136||ownerLocator.subarray(0,8).toString()!=='VHPLOC1\0')throw Error('owner locator scope');
+  const expectedScope=[owner.publicKey,...[8,40,72,104].map(offset=>ownerLocator.subarray(offset,offset+32).toString('hex')),request.context.subarray(96,128).toString('hex')];
+  await setFile(owner,'private-resume-offer-file',offer.path);
+  await invoke(owner,`async function(recipient,position,digest,context){
+    qset('private-recipient',recipient);const select=qid('private-admission-select');
+    const option=Array.from(select.options).find(o=>o.textContent.startsWith('mailbox '+position+' ·'));
+    qassert(option,'exact relay-retained request listed');qset('private-admission-select',option.value,'change');
+    qassert(qid('private-request-file').value==='','request was imported manually');
+    await qclick('private-admission-review');await qidle();
+    const text=qid('private-admission-consent').textContent;
+    qassert(context.every(key=>text.includes(key))&&text.includes(recipient)&&text.includes(digest),'review omits full scope, recipient/device or commitment');
+    qassert(text.includes('expires at')&&!qid('private-admission-confirm').disabled,'review lacks expiry or usable confirmation');
+    return true;
+  }`,[member.publicKey,request.position,request.digest,expectedScope]);
+  await evaluate(owner,"qshow('private-admission-consent');true");
+  const screenshot=await call('Page.captureScreenshot',{format:'png'},owner.sessionId);
+  const name='admission-review-'+request.position+'-'+(++fixtureSerial)+'.png';
+  await privateFile(name,Buffer.from(screenshot.data,'base64'));screenshots.push(name);
+}
+async function staleAdmissionProbe(page) {
+  return evaluate(page,`(async()=>{
+    const consent=qaAdmission,magic=new TextEncoder().encode('VHBRPRIVATE'+String.fromCharCode(7));
+    qassert(consent instanceof Uint8Array&&consent[12]===122&&magic.every((v,i)=>consent[i]===v),'captured actual admission review');
+    const frame=new Uint8Array(consent.length+16);frame.set(magic);frame[12]=42;
+    frame.set(crypto.getRandomValues(new Uint8Array(16)),13);frame.set(consent.subarray(13),29);
+    qaProbe='';qaProbeActive=true;qaWorker.postMessage(['private',new Uint8Array(16).fill(253),frame]);
+    await qwait(()=>qaProbe!=='','stale admission worker verdict');return qaProbe;
   })()`);
 }
 async function head() {
@@ -378,7 +431,10 @@ async function task(abortSignal) {
   const offer=await download(owner,'private-download-secret','vhoffer');await enter(member);await setFile(member,'private-offer-file',offer.path);
   await invoke(member,`async function(owner){qset('private-owner',owner);await qclick('private-review-offer');return true;}`,[owner.publicKey]);await retainCreation(member);
   await evaluate(member,"(async()=>{await qclick('private-request');await qidle();return true;})()");const request=await download(member,'private-download-output','vhrequest');
-  await setFile(owner,'private-request-file',request.path);await evaluate(owner,"(async()=>{await qclick('private-accept');await qidle();return true;})()");const response=await download(owner,'private-download-output','vhjoin');
+  const retainedRequest=await submitRequest(member,request);await sync(owner);
+  await reviewRequest(owner,member,offer,retainedRequest);
+  await evaluate(owner,"(async()=>{await qclick('private-admission-confirm');await qidle();qassert(qid('private-admission-confirm').disabled,'consent remained usable');return true;})()");const response=await download(owner,'private-download-output','vhjoin');
+  facts.push('owner reviews exact full room/account/device/expiry and relay-retained request commitment, then explicitly confirms without downloading/reimporting the request; recipient still joins through the existing file flow');
   await setFile(member,'private-join-file',response.path);await evaluate(member,"(async()=>{await qclick('private-join');await qidle();return true;})()");
   await sync(owner);await sync(owner);const checkpoint=await head();if(checkpoint<2)throw Error('join output was not retained before trusted checkpoint');
   member.deliveryProfile=await profileFile(checkpoint);await connect(member,member.deliveryProfile,true);await sync(member);
@@ -390,14 +446,22 @@ async function task(abortSignal) {
   facts.push('production browser worker sends exact ciphertext through HTTP gateway and authenticated TLS relay; receiver commits and queues signed acceptance without receipt loops; sender UI exposes the verified device claim without a human-read assertion');
   // Admit C while existing member B is offline. The owner must automatically
   // relay the separate encrypted membership control, not only C's invitation.
-  // Keep an older committed owner message queued across that membership change.
-  await send(owner,'SYNTHETIC_BEFORE_THIRD_MEMBER');
+  // Keep an older committed owner message queued across that membership change
+  // after the request-fetch and stale-consent Sync probes below have completed.
   const third=await account('third');
   await invoke(owner,`async function(recipient){qset('private-recipient',recipient);await qclick('private-offer');await qidle();return true;}`,[third.publicKey]);
   const thirdOffer=await download(owner,'private-download-secret','vhoffer');await enter(third);await setFile(third,'private-offer-file',thirdOffer.path);
   await invoke(third,`async function(owner){qset('private-owner',owner);await qclick('private-review-offer');return true;}`,[owner.publicKey]);await retainCreation(third);
   await evaluate(third,"(async()=>{await qclick('private-request');await qidle();return true;})()");const thirdRequest=await download(third,'private-download-output','vhrequest');
-  await setFile(owner,'private-request-file',thirdRequest.path);await evaluate(owner,"(async()=>{await qclick('private-accept');await qidle();return true;})()");const thirdResponse=await download(owner,'private-download-output','vhjoin');
+  const retainedThird=await submitRequest(third,thirdRequest);await sync(owner);
+  await reviewRequest(owner,third,thirdOffer,retainedThird);await sync(owner);
+  await evaluate(owner,"qassert(qid('private-admission-confirm').disabled,'Sync left admission confirmation enabled');true");
+  if(await staleAdmissionProbe(owner)!=='refused')throw Error('worker reused admission consent after Sync');
+  await reload(owner);await connect(owner,owner.deliveryProfile);
+  await send(owner,'SYNTHETIC_BEFORE_THIRD_MEMBER');
+  await reviewRequest(owner,third,thirdOffer,retainedThird);
+  await evaluate(owner,"(async()=>{await qclick('private-admission-confirm');await qidle();return true;})()");const thirdResponse=await download(owner,'private-download-output','vhjoin');
+  facts.push('same-roster Sync invalidates actual retained admission consent inside worker custody; explicit reopen and fresh review permit the exact pending device admission');
   await setFile(third,'private-join-file',thirdResponse.path);await evaluate(third,"(async()=>{await qclick('private-join');await qidle();return true;})()");
   await sync(owner);await sync(owner);
   await send(owner,'SYNTHETIC_AFTER_THIRD_MEMBER');await sync(owner);
@@ -519,6 +583,6 @@ async function task(abortSignal) {
   await leave(twin);await leave(member);
   if(unexpectedNetwork)throw Error('unexpected non-loopback page route');
   const digest=v=>createHash('sha256').update(v).digest('hex');
-  return {passed:true,artifact,artifactManifestSha256:digest(manifestRaw),gatewayOrigin,tlsAddress,namespaceSha256:digest(namespace),relayTokenSha256:digest(relayToken),browserCapabilitySha256:digest(browserCapability),facts,files,profile,scope:'production browser private custody → maintained local HTTP gateway → real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim'};
+  return {passed:true,artifact,artifactManifestSha256:digest(manifestRaw),gatewayOrigin,tlsAddress,namespaceSha256:digest(namespace),relayTokenSha256:digest(relayToken),browserCapabilitySha256:digest(browserCapability),facts,files,screenshots,profile,scope:'production browser private custody → maintained local HTTP gateway → real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim'};
 }
 await runQualification({work:task,timeoutMs:360000,cleanup:async()=>{try{for(const socket of blackholeSockets)socket.destroy();if(blackhole){await new Promise(r=>blackhole.close(r));blackhole=undefined;}await cleanupOwned({children,server:hostile,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));await writeFile(join(output,'network-failure.txt'),fatalNetwork);}},publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));}});
