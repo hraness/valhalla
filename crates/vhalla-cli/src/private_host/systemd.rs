@@ -401,7 +401,8 @@ pub(crate) mod linux {
         })
     }
     /// `$XDG_CONFIG_HOME/systemd/user` or `~/.config/systemd/user`, with owned,
-    /// non-group/world-writable, non-linked ancestry; created owner-only when absent.
+    /// non-group/world-writable, non-linked ancestry. An absent directory means
+    /// no unit is installed; it is created owner-only just for `install`.
     fn directory(create: bool) -> Result<PathBuf, String> {
         let uid = rustix::process::geteuid().as_raw();
         let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
@@ -409,11 +410,28 @@ pub(crate) mod linux {
             None => PathBuf::from(std::env::var_os("HOME").ok_or("user home unavailable")?)
                 .join(".config"),
         };
-        let mut path = base.canonicalize().map_err(|_| REFUSED)?;
-        let meta = fs::symlink_metadata(&path).map_err(|_| REFUSED)?;
-        if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o022 != 0 {
-            return Err(REFUSED.into());
-        }
+        let mut path = match fs::symlink_metadata(&base) {
+            Ok(meta) => {
+                if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o022 != 0 {
+                    return Err(REFUSED.into());
+                }
+                base.canonicalize().map_err(|_| REFUSED)?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&base)
+                    .map_err(|_| REFUSED)?;
+                fs::File::open(base.parent().ok_or(REFUSED)?)
+                    .and_then(|f| f.sync_all())
+                    .map_err(|_| REFUSED)?;
+                base.canonicalize().map_err(|_| REFUSED)?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(base.join("systemd").join("user"));
+            }
+            Err(_) => return Err(REFUSED.into()),
+        };
         for part in ["systemd", "user"] {
             path.push(part);
             match fs::symlink_metadata(&path) {
