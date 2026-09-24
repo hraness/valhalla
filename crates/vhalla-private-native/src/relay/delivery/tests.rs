@@ -151,6 +151,58 @@ fn receipt(n: u8, duplicate: bool) -> std::result::Result<RelayReceipt, NetError
         duplicate,
     })
 }
+
+#[test]
+fn generation_carries_spend_and_blocks_replaying_predecessor_jobs() {
+    let predecessor = Fixture::new();
+    let mut old = predecessor.create();
+    old.enqueue(&item(1), 100).unwrap();
+    assert_eq!(old.drained_snapshot(), Err(Error::Conflict));
+    let mut transport = Fake::new(&predecessor, vec![receipt(1, false)]);
+    old.tick(&mut transport, 100, budget()).unwrap();
+    old.save_driver_checkpoint(1, 7, 101).unwrap();
+    let prior = old.drained_snapshot().unwrap();
+    assert_eq!(prior.retained_jobs, 1);
+    assert_eq!(prior.charged_attempts, 1);
+    assert_eq!(
+        prior.canonical_bytes,
+        item(1).encode().unwrap().len() as u64
+    );
+    let successor = Fixture::new();
+    let mut next = successor.create();
+    next.initialize_successor(1, prior, [9; 32], 102).unwrap();
+    assert_eq!(next.driver_checkpoint().unwrap(), (1, 0));
+    assert_eq!(next.capacity().unwrap().2, prior.canonical_bytes as usize);
+    assert_eq!(next.enqueue(&item(1), 102), Err(Error::Conflict));
+    next.initialize_successor(1, prior, [9; 32], 102).unwrap();
+    assert_eq!(
+        next.initialize_successor(1, prior, [10; 32], 102),
+        Err(Error::Conflict)
+    );
+    drop(next);
+    let mut next = successor.open();
+    let second = next.drained_snapshot().unwrap();
+    assert_eq!(second.canonical_bytes, prior.canonical_bytes);
+    assert_eq!(second.retained_jobs, prior.retained_jobs);
+    assert_eq!(second.charged_attempts, prior.charged_attempts);
+    assert_eq!(second.applied, 0);
+    next.enqueue(&item(2), 103).unwrap();
+    let mut transport = Fake::new(&successor, vec![receipt(2, false)]);
+    next.tick(&mut transport, 103, budget()).unwrap();
+    next.save_driver_checkpoint(2, 3, 103).unwrap();
+    let second = next.drained_snapshot().unwrap();
+    assert_eq!(second.retained_jobs, 2);
+    assert_eq!(second.charged_attempts, 2);
+    let third = Fixture::new();
+    let mut third = third.create();
+    third
+        .initialize_successor(2, second, [11; 32], 104)
+        .unwrap();
+    assert_eq!(
+        third.drained_snapshot().unwrap().canonical_bytes,
+        second.canonical_bytes
+    );
+}
 #[test]
 fn exact_job_and_attempt_are_durable_before_transport_and_success_survives_reopen() {
     let f = Fixture::new();

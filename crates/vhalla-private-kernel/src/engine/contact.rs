@@ -7,7 +7,113 @@ use crate::{
 };
 use zeroize::Zeroize;
 
+/// Fully authenticated proposed membership from one encrypted response. This
+/// inspection is private metadata, not committed membership, permission to send,
+/// a relay checkpoint, or evidence of the owner's latest global state.
+pub struct ContactResponseReview {
+    pending: Status,
+    request: [u8; 32],
+    response: [u8; 32],
+    validity: Validity,
+    proposed: MembershipSnapshot,
+}
+impl ContactResponseReview {
+    /// Authenticated local pending state against which this response was checked.
+    pub fn pending(&self) -> Status {
+        self.pending
+    }
+    /// Commitment to the exact encrypted request retained by this device.
+    pub fn request(&self) -> [u8; 32] {
+        self.request
+    }
+    /// Commitment to the complete encrypted response inspected here.
+    pub fn response(&self) -> [u8; 32] {
+        self.response
+    }
+    /// Common validity of offer, invitation, owner and local enrollment.
+    pub fn validity(&self) -> Validity {
+        self.validity
+    }
+    /// The proposed resulting roster and bindings, never an accepted snapshot.
+    pub fn proposed(&self) -> &MembershipSnapshot {
+        &self.proposed
+    }
+}
+
+fn open_response(work: &Working, raw: &[u8], now: u64) -> Result<(InvitePacket, Validity)> {
+    let frame = Frame::decode(raw)?;
+    if frame.direction != 2 {
+        return Err(Error::Encoding);
+    }
+    if work.state.phase != Phase::AwaitingWelcome {
+        return Err(Error::Policy);
+    }
+    work.state.check_time(now)?;
+    let pending = work.state.contact.as_ref().ok_or(Error::Missing)?;
+    pending.offer.check_owner(&work.state)?;
+    pending.offer.check_time(now)?;
+    let clear = Zeroizing::new(pending.offer.open(&frame, Some(pending.request))?);
+    let packet = InvitePacket::decode(&clear)?;
+    let intervals = [
+        pending.offer.validity,
+        packet.invitation.claims().validity,
+        work.state.owner.claims().validity,
+        work.state.local.claims().validity,
+    ];
+    let validity = Validity::new(
+        intervals
+            .iter()
+            .map(|v| v.not_before())
+            .max()
+            .ok_or(Error::Time)?,
+        intervals
+            .iter()
+            .map(|v| v.expires_at())
+            .min()
+            .ok_or(Error::Time)?,
+    )?;
+    validity.check_at(now)?;
+    Ok((packet, validity))
+}
+
 impl<S: Store> Kernel<S> {
+    /// Inspect an exact encrypted response without publishing a state image or
+    /// record. The same complete Welcome, credential and checkpoint validation
+    /// constructs the isolated candidate used by `join_contact`. A successful or
+    /// rejected inspection leaves the durable pending request and KeyPackage
+    /// unchanged. Storage-read uncertainty still requires exact-store reopen.
+    pub async fn inspect_contact_response(
+        &mut self,
+        raw: &[u8],
+        now: u64,
+    ) -> Result<ContactResponseReview> {
+        let work = self.begin_live().await?;
+        let pending = work.state.status();
+        let request = work.state.contact.as_ref().ok_or(Error::Missing)?.request;
+        let (packet, validity) = open_response(&work, raw, now)?;
+        let response = contact::response_hash(raw);
+        let (candidate, _) = self.prepare_join(work, packet, response, now)?;
+        Ok(ContactResponseReview {
+            pending,
+            request,
+            response,
+            validity,
+            proposed: MembershipSnapshot::from_state(&candidate.state),
+        })
+    }
+
+    /// Reconcile only an already committed exact contact join. This read never
+    /// accepts a Welcome or consumes membership. The answer remains available
+    /// after later controls or removal, so a connection can finish an interrupted
+    /// local transition without reviving the device.
+    pub async fn contact_response_committed(&mut self, raw: &[u8]) -> Result<bool> {
+        if Frame::decode(raw)?.direction != 2 {
+            return Err(Error::Encoding);
+        }
+        let state = self.begin_state().await?;
+        Ok(state.joined == Some(contact::response_hash(raw)))
+    }
+
     async fn retained_offer(
         &mut self,
         operation: OperationId,
@@ -222,15 +328,7 @@ impl<S: Store> Kernel<S> {
         if work.state.phase == Phase::MemberJoined && work.state.joined == Some(id) {
             return Ok(self.status);
         }
-        if work.state.phase != Phase::AwaitingWelcome {
-            return Err(Error::Policy);
-        }
-        work.state.check_time(now)?;
-        let pending = work.state.contact.as_ref().ok_or(Error::Missing)?;
-        pending.offer.check_owner(&work.state)?;
-        pending.offer.check_time(now)?;
-        let clear = pending.offer.open(&frame, Some(pending.request))?;
-        let packet = InvitePacket::decode(&clear)?;
+        let (packet, _) = open_response(&work, raw, now)?;
         self.join_prepared(work, packet, id, now).await
     }
 }

@@ -28,6 +28,7 @@ const JOURNAL: &str = "private.sqlite-journal";
 const FORMAT_MAGIC: &[u8; 8] = b"VHPNS001";
 const FORMAT_BYTES: usize = 8 + 128 + 16 + 32;
 const APPLICATION_ID: i64 = 0x56485052;
+mod generation;
 const META_SQL: &str = "CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), context BLOB NOT NULL CHECK(length(context)=128), generation INTEGER NOT NULL CHECK(generation>=0), records INTEGER NOT NULL CHECK(records>=0), bytes INTEGER NOT NULL CHECK(bytes>=0), image BLOB CHECK(image IS NULL OR length(image) BETWEEN 40 AND 4194344), digest BLOB NOT NULL CHECK(length(digest)=32)) STRICT";
 const RECORD_SQL: &str = "CREATE TABLE records (key BLOB PRIMARY KEY NOT NULL CHECK(length(key) IN (9,17,33)), data BLOB NOT NULL CHECK(length(data) BETWEEN 40 AND 266280), digest BLOB NOT NULL CHECK(length(digest)=32)) WITHOUT ROWID, STRICT";
 
@@ -446,6 +447,9 @@ impl NativePrivateStore {
         records: &[Record],
     ) -> Result<()> {
         self.ready(context)?;
+        if self.delivery_is_paused()? {
+            return Err(Error::Refused);
+        }
         bounds(next, MAX_IMAGE_BYTES)?;
         if let Some(raw) = expected {
             bounds(raw, MAX_IMAGE_BYTES)?;
@@ -836,12 +840,16 @@ fn inventory(path: &Path, uid: u32, limits: Limits) -> Result<()> {
     let mut count = 0;
     for entry in fs::read_dir(path).map_err(|_| Error::Corrupt)? {
         count += 1;
-        if count > 4 {
+        if count > 5 {
             return Err(Error::Corrupt);
         }
         let entry = entry.map_err(|_| Error::Corrupt)?;
         let name = entry.file_name();
         let name = name.to_str().ok_or(Error::Corrupt)?;
+        if name == "delivery-generations" {
+            generation::inventory(&entry.path(), uid)?;
+            continue;
+        }
         let max = match name {
             "lock" => 0,
             "FORMAT" => FORMAT_BYTES,

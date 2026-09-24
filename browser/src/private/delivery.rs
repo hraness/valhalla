@@ -1,6 +1,8 @@
 //! Explicit bounded sync over a selected local gateway; ciphertext only.
 #[path = "delivery_engine.rs"]
 pub(super) mod engine;
+#[path = "delivery_generation.rs"]
+mod generation_ops;
 #[path = "delivery_model.rs"]
 mod model;
 #[path = "delivery_transport.rs"]
@@ -9,6 +11,7 @@ use super::{now, Session};
 use crate::private_wire::{DeliveryReport, PROFILE};
 pub(super) use engine::{Admission, Summary};
 use engine::{Engine, Failure, Host, Result, TransportError};
+pub(super) use generation_ops::ReviewedSuccessor;
 use sha2::{Digest, Sha256};
 use vhalla_browser_storage::{
     browser::{
@@ -27,6 +30,22 @@ pub(super) fn canceled() -> bool {
 }
 pub(super) fn abort() {
     transport::abort();
+}
+/// Read only; a missing active worker handle never proves that a connection
+/// was absent. File admission consults the full-context durable image first.
+pub(super) async fn retained_image(context: Context) -> Result<Option<Vec<u8>>> {
+    let mut store = IndexedDelivery::open(Namespace::new(PROFILE), context)
+        .await
+        .map_err(|_| Failure::Storage)?;
+    store.load().await.map_err(|_| Failure::Storage)
+}
+pub(super) async fn generation(
+    context: Context,
+) -> Result<Option<vhalla_browser_storage::private_rooms::DeliveryGeneration>> {
+    let store = IndexedDelivery::open(Namespace::new(PROFILE), context)
+        .await
+        .map_err(|_| Failure::Storage)?;
+    Ok(store.generation())
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,6 +251,8 @@ impl Delivery {
             refused: s.refused,
             admissions: s.admissions,
             review: s.review,
+            prejoin: s.prejoin,
+            discovery_cursor: s.discovery_cursor,
         }
     }
     pub fn status(&self, context: Context) -> DeliveryReport {
@@ -239,6 +260,23 @@ impl Delivery {
     }
     pub fn admissions(&self) -> Vec<Admission> {
         self.engine.admissions()
+    }
+    pub fn binding(&self) -> [u8; 32] {
+        self.engine.binding()
+    }
+    pub async fn join_reviewed(
+        &mut self,
+        session: &mut Session,
+        context: Context,
+        position: u64,
+        digest: [u8; 32],
+        reviewed: vhalla_private_kernel::protocol::Validity,
+    ) -> Result<DeliveryReport> {
+        let (engine, mut host) = self.host(session);
+        let report = engine
+            .join_reviewed(&mut host, position, digest, reviewed)
+            .await?;
+        Ok(Self::report(context, report))
     }
     fn host<'a>(&'a mut self, session: &'a mut Session) -> (&'a mut Engine, WorkerHost<'a>) {
         (

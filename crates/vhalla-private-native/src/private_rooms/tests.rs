@@ -31,6 +31,97 @@ fn record(key: RecordKey, n: u8) -> Record {
     Record::new(key, &[n; 80]).unwrap()
 }
 
+fn pause_receipt(generation: u64) -> Vec<u8> {
+    let mut raw = vec![1; 650];
+    raw[..9].copy_from_slice(b"VHCDRAIN\x01");
+    raw[233..241].copy_from_slice(&generation.to_be_bytes());
+    raw
+}
+
+#[test]
+fn paused_delivery_blocks_native_publish_and_retains_exact_history_on_reopen() {
+    let path = home();
+    let ctx = context();
+    let mut store = NativePrivateStore::create_new(&path, ctx, limits()).unwrap();
+    store
+        .publish(ctx, None, &[5; 40], &[record(RecordKey::Outbox(1), 7)])
+        .unwrap();
+    let image: [u8; 32] = Sha256::digest([5; 40]).into();
+    let receipt = pause_receipt(0);
+    store.pause_delivery(ctx, 0, image, &receipt).unwrap();
+    assert!(store.delivery_is_paused().unwrap());
+    assert_eq!(
+        store.publish(ctx, Some(&[5; 40]), &[6; 40], &[]),
+        Err(Error::Refused)
+    );
+    assert_eq!(
+        store.read(ctx, RecordKey::Outbox(1)).unwrap(),
+        Some(vec![7; 80])
+    );
+    drop(store);
+    let mut store = NativePrivateStore::open(&path, ctx).unwrap();
+    assert!(store.delivery_is_paused().unwrap());
+    assert_eq!(store.load(ctx).unwrap(), Some(vec![5; 40]));
+    let mut changed = receipt.clone();
+    changed[300] ^= 1;
+    assert_eq!(
+        store.pause_delivery(ctx, 0, image, &changed),
+        Err(Error::Conflict)
+    );
+    store.pause_delivery(ctx, 0, image, &receipt).unwrap();
+    store
+        .select_delivery_successor(ctx, 0, &receipt, [9; 32])
+        .unwrap();
+    assert!(!store.delivery_is_paused().unwrap());
+    store.publish(ctx, Some(&[5; 40]), &[6; 40], &[]).unwrap();
+    assert_eq!(
+        fs::read(path.join("delivery-generations/00.pause")).unwrap(),
+        receipt
+    );
+    assert_eq!(
+        store.select_delivery_successor(ctx, 0, &receipt, [10; 32]),
+        Err(Error::Conflict)
+    );
+}
+
+#[test]
+fn interrupted_pause_or_selection_only_finishes_the_exact_retained_prefix() {
+    let path = home();
+    let ctx = context();
+    let mut store = NativePrivateStore::create_new(&path, ctx, limits()).unwrap();
+    store.publish(ctx, None, &[5; 40], &[]).unwrap();
+    let directory = path.join("delivery-generations");
+    custody::create_private_directory(&directory).unwrap();
+    let receipt = pause_receipt(0);
+    let mut file = custody::create_private_file(&directory.join("00.pause")).unwrap();
+    file.write_all(&receipt[..100]).unwrap();
+    file.sync_all().unwrap();
+    drop(store);
+    let mut store = NativePrivateStore::open(&path, ctx).unwrap();
+    assert!(store.delivery_is_paused().unwrap());
+    assert_eq!(
+        store.publish(ctx, Some(&[5; 40]), &[6; 40], &[]),
+        Err(Error::Refused)
+    );
+    store
+        .pause_delivery(ctx, 0, Sha256::digest([5; 40]).into(), &receipt)
+        .unwrap();
+    let mut selected = b"VHCDSELE\x01".to_vec();
+    let mut hash = Sha256::new();
+    hash.update(b"vhalla/private/controller-pause-receipt/v1\0");
+    hash.update(&receipt);
+    selected.extend(hash.finalize());
+    selected.extend([9; 32]);
+    let mut file = custody::create_private_file(&directory.join("00.selected")).unwrap();
+    file.write_all(&selected[..15]).unwrap();
+    file.sync_all().unwrap();
+    assert!(store.delivery_is_paused().unwrap());
+    store
+        .select_delivery_successor(ctx, 0, &receipt, [9; 32])
+        .unwrap();
+    assert!(!store.delivery_is_paused().unwrap());
+}
+
 #[test]
 fn whole_image_cas_indexed_reads_and_immutable_collisions() {
     let path = home();

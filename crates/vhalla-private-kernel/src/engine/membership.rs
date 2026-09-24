@@ -300,11 +300,31 @@ impl<S: Store> Kernel<S> {
 
     pub(super) async fn join_prepared(
         &mut self,
-        mut work: Working,
+        work: Working,
         packet: InvitePacket,
         id: [u8; 32],
         now: u64,
     ) -> Result<Status> {
+        let (work, control_packet) = self.prepare_join(work, packet, id, now)?;
+        let record = self.encrypt_record(
+            RecordKey::Control(control_packet.floor()?.sequence()),
+            &transport::RetainedControl::new(control_packet.control.clone(), None)?.encode()?,
+        )?;
+        self.publish(work, vec![record]).await?;
+        self.needs_reopen = false;
+        Ok(self.status)
+    }
+
+    /// Build an isolated, fully checked candidate. Inspection drops it; only
+    /// `join_prepared` may publish it. OpenMLS never consumes the retained
+    /// provider's KeyPackage while preparing or inspecting this candidate.
+    pub(super) fn prepare_join(
+        &self,
+        mut work: Working,
+        packet: InvitePacket,
+        id: [u8; 32],
+        now: u64,
+    ) -> Result<(Working, ControlPacket)> {
         if work.state.phase != Phase::AwaitingWelcome {
             return Err(Error::Policy);
         }
@@ -432,13 +452,7 @@ impl<S: Store> Kernel<S> {
         work.state.joined = Some(id);
         work.state.contact = None;
         advance(&mut work, &packet.control, now)?;
-        let record = self.encrypt_record(
-            RecordKey::Control(control_packet.floor()?.sequence()),
-            &transport::RetainedControl::new(control_packet.control.clone(), None)?.encode()?,
-        )?;
-        self.publish(work, vec![record]).await?;
-        self.needs_reopen = false;
-        Ok(self.status)
+        Ok((work, control_packet))
     }
 
     /// Remove one exact current non-owner device. Same-account devices are not

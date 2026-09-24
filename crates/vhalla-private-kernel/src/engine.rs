@@ -20,6 +20,7 @@ pub mod recovery;
 mod renewal;
 mod snapshot;
 mod succession;
+pub use contact::ContactResponseReview;
 pub use drafts::{MemberDraft, OwnerDraft};
 pub use snapshot::MembershipSnapshot;
 
@@ -83,6 +84,15 @@ impl<S: Store> Kernel<S> {
     /// The wrapping key and private state are not returned.
     pub fn into_store(self) -> S {
         self.store
+    }
+
+    /// Authenticate and compare the exact retained encrypted current image.
+    /// A controller may bind a cross-store pause to these opaque bytes; this
+    /// exposes neither decrypted ratchets nor authority to rewrite custody.
+    /// Like membership inspection, stale or uncertain custody refuses.
+    pub async fn authenticated_image(&mut self) -> Result<Image> {
+        self.begin_state().await?;
+        Ok(self.image.clone())
     }
 
     /// Read-and-compare the committed image, then hydrate. A failure inside

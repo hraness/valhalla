@@ -23,7 +23,7 @@ pub enum CodecError {
     InvalidFrame,
 }
 type Result<T> = std::result::Result<T, CodecError>;
-const MAGIC: &[u8] = b"VHBRPRIVATE\x07";
+const MAGIC: &[u8] = b"VHBRPRIVATE\x08";
 struct Writer(Vec<u8>);
 impl Drop for Writer {
     fn drop(&mut self) {
@@ -141,6 +141,55 @@ impl Writer {
         self.put(&c.digest)?;
         self.key(c.recipient)?;
         self.key(c.device)?;
+        self.validity(c.validity)
+    }
+    fn join_consent(&mut self, c: &JoinConsent) -> Result<()> {
+        if c.id == 0
+            || c.session == [0; 16]
+            || c.connection == [0; 32]
+            || c.request == [0; 32]
+            || c.response == [0; 32]
+            || c.digest == [0; 32]
+            || c.pending.phase != Phase::AwaitingWelcome
+            || c.pending.quarantined
+            || c.proposed.status.context != c.pending.context
+            || c.proposed.status.phase != Phase::MemberJoined
+            || c.proposed.status.quarantined
+        {
+            return Err(CodecError::InvalidFrame);
+        }
+        self.put(&c.session)?;
+        self.number(c.id)?;
+        self.status(c.pending)?;
+        self.put(&c.connection)?;
+        self.position(c.position)?;
+        for digest in [&c.digest, &c.request, &c.response] {
+            self.put(digest)?;
+        }
+        self.validity(c.validity)?;
+        self.blob(
+            &Response::Membership(Box::new(c.proposed.clone())).encode()?,
+            MAX_FRAME / 2,
+        )
+    }
+    fn generation(&mut self, c: &GenerationConsent) -> Result<()> {
+        if c.generation == 0
+            || c.generation >= 16
+            || c.attempt_ceiling > 65_536
+            || c.attempt_ceiling < 4096
+            || c.byte_ceiling != 1024 * 1024 * 1024
+            || [c.transition, c.namespace, c.binding, c.fence, c.receipt].contains(&[0; 32])
+        {
+            return Err(CodecError::InvalidFrame);
+        }
+        self.context(c.context)?;
+        self.put(&c.transition)?;
+        self.number(c.generation)?;
+        for bytes in [&c.namespace, &c.binding, &c.fence, &c.receipt] {
+            self.put(bytes)?;
+        }
+        self.number(c.byte_ceiling)?;
+        self.number(c.attempt_ceiling)?;
         self.validity(c.validity)
     }
     fn status(&mut self, s: Status) -> Result<()> {
@@ -357,6 +406,57 @@ impl<'a> Reader<'a> {
             validity: self.validity()?,
         })
     }
+    fn join_consent(&mut self) -> Result<JoinConsent> {
+        let session = self.array()?;
+        let id = self.number()?;
+        let pending = self.status()?;
+        let connection = self.array()?;
+        let position = self.position()?;
+        let digest = self.array()?;
+        let request = self.array()?;
+        let response = self.array()?;
+        let validity = self.validity()?;
+        let raw = self.blob(MAX_FRAME / 2)?;
+        // Permit only the nonrecursive membership variant. Arbitrary nested
+        // response frames would otherwise allow attacker-controlled recursion.
+        if raw.get(..MAGIC.len()) != Some(MAGIC) || raw.get(MAGIC.len()) != Some(&103) {
+            return Err(CodecError::InvalidFrame);
+        }
+        let Response::Membership(proposed) = Response::decode(&raw)? else {
+            return Err(CodecError::InvalidFrame);
+        };
+        let value = JoinConsent {
+            session,
+            id,
+            pending,
+            connection,
+            position,
+            digest,
+            request,
+            response,
+            validity,
+            proposed: *proposed,
+        };
+        // Mirror all canonical cross-field checks without trusting UI metadata.
+        Writer::new(0).join_consent(&value)?;
+        Ok(value)
+    }
+    fn generation(&mut self) -> Result<GenerationConsent> {
+        let value = GenerationConsent {
+            context: self.context()?,
+            transition: self.array()?,
+            generation: self.number()?,
+            namespace: self.array()?,
+            binding: self.array()?,
+            fence: self.array()?,
+            receipt: self.array()?,
+            byte_ceiling: self.number()?,
+            attempt_ceiling: self.number()?,
+            validity: self.validity()?,
+        };
+        Writer::new(0).generation(&value)?;
+        Ok(value)
+    }
     fn status(&mut self) -> Result<Status> {
         let context = self.context()?;
         let phase = phase(self.byte()?)?;
@@ -549,9 +649,46 @@ impl Request {
             Self::DeliveryDiscard { .. } => 40,
             Self::ReviewAdmission { .. } => 41,
             Self::ConfirmAdmission { .. } => 42,
+            Self::ReviewJoinResponse { .. } => 43,
+            Self::ConfirmJoinResponse { .. } => 44,
+            Self::DeliveryDrain { .. } => 45,
+            Self::ReviewGeneration { .. } => 46,
+            Self::ConfirmGeneration { .. } => 47,
+            Self::ReviewOwnerAction { .. } => 48,
         };
         let mut w = Writer::new(tag);
         match self {
+            Self::ReviewOwnerAction { device, succession } => {
+                w.key(*device)?;
+                w.byte(u8::from(*succession))?;
+            }
+            Self::DeliveryDrain {
+                transition,
+                head,
+                restart,
+            } => {
+                if *transition == [0; 32] || *head > vhalla_private_relay::MAX_RELAY_ITEMS as u64 {
+                    return Err(CodecError::InvalidFrame);
+                }
+                w.put(transition)?;
+                w.number(*head)?;
+                w.byte(u8::from(*restart))?;
+            }
+            Self::ReviewGeneration {
+                profile,
+                fence,
+                attempt_ceiling,
+            } => {
+                if !(4096..=65536).contains(attempt_ceiling) {
+                    return Err(CodecError::InvalidFrame);
+                }
+                w.blob(profile, 4096)?;
+                w.blob(fence, 16384)?;
+                w.number(*attempt_ceiling)?;
+            }
+            Self::ConfirmGeneration { consent } => w.generation(consent)?,
+            Self::ReviewJoinResponse { position } => w.position(*position)?,
+            Self::ConfirmJoinResponse { consent } => w.join_consent(consent)?,
             Self::Enter { vault, local_birth } => {
                 w.blob(vault, 125)?;
                 w.byte(u8::from(*local_birth))?;
@@ -806,6 +943,45 @@ impl Request {
                 operation: r.op()?,
                 consent: Box::new(r.admission()?),
             },
+            43 => Self::ReviewJoinResponse {
+                position: r.position()?,
+            },
+            44 => Self::ConfirmJoinResponse {
+                consent: Box::new(r.join_consent()?),
+            },
+            45 => {
+                let transition = r.array()?;
+                let head = r.number()?;
+                let restart = r.boolean()?;
+                if transition == [0; 32] || head > vhalla_private_relay::MAX_RELAY_ITEMS as u64 {
+                    return Err(CodecError::InvalidFrame);
+                }
+                Self::DeliveryDrain {
+                    transition,
+                    head,
+                    restart,
+                }
+            }
+            46 => {
+                let profile = r.blob(4096)?;
+                let fence = r.blob(16384)?;
+                let attempt_ceiling = r.number()?;
+                if !(4096..=65536).contains(&attempt_ceiling) {
+                    return Err(CodecError::InvalidFrame);
+                }
+                Self::ReviewGeneration {
+                    profile,
+                    fence,
+                    attempt_ceiling,
+                }
+            }
+            47 => Self::ConfirmGeneration {
+                consent: Box::new(r.generation()?),
+            },
+            48 => Self::ReviewOwnerAction {
+                device: r.key()?,
+                succession: r.boolean()?,
+            },
             35 => Self::Succeed {
                 operation: r.op()?,
                 successor: r.key()?,
@@ -829,6 +1005,10 @@ impl Response {
             Self::Membership(_) => 103,
             Self::Draft(_) => 104,
             Self::AdmissionReview(_) => 122,
+            Self::JoinReview(_) => 123,
+            Self::Generation(_) => 124,
+            Self::GenerationReview(_) => 125,
+            Self::OwnerReview(_) => 126,
             Self::Artifact { .. } => 105,
             Self::Offer { .. } => 106,
             Self::Received { .. } => 107,
@@ -850,6 +1030,28 @@ impl Response {
         match self {
             Self::Entered(k) => w.key(*k)?,
             Self::AdmissionReview(c) => w.admission(c)?,
+            Self::JoinReview(c) => w.join_consent(c)?,
+            Self::GenerationReview(c) => w.generation(c)?,
+            Self::OwnerReview(c) => {
+                w.status(c.status)?;
+                w.enrollment(&c.target)?;
+                w.byte(u8::from(c.succession))?;
+                w.validity(c.validity)?;
+            }
+            Self::Generation(report) => {
+                if !report.valid() {
+                    return Err(CodecError::InvalidFrame);
+                }
+                w.context(report.context)?;
+                w.number(report.generation)?;
+                w.number(report.scanned)?;
+                w.number(report.head)?;
+                w.number(report.attempts)?;
+                w.number(report.wire_bytes)?;
+                w.number(report.attempt_ceiling)?;
+                w.number(report.byte_ceiling)?;
+                w.blob(&report.receipt, 546)?;
+            }
             Self::Delivery(v) => {
                 w.context(v.context)?;
                 for n in [
@@ -864,14 +1066,18 @@ impl Response {
                     v.retry_at,
                     v.refused,
                     v.admissions,
+                    v.discovery_cursor,
                 ] {
                     w.number(n)?;
                 }
-                if v.stop > 3
+                if v.stop > 4
                     || (v.stop == 2) != (v.detail != 0)
                     || v.blocked > 6
                     || v.deferred > 8
                     || v.cursor > v.fetched
+                    || v.admissions > MAX_ADMISSION_ITEMS as u64
+                    || v.discovery_cursor > vhalla_private_relay::MAX_RELAY_ITEMS as u64
+                    || (v.prejoin && (v.cursor != 0 || v.fetched != 0 || v.received != 0))
                 {
                     return Err(CodecError::InvalidFrame);
                 }
@@ -881,6 +1087,7 @@ impl Response {
                     v.detail,
                     v.blocked,
                     u8::from(v.review),
+                    u8::from(v.prejoin),
                 ] {
                     w.byte(b)?;
                 }
@@ -1070,6 +1277,31 @@ impl Response {
         let out = match r.byte()? {
             101 => Self::Entered(r.key()?),
             122 => Self::AdmissionReview(Box::new(r.admission()?)),
+            123 => Self::JoinReview(Box::new(r.join_consent()?)),
+            124 => {
+                let report = GenerationReport {
+                    context: r.context()?,
+                    generation: r.number()?,
+                    scanned: r.number()?,
+                    head: r.number()?,
+                    attempts: r.number()?,
+                    wire_bytes: r.number()?,
+                    attempt_ceiling: r.number()?,
+                    byte_ceiling: r.number()?,
+                    receipt: r.blob(546)?,
+                };
+                if !report.valid() {
+                    return Err(CodecError::InvalidFrame);
+                }
+                Self::Generation(report)
+            }
+            125 => Self::GenerationReview(Box::new(r.generation()?)),
+            126 => Self::OwnerReview(Box::new(OwnerConsent {
+                status: r.status()?,
+                target: r.enrollment()?,
+                succession: r.boolean()?,
+                validity: r.validity()?,
+            })),
             120 => {
                 let context = r.context()?;
                 let sent = r.number()?;
@@ -1083,17 +1315,21 @@ impl Response {
                 let retry_at = r.number()?;
                 let refused = r.number()?;
                 let admissions = r.number()?;
+                let discovery_cursor = r.number()?;
                 let pending = r.boolean()?;
                 let stop = r.byte()?;
                 let detail = r.byte()?;
                 let blocked = r.byte()?;
                 let review = r.boolean()?;
-                if stop > 3
+                let prejoin = r.boolean()?;
+                if stop > 4
                     || (stop == 2) != (detail != 0)
                     || blocked > 6
                     || deferred > 8
                     || cursor > fetched
                     || admissions > MAX_ADMISSION_ITEMS as u64
+                    || discovery_cursor > vhalla_private_relay::MAX_RELAY_ITEMS as u64
+                    || (prejoin && (cursor != 0 || fetched != 0 || received != 0))
                 {
                     return Err(CodecError::InvalidFrame);
                 }
@@ -1115,6 +1351,8 @@ impl Response {
                     refused,
                     admissions,
                     review,
+                    prejoin,
+                    discovery_cursor,
                 })
             }
             121 => {

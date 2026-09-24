@@ -188,6 +188,7 @@ fn tailcat_port(config: &Config) -> Result<String, String> {
 pub(super) fn test_config(label: &str) -> Config {
     Config {
         version: 1,
+        retained_generations: Vec::new(),
         label: label.into(),
         listen: "127.0.0.1:9473".parse().unwrap(),
         tls_name: "relay.invalid".into(),
@@ -613,6 +614,7 @@ mod mac {
                 home: home.clone(),
                 config: Config {
                     version: 1,
+                    retained_generations: Vec::new(),
                     label: "me.vhalla.private-host.install-test".into(),
                     listen: "127.0.0.1:9473".parse().unwrap(),
                     tls_name: "relay.invalid".into(),
@@ -803,6 +805,7 @@ mod mac {
                 home: home.clone(),
                 config: Config {
                     version: 1,
+                    retained_generations: Vec::new(),
                     label: "me.vhalla.private-host.probe-test".into(),
                     listen: "127.0.0.1:9473".parse().unwrap(),
                     tls_name: "relay.invalid".into(),
@@ -916,6 +919,7 @@ mod mac {
                 home: home.clone(),
                 config: Config {
                     version: 1,
+                    retained_generations: Vec::new(),
                     label: "me.vhalla.private-host.test".into(),
                     listen: "127.0.0.1:9473".parse().unwrap(),
                     tls_name: "relay.invalid".into(),
@@ -969,6 +973,7 @@ mod tests {
     fn launch_agent_escapes_paths_and_has_bounded_nonsecret_supervision() {
         let mut c = Config {
             version: 1,
+            retained_generations: Vec::new(),
             label: "me.vhalla.private-host.test".into(),
             listen: "127.0.0.1:9473".parse().unwrap(),
             tls_name: "relay.invalid".into(),

@@ -9,6 +9,7 @@ use vhalla_private_kernel::{
 };
 
 const FORMAT: &[u8; 8] = b"VHPIF001";
+const GUARDED_FORMAT: &[u8; 8] = b"VHPIF002";
 const STATE: &[u8; 8] = b"VHPIS001";
 const MARKER: &[u8; 8] = b"VHPIM001";
 pub(crate) const FORMAT_BYTES: usize = 184;
@@ -109,8 +110,14 @@ fn number(raw: &[u8]) -> Result<u64, Error> {
 }
 
 pub(crate) fn format_frame(context: Context, limits: Limits) -> Result<Vec<u8>, Error> {
+    format_version(context, limits, false)
+}
+pub(crate) fn guarded_format_frame(context: Context, limits: Limits) -> Result<Vec<u8>, Error> {
+    format_version(context, limits, true)
+}
+fn format_version(context: Context, limits: Limits, guarded: bool) -> Result<Vec<u8>, Error> {
     limits.check()?;
-    let mut raw = FORMAT.to_vec();
+    let mut raw = if guarded { GUARDED_FORMAT } else { FORMAT }.to_vec();
     raw.extend(context_bytes(context));
     raw.extend(limits.max_records.to_be_bytes());
     raw.extend(limits.max_record_bytes.to_be_bytes());
@@ -124,7 +131,9 @@ pub(crate) fn parse_format(context: Context, raw: &[u8]) -> Result<Limits, Error
         FORMAT_BYTES,
         FORMAT_BYTES,
     )?;
-    if &body[..8] != FORMAT || body[8..136] != context_bytes(context) {
+    if ![FORMAT.as_slice(), GUARDED_FORMAT.as_slice()].contains(&&body[..8])
+        || body[8..136] != context_bytes(context)
+    {
         return Err(Error::Corrupt);
     }
     let limits = Limits {
@@ -133,6 +142,79 @@ pub(crate) fn parse_format(context: Context, raw: &[u8]) -> Result<Limits, Error
     };
     limits.check().map_err(|_| Error::Corrupt)?;
     Ok(limits)
+}
+
+pub(crate) fn guarded_format(raw: &[u8]) -> bool {
+    raw.starts_with(GUARDED_FORMAT)
+}
+
+/// Durable selection of one delivery generation. A pause also guards every
+/// kernel publication in the same IndexedDB transaction as its image CAS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeliveryGeneration {
+    /// Zero-based generation; sixteen retained generations are supported.
+    pub generation: u64,
+    /// Exact immutable delivery profile binding, excluding credentials.
+    pub binding: [u8; 32],
+    /// Exact mailbox namespace; retained item positions are local to it.
+    pub namespace: [u8; 32],
+    /// A durable pause refuses kernel writes until a successor is selected.
+    pub paused: bool,
+    /// Nonzero transition selecting this pause or successor.
+    pub transition: [u8; 32],
+}
+impl DeliveryGeneration {
+    /// Fixed canonical selector width, including a local corruption checksum.
+    pub const BYTES: usize = 145;
+    /// Reject ambiguous identity, sentinel and generation values.
+    pub fn validate(self) -> Result<(), Error> {
+        if self.generation >= 16
+            || self.binding == [0; 32]
+            || self.namespace == [0; 32]
+            || self.transition == [0; 32]
+            || (self.generation == 0 && !self.paused)
+        {
+            return Err(Error::Bounds);
+        }
+        Ok(())
+    }
+    /// Encode exact versioned bytes; this checksum conveys no peer authority.
+    pub fn encode(self) -> Result<Vec<u8>, Error> {
+        self.validate()?;
+        let mut out = b"VHBDSEL1".to_vec();
+        out.extend(self.generation.to_be_bytes());
+        out.extend(self.binding);
+        out.extend(self.namespace);
+        out.push(u8::from(self.paused));
+        out.extend(self.transition);
+        append_checksum(b"vhalla/private-idb/delivery-selector/v1\0", &mut out);
+        Ok(out)
+    }
+    /// Decode only the complete canonical record, never a trailing extension.
+    pub fn decode(raw: &[u8]) -> Result<Self, Error> {
+        let body = checked(
+            b"vhalla/private-idb/delivery-selector/v1\0",
+            raw,
+            Self::BYTES,
+            Self::BYTES,
+        )?;
+        if &body[..8] != b"VHBDSEL1" || body[80] > 1 {
+            return Err(Error::Corrupt);
+        }
+        let out = Self {
+            generation: number(&body[8..16])?,
+            binding: body[16..48].try_into().map_err(|_| Error::Corrupt)?,
+            namespace: body[48..80].try_into().map_err(|_| Error::Corrupt)?,
+            paused: body[80] == 1,
+            transition: body[81..113].try_into().map_err(|_| Error::Corrupt)?,
+        };
+        out.validate().map_err(|_| Error::Corrupt)?;
+        Ok(out)
+    }
+}
+
+pub(crate) fn delivery_selector_key(context: Context) -> String {
+    format!("{}delivery-selector-v1", prefix(context))
 }
 
 #[derive(Clone)]

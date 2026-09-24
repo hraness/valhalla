@@ -107,7 +107,7 @@ impl Fixture {
         }
         let ready: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(ready["status"], "listening");
-        assert_eq!(ready["listen"], self.addr.to_string());
+        assert_eq!(ready["listen"], self.json("config.json")["listen"]);
         Server(child)
     }
 }
@@ -817,4 +817,209 @@ fn tailcat_template_uses_only_saved_private_key_and_exact_one_port_without_activ
     std::os::unix::fs::symlink(f.home().join("retained-overlay-key"), &key).unwrap();
     assert!(!run(command()).status.success());
     assert!(!out.exists());
+}
+
+#[test]
+fn drained_generation_retains_old_tls_retries_and_carries_spend_to_successor() {
+    use sha2::{Digest, Sha256};
+    use vhalla_private_kernel::{
+        protocol::{AnchorId, Key, PrivateRoomScope, RoomId},
+        Context,
+    };
+    use vhalla_private_native::{
+        client::generation::{
+            controller_id, Accounting, BrowserSharedAccounting, ControllerPauseReceipt,
+        },
+        relay::{tls::Service, FileStore},
+    };
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    fn private(path: &std::path::Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let f = Fixture::new();
+    ok(&f.init());
+    let old_namespace = f.namespace();
+    let old_client = f.client(1);
+    let item = RelayItem::new(
+        old_namespace,
+        1,
+        OperationId::from_bytes([14; 16]).unwrap(),
+        OutboxKind::Application,
+        b"original retained ciphertext",
+    )
+    .unwrap();
+    let mut server = f.serve();
+    assert_eq!(old_client.submit(&item).unwrap().position, 1);
+    server.stop();
+    let store = FileStore::open(f.home().join("mailbox"), old_namespace).unwrap();
+    let (head, items) = store.retained_head().unwrap();
+    let before = Service::credential_spend(&store).unwrap();
+    drop(store);
+    let config = f.json("config.json");
+    let receipts = f.root.join("drained-controllers");
+    fs::DirBuilder::new().mode(0o700).create(&receipts).unwrap();
+    let mut controllers = Vec::new();
+    for (index, id) in config["credential_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let context = Context {
+            scope: PrivateRoomScope {
+                room: RoomId::from_bytes([1; 32]).unwrap(),
+                anchor: AnchorId::from_bytes([2; 32]).unwrap(),
+            },
+            account: Key::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[3 + index as u8; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            )
+            .unwrap(),
+            device: Key::from_bytes(
+                ed25519_dalek::SigningKey::from_bytes(&[5 + index as u8; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            )
+            .unwrap(),
+        };
+        let mut counters = BrowserSharedAccounting {
+            attempts: 4,
+            wire_bytes: 2048,
+            retained: 1,
+            received: head,
+            refused_total: 0,
+            total_byte_ceiling: 8192,
+            total_attempt_ceiling: 64,
+            commitment: [0; 32],
+        };
+        counters.commitment = counters.computed_commitment();
+        let receipt = ControllerPauseReceipt {
+            context,
+            controller_id: controller_id(context, [9 + index as u8; 32]),
+            original_profile_binding: [9 + index as u8; 32],
+            transition: [7; 32],
+            generation: 0,
+            namespace: *old_namespace.as_bytes(),
+            endpoint: [11; 32],
+            profile_binding: [9 + index as u8; 32],
+            terminal_head: head,
+            items_commitment: items,
+            outbox_head: 1,
+            control_head: 0,
+            image_commitment: [13; 32],
+            accounting: Accounting::BrowserShared(counters),
+            prior_ledger_commitment: [0; 32],
+        };
+        private(
+            &receipts.join(format!("{}.receipt", hex(&receipt.controller_id))),
+            &receipt.encode().unwrap(),
+        );
+        controllers.push(serde_json::json!({"credential_id":id,"room":hex(context.scope.room.as_bytes()),"anchor":hex(context.scope.anchor.as_bytes()),"account":hex(context.account.as_bytes()),"device":hex(context.device.as_bytes()),"controller_id":hex(&receipt.controller_id),"original_profile_binding":hex(&receipt.original_profile_binding),"profile_binding":hex(&receipt.profile_binding),"endpoint":hex(&receipt.endpoint),"receipt_commitment":hex(&receipt.commitment().unwrap())}));
+    }
+    let port = TcpListener::bind("127.0.0.1:0").unwrap();
+    let next_address = port.local_addr().unwrap();
+    drop(port);
+    assert_ne!(next_address, f.addr);
+    let successor = RelayNamespace::from_bytes([8; 32]).unwrap();
+    let plan = serde_json::json!({"version":1,"complete_controller_inventory":true,"config_sha256":hex(&Sha256::digest(fs::read(f.home().join("config.json")).unwrap())),"transition":hex(&[7;32]),"generation":0,"predecessor":hex(old_namespace.as_bytes()),"successor":hex(successor.as_bytes()),"successor_address":next_address.to_string(),"expected_head":head,"items_commitment":hex(&items),"controllers":controllers,"allowances":[]});
+    let plan_path = f.root.join("generation-plan.json");
+    private(&plan_path, &serde_json::to_vec(&plan).unwrap());
+    for action in ["generation-check", "generation-prepare"] {
+        let mut command = f.command(action);
+        command
+            .arg("--plan")
+            .arg(&plan_path)
+            .arg("--receipts")
+            .arg(&receipts);
+        ok(&run(command));
+    }
+    ok(&run(f.command("generation-fence")));
+    ok(&run(f.command("generation-cutover")));
+    let next = FileStore::open(f.home().join("mailbox-2"), successor).unwrap();
+    let carried = Service::credential_spend(&next).unwrap();
+    assert_eq!(carried, before);
+    drop(next);
+    let new_client = TlsRelay::new(
+        next_address,
+        "local-host.test.invalid",
+        fs::read(f.home().join("ca.der")).unwrap(),
+        RelayToken::from_bytes(f.token(1)).unwrap(),
+        successor,
+    )
+    .unwrap();
+    let mut server = f.serve();
+    assert_eq!(old_client.page(0, 4).unwrap().records[0].item, item);
+    let receipt = old_client.submit(&item).unwrap();
+    assert!(receipt.duplicate);
+    assert_eq!(receipt.position, 1);
+    let forbidden = RelayItem::new(
+        old_namespace,
+        2,
+        OperationId::from_bytes([15; 16]).unwrap(),
+        OutboxKind::Application,
+        b"new old-generation write",
+    )
+    .unwrap();
+    assert!(matches!(
+        old_client.submit(&forbidden),
+        Err(NetError::Capacity)
+    ));
+    let next_item = RelayItem::new(
+        successor,
+        2,
+        OperationId::from_bytes([16; 16]).unwrap(),
+        OutboxKind::Application,
+        b"new successor ciphertext",
+    )
+    .unwrap();
+    assert_eq!(new_client.submit(&next_item).unwrap().position, 1);
+    assert_eq!(old_client.page(0, 4).unwrap().head, 1);
+    server.stop();
+    let old = FileStore::open(f.home().join("mailbox"), old_namespace).unwrap();
+    assert_eq!(Service::credential_spend(&old).unwrap(), before);
+    drop(old);
+    let next = FileStore::open(f.home().join("mailbox-2"), successor).unwrap();
+    let after = Service::credential_spend(&next).unwrap();
+    let first_id = unhex::<16>(config["credential_ids"][0].as_str().unwrap());
+    assert_eq!(
+        after
+            .iter()
+            .find(|c| c.id() == first_id)
+            .unwrap()
+            .spent_items(),
+        2
+    );
+    assert_eq!(
+        after
+            .iter()
+            .find(|c| c.id() == first_id)
+            .unwrap()
+            .authorized_items(),
+        2048
+    );
+    drop(next);
+    ok(&run(f.command("generation-recover")));
+    // Later enrollment belongs to the active generation only. Startup must
+    // never try to enroll this ID into a permanently fenced predecessor.
+    ok(&run(f.command("add-credential")));
+    let third = TlsRelay::new(
+        next_address,
+        "local-host.test.invalid",
+        fs::read(f.home().join("ca.der")).unwrap(),
+        RelayToken::from_bytes(f.token(3)).unwrap(),
+        successor,
+    )
+    .unwrap();
+    let mut server = f.serve();
+    assert_eq!(third.page(0, 4).unwrap().head, 1);
+    assert_eq!(old_client.page(0, 4).unwrap().head, 1);
+    server.stop();
+    let old = FileStore::open(f.home().join("mailbox"), old_namespace).unwrap();
+    assert_eq!(Service::credential_spend(&old).unwrap().len(), 2);
+    let next = FileStore::open(f.home().join("mailbox-2"), successor).unwrap();
+    assert_eq!(Service::credential_spend(&next).unwrap().len(), 3);
 }

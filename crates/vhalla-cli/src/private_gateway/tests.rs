@@ -106,3 +106,58 @@ fn invalid_initial_cursor_refuses_before_credentials_or_assets_are_read() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn retained_routes_keep_one_origin_and_refuse_aliases_or_shared_secrets() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = root("generations");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let write = |name: &str, bytes: &[u8]| {
+        let path = root.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    write("ca.der", certificate.cert.der());
+    for (name, value) in [
+        ("browser", 8),
+        ("old-browser", 7),
+        ("tls", 6),
+        ("old-tls", 5),
+    ] {
+        write(name, format!("{value:02x}").repeat(32).as_bytes());
+    }
+    write("index.html", b"production");
+    write("artifact.json", &serde_json::to_vec(&serde_json::json!({"format":1,"purpose":"production","assets":{"index.html":{"bytes":10,"sha256":format!("{:x}",Sha256::digest(b"production"))}}})).unwrap());
+    let upstream = |port, name: &str| serde_json::json!({"addr":format!("127.0.0.1:{port}"),"tls_name":"localhost","tls_ca_file":root.join("ca.der"),"token_file":root.join(name)});
+    let mut value = serde_json::json!({"format":2,"listen":"127.0.0.1:8088","namespace":"09".repeat(32),"browser_token_file":root.join("browser"),"upstream":upstream(9001,"tls"),"assets_dir":root,"initial_cursor":"0","retained":[{"namespace":"0a".repeat(32),"browser_token_file":root.join("old-browser"),"upstream":upstream(9002,"old-tls")}]});
+    let config = root.join("gateway.json");
+    write("gateway.json", &serde_json::to_vec(&value).unwrap());
+    let (gateway, address) = load(&config).unwrap();
+    assert_eq!(gateway.origin(), "http://127.0.0.1:8088");
+    assert_eq!(address.to_string(), "127.0.0.1:8088");
+    for change in 0..5 {
+        let mut changed = value.clone();
+        match change {
+            0 => changed["format"] = 1.into(),
+            1 => changed["retained"][0]["namespace"] = changed["namespace"].clone(),
+            2 => {
+                changed["retained"][0]["browser_token_file"] = changed["browser_token_file"].clone()
+            }
+            3 => {
+                changed["retained"][0]["upstream"]["token_file"] =
+                    changed["browser_token_file"].clone()
+            }
+            _ => changed["retained"] = vec![changed["retained"][0].clone(); 16].into(),
+        }
+        let bytes = serde_json::to_vec(&changed).unwrap();
+        write("gateway.json", &bytes);
+        assert!(load(&config).is_err(), "change {change}");
+        assert_eq!(std::fs::read(&config).unwrap(), bytes);
+    }
+    value["format"] = 1.into();
+    value.as_object_mut().unwrap().remove("retained");
+    write("gateway.json", &serde_json::to_vec(&value).unwrap());
+    assert!(load(&config).is_ok());
+    std::fs::remove_dir_all(root).unwrap();
+}

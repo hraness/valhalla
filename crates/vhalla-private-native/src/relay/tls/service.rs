@@ -3,6 +3,10 @@ use crate::relay::{FileStore, Limits, MAX_RELAY_ITEMS};
 use rusqlite::{params, OptionalExtension};
 use std::{collections::BTreeMap, net::TcpListener, sync::Mutex, thread};
 
+#[cfg(test)]
+#[path = "ledger_tests.rs"]
+mod ledger_tests;
+
 /// Transport permissions confer no private-room authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Permissions {
@@ -23,7 +27,8 @@ pub struct Credential {
     pub namespace: RelayNamespace,
     /// Explicit PUT/PAGE permissions.
     pub permissions: Permissions,
-    /// Immutable cumulative retained ciphertext budget for this key identity.
+    /// Immutable retained ciphertext cap within each generation. A migrated
+    /// ledger separately enforces cumulative explicitly authorized allowance.
     pub storage: Limits,
     /// Concurrent authenticated operations, including response writes.
     pub max_inflight: usize,
@@ -74,6 +79,7 @@ struct State {
     global: Work,
     keys: BTreeMap<[u8; 16], Work>,
     poisoned: bool,
+    ledger_format: u8,
 }
 /// An explicitly enrolled, single-namespace durable mailbox service. Item
 /// publication and its per-key storage charge commit in one SQLite transaction
@@ -92,6 +98,10 @@ impl Service {
     /// Explicitly enroll an EMPTY mailbox for TLS admission. Existing or used
     /// enrollments refuse. Never infer the owner of legacy retained ciphertext.
     pub fn initialize(store: FileStore) -> Result<()> {
+        store.live().map_err(|_| NetError::Unavailable)?;
+        if store.fenced().map_err(|_| NetError::Unavailable)? {
+            return Err(NetError::Conflict);
+        }
         let count: i64 = store
             .conn
             .query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
@@ -157,32 +167,17 @@ impl Service {
                 return Err(NetError::Bounds);
             }
         }
-        let format: i64 = store
-            .conn
-            .query_row("SELECT format FROM tls_meta WHERE id=1", [], |r| r.get(0))
-            .map_err(|_| NetError::Unavailable)?;
-        if format != 1 {
-            return Err(NetError::Bounds);
-        }
+        let ledger_format = ledger::validate(&store)?;
         // Per-key quota scans must not grow with every retained item. Stores
         // enrolled before this index existed are repaired once, idempotently.
         store
             .conn
             .execute_batch("CREATE INDEX IF NOT EXISTS tls_charges_by_key ON tls_charges(key_id)")
             .map_err(|_| NetError::Unavailable)?;
-        // A local compatibility writer cannot silently add uncharged items.
-        let bad: i64 = store.conn.query_row("SELECT (SELECT COUNT(*) FROM items LEFT JOIN tls_charges ON items.digest=tls_charges.digest WHERE tls_charges.digest IS NULL OR tls_charges.bytes != length(items.payload)) + (SELECT COUNT(*) FROM tls_charges LEFT JOIN items ON items.digest=tls_charges.digest WHERE items.digest IS NULL) + (SELECT COUNT(*) FROM tls_keys WHERE length(id)!=16 OR id=zeroblob(16) OR max_items<1 OR max_bytes<1) + (SELECT COUNT(*) FROM tls_charges LEFT JOIN tls_keys ON tls_charges.key_id=tls_keys.id WHERE tls_keys.id IS NULL OR tls_charges.bytes<1)", [], |r| r.get(0)).map_err(|_| NetError::Unavailable)?;
         let count: i64 = store
             .conn
             .query_row("SELECT COUNT(*) FROM tls_keys", [], |r| r.get(0))
             .map_err(|_| NetError::Unavailable)?;
-        if bad != 0 || !(0..=64).contains(&count) {
-            return Err(NetError::Unavailable);
-        }
-        let over: i64 = store.conn.query_row("SELECT COUNT(*) FROM tls_keys k WHERE (SELECT COUNT(*) FROM tls_charges c WHERE c.key_id=k.id)>k.max_items OR (SELECT COALESCE(SUM(bytes),0) FROM tls_charges c WHERE c.key_id=k.id)>k.max_bytes", [], |r| r.get(0)).map_err(|_| NetError::Unavailable)?;
-        if over != 0 {
-            return Err(NetError::Unavailable);
-        }
         // New credential identities are an explicit operator admission; quotas
         // already associated with an identity can never reset or change here.
         let mut additions = Vec::new();
@@ -209,6 +204,11 @@ impl Service {
         if count as usize + additions.len() > 64 {
             return Err(NetError::Capacity);
         }
+        // The fence also freezes the exported quota basis. Existing identities
+        // may replace tokens; enrolling another identity would alter that basis.
+        if !additions.is_empty() && store.fenced().map_err(|_| NetError::Unavailable)? {
+            return Err(NetError::Conflict);
+        }
         store
             .conn
             .execute_batch("BEGIN IMMEDIATE")
@@ -221,6 +221,15 @@ impl Service {
                     params![id.as_slice(), max_items, max_bytes],
                 )
                 .map_err(|_| NetError::Unavailable)?;
+            if ledger_format == 2 {
+                store
+                    .conn
+                    .execute(
+                        "INSERT INTO tls_budget VALUES(?1,0,0,?2,?3,0)",
+                        params![id.as_slice(), max_items, max_bytes],
+                    )
+                    .map_err(|_| NetError::Unavailable)?;
+            }
         }
         store
             .conn
@@ -239,6 +248,7 @@ impl Service {
                 global: Work::default(),
                 keys: BTreeMap::new(),
                 poisoned: false,
+                ledger_format,
             })),
             config,
         })
@@ -553,12 +563,9 @@ fn put(state: &mut State, id: [u8; 16], raw: &[u8]) -> Result<(u8, Vec<u8>)> {
             )
             .map_err(|_| super::super::Error::Storage)?;
         if !charged {
-            let (count,bytes,max_count,max_bytes): (i64,i64,i64,i64) = store.conn.query_row("SELECT (SELECT COUNT(*) FROM tls_charges WHERE key_id=?1),(SELECT COALESCE(SUM(bytes),0) FROM tls_charges WHERE key_id=?1),max_items,max_bytes FROM tls_keys WHERE id=?1", params![id.as_slice()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|_| super::super::Error::Storage)?;
             let size =
                 i64::try_from(item.payload().len()).map_err(|_| super::super::Error::Bounds)?;
-            if count >= max_count || bytes.checked_add(size).is_none_or(|n| n > max_bytes) {
-                return Err(super::super::Error::Capacity);
-            }
+            ledger::charge(store, state.ledger_format, id, size)?;
             store
                 .conn
                 .execute(

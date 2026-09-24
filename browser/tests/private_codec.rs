@@ -62,6 +62,20 @@ fn admission_consent() -> AdmissionConsent {
         validity: validity(),
     }
 }
+fn generation_consent() -> GenerationConsent {
+    GenerationConsent {
+        context: context(),
+        transition: [3; 32],
+        generation: 1,
+        namespace: [4; 32],
+        binding: [5; 32],
+        fence: [6; 32],
+        receipt: [7; 32],
+        byte_ceiling: 1024 * 1024 * 1024,
+        attempt_ceiling: 8192,
+        validity: validity(),
+    }
+}
 
 #[test]
 fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
@@ -79,6 +93,32 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         Request::CommitCreation(context()),
         Request::Open(context()),
         Request::Membership,
+        Request::ReviewOwnerAction {
+            device: key(),
+            succession: false,
+        },
+        Request::ReviewOwnerAction {
+            device: key(),
+            succession: true,
+        },
+        Request::DeliveryDrain {
+            transition: [3; 32],
+            head: 4096,
+            restart: false,
+        },
+        Request::DeliveryDrain {
+            transition: [3; 32],
+            head: 0,
+            restart: true,
+        },
+        Request::ReviewGeneration {
+            profile: bytes(4096),
+            fence: bytes(16384),
+            attempt_ceiling: 65536,
+        },
+        Request::ConfirmGeneration {
+            consent: Box::new(generation_consent()),
+        },
         Request::DeliveryConnect {
             profile: bytes(4096),
             create: true,
@@ -185,7 +225,7 @@ fn every_command_rejects_all_truncations_trailing_and_unknown_tags() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Request::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x07".len();
+        let tag = b"VHBRPRIVATE\x08".len();
         changed.truncate(raw.len());
         changed[tag] = 250;
         assert!(Request::decode(&changed).is_err());
@@ -211,7 +251,7 @@ fn archive_route_is_explicit_canonical_and_versioned() {
         ] {
             let raw = request.encode().unwrap();
             assert_eq!(*Request::decode(&raw).unwrap().encode().unwrap(), *raw);
-            let route = b"VHBRPRIVATE\x07".len() + 1 + 128 + 32;
+            let route = b"VHBRPRIVATE\x08".len() + 1 + 128 + 32;
             assert_eq!(raw[route], u8::from(legacy));
             let mut bad = raw.to_vec();
             bad[route] = 2;
@@ -225,7 +265,7 @@ fn archive_route_is_explicit_canonical_and_versioned() {
 
 #[test]
 fn untrusted_lengths_counts_boolean_and_floor_refuse_before_allocation() {
-    let prefix = b"VHBRPRIVATE\x07".len();
+    let prefix = b"VHBRPRIVATE\x08".len();
     let mut raw = Request::PrepareMessage(bytes(1)).encode().unwrap();
     raw[prefix + 1..prefix + 5].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Request::decode(&raw).is_err());
@@ -430,7 +470,7 @@ fn response_collection_count_and_blob_budgets_are_checked_on_raw_input() {
     }
     .encode()
     .unwrap();
-    let at = b"VHBRPRIVATE\x07".len() + 1 + 128 + 8 + 32;
+    let at = b"VHBRPRIVATE\x08".len() + 1 + 128 + 8 + 32;
     raw[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(Response::decode(&raw).is_err());
     assert!(Response::decode(&vec![0; MAX_FRAME + 1]).is_err());
@@ -479,6 +519,8 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
             refused: 6,
             admissions: 7,
             review: true,
+            prejoin: false,
+            discovery_cursor: 0,
         }),
         Response::Delivery(DeliveryReport {
             context: context(),
@@ -498,6 +540,8 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
             refused: 0,
             admissions: 0,
             review: false,
+            prejoin: false,
+            discovery_cursor: 0,
         }),
         Response::Admissions {
             context: context(),
@@ -556,7 +600,7 @@ fn archive_reports_round_trip_and_enforce_page_and_status_bounds() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x07".len();
+        let tag = b"VHBRPRIVATE\x08".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -699,7 +743,7 @@ fn signed_proofs_and_fork_evidence_verify_at_the_local_boundary() {
         let mut changed = raw.to_vec();
         changed.push(0);
         assert!(Response::decode(&changed).is_err());
-        let tag = b"VHBRPRIVATE\x07".len();
+        let tag = b"VHBRPRIVATE\x08".len();
         changed.truncate(raw.len());
         changed[tag] = 20;
         assert!(Response::decode(&changed).is_err());
@@ -1064,6 +1108,106 @@ fn admission_frames_refuse_old_worker_version_and_invalid_review_bindings() {
             operation: op(),
             consent: Box::new(bad)
         }
+        .encode()
+        .is_err());
+    }
+}
+
+#[test]
+fn generation_and_owner_reviews_preserve_context_and_refuse_partial_frames_or_allowance_reset() {
+    use vhalla_private_kernel::protocol::{DeviceEnrollmentClaims, UnsignedDeviceEnrollment};
+    let signer = SigningKey::from_bytes(&[8; 32]);
+    let target = UnsignedDeviceEnrollment::new(DeviceEnrollmentClaims {
+        account: Key::from_bytes(signer.verifying_key().to_bytes()).unwrap(),
+        device: key(),
+        validity: validity(),
+    })
+    .unwrap()
+    .sign(&signer)
+    .unwrap();
+    let responses = [
+        Response::OwnerReview(Box::new(OwnerConsent {
+            status: status(),
+            target,
+            succession: false,
+            validity: validity(),
+        })),
+        Response::GenerationReview(Box::new(generation_consent())),
+        Response::Generation(GenerationReport {
+            context: context(),
+            generation: 0,
+            scanned: 4,
+            head: 5,
+            attempts: 8,
+            wire_bytes: 1024,
+            attempt_ceiling: 4096,
+            byte_ceiling: 1024 * 1024 * 1024,
+            receipt: bytes(0),
+        }),
+        Response::Generation(GenerationReport {
+            context: context(),
+            generation: 0,
+            scanned: 5,
+            head: 5,
+            attempts: 8,
+            wire_bytes: 1024,
+            attempt_ceiling: 4096,
+            byte_ceiling: 1024 * 1024 * 1024,
+            receipt: bytes(546),
+        }),
+    ];
+    for response in responses {
+        assert_eq!(response.context(), Some(context()));
+        let raw = response.encode().unwrap();
+        assert_eq!(Response::decode(&raw).unwrap().encode().unwrap(), raw);
+        for end in 0..raw.len() {
+            assert!(Response::decode(&raw[..end]).is_err());
+        }
+        let mut trailing = raw.to_vec();
+        trailing.push(0);
+        assert!(Response::decode(&trailing).is_err());
+        assert!(Request::decode(&raw).is_err());
+    }
+    for field in 0..9 {
+        let mut consent = generation_consent();
+        match field {
+            0 => consent.generation = 0,
+            1 => consent.generation = 16,
+            2 => consent.byte_ceiling += 1,
+            3 => consent.attempt_ceiling = 4095,
+            4 => consent.attempt_ceiling = 65537,
+            5 => consent.transition = [0; 32],
+            6 => consent.binding = [0; 32],
+            7 => consent.namespace = [0; 32],
+            _ => consent.receipt = [0; 32],
+        }
+        assert!(Request::ConfirmGeneration {
+            consent: Box::new(consent.clone())
+        }
+        .encode()
+        .is_err());
+        assert!(Response::GenerationReview(Box::new(consent))
+            .encode()
+            .is_err());
+    }
+    for (generation, scanned, head, receipt) in [
+        (16, 0, 0, 0),
+        (0, 2, 1, 0),
+        (0, 0, 4097, 0),
+        (0, 0, 0, 545),
+        (0, 0, 1, 546),
+    ] {
+        assert!(Response::Generation(GenerationReport {
+            context: context(),
+            generation,
+            scanned,
+            head,
+            attempts: 8,
+            wire_bytes: 1024,
+            attempt_ceiling: 4096,
+            byte_ceiling: 1024 * 1024 * 1024,
+            receipt: bytes(receipt)
+        })
         .encode()
         .is_err());
     }

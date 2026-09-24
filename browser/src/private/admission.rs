@@ -1,5 +1,5 @@
 //! Explicit owner review of retained encrypted requests. No transport or new authority.
-use crate::private_wire::{AdmissionConsent, Bytes, Request};
+use crate::private_wire::{AdmissionConsent, Bytes, JoinConsent, Membership, Request};
 use vhalla_private_kernel::{
     protocol::{Key, Validity},
     storage::Store,
@@ -12,14 +12,37 @@ struct Pending {
     consent: AdmissionConsent,
     bytes: Bytes,
 }
+struct PendingJoin {
+    consent: JoinConsent,
+    bytes: Bytes,
+}
 
 /// One review per worker session. Only an unchanged confirmation may consume it.
 pub struct Admission {
     session: [u8; 16],
     counter: u64,
     pending: Option<Pending>,
+    join_pending: Option<PendingJoin>,
 }
 impl Admission {
+    /// File fallback must not bypass an existing connection's reviewed join
+    /// transaction. The caller reads this same-context image durably for every
+    /// attempt, including after reload; unknown or legacy bytes also refuse.
+    pub async fn join_file<S: Store>(
+        kernel: &mut Kernel<S>,
+        delivery_image: Option<&[u8]>,
+        response: &[u8],
+        now: u64,
+    ) -> Result<(), Error> {
+        if kernel.status().phase == vhalla_private_kernel::Phase::AwaitingWelcome
+            && delivery_image.is_some()
+        {
+            return Err(Error::Policy);
+        }
+        kernel.join_contact(response, now).await?;
+        Ok(())
+    }
+
     /// Start a fresh worker-local review lifetime with independently generated entropy.
     pub fn new(session: [u8; 16]) -> Result<Self, Error> {
         if session == [0; 16] {
@@ -29,6 +52,7 @@ impl Admission {
             session,
             counter: 0,
             pending: None,
+            join_pending: None,
         })
     }
 
@@ -38,6 +62,94 @@ impl Admission {
         if !matches!(request, Request::ConfirmAdmission { .. }) {
             self.pending = None;
         }
+        if !matches!(request, Request::ConfirmJoinResponse { .. }) {
+            self.join_pending = None;
+        }
+    }
+
+    /// Check the complete proposed membership without publishing it. The
+    /// response and connection selection remain fixed for this worker lifetime.
+    pub async fn review_join<S: Store>(
+        &mut self,
+        kernel: &mut Kernel<S>,
+        connection: [u8; 32],
+        position: u64,
+        item: &RelayItem,
+        now: u64,
+    ) -> Result<JoinConsent, Error> {
+        self.join_pending = None;
+        if connection == [0; 32]
+            || position == 0
+            || position > vhalla_private_relay::MAX_RELAY_ITEMS as u64
+            || item.kind() != RelayKind::Outbox(OutboxKind::ContactInvitation)
+        {
+            return Err(Error::Policy);
+        }
+        let review = kernel.inspect_contact_response(item.payload(), now).await?;
+        self.counter = self.counter.checked_add(1).ok_or(Error::Bounds)?;
+        let validity = Validity::new(
+            now,
+            review
+                .validity()
+                .expires_at()
+                .min(now.checked_add(300).ok_or(Error::Time)?),
+        )?;
+        let consent = JoinConsent {
+            session: self.session,
+            id: self.counter,
+            pending: review.pending(),
+            connection,
+            position,
+            digest: item.digest(),
+            request: review.request(),
+            response: review.response(),
+            validity,
+            proposed: proposed(&review),
+        };
+        self.join_pending = Some(PendingJoin {
+            consent: consent.clone(),
+            bytes: Zeroizing::new(item.payload().to_vec()),
+        });
+        Ok(consent)
+    }
+
+    /// Consume volatile consent and recheck its exact current pending state.
+    /// The caller then persists transition intent and invokes the existing join
+    /// inside the same exclusive worker operation. No membership is written here.
+    pub async fn authorize_join<S: Store>(
+        &mut self,
+        kernel: &mut Kernel<S>,
+        connection: [u8; 32],
+        consent: &JoinConsent,
+        item: &RelayItem,
+        now: u64,
+    ) -> Result<(), Error> {
+        let pending = self.join_pending.take().ok_or(Error::Policy)?;
+        if pending.consent != *consent
+            || consent.connection != connection
+            || item.kind() != RelayKind::Outbox(OutboxKind::ContactInvitation)
+            || item.digest() != consent.digest
+            || item.payload() != pending.bytes.as_slice()
+        {
+            return Err(Error::Scope);
+        }
+        consent.validity.check_at(now)?;
+        let review = kernel.inspect_contact_response(item.payload(), now).await?;
+        let mut current = proposed(&review);
+        // Candidate publication advances the clock when confirmed. Its new
+        // time is not a roster or destination change; all signed metadata and
+        // the unchanged actual pending clock still compare exactly.
+        current.status.clock = consent.proposed.status.clock;
+        if review.pending() != consent.pending
+            || review.request() != consent.request
+            || review.response() != consent.response
+            || current != consent.proposed
+            || consent.validity.not_before() < review.validity().not_before()
+            || consent.validity.expires_at() > review.validity().expires_at()
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(())
     }
 
     /// Authenticate selected request metadata without consuming the retained offer.
@@ -138,5 +250,17 @@ impl Admission {
         kernel
             .accept_contact(operation, &pending.bytes, consent.validity, now)
             .await
+    }
+}
+
+fn proposed(review: &vhalla_private_kernel::ContactResponseReview) -> Membership {
+    let m = review.proposed();
+    Membership {
+        status: m.status(),
+        anchor: m.anchor().clone(),
+        owner: m.owner().clone(),
+        local: m.local().clone(),
+        members: m.members().to_vec(),
+        successions: m.successions().to_vec(),
     }
 }
