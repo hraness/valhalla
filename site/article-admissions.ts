@@ -54,6 +54,7 @@ export const articleAdmissions = [
       'verify/native-delivery/README.md records a new run with different state counts',
       'README.md status line changes or a release changes the install instructions',
       'The product is renamed',
+      'The hraness.com tla-plus-interleavings or planted-bugs reference pages return 200 (add the links)',
     ],
   },
   {
@@ -95,6 +96,7 @@ export const articleAdmissions = [
       'crates/vhalla-native/src/spent.rs changes the file format, 1024-entry cap, refusal order or Kani harnesses',
       'CI required checks drop or move the Kani, Verus or Hegel jobs',
       'vhalla status label changes from In development',
+      'The hraness.com Hegel or Kani reference pages return 200 (link them in the body and further reading)',
     ],
   },
   {
@@ -134,6 +136,7 @@ export const articleAdmissions = [
       'The room directory validators leave the experimental-rooms-node feature, or a hosted network launches',
       'The lean-quorum job leaves the required CI check, or the Lean toolchain moves from 4.34.0',
       'A naming decision changes the prose name',
+      'hraness.com/reference/correctness/lean-proofs returns 200 (add the link)',
     ],
   },
 ] as const satisfies readonly ArticleAdmission[];

@@ -79,6 +79,8 @@ Second, the Lean check runs on every candidate change as part of the required CI
 
 The comparison has already reproduced one real mismatch. Reading the certificate code for the trial turned up the suspicion, and the comparison reproduced it with real signatures: the consensus engine accepted a certificate at the largest possible round number, while both of Valhalla's own certificate readers rejected it as a reserved value. The engine's verifier now rejects that value before it is recorded. Rechecking the proof is cheap. In one run on an Apple silicon Mac on 24 September 2026, with other checks running at the same time, Lean 4.34.0 checked the quorum file in 4.68 seconds. That is a single observation, not a benchmark.
 
+For the broader question of why a room of a few peers needs agreement rules at all, see [Consensus for a group chat](https://hraness.com/reference/peer-to-peer-systems/room-scale-consensus).
+
 ## What the proof leaves open
 
 The theorem is about one fixed roster in one signing context, and it assumes authenticated signatures, faulty weight of at most one third, and honest validators that never sign two values in the same signing context. It does not prove the cryptography, agreement across rounds, safe changes to the validator set, the consensus engine as a whole, or that the Rust code computes exactly what the Lean definition does. The connection to Rust is the finite set of generated cases above. The room directory validators also sit behind the experimental `experimental-rooms-node` build feature, and ordinary message delivery in public rooms does not wait on this consensus.

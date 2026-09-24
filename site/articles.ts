@@ -32,33 +32,31 @@ const markdown = (slug: string) => Bun.markdown.html(readFileSync(new URL(`./art
 
 const article = (fields: Omit<Article, 'admission' | 'bodyHtml'>): Article => ({ ...fields, admission: admissionFor(fields.slug), bodyHtml: markdown(fields.slug) });
 
+// Further-reading links to hraness.com reference pages are added only once
+// those pages return 200 (see each record's refreshTriggers).
 export const articles: Article[] = [
   article({
     slug: 'delivery-specs-that-fail-on-purpose',
-    title: 'Testing vhalla\'s delivery rules with bugs that must fail',
-    dek: 'vhalla\'s model check fails unless each of its 51 planted delivery bugs breaks the rule it names.',
+    title: 'Testing Valhalla\'s delivery rules with bugs that must fail',
+    dek: 'Valhalla\'s model check fails unless each of its 51 planted delivery bugs breaks the rule it names.',
     eyebrow: 'Technique',
     navLabel: 'Planted delivery bugs',
     published: '2026-09-24',
     tags: ['vhalla', 'TLA+', 'model checking', 'message delivery', 'retries', 'offline'],
     links: [
-      { label: 'Checking every interleaving with TLA+ and Quint', href: 'https://hraness.com/reference/correctness/tla-plus-interleavings', reason: 'The general lesson on model checking; this post is the vhalla version.' },
-      { label: 'Planted bugs: who tests the tests', href: 'https://hraness.com/reference/correctness/planted-bugs', reason: 'Why a checker that must catch a deliberate mistake is worth more than one that reports no errors.' },
       { label: 'Receipts, not logs', href: '/writing/receipts-not-logs/', reason: 'What the relay\'s signed confirmation is, and why the owner keeps it.' },
       { label: 'Readiness page', href: '/docs/status/', reason: 'What has and has not been tested today, for a reader deciding whether to rely on delivery.' },
     ],
   }),
   article({
     slug: 'ledger-recovery-under-random-crashes',
-    title: 'How vhalla uses random restarts to test its ledger',
-    dek: 'After every step of a random event history, vhalla\'s tests restore the ledger from its saved bytes and check that the copy is the same ledger.',
+    title: 'How Valhalla uses random restarts to test its ledger',
+    dek: 'After every step of a random event history, Valhalla\'s tests restore the ledger from its saved bytes and check that the copy is the same ledger.',
     eyebrow: 'Technique',
     navLabel: 'Ledger restarts',
     published: '2026-09-24',
     tags: ['crash recovery', 'stateful testing', 'Hegel', 'Verus', 'Kani', 'Rust', 'vhalla'],
     links: [
-      { label: 'Hegel: random operations against a model', href: 'https://hraness.com/reference/correctness/hegel-stateful-testing', reason: 'The technique behind the recovery test.' },
-      { label: 'Kani: proofs over every value within chosen sizes', href: 'https://hraness.com/reference/correctness/kani-bounded-proofs', reason: 'The technique behind the spent-set checks.' },
       { label: 'Receipts, not logs', href: '/writing/receipts-not-logs/', reason: 'What vhalla keeps as evidence of what was sent.' },
     ],
   }),
@@ -71,8 +69,8 @@ export const articles: Article[] = [
     published: '2026-09-24',
     tags: ['vhalla', 'lean', 'formal-verification', 'quorum', 'consensus', 'proofs'],
     links: [
-      { label: 'Lean proofs cover the cases your tests skip', href: 'https://hraness.com/reference/correctness/lean-proofs', reason: 'The general technique post that uses this quorum proof as one of its examples.' },
       { label: 'A room in sixty seconds', href: '/writing/a-room-in-sixty-seconds/', reason: 'What a peer and a room are, for readers who arrive here first.' },
+      { label: 'Consensus for a group chat', href: 'https://hraness.com/reference/peer-to-peer-systems/room-scale-consensus', reason: 'Why a room of a few peers needs agreement rules at all; this post is the proof-specific follow-up.' },
       { label: 'Readiness page', href: '/docs/status/', reason: 'What has and has not been tested so far.' },
     ],
   }),

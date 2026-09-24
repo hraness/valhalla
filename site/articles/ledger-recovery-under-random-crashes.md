@@ -1,4 +1,4 @@
-vhalla tests its ledger by restarting it after every step of a random history: save to bytes, restore, and check that the restored copy is the same ledger and still refuses an old event replayed as new. The ledger is a small crate, an ordered, size-limited list of events in which each event names the one before it and is identified by a hash of its contents. It is a foundation piece that is not yet wired into rooms, storage or the host; its README says durable recovery and signed checkpoints must come first. The rule it has to keep is the one any shared record needs, because programs crash, laptops lose power and processes get killed. A ledger reloaded from its saved bytes has to lose nothing from the saved part, count nothing twice, and give no way to replay an old event.
+vhalla (valhalla) tests its ledger by restarting it after every step of a random history: save to bytes, restore, and check that the restored copy is the same ledger and still refuses an old event replayed as new. The ledger is a small crate, an ordered, size-limited list of events in which each event names the one before it and is identified by a hash of its contents. It is a foundation piece that is not yet wired into rooms, storage or the host; its README says durable recovery and signed checkpoints must come first. The rule it has to keep is the one any shared record needs, because programs crash, laptops lose power and processes get killed. A ledger reloaded from its saved bytes has to lose nothing from the saved part, count nothing twice, and give no way to replay an old event.
 
 ## The bug that only shows up on the third step
 
@@ -10,7 +10,7 @@ The alternative is to stop guessing which orders matter. A program plays many ra
 
 ## Three tools, three components
 
-vhalla uses three tools, each on a different part.
+Valhalla uses three tools, each on a different part.
 
 | Tool | What it checks | Component |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ vhalla uses three tools, each on a different part.
 
 ## Replaying random histories with Hegel
 
-[Hegel](https://hraness.com/reference/correctness/hegel-stateful-testing) is a stateful property testing library. A test draws each operation while the history runs, so the next choice can depend on what has already happened.
+Hegel is a stateful property testing library. A test draws each operation while the history runs, so the next choice can depend on what has already happened.
 
 The ledger's recovery test works like this. It creates an empty ledger that holds up to 32 events, draws a number of steps (up to 23), and at each step picks one of four actors, appends that actor's next event with a random payload, and sometimes takes a checkpoint. Then it saves the ledger to bytes, restores a fresh ledger from those bytes, and checks the restored copy. The loop, written out for a reader, looks like this:
 
@@ -61,7 +61,7 @@ The spent-invitation file, described below, has its own Hegel property with real
 
 ## Proving the append rule with Verus
 
-Random testing samples histories. For the rule that decides whether an event may join the ledger, vhalla also has a proof. [Verus](https://github.com/verus-lang/verus) checks Rust code against written specifications and proves they hold for every input.
+Random testing samples histories. For the rule that decides whether an event may join the ledger, Valhalla also has a proof. [Verus](https://github.com/verus-lang/verus) checks Rust code against written specifications and proves they hold for every input.
 
 The proof covers a reference model of the ledger's append step. The model applies the production code's checks in the same order and rejects anything that fails. The one check it leaves out is recomputing the event's hash id, because the model uses plain numbers for ids. Verus proves these invariants hold after every call, with no limit on history length:
 
@@ -76,9 +76,9 @@ The model is a proof-friendly stand-in for the production type. It uses small in
 
 ## Checking the spent set with Kani
 
-vhalla's experimental command-line pairing for direct chat can accept an owner-signed invitation that is meant to work once. Before dialing, vhalla records the invitation's code in a small file next to the user's identity, so the same local identity cannot redeem it twice, even across restarts. Each redemption rewrites the whole file through a temporary copy, syncs it to disk, renames it into place and syncs the folder. The design aim is that a crash leaves either the old file or the new one; the proofs below do not cover that part.
+Valhalla's experimental command-line pairing for direct chat can accept an owner-signed invitation that is meant to work once. Before dialing, Valhalla records the invitation's code in a small file next to the user's identity, so the same local identity cannot redeem it twice, even across restarts. Each redemption rewrites the whole file through a temporary copy, syncs it to disk, renames it into place and syncs the folder. The design aim is that a crash leaves either the old file or the new one; the proofs below do not cover that part.
 
-[Kani](https://hraness.com/reference/correctness/kani-bounded-proofs) checks Rust functions against every possible input within sizes you choose. vhalla uses it on three pieces of the spent set:
+Kani checks Rust functions against every possible input within sizes you choose. Valhalla uses it on three pieces of the spent set:
 
 - **The refusal rule.** For every possible 32-byte code, every count and both answers to "already used", the check returns one verdict in a fixed order: the all-zero code is invalid, then a used code is refused, then a full file is refused, and otherwise the code is accepted.
 - **The file size rule.** For every possible length, a length is valid exactly when it is the four-byte header plus a whole number of 32-byte entries, up to 1024 entries.
@@ -100,6 +100,6 @@ Kani runs in continuous integration on every pull request and every push to main
 
 ## Limits
 
-vhalla is in development, and there is no public network yet.
+Valhalla is in development, and there is no public network yet.
 
 The ledger's recovery test models a restart as saving to bytes and restoring from them. It does not kill a process halfway through a disk write; the ledger code sits below storage, and its saved bytes are not signed, so whatever stores them has to protect them. The Verus proof covers a reference model of the append rule, not the production data structures, snapshots or checkpoints. The Kani checks cover the spent set's format and refusal decision, not the underlying set type, the full 1024-entry file, filesystem safety, crash durability or two redemptions racing at once; those are left to the unit tests and the Hegel property on real files. The spent set works per machine and per identity, so it does not stop two different machines from each redeeming the same invitation.

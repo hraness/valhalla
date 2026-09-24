@@ -46,13 +46,11 @@ test('every article shows the Hraness byline, the provenance note and dated sour
   }
 });
 
-// Cross-product links go only to posts in the reviewed article set or to a product home page.
+// Links to other Hraness sites go only to reviewed pages that are live or to a
+// product home page. The hraness.com correctness reference posts are held
+// back until they return 200; add each one here when it is linked.
 const reviewedRoutes = new Set([
-  'https://hraness.com/reference/correctness/tla-plus-interleavings',
-  'https://hraness.com/reference/correctness/planted-bugs',
-  'https://hraness.com/reference/correctness/hegel-stateful-testing',
-  'https://hraness.com/reference/correctness/kani-bounded-proofs',
-  'https://hraness.com/reference/correctness/lean-proofs',
+  'https://hraness.com/reference/peer-to-peer-systems/room-scale-consensus',
 ]);
 const productHosts = new Set([...Object.values(portfolioProducts).map(product => new URL(product.canonicalUrl).host), 'hraness.com']);
 
