@@ -86,4 +86,4 @@ Limits requiring further work/review:
 All packet probes use owned `127.0.0.1` UDP sockets, bounded finite sends and
 one/five-second outer deadlines where appropriate; no Internet traffic. Test
 manifests retain the previous offline diagnostic adjustments. Required heavy
-validation runs through `/Users/bg/.bun/bin/oompa-host-run`.
+validation runs through `/Users/bg/.bun/bin/hra-host-run`.
