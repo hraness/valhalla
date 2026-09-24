@@ -1,7 +1,7 @@
 ---
 type: plan
 area: formal-verification
-status: in-progress
+status: completed
 ---
 
 # Lean assurance trial for weighted certificates
@@ -111,7 +111,7 @@ any claim of comparative superiority still requires comparative evidence.
 
 ## Phase 3: Integrated assurance boundary
 
-- **Status:** In progress
+- **Status:** Done
 - **Acceptance:** existing formal workflow includes Lean; old optional-only
   guidance points to the maintained trial. Document theorem statements,
   implementation map, measured checking/setup cost and remaining assumptions.
@@ -220,3 +220,51 @@ reverting proof tooling needs no storage or operational rollback.
   required CI and verify all 19 copied inputs from the downloaded artifact.
   The omitted file contains workflow source, not credentials; the extracted
   distribution remains outside the uploaded directory.
+- The corrected candidate `019282e6679f6c6aee37839ecad67299cec3531c`
+  passed all 71 checks, including the complete Rust aggregate, all five CodeQL
+  analyses and the managed CodeQL verdict from app 57789. The Linux Lean job
+  in [run 35947888460](https://github.com/hraness/valhalla/actions/runs/35947888460)
+  completed in 43 seconds, including download and extraction. Its receipt
+  SHA-256 is
+  `6c490740376bbe48e4303debb2597bad42d8f4eeb485cbb221d974ebabb0f500`.
+  Independent AI reviewer `lean_independent_review` verified all 19 copied
+  inputs, including the workflow, all 21 logs, 24 claims, 177 declarations,
+  eight rejection controls and the regenerated corpus. The same review checked
+  the CI TLC receipt
+  `a085298f550af4e769277d413a9edb48848aec57ba9e27d4e38e5f031901eef0`,
+  all 141 source inputs, 71 copies, 61 logs and 43 expected counterexamples.
+  Both artifacts matched the candidate; neither review required changes.
+- PR [#105](https://github.com/hraness/valhalla/pull/105) merged on
+  24 September 2026 at 02:57:36 UTC as
+  `dd5b72cc574d3f03efd67820ca0bcab36bbe2d20`. Conditional squash merge
+  required the reviewed head and included current main. Readback confirmed the
+  merged tree exactly matched candidate tree
+  `2c6056a609816be9e467bb4ca0d43cc9237215cd`. The implementation branch is
+  `codex/lean-assurance-trial-20260924`; this completion record is maintained
+  on `codex/lean-assurance-closeout-20260924`. No release, deployment, service
+  activation or data migration was needed.
+
+## Result
+
+All phases are complete. Lean checks 24 theorems in required CI, including
+weighted signer-list correspondence, positive-power honest quorum overlap and
+same-context certificate value equality under the stated authentication and
+non-equivocation assumptions. The 354-case shared corpus exercises both Rust
+certificate verifiers with signatures and the CLI quorum threshold. Production
+correspondence inspection and a failing regression exposed the reserved-round
+mismatch; engine verification now rejects it before persistence.
+
+The measured Linux check cost supports keeping this trial alongside the existing
+TLA+, Verus and Kani checks. Finite Rust conformance and the mathematical proof
+remain distinct evidence. Broader adoption still depends on a useful theorem
+and a clear implementation connection for each proposed target.
+
+## Durable memory
+
+The maintained [[notes/formal-assurance|formal-assurance note]] records the
+division of work between protocol models, mathematical proofs and production
+tests. [The Lean reference](../../verify/lean/README.md) owns the theorem map,
+assumptions, Rust callsites, corpus, commands and measured costs;
+[the verification guide](../../docs/verification.md) links the required checks.
+The historical prototype points to this maintained implementation. No additional
+follow-up plan is required for the completed trial.
