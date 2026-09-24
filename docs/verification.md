@@ -99,10 +99,73 @@ application. The real TLS backlog regression exercises that defect in native
 delivery. The model assumes source artifacts exist and does not establish
 global message order, remote availability or source-publication correctness.
 
-All use checksum-pinned TLC 1.7.4. The runner requires complete positive runs
-and the specific expected invariant failure for each intentionally broken
-configuration. It preserves counterexamples, logs and source/tool hashes; a
-parse error or timeout cannot count as finding the expected defect.
+`verify/rooms-held-reply` checks the rooms node's sequential connector boundary:
+preserved oneshot custody, durable preparation and confirmed candidate admission
+before a real reply, reply-only
+tombstones, bounded metadata admission and eventual deadline resolution under
+explicit scheduling/network assumptions. Its deliberate failures include a
+temporal counterexample that leaves an empty request waiting forever. The
+real host-loop tests use actual channels and synthetic stores, and the existing
+forced-persistence-failure regression checks the send ordering. A three-height
+regression exercises a retained future batch pruned from the pending adapter;
+local preparation must restore it before replying. A separate mutant omits
+that admission while preserving durable metadata. This is not a
+hard real-time guarantee or a proof of Malachite consensus.
+
+`verify/host-recovery` checks sealed maintenance and repeated recovery with
+process interruption distinguished from power loss. The model found that a
+retry after an unsynced marker unlink could skip the pre-cleanup fence; the
+implementation now syncs before deleting backups even when no marker is visible.
+Its regression injects a failed directory sync and requires every backup to
+remain. Other cases challenge consumed backups, premature cleanup and admission
+using only matching config/completion files. Atomic durable replacement remains
+an assumption; these checks do not simulate physical filesystem power loss.
+
+`verify/rooms-frontier` separates journal commitment, the two snapshot stores,
+the full application frontier and finalization replies. Four positive root
+schedules include empty batches and changes to only one store. Seven mutants
+challenge acknowledgment ordering, root equality as progress, independent
+snapshot-height inference, committed identity, publication order, failed
+finalization and next-height roster selection. Real adapter regressions cover
+each publication cut and exact reopen/redelivery; real host messages reproduce
+failed finalization with authenticated certificates. The repair preserves the
+WAL by withholding failure responses instead of requesting an engine reset.
+The model assumes atomic publication and verified replay, and source-binds the
+external engine behavior to its pinned revision. It is not a consensus proof.
+
+`verify/native-delivery` separates durable attempt intent, transport results,
+outcome publication, uncertainty, budget exhaustion and explicit resume. It
+checks exact destination/ciphertext binding, checked retention receipts and
+conservation of spent attempts plus durably classified outages. Two attempts
+per allowance, one resume and bounded failures keep the state space finite;
+the split outcome-refusal action is limited to precommit failures. Failure
+after SQL commit during barrier/readback and delivery liveness are outside this
+model.
+
+`verify/relay-quota` checks atomic item/charge publication, exact duplicate
+position, stable credential ownership and durable retention before receipt.
+Two items, two credential IDs, four requests and two interruptions cover item
+and byte limits separately. A real TLS regression loses a successful PUT
+completion, reopens both stores, replaces the token under the same credential
+ID, exhausts/resumes the sender and recovers the original position with one
+charge. SQLite atomicity and successful durability barriers remain assumptions.
+
+`verify/private-control` checks sequence-bound owner attribution across two
+handoffs, grants pinned to their carrying sequence, observation-only authority,
+known-history fork evidence and quarantine across uncertain publication and
+new-process reopen. Ordinary and late-join configurations use two devices and
+four control slots. Real kernel tests exercise A→B→A and storage refusal,
+lost completion and canceled completion. A precommit refusal can lose volatile
+fork evidence when the process is lost; committed quarantine must survive.
+The model assumes valid signatures and atomic publication and does not verify
+MLS or agreement between disconnected replicas.
+
+All use checksum-pinned TLC 1.7.4. The complete case inventory is required by the
+runner: new configs cannot silently miss the gate. It requires complete positive
+runs, named invariant failures or an unambiguously attributed temporal witness
+for intentionally broken configurations. It preserves copied model inputs,
+counterexamples, logs and source/tool/runner hashes; parse errors, input changes
+or timeouts cannot count as finding the expected defect.
 
 ```console
 python3 verify/run_tlc.py --jar /absolute/tla2tools.jar --java /absolute/java --out /new/evidence/directory
@@ -122,3 +185,16 @@ isolation remain outside these proofs. Kani results retain their input and
 unwinding bounds; Verus proves reference transition discipline; TLC checks its
 chosen finite protocol abstraction. Tests and live evidence cover different
 parts of the argument and must not be relabeled as mathematical proofs.
+
+## Evaluated Lean experiment
+
+The optional [weighted-quorum spike](../prototypes/lean-quorum/README.md) contains
+a checked, unbounded theorem over finite weighted rosters, arithmetic lemmas,
+and witnesses showing why strict quorum and the Byzantine-weight bound matter.
+Its Lean 4.34.0 source uses only `Std` and reports its transitive axioms. It does
+not prove Rust correspondence, cross-round locking or validator rotation.
+
+The [tool comparison](../verify/README.md#lean-comparison-decision) recommends
+expanding the existing TLA+ gate and retaining Kani/Verus. Lean remains a
+reproducible optional experiment until a stable theorem and owned implementation
+boundary justify the extra toolchain; no required Lean CI layer was added.

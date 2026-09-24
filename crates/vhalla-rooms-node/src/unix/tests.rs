@@ -14,6 +14,12 @@ use vhalla_rooms_consensus::{
     encode_eligible_update, fixture, Batch, GameCommitment, GameCommitmentKind, OwnerId,
 };
 
+#[path = "formal_held_reply.rs"]
+mod formal_held_reply;
+
+#[path = "formal_finalized.rs"]
+mod formal_finalized;
+
 /// The shared batch plan: `heights` room creations over 8 beneficiary
 /// owners and 16 eligible award sources — enough credits for two rooms
 /// per owner across the longest run.

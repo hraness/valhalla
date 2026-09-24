@@ -56,6 +56,7 @@ const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }
 function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string; ogImage: string }) {
   const url = opts.url;
   const head = template.slice(0, template.indexOf('  <body>'))
+    .replace('data-hraness-pattern="cells"', 'data-hraness-pattern="none"')
     .replace(/<title>.*?<\/title>/, `<title>${escape(opts.title)}</title>`)
     .replace(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${escape(page.summary)}">`)
     .replace(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${escape(shareTitle(page))}">`)

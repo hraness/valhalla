@@ -16,7 +16,7 @@ python3 -m http.server 8764 --bind 127.0.0.1 --directory site/dist
 ```
 
 Open http://127.0.0.1:8764. The site uses the pinned `@hraness/design-kit`
-Paper palette, Lantern material, marketing texture, Nebula Sans and Instrument
+Rosé Pine palette, Lantern material, marketing texture, Nebula Sans and Instrument
 Serif fonts. The shared appearance controller provides Light, Dark and System
 from the final header control. Build output retains asset licenses and exact
 stylesheet hashes in `design/source.json`. Deployment includes the referenced web
@@ -83,6 +83,12 @@ It serves the exact static build and deployment CSP on loopback in a fresh
 profile, checks all documentation paths, desktop/mobile overflow, keyboard
 navigation, appearance modes and reading with JavaScript disabled, then writes
 screenshots and a receipt. CI retains those outputs without the browser profile.
+The same gate checks first-visit System appearance, live OS preference changes,
+saved Light/Dark choices and actual back/forward-cache restoration of the hero
+controller. Append `--appearance-only` to run only those focused checks against
+an already built site; this does not replace the complete deployment gate.
+Reduced-motion and forced-color changes suppress interaction in the desktop
+document; coarse-pointer suppression uses a separate native touch target.
 
 
 Documentation source links and the setup command pin `documentedRevision` to a
