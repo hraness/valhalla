@@ -222,10 +222,10 @@ or Dioxus requirements.
 
 ## Phase 5: Delivery and independent-device acceptance
 
-- **Status:** In progress. PR #115 carries the branch and leaves draft on the
-  commit that records this status; every local gate and the four real-Chrome
-  qualifications passed on `8047ffd` (implementation log), and the docs commit
-  on top changes no source. Delivery follows `docs/main-policy.md`
+- **Status:** In progress. PR #115 carries the branch and left draft at
+  `e985a80`; every local gate and the four real-Chrome qualifications passed
+  on `8047ffd` and again on `c84f585` after current main (PR112, PR117) was
+  merged in (implementation log). Delivery follows `docs/main-policy.md`
   (current-head required checks, independent agent review recorded in the PR
   body, CodeQL, conditional merge). The second-machine cases stay deferred by
   the owner until the connection is ready; sleep/logout/reboot and the sparse
@@ -584,3 +584,27 @@ or Dioxus requirements.
   the Python tools. `docs/performance.md` now names the meter bounds and the
   unrecorded repeated comparison. PR #115 leaves draft on the docs commit
   carrying this entry.
+- Main moved again while PR #115 was leaving draft: PR112 routes launchd
+  supervisor output to `supervisor.log` and rotates it at startup, PR117
+  updates retired scheduler references. Merged as `f9959f1` with one textual
+  conflict in `private_host.rs`: the branch acquires every generation's store
+  before binding any listener, so main's `events::bound_supervisor_output`
+  call now runs after the generation-service loop and before the bind
+  retries, where main placed it relative to the service and the bind loop.
+  One semantic conflict followed: PR112's test-only `launchd::test_config`
+  predates `retained_generations`, so the merged test target did not compile
+  (CI `quality` failed at clippy on `f9959f1`); `c84f585` adds the empty
+  field. Full local rerun on `c84f585` (22:17–22:29 UTC), every step exit 0:
+  fmt; clippy `-D warnings`; the `vhalla-cli` lane (24 binaries, 252 passed,
+  0 failed, 3 filtered); doc tests (43); identity (7) and social (1) without
+  default features; the rebuilt `experimental-private` CLI (`34cadd40…`);
+  delivery (16 facts, 32 owned children stopped), `--mixed-pilot` (3 facts,
+  44 stopped, refused send at declared exit 1, three `direct-child`
+  receipts), `--generation-pilot` (3 facts, generation 1 at head 18 across
+  three controllers, 82 stopped) and panel `--production` (12 facts) on the
+  same bundle (`546ddef6…`), Chrome's closure observed through its log file
+  in each; the deterministic `agent-launch` pilot 9/9 from a git-checkout
+  receipt for `c84f585` (35 owned children, none forced). The generation
+  pilot is the local exercise of the resolved serve path with retained
+  generations; CI's browser job ran delivery, mixed pilot and panel on the
+  same head.
