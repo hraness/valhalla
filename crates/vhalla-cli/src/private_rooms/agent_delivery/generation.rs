@@ -441,10 +441,7 @@ async fn reauthenticate(
             }
         }
         "unmatched-receipt-content"
-            if MemberAcceptance::is_receipt(received.body()) && verified.is_none() =>
-        {
-            ()
-        }
+            if MemberAcceptance::is_receipt(received.body()) && verified.is_none() => {}
         "recipient-device-claim" => {
             let (sequence, claim) = verified.ok_or(REFUSED)?;
             if value["outbox_sequence"].as_str() != Some(sequence.to_string().as_str())
@@ -743,13 +740,12 @@ fn initialize_successor(
             }
         }
     }
-    if claim.symlink_metadata().is_err() {
-        if std::fs::read_dir(path)
+    if claim.symlink_metadata().is_err()
+        && std::fs::read_dir(path)
             .map_err(|_| REFUSED)?
             .any(|entry| entry.map_or(true, |entry| entry.file_name() != "lock"))
-        {
-            return Err(REFUSED.into());
-        }
+    {
+        return Err(REFUSED.into());
     }
     exact(&claim, &receipt.encode().map_err(|_| REFUSED)?)?;
     for (name, prior) in [("jobs", normal), ("controls", controls)] {

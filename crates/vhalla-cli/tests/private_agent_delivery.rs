@@ -4,7 +4,7 @@
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -20,11 +20,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use vhalla_identity::Identity;
-use vhalla_private_kernel::{Context, OperationId, OutboxKind, protocol::Validity};
+use vhalla_private_kernel::{protocol::Validity, Context, OperationId, OutboxKind};
 use vhalla_private_native::{
     client::{RoomCreation, RoomSession},
     private_rooms::Limits,
-    relay::{RelayItem, RelayNamespace, delivery::DeliveryStore, net::RelayToken, tls::TlsRelay},
+    relay::{delivery::DeliveryStore, net::RelayToken, tls::TlsRelay, RelayItem, RelayNamespace},
 };
 
 const NAME: &str = "agent-relay.integration.invalid";
@@ -476,11 +476,10 @@ impl Host {
             let notice: Value = serde_json::from_str(&line).expect("closing frame is MCP JSON");
             assert_eq!(notice["method"], "notifications/message", "{notice}");
             assert_eq!(notice["params"]["data"]["status"], "closed", "{notice}");
-            assert!(
-                self.responses
-                    .recv_timeout(Duration::from_millis(100))
-                    .is_err()
-            );
+            assert!(self
+                .responses
+                .recv_timeout(Duration::from_millis(100))
+                .is_err());
         }
     }
     fn stderr(&mut self) -> String {
@@ -621,7 +620,8 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
             .is_some_and(|a| a.len() == 1)
     });
     assert_eq!(
-        member.call(&member_grant, "private_status", json!({}))["result"]["structuredContent"]["inbox_head"],
+        member.call(&member_grant, "private_status", json!({}))["result"]["structuredContent"]
+            ["inbox_head"],
         "2",
         "host delivery may retain later messages while the agent disclosure ceiling stays fixed"
     );
@@ -660,16 +660,14 @@ fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipi
         "restart retransmits exact committed ciphertext"
     );
     assert_eq!(f.job(OWNER, sequence).0.id, before.id);
-    assert!(
-        f.applied(OWNER)
-            .iter()
-            .any(|v| v["state"] == "exact-local-outbox-echo")
-    );
-    assert!(
-        f.applied(OWNER)
-            .iter()
-            .any(|v| v["state"] == "recipient-device-claim")
-    );
+    assert!(f
+        .applied(OWNER)
+        .iter()
+        .any(|v| v["state"] == "exact-local-outbox-echo"));
+    assert!(f
+        .applied(OWNER)
+        .iter()
+        .any(|v| v["state"] == "recipient-device-claim"));
     // A fresh explicit grant restores the signed claim from retained receive evidence.
     let third = f.grant(OWNER, "third", 16);
     let mut owner = f.host(OWNER, "third", OWNER);
@@ -1095,7 +1093,7 @@ fn malformed_retained_item_records_skip_marker_and_following_delivery_still_appl
 #[test]
 fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_regrant() {
     use vhalla_private_kernel::protocol::Key;
-    use vhalla_private_native::relay::{MAX_RELAY_PAGE, RelayKind, delivery::JobState};
+    use vhalla_private_native::relay::{delivery::JobState, RelayKind, MAX_RELAY_PAGE};
 
     let f = Fixture::with_capacity(1024, 512);
     let count = MAX_RELAY_PAGE + 1;
@@ -1172,7 +1170,8 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
         }
         assert!(Instant::now() < deadline, "future-epoch page did not stage");
         assert_eq!(
-            member.call(&first, "private_status", json!({}))["result"]["structuredContent"]["status"],
+            member.call(&first, "private_status", json!({}))["result"]["structuredContent"]
+                ["status"],
             "live"
         );
         thread::sleep(Duration::from_millis(50));
@@ -1226,7 +1225,8 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
             "automatic admission control did not reach relay"
         );
         assert_eq!(
-            owner.call(&owner_grant, "private_status", json!({}))["result"]["structuredContent"]["status"],
+            owner.call(&owner_grant, "private_status", json!({}))["result"]["structuredContent"]
+                ["status"],
             "live"
         );
         thread::sleep(Duration::from_millis(50));
@@ -1234,11 +1234,10 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
     owner.close();
     let mut member = f.host(MEMBER, "before-admission", MEMBER);
     member.refused();
-    assert!(
-        f.applied(MEMBER)
-            .iter()
-            .any(|v| v["state"] == "locally-applied-control")
-    );
+    assert!(f
+        .applied(MEMBER)
+        .iter()
+        .any(|v| v["state"] == "locally-applied-control"));
     assert!(
         !f.applied(MEMBER)
             .iter()

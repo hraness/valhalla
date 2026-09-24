@@ -12,8 +12,8 @@
 //! and permanent refusals stop a job at once. A stopped job can be re-armed
 //! explicitly with [`DeliveryStore::resume`], which keeps every prior attempt
 //! as evidence and never creates a new queue.
-use super::{MAX_RELAY_ITEMS, RelayItem, RelayNamespace, RelayReceipt, net::NetError};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use super::{net::NetError, RelayItem, RelayNamespace, RelayReceipt, MAX_RELAY_ITEMS};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,

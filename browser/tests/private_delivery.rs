@@ -33,7 +33,9 @@ fn browser_pause_receipt_matches_shared_native_golden_vector() {
     };
     let decode = |raw: &str| {
         raw.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>()
     };
