@@ -36,6 +36,8 @@ const IDS: &[(&str, Action)] = &[
     ("private-delivery-sync", Action::DeliverySync),
     ("private-admission-download", Action::AdmissionDownload),
     ("private-admission-discard", Action::AdmissionDiscard),
+    ("private-admission-review", Action::AdmissionReview),
+    ("private-admission-confirm", Action::AdmissionConfirm),
     ("private-prepare-message", Action::Prepare),
     ("private-save-message", Action::Send),
     ("private-download-output", Action::Download),
@@ -125,6 +127,8 @@ enum Action {
     ArchiveClose,
     AdmissionDownload,
     AdmissionDiscard,
+    AdmissionReview,
+    AdmissionConfirm,
 }
 struct Secret {
     operation: OperationId,
@@ -157,6 +161,7 @@ struct State {
     delivery_connected: bool,
     delivery_ready: bool,
     admissions: Vec<AdmissionItem>,
+    admission_consent: Option<Box<AdmissionConsent>>,
     archive_sink: Option<Rc<archive_save::Sink>>,
     downloads: Vec<(String, usize)>,
     handlers: Vec<Closure<dyn FnMut(Event)>>,
@@ -360,6 +365,7 @@ pub fn clear_sensitive_state() {
         s.delivery_connected = false;
         s.delivery_ready = false;
         s.admissions.clear();
+        s.admission_consent = None;
         if let Some(sink) = s.archive_sink.take() {
             sink.abort();
         }
@@ -389,6 +395,7 @@ pub fn clear_sensitive_state() {
         "private-evidence",
         "private-outbox-select",
         "private-admission-select",
+        "private-admission-consent",
         "private-archive-title",
         "private-archive-summary",
         "private-archive-details",
@@ -433,6 +440,18 @@ fn render(app: &App) {
     let archived = s.archive.is_some();
     let ready = joined(&s);
     let is_owner = owner(&s);
+    let admission_select = s
+        .document
+        .get_element_by_id("private-admission-select")
+        .unwrap()
+        .dyn_into::<HtmlSelectElement>()
+        .unwrap();
+    admission_select.set_disabled(s.busy);
+    let admission_index = admission_select.selected_index();
+    let request_selected = usize::try_from(admission_index)
+        .ok()
+        .and_then(|index| s.admissions.get(index))
+        .is_some_and(|item| item.kind == vhalla_private_kernel::OutboxKind::ContactRequest);
     let retained = input_unborrowed(&s.document, "private-locator-retained").checked();
     for (id, action) in IDS {
         let enabled = match action {
@@ -469,6 +488,10 @@ fn render(app: &App) {
             Action::AdmissionDownload | Action::AdmissionDiscard => {
                 active && s.delivery_connected && !s.admissions.is_empty()
             }
+            Action::AdmissionReview => {
+                active && is_owner && s.delivery_connected && request_selected
+            }
+            Action::AdmissionConfirm => active && is_owner && s.admission_consent.is_some(),
             Action::ControlsNext => active && s.controls_next.is_some(),
             Action::ProofsNext => active && s.proofs_next.is_some(),
             Action::DownloadProof => active && !s.proofs.is_empty(),
@@ -789,8 +812,14 @@ fn action(app: &App, selected: Action) {
         };
         s.generation = next;
         s.busy = true;
+        if selected != Action::AdmissionConfirm {
+            s.admission_consent = None;
+        }
         next
     };
+    if selected != Action::AdmissionConfirm {
+        text(app, "private-admission-consent", "");
+    }
     status(
         app,
         "Working locally… Preserve the exact locator if this operation is interrupted.",
@@ -910,6 +939,7 @@ pub fn start() {
         delivery_connected: false,
         delivery_ready: false,
         admissions: Vec::new(),
+        admission_consent: None,
         archive_sink: None,
         downloads: Vec::new(),
         handlers: Vec::new(),
@@ -948,6 +978,35 @@ pub fn start() {
         .add_event_listener_with_callback("input", edit.as_ref().unchecked_ref())
         .expect("private draft handler");
     app.borrow_mut().handlers.push(edit);
+    for id in [
+        "private-recipient",
+        "private-resume-offer-file",
+        "private-admission-select",
+    ] {
+        let weak = Rc::downgrade(&app);
+        let changed = Closure::wrap(Box::new(move |_: Event| {
+            if let Some(app) = weak.upgrade() {
+                app.borrow_mut().admission_consent = None;
+                text(
+                    &app,
+                    "private-admission-consent",
+                    "Selection changed. Review this request again before admitting its device.",
+                );
+                render(&app);
+            }
+        }) as Box<dyn FnMut(Event)>);
+        element(&app, id)
+            .add_event_listener_with_callback(
+                if id == "private-recipient" {
+                    "input"
+                } else {
+                    "change"
+                },
+                changed.as_ref().unchecked_ref(),
+            )
+            .expect("admission selection handler");
+        app.borrow_mut().handlers.push(changed);
+    }
     let weak = Rc::downgrade(&app);
     let retained = Closure::wrap(Box::new(move |_: Event| {
         if let Some(app) = weak.upgrade() {

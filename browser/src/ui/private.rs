@@ -250,7 +250,7 @@ async fn request(app: &App, operation: Request) -> Result<Response, String> {
                 Some(*operation),
                 Some(vhalla_private_kernel::OutboxKind::ContactRequest),
             ),
-            Request::Accept { operation, .. } => (
+            Request::Accept { operation, .. } | Request::ConfirmAdmission { operation, .. } => (
                 Some(*operation),
                 Some(vhalla_private_kernel::OutboxKind::ContactInvitation),
             ),

@@ -6,12 +6,17 @@
 #![cfg(feature = "private-rooms")]
 // The shared model and engine also carry paths only the worker transport
 // uses (hostile replies, identity changes); the model does not drive them.
+#[path = "../src/private/admission.rs"]
+mod admission;
 #[allow(dead_code)]
 #[path = "../src/private/delivery_engine.rs"]
 mod engine;
 #[allow(dead_code)]
 #[path = "../src/private/delivery_model.rs"]
 mod model;
+#[allow(dead_code)]
+#[path = "../src/private/wire.rs"]
+pub mod private_wire;
 
 use ed25519_dalek::SigningKey;
 use engine::{Engine, Failure, Host, Summary, TransportError};
@@ -1171,5 +1176,382 @@ fn two_devices_converge_through_controls_messages_and_bootstrap_items(tc: TestCa
             }
         }
         world.converge().await;
+    });
+}
+
+async fn admission_fixture(world: &mut World, seed: u8) -> (Kernel<Mem>, Vec<u8>, RelayItem, Key) {
+    let now = world.clock.get();
+    let account = account(seed);
+    let recipient = device_key(&account);
+    let membership = world
+        .owner
+        .kernel
+        .as_mut()
+        .unwrap()
+        .membership()
+        .await
+        .unwrap();
+    let validity = Validity::new(now - 30, now + 1800).unwrap();
+    let draft = MemberDraft::new(
+        membership.status().context.scope,
+        membership.anchor().clone(),
+        membership.owner().clone(),
+        recipient,
+        validity,
+        now,
+    )
+    .unwrap();
+    let enrollment = draft.enrollment_request().sign(&account).unwrap();
+    let mut member = draft
+        .initialize(
+            Mem::default(),
+            &StorageKey::from_secret([seed; 32]).unwrap(),
+            enrollment,
+            now,
+        )
+        .await
+        .unwrap();
+    let operation = world.operation();
+    let offer = world
+        .owner
+        .kernel
+        .as_mut()
+        .unwrap()
+        .create_contact_offer(operation, recipient, validity, now)
+        .await
+        .unwrap();
+    let request = member
+        .contact_request(op(1), offer.confidential_bytes(), now)
+        .await
+        .unwrap();
+    let item = RelayItem::from_artifact(world.namespace, &request).unwrap();
+    (member, offer.confidential_bytes().to_vec(), item, recipient)
+}
+
+#[test]
+fn admission_review_is_read_only_and_confirm_consumes_exact_request_once() {
+    block_on(async {
+        let mut world = build().await;
+        let (mut member, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let now = world.clock.get();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        let writes = world.owner.disk.publishes();
+        let consent = admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(writes, world.owner.disk.publishes());
+        assert_eq!(consent.device, member.status().context.device);
+        // The panel displays the returned metadata without another worker call.
+        // Exercise the actual wire round trip before the explicit confirmation.
+        let raw = private_wire::Response::AdmissionReview(Box::new(consent.clone()))
+            .encode()
+            .unwrap();
+        let private_wire::Response::AdmissionReview(shown) =
+            private_wire::Response::decode(&raw).unwrap()
+        else {
+            panic!("review reply")
+        };
+        assert!(*shown == consent);
+        let operation = world.operation();
+        let command = private_wire::Request::ConfirmAdmission {
+            operation,
+            consent: shown,
+        };
+        admission.before(&command);
+        let output = admission
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                operation,
+                &consent,
+                &item,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(output.kind(), OutboxKind::ContactInvitation);
+        member.join_contact(output.bytes(), now).await.unwrap();
+        let writes = world.owner.disk.publishes();
+        assert!(admission
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                operation,
+                &consent,
+                &item,
+                now
+            )
+            .await
+            .is_err());
+        assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn admission_wrong_recipient_and_expired_offer_never_publish() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let now = world.clock.get();
+        let writes = world.owner.disk.publishes();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        assert!(admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                device_key(&account(10)),
+                now
+            )
+            .await
+            .is_err());
+        assert!(admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now + 1801
+            )
+            .await
+            .is_err());
+        let consent = admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        let operation = world.operation();
+        assert!(admission
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                operation,
+                &consent,
+                &item,
+                now + 1801
+            )
+            .await
+            .is_err());
+        assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn admission_sync_read_and_reload_invalidate_worker_held_consent() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let now = world.clock.get();
+        let writes = world.owner.disk.publishes();
+        let operation = world.operation();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        for request in [
+            private_wire::Request::DeliverySync,
+            private_wire::Request::Membership,
+        ] {
+            let consent = admission
+                .review(
+                    world.owner.kernel.as_mut().unwrap(),
+                    1,
+                    &item,
+                    &offer,
+                    recipient,
+                    now,
+                )
+                .await
+                .unwrap();
+            admission.before(&request);
+            assert!(admission
+                .confirm(
+                    world.owner.kernel.as_mut().unwrap(),
+                    operation,
+                    &consent,
+                    &item,
+                    now
+                )
+                .await
+                .is_err());
+        }
+        let prior = admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        drop(admission);
+        let mut reopened = admission::Admission::new([2; 16]).unwrap();
+        assert!(reopened
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                operation,
+                &prior,
+                &item,
+                now
+            )
+            .await
+            .is_err());
+        let current = reopened
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_ne!(prior.session, current.session);
+        assert!(reopened
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                operation,
+                &prior,
+                &item,
+                now
+            )
+            .await
+            .is_err());
+        assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn admission_modified_confirmation_or_retained_item_cannot_rebind_review() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let (_, _, replacement, _) = admission_fixture(&mut world, 10).await;
+        let now = world.clock.get();
+        let writes = world.owner.disk.publishes();
+        let operation = world.operation();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        for field in 0..10 {
+            let mut consent = admission
+                .review(
+                    world.owner.kernel.as_mut().unwrap(),
+                    1,
+                    &item,
+                    &offer,
+                    recipient,
+                    now,
+                )
+                .await
+                .unwrap();
+            match field {
+                0 => consent.recipient = device_key(&account(11)),
+                1 => consent.device = device_key(&account(11)),
+                2 => consent.position += 1,
+                3 => consent.digest[0] ^= 1,
+                4 => consent.context = world.member.kernel.as_ref().unwrap().status().context,
+                5 => consent.epoch += 1,
+                6 => consent.roster[0] ^= 1,
+                7 => consent.validity = Validity::new(now, now + 10).unwrap(),
+                8 => consent.session[0] ^= 1,
+                _ => {
+                    consent.control_floor =
+                        vhalla_private_kernel::protocol::ControlFloor::new(0, None).unwrap()
+                }
+            }
+            assert!(admission
+                .confirm(
+                    world.owner.kernel.as_mut().unwrap(),
+                    operation,
+                    &consent,
+                    &item,
+                    now
+                )
+                .await
+                .is_err());
+        }
+        let consent = admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        assert!(admission
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                operation,
+                &consent,
+                &replacement,
+                now
+            )
+            .await
+            .is_err());
+        assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn admission_membership_change_after_review_requires_fresh_consent() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let (_, _, other, _) = admission_fixture(&mut world, 10).await;
+        let now = world.clock.get();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        let consent = admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        let operation = world.operation();
+        world
+            .owner
+            .kernel
+            .as_mut()
+            .unwrap()
+            .accept_contact(
+                operation,
+                other.payload(),
+                Validity::new(now, now + 600).unwrap(),
+                now,
+            )
+            .await
+            .unwrap();
+        let writes = world.owner.disk.publishes();
+        let operation = world.operation();
+        assert!(admission
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                operation,
+                &consent,
+                &item,
+                now
+            )
+            .await
+            .is_err());
+        assert_eq!(writes, world.owner.disk.publishes());
     });
 }

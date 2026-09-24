@@ -2,6 +2,123 @@
 
 These are reproducible synthetic local measurements, not a production capacity recommendation. They measure real signatures, certificate checks and file/directory syncs. The examples add no production behavior.
 
+## Actual private CLI process measurement
+
+[`measure_private_runtime.py`](../crates/vhalla-cli/tools/measure_private_runtime.py)
+is a Python 3.11+ standard-library runner for the maintained `private-host serve`
+and two `private agent-serve` processes over real MCP stdio and loopback TLS. It
+uses the documented admission, disclosure, one-use grant and delivery-profile
+commands. It does not build, install, use launchd, contact an external provider,
+reset a store, or renew authority automatically. Its measurements are separate
+from the historical in-process steel-thread example below.
+
+The integration owner supplies an executable and a build receipt with `passed`,
+`source_clean_at_build`, `source_commit`, `source_tree`, `lockfile_sha256`, and
+`artifact.sha256`. `--source` must identify that exact commit/tree with unchanged
+tracked native inputs. A clean detached verification checkout is suitable when
+independent browser changes are in progress. The receipt retains the candidate's
+original provenance, plus the runner hash; it never relabels an older build as a
+new commit. Both source and artifact are checked again after measurement.
+
+```sh
+/Users/benguo/.bun/bin/hra-host-run --mode=heavy --lane=compute \
+  --label=valhalla-private-runtime-smoke -- \
+  /opt/homebrew/bin/python3 crates/vhalla-cli/tools/measure_private_runtime.py \
+  --cli /ABSOLUTE/CANDIDATE/vhalla \
+  --provenance /ABSOLUTE/CANDIDATE/build-receipt.json \
+  --source /ABSOLUTE/EXACT-SOURCE \
+  --out /ABSOLUTE/NEW-EVIDENCE/runtime-smoke --scenario smoke
+```
+
+Run `smoke` first (two 128-byte messages), inspect its evidence, then invoke
+`--scenario all` in a different new directory for these fixed workloads:
+
+| Scenario | Offered workload | Bounded completion contract |
+|---|---|---|
+| `load` | 100 unique 128-byte messages scheduled at 1 Hz; at most 16 without an observed member acceptance | No catch-up burst; preserve late/missed slots, then allow 120 seconds to drain after the final admission |
+| `quiet` | Both agents idle for 90 seconds, then one 128-byte message | 120-second drain; the quiet interval does not claim direct observation of the controller's internal poll timer |
+| `offline` | Stop B, queue 32 messages and observe their relay retention, then reopen B with an explicit fresh grant | 120-second drain, exact accepted set, then fresh-grant B and A reopens must retain the exact inbox and acceptance claims |
+
+Every scenario uses a fresh host and homes, two distinct host credentials, a
+new grant claim for each explicitly enumerated reopen, a 600-second setup/workload
+deadline, and up to 75 seconds of bounded cleanup. Each grant permits 110 preparations/messages, 1 MiB of body bytes,
+256 read records and 32 MiB of read bytes for 900 seconds. No allowance is
+topped up. The generated host's 4,096-item/256-MiB mailbox and each credential's
+2,048-item/128-MiB quota remain unchanged. The final stopped-mailbox report reads
+the current SQLite schema in read-only mode to record item identities and
+credential usage; it is a diagnostic, not a supported live quota API.
+
+Each message records the monotonic scheduled time, preparation and queue RPC
+times, first observed relay retention, first recipient inbox observation, and
+first authenticated member acceptance observed by the sender. These are client
+observation times, with a nominal 500-ms observation interval and actual
+serialized RPC delays, not internal commit timestamps or human-read receipts.
+Reports include planned, scheduled, attempted, admitted and accepted counts;
+load slots missed by a full second; latency p50/p95/p99 and observed sample
+counts; and every incomplete/censored message. Late admission is never silently
+called sustained 1-Hz throughput. The exploratory acceptance-p95-under-5s target
+is reported separately from receiver-p95-under-5s and from correctness. A
+successful runner exit means the exact bounded workload and cleanup passed;
+it does not assert that either latency target passed.
+
+Resource evidence includes one-second RSS samples for owned CLI PIDs (a lower
+bound on lifetime maximum RSS), regular-file logical/allocated bytes at named
+checkpoints, grant budgets before/after each process generation, and cold process
+spawn-to-live and exact-reopen observations. Filesystem caches are not flushed.
+The runner closes agent stdin, drains/stops its host, bounds cleanup, records all
+exit statuses and fails on forced cleanup. Children remain in the host
+scheduler's process group. Success and failure homes, raw MCP logs and receipts
+are retained in a new mode-0700 directory. These homes contain synthetic private
+keys and credentials: share selected metrics/provenance, not the raw fixture.
+
+This runner does not qualify a browser, a second Mac, a 24-hour soak, disk power
+loss, namespace rotation or unbounded delivery. In particular, 24 hours at
+1 message/second would require 86,400 applications and approximately 172,800
+relay items, beyond the unchanged mailbox and credential budgets. A separately
+specified sparse soak must budget every application, receipt, control, grant
+handoff and observation without deleting retained state.
+
+Runner contract tests do not invoke Valhalla or open a network listener:
+
+```sh
+python3 -m unittest discover -s crates/vhalla-cli/tools -p 'test_*.py' -v
+```
+
+### Measured native process result, 2026-09-23
+
+The first complete `--scenario all` run used optimized native source
+`1cff4f5fc202b1a1a987d6ae52672188956774b0` on macOS 26.5.2 arm64,
+Python 3.14.6, under a shared HRA heavy-compute allocation. Exact identities:
+
+- CLI SHA256: `ac18f7dbeefa147b19d983710c2c722795a25acd1dbfd1c3d23643a39ee32bad`.
+- Runner SHA256: `9c41be3f3cf7c69f9e478ee9ee3aefe4e7319ca3bf4534d6936deebb380246bf`.
+- Source tree: `26b4012fa95ce4bef4b4270e5cc051213bc6f55b`.
+
+| Scenario | Exact bounded outcome | Recipient observation | Sender's authenticated acceptance observation |
+|---|---|---|---|
+| 100 × 128 B at scheduled 1 Hz | 100 scheduled, attempted, admitted, retained, received and acknowledged; zero missed one-second slots; maximum 9/16 outstanding | p95 2.412s from queue request | p50 3.278s, p95 4.272s, p99 7.893s; maximum 8.895s |
+| 90s quiet, then one message | 1/1 completed | 26.642s from queue request | 28.667s; one observation, not a latency distribution |
+| 32 messages retained while B was offline | Exact 32/32 restored and acknowledged after explicit fresh grant; repeated B/A reopen preserved inbox/claims | All 32 observed 2.331s after B's reopen spawn | All 32 claims observed 11.999s after B's reopen spawn |
+
+All three correctness checks passed, with zero censored messages and all 63
+owned CLI children reaped at exit code zero without forced cleanup. The load
+acceptance-p95 target below five seconds passed; quiet arrival missed it. Load
+scheduling lateness reached 164ms, so the zero missed-slot count should not be
+read as zero jitter. Offline queue-to-acceptance p95 was 46.435s and includes
+the intentional outage; the catch-up timings above use the later reopen spawn.
+The subsequent exact B inbox reopen took 113.865ms from process spawn, and A's
+exact acceptance-claim reopen took 156.495ms; filesystem caches remained warm.
+
+The load phase retained 203 relay items; its two credentials used 101 and 102
+of their unchanged 2,048-item quotas. Sampled maximum RSS was 7,307,264 bytes
+for the host and 10,534,912 / 10,059,776 bytes for A/B. These one-second samples
+are lower bounds; short-lived reopen processes may have no RSS sample. The load
+fixture at its drained checkpoint had 877 regular files, 2,497,315 logical bytes
+and 5,681,152 allocated bytes, including measurement logs and synthetic homes.
+These are local loopback measurements, not browser, two-Mac or soak evidence.
+The task's retained `Runtime-performance-results-1cff4f5.md` note links the raw
+private receipts and the earlier two-message smoke/refused preflight separately.
+
 ## Environment and reproduction
 
 Measured on Apple M4 Max, 16 physical/logical cores, 128 GiB RAM, macOS 26.5.2 (25F84), Rust/Cargo 1.98.1, optimized release binaries. Work ran in shared HRA heavy compute slots with warm filesystem caches; it was not CPU or disk isolated. Compiler time is excluded from the runtime measurements.
