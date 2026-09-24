@@ -657,3 +657,6 @@ pub fn fin_sign_bytes(init: &ProposalInit, data: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod lean_quorum_tests;

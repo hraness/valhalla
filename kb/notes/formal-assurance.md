@@ -15,12 +15,15 @@ chosen property can expose the intended failure.
 For Valhalla, TLA+ is the current fit for interleavings, recovery custody and
 conditional progress. Kani checks selected production Rust decisions within
 declared symbolic bounds, while Verus carries the existing unbounded ledger
-reference model. Lean is viable for weighted-quorum mathematics, but its
-checked optional spike does not establish a distinct maintenance advantage over
-Verus or prove Rust correspondence. The [assurance ledger](../../verify/README.md)
-owns the current tool decision, source mappings and limits. Reconsider Lean
-when a stable theorem needs substantial reusable mathematics or a supported
-extraction path, with a named owner for the implementation relationship.
+reference model. The [[plans/valhalla-lean-assurance-trial|Lean trial]] maintains
+unbounded weighted-certificate proofs and tests Lean-generated cases against
+both authenticated Rust verifiers. Its identity-list theorem proves why known,
+distinct signer lists match weighted roster membership; certificate uniqueness
+also requires one signing context and honest non-equivocation within it.
+Finite conformance does not prove Rust refinement, and the trial does not
+establish a maintenance advantage over Verus. The
+[assurance ledger](../../verify/README.md) owns the current tool decision,
+source mappings and limits.
 
 Distinguish visible state from durable state when modeling recovery. A process
 restart can observe an unsynced deletion that later power loss reverses. The

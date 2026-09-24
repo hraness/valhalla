@@ -10,6 +10,26 @@ permissions:
   contents: read
 
 jobs:
+  lean-quorum:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download pinned Lean distribution
+        run: |
+          url="$(python3 -c 'import json; print(json.load(open("verify/lean/tools.json"))["platforms"]["linux-x86_64"]["url"])')"
+          curl --proto '=https' --tlsv1.2 --fail --show-error --location --retry 3 --connect-timeout 30 --max-time 300 "$url" -o "$RUNNER_TEMP/lean.tar.zst" --write-out 'download_seconds=%{time_total}\narchive_bytes=%{size_download}\n'
+      - name: Verify distribution, proofs, axioms and shared corpus
+        run: python3 verify/run_lean.py --archive "$RUNNER_TEMP/lean.tar.zst" --out "$RUNNER_TEMP/lean-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lean-quorum-evidence
+          path: ${{ runner.temp }}/lean-evidence
+          if-no-files-found: error
+          retention-days: 14
   private-models:
     runs-on: ubuntu-latest
     timeout-minutes: 10
