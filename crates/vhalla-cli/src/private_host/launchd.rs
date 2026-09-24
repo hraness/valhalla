@@ -188,6 +188,7 @@ fn tailcat_port(config: &Config) -> Result<String, String> {
 pub(super) fn test_config(label: &str) -> Config {
     Config {
         version: 1,
+        retained_generations: Vec::new(),
         label: label.into(),
         listen: "127.0.0.1:9473".parse().unwrap(),
         tls_name: "relay.invalid".into(),
