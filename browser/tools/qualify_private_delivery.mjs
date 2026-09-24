@@ -1,6 +1,7 @@
 // Production private DOM through the actual loopback HTTP gateway and TLS relay.
 // No account seeds, production signer calls, external routes or fixture KDF changes.
-import {spawnOwned, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
+import {spawn} from 'node:child_process';
+import {spawnOwned, trackChild, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
 import {stopChild, stopServer} from './qualification_lifecycle.mjs';
 import {createServer} from 'node:http';
 import {createConnection, createServer as createTcpServer} from 'node:net';
@@ -420,7 +421,7 @@ async function task(abortSignal) {
   // Crashpad deliberately leaves the browser's process tree. Disable that
   // unrelated reporting service for this isolated synthetic test so the owned
   // guardian can confirm the whole browser group has gone before publishing.
-  const chrome=spawnOwned(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-crashpad-for-testing','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{role:'chrome'});children.push(chrome);chrome.stdout.resume();chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
+  const chrome=trackChild(spawn(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));children.push(chrome);chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   signal.throwIfAborted();socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
