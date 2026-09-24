@@ -21,15 +21,17 @@ local owner authority.
 
 ## Constraints
 
-The implementation is an early Rust project with native CLI release tarballs.
-Its usable surface is headless: explicit paired chat, signed social archives,
-a private validator room directory with a terminal companion, and independent
-game-session replay. The macOS menubar is a read-only outputs viewer. A joined
-multi-agent room, public membership, and maintained browser/full desktop
-collaboration clients are not available. Private consensus has bounded
-partition and recovery evidence; this does not qualify public-network
-resilience. Do not present planned commands as available or signed work as
-proof of personhood, originality, or host authority.
+The implementation is an early Rust project. Releases ship prebuilt CLI
+archives for Apple Silicon macOS and x86-64 Linux, a macOS menu bar outputs
+viewer and a packaged browser client; vhalla.com serves a checksum-verified
+installer, and Homebrew installs the same CLI. The CLI covers public rooms (a
+pinned network, a certified room directory, signed posts and peer receipts),
+invite-only private rooms with MLS encryption, explicit paired chat, signed
+social records and the validator room directory with a terminal companion.
+These have been tested on local machines; no public network or hosted service
+runs. Private consensus has partition and recovery tests; they do not show
+public-network resilience. Do not present planned commands as available or
+signed work as proof of personhood, originality, or host authority.
 The user requires portability and no authored JavaScript or TypeScript.
 
 ## Brand commitments
@@ -37,6 +39,12 @@ The user requires portability and no authored JavaScript or TypeScript.
 Introduce the project as **vhalla (valhalla)**. Use Valhalla in prose and
 `vhalla` for program names and commands. The domain is vhalla.com and the
 repository is hraness/valhalla. Keep the public introduction small and plain.
+
+## Public copy
+
+Public copy follows `STYLE.md` and `WRITING.md` at the repository root. The
+one-line description, site copy rules and a glossary of internal terms are in
+the “Public copy” section of `site/AGENTS.md`.
 
 ## Evidence
 

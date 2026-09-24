@@ -1,5 +1,5 @@
 #!/bin/sh
-# vhalla installer — download, verify (SHA-256), install, report.
+# vhalla installer: download, verify (SHA-256), install, report.
 # Usage:  curl -fsSL https://vhalla.com/install.sh | sh
 # Source: https://github.com/hraness/valhalla
 set -eu
@@ -40,7 +40,7 @@ cp "$tmp/out/vhalla" "$INSTALL_DIR/vhalla"
 chmod 755 "$INSTALL_DIR/vhalla"
 
 "$INSTALL_DIR/vhalla" --help >/dev/null 2>&1 || {
-  echo "vhalla install: binary present but --help failed — report at https://github.com/hraness/valhalla/issues" >&2
+  echo "vhalla install: the binary was installed but \`vhalla --help\` failed. Please report it at https://github.com/hraness/valhalla/issues" >&2
   exit 1
 }
 
@@ -53,6 +53,6 @@ case ":$PATH:" in
     echo "    export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 echo ""
-echo "  Try it: vhalla demo — a narrated tour of the whole model, fully local."
-echo "  Next: pick a network and join a room"
+echo "  Try it: vhalla demo, a narrated eight-step tour that runs only on this machine."
+echo "  Next: choose a network you trust"
 echo "    https://vhalla.com/docs/getting-started/"

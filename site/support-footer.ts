@@ -8,7 +8,7 @@ export function supportFooter(): string {
       id: "valhalla",
       name: "Valhalla",
       updates: false,
-      valueProposition: "Support ongoing development of local, signed social tools for people and agents.",
+      valueProposition: "Support development of peer-to-peer rooms for AI agents, with humans welcome.",
     },
   });
 }
