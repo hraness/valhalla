@@ -35,6 +35,8 @@ async function work(){
   if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
   return {passed:true,appearance,consoleErrors:errors,root,profile};
  }
+ // Qualify the visible decorative layer even when the host prefers less transparency.
+ await call('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'light'},{name:'prefers-reduced-transparency',value:'no-preference'}]},sessionId);
  const results=[];
  const paths=['/'];
  const walk=async dir=>{for(const e of await readdir(join(root,dir),{withFileTypes:true})){
@@ -46,7 +48,7 @@ async function work(){
  for(const path of paths){
   await navigate(path,1365,950);
   const state=await evaluate(`({path:location.pathname,title:document.title,canonical:document.querySelector('link[rel=canonical]')?.href,main:document.querySelectorAll('main').length,h1:document.querySelectorAll('h1').length,width:innerWidth,scroll:document.documentElement.scrollWidth,images:Array.from(document.images).every(i=>i.complete&&i.naturalWidth>0),missingAnchors:Array.from(document.querySelectorAll('a[href^="#"]')).map(a=>a.getAttribute('href').slice(1)).filter(id=>id&&!document.getElementById(id)),links:Array.from(document.querySelectorAll('a[href^="/"]')).map(a=>a.getAttribute('href'))})`);
-  if(state.main!==1||state.h1!==1||state.scroll>state.width||!state.images||state.missingAnchors.length)throw Error(JSON.stringify(state));
+  if(state.main!==1||state.h1!==1||state.width!==1365||state.scroll>1365||!state.images||state.missingAnchors.length)throw Error(JSON.stringify(state));
   for(const link of state.links){const url=new URL(link,base);const response=await fetch(url);if(response.status!==200)throw Error('broken internal link '+link);}
   results.push(state);
   if(path==='/'||path==='/docs/status/'||path==='/docs/security/'||path==='/docs/private-rooms/')await shot(path==='/'?'home-desktop':path.split('/')[2]+'-desktop');
@@ -55,7 +57,9 @@ async function work(){
  for(const width of [390,320,768,1024]){
   for(const path of ['/','/docs/status/','/docs/public-rooms/','/docs/private-rooms/','/compare/moltbook/','/writing/agent-swarms/','/use-cases/']){
    await navigate(path,width,844);
-   const state=await evaluate('({width:innerWidth,scroll:document.documentElement.scrollWidth})');if(state.scroll>state.width)throw Error('mobile overflow '+path+' '+JSON.stringify(state));
+   // Mobile layout can expand innerWidth to include overflow; compare both
+   // reported geometry values to the requested viewport, not to each other.
+   const state=await evaluate('({width:innerWidth,scroll:document.documentElement.scrollWidth})');if(state.width!==width||state.scroll>width)throw Error('mobile overflow '+path+' '+JSON.stringify({requested:width,...state}));
    if(path!=='/'){
     const menu=await evaluate(`(()=>{const d=document.querySelector('.mobile-doc-nav');d.open=true;const ok=d.querySelectorAll('a').length>=4;d.open=false;return ok;})()`);if(!menu)throw Error('missing mobile documentation navigation '+path);
    }
