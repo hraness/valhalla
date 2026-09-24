@@ -18,12 +18,14 @@ pub(crate) struct AgentSpec {
     pub plist: String,
     pub alternates: Vec<String>,
 }
-/// Resolve the host's selected agent, embedding its exact home and log.
+/// Resolve the host's selected agent, embedding its exact home and logs. Both
+/// earlier emitted shapes stay admissible so an existing installation is still
+/// ours; `install` replaces an outdated shape only while its label is unloaded.
 pub(super) fn spec(home: &Path, c: &Config) -> Result<AgentSpec, String> {
     Ok(AgentSpec {
         label: c.label.clone(),
         plist: plist(home, c)?,
-        alternates: vec![plist_v1(home, c)?],
+        alternates: vec![plist_v2(home, c)?, plist_v1(home, c)?],
     })
 }
 
@@ -38,14 +40,24 @@ pub(crate) fn xml(value: &str) -> Result<String, String> {
         .replace('"', "&quot;")
         .replace('\'', "&apos;"))
 }
-/// The event log launchd output is redirected into: bounded, rotated and
-/// inside the owner-private home rather than discarded.
+/// The bounded lifecycle event log inside the owner-private home. Only the
+/// service's own event writer appends structured lines here.
 pub(crate) const LOG_NAME: &str = "events.log";
+/// Where launchd redirects the service's stdout and stderr: startup lines,
+/// panics and coarse errors that are not structured events. The service
+/// rotates it at startup once it exceeds its bound, keeping one generation, so
+/// arbitrary supervisor output can never fill the event log or wedge startup.
+pub(crate) const SUPERVISOR_LOG_NAME: &str = "supervisor.log";
 fn plist_v1(home: &Path, c: &Config) -> Result<String, String> {
     plist_shape(home, c, "/dev/null")
 }
-pub(super) fn plist(home: &Path, c: &Config) -> Result<String, String> {
+/// The second emitted shape sent launchd output into the event log itself.
+fn plist_v2(home: &Path, c: &Config) -> Result<String, String> {
     let log = xml(home.join(LOG_NAME).to_str().ok_or(REFUSED)?)?;
+    plist_shape(home, c, &log)
+}
+pub(super) fn plist(home: &Path, c: &Config) -> Result<String, String> {
+    let log = xml(home.join(SUPERVISOR_LOG_NAME).to_str().ok_or(REFUSED)?)?;
     plist_shape(home, c, &log)
 }
 fn plist_shape(home: &Path, c: &Config, out: &str) -> Result<String, String> {
@@ -71,8 +83,9 @@ fn plist_shape(home: &Path, c: &Config, out: &str) -> Result<String, String> {
 "#
     ))
 }
-/// Earlier homes were sealed with launchd output discarded; that exact shape
-/// remains admissible evidence so an upgrade never invalidates a sealed home.
+/// Earlier homes were sealed with launchd output discarded or sent into the
+/// event log; those exact shapes remain admissible evidence so an upgrade never
+/// invalidates a sealed home.
 fn ours(spec: &AgentSpec, bytes: &[u8]) -> bool {
     spec.plist.as_bytes() == bytes
         || spec
@@ -169,6 +182,67 @@ fn tailcat_port(config: &Config) -> Result<String, String> {
         );
     }
     Ok(config.listen.port().to_string())
+}
+
+#[cfg(test)]
+pub(super) fn test_config(label: &str) -> Config {
+    Config {
+        version: 1,
+        label: label.into(),
+        listen: "127.0.0.1:9473".parse().unwrap(),
+        tls_name: "relay.invalid".into(),
+        executable: "/private/binary".into(),
+        namespace: "a".repeat(64),
+        credential_ids: vec!["b".repeat(32), "c".repeat(32)],
+        credential_generations: Vec::new(),
+        revoked_credential_ids: Default::default(),
+        leaf_lifetime_seconds: None,
+        mailbox: "mailbox".into(),
+        created_at: 1,
+        certificate_expires_at: 2,
+        authority_expires_at: 3,
+        files: Default::default(),
+    }
+}
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+    #[test]
+    fn current_shape_redirects_supervisor_output_and_earlier_shapes_stay_ours() {
+        let home = Path::new("/private/host-home");
+        let config = test_config("me.vhalla.private-host.shape-test");
+        let agent = spec(home, &config).unwrap();
+        for key in ["StandardOutPath", "StandardErrorPath"] {
+            assert!(agent.plist.contains(&format!(
+                "<key>{key}</key><string>/private/host-home/supervisor.log</string>"
+            )));
+        }
+        assert!(!agent.plist.contains("events.log"));
+        let v2 = plist_v2(home, &config).unwrap();
+        let v1 = plist_v1(home, &config).unwrap();
+        assert!(
+            v2.contains("<key>StandardOutPath</key><string>/private/host-home/events.log</string>")
+        );
+        assert!(v1.contains("<key>StandardOutPath</key><string>/dev/null</string>"));
+        assert_eq!(v2.replace("events.log", "supervisor.log"), agent.plist);
+        assert_eq!(agent.alternates, vec![v2.clone(), v1.clone()]);
+        assert!(ours(&agent, agent.plist.as_bytes()));
+        assert!(ours(&agent, v2.as_bytes()));
+        assert!(ours(&agent, v1.as_bytes()));
+        assert!(!ours(&agent, v2.replace("30", "31").as_bytes()));
+        assert!(!ours(&agent, b"foreign retained configuration"));
+        // A sealed home from either earlier version still validates.
+        for template in [&v2, &v1] {
+            assert!(template_ours(
+                &Loaded {
+                    home: home.to_path_buf(),
+                    config: config.clone()
+                },
+                template.as_bytes()
+            )
+            .unwrap());
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -336,6 +410,18 @@ mod mac {
         }
         Ok(true)
     }
+    /// Whether the installed template is the exact current shape rather than
+    /// an admissible earlier one. Absent or foreign files are not exact.
+    fn exact(spec: &AgentSpec, path: &Path) -> Result<bool, String> {
+        let uid = rustix::process::geteuid().as_raw();
+        if !custody::private_file_present(path, uid, 65536).map_err(|_| REFUSED)? {
+            return Ok(false);
+        }
+        Ok(
+            custody::read_private_file(path, uid, 65536).map_err(|_| REFUSED)?
+                == spec.plist.as_bytes(),
+        )
+    }
     // Only the exact service-not-found response proves absence. IPC errors,
     // unavailable domains, permissions failures and signals preserve custody.
     fn classify_service(spec: &AgentSpec, reply: Reply) -> Result<Reply, String> {
@@ -394,6 +480,13 @@ mod mac {
             );
         }
         let path = destination()?;
+        // An installed earlier emitted shape is ours but outdated. The label is
+        // proven unloaded, so replace it with the exact current shape before
+        // bootstrap; the file that bootstraps is always the one this software
+        // emits now.
+        if expected(spec, &path)? && !exact(spec, &path)? {
+            fs::remove_file(&path).map_err(|_| REFUSED)?;
+        }
         if !expected(spec, &path)? {
             use std::io::Write;
             let mut file = custody::create_private_file(&path).map_err(|_| REFUSED)?;
@@ -408,7 +501,7 @@ mod mac {
                 })
                 .map_err(|_| REFUSED)?;
         }
-        if !expected(spec, &path)? {
+        if !exact(spec, &path)? {
             return Err(REFUSED.into());
         }
         if !run(&[
@@ -597,6 +690,94 @@ mod mac {
             .unwrap();
             assert_eq!(calls, 3);
             assert!(expected(&agent, &path).unwrap());
+            fs::remove_dir_all(home).unwrap();
+        }
+        #[test]
+        fn install_replaces_an_outdated_owned_shape_only_while_its_label_is_unloaded() {
+            let home = std::env::temp_dir().join(format!(
+                "valhalla-launch-agent-upgrade-{}",
+                std::process::id()
+            ));
+            fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
+            let config = test_config("me.vhalla.private-host.upgrade-test");
+            let path = home.join("selected.plist");
+            let agent = spec(&home, &config).unwrap();
+            let outdated = plist_v2(&home, &config).unwrap();
+            fs::write(&path, &outdated).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(expected(&agent, &path).unwrap());
+            assert!(!exact(&agent, &path).unwrap());
+            // A loaded label refuses before touching the installed template.
+            assert!(install_selected(
+                &agent,
+                || Ok(path.clone()),
+                |_| Ok(Reply {
+                    success: true,
+                    code: Some(0),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }),
+            )
+            .is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), outdated);
+            let absent = format!(
+                "Bad request.\nCould not find service \"{}\" in domain for user gui: {}\n",
+                config.label,
+                rustix::process::geteuid().as_raw()
+            );
+            let mut calls = 0;
+            install_selected(
+                &agent,
+                || Ok(path.clone()),
+                |args| {
+                    calls += 1;
+                    match calls {
+                        1 => Ok(Reply {
+                            success: false,
+                            code: Some(113),
+                            stdout: String::new(),
+                            stderr: absent.clone(),
+                        }),
+                        2 => {
+                            assert_eq!(args[0], "bootstrap");
+                            assert!(
+                                exact(&agent, &path).unwrap(),
+                                "bootstrap sees the current shape"
+                            );
+                            Ok(Reply {
+                                success: true,
+                                code: Some(0),
+                                stdout: String::new(),
+                                stderr: String::new(),
+                            })
+                        }
+                        _ => Ok(Reply {
+                            success: true,
+                            code: Some(0),
+                            stdout: format!("path = {}\n", path.display()),
+                            stderr: String::new(),
+                        }),
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(calls, 3);
+            assert_eq!(fs::read_to_string(&path).unwrap(), agent.plist);
+            assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
+            // A foreign template is never replaced, even while unloaded.
+            fs::write(&path, b"foreign retained configuration").unwrap();
+            assert!(install_selected(
+                &agent,
+                || Ok(path.clone()),
+                |_| Ok(Reply {
+                    success: false,
+                    code: Some(113),
+                    stdout: String::new(),
+                    stderr: absent.clone(),
+                }),
+            )
+            .is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"foreign retained configuration");
             fs::remove_dir_all(home).unwrap();
         }
         #[test]

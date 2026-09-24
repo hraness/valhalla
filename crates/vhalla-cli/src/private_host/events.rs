@@ -5,7 +5,7 @@
 //! writes tokens, keys, message bodies, peer payloads or free-form errors;
 //! field values are bounded printable ASCII supplied by the caller's own
 //! lifecycle code. Rotation keeps at most one earlier generation.
-use super::launchd::LOG_NAME;
+use super::launchd::{LOG_NAME, SUPERVISOR_LOG_NAME};
 use std::{
     fs,
     io::{Seek, SeekFrom, Write},
@@ -16,6 +16,9 @@ use vhalla_custody as custody;
 const ROTATED: &str = "events.log.1";
 /// Total live log bound; one rotated generation is kept alongside it.
 const LIMIT: u64 = 256 * 1024;
+const SUPERVISOR_ROTATED: &str = "supervisor.log.1";
+/// Live supervisor output bound; one rotated generation is kept alongside it.
+const SUPERVISOR_LIMIT: u64 = 256 * 1024;
 const LINE_MAX: usize = 512;
 const REFUSED: &str = "event log refused; preserve the owner-private home";
 
@@ -58,16 +61,13 @@ pub(crate) fn append(dir: &Path, event: &str, fields: &[(&str, &str)]) -> Result
     }
     let (directory, uid) = owner(dir)?;
     let path = dir.join(LOG_NAME);
-    let rotated = dir.join(ROTATED);
-    if custody::private_file_present(&path, uid, LIMIT as usize).map_err(|_| REFUSED)? {
-        let meta = fs::metadata(&path).map_err(|_| REFUSED)?;
-        if meta.len() + line.len() as u64 > LIMIT {
-            match fs::remove_file(&rotated) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err(REFUSED.into()),
-            }
-            fs::rename(&path, &rotated).map_err(|_| REFUSED)?;
+    // A live log that another writer pushed past its bound (an earlier agent
+    // shape redirected launchd output here) is still owner-private evidence:
+    // rotate it into the single earlier generation instead of refusing every
+    // later append, which would otherwise turn each restart into a crash loop.
+    if let Some(len) = private_length(&path, uid, LIMIT)? {
+        if len + line.len() as u64 > LIMIT {
+            rotate(&path, &dir.join(ROTATED))?;
         }
     }
     let mut file =
@@ -81,6 +81,59 @@ pub(crate) fn append(dir: &Path, event: &str, fields: &[(&str, &str)]) -> Result
         .and_then(|()| file.sync_data())
         .and_then(|()| directory.sync_all())
         .map_err(|_| REFUSED.to_owned())
+}
+/// Length of the owner-private regular file at `path`, `None` when absent. A
+/// foreign type, link, owner or mode refuses; exceeding `limit` does not,
+/// because callers rotate oversized evidence rather than discarding it.
+fn private_length(path: &Path, uid: u32, limit: u64) -> Result<Option<u64>, String> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(REFUSED.into()),
+    };
+    match custody::check_regular_file(&meta, uid, limit as usize) {
+        Ok(()) | Err(custody::Error::Capacity) => Ok(Some(meta.len())),
+        Err(_) => Err(REFUSED.into()),
+    }
+}
+/// Keep exactly one earlier generation: any previous one is replaced.
+fn rotate(path: &Path, rotated: &Path) -> Result<(), String> {
+    match fs::remove_file(rotated) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(REFUSED.into()),
+    }
+    fs::rename(path, rotated).map_err(|_| REFUSED.into())
+}
+/// Rotate launchd's supervisor output once it exceeds its bound. Services call
+/// this at startup before their first structured event. The file launchd
+/// opened for this launch keeps receiving this process's output under the
+/// rotated name; launchd creates a fresh live file at the next launch. A
+/// rotation is recorded as an event. A foreign file at that name is left
+/// untouched and recorded as refused. Callers never let this refuse startup.
+pub(crate) fn bound_supervisor_output(dir: &Path) -> Result<(), String> {
+    let (directory, uid) = owner(dir)?;
+    let path = dir.join(SUPERVISOR_LOG_NAME);
+    let outcome = private_length(&path, uid, SUPERVISOR_LIMIT).and_then(|len| match len {
+        Some(len) if len > SUPERVISOR_LIMIT => {
+            rotate(&path, &dir.join(SUPERVISOR_ROTATED))?;
+            directory.sync_all().map_err(|_| REFUSED)?;
+            Ok(Some(len))
+        }
+        _ => Ok(None),
+    });
+    match outcome {
+        Ok(Some(len)) => append(
+            dir,
+            "supervisor-log-rotated",
+            &[("bytes", &len.to_string())],
+        ),
+        Ok(None) => Ok(()),
+        Err(error) => {
+            let _ = append(dir, "supervisor-log-refused", &[]);
+            Err(error)
+        }
+    }
 }
 /// Most recent complete lines, oldest first, for operator inspection. A torn
 /// or oversized log refuses rather than guessing; missing logs are empty.
@@ -156,6 +209,84 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(append(&dir, "x", &[]).is_err());
         assert!(tail(&dir, 1).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    fn private_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "vhalla-events-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        dir
+    }
+    fn write_owned(path: &Path, bytes: usize, byte: u8, mode: u32) {
+        fs::write(path, vec![byte; bytes]).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    #[test]
+    fn oversized_live_log_rotates_into_the_earlier_generation_instead_of_refusing() {
+        let dir = private_dir("oversized");
+        let path = dir.join(LOG_NAME);
+        // An earlier agent shape let launchd push supervisor output past the
+        // bound. Every later append used to refuse, so each restart failed.
+        write_owned(&path, LIMIT as usize + 4096, b'x', 0o600);
+        append(&dir, "serve-start", &[("listen", "127.0.0.1:1")]).unwrap();
+        assert_eq!(
+            fs::metadata(dir.join(ROTATED)).unwrap().len(),
+            LIMIT + 4096,
+            "oversized evidence is retained as the earlier generation"
+        );
+        assert!(fs::metadata(&path).unwrap().len() < LINE_MAX as u64);
+        let entries = tail(&dir, 5).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].contains("\"event\":\"serve-start\""));
+        // A foreign oversized file is still refused and never touched.
+        write_owned(&path, LIMIT as usize + 1, b'y', 0o644);
+        assert!(append(&dir, "x", &[]).is_err());
+        assert_eq!(fs::metadata(&path).unwrap().len(), LIMIT + 1);
+        assert_eq!(fs::metadata(dir.join(ROTATED)).unwrap().len(), LIMIT + 4096);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn supervisor_output_rotates_only_when_owned_and_oversized_and_never_blocks() {
+        let dir = private_dir("supervisor");
+        let path = dir.join(SUPERVISOR_LOG_NAME);
+        let rotated = dir.join(SUPERVISOR_ROTATED);
+        bound_supervisor_output(&dir).unwrap();
+        assert!(
+            tail(&dir, 5).unwrap().is_empty(),
+            "absent output records nothing"
+        );
+        write_owned(&path, 5, b's', 0o600);
+        bound_supervisor_output(&dir).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().len(),
+            5,
+            "bounded output is untouched"
+        );
+        assert!(!rotated.exists());
+        write_owned(&rotated, 3, b'o', 0o600);
+        write_owned(&path, SUPERVISOR_LIMIT as usize + 1, b'z', 0o600);
+        bound_supervisor_output(&dir).unwrap();
+        assert!(
+            !path.exists(),
+            "launchd recreates the live file at the next launch"
+        );
+        assert_eq!(fs::metadata(&rotated).unwrap().len(), SUPERVISOR_LIMIT + 1);
+        let entries = tail(&dir, 5).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].contains("\"event\":\"supervisor-log-rotated\""));
+        assert!(entries[0].contains(&format!("\"bytes\":\"{}\"", SUPERVISOR_LIMIT + 1)));
+        // A foreign file at that name is refused, recorded and left untouched.
+        write_owned(&path, SUPERVISOR_LIMIT as usize + 1, b'w', 0o644);
+        assert!(bound_supervisor_output(&dir).is_err());
+        assert_eq!(fs::metadata(&path).unwrap().len(), SUPERVISOR_LIMIT + 1);
+        assert_eq!(fs::metadata(&rotated).unwrap().len(), SUPERVISOR_LIMIT + 1);
+        assert!(tail(&dir, 1).unwrap()[0].contains("\"event\":\"supervisor-log-refused\""));
         fs::remove_dir_all(dir).unwrap();
     }
 }

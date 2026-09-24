@@ -98,11 +98,19 @@ No command installs the menubar or changes another service.
 
 The LaunchAgent starts at login, restarts unsuccessful exits with a 30-second
 throttle, and has a 15-second exit grace. It does not promise service before
-login, while logged out, or while the Mac sleeps. Its stdout/stderr go to the
-bounded private `events.log` inside the home, which keeps one rotated
-generation at 256 KiB each and records only short lifecycle lines (starts,
-stops, bind retries, agent install/remove) — never credentials, keys, message
-bodies or peer payloads. A transient `AddrInUse` at startup is retried inside
+login, while logged out, or while the Mac sleeps. Its stdout/stderr go to
+`supervisor.log` inside the home: startup lines, panics and coarse errors that
+are not structured events. The service rotates that file into one earlier
+generation at startup once it exceeds 256 KiB, so a restart loop can never
+fill the home. Structured lifecycle lines (starts, stops, bind retries, agent
+install/remove, supervisor-log rotation) go to the separate bounded private
+`events.log`, which keeps one rotated generation at 256 KiB each — never
+credentials, keys, message bodies or peer payloads. Installations from earlier
+versions that discarded launchd output or sent it into `events.log` remain
+recognized as this software's; `install` rewrites such a plist to the current
+shape while the agent is unloaded, and an `events.log` that earlier output
+pushed past its bound is rotated rather than refused, which previously turned
+every restart into a failed start. A transient `AddrInUse` at startup is retried inside
 a bounded window before the service gives up. Foreground errors are
 deliberately coarse and contain no secrets. `status` reports loaded service
 state separately from health: without `--probe` it performs no TLS exchange

@@ -10,19 +10,26 @@ Lifecycle commands take the same canonical absolute config path:
 
 - `vhalla private-gateway status CONFIG` reports the validated configuration,
   the deterministic `me.vhalla.private-gateway.<path-digest>` label, launchd
-  state and the sibling bounded `events.log`. `status --probe` additionally
+  state, the sibling bounded `events.log` and the `supervisor.log` that
+  launchd's stdout/stderr redirection lands in. `status --probe` additionally
   performs a real bounded loopback HTTP GET and reports whether the listener
   answered `HTTP/1.1 200`; a probe proves listener shape only, never upstream
   TLS or mailbox retention.
 - `vhalla private-gateway install CONFIG` validates the full configuration,
   writes the exact plist for that one label into `~/Library/LaunchAgents` and
-  bootstraps it. A foreign or changed plist at the label refuses; the command
-  never lists or touches other services in the GUI domain.
+  bootstraps it. A foreign or changed plist at the label refuses; a plist this
+  software emitted earlier (launchd output into `events.log`) is replaced with
+  the current shape while its label is unloaded. The command never lists or
+  touches other services in the GUI domain.
 - `vhalla private-gateway uninstall CONFIG` boots out only the exact label when
   the loaded service identifies the owned plist, then removes the plist file.
 - `serve` retries a transient address-in-use bind for a bounded window, logs
   `serve-start`/`bind-retry`/`serve-stop` to the bounded `events.log` beside
-  the config, and drains SIGTERM/SIGINT before exit.
+  the config, and drains SIGTERM/SIGINT before exit. Startup lines, panics and
+  coarse errors go to `supervisor.log` under launchd; `serve` rotates that file
+  into one earlier generation once it exceeds 256 KiB and records the rotation
+  as an event, so supervisor output can neither fill the event log nor keep a
+  restarting service from starting.
 
 An unwinding connection-local handler panic closes that request without a
 success response. The gateway continues only when the shared admission budget
