@@ -103,11 +103,13 @@ under five seconds is distinct from correctness and may fail honestly.
 
 ## Remaining production decisions and gates
 
-- Quiet-arrival latency remains a measured gap: after 90 seconds idle, one
-  message took 28.67 seconds to observed acceptance. The 100-message 1 Hz run
-  passed correctness with no missed slots and 4.27-second acceptance p95.
-  Investigate wakeup or bounded long-polling before promising the same latency
-  after idle; preserve explicit authority and resource limits.
+- The explicit interactive mailbox policy has a [local quiet-arrival comparison](evidence/private-quiet-policies-20260924.json):
+  one message after 90 seconds idle reached the receiver in 1.005 seconds and
+  observed acceptance in 3.014 seconds. Adaptive polling on the same candidate
+  took 26.639 and 28.649 seconds. Both preserved correctness and cleanup. These
+  single-message trials do not establish production percentiles, Internet
+  latency or equal-duration idle CPU cost. The historical 100-message 1 Hz run
+  used an earlier candidate and remains separate evidence.
 - Native delivery and offline catch-up passed across two physical Macs on one
   LAN. The Tailcat path was not classified as direct or DERP; cross-device browser and
   separate transport-fault cases remain unrun.

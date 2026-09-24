@@ -42,7 +42,7 @@ test('guardian stops a live leader and its grandchild and proves group absence',
   const process = spawnOwned(globalThis.process.execPath,['-e',script],{role:'custody-test',timeoutMs:10000});
   try {
     await ready(process); const receipt = await stopChild(process);
-    assert.equal(receipt.status,'stopped'); assert.equal(receipt.groupAbsent,true);
+    assert.equal(receipt.status,'stopped'); assert.equal(receipt.groupAbsent,true); assert.equal(receipt.closeObserved,true);
     assert.equal(receipt.guardian.forced,false); assert.ok(receipt.guardian.observedMembers.length >= 2);
   } finally { await retainCleanup(process); }
 });
@@ -54,6 +54,7 @@ test('guardian force-kills a TERM-resistant group but the result remains a failu
     await ready(process); await assert.rejects(stopChild(process),/forced termination/);
     const receipt = childCleanupReceipt(process);
     assert.equal(receipt.groupAbsent,true); assert.equal(receipt.guardian.forced,true); assert.equal(receipt.status,'failed');
+    assert.equal(receipt.closeObserved,true);
   } finally { await retainCleanup(process); }
 });
 
@@ -67,6 +68,7 @@ test('guardian failed spawn, independent deadline and lost IPC cannot produce su
       await exited(process);
       await assert.rejects(stopChild(process), mode === 'spawn'?/ENOENT/:mode === 'deadline'?/deadline/:/evidence is missing/);
       assert.equal(childCleanupReceipt(process).groupAbsent,true);
+      assert.equal(childCleanupReceipt(process).closeObserved,true);
     } finally { await retainCleanup(process); }
   }
 });
