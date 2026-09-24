@@ -90,7 +90,7 @@ async function invoke(page, functionDeclaration, args = []) {
   return result.result.value;
 }
 async function setFile(page,id,path) {
-  await evaluate(page,`qshow(${JSON.stringify(id)});true`);
+  await invoke(page,`function(id){qshow(id);return true;}`,[id]);
   const {root}=await call('DOM.getDocument',{},page.sessionId);
   const {nodeId}=await call('DOM.querySelector',{nodeId:root.nodeId,selector:'#'+id},page.sessionId);
   if (!nodeId) throw Error('missing file input '+id);
@@ -111,7 +111,7 @@ async function keypress(page,id,key,code,virtualKey) {
 }
 async function download(page,button,extension) {
   const previous=new Set(downloads.keys());
-  await evaluate(page,`qclick(${JSON.stringify(button)})`);
+  await invoke(page,`function(button){return qclick(button);}`,[button]);
   let item;
   await wait(()=>{
     item=[...downloads.values()].find(d=>!previous.has(d.guid)&&d.filename?.endsWith('.'+extension));

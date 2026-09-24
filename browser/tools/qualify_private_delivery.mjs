@@ -128,7 +128,7 @@ async function invoke(page, functionDeclaration, args = []) {
   return result.result.value;
 }
 async function setFile(page,id,path) {
-  await evaluate(page,`qshow(${JSON.stringify(id)});true`);
+  await invoke(page,`function(id){qshow(id);return true;}`,[id]);
   const {root}=await call('DOM.getDocument',{},page.sessionId);
   const {nodeId}=await call('DOM.querySelector',{nodeId:root.nodeId,selector:'#'+id},page.sessionId);
   if (!nodeId) throw Error('missing file input '+id);
@@ -153,7 +153,7 @@ async function download(page,button,extension) {
   // refusal, then surface any refusal the click still produced.
   await wait(()=>[...downloads.values()].filter(d=>d.frameId===page.frameId&&Date.now()-d.at<31000).length<8,button+' download slot');
   const previous=new Set(downloads.keys());
-  const refused=await evaluate(page,`(async()=>{const s=qid('private-status');const before=s.textContent;await qclick(${JSON.stringify(button)});await new Promise(r=>setTimeout(r,0));return s.dataset.error==='true'&&s.textContent!==before?s.textContent:'';})()`);
+  const refused=await invoke(page,`async function(button){const s=qid('private-status');const before=s.textContent;await qclick(button);await new Promise(r=>setTimeout(r,0));return s.dataset.error==='true'&&s.textContent!==before?s.textContent:'';}`,[button]);
   if(refused)throw Error(button+' refused: '+refused);
   let item;
   await wait(()=>{
@@ -551,7 +551,7 @@ function chargedPending(before,after,committed,stopCode=0) {
 async function snapshot(page, expected=1, generation=0) {
   if(!Number.isInteger(generation)||generation<0||generation>=16)throw Error('snapshot generation bound');
   const suffix=generation===0?'delivery-v1':'delivery-generations-v1/'+String(generation).padStart(2,'0')+'/image';
-  return evaluate(page,`(async()=>{const names=await indexedDB.databases();let found=[];for(const info of names){const db=await new Promise((r,j)=>{const q=indexedDB.open(info.name);q.onsuccess=()=>r(q.result);q.onerror=()=>j(Error('read database'));});try{if(!db.objectStoreNames.contains('images'))continue;const rows=await new Promise((r,j)=>{const tx=db.transaction('images','readonly'),s=tx.objectStore('images'),q=s.openCursor(),rows=[];q.onsuccess=()=>{const c=q.result;if(c){if(String(c.key).endsWith(${JSON.stringify(suffix)}))rows.push([...c.value]);c.continue();}else r(rows);};q.onerror=()=>j(Error('read delivery'));});found.push(...rows);}finally{db.close();}}qassert(found.length===${expected},'expected delivery image count');return found[0]??[];})()`);
+  return invoke(page,`async function(suffix,expected){const names=await indexedDB.databases();let found=[];for(const info of names){const db=await new Promise((r,j)=>{const q=indexedDB.open(info.name);q.onsuccess=()=>r(q.result);q.onerror=()=>j(Error('read database'));});try{if(!db.objectStoreNames.contains('images'))continue;const rows=await new Promise((r,j)=>{const tx=db.transaction('images','readonly'),s=tx.objectStore('images'),q=s.openCursor(),rows=[];q.onsuccess=()=>{const c=q.result;if(c){if(String(c.key).endsWith(suffix))rows.push([...c.value]);c.continue();}else r(rows);};q.onerror=()=>j(Error('read delivery'));});found.push(...rows);}finally{db.close();}}qassert(found.length===expected,'expected delivery image count');return found[0]??[];}`,[suffix,expected]);
 }
 async function finish(extra={}) {
   if(unexpectedNetwork)throw Error('unexpected non-loopback page route');
