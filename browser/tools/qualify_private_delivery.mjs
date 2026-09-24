@@ -1,24 +1,30 @@
-// Production private DOM through the actual loopback HTTP gateway and TLS relay.
+// Production private DOM through the loopback HTTP or explicit synthetic HTTPS gateway and TLS relay.
 // No account seeds, production signer calls, external routes or fixture KDF changes.
-import {trackChild, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
+import {spawnOwned, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
 import {stopChild, stopServer} from './qualification_lifecycle.mjs';
 import {createServer} from 'node:http';
-import {spawn} from 'node:child_process';
+import {createServer as createHttpsServer} from 'node:https';
+import {chromeHttpsArguments, probeHttps} from './qualification_https.mjs';
 import {createConnection, createServer as createTcpServer} from 'node:net';
 import {createHash} from 'node:crypto';
 import {readFile, writeFile, mkdir, mkdtemp, chmod, open} from 'node:fs/promises';
 import {resolve, join} from 'node:path';
 
 const [artifactArg, chromeExecutable, outputArg, cliArg, opensslArg, ...flags] = process.argv.slice(2);
-if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M]');
+if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M] [--parent-stdin] [--https]');
+process.umask(0o077);
 const options={};
 for(let i=0;i<flags.length;i++){
   const flag=flags[i];
+  if(Object.hasOwn(options,flag))throw Error('duplicate flag: '+flag);
+  if(flag==='--parent-stdin'||flag==='--https'){options[flag]=true;continue;}
   if(flag!=='--gateway-port'&&flag!=='--tls-port')throw Error('unknown flag: '+flag);
   const value=flags[++i];
   if(!/^[0-9]+$/.test(value??''))throw Error(flag+' requires a decimal loopback port');
   options[flag]=Number(value);
 }
+const httpsMode=options['--https']===true;
+const httpsChecks=httpsMode?{profileFormat:2,contexts:[]}:undefined;
 const artifact = resolve(artifactArg), output = resolve(outputArg);
 await mkdir(output, {recursive:false, mode:0o700});
 const profile = await mkdtemp(join(output,'profile-'));
@@ -166,6 +172,7 @@ async function context(name) {
   await wait(()=>evaluate(page,"!!document.getElementById('private-panel') && !!document.getElementById('create') && !document.getElementById('create').disabled"),'private app '+name);
   const origin=await evaluate(page,"location.origin");
   if(origin!==gatewayOrigin)throw Error('private app origin '+origin+' != configured '+gatewayOrigin);
+  if(httpsMode){const secureContext=await evaluate(page,'isSecureContext');if(!secureContext)throw Error('HTTPS page is not a secure context');httpsChecks.contexts.push({account:name,origin,secureContext});}
   return page;
 }
 async function account(name) {
@@ -252,7 +259,7 @@ async function resolvePort(explicit,label) {
 }
 const gatewayPort=await resolvePort(options['--gateway-port'],'gateway');
 const tlsPort=await resolvePort(options['--tls-port'],'relay TLS');
-const gatewayOrigin=`http://127.0.0.1:${gatewayPort}`;
+const gatewayOrigin=httpsMode?`https://rooms.example.test:${gatewayPort}`:`http://127.0.0.1:${gatewayPort}`;
 const tlsAddress=`127.0.0.1:${tlsPort}`;
 // Collision-refusal self-check: resolvePort must never accept an occupied port.
 {
@@ -263,18 +270,18 @@ const tlsAddress=`127.0.0.1:${tlsPort}`;
   await new Promise(r=>occupied.close(r));
   if(!refused)throw Error('occupied loopback port was accepted');
 }
-let relay, gateway, blackhole, hostile, fixtureSerial=0;
+let relay, gateway, blackhole, hostile, gatewayTls, chromeHttps, fixtureSerial=0;
 const blackholeSockets=new Set();
 const serviceLogs=[];
-async function privateFile(name,content) {const path=join(output,name);await writeFile(path,content,{mode:0o600,flag:'wx'});return path;}
+async function privateFile(name,content) {signal.throwIfAborted();const path=join(output,name);await writeFile(path,content,{mode:0o600,flag:'wx'});return path;}
 async function command(executable,args) {
-  signal.throwIfAborted();const process=trackChild(spawn(executable,args,{stdio:['ignore','pipe','pipe']}));children.push(process);
+  signal.throwIfAborted();const process=spawnOwned(executable,args,{role:'fixture-command',timeoutMs:20000});children.push(process);
   let stdout='',stderr='';process.stdout.on('data',v=>stdout=(stdout+v).slice(-1048576));process.stderr.on('data',v=>stderr=(stderr+v).slice(-1048576));
   let timer;try {await Promise.race([new Promise((r,j)=>{process.once('error',j);process.once('exit',code=>code===0?r():j(Error('fixture command refused: '+stderr)));}),new Promise((_,j)=>{timer=setTimeout(()=>j(Error('fixture command deadline')),20000);})]);}finally{clearTimeout(timer);if(!childStopped(process))await stopChild(process);}
   return {stdout,stderr};
 }
 async function child(args,ready) {
-  signal.throwIfAborted();const process=trackChild(spawn(cli,args,{stdio:['ignore','pipe','pipe']}));children.push(process);
+  signal.throwIfAborted();const process=spawnOwned(cli,args,{role:args[0]});children.push(process);
   const record={args:args.map(a=>a.startsWith(output)?a.slice(output.length):a),stdout:'',stderr:''};serviceLogs.push(record);
   process.stdout.on('data',v=>record.stdout=(record.stdout+v).slice(-65536));process.stderr.on('data',v=>record.stderr=(record.stderr+v).slice(-65536));
   await wait(()=>{if(childStopped(process))throw Error('fixture service exited: '+record.stderr);return record.stdout.includes(ready);},ready);return process;
@@ -297,14 +304,85 @@ async function fixture() {
   await command(openssl,['x509','-in',serverPem,'-outform','DER','-out',join(output,'server.der')]);
   await command(openssl,['pkcs8','-topk8','-nocrypt','-in',serverKey,'-outform','DER','-out',join(output,'server-key.der')]);
   for(const name of ['ca-key.pem','ca.pem','server-key.pem','server.csr','server.pem','ca.der','server.der','server-key.der'])await chmod(join(output,name),0o600);
+  if(httpsMode){
+    const key=join(output,'gateway-key.pem'),csr=join(output,'gateway.csr'),cert=join(output,'gateway.pem');
+    await command(openssl,['ecparam','-name','prime256v1','-genkey','-noout','-out',key]);
+    await command(openssl,['req','-new','-key',key,'-out',csr,'-subj','/CN=rooms.example.test']);
+    const ext=await privateFile('gateway.ext','basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:rooms.example.test\n');
+    await command(openssl,['x509','-req','-in',csr,'-CA',caPem,'-CAkey',caKey,'-CAcreateserial','-out',cert,'-days','2','-sha256','-extfile',ext]);
+    await command(openssl,['x509','-in',cert,'-outform','DER','-out',join(output,'gateway.der')]);
+    await command(openssl,['pkcs8','-topk8','-nocrypt','-in',key,'-outform','DER','-out',join(output,'gateway-key.der')]);
+    for(const name of ['gateway-key.pem','gateway.csr','gateway.pem','gateway.der','gateway-key.der'])await chmod(join(output,name),0o600);
+    gatewayTls={key:await readFile(key),cert:await readFile(cert),minVersion:'TLSv1.3',ALPNProtocols:['http/1.1']};
+    chromeHttps=chromeHttpsArguments(gatewayTls.cert);
+    httpsChecks.certificateSpkiSha256Base64=chromeHttps.spki;
+    httpsChecks.trust='synthetic leaf SPKI exception in a fresh isolated Chrome profile; no system trust modification or public CA claim';
+  }
   await privateFile('relay-token',relayToken);await privateFile('gateway-upstream-token',relayToken);await privateFile('browser-token',browserCapability);
   await command(cli,['private','relay-mailbox',join(output,'mailbox'),'--namespace',namespace,'--max-items','4096','--max-bytes',String(128*1024*1024)]);
   await command(cli,['private','relay-tls-init',join(output,'mailbox'),'--namespace',namespace]);
   await privateFile('tls.json',JSON.stringify({max_connections:16,request_timeout_ms:10000,window_ms:1000,requests_per_window:128,bytes_per_window:64*1024*1024,credentials:[{id:'64'.repeat(16),namespace,token_files:[join(output,'relay-token')],put:true,page:true,max_items:2048,max_bytes:64*1024*1024,max_inflight:8,requests_per_window:64,bytes_per_window:32*1024*1024}]}));
-  await privateFile('gateway.json',JSON.stringify({format:1,listen:'127.0.0.1:'+gatewayPort,namespace,browser_token_file:join(output,'browser-token'),upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')},assets_dir:artifact,initial_cursor:'0'}));
+  const front=httpsMode?{format:2,origin:gatewayOrigin,
+    tls:{certificate_chain_files:[join(output,'gateway.der')],private_key_file:join(output,'gateway-key.der')},
+    clients:[{id:'75'.repeat(16),token_file:join(output,'browser-token'),expires_unix_secs:Math.floor(Date.now()/1000)+3600,revoked:false,max_inflight:8,requests_per_window:128,bytes_per_window:32*1024*1024}]
+  }:{format:1,browser_token_file:join(output,'browser-token')};
+  await privateFile('gateway.json',JSON.stringify({...front,listen:'127.0.0.1:'+gatewayPort,namespace,upstream:{addr:tlsAddress,tls_name:'relay.test',tls_ca_file:join(output,'ca.der'),token_file:join(output,'gateway-upstream-token')},assets_dir:artifact,initial_cursor:'0'}));
   await relayStart();await gatewayStart();
 }
-async function profileFile(initial,overrides={}) {return privateFile('profile-'+(++fixtureSerial)+'.json',JSON.stringify({format:1,origin:gatewayOrigin,namespace,capability:browserCapability,initial_cursor:String(initial),...overrides}));}
+async function profileFile(initial,overrides={}) {return privateFile('profile-'+(++fixtureSerial)+'.json',JSON.stringify({format:httpsMode?2:1,origin:gatewayOrigin,namespace,capability:browserCapability,initial_cursor:String(initial),...overrides}));}
+function fixtureHttpServer(handler) {
+  return httpsMode?createHttpsServer(gatewayTls,handler):createServer(handler);
+}
+async function httpsGatewayProbes() {
+  const body=Buffer.alloc(15);body.writeUInt32BE(11);body[4]=2;body.writeUInt16BE(1,13);
+  const headers={origin:gatewayOrigin,authorization:'Bearer '+browserCapability,'content-type':'application/octet-stream','x-vhalla-namespace':namespace};
+  const ca=await readFile(join(output,'ca.pem'));
+  const before=await head(),statuses={};
+  for(const [label,override,expected] of [
+    ['correct',{},200],['wrongOrigin',{origin:'https://other.example.test:'+gatewayPort},403],
+    ['wrongCapability',{authorization:'Bearer '+'54'.repeat(32)},403],
+    ['wrongNamespace',{'x-vhalla-namespace':'32'.repeat(32)},403],
+    ['forwardedOrigin',{'x-forwarded-host':'other.example.test'},403],
+  ]){
+    const result=await probeHttps({origin:gatewayOrigin,ca,body,headers:{...headers,...override},signal});
+    if(result.status!==expected)throw Error('HTTPS gateway '+label+' status');
+    if(label==='correct'&&(result.body.length<5||result.body[4]!==0||result.body.readUInt32BE(0)!==result.body.length-4))throw Error('HTTPS gateway positive control was not a canonical relay success');
+    for(const forbidden of [namespace,browserCapability,relayToken])if(result.body.includes(Buffer.from(forbidden)))throw Error('HTTPS gateway refusal disclosed credentials or namespace');
+    statuses[label]=result.status;
+    httpsChecks.probeTlsProtocol=result.protocol;
+    httpsChecks.probeAlpn=result.alpn;
+  }
+  if(await head()!==before)throw Error('HTTPS admission probes mutated mailbox');
+  httpsChecks.admission={statuses,mailboxUnchanged:true,noCredentialOrNamespaceInErrors:true};
+}
+async function httpsRedirectProbe(page) {
+  // Same-origin target deliberately stays inside CSP's connect-src 'self'.
+  // Thus it is Fetch's redirect:error boundary that must prevent forwarding
+  // the capability and namespace, rather than an unrelated cross-origin block.
+  const beforeHead=await head(),message=await send(page,'SYNTHETIC_HTTPS_REDIRECT_RETRY');
+  const before=Buffer.from(await snapshot(page));await stopChild(gateway);
+  let redirects=0,targetRequests=0,badRequest=false;
+  signal.throwIfAborted();hostile=fixtureHttpServer((request,response)=>{
+    if(request.url==='/credential-redirect-target'){targetRequests++;request.resume();response.writeHead(403);response.end();return;}
+    if(request.method!=='POST'||request.url!=='/private-relay/v1'||request.headers.origin!==gatewayOrigin||request.headers.authorization!=='Bearer '+browserCapability||request.headers['x-vhalla-namespace']!==namespace){badRequest=true;request.resume();response.writeHead(403);response.end();return;}
+    const chunks=[];let bytes=0;
+    request.on('data',chunk=>{bytes+=chunk.length;if(bytes>300000){badRequest=true;request.destroy();return;}chunks.push(chunk);});
+    request.on('end',()=>{
+      const frame=Buffer.concat(chunks);
+      if(frame[4]!==1||!frame.includes(message.raw)){badRequest=true;response.writeHead(400);response.end();return;}
+      redirects++;response.writeHead(307,{location:gatewayOrigin+'/credential-redirect-target','content-length':0,'cache-control':'no-store'});response.end();
+    });
+  });
+  await new Promise((r,j)=>{hostile.once('error',j);hostile.listen(gatewayPort,'127.0.0.1',r);});
+  const report=await sync(page),retained=Buffer.from(await snapshot(page));
+  if(redirects!==1||targetRequests!==0||badRequest||!report.includes('Pending: true'))throw Error('HTTPS worker did not refuse the credential redirect with pending work retained');
+  chargedPending(before,retained,message.raw);
+  await stopServer(hostile);hostile=undefined;await gatewayStart();
+  if(await head()!==beforeHead)throw Error('redirect challenge retained an item');
+  await backoffWait(retained);await sync(page);
+  if(await head()!==beforeHead+1)throw Error('redirect recovery lost or duplicated ciphertext');
+  httpsChecks.redirect={status:307,redirectResponses:redirects,targetRequests,capabilityAndNamespaceForwarded:false,chargedPendingPreserved:true,exactRetryRetainedOnce:true};
+}
 async function connect(page,path,create=false) {
   await setFile(page,'private-delivery-profile',path);
   await evaluate(page,`(async()=>{await qclick('${create?'private-delivery-create':'private-delivery-open'}');await qidle();qassert(qid('private-delivery-profile').value==='','profile capability selection survived');qassert(!qid('private-delivery-sync').disabled,'delivery not ready');return true;})()`);
@@ -412,12 +490,19 @@ async function snapshot(page, expected=1) {
   return evaluate(page,`(async()=>{const names=await indexedDB.databases();let found=[];for(const info of names){const db=await new Promise((r,j)=>{const q=indexedDB.open(info.name);q.onsuccess=()=>r(q.result);q.onerror=()=>j(Error('read database'));});try{if(!db.objectStoreNames.contains('images'))continue;const rows=await new Promise((r,j)=>{const tx=db.transaction('images','readonly'),s=tx.objectStore('images'),q=s.openCursor(),rows=[];q.onsuccess=()=>{const c=q.result;if(c){if(String(c.key).endsWith('delivery-v1'))rows.push([...c.value]);c.continue();}else r(rows);};q.onerror=()=>j(Error('read delivery'));});found.push(...rows);}finally{db.close();}}qassert(found.length===${expected},'expected delivery image count');return found[0]??[];})()`);
 }
 async function task(abortSignal) {
-  signal=abortSignal;await fixture();
-  const chrome=trackChild(spawn(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));children.push(chrome);chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
+  signal=abortSignal;
+  signal.addEventListener('abort',()=>{for(const waiter of pending.values())waiter.reject(signal.reason);pending.clear();},{once:true});
+  await fixture();signal.throwIfAborted();
+  if(httpsMode)await httpsGatewayProbes();
+  // Crashpad deliberately leaves the browser's process tree. Disable that
+  // unrelated reporting service for this isolated synthetic test so the owned
+  // guardian can confirm the whole browser group has gone before publishing.
+  const chrome=spawnOwned(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-crashpad-for-testing','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,...(chromeHttps?.args??[]),'about:blank'],{role:'chrome'});children.push(chrome);chrome.stdout.resume();chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
-  socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
+  signal.throwIfAborted();socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
   socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith(gatewayOrigin+'/')&&!url.startsWith('blob:'+gatewayOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
+  if(httpsMode)httpsChecks.browser=await call('Browser.getVersion');
   const owner=await account('owner'),member=await account('member');
   await enter(owner,true);await evaluate(owner,"qclick('private-create')");await retainCreation(owner);
   await send(owner,'SYNTHETIC_PREJOIN_HISTORY');
@@ -443,7 +528,8 @@ async function task(abortSignal) {
   await evaluate(member,"(async()=>{await qclick('private-inbox');await qidle();qassert(qid('private-inbox-content').textContent.includes('SYNTHETIC_GATEWAY_TLS_MESSAGE'),'network message absent');qassert(!qid('private-inbox-content').textContent.includes('SYNTHETIC_PREJOIN_HISTORY'),'prejoin history leaked');return true;})()");
   await sync(member);await sync(owner);
   await evaluate(owner,"(async()=>{await qclick('private-outbox');await qidle();qassert(/verified device [0-9a-f]{64} claims acceptance at its inbox position [1-9]/.test(qid('private-outbox-acceptances').textContent),'verified device acceptance absent from outbox UI');return true;})()");
-  facts.push('production browser worker sends exact ciphertext through HTTP gateway and authenticated TLS relay; receiver commits and queues signed acceptance without receipt loops; sender UI exposes the verified device claim without a human-read assertion');
+  facts.push('production browser worker sends exact ciphertext through '+(httpsMode?'HTTPS':'HTTP')+' gateway and authenticated TLS relay; receiver commits and queues signed acceptance without receipt loops; sender UI exposes the verified device claim without a human-read assertion');
+  if(httpsMode)httpsChecks.productionWorkerV2Exchange=true;
   // Admit C while existing member B is offline. The owner must automatically
   // relay the separate encrypted membership control, not only C's invitation.
   // Keep an older committed owner message queued across that membership change
@@ -505,6 +591,7 @@ async function task(abortSignal) {
   sameRetained(before,reopened,'reload changed pending progress/budget');
   await relayStart();await backoffWait(before);await sync(owner);const afterOutage=await head();if(afterOutage!==beforeOutage+1)throw Error('outage retry duplicated or lost committed ciphertext');
   await sync(member);facts.push('relay outage, real document teardown, same-profile reopen and exact retry preserve ciphertext and counters and retain the output once');
+  if(httpsMode){httpsChecks.retainedV2Reopen=true;await httpsRedirectProbe(owner);}
   // Authentication refusal ends custody, but a newly supplied host capability
   // may resume the exact charged job. Neither unlock nor corrected authority
   // resets the retained attempt or backoff, and wrong credentials never retain.
@@ -550,7 +637,7 @@ async function task(abortSignal) {
   // Terminate the worker while the actual native gateway waits on a TLS
   // handshake. No delayed completion may repopulate its private UI or budgets.
   await send(twin,'SYNTHETIC_LOCKED_IN_FLIGHT');await stopChild(relay);
-  blackhole=createTcpServer(socket=>{blackholeSockets.add(socket);socket.once('close',()=>blackholeSockets.delete(socket));});
+  signal.throwIfAborted();blackhole=createTcpServer(socket=>{blackholeSockets.add(socket);socket.once('close',()=>blackholeSockets.delete(socket));});
   await new Promise((r,j)=>{blackhole.once('error',j);blackhole.listen(tlsPort,'127.0.0.1',r);});
   await evaluate(twin,"qclick('private-delivery-sync')");await wait(()=>blackholeSockets.size>0,'gateway pending actual TLS handshake');
   await leave(twin);const canceled=Buffer.from(await snapshot(twin));
@@ -564,7 +651,7 @@ async function task(abortSignal) {
   // outage or an authorization renewal. Persist the stop before ending custody.
   const hostileHead=await head();const hostileMessage=await send(twin,'SYNTHETIC_CORRUPT_RECEIPT');
   const beforeHostile=Buffer.from(await snapshot(twin));await stopChild(gateway);
-  hostile=createServer((request,response)=>{
+  signal.throwIfAborted();hostile=fixtureHttpServer((request,response)=>{
     if(request.method!=='POST'||request.url!=='/private-relay/v1'||request.headers.origin!==gatewayOrigin||request.headers.authorization!=='Bearer '+browserCapability){response.writeHead(403);response.end();return;}
     const chunks=[];let size=0;request.on('data',chunk=>{size+=chunk.length;if(size>300000){request.destroy();return;}chunks.push(chunk);});
     request.on('end',()=>{const body=Buffer.concat(chunks);if(body.length<40||body[4]!==1){response.writeHead(400);response.end();return;}const receipt=Buffer.alloc(46);receipt.writeUInt32BE(42,0);receipt.writeBigUInt64BE(1n,5);body.subarray(-32).copy(receipt,13);receipt[13]^=1;response.writeHead(200,{'content-type':'application/octet-stream','content-length':receipt.length,'cache-control':'no-store'});response.end(receipt);});
@@ -581,8 +668,33 @@ async function task(abortSignal) {
   if(await head()!==hostileHead)throw Error('reopen or forced Sync reset durable hostile-response stop');
   facts.push('a well-framed HTTP200 receipt with a corrupt commitment durably stops before worker termination; exact pending bytes and charged credits survive, and reopen or forced Sync cannot resume network work');
   await leave(twin);await leave(member);
-  if(unexpectedNetwork)throw Error('unexpected non-loopback page route');
+  if(unexpectedNetwork)throw Error('unexpected page route outside selected gateway origin');
   const digest=v=>createHash('sha256').update(v).digest('hex');
-  return {passed:true,artifact,artifactManifestSha256:digest(manifestRaw),gatewayOrigin,tlsAddress,namespaceSha256:digest(namespace),relayTokenSha256:digest(relayToken),browserCapabilitySha256:digest(browserCapability),facts,files,screenshots,profile,scope:'production browser private custody → maintained local HTTP gateway → real TLS relay; synthetic same-machine identities; no independent-machine or Tailcat path claim'};
+  return {passed:true,artifact,artifactManifestSha256:digest(manifestRaw),gatewayOrigin,tlsAddress,namespaceSha256:digest(namespace),relayTokenSha256:digest(relayToken),browserCapabilitySha256:digest(browserCapability),facts,files,screenshots,profile,...(httpsMode?{https: httpsChecks}:{}),scope:'production browser private custody → maintained '+(httpsMode?'direct HTTPS gateway at synthetic DNS origin':'local HTTP gateway')+' → real TLS relay; synthetic same-machine identities; no public certificate, hosted deployment, independent-machine or Tailcat path claim'};
 }
-await runQualification({work:task,timeoutMs:360000,cleanup:async()=>{try{for(const socket of blackholeSockets)socket.destroy();if(blackhole){await new Promise(r=>blackhole.close(r));blackhole=undefined;}await cleanupOwned({children,server:hostile,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));await writeFile(join(output,'network-failure.txt'),fatalNetwork);}},publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));}});
+await runQualification({
+  work:task, timeoutMs:360000,
+  parentInput:options['--parent-stdin']?process.stdin:undefined,
+  cleanup:async()=>{
+    let receipt;
+    try{
+      for(const socket of blackholeSockets)socket.destroy();
+      receipt=await cleanupOwned({children,servers:[blackhole,hostile],socket,pending});
+      return receipt;
+    }catch(error){receipt=error.cleanupReceipt;throw error;}
+    finally{
+      await writeFile(join(output,'cleanup.json'),JSON.stringify(receipt??{passed:false,error:'cleanup evidence unavailable'},null,2)+'\n');
+      await writeFile(join(output,'chrome.log'),chromeLog);
+      await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));
+      await writeFile(join(output,'network-failure.txt'),fatalNetwork);
+    }
+  },
+  onFailure:async({error,cleanup})=>{
+    await writeFile(join(output,'receipt.json'),JSON.stringify({passed:false,failure:error.message,cleanup,...(httpsMode?{gatewayOrigin,https:httpsChecks}:{})},null,2)+'\n');
+  },
+  publish:async(receipt,cleanup)=>{
+    receipt.cleanup=cleanup;
+    await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
+    console.log(JSON.stringify(receipt));
+  },
+});

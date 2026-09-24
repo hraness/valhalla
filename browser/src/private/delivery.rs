@@ -1,15 +1,16 @@
-//! Explicit bounded sync over a selected local gateway; ciphertext only.
+//! Explicit bounded sync over a selected same-origin gateway; ciphertext only.
 #[path = "delivery_engine.rs"]
 pub(super) mod engine;
 #[path = "delivery_model.rs"]
 mod model;
+#[path = "delivery_profile.rs"]
+mod profile;
 #[path = "delivery_transport.rs"]
 mod transport;
 use super::{now, Session};
 use crate::private_wire::{DeliveryReport, PROFILE};
 pub(super) use engine::{Admission, Summary};
 use engine::{Engine, Failure, Host, Result, TransportError};
-use sha2::{Digest, Sha256};
 use vhalla_browser_storage::{
     browser::{
         private_delivery::{DeliveryWrite, IndexedDelivery},
@@ -28,60 +29,13 @@ pub(super) fn canceled() -> bool {
 pub(super) fn abort() {
     transport::abort();
 }
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Profile {
-    format: u8,
-    origin: String,
-    namespace: String,
-    capability: String,
-    initial_cursor: String,
-}
-fn hex(raw: &str) -> Result<[u8; 32]> {
-    if raw.len() != 64
-        || !raw
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-    {
-        return Err(Failure::Invalid);
-    }
-    let mut out = [0; 32];
-    for (i, v) in out.iter_mut().enumerate() {
-        *v = u8::from_str_radix(&raw[i * 2..i * 2 + 2], 16).map_err(|_| Failure::Invalid)?;
-    }
-    if out == [0; 32] {
-        return Err(Failure::Invalid);
-    }
-    Ok(out)
-}
-fn binding(
-    context: Context,
-    profile: &Profile,
-    namespace: RelayNamespace,
-    initial: u64,
-) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"vhalla/browser-private-delivery-profile/v1\0");
-    for b in [
-        context.scope.room.as_bytes(),
-        context.scope.anchor.as_bytes(),
-        context.account.as_bytes(),
-        context.device.as_bytes(),
-    ] {
-        h.update(b);
-    }
-    h.update(profile.origin.as_bytes());
-    h.update([0]);
-    h.update(namespace.as_bytes());
-    h.update(initial.to_be_bytes());
-    h.finalize().into()
-}
 /// The worker-side environment of one delivery engine: this session's kernel
 /// and identity revalidation, the profile database and the same-origin fetch.
 struct WorkerHost<'a> {
     session: &'a mut Session,
     store: &'a mut IndexedDelivery,
     origin: &'a str,
+    mode: profile::Mode,
     namespace: [u8; 32],
     capability: &'a Zeroizing<String>,
 }
@@ -135,6 +89,7 @@ impl Host for WorkerHost<'_> {
     ) -> core::result::Result<Vec<u8>, TransportError> {
         transport::exchange(
             self.origin,
+            self.mode,
             &self.namespace,
             self.capability,
             frame,
@@ -147,6 +102,7 @@ pub(super) struct Delivery {
     store: IndexedDelivery,
     engine: Engine,
     origin: String,
+    mode: profile::Mode,
     namespace: RelayNamespace,
     capability: Zeroizing<String>,
 }
@@ -157,30 +113,15 @@ impl Delivery {
         bytes: &[u8],
         create: bool,
     ) -> Result<Self> {
-        if bytes.len() > 4096 {
-            return Err(Failure::Invalid);
-        }
-        let mut p: Profile = serde_json::from_slice(bytes).map_err(|_| Failure::Invalid)?;
-        let capability = Zeroizing::new(std::mem::take(&mut p.capability));
-        hex(&capability)?;
-        if p.format != 1
-            || !transport::canonical_origin(&p.origin)
-            || transport::origin().map_err(|_| Failure::Invalid)? != p.origin
-        {
-            return Err(Failure::Invalid);
-        }
-        let namespace =
-            RelayNamespace::from_bytes(hex(&p.namespace)?).map_err(|_| Failure::Invalid)?;
-        let initial = p
-            .initial_cursor
-            .parse::<u64>()
-            .map_err(|_| Failure::Invalid)?;
-        if initial.to_string() != p.initial_cursor
-            || initial > vhalla_private_relay::MAX_RELAY_ITEMS as u64
-        {
-            return Err(Failure::Invalid);
-        }
-        let bound = binding(context, &p, namespace, initial);
+        let selected = profile::select(
+            bytes,
+            &transport::origin().map_err(|_| Failure::Invalid)?,
+            transport::secure_context(),
+        )
+        .map_err(|_| Failure::Invalid)?;
+        let namespace = selected.namespace;
+        let initial = selected.initial;
+        let bound = selected.binding(context);
         let mut owner = [0; 16];
         js_sys::global()
             .dyn_into::<web_sys::DedicatedWorkerGlobalScope>()
@@ -199,18 +140,20 @@ impl Delivery {
             let mut host = WorkerHost {
                 session,
                 store: &mut store,
-                origin: &p.origin,
+                origin: &selected.origin,
+                mode: selected.mode,
                 namespace: *namespace.as_bytes(),
-                capability: &capability,
+                capability: &selected.capability,
             };
             Engine::open(&mut host, namespace, bound, owner, initial, create).await?
         };
         Ok(Self {
             store,
             engine,
-            origin: p.origin,
+            origin: selected.origin,
+            mode: selected.mode,
             namespace,
-            capability,
+            capability: selected.capability,
         })
     }
     fn report(context: Context, s: Summary) -> DeliveryReport {
@@ -247,6 +190,7 @@ impl Delivery {
                 session,
                 store: &mut self.store,
                 origin: &self.origin,
+                mode: self.mode,
                 namespace: *self.namespace.as_bytes(),
                 capability: &self.capability,
             },

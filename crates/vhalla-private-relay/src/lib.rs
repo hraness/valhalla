@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 use vhalla_private_kernel::{CommittedEncryptedControl, CommittedOutbox, OperationId, OutboxKind};
 /// Shared bounded transport framing.
 pub mod codec;
+/// Exact HTTPS origins shared by browser profiles and hosted gateways.
+pub mod http_origin;
 /// Canonical item magic and version.
 pub const MAGIC: &[u8] = b"VHPRELAY\x01";
 const DIGEST_DOMAIN: &[u8] = b"vhalla/private/relay-item/v1";

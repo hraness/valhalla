@@ -1,6 +1,7 @@
-//! Loopback-only, same-origin browser gateway to one authenticated TLS relay.
+//! Same-origin loopback HTTP or explicit HTTPS gateway to one pinned TLS relay.
 //! No mailbox is opened here. Admission precedes upstream network effects.
 use super::{codec::*, net::NetError, tls::TlsRelay, RelayItem, RelayNamespace};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
@@ -11,12 +12,16 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+pub use vhalla_private_relay::http_origin::HttpsOrigin;
 #[cfg(test)]
 mod tests;
 type Result<T> = std::result::Result<T, NetError>;
 const HEADER_MAX: usize = 8192;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Maximum explicitly selected lifetime for a newly loaded HTTPS client.
+pub const MAX_BROWSER_CLIENT_LIFETIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Fixed HTTP endpoint; callers cannot choose an upstream route.
 pub const ENDPOINT: &str = "/private-relay/v1";
 /// Public UI artifact memory cap, separate from relay ciphertext bounds.
@@ -52,6 +57,164 @@ impl BrowserCapability {
             .fold(0u8, |diff, (a, b)| diff | (a ^ b))
             == 0
     }
+}
+/// One independently revocable hosted browser credential. These budgets limit
+/// admitted browser bodies and concurrent requests; they never reset or replace
+/// durable relay quota. A bounded upstream reply can be read before refusal.
+pub struct BrowserClient {
+    /// Stable nonzero administration identifier, not a room or account identity.
+    pub id: [u8; 16],
+    /// Independent browser secret, distinct from every other and upstream token.
+    pub capability: BrowserCapability,
+    /// Explicit UNIX-seconds expiry; expired entries remain denied.
+    pub expires_unix_secs: u64,
+    /// Administratively disabled until an explicit drained configuration change.
+    pub revoked: bool,
+    /// Maximum concurrent authenticated requests, from one through eight.
+    pub max_inflight: usize,
+    /// Requests per gateway window, from one through 4,096.
+    pub requests_per_window: u32,
+    /// Admitted browser request and reply frame bytes per window, at most 64 MiB.
+    /// An upstream reply read before this check may exceed the remaining budget.
+    pub bytes_per_window: usize,
+}
+
+/// Explicit HTTPS termination settings. No forwarded header can enable TLS.
+pub struct HttpsSettings {
+    /// Exact public HTTPS origin selected before browser custody initialization.
+    pub origin: HttpsOrigin,
+    /// DER certificate chain, leaf first, under ordinary browser trust.
+    pub certificate_chain: Vec<Vec<u8>>,
+    /// PKCS#8 DER key matching the leaf certificate.
+    pub private_key: Vec<u8>,
+    /// One through 64 distinct browser credentials.
+    pub clients: Vec<BrowserClient>,
+}
+
+struct ClientState {
+    selected: BrowserClient,
+    expires: Option<Instant>,
+    disabled: bool,
+    budget: Budget,
+    inflight: usize,
+}
+impl ClientState {
+    fn live(&mut self, now: Instant, wall: u64) -> bool {
+        self.disabled |= self.selected.revoked
+            || wall >= self.selected.expires_unix_secs
+            || self.expires.is_none_or(|expires| now >= expires);
+        !self.disabled
+    }
+}
+struct Hosted {
+    tls: Arc<ServerConfig>,
+    name: String,
+    clients: Mutex<Vec<ClientState>>,
+}
+
+fn unix_now() -> Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| NetError::Unavailable)
+}
+
+struct ClientLease<'a> {
+    state: &'a State,
+    index: usize,
+}
+impl ClientLease<'_> {
+    fn charge(&self, bytes: usize) -> Result<bool> {
+        let hosted = self.state.hosted.as_ref().ok_or(NetError::Unavailable)?;
+        let mut clients = hosted.clients.lock().map_err(|_| NetError::Unavailable)?;
+        let client = &mut clients[self.index];
+        let now = Instant::now();
+        if now.duration_since(client.budget.start) >= self.state.limits.window {
+            client.budget = Budget {
+                start: now,
+                requests: 0,
+                bytes: 0,
+            };
+        }
+        if bytes
+            > client
+                .selected
+                .bytes_per_window
+                .saturating_sub(client.budget.bytes)
+        {
+            return Ok(false);
+        }
+        client.budget.bytes += bytes;
+        Ok(true)
+    }
+    fn live(&self) -> Result<bool> {
+        let hosted = self.state.hosted.as_ref().ok_or(NetError::Unavailable)?;
+        let mut clients = hosted.clients.lock().map_err(|_| NetError::Unavailable)?;
+        Ok(clients[self.index].live(Instant::now(), unix_now()?))
+    }
+}
+impl Drop for ClientLease<'_> {
+    fn drop(&mut self) {
+        let Some(hosted) = &self.state.hosted else {
+            return;
+        };
+        match hosted.clients.lock() {
+            Ok(mut clients) => {
+                let client = &mut clients[self.index];
+                if let Some(next) = client.inflight.checked_sub(1) {
+                    client.inflight = next;
+                } else {
+                    self.state.unhealthy.store(true, Ordering::Release);
+                }
+            }
+            Err(_) => self.state.unhealthy.store(true, Ordering::Release),
+        }
+    }
+}
+
+enum Authorized<'a> {
+    Allowed(Option<ClientLease<'a>>),
+    Denied,
+    Busy,
+}
+fn authorize<'a>(state: &'a State, header: Option<&str>) -> Result<Authorized<'a>> {
+    let Some(header) = header else {
+        return Ok(Authorized::Denied);
+    };
+    let Some(hosted) = &state.hosted else {
+        return Ok(if state.capability.matches(header) {
+            Authorized::Allowed(None)
+        } else {
+            Authorized::Denied
+        });
+    };
+    let mut clients = hosted.clients.lock().map_err(|_| NetError::Unavailable)?;
+    let Some(index) = clients
+        .iter()
+        .position(|client| client.selected.capability.matches(header))
+    else {
+        return Ok(Authorized::Denied);
+    };
+    let client = &mut clients[index];
+    let now = Instant::now();
+    if !client.live(now, unix_now()?) {
+        return Ok(Authorized::Denied);
+    }
+    if now.duration_since(client.budget.start) >= state.limits.window {
+        client.budget = Budget {
+            start: now,
+            requests: 0,
+            bytes: 0,
+        };
+    }
+    if client.inflight >= client.selected.max_inflight
+        || client.budget.requests >= client.selected.requests_per_window
+    {
+        return Ok(Authorized::Busy);
+    }
+    client.budget.requests += 1;
+    client.inflight += 1;
+    Ok(Authorized::Allowed(Some(ClientLease { state, index })))
 }
 fn hex32(value: &str) -> Option<[u8; 32]> {
     if value.len() != 64
@@ -172,6 +335,7 @@ struct State {
     origin: String,
     namespace: RelayNamespace,
     capability: BrowserCapability,
+    hosted: Option<Hosted>,
     limits: GatewayLimits,
     upstream: Arc<dyn Upstream>,
     assets: Assets,
@@ -207,6 +371,110 @@ impl Gateway {
             limits,
         )
     }
+    /// Construct direct TLS 1.3 termination for one canonical DNS origin.
+    /// It never enables plaintext remote HTTP, proxy headers or ambient upstream trust.
+    pub fn new_https(
+        address: SocketAddr,
+        namespace: RelayNamespace,
+        settings: HttpsSettings,
+        upstream: TlsRelay,
+        assets: Assets,
+        limits: GatewayLimits,
+    ) -> Result<Self> {
+        if upstream.namespace() != namespace {
+            return Err(NetError::Scope);
+        }
+        if settings
+            .clients
+            .iter()
+            .any(|client| upstream.token_matches(&client.capability.0))
+        {
+            return Err(NetError::Denied);
+        }
+        Self::configured_https(
+            address,
+            namespace,
+            settings,
+            Arc::new(upstream),
+            assets,
+            limits,
+        )
+    }
+    fn configured_https(
+        address: SocketAddr,
+        namespace: RelayNamespace,
+        settings: HttpsSettings,
+        upstream: Arc<dyn Upstream>,
+        assets: Assets,
+        limits: GatewayLimits,
+    ) -> Result<Self> {
+        limits.check()?;
+        if address.port() == 0
+            || address.port() != settings.origin.port()
+            || settings.clients.is_empty()
+            || settings.clients.len() > 64
+        {
+            return Err(NetError::Bounds);
+        }
+        let wall = unix_now()?;
+        let now = Instant::now();
+        let mut clients = Vec::<ClientState>::new();
+        for selected in settings.clients {
+            if selected.id == [0; 16]
+                || !(1..=8).contains(&selected.max_inflight)
+                || !(1..=4096).contains(&selected.requests_per_window)
+                || !(1..=64 * 1024 * 1024).contains(&selected.bytes_per_window)
+                || (!selected.revoked
+                    && selected.expires_unix_secs.saturating_sub(wall)
+                        > MAX_BROWSER_CLIENT_LIFETIME.as_secs())
+                || clients.iter().any(|prior| {
+                    prior.selected.id == selected.id
+                        || prior.selected.capability.0 == selected.capability.0
+                })
+            {
+                return Err(NetError::Bounds);
+            }
+            let remaining = selected.expires_unix_secs.saturating_sub(wall);
+            let disabled = selected.revoked || remaining == 0;
+            clients.push(ClientState {
+                selected,
+                expires: (!disabled).then(|| now + Duration::from_secs(remaining)),
+                disabled,
+                budget: Budget {
+                    start: now,
+                    requests: 0,
+                    bytes: 0,
+                },
+                inflight: 0,
+            });
+        }
+        let mut tls = super::tls::server_config(settings.certificate_chain, settings.private_key)?;
+        Arc::get_mut(&mut tls)
+            .ok_or(NetError::Unavailable)?
+            .alpn_protocols = vec![b"http/1.1".to_vec()];
+        Ok(Self(Arc::new(State {
+            address,
+            host: settings.origin.authority().to_owned(),
+            origin: settings.origin.as_str().to_owned(),
+            // Unused for HTTPS, which always uses its explicit client table.
+            capability: BrowserCapability([0; 32]),
+            hosted: Some(Hosted {
+                tls,
+                name: settings.origin.host().to_owned(),
+                clients: Mutex::new(clients),
+            }),
+            namespace,
+            upstream,
+            assets,
+            limits,
+            budget: Mutex::new(Budget {
+                start: now,
+                requests: 0,
+                bytes: 0,
+            }),
+            unhealthy: AtomicBool::new(false),
+        })))
+    }
     fn configured(
         address: SocketAddr,
         namespace: RelayNamespace,
@@ -226,6 +494,7 @@ impl Gateway {
             host,
             namespace,
             capability,
+            hosted: None,
             upstream,
             assets,
             limits,
@@ -237,7 +506,7 @@ impl Gateway {
             unhealthy: AtomicBool::new(false),
         })))
     }
-    /// Stable browser origin, always numeric loopback HTTP.
+    /// Exact selected browser origin; construction determines HTTP or HTTPS.
     pub fn origin(&self) -> &str {
         &self.0.origin
     }
@@ -287,16 +556,20 @@ impl Gateway {
                     // of silently dropping the socket: 403 for a non-loopback
                     // peer, 503 while every worker slot is occupied, and 429
                     // once the accepted-connection window budget is spent.
-                    if !peer.ip().is_loopback() {
+                    if self.0.hosted.is_none() && !peer.ip().is_loopback() {
                         refuse(stream, 403);
                         continue;
                     }
                     if workers.len() >= self.0.limits.max_connections {
-                        refuse(stream, 503);
+                        if self.0.hosted.is_none() {
+                            refuse(stream, 503);
+                        }
                         continue;
                     }
                     if !admitted {
-                        refuse(stream, 429);
+                        if self.0.hosted.is_none() {
+                            refuse(stream, 429);
+                        }
                         continue;
                     }
                     let state = self.0.clone();
@@ -338,7 +611,9 @@ impl Gateway {
     }
 }
 /// Catch only unwinding failures whose shared-state boundary can be audited.
-/// Configuration/assets are immutable; budget mutation is mutex-protected.
+/// Configuration/assets are immutable; global and per-client budgets, inflight
+/// counts and expiry latches are mutex-protected. A failed lease release also
+/// marks shared state unhealthy instead of repairing accounting in place.
 /// A panic inside the upstream client may taint its shared TLS internals, so
 /// that boundary stays fail-closed even when the admission mutex is healthy.
 /// New shared mutable state requires an explicit addition to this audit.
@@ -354,7 +629,12 @@ fn connection_with(
     }));
     // Local request buffers and the socket are dropped on unwind. No failed
     // request is reported as successful and no retained work is acknowledged.
-    let unhealthy = upstream_uncertain || state.budget.is_poisoned();
+    let unhealthy = upstream_uncertain
+        || state.budget.is_poisoned()
+        || state
+            .hosted
+            .as_ref()
+            .is_some_and(|hosted| hosted.clients.is_poisoned());
     if unhealthy {
         state.unhealthy.store(true, Ordering::Release);
     }
@@ -435,7 +715,7 @@ struct Request {
     path: String,
     headers: BTreeMap<String, String>,
 }
-fn headers(socket: &mut Socket) -> Result<Request> {
+fn headers(socket: &mut impl Read) -> Result<Request> {
     let mut raw = Vec::new();
     while !raw.ends_with(b"\r\n\r\n") {
         if raw.len() == HEADER_MAX {
@@ -479,7 +759,7 @@ fn headers(socket: &mut Socket) -> Result<Request> {
         headers,
     })
 }
-fn response(socket: &mut Socket, status: u16, mime: &str, body: &[u8]) -> Result<()> {
+fn response(socket: &mut impl Write, status: u16, mime: &str, body: &[u8]) -> Result<()> {
     let header = format!(
         "HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nContent-Type: {mime}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Opener-Policy: same-origin\r\nContent-Security-Policy: {CSP}\r\n\r\n",
         body.len()
@@ -487,6 +767,7 @@ fn response(socket: &mut Socket, status: u16, mime: &str, body: &[u8]) -> Result
     socket
         .write_all(header.as_bytes())
         .and_then(|_| socket.write_all(body))
+        .and_then(|_| socket.flush())
         .map_err(|_| NetError::Timeout)
 }
 #[cfg(test)]
@@ -504,26 +785,66 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
         stream,
         deadline: Instant::now() + state.limits.timeout,
     };
-    let request = match headers(&mut socket) {
+    let deadline = socket.deadline;
+    if let Some(hosted) = &state.hosted {
+        socket.deadline = deadline.min(Instant::now() + HANDSHAKE_TIMEOUT);
+        let mut connection =
+            ServerConnection::new(hosted.tls.clone()).map_err(|_| NetError::Unavailable)?;
+        while connection.is_handshaking() {
+            connection
+                .complete_io(&mut socket)
+                .map_err(|_| NetError::Timeout)?;
+        }
+        if connection.alpn_protocol() != Some(b"http/1.1".as_slice())
+            || connection.server_name() != Some(hosted.name.as_str())
+        {
+            return Err(NetError::Scope);
+        }
+        socket.deadline = deadline;
+        let mut stream = StreamOwned::new(connection, socket);
+        handle_request(state, &mut stream, deadline, upstream_uncertain)?;
+        stream.conn.send_close_notify();
+        return stream.flush().map_err(|_| NetError::Timeout);
+    }
+    handle_request(state, &mut socket, deadline, upstream_uncertain)
+}
+fn handle_request(
+    state: &State,
+    socket: &mut (impl Read + Write),
+    deadline: Instant,
+    upstream_uncertain: &mut bool,
+) -> Result<()> {
+    let request = match headers(socket) {
         Ok(value) => value,
-        Err(_) => return response(&mut socket, 400, "text/plain", b"request refused"),
+        Err(_) => return response(socket, 400, "text/plain", b"request refused"),
     };
     let get = |name: &str| request.headers.get(name).map(String::as_str);
     if get("host") != Some(state.host.as_str()) || get("origin").is_some_and(|v| v != state.origin)
     {
         return response(
-            &mut socket,
+            socket,
             403,
             "text/plain",
-            b"gateway origin refused; use the configured loopback host and forward the same port",
+            if state.hosted.is_some() {
+                b"gateway origin refused; use the exact configured host and origin"
+            } else {
+                b"gateway origin refused; use the configured loopback host and forward the same port"
+            },
         );
     }
+    if state.hosted.is_some()
+        && request.headers.keys().any(|name| {
+            name == "forwarded" || name.starts_with("x-forwarded-") || name == "x-real-ip"
+        })
+    {
+        return response(socket, 403, "text/plain", b"request refused");
+    }
     if get("transfer-encoding").is_some() || get("content-encoding").is_some() {
-        return response(&mut socket, 403, "text/plain", b"request refused");
+        return response(socket, 403, "text/plain", b"request refused");
     }
     if request.method == "GET" {
         if get("content-length").is_some_and(|v| v != "0") {
-            return response(&mut socket, 400, "text/plain", b"request refused");
+            return response(socket, 400, "text/plain", b"request refused");
         }
         let path = if request.path == "/" {
             "index.html"
@@ -531,7 +852,7 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
             &request.path[1..]
         };
         let Some(body) = state.assets.0.get(path) else {
-            return response(&mut socket, 404, "text/plain", b"not found");
+            return response(socket, 404, "text/plain", b"not found");
         };
         let mime = if path.ends_with(".html") {
             "text/html; charset=utf-8"
@@ -545,39 +866,49 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
             "application/octet-stream"
         };
         if !admit(state, body.len(), false)? {
-            return response(&mut socket, 429, "text/plain", b"temporarily unavailable");
+            return response(socket, 429, "text/plain", b"temporarily unavailable");
         }
-        return response(&mut socket, 200, mime, body);
+        return response(socket, 200, mime, body);
     }
     if request.method != "POST"
         || request.path != ENDPOINT
         || get("origin") != Some(state.origin.as_str())
         || get("content-type") != Some("application/octet-stream")
-        || !get("authorization").is_some_and(|v| state.capability.matches(v))
         || get("x-vhalla-namespace").and_then(hex32).as_ref() != Some(state.namespace.as_bytes())
     {
-        return response(&mut socket, 403, "text/plain", b"request refused");
+        return response(socket, 403, "text/plain", b"request refused");
     }
+    let lease = match authorize(state, get("authorization"))? {
+        Authorized::Allowed(lease) => lease,
+        Authorized::Denied => return response(socket, 403, "text/plain", b"request refused"),
+        Authorized::Busy => return response(socket, 429, "text/plain", b"temporarily unavailable"),
+    };
     let length =
         get("content-length").and_then(|v| v.parse::<usize>().ok().filter(|n| n.to_string() == v));
     let Some(length) = length.filter(|n| (5..=MAX_REQUEST + 4).contains(n)) else {
-        return response(&mut socket, 400, "text/plain", b"request refused");
+        return response(socket, 400, "text/plain", b"request refused");
     };
-    if !admit(state, length, false)? {
-        return response(&mut socket, 429, "text/plain", b"temporarily unavailable");
+    if !admit(state, length, false)?
+        || lease
+            .as_ref()
+            .map(|client| client.charge(length))
+            .transpose()?
+            .is_some_and(|allowed| !allowed)
+    {
+        return response(socket, 429, "text/plain", b"temporarily unavailable");
     }
     let mut body = vec![0; length];
     if socket.read_exact(&mut body).is_err() {
-        return response(&mut socket, 408, "text/plain", b"request timeout");
+        return response(socket, 408, "text/plain", b"request timeout");
     }
     let (op, body) = match decode_frame(&body, MAX_REQUEST) {
         Ok(frame) => frame,
-        Err(_) => return response(&mut socket, 400, "text/plain", b"request refused"),
+        Err(_) => return response(socket, 400, "text/plain", b"request refused"),
     };
     match op {
         OP_PUT => {
             if !RelayItem::decode(body).is_ok_and(|i| i.namespace() == state.namespace) {
-                return response(&mut socket, 400, "text/plain", b"request refused");
+                return response(socket, 400, "text/plain", b"request refused");
             }
         }
         OP_PAGE => {
@@ -588,13 +919,29 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
                 )
                 .is_err()
             {
-                return response(&mut socket, 400, "text/plain", b"request refused");
+                return response(socket, 400, "text/plain", b"request refused");
             }
         }
-        _ => return response(&mut socket, 400, "text/plain", b"request refused"),
+        _ => return response(socket, 400, "text/plain", b"request refused"),
+    }
+    // The authenticated header may have preceded a slow request body. Recheck
+    // the latched wall/monotonic expiry immediately before an upstream effect.
+    if lease
+        .as_ref()
+        .map(ClientLease::live)
+        .transpose()?
+        .is_some_and(|live| !live)
+    {
+        return response(socket, 403, "text/plain", b"request refused");
+    }
+    if Instant::now() >= deadline {
+        return Err(NetError::Timeout);
+    }
+    if state.unhealthy.load(Ordering::Acquire) {
+        return Err(NetError::Unavailable);
     }
     *upstream_uncertain = true;
-    let exchange = state.upstream.exchange(op, body, socket.deadline);
+    let exchange = state.upstream.exchange(op, body, deadline);
     *upstream_uncertain = false;
     let (status, body) = match exchange {
         Ok(body) => (STATUS_OK, body),
@@ -610,11 +957,17 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
             Vec::new(),
         ),
     };
-    if !admit(state, body.len(), false)? {
-        return response(&mut socket, 429, "text/plain", b"temporarily unavailable");
+    if !admit(state, body.len(), false)?
+        || lease
+            .as_ref()
+            .map(|client| client.charge(body.len() + 5))
+            .transpose()?
+            .is_some_and(|allowed| !allowed)
+    {
+        return response(socket, 429, "text/plain", b"temporarily unavailable");
     }
     response(
-        &mut socket,
+        socket,
         200,
         "application/octet-stream",
         &frame(status, &body),

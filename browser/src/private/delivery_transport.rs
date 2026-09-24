@@ -50,22 +50,23 @@ pub(super) fn origin() -> Result<String, Error> {
         .as_string()
         .ok_or(Error::Refused)
 }
-pub(super) fn canonical_origin(origin: &str) -> bool {
-    let Some(port) = origin.strip_prefix("http://127.0.0.1:") else {
-        return false;
-    };
-    port.parse::<u16>()
-        .is_ok_and(|n| n != 0 && n.to_string() == port)
+pub(super) fn secure_context() -> bool {
+    Reflect::get(&js_sys::global(), &"isSecureContext".into())
+        .ok()
+        .and_then(|value| value.as_bool())
+        == Some(true)
 }
 pub(super) async fn exchange(
     origin: &str,
+    mode: super::profile::Mode,
     namespace: &[u8; 32],
     capability: &Zeroizing<String>,
     frame: &[u8],
     maximum: usize,
 ) -> Result<Vec<u8>, Error> {
     if canceled()
-        || !canonical_origin(origin)
+        || !super::profile::valid_origin(mode, origin)
+        || (mode == super::profile::Mode::Https && !secure_context())
         || self::origin()? != origin
         || frame.len() > codec::MAX_REQUEST + 4
         || maximum > codec::MAX_RESPONSE + 4

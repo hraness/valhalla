@@ -206,11 +206,13 @@ jobs:
         with:
           node-version: '24'
       - name: Qualification process cleanup regressions
-        run: node --test browser/tools/qualification_lifecycle.test.mjs
+        run: node --test browser/tools/qualification_lifecycle.test.mjs browser/tools/qualification_process_guardian.test.mjs browser/tools/qualification_https.test.mjs
       - name: Build maintained local private host and browser gateway
         run: cargo build --locked -p vhalla-cli --features experimental-private
       - name: Exercise production browser delivery, outage and exact restart
         run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-delivery-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)"
+      - name: Exercise production HTTPS browser delivery without a local client helper
+        run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-https-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)" --https
       - name: Exercise production private panel and archive recovery
         run: node browser/tools/qualify_private_panel.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-production-panel-results" --production
       - name: Install exact browser bindings for runtime qualification
@@ -303,6 +305,10 @@ jobs:
             ${{ runner.temp }}/vhalla-private-panel-results/receipt.json
             ${{ runner.temp }}/vhalla-private-panel-results/*.log
             ${{ runner.temp }}/vhalla-private-panel-results/*.png
+            ${{ runner.temp }}/vhalla-private-https-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-https-results/cleanup.json
+            ${{ runner.temp }}/vhalla-private-https-results/*.log
+            ${{ runner.temp }}/vhalla-private-https-results/*.png
             ${{ runner.temp }}/vhalla-private-delivery-results/receipt.json
             ${{ runner.temp }}/vhalla-private-delivery-results/*.log
             ${{ runner.temp }}/vhalla-private-delivery-results/*.png
@@ -320,6 +326,8 @@ jobs:
         id: qualified-browser
         run: |
           digest="$(python3 .github/scripts/verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-delivery-results/receipt.json")"
+          https_digest="$(python3 .github/scripts/verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-https-results/receipt.json")"
+          test "$digest" = "$https_digest"
           printf 'manifest_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:

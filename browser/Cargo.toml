@@ -10,7 +10,7 @@ description = "Rust/WASM browser participation and local encrypted identity."
 default = []
 # Local browser acceptance harness only; never use this build for deployment.
 local-qualification = ["vhalla-private-kernel?/local-qualification"]
-# Trusted private custody with explicit, bounded local-gateway synchronization.
+# Trusted private custody with explicit, bounded same-origin synchronization.
 private-rooms = ["dep:sha2", "dep:vhalla-private-relay", "dep:vhalla-private-kernel", "vhalla-browser-vault/private-storage", "vhalla-browser-storage/private-rooms"]
 
 [dependencies]
@@ -19,6 +19,8 @@ vhalla-private-relay = { path = "../crates/vhalla-private-relay", optional = tru
 vhalla-private-kernel = { path = "../crates/vhalla-private-kernel", optional = true }
 
 [dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 ed25519-dalek = "=2.2.0"
 zeroize = { version = "1.9", features = ["alloc"] }
 futures = "=0.3.34"

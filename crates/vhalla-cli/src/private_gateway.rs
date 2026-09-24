@@ -1,4 +1,4 @@
-//! Loopback UI and browser relay gateway. Never opens a mailbox or identity.
+//! Explicit loopback or HTTPS browser gateway. Never opens a mailbox or identity.
 mod launchd;
 use crate::private_host::events;
 use serde::Deserialize;
@@ -16,7 +16,10 @@ use std::{
     time::Duration,
 };
 use vhalla_private_native::relay::{
-    http::{Assets, BrowserCapability, Gateway, GatewayLimits, MAX_ASSET_BYTES},
+    http::{
+        Assets, BrowserCapability, BrowserClient, Gateway, GatewayLimits, HttpsOrigin,
+        HttpsSettings, MAX_ASSET_BYTES,
+    },
     net::RelayToken,
     tls::TlsRelay,
     RelayNamespace, MAX_RELAY_ITEMS,
@@ -46,6 +49,36 @@ struct Config {
     upstream: Upstream,
     assets_dir: PathBuf,
     initial_cursor: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HttpsConfig {
+    format: u32,
+    listen: SocketAddr,
+    origin: String,
+    namespace: String,
+    tls: ServerTls,
+    clients: Vec<Client>,
+    upstream: Upstream,
+    assets_dir: PathBuf,
+    initial_cursor: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServerTls {
+    certificate_chain_files: Vec<PathBuf>,
+    private_key_file: PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Client {
+    id: String,
+    token_file: PathBuf,
+    expires_unix_secs: u64,
+    revoked: bool,
+    max_inflight: usize,
+    requests_per_window: u32,
+    bytes_per_window: usize,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,8 +204,20 @@ fn assets(root: &Path) -> Result<Assets, String> {
 /// Load exact immutable gateway configuration; the browser receives neither the
 /// upstream token nor CA/key paths. This performs no network or mailbox effects.
 pub(crate) fn load(path: &Path) -> Result<(Gateway, SocketAddr), String> {
-    let config: Config = serde_json::from_slice(&private(path, 65536)?)
-        .map_err(|_| "gateway configuration malformed")?;
+    #[derive(Deserialize)]
+    struct Format {
+        format: u32,
+    }
+    let bytes = private(path, 65536)?;
+    let selected: Format =
+        serde_json::from_slice(&bytes).map_err(|_| "gateway configuration malformed")?;
+    if selected.format == 2 {
+        return load_https(
+            serde_json::from_slice(&bytes).map_err(|_| "gateway HTTPS configuration malformed")?,
+        );
+    }
+    let config: Config =
+        serde_json::from_slice(&bytes).map_err(|_| "gateway configuration malformed")?;
     if config.format != 1
         || !config.listen.ip().is_loopback()
         || config.listen.port() == 0
@@ -212,6 +257,82 @@ pub(crate) fn load(path: &Path) -> Result<(Gateway, SocketAddr), String> {
         GatewayLimits::default(),
     )
     .map_err(|_| "gateway policy refused")?;
+    Ok((gateway, config.listen))
+}
+
+fn load_https(config: HttpsConfig) -> Result<(Gateway, SocketAddr), String> {
+    let origin = HttpsOrigin::parse(&config.origin).map_err(|_| "gateway HTTPS origin refused")?;
+    if config.format != 2
+        || config.listen.port() == 0
+        || config.listen.port() != origin.port()
+        || config
+            .initial_cursor
+            .parse::<u64>()
+            .ok()
+            .is_none_or(|cursor| {
+                cursor.to_string() != config.initial_cursor || cursor > MAX_RELAY_ITEMS as u64
+            })
+        || config.clients.is_empty()
+        || config.clients.len() > 64
+        || config.tls.certificate_chain_files.is_empty()
+        || config.tls.certificate_chain_files.len() > 8
+    {
+        return Err("gateway format 2 needs exact HTTPS origin, matching listen port, bounded clients and canonical initial_cursor".into());
+    }
+    let namespace = RelayNamespace::from_bytes(hex(&config.namespace)?)
+        .map_err(|_| "gateway namespace refused")?;
+    let upstream_token = Zeroizing::new(token(&config.upstream.token_file)?);
+    let upstream = TlsRelay::new(
+        config.upstream.addr,
+        &config.upstream.tls_name,
+        private(&config.upstream.tls_ca_file, 65536)?.to_vec(),
+        RelayToken::from_bytes(*upstream_token)
+            .map_err(|_| "gateway upstream credential refused")?,
+        namespace,
+    )
+    .map_err(|_| "gateway TLS profile refused")?;
+    let mut clients = Vec::with_capacity(config.clients.len());
+    for client in config.clients {
+        if client.id.len() != 32 {
+            return Err("gateway client identifier refused".into());
+        }
+        let extended = hex(&format!("{}{}", client.id, client.id))?;
+        let id = extended[..16]
+            .try_into()
+            .map_err(|_| "gateway client identifier refused")?;
+        let capability = Zeroizing::new(token(&client.token_file)?);
+        clients.push(BrowserClient {
+            id,
+            capability: BrowserCapability::from_bytes(*capability)
+                .map_err(|_| "gateway browser capability refused")?,
+            expires_unix_secs: client.expires_unix_secs,
+            revoked: client.revoked,
+            max_inflight: client.max_inflight,
+            requests_per_window: client.requests_per_window,
+            bytes_per_window: client.bytes_per_window,
+        });
+    }
+    let certificate_chain = config
+        .tls
+        .certificate_chain_files
+        .iter()
+        .map(|path| private(path, 65536).map(|bytes| bytes.to_vec()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let settings = HttpsSettings {
+        origin,
+        certificate_chain,
+        private_key: private(&config.tls.private_key_file, 65536)?.to_vec(),
+        clients,
+    };
+    let gateway = Gateway::new_https(
+        config.listen,
+        namespace,
+        settings,
+        upstream,
+        assets(&config.assets_dir)?,
+        GatewayLimits::default(),
+    )
+    .map_err(|_| "gateway HTTPS policy refused")?;
     Ok((gateway, config.listen))
 }
 /// Canonical absolute path used for labels, argv and the sibling event log.
@@ -273,10 +394,10 @@ fn bind(address: SocketAddr, log_dir: &Path) -> Result<TcpListener, String> {
                 events::append(log_dir, "bind-retry", &[("attempt", &attempt.to_string())])?;
                 std::thread::sleep(Duration::from_millis(500));
             }
-            Err(_) => return Err("gateway loopback listener bind failed".into()),
+            Err(_) => return Err("gateway listener bind failed".into()),
         }
     }
-    Err("gateway loopback listener bind failed".into())
+    Err("gateway listener bind failed".into())
 }
 pub(crate) fn help() -> &'static str {
     "vhalla private-gateway serve|status|install|uninstall <absolute-private-config.json> [--probe for status]"
@@ -295,7 +416,11 @@ pub(crate) fn execute(args: &[OsString]) -> Result<(), String> {
             let log_dir = config.parent().ok_or(REFUSED)?;
             let mut report = serde_json::json!({"status":"configured","config":config,"label":launchd::label(&config)?,"listen":listen,"origin":gateway.origin(),"service":launchd::status(&config)?,"log":log_dir.join(crate::private_host::launchd::LOG_NAME),"recent_events":events::tail(log_dir,8)?});
             if args.len() == 3 {
-                report["probe"] = probe(listen)?;
+                report["probe"] = if gateway.origin().starts_with("https://") {
+                    serde_json::json!({"listening":TcpStream::connect_timeout(&listen,Duration::from_secs(2)).is_ok(),"probed":false,"scope":"TCP listener only; HTTPS certificate and upstream TLS require separate verification"})
+                } else {
+                    probe(listen)?
+                };
             } else {
                 report["health"] =
                     "not probed; live listener and upstream TLS are separate evidence".into();

@@ -162,7 +162,7 @@ pub(super) async fn perform(
                     create: action == Action::DeliveryCreate,
                 },
             )
-            .await.map_err(|error| format!("{error} The profile must name the configured 127.0.0.1 host and the same forwarded local port."))?;
+            .await.map_err(|error| format!("{error} Use a profile for this app’s exact address: HTTPS profiles require a secure connection; local-host profiles require the configured 127.0.0.1 address and port."))?;
             let Response::Delivery(report) = reply else {
                 return Err("Unexpected delivery report.".into());
             };

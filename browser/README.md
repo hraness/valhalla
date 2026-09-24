@@ -205,7 +205,7 @@ private commands to the existing identity worker. Entering private mode is
 irreversible for that worker: public signing, public author export and account
 replacement refuse while private custody is ready, busy or failed. Leaving ends
 both account and kernel custody and requires explicit unlock in a new worker.
-It adds no automatic network operation or agent execution environment. The optional explicit local-gateway connection described below transfers only already-encrypted artifacts.
+It adds no automatic network operation or agent execution environment. The optional explicit connection described below transfers only already-encrypted artifacts.
 
 Each operation rechecks the exact saved account image before and after kernel
 access. Interrupted, failed or canceled work terminates custody; reopen must use
@@ -324,7 +324,7 @@ applies it in order without regaining owner actions. Safe live-device
 transfer remains separate work.
 
 
-## Explicit local-host private sync
+## Explicit private sync
 
 Build the production private UI from the `browser/` directory into a separate
 output path, then generate its checked asset manifest:
@@ -338,20 +338,48 @@ Use that directory as the gateway's `assets_dir`. The default public build does
 not include private-room controls, and a `local-qualification` build is refused
 by the gateway.
 
-A production `private-rooms` build can run at a **fixed**
-`http://127.0.0.1:PORT` origin served by `vhalla private-gateway`. The gateway
-forwards opaque relay requests through the selected CA/name-pinned TLS endpoint.
-Run native Tailcat forwarding on that browser's machine when the relay host is
-elsewhere. A generic `tailcat browse` chooses a random local port and therefore a
-new IndexedDB origin; use a fixed explicit forward instead. Browser-only/mobile
-Tailcat, autonomous browser hosting and background persistence are not implemented.
-When forwarding the gateway itself, use the same `127.0.0.1` host and local port
-as its configured origin: its Host/Origin checks intentionally reject a different
-forwarded port. A local gateway may instead forward only its upstream TLS socket.
-Your Mac can sleep or disconnect: queued ciphertext remains durable locally and
-progress resumes when you explicitly reopen and select **Sync now**.
+A production `private-rooms` build supports two explicitly selected origins:
 
-After opening a room, choose a private JSON connection profile:
+- **Hosted HTTPS (format 2):** open the configured HTTPS address in a browser.
+  No local CLI or Tailcat installation is required. The HTTPS gateway serves
+  this app and forwards encrypted requests to one configured, CA/name-pinned
+  relay namespace. Account keys, private-room device keys and plaintext remain
+  in the browser's private worker. Use a browser-trusted certificate; the client
+  has no certificate bypass or fallback to HTTP.
+- **Local host (format 1):** use the fixed `http://127.0.0.1:PORT` origin served
+  by `vhalla private-gateway`. A native Tailcat helper can forward the upstream
+  TLS socket. When forwarding the gateway itself, retain its configured host
+  and port. A generic `tailcat browse` selects a random port and therefore a
+  different IndexedDB origin; use a fixed explicit forward instead.
+
+Keep the same app origin. A hostname, scheme or port change selects separate
+browser storage and cannot reopen this device's retained state. Moving to an
+HTTPS app does not migrate an existing local-origin device. A browser can pause
+or lose its storage; an account-key backup alone cannot restore private-room
+ratchet state. Rejoining as a fresh device requires the ordinary explicit
+membership process. The app publisher remains trusted to serve honest client
+code: encrypted transport cannot protect keys from a malicious app update.
+
+A closed browser or sleeping device pauses progress. Reopen the same origin and
+select **Sync now** to continue. This path provides no always-on background
+participant or automatic browser polling.
+
+After opening a room, choose a private JSON connection profile. For HTTPS:
+
+```json
+{
+  "format": 2,
+  "origin": "https://rooms.example.com",
+  "namespace": "<64 lowercase hexadecimal digits from the selected relay host>",
+  "capability": "<individual gateway capability, 64 lowercase hexadecimal digits>",
+  "initial_cursor": "0"
+}
+```
+
+The HTTPS origin is canonical lowercase ASCII DNS with no trailing slash,
+credentials, path or explicit default port. It must match this app's exact
+origin, and the browser must report a secure context. A format-1 profile never
+silently upgrades to format 2. For an explicitly configured local host:
 
 ```json
 {
@@ -363,7 +391,7 @@ After opening a room, choose a private JSON connection profile:
 }
 ```
 
-The origin must exactly match this worker's fixed loopback origin. The gateway
+The origin must exactly match this worker's origin. The gateway
 capability is distinct from the host-only relay token and is supplied again on
 each unlock. The worker holds it only in memory, and clears the selected file
 input immediately. Browser-managed temporary copies are outside a guarantee of
@@ -371,7 +399,8 @@ complete memory erasure. Keep this profile file `0600` inside a `0700`
 directory and never in Downloads or other shared locations; its capability is
 a bearer credential. Revocation or replacement requires an explicit gateway
 configuration change and drained restart; locking a worker does not revoke the
-shared gateway capability.
+gateway capability. Hosted gateways can assign separate expiring credentials
+to clients; a credential permits encrypted transport, not room membership.
 An authorization refusal locks that worker and retains its exact pending job,
 charged attempt and backoff. Explicitly unlock and select a profile carrying the
 current capability to resume; correcting authority never resets finite budgets.
