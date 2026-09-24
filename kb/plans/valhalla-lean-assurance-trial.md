@@ -211,3 +211,12 @@ reverting proof tooling needs no storage or operational rollback.
   Source and documentation were drafted by root and the named implementation
   agents and reviewed by the independent AI agent; no human review is claimed.
   Current-candidate CI and governed delivery remain pending.
+- PR [#105](https://github.com/hraness/valhalla/pull/105) publishes implementation
+  candidate `0607fe474133d62e5a3c56117fd274b2fff1ea92` on current main `339760a`.
+  Its Linux Lean job passed in 39 seconds, including download and extraction.
+  Artifact readback exposed a packaging omission: upload-artifact excluded the
+  copied `.github/workflows/verification.yml` by default. Enable hidden-file
+  upload for this explicitly enumerated source/evidence directory, then rerun
+  required CI and verify all 19 copied inputs from the downloaded artifact.
+  The omitted file contains workflow source, not credentials; the extracted
+  distribution remains outside the uploaded directory.
