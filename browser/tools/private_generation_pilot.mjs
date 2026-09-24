@@ -105,6 +105,20 @@ async function mailbox(h,name){
 export async function drainMixedGeneration(h,{owner,roles}) {
   require(h.generationPilot&&roles.length===2&&!active.has(owner),'unexpected generation fixture');
   const deadline=Date.now()+120000;
+  // Both natives were admitted through the exact file path, so their relay-published
+  // requests remain as retained local copies awaiting an owner decision. A drain
+  // requires that decision; the owner discards the duplicates explicitly, one at a
+  // time, exactly as an operator must before a transition. The mailbox is unchanged.
+  let discarded=0;
+  for(;;){
+    h.signal.throwIfAborted();require(Date.now()<deadline&&discarded<=8,'retained admission copies did not resolve');
+    await h.sync(owner);
+    const listed=await h.invoke(owner,'function(){return qid(\'private-admission-select\').options.length;}',[]);
+    if(!listed)break;
+    await h.evaluate(owner,"(async()=>{const select=qid('private-admission-select');qset('private-admission-select',select.options[0].value,'change');await qclick('private-admission-discard');await qidle();return true;})()");
+    discarded++;
+  }
+  require(discarded===roles.length,'expected exactly one retained relay request per file-admitted native');
   for(;;){
     h.signal.throwIfAborted();require(Date.now()<deadline,'mixed controllers failed to drain in 120 seconds');
     await h.sync(owner);const head=Number(await h.head());require(Number.isSafeInteger(head)&&head>0&&head<=4096,'drain head bound');

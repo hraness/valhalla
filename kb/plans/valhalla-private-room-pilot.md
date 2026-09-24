@@ -89,7 +89,11 @@ or Dioxus requirements.
 
 ## Phase 1a: Quiet-room delivery
 
-- **Status:** In progress
+- **Status:** Deferred to PR110. The pilot keeps main's adaptive idle backoff
+  (five to thirty seconds, reset by staged or applied work); its unconditional
+  one-second poll was reverted before delivery, and no quiet-arrival
+  improvement is claimed. PR110 proposes an opt-in profile-bound polling
+  policy and owns the controlled before/after measurement.
 - **Depends on:** phase 0 delivery contract.
 - **Objective:** reduce the measured 28.667-second quiet-arrival acceptance delay.
 - **Approach:** choose the smallest measured improvement preserving transport
@@ -105,7 +109,12 @@ or Dioxus requirements.
 
 ## Phase 1b: Recipient relay admission
 
-- **Status:** In progress
+- **Status:** Done locally. The production browser delivery qualification on
+  the current head records the recipient publishing its exact request through
+  prejoin sync, reviewing an authenticated invitation after multipage
+  discovery, refusing stale consent after sync/reload, then joining with live
+  replay at zero and preserved connection spend (sixteen facts, same-machine
+  synthetic identities). Independent-device evidence stays in phase 5.
 - **Depends on:** 0.
 - **Objective:** after confidential bootstrap, review and explicitly join from an
   encrypted retained response without manually transferring that response file.
@@ -122,7 +131,11 @@ or Dioxus requirements.
 
 ## Phase 1c: Useful pilot and accurate operating instructions
 
-- **Status:** In progress
+- **Status:** Done locally. The deterministic `agent-launch` pilot and its
+  mixed browser-plus-two-native-agents variant pass on the current head (the
+  mixed run records request, result, verified, human-review and completion
+  stages with exact digests, `realModel: NOT_RUN`, `externalDevice:
+  DEFERRED`); the one installed Codex run remains a single retained sample.
 - **Depends on:** phase 0 pilot contract.
 - **Objective:** reproducibly exercise read, prepare, queue, delivery and
   authenticated acceptance with the existing stable launcher.
@@ -139,7 +152,12 @@ or Dioxus requirements.
 
 ## Phase 2: Joined private-room journey
 
-- **Status:** In progress
+- **Status:** Done locally. The production-artifact mixed pilot joins one
+  browser owner and two native MCP agents through confidential offers and
+  exact encrypted admission files, completes the statistics task, removes the
+  reviewer with one-use review, applies the authenticated control offline,
+  reloads, and delivers the completion under a fresh scoped grant while the
+  original ciphertext, grants and claims stay byte-identical (three facts).
 - **Depends on:** 1a, 1b, 1c.
 - **Objective:** the pieces work together through the real user entry points.
 - **Acceptance:** create/admit, exchange work, go offline, reopen, catch up,
@@ -151,7 +169,13 @@ or Dioxus requirements.
 
 ## Phase 3: Drained mailbox maintenance
 
-- **Status:** In progress (native, browser and host implementation; joined qualification pending)
+- **Status:** Done locally. The joined `--generation-pilot` run (local only;
+  CI runs the mixed pilot without it) drains one browser owner and two native
+  controllers to a common head of 18, pauses all three durably, fences and
+  cuts over the host through check/prepare/fence/cutover/recover, and reaches
+  generation 1 with encrypted room state preserved, incoming starting at
+  zero, cumulative client and host spend preserved and no additional
+  allowance; `independentDevice: DEFERRED`.
 - **Depends on:** joined delivery/admission contract from 2.
 - **Objective:** allow a room to move beyond a mailbox generation's capacity.
 - **Approach:** follow the reviewed drain/fence/intent/cutover contract in
@@ -166,7 +190,12 @@ or Dioxus requirements.
 
 ## Phase 4: Owner and recovery experience
 
-- **Status:** In progress
+- **Status:** Done locally. The production panel qualification passes twelve
+  facts including the ordered removal envelope under the real clock and the
+  account-authorized succession to the enrolled same-account device through
+  one distributed owner control (review captures at 1280 and 390 pixels); the
+  mixed pilot exercises removal with one-use review and reopen under a fresh
+  grant. Missing-owner custody still offers only the supported alternatives.
 - **Depends on:** 2.
 - **Objective:** expose existing device, agent and recovery mechanisms coherently.
 - **Acceptance:** owner can inspect devices and agent authority, revoke or review
@@ -179,7 +208,11 @@ or Dioxus requirements.
 
 ## Phase 5: Delivery and independent-device acceptance
 
-- **Status:** Not started
+- **Status:** In progress. Draft PR #115 carries the branch; delivery follows
+  `docs/main-policy.md` (current-head required checks, independent agent
+  review, CodeQL, conditional merge). The second-machine cases stay deferred
+  by the owner until the connection is ready; sleep/logout/reboot and the
+  sparse soak have no selected target or window and are not claimed.
 - **Depends on:** applicable local implementation phases and reviewed candidate.
 - **Objective:** ship the source/artifacts and prove the selected external route.
 - **Acceptance:** exact-current-head required checks, independent review,
@@ -385,3 +418,54 @@ or Dioxus requirements.
   production artifact, and the combined three-controller rollover are in
   progress. The [maintenance guide](../../docs/private-generations.md) owns the
   command sequence, private inventory and known recovery limits.
+- Claude took over the branch after the Codex thread stopped on its usage cap
+  and checkpointed the uncommitted work, then merged main `a47fe86` (#109)
+  as `9ab2530`. `delivery-pause` refused every checkpoint member: it paged
+  encrypted controls from `Status::history_base`, which sits below the
+  kernel's encrypted base for a member joined at a trusted admission
+  checkpoint, so the kernel refused the first page as missing. The pause now
+  pages from the device's retained wire-history base through the new
+  `encrypted_controls_from(None, ..)` native API, exactly as the delivery
+  driver does; it never accepts a relay-supplied checkpoint or reads below
+  the joining floor. `private_agent_delivery` passes 12/12 with the fix.
+- The unconditional one-second idle poll was reverted to main's adaptive
+  backoff so this branch stays orthogonal to PR110, which proposes an opt-in
+  `polling::Policy` and conflicts with the pilot in nine files; whichever
+  merges second resolves textual conflicts. Phase 1a is handed to PR110 and
+  `docs/private-runtime-readiness.md` no longer claims a shorter interval.
+- The first current-head CI run (36037035228) failed only the browser
+  production artifact, the `vhalla-cli` lane (the pause refusal above) and
+  the site test's outdated readiness phrase. The browser failure was the
+  mixed pilot's 390-pixel owner-removal review capture: the secret label
+  (`Only for account <64 hex> · operation ..`) could not wrap, so the review
+  overflowed the viewport. `#private-panel p, h3 { overflow-wrap: anywhere }`
+  fixes it without changing any text. On the fixed bundle the production
+  delivery qualification passed locally with all sixteen facts, including the
+  recipient prejoin relay join with live replay at zero.
+- With the overflow fixed, the local mixed pilot reached the owner's removal
+  control export and then timed out silently. The panel retains at most eight
+  blob downloads for thirty seconds each and refuses a ninth; the pilot's owner
+  exports nine files (locator, two offers, two admission responses, the first
+  control, two messages, the removal control) in about ten seconds, so the
+  ninth click was refused and the harness waited for a download that never
+  began. A slower diagnostic run whose ninth export came 32 seconds after the
+  first passed, which confirmed the mechanism. The driver now waits for that
+  exact per-document slot window before clicking any export and fails loudly
+  on a refused export; the product limit is unchanged.
+- The first local `--generation-pilot` run (not part of CI) failed its common
+  drain after 120 seconds while every native controller already reported
+  `applied` at the relay head with nothing pending. The owner's browser was the
+  holdout: both natives were admitted through the exact file path, so their
+  relay-published contact requests stayed retained as two local admission
+  copies awaiting an owner decision, and the product's `drained()` predicate
+  correctly refuses a transition while any retained bootstrap item is
+  unresolved. The pilot now has the owner discard each duplicate copy
+  explicitly before the drain, as an operator must; the mailbox and the
+  predicate are unchanged.
+- With the duplicate copies discarded, the joined generation pilot passed:
+  three controllers drained to head 18 and paused, the host fence bound the
+  exact transition, namespaces and head, cutover and recovery selected the
+  successor, and the successor started incoming at zero with cumulative client
+  and host spend preserved and no additional allowance. Its receipts, plan and
+  fence are retained under the qualification output directory; the run is
+  same-machine evidence and `independentDevice` stays `DEFERRED`.

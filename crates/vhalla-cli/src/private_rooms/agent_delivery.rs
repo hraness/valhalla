@@ -35,9 +35,10 @@ const PAGE: usize = MAX_RELAY_PAGE;
 /// loop until an empty page, so catch-up still converges in one tick budget.
 const OUTBOX_PAGE: usize = vhalla_private_kernel::MAX_PAGE_RECORDS;
 const TICK: Duration = Duration::from_secs(2);
-/// Poll healthy quiet rooms at the controller's one-second tick cadence.
-/// Network failures and relay delivery attempts retain separate backoffs.
-const IDLE_POLL: Duration = Duration::from_secs(1);
+/// Idle mailbox poll backoff: a quiet room backs off 5s -> 30s; any staged or
+/// applied work resets it. Relay delivery attempts keep their own due times.
+const IDLE_BASE: Duration = Duration::from_secs(5);
+const IDLE_MAX: Duration = Duration::from_secs(30);
 /// Network-error backoff for relay scans, independent of the idle cadence.
 const ERR_BASE: Duration = Duration::from_secs(1);
 const ERR_MAX: Duration = Duration::from_secs(30);
@@ -542,6 +543,7 @@ pub(super) struct Driver {
     /// kernel custody and the queue.
     boundary_checked: bool,
     next_poll: Instant,
+    idle: Duration,
     err: Duration,
     scan_full: bool,
 }
@@ -618,6 +620,7 @@ impl Driver {
             checkpoint: (cp_outgoing, cp_applied),
             boundary_checked: cp_outgoing == 0,
             next_poll: Instant::now(),
+            idle: IDLE_BASE,
             err: ERR_BASE,
             scan_full: false,
         })
@@ -972,9 +975,9 @@ impl Driver {
         Ok(())
     }
 
-    /// Poll the relay mailbox under the bounded cadence. A nonempty page or a
+    /// Poll the relay mailbox under the adaptive cadence. A nonempty page or a
     /// cursor still behind the observed head repolls on the next tick; a quiet
-    /// room waits one second; network errors back off independently without touching
+    /// room backs off; network errors back off independently without touching
     /// staged evidence. No lifetime attempt cap: only the current pass counts.
     fn poll(&mut self, deadline: Instant) -> Result<(), String> {
         if self.scan_full || Instant::now() < self.next_poll {
@@ -985,8 +988,10 @@ impl Driver {
                 self.staged_head = self.scan.cursor();
                 if report.scanned > 0 || self.staged_head < report.head {
                     self.next_poll = Instant::now();
+                    self.idle = IDLE_BASE;
                 } else {
-                    self.next_poll = Instant::now() + IDLE_POLL;
+                    self.idle = (self.idle * 2).min(IDLE_MAX);
+                    self.next_poll = Instant::now() + self.idle;
                 }
                 self.err = ERR_BASE;
             }

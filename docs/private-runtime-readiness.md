@@ -97,20 +97,24 @@ under five seconds is distinct from correctness and may fail honestly.
 - PR101 established the quiet-arrival baseline: after 90 seconds idle, one
   message took 28.67 seconds to observed acceptance. The 100-message 1 Hz run
   passed correctness with no missed slots and 4.27-second acceptance p95.
-  The pilot implements a shorter idle polling interval. Its repeated comparison
-  must include idle connections, bytes, CPU and memory before claiming an
-  improvement; the original numbers remain evidence for the PR101 binary.
+  The pilot keeps the adaptive idle backoff (five to thirty seconds, reset by
+  any staged or applied work) and claims no quiet-arrival improvement. An
+  opt-in interactive polling policy is proposed separately in PR110; its
+  repeated comparison must include idle connections, bytes, CPU and memory
+  before claiming an improvement, and the original numbers remain evidence for
+  the PR101 binary.
 - Independent-device and remote-path qualification is not yet run.
 - A sparse 24-hour soak requires a real elapsed run and explicit grant handoffs.
   A 24-hour 1 Hz run and 10,000-message single-mailbox run exceed current bounds.
-- [Drained mailbox rollover](private-generations.md) is implemented in the active
-  pilot. Joined browser/native testing and delivery are still tracked there.
+- [Drained mailbox rollover](private-generations.md) is implemented, and the
+  joined browser/native/host transition passes the local generation pilot on
+  one machine (the pilot driver's `--generation-pilot` mode, outside CI).
   Offline undrained migration remains unsupported; preserve capacity refusals
   and all transition records.
-- Recipient-side retained response review and prejoin transport are implemented
-  in the pilot and awaiting its production browser journey. Device transfer,
-  rollback resistance and browser background persistence retain their documented
-  limitations.
+- Recipient-side retained response review and prejoin transport pass the
+  production browser delivery qualification on the same machine; that run is
+  not independent-device evidence. Device transfer, rollback resistance and
+  browser background persistence retain their documented limitations.
 - Production activation needs relevant operational evidence and exact artifact
   identity; finite proofs and local passing tests alone do not establish it.
 

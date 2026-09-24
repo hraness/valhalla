@@ -147,8 +147,13 @@ async function keypress(page,id,key,code,virtualKey) {
   await invoke(page,`async function(id,expected,label){await qwait(()=>qaKeyboardClicks[id]===expected,label);return true;}`,[id,before+1,id+' trusted keyboard activation']);
 }
 async function download(page,button,extension) {
+  // The panel retains at most eight blob downloads for thirty seconds each and
+  // refuses a ninth. Wait for that exact window instead of clicking into the
+  // refusal, then surface any refusal the click still produced.
+  await wait(()=>[...downloads.values()].filter(d=>d.frameId===page.frameId&&Date.now()-d.at<31000).length<8,button+' download slot');
   const previous=new Set(downloads.keys());
-  await evaluate(page,`qclick(${JSON.stringify(button)})`);
+  const refused=await evaluate(page,`(async()=>{const s=qid('private-status');const before=s.textContent;await qclick(${JSON.stringify(button)});await new Promise(r=>setTimeout(r,0));return s.dataset.error==='true'&&s.textContent!==before?s.textContent:'';})()`);
+  if(refused)throw Error(button+' refused: '+refused);
   let item;
   await wait(()=>{
     item=[...downloads.values()].find(d=>!previous.has(d.guid)&&d.filename?.endsWith('.'+extension));
@@ -173,6 +178,7 @@ async function context(name) {
   const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
   const page={name,downloads:directory,browserContextId,targetId,sessionId};pages.push(page);
   for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
+  page.frameId=(await call('Page.getFrameTree',{},sessionId)).frameTree.frame.id;
   await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);
   await call('Page.navigate',{url:gatewayOrigin},sessionId);
   await wait(()=>evaluate(page,"!!document.getElementById('private-panel') && !!document.getElementById('create') && !document.getElementById('create').disabled"),'private app '+name);
@@ -225,6 +231,8 @@ async function reload(page) {
   const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
   page.targetId=targetId;page.sessionId=sessionId;
   for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
+  // A fresh document starts with no retained blob downloads; count only its own.
+  page.frameId=(await call('Page.getFrameTree',{},sessionId)).frameTree.frame.id;
   await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);
   await call('Page.navigate',{url:gatewayOrigin},sessionId);
   // A Runtime.evaluate bound to a context dying mid-navigation is dropped
@@ -556,7 +564,7 @@ async function task(abortSignal) {
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
-  socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith(gatewayOrigin+'/')&&!url.startsWith('blob:'+gatewayOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
+  socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,frameId:p.frameId,at:Date.now(),filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith(gatewayOrigin+'/')&&!url.startsWith('blob:'+gatewayOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
   if(options.mixedPilot) {
     const result=await runMixedPilot({account,enter,evaluate,invoke,setFile,download,retainCreation,
       connect,profileFile,sync,head,command,privateFile,send,reload,leave,wait,removeMember,captureReview,
