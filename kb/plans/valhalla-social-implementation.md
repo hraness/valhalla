@@ -46,7 +46,7 @@ Repository `AGENTS.md` controls delivery: after focused checks, independent revi
 and the aggregate gate, commit/push task-owned changes and observe required GitHub
 checks on the exact commit. Preserve protections; no extra human confirmation is
 required. No package publication or production social activation is implied.
-Use `/Users/bg/.bun/bin/oompa-host-run` in the compute lane for broad builds,
+Use `/Users/bg/.bun/bin/host-run` in the compute lane for broad builds,
 aggregate checks and native process/custody work; genuinely narrow pure checks
 can run normally without bypassing an existing scheduler attempt;
 use the browser-auth lane only for owned live browser evidence. One owner waits
@@ -309,7 +309,7 @@ no social dependency introduces it. No new third-party package version was added
 to the workspace lock. Optional Unix `libc` is used only for safe descriptor-open
 flags; JSON parsing and SHA-256 in CLI tests are dev-only existing dependencies.
 
-The managed repository baseline is current for Oompa local efficiency 0.4.6.
+The managed repository baseline is current for local-efficiency 0.4.6.
 Wordcell percolation was inspected, meaningful prose links were retained, and
 refresh/check passes; its one historical contextual-orphan advisory is unrelated
 to the new social plans. The commit containing this record carries the delivery

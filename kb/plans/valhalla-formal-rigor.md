@@ -40,7 +40,7 @@ is not evidence of a useful theorem, and passing a model is not a Rust proof.
   assurance documentation, tool pins, KB catalog and Git delivery. Workers own
   disjoint model/test files, run focused validation and never commit.
 - Use the installed host scheduler for heavy commands when available. On this
-  host neither `oompa-host-run` nor `hra-host-run` resolves in PATH or standard
+  host neither `host-run` nor `host-run` resolves in PATH or standard
   installed binary directories. Do not install or revive retired global
   wrappers. Keep model runs one-worker/512 MiB and Rust jobs bounded.
 - Deliver a checked PR, independent agent review, resolved findings, current

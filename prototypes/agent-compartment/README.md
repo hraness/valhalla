@@ -57,7 +57,7 @@ Actual OS qualification requires macOS, its installed `sandbox-exec`, and clang.
 Use the installed host scheduler; substitute its resolved absolute path:
 
 ```sh
-/Users/benguo/.bun/bin/hra-host-run --mode=shared --lane=mac-native \
+/Users/benguo/.bun/bin/host-run --mode=shared --lane=mac-native \
   --label=valhalla-agent-compartment-probe -- \
   /usr/bin/python3 prototypes/agent-compartment/qualify_macos.py
 ```

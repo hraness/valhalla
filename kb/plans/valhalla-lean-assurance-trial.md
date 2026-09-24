@@ -48,7 +48,7 @@ any claim of comparative superiority still requires comparative evidence.
   assurance documentation, KB catalog, branch and delivery. Worker file scopes
   are disjoint. There is one Cargo owner and one CI-wait owner.
 - Use an installed host scheduler for heavyweight work when available. No
-  `oompa-host-run` or `hra-host-run` currently resolves in PATH or the standard
+  `host-run` or `host-run` currently resolves in PATH or the standard
   installed binary directories on this host; do not install a wrapper or bypass
   a denial. Use pinned Rust 1.98.1, four build jobs and the existing target cache.
 

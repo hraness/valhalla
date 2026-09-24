@@ -91,7 +91,7 @@ first protocol; general Unicode text and fulltext search remain separate questio
 ## Evidence and reproduction
 
 All commands run from the repository root. The initial vector build and test
-suite ran through `/Users/bg/.bun/bin/hra-host-run --mode=shared --lane=compute`;
+suite ran through `/Users/bg/.bun/bin/host-run --mode=shared --lane=compute`;
 subsequent focused pure Clippy/fmt checks run directly, as permitted by the
 repository baseline. Broad/native/process/WASM work retains the scheduler. `cargo run --example vectors` initially generated candidate
 fixtures; committed fixtures are now fixed regression vectors. Python independently
