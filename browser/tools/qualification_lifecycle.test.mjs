@@ -55,6 +55,43 @@ test('already exited but never closed child fails within a bound and disposes on
   assert.equal(receipt.closeObserved, false); assert.equal(receipt.status, 'failed');
 });
 
+function pipedChild(onKill = () => {}) {
+  const process = new EventEmitter();
+  Object.assign(process, {exitCode: null, signalCode: null, pid: 42, signals: [], stdout: new PassThrough(), stderr: new PassThrough()});
+  process.kill = signal => { process.signals.push(signal); onKill(process, signal); return true; };
+  return trackChild(process);
+}
+
+test('exit plus every tracked output pipe closing is closure evidence when Node never emits close', async () => {
+  // A parent-side IPC disconnect leaves Node's aggregate `close` unemitted forever.
+  for (const order of ['exit-first', 'pipes-first']) {
+    const process = pipedChild(process => {
+      if (order === 'pipes-first') { process.stdout.destroy(); process.stderr.destroy(); }
+      setImmediate(() => {
+        process.exitCode = 0; process.emit('exit', 0, null);
+        if (order === 'exit-first') setImmediate(() => { process.stdout.destroy(); process.stderr.destroy(); });
+      });
+    });
+    const receipt = await stopChild(process, 100, 100);
+    assert.equal(receipt.closeObserved, true); assert.equal(receipt.status, 'stopped');
+    assert.equal(receipt.parentStreamsDisposed, undefined);
+  }
+});
+
+test('one still-open output pipe withholds closure evidence and a parent-side disposal never supplies it', async () => {
+  const process = pipedChild(process => { process.exitCode = 0; process.emit('exit', 0, null); process.stdout.destroy(); });
+  const started = performance.now();
+  await assert.rejects(stopChild(process, 5, 5), /stdio closure/);
+  assert.ok(performance.now() - started < 250);
+  const receipt = childCleanupReceipt(process);
+  assert.equal(receipt.status, 'failed'); assert.equal(receipt.closeObserved, false);
+  assert.deepEqual(receipt.parentStreamsDisposed, [2]);
+  assert.equal(process.stderr.destroyed, true);
+  await new Promise(resolve => setImmediate(resolve));
+  await assert.rejects(stopChild(process, 5, 5), /stdio closure/);
+  assert.equal(childCleanupReceipt(process).closeObserved, false);
+});
+
 test('an unclosed child prevents a successful qualification receipt', async () => {
   const process = child(); process.exitCode = 0; let published = false, failed = false;
   await assert.rejects(runQualification({work:async()=>({passed:true}),timeoutMs:100,

@@ -6,11 +6,33 @@ const childStates = new WeakMap();
 // Install immediately after spawn so a failed spawn is handled even before cleanup.
 export function trackChild(child) {
   if (!childStates.has(child)) {
-    const state = {spawnError: null, cleanup:null, closeObserved:false};
+    const state = {spawnError: null, cleanup:null, closeObserved:false, closeWaiters:[],
+      outputsOpen:new Set(), outputsDisposed:false};
     child.on('error', error => { state.spawnError = error; });
+    const closed = () => {
+      if (state.closeObserved) return;
+      state.closeObserved = true;
+      for (const waiter of state.closeWaiters.splice(0)) waiter();
+    };
     // Node's exit event does not prove that every inherited stdio pipe closed.
     // Observe close from spawn time, including a child which exits before stop.
-    child.once('close', () => { state.closeObserved = true; });
+    child.once('close', closed);
+    // Node withholds `close` for good once this parent disconnects the IPC
+    // channel itself, even after the child exited and every inherited pipe
+    // closed. The inherited pipes are this parent's readable stdio streams, so
+    // a recorded exit plus each tracked stream's own closure is equivalent
+    // evidence. A stream this parent destroys during failed cleanup never
+    // counts, and a child tracked without stdio streams still needs `close`.
+    const outputs = (child.stdio ?? [child.stdin, child.stdout, child.stderr]).slice(1)
+      .filter(stream => stream && typeof stream.once === 'function');
+    state.settle = () => {
+      if (childStopped(child) && outputs.length && !state.outputsOpen.size && !state.outputsDisposed) closed();
+    };
+    for (const stream of outputs) {
+      if (stream.closed) continue;
+      state.outputsOpen.add(stream);
+      stream.once('close', () => { state.outputsOpen.delete(stream); state.settle(); });
+    }
     childStates.set(child, state);
   }
   return child;
@@ -127,15 +149,17 @@ export async function stopChild(child, graceMs = 2000, killMs = 2000) {
   return state.stopping;
 }
 
-async function observeChildClose(child, state, timeoutMs) {
+async function observeChildClose(state, timeoutMs) {
+  state.settle();
   if (state.closeObserved) return true;
-  const deadline = performance.now() + timeoutMs;
   return new Promise(resolve => {
-    const finish = closed => { clearTimeout(timer); child.off('close', closedEvent); resolve(closed); };
-    const closedEvent = () => finish(performance.now() <= deadline);
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    child.once('close', closedEvent);
-    if (state.closeObserved) finish(true);
+    const waiter = () => { clearTimeout(timer); resolve(true); };
+    const timer = setTimeout(() => {
+      const index = state.closeWaiters.indexOf(waiter);
+      if (index >= 0) state.closeWaiters.splice(index, 1);
+      resolve(false);
+    }, timeoutMs);
+    state.closeWaiters.push(waiter);
   });
 }
 
@@ -144,7 +168,7 @@ async function finishChildStop(child, state, graceMs, killMs) {
   try {
     await (state.guardian ? stopOwned(child, state, killMs) : stopDirect(child, state, graceMs, killMs));
   } catch (error) { failure = error; }
-  const closed = await observeChildClose(child, state, killMs);
+  const closed = await observeChildClose(state, killMs);
   const receipt = state.cleanup ??= {role:state.role ?? 'direct-child', pid:child.pid ?? null,
     group:state.group ?? null, status:'failed', exitCode:child.exitCode, signal:child.signalCode};
   receipt.closeObserved = closed;
@@ -154,6 +178,7 @@ async function finishChildStop(child, state, graceMs, killMs) {
     // pipe holder is not thereby proved dead, and a later close cannot turn
     // this cached failure into success. Never signal a saved descendant PID.
     receipt.parentStreamsDisposed = [];
+    state.outputsDisposed = true;
     const streams = child.stdio ?? [child.stdin, child.stdout, child.stderr];
     for (const [index, stream] of streams.entries()) {
       if (!stream || typeof stream.destroy !== 'function' || stream.destroyed) continue;
