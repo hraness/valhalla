@@ -6,8 +6,11 @@ const childStates = new WeakMap();
 // Install immediately after spawn so a failed spawn is handled even before cleanup.
 export function trackChild(child) {
   if (!childStates.has(child)) {
-    const state = {spawnError: null, cleanup:null};
+    const state = {spawnError: null, cleanup:null, closeObserved:false};
     child.on('error', error => { state.spawnError = error; });
+    // Node's exit event does not prove that every inherited stdio pipe closed.
+    // Observe close from spawn time, including a child which exits before stop.
+    child.once('close', () => { state.closeObserved = true; });
     childStates.set(child, state);
   }
   return child;
@@ -113,15 +116,61 @@ async function stopOwned(child, state, killMs) {
   if (receipt?.failure) failure ??= Error(receipt.failure);
   if (child.exitCode !== 0) failure ??= Error('owned guardian exited unsuccessfully');
   if (failure) { state.cleanup.failure = failure.message; throw failure; }
-  state.cleanup.status = 'stopped';
+  state.cleanup.status = 'stopping';
   return state.cleanup;
 }
 
 export async function stopChild(child, graceMs = 2000, killMs = 2000) {
   trackChild(child);
   const state = childStates.get(child);
-  state.stopping ??= state.guardian ? stopOwned(child, state, killMs) : stopDirect(child, state, graceMs, killMs);
+  state.stopping ??= finishChildStop(child, state, graceMs, killMs);
   return state.stopping;
+}
+
+async function observeChildClose(child, state, timeoutMs) {
+  if (state.closeObserved) return true;
+  const deadline = performance.now() + timeoutMs;
+  return new Promise(resolve => {
+    const finish = closed => { clearTimeout(timer); child.off('close', closedEvent); resolve(closed); };
+    const closedEvent = () => finish(performance.now() <= deadline);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once('close', closedEvent);
+    if (state.closeObserved) finish(true);
+  });
+}
+
+async function finishChildStop(child, state, graceMs, killMs) {
+  let failure;
+  try {
+    await (state.guardian ? stopOwned(child, state, killMs) : stopDirect(child, state, graceMs, killMs));
+  } catch (error) { failure = error; }
+  const closed = await observeChildClose(child, state, killMs);
+  const receipt = state.cleanup ??= {role:state.role ?? 'direct-child', pid:child.pid ?? null,
+    group:state.group ?? null, status:'failed', exitCode:child.exitCode, signal:child.signalCode};
+  receipt.closeObserved = closed;
+  if (!closed) {
+    failure ??= Error('owned child stdio closure was not observed before cleanup deadline');
+    // Dispose only this parent's FDs after latching failed evidence. An escaped
+    // pipe holder is not thereby proved dead, and a later close cannot turn
+    // this cached failure into success. Never signal a saved descendant PID.
+    receipt.parentStreamsDisposed = [];
+    const streams = child.stdio ?? [child.stdin, child.stdout, child.stderr];
+    for (const [index, stream] of streams.entries()) {
+      if (!stream || typeof stream.destroy !== 'function' || stream.destroyed) continue;
+      try { stream.destroy(); receipt.parentStreamsDisposed.push(index); }
+      catch { receipt.parentStreamDisposalFailed = true; }
+    }
+    if (child.connected) {
+      try { child.disconnect(); receipt.parentIpcDisconnected = true; }
+      catch { receipt.parentIpcDisconnectFailed = true; }
+    }
+  }
+  if (failure) {
+    receipt.status = 'failed'; receipt.failure = failure.message;
+    throw failure;
+  }
+  receipt.status = 'stopped';
+  return receipt;
 }
 
 async function stopDirect(child, state, graceMs, killMs) {
@@ -132,7 +181,7 @@ async function stopDirect(child, state, graceMs, killMs) {
   state.cleanup = {role:'direct-child', pid:child.pid ?? null, group:null, status:'stopping', forced:false};
   const settle = () => {
     state.cleanup.exitCode = child.exitCode; state.cleanup.signal = child.signalCode;
-    state.cleanup.status = state.cleanup.failure ? 'failed' : 'stopped';
+    state.cleanup.status = state.cleanup.failure ? 'failed' : 'stopping';
   };
   if (childStopped(child)) { settle(); return state.cleanup; }
   try { await new Promise((resolve, reject) => {

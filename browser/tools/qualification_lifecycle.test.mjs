@@ -11,7 +11,7 @@ function child(onKill = () => {}) {
   process.kill = signal => { process.signals.push(signal); onKill(process, signal); return true; };
   return trackChild(process);
 }
-const terminated = (process, signal) => { process.signalCode = signal; process.emit('exit', null, signal); };
+const terminated = (process, signal) => { process.signalCode = signal; process.emit('exit', null, signal); process.emit('close', null, signal); };
 
 test('an already signal-exited child never waits on a past exit event or signals a reused PID', async () => {
   const process = child(); terminated(process, 'SIGKILL');
@@ -20,10 +20,47 @@ test('an already signal-exited child never waits on a past exit event or signals
 });
 
 test('already normal-exited and failed-spawn children are settled', async () => {
-  const normal = child(); normal.exitCode = 0;
-  const failed = child(); failed.pid = undefined; failed.emit('error', Error('ENOENT'));
+  const normal = child(); normal.exitCode = 0; normal.emit('close', 0, null);
+  const failed = child(); failed.pid = undefined; failed.emit('error', Error('ENOENT')); failed.emit('close', -2, null);
   await Promise.all([stopChild(normal, 5, 5), stopChild(failed, 5, 5)]);
   assert.deepEqual(normal.signals, []); assert.deepEqual(failed.signals, []);
+});
+
+test('exit alone cannot complete cleanup before the separate stdio close event', async () => {
+  const process = child(process => { process.exitCode = 0; process.emit('exit', 0, null); });
+  let settled = false;
+  const stopping = stopChild(process, 100, 100).then(value => { settled = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(childStopped(process), true); assert.equal(settled, false);
+  assert.equal(childCleanupReceipt(process).status, 'stopping');
+  process.emit('close', 0, null);
+  const receipt = await stopping;
+  assert.equal(receipt.closeObserved, true); assert.equal(receipt.status, 'stopped');
+  assert.equal(receipt.parentStreamsDisposed, undefined);
+});
+
+test('already exited but never closed child fails within a bound and disposes only parent streams', async () => {
+  const process = child(); process.exitCode = 0;
+  process.stdout = new PassThrough(); process.stderr = new PassThrough();
+  const started = performance.now();
+  await assert.rejects(stopChild(process, 5, 5), /stdio closure/);
+  assert.ok(performance.now() - started < 250);
+  const receipt = childCleanupReceipt(process);
+  assert.equal(receipt.status, 'failed'); assert.equal(receipt.closeObserved, false);
+  assert.deepEqual(receipt.parentStreamsDisposed, [1, 2]);
+  assert.equal(process.stdout.destroyed, true); assert.equal(process.stderr.destroyed, true);
+  assert.deepEqual(process.signals, []);
+  process.emit('close', 0, null);
+  await assert.rejects(stopChild(process, 5, 5), /stdio closure/);
+  assert.equal(receipt.closeObserved, false); assert.equal(receipt.status, 'failed');
+});
+
+test('an unclosed child prevents a successful qualification receipt', async () => {
+  const process = child(); process.exitCode = 0; let published = false, failed = false;
+  await assert.rejects(runQualification({work:async()=>({passed:true}),timeoutMs:100,
+    cleanup:async()=>stopChild(process,5,5), publish:async()=>{published=true;},
+    onFailure:async()=>{failed=true;}}), /stdio closure/);
+  assert.equal(published,false); assert.equal(failed,true);
 });
 
 test('TERM completion succeeds but KILL escalation settles as failure and retains evidence', async () => {

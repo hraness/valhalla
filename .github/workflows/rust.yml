@@ -210,6 +210,7 @@ jobs:
       - name: Build maintained local private host and browser gateway
         run: cargo build --locked -p vhalla-cli --features experimental-private
       - name: Exercise production browser delivery, outage and exact restart
+        timeout-minutes: 8
         run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-delivery-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)"
       - name: Exercise production HTTPS browser delivery without a local client helper
         run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-https-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)" --https

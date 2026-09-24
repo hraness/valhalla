@@ -84,6 +84,31 @@ Runner contract tests do not invoke Valhalla or open a network listener:
 python3 -m unittest discover -s crates/vhalla-cli/tools -p 'test_*.py' -v
 ```
 
+### Quiet-arrival policy comparison, 2026-09-24
+
+Two fresh local trials used optimized source `df50105`, the same CLI binary,
+and one 128-byte message after 90 seconds without application traffic. Both
+trials retained, received and acknowledged exactly one message, with all 19
+owned child processes stopped gracefully. The [recorded results](evidence/private-quiet-policies-20260924.json)
+include the binary and raw receipt hashes.
+
+| Mailbox policy | Recipient observation after queue request | Sender's verified acceptance observation |
+|---|---|---|
+| Adaptive | 26.639s | 28.649s |
+| Interactive | 1.005s | 3.014s |
+
+These single-message observations support using the explicit interactive policy
+for latency-sensitive rooms. They do not establish a latency distribution or a
+production guarantee. The existing adaptive policy remains the default; selecting
+interactive requires a fresh delivery profile before initialization.
+
+Process identities stayed stable and sampled CPU time never regressed. The
+adaptive and interactive observation windows were about 124 and 100 seconds,
+respectively, and include startup and delivery. Their CPU totals therefore do
+not establish an equal-duration idle-cost comparison. RSS is a sampled maximum,
+CPU time has 10-ms display resolution, and mailbox poll counts were not measured.
+Neither trial exercised a browser, another device or an Internet route.
+
 ### Measured native process result, 2026-09-23
 
 The first complete `--scenario all` run used optimized native source

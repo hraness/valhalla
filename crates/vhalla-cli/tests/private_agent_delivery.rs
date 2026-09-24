@@ -1187,23 +1187,54 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
     });
     let second = f.grant(MEMBER, "after-admission", 128);
     let mut member = f.host(MEMBER, "after-admission", MEMBER);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // Receiving and signing each acceptance requires durable writes, while
+    // relay publication shares the driver's two-second work window. Bound a
+    // stalled driver separately from total throughput on a loaded CI host.
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(120);
+    let mut progress_deadline = started + Duration::from_secs(30);
+    let mut received = 0;
+    let mut progress = Vec::new();
+    let mut last_status = Value::Null;
     loop {
-        let count_received = f
-            .applied(MEMBER)
+        let markers = f.applied(MEMBER);
+        let count_received = markers
             .iter()
             .filter(|v| v["state"] == "locally-received")
             .count();
+        let now = Instant::now();
+        assert!(
+            (received..=count).contains(&count_received),
+            "received markers regressed or exceeded the input: {received} -> {count_received}/{count}"
+        );
+        // Check both existing deadlines before new evidence can refresh the
+        // progress clock or late completion can turn a timeout into success.
+        assert!(
+            now < deadline && now < progress_deadline,
+            "deferred messages did not resume: {count_received}/{count}; elapsed_ms={}; \
+             progress_ms_and_count={progress:?}; markers={}; staged={:?}; last_status={last_status}",
+            now.duration_since(started).as_millis(),
+            markers.len(),
+            fs::read_dir(f.p("1-delivery/scan/items")).map(|entries| entries.count())
+        );
+        if count_received > received {
+            received = count_received;
+            progress_deadline = now + Duration::from_secs(30);
+            // Strictly increasing counts bound this history to 65 entries.
+            progress.push((now.duration_since(started).as_millis(), received));
+        }
         if count_received == count {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "deferred messages did not resume: {count_received}/{count}"
-        );
         let probe = member.call(&second, "private_status", json!({}));
+        let status = &probe["result"]["structuredContent"];
+        last_status = json!({
+            "status": status["status"],
+            "inbox_head": status["inbox_head"],
+            "outbox_head": status["outbox_head"],
+        });
         assert_eq!(
-            probe["result"]["structuredContent"]["status"], "live",
+            status["status"], "live",
             "received={count_received}: {probe}"
         );
         thread::sleep(Duration::from_millis(100));
