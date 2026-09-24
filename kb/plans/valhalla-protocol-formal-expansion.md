@@ -1,7 +1,7 @@
 ---
 type: plan
 area: formal-verification
-status: in-progress
+status: completed
 ---
 
 # Valhalla protocol formal coverage expansion
@@ -168,7 +168,7 @@ implementation, Malachite, MLS, signatures, SQLite or physical filesystem safety
 
 ## Phase 3: Complete reviewed assurance
 
-- **Status:** In progress
+- **Status:** Done
 - **Depends on:** completed phase 1 node qualification, 2a, 2b
 - **Objective:** every new claim has checked evidence and precise implementation
   correspondence in one maintained inventory.
@@ -189,7 +189,7 @@ implementation, Malachite, MLS, signatures, SQLite or physical filesystem safety
 
 ## Phase 4: Repository delivery
 
-- **Status:** In progress
+- **Status:** Done
 - **Depends on:** completed phase 3 for merge. After local aggregate checks,
   candidate PR CI may run alongside whole-feature review; neither gate is waived.
 - **Objective:** integrate the reviewed expansion under the existing policy.
@@ -318,3 +318,51 @@ never restore old user state, alter WAL markers or delete recovery evidence.
   all 141 formal-attested inputs remained byte-identical. Candidate CI will
   run the complete required aggregate on the integrated tree. Wordcell
   percolation found no candidates; refresh and the normal catalog check passed.
+
+- 2026-09-23, phases 3–4 complete: fresh independent whole-feature review
+  passed without edits against `aea7323..be61ad7`, inspecting all 94 changed
+  files and independently checking the complete formal and runtime evidence.
+  [PR #102](https://github.com/hraness/valhalla/pull/102) passed all 70 checks
+  on `be61ad72cdaef68ffca914c965b4bd80b6fba380`, including the complete Rust
+  aggregate, all five analyses, and the separate managed CodeQL success
+  from app 57789 with no new alerts. Conditional squash merge produced
+  `ad317cad7bf2e7d747b1d0b4df556ae60e99a0b2` at 23:37:21 UTC. Its tree
+  exactly matched the reviewed head; local main fast-forwarded cleanly.
+  The fresh [post-merge formal job](https://github.com/hraness/valhalla/actions/runs/35934507800/job/107428401942)
+  passed all 61 cases. All 141 source inputs, 71 consumed copies and 61 log
+  hashes matched its pre/post receipt and merged source. The downloaded
+  receipt SHA-256 is
+  `c281cb4bca46b01d98d5705190616519540ddbfd07ad5b4d91984a465473a4bf`.
+
+## Result
+
+Delivered four additional bounded protocol models and strengthened the existing
+held-reply admission model. The required inventory now checks ten suites with
+18 positive cases and 43 deliberate failures. Real adapter, host-loop, TLS and
+Kernel regressions connect the claims to production transitions; independent
+phase and whole-feature reviews passed.
+
+The rooms repairs preserve complete frontier advancement and compatible
+snapshot recovery, withhold unsafe failed-finalization restart commands, and
+restore exact local candidate admission after earlier-height pruning. The
+private-protocol slices added coverage without production changes. Required
+candidate CI and fresh post-merge formal evidence passed. Implementation branch
+`codex/formal-protocol-expansion-20260923` was delivered through PR #102 as
+`ad317ca`; the follow-up documentation records this completed state. No release,
+service activation, data migration or production-data mutation was selected.
+
+## Durable memory
+
+- [[notes/formal-assurance|Formal assurance with implementation correspondence]]
+  owns the reusable distinction between snapshot contents and full protocol
+  progress, between durable retention and current admission, and between
+  successful-admission checks and honest recovery reachability.
+- The [assurance ledger](../../verify/README.md),
+  [case inventory](../../verify/cases.json) and per-model source maps own the
+  checked claims, bounds, mutations and implementation correspondence. These
+  remain finite-model evidence, not a proof of the complete deployed Rust
+  system. The evaluated Lean spike remains optional.
+- The [rooms operator guide](../../crates/vhalla-cli/README.md) owns failed
+  finalization and WAL-preserving recovery guidance. The
+  [native relay guide](../../crates/vhalla-private-native/README.md) owns current
+  outage, retry-budget, explicit-resume and quota behavior.
