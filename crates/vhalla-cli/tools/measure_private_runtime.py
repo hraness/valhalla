@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import signal
 import socket
 import sqlite3
@@ -160,6 +161,7 @@ class Child:
         self.forced = False
         self.closed = False
         self.sampled_start_identity = None
+        self.sampled_cpu_time_ns = None
 
     async def drain(self, stream, channel):
         while data := await stream.read(16384):
@@ -267,9 +269,35 @@ def next_cursor(page, previous):
     return cursor
 
 
+def parse_cpu_time(value):
+    """Decode ps time's macOS M:SS.hh and Unix [[D-]H:]MM:SS displays."""
+    require(len(value) <= 32, "CPU time display exceeds bound")
+    match = re.fullmatch(r"(?:(\d+)-)?(\d+):([0-5]\d)(?::([0-5]\d))?(?:\.(\d{1,9}))?", value, re.ASCII)
+    require(match is not None, "CPU time display format changed")
+    days, first, second, third, fraction = match.groups()
+    require(days is None or (third is not None and int(first) < 24), "CPU day/hour display format changed")
+    seconds = (int(first) * 60 + int(second) if third is None
+               else int(first) * 3600 + int(second) * 60 + int(third))
+    seconds += int(days or 0) * 86400
+    resolution_ns = 10 ** (9 - len(fraction or ""))
+    return seconds * 1_000_000_000 + int(fraction or 0) * resolution_ns, resolution_ns
+
+
+def parse_process_sample(line):
+    parts = line.split()
+    require(len(parts) == 8, "process sampler start identity format changed")
+    pid, rss, cpu, identity = parts[0], parts[-2], parts[-1], " ".join(parts[1:-2])
+    require(pid.isascii() and pid.isdecimal() and int(pid) > 0, "process sampler PID format changed")
+    require(rss.isascii() and rss.isdecimal(), "process sampler RSS format changed")
+    cpu_ns, resolution_ns = parse_cpu_time(cpu)
+    return pid, identity, int(rss) * 1024, cpu_ns, resolution_ns
+
+
 class Fixture:
-    def __init__(self, cli, root, scenario):
+    def __init__(self, cli, root, scenario, mailbox_polling="adaptive"):
+        require(mailbox_polling in ("adaptive", "interactive"), "unsupported mailbox polling policy")
         self.cli, self.root, self.scenario = cli, root, scenario
+        self.mailbox_polling = mailbox_polling
         root.mkdir(mode=0o700)
         self.log = Log(root / "events.jsonl")
         self.children = []
@@ -334,6 +362,19 @@ class Fixture:
         result = await self.command(self.private_args(command, who, include_room, **flags))
         require(result == PRIVATE_OK, f"private {command}: unexpected completion")
 
+    def delivery_profile(self, who):
+        home = self.root / who
+        profile = {"version": 1, "context": self.contexts[who],
+            "namespace": self.connection["namespace"], "addr": self.addr, "tls_name": "runtime.test.invalid",
+            "ca": str(home / "ca.der"), "token": str(home / "token.hex"), "state": str(home / "delivery-state"),
+            "max_jobs": 1024, "max_bytes": 67108864, "max_attempts": 20, "initial_backoff_secs": 5,
+            "max_backoff_secs": 300, "emit_acceptance": True, "initial_cursor": 0}
+        # The omitted adaptive default keeps older qualified candidates usable
+        # for comparisons. Interactive is explicit before custody initialization.
+        if self.mailbox_polling != "adaptive":
+            profile["mailbox_polling"] = self.mailbox_polling
+        return profile
+
     async def setup(self):
         for who in ("a", "b"):
             (self.root / who).mkdir(mode=0o700)
@@ -379,11 +420,7 @@ class Fixture:
             for name, origin in (("ca.der", "ca.der"), ("token.hex", f"client-{index}.token")):
                 (home / name).write_bytes((host / origin).read_bytes())
                 os.chmod(home / name, 0o600)
-            write_json(home / "delivery.json", {"version": 1, "context": self.contexts[who],
-                "namespace": self.connection["namespace"], "addr": self.addr, "tls_name": "runtime.test.invalid",
-                "ca": str(home / "ca.der"), "token": str(home / "token.hex"), "state": str(home / "delivery-state"),
-                "max_jobs": 1024, "max_bytes": 67108864, "max_attempts": 20, "initial_backoff_secs": 5,
-                "max_backoff_secs": 300, "emit_acceptance": True, "initial_cursor": 0})
+            write_json(home / "delivery.json", self.delivery_profile(who))
             await self.private("delivery-init", who, config=home / "delivery.json")
             write_json(home / "disclosure.json", {"host": f"synthetic runtime measurement {who}", "provider": "none",
                 "model": "fixture", "processing_policy": "local synthetic content only", "allow_cooperating_host": True})
@@ -595,7 +632,7 @@ class Fixture:
             active = {str(c.process.pid): c for c in self.children if c.process.returncode is None
                       and (c is self.host or c.label.startswith("agent-"))}
             if active:
-                process = await asyncio.create_subprocess_exec("/bin/ps", "-o", "pid=,lstart=,rss=", "-p", ",".join(active),
+                process = await asyncio.create_subprocess_exec("/bin/ps", "-o", "pid=,lstart=,rss=,time=", "-p", ",".join(active),
                                       stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 try:
                     output, error = await asyncio.wait_for(process.communicate(), 5)
@@ -603,19 +640,23 @@ class Fixture:
                     if process.returncode is None:
                         process.kill()
                         await process.wait()
-                require(process.returncode in (0, 1) and not error, "RSS sampler failed")
-                sample = {"monotonic_ns": time.monotonic_ns(), "rss_bytes": {}, "process_start_identity": {}}
+                require(process.returncode in (0, 1) and not error, "process resource sampler failed")
+                sample = {"monotonic_ns": time.monotonic_ns(), "rss_bytes": {}, "process_start_identity": {},
+                          "cpu_time_ns": {}, "cpu_time_display_resolution_ns": {}}
                 for line in output.decode().splitlines():
-                    parts = line.split()
-                    require(len(parts) == 7, "RSS sampler start identity format changed")
-                    pid, rss, identity = parts[0], parts[-1], " ".join(parts[1:-1])
-                    require(pid in active, "RSS sampler returned unowned PID")
+                    pid, identity, rss_bytes, cpu_ns, resolution_ns = parse_process_sample(line)
+                    require(pid in active, "process sampler returned unowned PID")
                     child = active[pid]
                     if child.process.returncode is not None:
                         continue  # no sample after the owned child was reaped
                     require(child.sampled_start_identity in (None, identity), "owned PID start identity changed")
+                    require(child.sampled_cpu_time_ns is None or cpu_ns >= child.sampled_cpu_time_ns,
+                            "owned process CPU clock regressed")
                     child.sampled_start_identity = identity
-                    sample["rss_bytes"][child.label] = int(rss) * 1024
+                    child.sampled_cpu_time_ns = cpu_ns
+                    sample["rss_bytes"][child.label] = rss_bytes
+                    sample["cpu_time_ns"][child.label] = cpu_ns
+                    sample["cpu_time_display_resolution_ns"][child.label] = resolution_ns
                     sample["process_start_identity"][child.label] = {"pid": int(pid), "lstart": identity}
                 self.samples.append(sample)
                 require(len(self.samples) <= 1200, "resource sample bound exceeded")
@@ -710,8 +751,12 @@ class Fixture:
         ended = time.monotonic_ns()
         result = {"messages": sorted(self.messages.values(), key=lambda m: m["index"]), "count": len(self.messages),
                   "expected_count": SCENARIOS[self.scenario], "checkpoints": self.checkpoints, "reopens": self.reopens,
+                  "mailbox_polling": self.mailbox_polling,
+                  "page_tls_exchange_count": None,
+                  "polling_observability": "PAGE/TLS exchanges are not instrumented; policy tests bound scheduling, not measured exchange count",
                   "grants": self.budgets, "cleanup": self.cleanup, "rss_samples": self.samples,
-                  "rss_scope": "1s samples of owned CLI PIDs; observed maximum is a lower bound, not lifetime maximum RSS"}
+                  "rss_scope": "1s samples of owned CLI PIDs; observed maximum is a lower bound, not lifetime maximum RSS",
+                  "cpu_scope": "1s ps time samples of owned host/agent PIDs, accumulated user + system CPU time; display resolution is recorded per sample, not the kernel clock resolution; final lifetime CPU and per-PAGE attribution are unmeasured"}
         result["measurement_ended_ns"] = ended
         result["last_delivery_observation_ns"] = self.last_observation_ns
         result["offers"] = self.offers
@@ -745,14 +790,17 @@ class Fixture:
                                             and acceptance["percentiles"]["p95"] < 5000)
         result["quiet_ns"] = (getattr(self, "quiet_end_ns", 0) - getattr(self, "quiet_start_ns", 0))
         result["observed_rss_max_bytes_by_process"] = {}
+        result["observed_cpu_time_ns_by_process"] = {}
         for sample in self.samples:
             for label, value in sample["rss_bytes"].items():
                 result["observed_rss_max_bytes_by_process"][label] = max(value, result["observed_rss_max_bytes_by_process"].get(label, 0))
+            for label, value in sample.get("cpu_time_ns", {}).items():
+                result["observed_cpu_time_ns_by_process"][label] = max(value, result["observed_cpu_time_ns_by_process"].get(label, 0))
         return result
 
 
-async def run_scenario(cli, root, scenario):
-    fixture = Fixture(cli, root, scenario)
+async def run_scenario(cli, root, scenario, mailbox_polling="adaptive"):
+    fixture = Fixture(cli, root, scenario, mailbox_polling)
     errors = []
     try:
         async with asyncio.timeout(600):
@@ -789,6 +837,7 @@ async def main_async(args):
     require(not root.exists() and not root.is_symlink(), "--out must be a new directory")
     root.mkdir(mode=0o700, parents=False)
     receipt = {"schema": 1, "passed": False, "evidence": str(root), "scenarios": [],
+               "mailbox_polling": args.mailbox_polling,
                "scope": "synthetic loopback native process measurement; no browser, two-Mac, soak or power-loss claim",
                "started_unix_ns": time.time_ns(), "scenario_contract": {"counts": SCENARIOS, "load_hz": 1,
                    "body_bytes": 128, "outstanding_window": WINDOW, "drain_seconds": DRAIN_SECONDS,
@@ -798,7 +847,7 @@ async def main_async(args):
         write_json(root / "receipt.json", receipt)
         names = ["load", "quiet", "offline"] if args.scenario == "all" else [args.scenario]
         for name in names:
-            result = await run_scenario(cli, root / name, name)
+            result = await run_scenario(cli, root / name, name, args.mailbox_polling)
             receipt["scenarios"].append({"scenario": name, "receipt": f"{name}/receipt.json",
                 "correctness_passed": result["correctness_passed"], "receiver_p95_under_5s": result["receiver_p95_under_5s"],
                 "acceptance_p95_under_5s": result["acceptance_p95_under_5s"], "counts": result["counts"],
@@ -820,6 +869,8 @@ def main():
     for name in ("cli", "provenance", "source", "out"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--scenario", choices=[*SCENARIOS, "all"], required=True)
+    parser.add_argument("--mailbox-polling", choices=["adaptive", "interactive"], default="adaptive",
+                        help="select the polling policy before creating fresh delivery profiles (default: adaptive)")
     args = parser.parse_args()
     try:
         return asyncio.run(main_async(args))
