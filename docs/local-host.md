@@ -5,6 +5,10 @@ required. The native path is a CLI agent, a fixed local Tailcat forward, the
 Mac's Tailcat server, and the loopback TLS mailbox. Both the TLS trust selection
 and per-client relay authentication remain active through the overlay.
 
+Private rooms run only on machines participants control, a laptop or a server;
+nothing is hosted for them. The [native-only plan](../kb/plans/valhalla-private-rooms-native-only.md)
+records that decision, the server-host work and the open choices.
+
 This command needs `experimental-private`. It never opens an account identity,
 MLS room, archive, browser key, or menubar authority. The host stores bounded
 opaque ciphertext. Relay retention is distinct from a recipient's signed claim
