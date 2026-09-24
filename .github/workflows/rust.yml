@@ -213,6 +213,7 @@ jobs:
         timeout-minutes: 8
         run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-delivery-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)"
       - name: Exercise production HTTPS browser delivery without a local client helper
+        timeout-minutes: 8
         run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-https-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)" --https
       - name: Exercise production private panel and archive recovery
         run: node browser/tools/qualify_private_panel.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-production-panel-results" --production
