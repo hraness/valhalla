@@ -3,6 +3,7 @@
 // leader signals the group it currently belongs to: no saved/reused PID is used
 // for destructive signaling after a leader exits.
 import {spawn, execFileSync} from 'node:child_process';
+import {openSync, closeSync} from 'node:fs';
 
 if (!process.send || !['darwin', 'linux'].includes(process.platform)) {
   throw Error('qualification process guardian requires POSIX IPC custody');
@@ -13,7 +14,7 @@ if (Number(execFileSync('/bin/ps', ['-p', String(process.pid), '-o', 'pgid='],
 }
 
 let child, deadline, stopping = false, started = false, leaderExit;
-let graceMs = 2000, role = 'unconfigured', observed = new Set();
+let graceMs = 2000, expectedExit = 0, role = 'unconfigured', outputPath = null, observed = new Set();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const send = message => new Promise(resolve => {
   if (!process.connected) { resolve(); return; }
@@ -53,7 +54,7 @@ async function finish(cause, failure) {
   if (stopping) return;
   stopping = true; clearTimeout(deadline);
   const receipt = {role, group:process.pid, leader:child?.pid ?? null, cause,
-    graceMs, forced:false, remaining:[], observedMembers:[], leaderExit:null};
+    graceMs, expectedExit, output:outputPath, forced:false, remaining:[], observedMembers:[], leaderExit:null};
   try {
     receipt.remaining = await members();
     // Include all descendants that still share our group, even after their
@@ -77,7 +78,9 @@ async function finish(cause, failure) {
       process.kill(0, 'SIGKILL');
       return;
     }
-    const normal = leaderExit?.code === 0 || (cause !== 'leader-exit' && leaderExit?.signal === 'SIGTERM');
+    // Only the exit status declared at launch is a normal self-exit; a stop
+    // requested by the parent may also end in a clean SIGTERM.
+    const normal = leaderExit?.code === expectedExit || (cause !== 'leader-exit' && leaderExit?.signal === 'SIGTERM');
     if (child && !normal) receipt.failure ??= 'owned command exited unsuccessfully';
     await send({type:'cleanup', receipt});
     process.exit(receipt.failure ? 1 : 0);
@@ -102,16 +105,31 @@ process.on('message', message => {
   const {executable, args, timeoutMs} = message;
   role = message.role;
   graceMs = message.graceMs;
+  expectedExit = message.expectedExit ?? 0;
+  outputPath = message.outputPath ?? null;
   if (typeof executable !== 'string' || !executable.startsWith('/') ||
       !Array.isArray(args) || args.some(arg => typeof arg !== 'string') ||
       typeof role !== 'string' || !/^[a-z0-9-]{1,64}$/.test(role) ||
       !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 420000 ||
-      !Number.isInteger(graceMs) || graceMs < 1 || graceMs > 10000) {
+      !Number.isInteger(graceMs) || graceMs < 1 || graceMs > 10000 ||
+      !Number.isInteger(expectedExit) || expectedExit < 0 || expectedExit > 255 ||
+      (outputPath !== null && (typeof outputPath !== 'string' || !outputPath.startsWith('/') || outputPath.length > 4096))) {
     void finish('invalid-configuration', 'invalid guardian configuration'); return;
   }
   clearTimeout(deadline);
   deadline = setTimeout(() => { void finish('deadline', 'owned command deadline'); }, timeoutMs);
-  child = spawn(executable, args, {stdio:['ignore', 1, 2], detached:false});
+  // A command whose descendants leave the owned group by design (a browser's
+  // crash handler or updater) and outlive it writes to a fresh private file
+  // rather than inheriting the parent's pipes, so no escaped holder can
+  // withhold the parent's closure evidence. The file is created here
+  // exclusively, mode 0600; the guardian keeps no descriptor for it.
+  let output = null;
+  if (outputPath !== null) {
+    try { output = openSync(outputPath, 'wx', 0o600); }
+    catch (error) { void finish('output-error', 'owned command output file was not created: ' + (error.code ?? 'error')); return; }
+  }
+  try { child = spawn(executable, args, {stdio:['ignore', output ?? 1, output ?? 2], detached:false}); }
+  finally { if (output !== null) closeSync(output); }
   child.once('error', error => { child = undefined; void finish('spawn-error', error.code ?? 'spawn failed'); });
   child.once('exit', (code, signal) => { leaderExit = {code, signal}; void finish('leader-exit'); });
   void send({type:'started', leader:child.pid, group:process.pid});

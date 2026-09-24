@@ -525,7 +525,7 @@ fn pending(home: &Path) -> Result<(Pending, Intent), String> {
     }
     Ok((p, intent))
 }
-fn fence_document(intent: &Intent, fence: GenerationFence) -> FenceDocument {
+fn fence_document(intent: &Intent, fence: GenerationFence) -> Result<FenceDocument, String> {
     let mut receipt_commitments: Vec<_> = intent
         .plan
         .controllers
@@ -533,7 +533,14 @@ fn fence_document(intent: &Intent, fence: GenerationFence) -> FenceDocument {
         .map(|c| c.receipt_commitment.clone())
         .collect();
     receipt_commitments.sort();
-    FenceDocument {
+    // A predecessor config without its CA digest is refused, never a panic.
+    let ca_sha256 = intent
+        .predecessor_config
+        .files
+        .get("ca.der")
+        .cloned()
+        .ok_or_else(|| TRANSITION_ERROR.to_string())?;
+    Ok(FenceDocument {
         version: 1,
         transition: intent.plan.transition.clone(),
         predecessor: intent.plan.predecessor.clone(),
@@ -544,9 +551,9 @@ fn fence_document(intent: &Intent, fence: GenerationFence) -> FenceDocument {
         predecessor_address: intent.predecessor_config.listen,
         successor_address: intent.plan.successor_address,
         tls_name: intent.predecessor_config.tls_name.clone(),
-        ca_sha256: intent.predecessor_config.files["ca.der"].clone(),
+        ca_sha256,
         receipt_commitments,
-    }
+    })
 }
 fn old_store(home: &Path, intent: &Intent) -> Result<FileStore, String> {
     FileStore::open(
@@ -600,7 +607,7 @@ pub(super) fn fence(home: &Path) -> Result<(), String> {
     immutable(
         &loaded.home,
         &fence_name(intent.plan.generation),
-        &serde_json::to_vec(&fence_document(&intent, f)).map_err(|_| TRANSITION_ERROR)?,
+        &serde_json::to_vec(&fence_document(&intent, f)?).map_err(|_| TRANSITION_ERROR)?,
     )
 }
 
@@ -637,7 +644,7 @@ fn cutover_with(
     immutable(
         &loaded.home,
         &fence_name(p.generation),
-        &serde_json::to_vec(&fence_document(&intent, f)).map_err(|_| TRANSITION_ERROR)?,
+        &serde_json::to_vec(&fence_document(&intent, f)?).map_err(|_| TRANSITION_ERROR)?,
     )?;
     let snapshot = Service::fenced_spend(&store).map_err(|_| TRANSITION_ERROR)?;
     let ids: BTreeSet<_> = snapshot
@@ -729,7 +736,7 @@ pub(super) fn validate_retained(home: &Path, selected: &RetainedGeneration) -> R
     let store = old_store(home, &intent)?;
     let fence = exact_fence(&store, &intent)?;
     let expected =
-        serde_json::to_vec(&fence_document(&intent, fence)).map_err(|_| TRANSITION_ERROR)?;
+        serde_json::to_vec(&fence_document(&intent, fence)?).map_err(|_| TRANSITION_ERROR)?;
     if config::read(home, &fence_name(selected.generation), 65536)?.as_slice() != expected {
         return Err(TRANSITION_ERROR.into());
     }

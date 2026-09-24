@@ -100,7 +100,7 @@ class ContractTests(unittest.TestCase):
             result = m.admit_candidate(binary, proof, source)
             self.assertFalse(result["source_clean_at_build"])
             self.assertEqual(result["source_patch_sha256"], "c" * 64)
-            self.assertIn("base commit/tree", result["source_identity_scope"])
+            self.assertIn("declared base commit/tree (not verified against a checkout)", result["source_identity_scope"])
             m.write_json(proof, {**valid, "source_patch_sha256": ""})
             with self.assertRaisesRegex(m.MeasurementError, "patch identity"):
                 m.admit_candidate(binary, proof, source)
@@ -306,17 +306,35 @@ class AsyncContractTests(unittest.IsolatedAsyncioTestCase):
         self.fixture.samples = [
             {"monotonic_ns": 1_000_000_000, "cpu_time_ns": {"host": 100_000_000}, "rss_bytes": {"host": 1024},
              "process_start_identity": {"host": {"pid": 1, "lstart": "same"}}},
-            {"monotonic_ns": 29_000_000_000, "cpu_time_ns": {"host": 400_000_000}, "rss_bytes": {"host": 2048},
-             "process_start_identity": {"host": {"pid": 1, "lstart": "same"}}}]
+            {"monotonic_ns": 29_000_000_000, "cpu_time_ns": {"host": 400_000_000, "agent-b-1": 5_000_000},
+             "rss_bytes": {"host": 2048, "agent-b-1": 512},
+             "process_start_identity": {"host": {"pid": 1, "lstart": "same"}, "agent-b-1": {"pid": 3, "lstart": "later"}}}]
         window = self.fixture.metrics()["idle_window"]
         self.assertEqual(window["clients"]["a"]["connections_per_minute"], 60)
         self.assertEqual(window["processes"]["host"]["cpu_time_ns"], 300_000_000)
         self.assertAlmostEqual(window["processes"]["host"]["cpu_seconds"], 0.3)
         self.assertEqual(window["processes"]["host"]["sample_span_seconds"], 28)
+        self.assertAlmostEqual(window["processes"]["host"]["one_core_percent"], 300_000_000 / 1e7 / 28)
         self.assertEqual(window["processes"]["host"]["rss_max_bytes"], 2048)
+        # One sample inside the window is no idle measurement; the process is named, not dropped.
+        self.assertNotIn("agent-b-1", window["processes"])
+        self.assertEqual(window["insufficient_sample_processes"], ["agent-b-1"])
         self.fixture.samples[-1]["process_start_identity"]["host"]["pid"] = 2
         with self.assertRaisesRegex(m.MeasurementError, "different process identities"):
             self.fixture.metrics()
+
+    async def test_meter_refusal_or_failure_before_shutdown_fails_the_scenario(self):
+        self.fixture.meters = {"a": m.TrafficMeter(("", 0)), "b": m.TrafficMeter(("", 0))}
+        self.fixture.meters["a"].counts["connections"] = 3
+        self.fixture.meters["a"].counts["completed"] = 3
+        self.fixture.meter_health()
+        self.assertIn("at most 8 concurrent connections", self.fixture.metrics()["traffic_scope"])
+        for field in ("refused", "failed"):
+            self.fixture.meters["b"].counts[field] = 1
+            with self.assertRaisesRegex(m.MeasurementError, "refused or failed connections before shutdown"):
+                self.fixture.meter_health()
+            self.fixture.meters["b"].counts[field] = 0
+        self.fixture.meters = {}
 
     async def test_cpu_metrics_keep_process_generations_separate(self):
         self.fixture.samples = [

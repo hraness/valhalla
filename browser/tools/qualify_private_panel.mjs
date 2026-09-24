@@ -271,9 +271,17 @@ async function task(abortSignal) {
   // producing compositor frames on demand, which leaves Page.captureScreenshot
   // unanswered. These flags disable only scheduling throttles, never a
   // behavior under test.
-  const chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-background-timer-throttling','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
-  children.push(chrome);chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
-  await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
+  // Chrome writes to a private log file rather than inheriting this driver's
+  // pipe: its crash handler leaves the browser's process tree by design and
+  // can outlive it, and an inherited pipe would withhold the closure evidence
+  // cleanup requires. A child with no pipes closes as soon as it exits.
+  const chromeLogPath=join(output,'chrome.log');
+  const chromeLogFile=await open(chromeLogPath,'wx',0o600);
+  let chrome;
+  try{chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-background-timer-throttling','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore',chromeLogFile.fd,chromeLogFile.fd]}));}
+  finally{await chromeLogFile.close();}
+  children.push(chrome);
+  await wait(async()=>{chromeLog=(await readFile(chromeLogPath,'utf8').catch(()=>'')).slice(-131072);return /DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome);},'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);
   await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
@@ -491,6 +499,6 @@ async function task(abortSignal) {
 }
 
 await runQualification({work:task,timeoutMs:300000,
-  cleanup:async()=>{try{await cleanupOwned({children,server,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);}},
+  cleanup:async()=>cleanupOwned({children,server,socket,pending}),
   publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));},
 });

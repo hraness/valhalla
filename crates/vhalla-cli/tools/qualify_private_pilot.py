@@ -395,7 +395,10 @@ async def run(args):
             pilot.receipt["cases"]["identity"] = "PASS"
         except (Exception, asyncio.CancelledError) as error:
             pilot.log.add({"event": "cleanup-error", "type": type(error).__name__, "detail": str(error)})
-            pilot.receipt["error"] = "FINAL_CHECK_FAILED_SEE_PRIVATE_EVIDENCE"
+            # A journey failure keeps its own label; the final-check failure is
+            # recorded beside it rather than replacing it.
+            pilot.receipt.setdefault("error", "FINAL_CHECK_FAILED_SEE_PRIVATE_EVIDENCE")
+            pilot.receipt["final_check_failed"] = True
         pilot.receipt["cleanup"] = {"owned_children": len(pilot.cleanup),
                                     "forced_children": sum(item["forced"] for item in pilot.cleanup)}
         pilot.receipt["passed"] = passed(pilot.receipt)

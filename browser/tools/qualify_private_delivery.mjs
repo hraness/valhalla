@@ -290,9 +290,20 @@ const blackholeSockets=new Set();
 const serviceLogs=[];
 async function privateFile(name,content) {signal.throwIfAborted();const path=join(output,name);await writeFile(path,content,{mode:0o600,flag:'wx'});return path;}
 async function command(executable,args,expectedExit=0) {
-  signal.throwIfAborted();const process=spawnOwned(executable,args,{role:'fixture-command',timeoutMs:20000});children.push(process);
+  signal.throwIfAborted();const process=spawnOwned(executable,args,{role:'fixture-command',timeoutMs:20000,expectedExit});children.push(process);
   let stdout='',stderr='';process.stdout.on('data',v=>stdout=(stdout+v).slice(-1048576));process.stderr.on('data',v=>stderr=(stderr+v).slice(-1048576));
-  let timer;try {await Promise.race([new Promise((r,j)=>{process.once('error',j);process.once('exit',code=>code===expectedExit?r():j(Error('fixture command exited '+code+' (expected '+expectedExit+'): '+stderr)));}),new Promise((_,j)=>{timer=setTimeout(()=>j(Error('fixture command deadline')),20000);})]);}finally{clearTimeout(timer);if(!childStopped(process))await stopChild(process);}
+  let timer;
+  try {await Promise.race([new Promise((r,j)=>{process.once('error',j);process.once('exit',()=>r());}),new Promise((_,j)=>{timer=setTimeout(()=>j(Error('fixture command deadline')),20000);})]);}
+  catch(error){await stopChild(process).catch(()=>{});throw error;}
+  finally{clearTimeout(timer);}
+  // The exit observed above belongs to the guardian, not to the command. Its
+  // cleanup receipt carries the command's own exit, and the guardian fails
+  // cleanup on any status other than the one declared at spawn.
+  let receipt;
+  try{receipt=await stopChild(process);}
+  catch(error){throw Error('fixture command failed ('+error.message+'; expected exit '+expectedExit+'): '+stderr);}
+  const code=receipt.guardian?.leaderExit?.code;
+  if(code!==expectedExit)throw Error('fixture command exited '+code+' (expected '+expectedExit+'): '+stderr);
   return {stdout,stderr};
 }
 async function child(args,ready) {
@@ -569,8 +580,13 @@ async function task(abortSignal) {
   // Keep the pre-guardian Chrome flags: on the Ubuntu runner, adding
   // --disable-crashpad-for-testing/--remote-debugging-address made Chrome's
   // network service crash-loop (FD ownership violation) and the journey hang.
-  const chrome=spawnOwned(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{role:'chrome'});children.push(chrome);chrome.stdout.resume();chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
-  await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
+  // Chrome writes to a private log file rather than inheriting this driver's
+  // pipes: its crash handler and, on macOS, the updater it wakes leave the
+  // owned group by design and can outlive the browser, so an inherited pipe
+  // would withhold the closure evidence the guardian's receipt requires.
+  const chromeLogPath=join(output,'chrome.log');
+  const chrome=spawnOwned(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{role:'chrome',outputPath:chromeLogPath});children.push(chrome);chrome.stdout.resume();chrome.stderr.resume();
+  await wait(async()=>{chromeLog=(await readFile(chromeLogPath,'utf8').catch(()=>'')).slice(-131072);return /DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome);},'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   signal.throwIfAborted();socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
   socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,frameId:p.frameId,at:Date.now(),filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith(gatewayOrigin+'/')&&!url.startsWith('blob:'+gatewayOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
@@ -725,6 +741,8 @@ async function task(abortSignal) {
   // A second same-origin tab claims a fresh CAS owner; the old worker refuses.
   const {targetId}=await call('Target.createTarget',{url:'about:blank',browserContextId:owner.browserContextId});const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});const twin={...owner,targetId,sessionId};
   for(const method of ['Page.enable','Runtime.enable','DOM.enable','Network.enable'])await call(method,{},sessionId);
+  // The twin's downloads are attributed to its own frame, not the owner's.
+  twin.frameId=(await call('Page.getFrameTree',{},sessionId)).frameTree.frame.id;
   await call('Page.addScriptToEvaluateOnNewDocument',{source:instrumentation},sessionId);await call('Page.navigate',{url:gatewayOrigin},sessionId);
   await wait(()=>evaluate(twin,"!!document.getElementById('unlock')&&!document.getElementById('unlock').disabled"),'second tab load');await evaluate(twin,helpers);await reopen(twin);await connect(twin,owner.deliveryProfile);
   await evaluate(owner,"(async()=>{await qclick('private-delivery-sync');await qwait(()=>qid('identity-state').textContent==='Reload required','old worker fence');return true;})()");await sync(twin);facts.push('second-tab CAS ownership invalidates the prior worker before another sync; the new worker retains exact existing counters');
@@ -776,7 +794,6 @@ await runQualification({
     }catch(error){receipt=error.cleanupReceipt;throw error;}
     finally{
       await writeFile(join(output,'cleanup.json'),JSON.stringify(receipt??{passed:false,error:'cleanup evidence unavailable'},null,2)+'\n');
-      await writeFile(join(output,'chrome.log'),chromeLog);
       await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));
       await writeFile(join(output,'network-failure.txt'),fatalNetwork);
     }

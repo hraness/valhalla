@@ -160,7 +160,8 @@ def admit_candidate(cli, provenance, source):
             "native_inputs_sha256": inputs, "source_kind": "frozen-source-v1" if frozen else "git-checkout",
             "source_clean_at_build": value["source_clean_at_build"],
             "source_patch_sha256": value.get("source_patch_sha256"),
-            "source_identity_scope": "base commit/tree plus complete source inventory" if frozen else "clean commit/tree",
+            "source_identity_scope": ("declared base commit/tree (not verified against a checkout) plus verified complete source inventory"
+                                      if frozen else "clean commit/tree"),
             "runner_sha256": sha256(Path(__file__)), "python": sys.version,
             "platform": platform.platform(), "machine": platform.machine()}
 
@@ -747,6 +748,18 @@ class Fixture:
                         and int(claims[0]["received_sequence"]) == message["received_sequence"], "reopened exact acceptance changed")
             self.reopens[-1]["exact_claims_observed_ns"] = time.monotonic_ns()
             self.checkpoints["reopened"] = footprint(self.root)
+        self.meter_health()
+
+    def meter_health(self):
+        # Checked before shutdown, which force-closes the meters and counts the
+        # cancelled connections as failed. A refused or failed connection while
+        # the scenario ran is a measurement defect: the meter's admission and
+        # per-connection bounds were hit, so the traffic counters and the
+        # delivery timings no longer describe the CLI alone.
+        unhealthy = {who: meter.snapshot() for who, meter in self.meters.items()
+                     if meter.counts["refused"] or meter.counts["failed"]}
+        require(not unhealthy, "traffic meter refused or failed connections before shutdown: "
+                + json.dumps(unhealthy, sort_keys=True))
 
     async def sample_resources(self):
         while True:
@@ -886,7 +899,9 @@ class Fixture:
                   "grants": self.budgets, "cleanup": self.cleanup, "rss_samples": self.samples,
                   "rss_scope": "1s samples of owned CLI PIDs; observed maximum is a lower bound, not lifetime maximum RSS",
                   "traffic": {who: meter.snapshot() for who, meter in self.meters.items()},
-                  "traffic_scope": "byte-transparent per-client loopback TCP; end-to-end pinned TLS; one connection per current exchange; bytes include TLS overhead",
+                  "traffic_scope": "byte-transparent per-client loopback TCP; end-to-end pinned TLS; one connection per current exchange; bytes include TLS overhead; "
+                                   "the meter admits at most 8 concurrent connections per client and bounds each connection to 12 s and 32 MiB; "
+                                   "a refused or failed connection before shutdown fails the scenario",
                   "cpu_scope": "1s ps time samples of owned host/agent PIDs, accumulated user + system CPU time; display resolution is recorded per sample, not the kernel clock resolution; final lifetime CPU and per-PAGE attribution are unmeasured"}
         result["measurement_ended_ns"] = ended
         result["last_delivery_observation_ns"] = self.last_observation_ns
@@ -934,10 +949,15 @@ class Fixture:
                                            "inflight_before": before["inflight"], "inflight_after": after["inflight"]}
             within = [sample for sample in self.samples if start <= sample["monotonic_ns"] <= end]
             labels = set().union(*(sample["cpu_time_ns"] for sample in within)) if within else set()
+            # A process with fewer than two samples inside the window has no
+            # measurable idle cost; it is named rather than silently omitted.
+            window["insufficient_sample_processes"] = []
             for label in sorted(labels):
                 selected = [sample for sample in within if label in sample["cpu_time_ns"]]
                 require(len({json.dumps(sample["process_start_identity"][label], sort_keys=True) for sample in selected}) == 1,
                         "idle CPU samples span different process identities")
+                if len(selected) < 2:
+                    window["insufficient_sample_processes"].append(label)
                 if len(selected) >= 2:
                     span = (selected[-1]["monotonic_ns"] - selected[0]["monotonic_ns"]) / 1e9
                     delta_ns = selected[-1]["cpu_time_ns"][label] - selected[0]["cpu_time_ns"][label]
