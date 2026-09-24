@@ -224,10 +224,13 @@ pub(in crate::private_rooms) async fn pause(
         .predecessor_baseline()
         .map_err(|_| REFUSED)?
         .map_or(0, |(n, _)| n);
-    let mut after = status.history_base;
+    // Page from this device's retained wire-history base, exactly as the
+    // driver does. A checkpoint member holds no encrypted history below its
+    // joining floor, so `status.history_base` would be refused as missing.
+    let mut after = None;
     loop {
         let page = room
-            .encrypted_controls(after, OUTBOX_PAGE)
+            .encrypted_controls_from(after, OUTBOX_PAGE)
             .await
             .map_err(|_| REFUSED)?;
         if page.head != status.control_floor {
@@ -244,7 +247,7 @@ pub(in crate::private_rooms) async fn pause(
                     return Err(REFUSED.into());
                 }
             }
-            after = control.floor();
+            after = Some(control.floor().sequence());
         }
         if page.records.is_empty() {
             break;

@@ -513,6 +513,22 @@ impl RoomSession {
             .await?)
     }
 
+    /// Read committed encrypted controls from a durable sequence watermark.
+    /// `None` selects this device's retained wire-history base, which for a
+    /// checkpoint member sits above `Status::history_base`; it never selects a
+    /// relay-supplied checkpoint or grants access before the joining floor.
+    pub async fn encrypted_controls_from(
+        &mut self,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<EncryptedControlPage> {
+        Ok(self
+            .live_mut()?
+            .kernel
+            .encrypted_controls_from(after, limit)
+            .await?)
+    }
+
     /// Export the plaintext signed-proof control suffix, never relay wire.
     /// The exact floor cursor prevents an accidental gap or cross-fork cursor.
     pub async fn controls(
