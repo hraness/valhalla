@@ -46,7 +46,7 @@ Repository `AGENTS.md` controls delivery: after focused checks, independent revi
 and the aggregate gate, commit/push task-owned changes and observe required GitHub
 checks on the exact commit. Preserve protections; no extra human confirmation is
 required. No package publication or production social activation is implied.
-Use `/Users/bg/.bun/bin/oompa-host-run` in the compute lane for broad builds,
+Use `/Users/bg/.bun/bin/host-run` in the compute lane for broad builds,
 aggregate checks and native process/custody work; genuinely narrow pure checks
 can run normally without bypassing an existing scheduler attempt;
 use the browser-auth lane only for owned live browser evidence. One owner waits

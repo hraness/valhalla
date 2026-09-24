@@ -64,7 +64,7 @@ different things; neither establishes public-network availability, honest
 providers, browser transport or indefinite archive capacity.
 
 ```sh
-/Users/bg/.bun/bin/hra-host-run --mode=shared --lane=compute --label=valhalla-retrieval-native-fixture -- /bin/sh /Users/bg/Documents/Codex/valhalla/prototypes/social-retrieval/verify-native.sh
+/Users/bg/.bun/bin/host-run --mode=shared --lane=compute --label=valhalla-retrieval-native-fixture -- /bin/sh /Users/bg/Documents/Codex/valhalla/prototypes/social-retrieval/verify-native.sh
 ```
 
 `verify-native.sh` runs standalone formatting, the six pure tests plus the actual

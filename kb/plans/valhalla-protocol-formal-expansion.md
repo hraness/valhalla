@@ -38,8 +38,8 @@ implementation, Malachite, MLS, signatures, SQLite or physical filesystem safety
   formats, protocol bytes, quotas, custody, rollback evidence and existing gates.
   All regression homes, credentials and traffic are synthetic and task-owned.
   No existing service, release, migration or deployment is selected.
-- Use the installed host scheduler when available. Neither `oompa-host-run`
-  nor `hra-host-run` exists in PATH or the standard installed binary directories
+- Use the installed host scheduler when available. Neither `host-run`
+  nor `host-run` exists in PATH or the standard installed binary directories
   on this host. Do not install a replacement. Raw focused TLC uses one worker
   and 512 MiB. One owner at a time runs Cargo against the shared target, with
   Rust 1.98.1 and `CARGO_BUILD_JOBS=4`; reasoning and disjoint editing continue.
