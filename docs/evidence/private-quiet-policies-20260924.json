@@ -1,0 +1,138 @@
+{
+  "schema": 1,
+  "recorded_date": "2026-09-24",
+  "source_commit": "df5010500098d0245f27b4a4a993e9668e209840",
+  "cli_sha256": "e12a9e64d8d54e7af859c36828c9f1f73dbdc430502b887850d14f7350db48ff",
+  "scope": "Two fresh local synthetic one-message trials, each following 90 seconds quiet. Correctness and observed latency are separate criteria. No population latency, idle-only CPU, lifetime peak RSS, network PAGE count, or production SLO claim.",
+  "trials": {
+    "adaptive": {
+      "counts": {
+        "admitted": 1,
+        "attempted": 1,
+        "member_acceptance_observed": 1,
+        "planned": 1,
+        "receiver_observed": 1,
+        "relay_retained_observed": 1,
+        "scheduled": 1
+      },
+      "quiet_ns": 90002103583,
+      "receiptSha256": "5c84ae9570393884251a903b6a56ecb6146b7c38927f56646583f340a6c6d8b1",
+      "sampleCount": 118,
+      "cleanupCount": 19,
+      "gracefulCleanup": true,
+      "queueToRetentionObservationMs": 501.926333,
+      "queueToReceiverObservationMs": 26639.379958,
+      "queueToAcceptanceObservationMs": 28648.944958,
+      "page_tls_exchange_count": null,
+      "correctness_passed": true,
+      "processes": {
+        "agent-a-1": {
+          "identityStable": true,
+          "sampleCount": 117,
+          "observationDurationSeconds": 123.088055666,
+          "cpuDeltaSeconds": 0.31,
+          "maxObservedCumulativeCpuSeconds": 0.33,
+          "observedRssMaxBytes": 9142272,
+          "displayResolutionNs": [
+            10000000
+          ]
+        },
+        "agent-b-1": {
+          "identityStable": true,
+          "sampleCount": 117,
+          "observationDurationSeconds": 123.088055666,
+          "cpuDeltaSeconds": 0.18,
+          "maxObservedCumulativeCpuSeconds": 0.2,
+          "observedRssMaxBytes": 9076736,
+          "displayResolutionNs": [
+            10000000
+          ]
+        },
+        "host": {
+          "identityStable": true,
+          "sampleCount": 118,
+          "observationDurationSeconds": 124.148028208,
+          "cpuDeltaSeconds": 0.06,
+          "maxObservedCumulativeCpuSeconds": 0.07,
+          "observedRssMaxBytes": 6717440,
+          "displayResolutionNs": [
+            10000000
+          ]
+        }
+      }
+    },
+    "interactive": {
+      "counts": {
+        "admitted": 1,
+        "attempted": 1,
+        "member_acceptance_observed": 1,
+        "planned": 1,
+        "receiver_observed": 1,
+        "relay_retained_observed": 1,
+        "scheduled": 1
+      },
+      "quiet_ns": 90002096625,
+      "receiptSha256": "89e64d213051d1843e3cf2a2874ad916488e43c21420c7de4787bea525876e6a",
+      "sampleCount": 95,
+      "cleanupCount": 19,
+      "gracefulCleanup": true,
+      "queueToRetentionObservationMs": 1004.584958,
+      "queueToReceiverObservationMs": 1005.193333,
+      "queueToAcceptanceObservationMs": 3014.368625,
+      "page_tls_exchange_count": null,
+      "correctness_passed": true,
+      "processes": {
+        "agent-a-1": {
+          "identityStable": true,
+          "sampleCount": 94,
+          "observationDurationSeconds": 98.451095917,
+          "cpuDeltaSeconds": 0.24,
+          "maxObservedCumulativeCpuSeconds": 0.27,
+          "observedRssMaxBytes": 9338880,
+          "displayResolutionNs": [
+            10000000
+          ]
+        },
+        "agent-b-1": {
+          "identityStable": true,
+          "sampleCount": 94,
+          "observationDurationSeconds": 98.451095917,
+          "cpuDeltaSeconds": 0.16,
+          "maxObservedCumulativeCpuSeconds": 0.18,
+          "observedRssMaxBytes": 9256960,
+          "displayResolutionNs": [
+            10000000
+          ]
+        },
+        "host": {
+          "identityStable": true,
+          "sampleCount": 95,
+          "observationDurationSeconds": 99.533124333,
+          "cpuDeltaSeconds": 0.08,
+          "maxObservedCumulativeCpuSeconds": 0.09,
+          "observedRssMaxBytes": 6799360,
+          "displayResolutionNs": [
+            10000000
+          ]
+        }
+      }
+    }
+  },
+  "candidate": {
+    "cli_sha256": "e12a9e64d8d54e7af859c36828c9f1f73dbdc430502b887850d14f7350db48ff",
+    "lockfile_sha256": "c1a2717c645e42d338e78f290fe162a4d7d740f85b79f79d4dafbb502a504ff3",
+    "machine": "arm64",
+    "native_inputs_sha256": "76ac4278391b8ab070dd552983f52c1164b9d5083d9620b77ca1721d3ce9321f",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "provenance_sha256": "146274bbe8a0d370adcb1ed7070ee044dafd4ce0b3727e29d144fad2834e1527",
+    "runner_sha256": "0a593174fc39ea19208c3317cee29976b9971222d591eff2e9b0aa1c5f8de0f4",
+    "source_commit": "df5010500098d0245f27b4a4a993e9668e209840",
+    "source_tree": "83109bcec6bc64cfaddbcdf3837e4ee068a1e713"
+  },
+  "limits": [
+    "One message per policy; no population percentile or production latency guarantee.",
+    "Resource windows differ: about 124 seconds adaptive and 100 seconds interactive. CPU measurements include startup and delivery, not only quiet time; no equal-duration CPU or energy comparison.",
+    "RSS is a sampled maximum, not lifetime peak; CPU display resolution is 10 ms.",
+    "No direct mailbox poll-count measurement, independent-device path, browser, Internet, sleep/reboot, or soak result."
+  ]
+}

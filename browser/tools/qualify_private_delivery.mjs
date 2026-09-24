@@ -1,29 +1,30 @@
 // Production private DOM through the actual loopback HTTP gateway and TLS relay.
 // No account seeds, production signer calls, external routes or fixture KDF changes.
-import {trackChild, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
+import {spawnOwned, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
 import {stopChild, stopServer} from './qualification_lifecycle.mjs';
 import {createServer} from 'node:http';
 import {runMixedPilot} from './private_mixed_pilot.mjs';
 import {drainMixedGeneration, transitionMixedGeneration} from './private_generation_pilot.mjs';
-import {spawn} from 'node:child_process';
 import {createConnection, createServer as createTcpServer} from 'node:net';
 import {createHash} from 'node:crypto';
 import {readFile, writeFile, mkdir, mkdtemp, chmod, open} from 'node:fs/promises';
 import {resolve, join} from 'node:path';
 
 const [artifactArg, chromeExecutable, outputArg, cliArg, opensslArg, ...flags] = process.argv.slice(2);
-if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M] [--mixed-pilot] [--generation-pilot]');
+if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M] [--parent-stdin] [--mixed-pilot] [--generation-pilot]');
+process.umask(0o077);
 const options={};
 for(let i=0;i<flags.length;i++){
   const flag=flags[i];
-  if(flag==='--generation-pilot'){if(options.generationPilot)throw Error('duplicate generation-pilot flag');options.generationPilot=true;continue;}
-  if(flag==='--mixed-pilot'){if(options.mixedPilot)throw Error('duplicate mixed-pilot flag');options.mixedPilot=true;continue;}
+  if(Object.hasOwn(options,flag))throw Error('duplicate flag: '+flag);
+  if(flag==='--parent-stdin'||flag==='--mixed-pilot'||flag==='--generation-pilot'){options[flag]=true;continue;}
   if(flag!=='--gateway-port'&&flag!=='--tls-port')throw Error('unknown flag: '+flag);
   const value=flags[++i];
   if(!/^[0-9]+$/.test(value??''))throw Error(flag+' requires a decimal loopback port');
   options[flag]=Number(value);
 }
-options.mixedPilot ||= options.generationPilot;
+options.generationPilot=!!options['--generation-pilot'];
+options.mixedPilot=!!options['--mixed-pilot']||options.generationPilot;
 const artifact = resolve(artifactArg), output = resolve(outputArg);
 const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
 const driverPaths={driver:new URL(import.meta.url),lifecycle:new URL('./qualification_lifecycle.mjs',import.meta.url),mixedPilot:new URL('./private_mixed_pilot.mjs',import.meta.url),generationPilot:new URL('./private_generation_pilot.mjs',import.meta.url)};
@@ -287,15 +288,15 @@ let tlsAddress=`127.0.0.1:${tlsPort}`;
 let relay, gateway, blackhole, hostile, fixtureSerial=0;
 const blackholeSockets=new Set();
 const serviceLogs=[];
-async function privateFile(name,content) {const path=join(output,name);await writeFile(path,content,{mode:0o600,flag:'wx'});return path;}
+async function privateFile(name,content) {signal.throwIfAborted();const path=join(output,name);await writeFile(path,content,{mode:0o600,flag:'wx'});return path;}
 async function command(executable,args,expectedExit=0) {
-  signal.throwIfAborted();const process=trackChild(spawn(executable,args,{stdio:['ignore','pipe','pipe']}));children.push(process);
+  signal.throwIfAborted();const process=spawnOwned(executable,args,{role:'fixture-command',timeoutMs:20000});children.push(process);
   let stdout='',stderr='';process.stdout.on('data',v=>stdout=(stdout+v).slice(-1048576));process.stderr.on('data',v=>stderr=(stderr+v).slice(-1048576));
   let timer;try {await Promise.race([new Promise((r,j)=>{process.once('error',j);process.once('exit',code=>code===expectedExit?r():j(Error('fixture command exited '+code+' (expected '+expectedExit+'): '+stderr)));}),new Promise((_,j)=>{timer=setTimeout(()=>j(Error('fixture command deadline')),20000);})]);}finally{clearTimeout(timer);if(!childStopped(process))await stopChild(process);}
   return {stdout,stderr};
 }
 async function child(args,ready) {
-  signal.throwIfAborted();const process=trackChild(spawn(cli,args,{stdio:['ignore','pipe','pipe']}));children.push(process);
+  signal.throwIfAborted();const process=spawnOwned(cli,args,{role:args[0]});children.push(process);
   const record={args:args.map(a=>a.startsWith(output)?a.slice(output.length):a),stdout:'',stderr:''};serviceLogs.push(record);
   process.stdout.on('data',v=>record.stdout=(record.stdout+v).slice(-65536));process.stderr.on('data',v=>record.stderr=(record.stderr+v).slice(-65536));
   await wait(()=>{if(childStopped(process))throw Error('fixture service exited: '+record.stderr);return record.stdout.includes(ready);},ready);return process;
@@ -559,11 +560,19 @@ async function removeMember(page,account,device) {
   await evaluate(page,"(async()=>{await qclick('private-remove');await qidle();})()");
 }
 async function task(abortSignal) {
-  signal=abortSignal;await fixture();
-  const chrome=trackChild(spawn(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));children.push(chrome);chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
+  signal=abortSignal;
+  signal.addEventListener('abort',()=>{for(const waiter of pending.values())waiter.reject(signal.reason);pending.clear();},{once:true});
+  await fixture();signal.throwIfAborted();
+  // Crashpad deliberately leaves the browser's process tree. Disable that
+  // unrelated reporting service for this isolated synthetic test so the owned
+  // guardian can confirm the whole browser group has gone before publishing.
+  // Keep the pre-guardian Chrome flags: on the Ubuntu runner, adding
+  // --disable-crashpad-for-testing/--remote-debugging-address made Chrome's
+  // network service crash-loop (FD ownership violation) and the journey hang.
+  const chrome=spawnOwned(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{role:'chrome'});children.push(chrome);chrome.stdout.resume();chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
-  socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
+  signal.throwIfAborted();socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
   socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,frameId:p.frameId,at:Date.now(),filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith(gatewayOrigin+'/')&&!url.startsWith('blob:'+gatewayOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
   if(options.mixedPilot) {
     const result=await runMixedPilot({account,enter,evaluate,invoke,setFile,download,retainCreation,
@@ -722,7 +731,7 @@ async function task(abortSignal) {
   // Terminate the worker while the actual native gateway waits on a TLS
   // handshake. No delayed completion may repopulate its private UI or budgets.
   await send(twin,'SYNTHETIC_LOCKED_IN_FLIGHT');await stopChild(relay);
-  blackhole=createTcpServer(socket=>{blackholeSockets.add(socket);socket.once('close',()=>blackholeSockets.delete(socket));});
+  signal.throwIfAborted();blackhole=createTcpServer(socket=>{blackholeSockets.add(socket);socket.once('close',()=>blackholeSockets.delete(socket));});
   await new Promise((r,j)=>{blackhole.once('error',j);blackhole.listen(tlsPort,'127.0.0.1',r);});
   await evaluate(twin,"qclick('private-delivery-sync')");await wait(()=>blackholeSockets.size>0,'gateway pending actual TLS handshake');
   await leave(twin);const canceled=Buffer.from(await snapshot(twin));
@@ -736,7 +745,7 @@ async function task(abortSignal) {
   // outage or an authorization renewal. Persist the stop before ending custody.
   const hostileHead=await head();const hostileMessage=await send(twin,'SYNTHETIC_CORRUPT_RECEIPT');
   const beforeHostile=Buffer.from(await snapshot(twin));await stopChild(gateway);
-  hostile=createServer((request,response)=>{
+  signal.throwIfAborted();hostile=createServer((request,response)=>{
     if(request.method!=='POST'||request.url!=='/private-relay/v1'||request.headers.origin!==gatewayOrigin||request.headers.authorization!=='Bearer '+browserCapability){response.writeHead(403);response.end();return;}
     const chunks=[];let size=0;request.on('data',chunk=>{size+=chunk.length;if(size>300000){request.destroy();return;}chunks.push(chunk);});
     request.on('end',()=>{const body=Buffer.concat(chunks);if(body.length<40||body[4]!==1){response.writeHead(400);response.end();return;}const receipt=Buffer.alloc(46);receipt.writeUInt32BE(42,0);receipt.writeBigUInt64BE(1n,5);body.subarray(-32).copy(receipt,13);receipt[13]^=1;response.writeHead(200,{'content-type':'application/octet-stream','content-length':receipt.length,'cache-control':'no-store'});response.end(receipt);});
@@ -755,4 +764,29 @@ async function task(abortSignal) {
   await leave(twin);await leave(member);
   return finish();
 }
-await runQualification({work:task,timeoutMs:360000,cleanup:async()=>{try{for(const socket of blackholeSockets)socket.destroy();if(blackhole){await new Promise(r=>blackhole.close(r));blackhole=undefined;}await cleanupOwned({children,server:hostile,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));await writeFile(join(output,'network-failure.txt'),fatalNetwork);}},publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));}});
+await runQualification({
+  work:task, timeoutMs:360000,
+  parentInput:options['--parent-stdin']?process.stdin:undefined,
+  cleanup:async()=>{
+    let receipt;
+    try{
+      for(const socket of blackholeSockets)socket.destroy();
+      receipt=await cleanupOwned({children,servers:[blackhole,hostile],socket,pending});
+      return receipt;
+    }catch(error){receipt=error.cleanupReceipt;throw error;}
+    finally{
+      await writeFile(join(output,'cleanup.json'),JSON.stringify(receipt??{passed:false,error:'cleanup evidence unavailable'},null,2)+'\n');
+      await writeFile(join(output,'chrome.log'),chromeLog);
+      await writeFile(join(output,'services.json'),JSON.stringify(serviceLogs,null,2));
+      await writeFile(join(output,'network-failure.txt'),fatalNetwork);
+    }
+  },
+  onFailure:async({error,cleanup})=>{
+    await writeFile(join(output,'receipt.json'),JSON.stringify({passed:false,failure:error.message,cleanup},null,2)+'\n');
+  },
+  publish:async(receipt,cleanup)=>{
+    receipt.cleanup=cleanup;
+    await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
+    console.log(JSON.stringify(receipt));
+  },
+});

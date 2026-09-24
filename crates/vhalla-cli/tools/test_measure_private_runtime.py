@@ -6,8 +6,9 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 SPEC = importlib.util.spec_from_file_location("measurement", Path(__file__).with_name("measure_private_runtime.py"))
 m = importlib.util.module_from_spec(SPEC)
@@ -112,14 +113,6 @@ class ContractTests(unittest.TestCase):
             with self.assertRaisesRegex(m.MeasurementError, "captured inputs"):
                 m.admit_candidate(binary, proof, source)
 
-    def test_cpu_time_parses_both_platform_formats(self):
-        self.assertAlmostEqual(m.cpu_seconds("0:01.25"), 1.25)
-        self.assertEqual(m.cpu_seconds("01:02:03"), 3723)
-        self.assertEqual(m.cpu_seconds("2-01:02:03"), 176523)
-        for invalid in ("", "unknown", "nan", "1", "1:-1"):
-            with self.assertRaises(m.MeasurementError):
-                m.cpu_seconds(invalid)
-
     def test_repeated_quiet_distribution_requires_every_expected_sample(self):
         def result(milliseconds, passed=True):
             return {"correctness_passed": passed, "messages": [{"queue_request_ns": 0,
@@ -141,6 +134,37 @@ class ContractTests(unittest.TestCase):
                 log.add({"oversized": "x" * 40})
             log.close()
             self.assertEqual([json.loads(line) for line in path.read_text().splitlines()], [{"first": True}])
+
+    def test_invalid_polling_selection_creates_no_fixture_or_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "invalid"
+            for selection in (None, "unknown", 1):
+                with self.subTest(selection=selection), self.assertRaises(m.MeasurementError):
+                    m.Fixture(Path(sys.executable), destination, "quiet", selection)
+                self.assertFalse(destination.exists())
+
+    def test_cpu_time_parses_platform_displays_without_float_roundoff(self):
+        for text, nanoseconds, resolution in (
+                ("0:00.01", 10_000_000, 10_000_000),
+                ("125:30.99", 7_530_990_000_000, 10_000_000),
+                ("01:02:03", 3_723_000_000_000, 1_000_000_000),
+                ("2-03:04:05", 183_845_000_000_000, 1_000_000_000),
+                ("00:00.123456789", 123_456_789, 1)):
+            with self.subTest(text=text):
+                self.assertEqual(m.parse_cpu_time(text), (nanoseconds, resolution))
+        for invalid in ("", "nan", "-1:00.00", "0:60.00", "1-00:01", "1-24:00:00",
+                        "00:00.1234567890", "0:00 trailing", "x" * 33):
+            with self.subTest(invalid=invalid), self.assertRaises(m.MeasurementError):
+                m.parse_cpu_time(invalid)
+
+    def test_resource_row_retains_start_identity_and_rss_with_cpu(self):
+        self.assertEqual(m.parse_process_sample(" 2243 Thu Sep 24 10:53:52 2026 1392 0:00.01"),
+                         ("2243", "Thu Sep 24 10:53:52 2026", 1_425_408, 10_000_000, 10_000_000))
+        for invalid in ("2243 Thu Sep 24 10:53:52 2026 1392",
+                        "2243 Thu Sep 24 10:53:52 2026 -1 0:00.01",
+                        "-2 Thu Sep 24 10:53:52 2026 1392 0:00.01"):
+            with self.subTest(invalid=invalid), self.assertRaises(m.MeasurementError):
+                m.parse_process_sample(invalid)
 
 
 class AsyncContractTests(unittest.IsolatedAsyncioTestCase):
@@ -216,6 +240,22 @@ class AsyncContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(meter.tasks)
         self.assertTrue(downstream.closed and upstream.closed)
 
+    async def test_polling_selection_changes_no_retry_or_authority_fields(self):
+        self.fixture.contexts["a"] = {"room": "r", "anchor": "a", "account": "k", "device": "d"}
+        self.fixture.connection = {"namespace": "n"}
+        self.fixture.addr = "127.0.0.1:12345"
+        adaptive = self.fixture.delivery_profile("a")
+        self.assertNotIn("mailbox_polling", adaptive, "default must remain compatible with old candidates")
+        self.fixture.mailbox_polling = "interactive"
+        interactive = self.fixture.delivery_profile("a")
+        self.assertEqual(interactive.pop("mailbox_polling"), "interactive")
+        self.assertEqual(interactive, adaptive)
+        self.assertEqual(interactive["initial_backoff_secs"], 5)
+        self.assertEqual(interactive["max_backoff_secs"], 300)
+        result = self.fixture.metrics()
+        self.assertEqual(result["mailbox_polling"], "interactive")
+        self.assertIsNone(result["page_tls_exchange_count"])
+
     async def test_owned_stdio_child_is_closed_reaped_and_retained(self):
         child = await self.fixture.spawn("pipe-child", ["-c", "import sys; print('{\"ready\":true}', flush=True); sys.stdin.read()"])
         self.assertEqual(await child.line(), {"ready": True})
@@ -264,18 +304,52 @@ class AsyncContractTests(unittest.IsolatedAsyncioTestCase):
         self.fixture.idle_start, self.fixture.idle_end = {"a": before}, {"a": after}
         self.fixture.idle_observer_cpu_start, self.fixture.idle_observer_cpu_end = 1, 1.1
         self.fixture.samples = [
-            {"monotonic_ns": 1_000_000_000, "cpu_seconds": {"host": 0.1}, "rss_bytes": {"host": 1024},
+            {"monotonic_ns": 1_000_000_000, "cpu_time_ns": {"host": 100_000_000}, "rss_bytes": {"host": 1024},
              "process_start_identity": {"host": {"pid": 1, "lstart": "same"}}},
-            {"monotonic_ns": 29_000_000_000, "cpu_seconds": {"host": 0.4}, "rss_bytes": {"host": 2048},
+            {"monotonic_ns": 29_000_000_000, "cpu_time_ns": {"host": 400_000_000}, "rss_bytes": {"host": 2048},
              "process_start_identity": {"host": {"pid": 1, "lstart": "same"}}}]
         window = self.fixture.metrics()["idle_window"]
         self.assertEqual(window["clients"]["a"]["connections_per_minute"], 60)
+        self.assertEqual(window["processes"]["host"]["cpu_time_ns"], 300_000_000)
         self.assertAlmostEqual(window["processes"]["host"]["cpu_seconds"], 0.3)
         self.assertEqual(window["processes"]["host"]["sample_span_seconds"], 28)
         self.assertEqual(window["processes"]["host"]["rss_max_bytes"], 2048)
         self.fixture.samples[-1]["process_start_identity"]["host"]["pid"] = 2
         with self.assertRaisesRegex(m.MeasurementError, "different process identities"):
             self.fixture.metrics()
+
+    async def test_cpu_metrics_keep_process_generations_separate(self):
+        self.fixture.samples = [
+            {"rss_bytes": {}, "cpu_time_ns": {"agent-a-1": 10_000_000}},
+            {"rss_bytes": {}, "cpu_time_ns": {"agent-a-1": 30_000_000, "agent-a-2": 20_000_000}}]
+        self.assertEqual(self.fixture.metrics()["observed_cpu_time_ns_by_process"],
+                         {"agent-a-1": 30_000_000, "agent-a-2": 20_000_000})
+
+    async def test_resource_sampler_checks_live_pid_start_identity_and_cpu_progress(self):
+        identity = "Thu Sep 24 10:53:52 2026"
+        child = SimpleNamespace(process=SimpleNamespace(pid=2243, returncode=None), label="agent-a-1",
+                                sampled_start_identity=None, sampled_cpu_time_ns=None)
+        self.fixture.children.append(child)
+        async def sample(row):
+            process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(row.encode(), b"")))
+            with patch.object(m.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)), \
+                    patch.object(m.asyncio, "sleep", AsyncMock(side_effect=asyncio.CancelledError)):
+                await self.fixture.sample_resources()
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await sample(f"2243 {identity} 1392 0:00.02")
+            saved = self.fixture.samples[0]
+            self.assertEqual(saved["cpu_time_ns"], {"agent-a-1": 20_000_000})
+            self.assertEqual(saved["cpu_time_display_resolution_ns"], {"agent-a-1": 10_000_000})
+            self.assertEqual(saved["process_start_identity"]["agent-a-1"], {"pid": 2243, "lstart": identity})
+            for row, reason in ((f"2243 {identity} 1392 0:00.01", "CPU clock regressed"),
+                                ("2243 Thu Sep 24 10:53:53 2026 1392 0:00.03", "start identity changed"),
+                                (f"2244 {identity} 1392 0:00.03", "unowned PID")):
+                with self.subTest(row=row), self.assertRaisesRegex(m.MeasurementError, reason):
+                    await sample(row)
+            self.assertEqual(len(self.fixture.samples), 1, "refused samples must not be reported")
+        finally:
+            self.fixture.children.clear()
 
     async def test_offline_retention_is_observed_past_first_sixteen_without_claims(self):
         calls = []
@@ -365,8 +439,10 @@ class AsyncContractTests(unittest.IsolatedAsyncioTestCase):
             fixture.log.add({"event": "before-failure"})
             raise m.MeasurementError("synthetic setup failure")
         with patch.object(m.Fixture, "setup", fail_setup):
-            result = await m.run_scenario(Path(sys.executable), destination, "smoke")
+            result = await m.run_scenario(Path(sys.executable), destination, "smoke", "interactive")
         self.assertFalse(result["correctness_passed"])
+        self.assertEqual(result["mailbox_polling"], "interactive")
+        self.assertEqual(json.loads((destination / "receipt.json").read_text())["mailbox_polling"], "interactive")
         self.assertTrue((destination / "receipt.json").is_file())
         self.assertIn("before-failure", (destination / "events.jsonl").read_text())
 

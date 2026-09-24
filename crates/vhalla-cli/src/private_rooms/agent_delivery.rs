@@ -35,13 +35,6 @@ const PAGE: usize = MAX_RELAY_PAGE;
 /// loop until an empty page, so catch-up still converges in one tick budget.
 const OUTBOX_PAGE: usize = vhalla_private_kernel::MAX_PAGE_RECORDS;
 const TICK: Duration = Duration::from_secs(2);
-/// Idle mailbox poll backoff: a quiet room backs off 5s -> 30s; any staged or
-/// applied work resets it. Relay delivery attempts keep their own due times.
-const IDLE_BASE: Duration = Duration::from_secs(5);
-const IDLE_MAX: Duration = Duration::from_secs(30);
-/// Network-error backoff for relay scans, independent of the idle cadence.
-const ERR_BASE: Duration = Duration::from_secs(1);
-const ERR_MAX: Duration = Duration::from_secs(30);
 /// Relay job attempts per tick, within the store's byte and deadline budget.
 const TICK_JOBS: usize = 8;
 const TICK_BYTES: usize = 4 * 1024 * 1024;
@@ -52,6 +45,7 @@ const PENDING_MAX: Duration = Duration::from_secs(300);
 
 mod applied;
 pub(super) mod generation;
+mod polling;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -74,6 +68,10 @@ struct Config {
     initial_cursor: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lineage: Option<generation::Lineage>,
+    /// Mailbox cadence is distinct from outbound job retry authority. The
+    /// faster policy must be selected before initializing a new profile.
+    #[serde(default)]
+    mailbox_polling: polling::Policy,
     /// Exact selected bytes for conditional atomic version publication.
     #[serde(skip)]
     encoded: Vec<u8>,
@@ -153,7 +151,11 @@ impl Config {
 fn binding(context: Context, ns: RelayNamespace, relay: &TlsRelay, config: &Config) -> Vec<u8> {
     // Version 1 omitted limits and retry authority. Refuse it without altering
     // the old state; reinterpreting its queue would silently widen a new config.
-    let mut bytes = if config.initial_cursor == 0 {
+    // Versions 2 and 3 retain their exact adaptive-policy bytes. Version 4
+    // explicitly binds the interactive policy and its starting cursor, even 0.
+    let mut bytes = if config.mailbox_polling == polling::Policy::Interactive {
+        b"VHDELHOST\x04".to_vec()
+    } else if config.initial_cursor == 0 {
         b"VHDELHOST\x02".to_vec()
     } else {
         b"VHDELHOST\x03".to_vec()
@@ -178,8 +180,11 @@ fn binding(context: Context, ns: RelayNamespace, relay: &TlsRelay, config: &Conf
     ] {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
-    if config.initial_cursor != 0 {
+    if config.initial_cursor != 0 || config.mailbox_polling == polling::Policy::Interactive {
         bytes.extend_from_slice(&config.initial_cursor.to_be_bytes());
+    }
+    if config.mailbox_polling == polling::Policy::Interactive {
+        bytes.push(1);
     }
     bytes
 }
@@ -542,9 +547,7 @@ pub(super) struct Driver {
     /// One-time boundary check that the durable outgoing watermark agrees with
     /// kernel custody and the queue.
     boundary_checked: bool,
-    next_poll: Instant,
-    idle: Duration,
-    err: Duration,
+    polling: polling::Schedule,
     scan_full: bool,
 }
 impl Driver {
@@ -598,6 +601,7 @@ impl Driver {
         let (cp_outgoing, cp_applied) = queue.driver_checkpoint().map_err(|_| REFUSED)?;
         let (applied, ahead) =
             applied_restore(&applied_dir, config.initial_cursor, staged_head, cp_applied)?;
+        let polling = polling::Schedule::new(config.mailbox_polling, Instant::now());
         Ok(Self {
             config,
             context,
@@ -619,9 +623,7 @@ impl Driver {
             staged_head,
             checkpoint: (cp_outgoing, cp_applied),
             boundary_checked: cp_outgoing == 0,
-            next_poll: Instant::now(),
-            idle: IDLE_BASE,
-            err: ERR_BASE,
+            polling,
             scan_full: false,
         })
     }
@@ -717,6 +719,7 @@ impl Driver {
                     Err(_) => return Err(REFUSED.into()),
                 }
                 self.control_outgoing = control.floor().sequence();
+                self.polling.activity(Instant::now());
                 self.controls
                     .save_driver_checkpoint(self.control_outgoing, 0, now()?)
                     .map_err(|_| REFUSED)?;
@@ -766,6 +769,7 @@ impl Driver {
                     rpc.update_delivery(self.namespace, &status)
                         .await
                         .map_err(|_| REFUSED)?;
+                    self.polling.activity(Instant::now());
                     // `fed` is not marked here: `feed` delivers every durable
                     // row in sequence order, and a deadline-stopped feed must
                     // still reach rows enqueued before this job.
@@ -975,34 +979,29 @@ impl Driver {
         Ok(())
     }
 
-    /// Poll the relay mailbox under the adaptive cadence. A nonempty page or a
+    /// Poll the relay mailbox under the selected cadence. A nonempty page or a
     /// cursor still behind the observed head repolls on the next tick; a quiet
-    /// room backs off; network errors back off independently without touching
+    /// room uses its selected idle interval; errors back off without touching
     /// staged evidence. No lifetime attempt cap: only the current pass counts.
     fn poll(&mut self, deadline: Instant) -> Result<(), String> {
-        if self.scan_full || Instant::now() < self.next_poll {
+        if self.scan_full || !self.polling.due(Instant::now()) {
             return Ok(());
         }
         match self.scan.scan_page_until(&self.relay, PAGE, deadline) {
             Ok(report) => {
                 self.staged_head = self.scan.cursor();
-                if report.scanned > 0 || self.staged_head < report.head {
-                    self.next_poll = Instant::now();
-                    self.idle = IDLE_BASE;
-                } else {
-                    self.idle = (self.idle * 2).min(IDLE_MAX);
-                    self.next_poll = Instant::now() + self.idle;
-                }
-                self.err = ERR_BASE;
+                self.polling.success(
+                    Instant::now(),
+                    report.scanned > 0 || self.staged_head < report.head,
+                );
             }
             Err(ScanFailure::Net(
                 NetError::Connect | NetError::Timeout | NetError::Capacity | NetError::Unavailable,
             )) => {
-                self.next_poll = Instant::now() + self.err;
-                self.err = (self.err * 2).min(ERR_MAX);
+                self.polling.network_error(Instant::now());
             }
             Err(ScanFailure::Timeout) => {
-                self.next_poll = Instant::now();
+                self.polling.budget_exhausted(Instant::now());
             }
             Err(ScanFailure::Capacity) => {
                 // The retained window exceeds relay bounds; staged items still

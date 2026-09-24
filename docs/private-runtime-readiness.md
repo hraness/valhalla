@@ -14,9 +14,11 @@ recovery and browser qualification. PR98 added six maintained TLA+ suites with
 26 cases and repaired a host recovery fence exposed by a counterexample. PR99
 closed that formal plan. Kani checks production spent-nonce logic; Verus checks
 a ledger reference implementation with sampled Rust correspondence. The Lean
-weighted-certificate trial became a required CI check in PR105. It checks 24
-theorems and a shared conformance corpus consumed by both Rust verifiers; it
-does not prove their complete implementations. See the
+weighted-certificate trial became a required CI check in PR105 with signed
+Rust conformance cases. It checks 24 theorems and a shared conformance corpus
+consumed by both Rust verifiers; its theorem applies to one fixed roster and
+signing context under honest non-equivocation, and it proves neither
+cross-round consensus nor the complete implementations. See the
 [Lean trial](../kb/plans/valhalla-lean-assurance-trial.md).
 See [formal rigor](../kb/plans/valhalla-formal-rigor.md) for exact claims and limits.
 
@@ -51,12 +53,25 @@ independent production regression for each useful counterexample.
    WASM build and real browser journey. Build an exact native candidate, run a
    small smoke fixture, then the bounded load, quiet and offline scenarios.
    Retain unsuccessful evidence as well as successful evidence.
-4. **Complete — independent review and source delivery.** PR101 merged after
-   its current-head checks and independent review. Release artifact identity
-   and operational tests remain separate from source delivery.
-5. **Pending external qualification.** Bind the second-Mac instructions to the
-   qualified candidate. Run separate-machine pinned-relay/Tailcat and
-   sleep/wake/reboot qualification when that machine is identified and ready.
+4. **Complete — independent review and delivery.** PR101 merged as `4b08106`
+   after its current-head checks passed. Its original browser and native
+   component identities remain separate from subsequent source changes.
+5. **Partial — independent-device qualification.** Two physical Macs completed
+   native bidirectional delivery and stopped-member catch-up under a fresh
+   grant. The [portable result](evidence/private-two-mac-native-20260924.json)
+   binds the original native build and four exact application deliveries.
+   A separate [production browser journey on Mac B](evidence/private-browser-mac-b-20260924.json)
+   passed all 15 UI observations and confirmed owned process-group cleanup.
+   Its browser identities and relay ran together on Mac B; cross-device browser
+   transport, installed lifecycle and a real-duration soak remain open.
+
+The next readiness change adds a retained-request admission model and real
+cancellation and competing-publication regressions. Its [full model replay](evidence/private-admission-models-20260924.json)
+passed all 71 cases across 11 suites. The new normal case explored 1,628,479
+distinct states; eight deliberately broken variants produced their expected
+counterexamples, and a separate witness demonstrated successful admission.
+These are finite safety results under the documented assumptions, not a proof
+of the complete implementation or production readiness.
 
 ## Frozen admission contract
 
@@ -94,16 +109,18 @@ under five seconds is distinct from correctness and may fail honestly.
 
 ## Follow-on work and remaining operating tests
 
-- PR101 established the quiet-arrival baseline: after 90 seconds idle, one
-  message took 28.67 seconds to observed acceptance. The 100-message 1 Hz run
-  passed correctness with no missed slots and 4.27-second acceptance p95.
-  The pilot keeps the adaptive idle backoff (five to thirty seconds, reset by
-  any staged or applied work) and claims no quiet-arrival improvement. An
-  opt-in interactive polling policy is proposed separately in PR110; its
-  repeated comparison must include idle connections, bytes, CPU and memory
-  before claiming an improvement, and the original numbers remain evidence for
-  the PR101 binary.
-- Independent-device and remote-path qualification is not yet run.
+- The explicit interactive mailbox policy has a [local quiet-arrival comparison](evidence/private-quiet-policies-20260924.json):
+  one message after 90 seconds idle reached the receiver in 1.005 seconds and
+  observed acceptance in 3.014 seconds. Adaptive polling on the same candidate
+  took 26.639 and 28.649 seconds. Both preserved correctness and cleanup. These
+  single-message trials do not establish production percentiles, Internet
+  latency or equal-duration idle CPU cost. The historical 100-message 1 Hz run
+  used an earlier candidate and remains separate evidence. The pilot drivers
+  leave `mailbox_polling` at its adaptive default and claim no quiet-arrival
+  improvement of their own.
+- Native delivery and offline catch-up passed across two physical Macs on one
+  LAN. The Tailcat path was not classified as direct or DERP; cross-device browser and
+  separate transport-fault cases remain unrun.
 - A sparse 24-hour soak requires a real elapsed run and explicit grant handoffs.
   A 24-hour 1 Hz run and 10,000-message single-mailbox run exceed current bounds.
 - [Drained mailbox rollover](private-generations.md) is implemented, and the
