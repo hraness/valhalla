@@ -293,7 +293,7 @@ pub(crate) fn execute(args: &[OsString]) -> Result<(), String> {
             let config = resolve(Path::new(&args[1]))?;
             let (gateway, listen) = load(&config)?;
             let log_dir = config.parent().ok_or(REFUSED)?;
-            let mut report = serde_json::json!({"status":"configured","config":config,"label":launchd::label(&config)?,"listen":listen,"origin":gateway.origin(),"service":launchd::status(&config)?,"log":log_dir.join(crate::private_host::launchd::LOG_NAME),"recent_events":events::tail(log_dir,8)?});
+            let mut report = serde_json::json!({"status":"configured","config":config,"label":launchd::label(&config)?,"listen":listen,"origin":gateway.origin(),"service":launchd::status(&config)?,"log":log_dir.join(crate::private_host::launchd::LOG_NAME),"supervisor_log":log_dir.join(crate::private_host::launchd::SUPERVISOR_LOG_NAME),"recent_events":events::tail(log_dir,8)?});
             if args.len() == 3 {
                 report["probe"] = probe(listen)?;
             } else {
@@ -329,6 +329,9 @@ fn serve(path: &Path) -> Result<(), String> {
     let config = resolve(path)?;
     let (gateway, address) = load(&config)?;
     let log_dir = config.parent().ok_or(REFUSED)?.to_path_buf();
+    // Launchd output is bounded separately from structured events and cannot
+    // refuse startup; a rotation or refusal is itself recorded as an event.
+    events::bound_supervisor_output(&log_dir);
     let listener = bind(address, &log_dir)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

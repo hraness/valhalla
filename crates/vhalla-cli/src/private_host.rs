@@ -162,7 +162,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             match action {
                 "status" => {
                     let now = time::OffsetDateTime::now_utc().unix_timestamp();
-                    let mut report = serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"log":loaded.home.join(launchd::LOG_NAME),"recent_events":events::tail(&loaded.home,8)?});
+                    let mut report = serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"log":loaded.home.join(launchd::LOG_NAME),"supervisor_log":loaded.home.join(launchd::SUPERVISOR_LOG_NAME),"recent_events":events::tail(&loaded.home,8)?});
                     report["active_credentials"] = (loaded.config.credential_ids.len()
                         - loaded.config.revoked_credential_ids.len())
                     .into();
@@ -318,6 +318,9 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
     }
     let service = service(&loaded.home, &loaded.config)?;
     drop(maintenance);
+    // Launchd output is bounded separately from structured events and cannot
+    // refuse startup; a rotation or refusal is itself recorded as an event.
+    events::bound_supervisor_output(&loaded.home);
     // Mailbox custody is held before the bounded bind retry so a restart
     // handoff cannot let a second owner take the store mid-recovery.
     let mut listener = None;
