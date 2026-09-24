@@ -1,4 +1,34 @@
 use super::*;
+#[test]
+fn launch_agent_redirects_supervisor_output_beside_the_config_and_keeps_the_event_log_shape_ours() {
+    let dir = root("launchd");
+    let config = dir.join("gateway.json");
+    let agent = launchd::spec(&config).unwrap();
+    let canonical = dir.canonicalize().unwrap();
+    for key in ["StandardOutPath", "StandardErrorPath"] {
+        assert!(agent.plist.contains(&format!(
+            "<key>{key}</key><string>{}</string>",
+            canonical.join("supervisor.log").display()
+        )));
+    }
+    assert!(!agent.plist.contains("events.log"));
+    assert!(agent
+        .plist
+        .contains("<string>private-gateway</string><string>serve</string>"));
+    // The earlier emitted shape differs only in its output redirection, so an
+    // installation from that version is still recognized as ours.
+    assert_eq!(agent.alternates.len(), 1);
+    assert!(agent.alternates[0].contains(&format!(
+        "<key>StandardOutPath</key><string>{}</string>",
+        canonical.join("events.log").display()
+    )));
+    assert_eq!(
+        agent.alternates[0].replace("events.log", "supervisor.log"),
+        agent.plist
+    );
+    assert_eq!(agent.label, launchd::label(&config).unwrap());
+    std::fs::remove_dir_all(dir).unwrap();
+}
 fn root(label: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "vhalla-gateway-{}-{}-{label}",

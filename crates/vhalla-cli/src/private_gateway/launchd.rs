@@ -1,6 +1,6 @@
 //! Per-user gateway LaunchAgent selection through the shared custody path.
 use super::{resolve, REFUSED};
-use crate::private_host::launchd::{self, AgentSpec, LOG_NAME};
+use crate::private_host::launchd::{self, AgentSpec, LOG_NAME, SUPERVISOR_LOG_NAME};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -18,7 +18,8 @@ pub(super) fn label(config: &Path) -> Result<String, String> {
     ))
 }
 /// Exact agent: installed executable plus absolute config path, with launchd
-/// output redirected into the bounded private event log next to the config.
+/// output redirected into the bounded supervisor log next to the config. The
+/// earlier shape that sent that output into the event log stays admissible.
 pub(super) fn spec(config: &Path) -> Result<AgentSpec, String> {
     let resolved = resolve(config)?;
     let executable = std::env::current_exe()
@@ -27,18 +28,11 @@ pub(super) fn spec(config: &Path) -> Result<AgentSpec, String> {
         .map_err(|_| "selected executable unavailable")?;
     let executable = launchd::xml(executable.to_str().ok_or(REFUSED)?)?;
     let argument = launchd::xml(resolved.to_str().ok_or(REFUSED)?)?;
-    let log = launchd::xml(
-        resolved
-            .parent()
-            .ok_or(REFUSED)?
-            .join(LOG_NAME)
-            .to_str()
-            .ok_or(REFUSED)?,
-    )?;
+    let directory = resolved.parent().ok_or(REFUSED)?;
     let label_xml = launchd::xml(&label(&resolved)?)?;
-    Ok(AgentSpec {
-        label: label(config)?,
-        plist: format!(
+    let shape = |name: &str| -> Result<String, String> {
+        let log = launchd::xml(directory.join(name).to_str().ok_or(REFUSED)?)?;
+        Ok(format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -55,8 +49,12 @@ pub(super) fn spec(config: &Path) -> Result<AgentSpec, String> {
 <key>StandardErrorPath</key><string>{log}</string>
 </dict></plist>
 "#
-        ),
-        alternates: Vec::new(),
+        ))
+    };
+    Ok(AgentSpec {
+        label: label(config)?,
+        plist: shape(SUPERVISOR_LOG_NAME)?,
+        alternates: vec![shape(LOG_NAME)?],
     })
 }
 pub(super) fn status(config: &Path) -> Result<serde_json::Value, String> {

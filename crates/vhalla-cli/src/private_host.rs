@@ -181,7 +181,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             match action {
                 "status" => {
                     let now = time::OffsetDateTime::now_utc().unix_timestamp();
-                    let mut report = serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"log":loaded.home.join(launchd::LOG_NAME),"recent_events":events::tail(&loaded.home,8)?});
+                    let mut report = serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"log":loaded.home.join(launchd::LOG_NAME),"supervisor_log":loaded.home.join(launchd::SUPERVISOR_LOG_NAME),"recent_events":events::tail(&loaded.home,8)?});
                     report["active_credentials"] = (loaded.config.credential_ids.len()
                         - loaded.config.revoked_credential_ids.len())
                     .into();
@@ -351,6 +351,9 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
             service_ids(&loaded.home, &selection, &retained.credential_ids)?,
         ));
     }
+    // Launchd output is bounded separately from structured events and cannot
+    // refuse startup; a rotation or refusal is itself recorded as an event.
+    events::bound_supervisor_output(&loaded.home);
     // At most sixteen generations, each with sixteen connection workers and
     // its existing finite per-window budgets: 256 simultaneous workers total.
     // Acquire every store before binding any listener, then keep them together.
