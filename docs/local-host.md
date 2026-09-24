@@ -107,7 +107,11 @@ from another file, writes the exact owner-only unit, reloads the user manager,
 enables and starts it, and requires an active readback from that file.
 `status` reports `supervisor: "systemd"`, custody (`installed`,
 `unit_current`) separately from manager state (`loaded`, `unit_matches`,
-`state`, `pid`, `last_exit_code`, `restarts`, `restart_loop_suspected`).
+`state`, `pid`, `last_exit_code`, `restarts`, `restart_loop_suspected`);
+where no user manager answers (a container, CI, no session) or the unit
+directory is unusable it reports `manager: "unavailable"` or
+`unit_directory: "unusable"` with unknown state rather than failing, while
+`install` and `uninstall` still fail closed.
 `uninstall` stops only a unit loaded from the exact owned file, waits for it
 to become inactive, removes the file and reloads. A `systemctl` failure never
 counts as absence. The unit restarts only after an unsuccessful exit with the

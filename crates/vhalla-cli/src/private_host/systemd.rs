@@ -170,7 +170,27 @@ pub(crate) fn status_with(
     mut run: impl FnMut(&[OsString]) -> Result<Reply, String>,
 ) -> Result<serde_json::Value, String> {
     let installed = installed_shape(spec, path)?;
-    let fields = show(spec, &mut run)?;
+    // `status` is the operator's view: a manager that does not answer (no user
+    // session, a container, CI) is reported as unknown state, never as absence
+    // and never as a failed command. Install and removal still fail closed.
+    let fields = match show(spec, &mut run) {
+        Ok(fields) => fields,
+        Err(reason) => {
+            return Ok(serde_json::json!({
+                "supported": true,
+                "supervisor": "systemd",
+                "installed": installed.is_some(),
+                "unit_current": installed == Some(true),
+                "unit": path,
+                "manager": "unavailable",
+                "manager_error": reason,
+                "loaded": serde_json::Value::Null,
+                "state": "unknown",
+                "pid": serde_json::Value::Null,
+                "restart_loop_suspected": false,
+            }));
+        }
+    };
     let pid = number(&fields, "MainPID").filter(|pid| *pid != 0);
     let last_exit = number(&fields, "ExecMainStatus");
     let restarts = number(&fields, "NRestarts").unwrap_or(0);
@@ -185,6 +205,7 @@ pub(crate) fn status_with(
         "installed": installed.is_some(),
         "unit_current": installed == Some(true),
         "unit": path,
+        "manager": "answered",
         "loaded": is_loaded,
         "unit_matches": is_loaded && fragment_is(&fields, path),
         "state": format!("{}/{}", fields.get("ActiveState").cloned().unwrap_or_default(), fields.get("SubState").cloned().unwrap_or_default()),
@@ -319,7 +340,20 @@ fn uninstall_bounded(
 
 #[cfg(target_os = "linux")]
 pub(super) fn status(loaded: &Loaded) -> Result<serde_json::Value, String> {
-    linux::agent_status(&spec(&loaded.home, &loaded.config)?)
+    match spec(&loaded.home, &loaded.config) {
+        Ok(unit) => linux::agent_status(&unit),
+        Err(reason) => Ok(serde_json::json!({
+            "supported": true,
+            "supervisor": "systemd",
+            "installed": false,
+            "unit": serde_json::Value::Null,
+            "unsupervisable": reason,
+            "loaded": serde_json::Value::Null,
+            "state": "unknown",
+            "pid": serde_json::Value::Null,
+            "restart_loop_suspected": false,
+        })),
+    }
 }
 #[cfg(target_os = "linux")]
 pub(super) fn install(loaded: &Loaded) -> Result<(), String> {
@@ -461,7 +495,21 @@ pub(crate) mod linux {
         Ok(directory(create)?.join(unit_name(spec)))
     }
     pub(crate) fn agent_status(spec: &UnitSpec) -> Result<serde_json::Value, String> {
-        status_with(spec, &destination(spec, false)?, command)
+        match destination(spec, false) {
+            Ok(path) => status_with(spec, &path, command),
+            Err(reason) => Ok(serde_json::json!({
+                "supported": true,
+                "supervisor": "systemd",
+                "installed": false,
+                "unit": serde_json::Value::Null,
+                "unit_directory": "unusable",
+                "unit_directory_error": reason,
+                "loaded": serde_json::Value::Null,
+                "state": "unknown",
+                "pid": serde_json::Value::Null,
+                "restart_loop_suspected": false,
+            })),
+        }
     }
     pub(crate) fn agent_install(spec: &UnitSpec) -> Result<(), String> {
         install_with(spec, || destination(spec, true), command)
@@ -782,7 +830,12 @@ mod tests {
         assert_eq!(failing["pid"], serde_json::Value::Null);
         assert_eq!(failing["restarts"], 3);
         assert_eq!(failing["restart_loop_suspected"], true);
-        assert!(status_with(&unit, &path, |_| reply(false, "")).is_err());
+        let unknown = status_with(&unit, &path, |_| reply(false, "")).unwrap();
+        assert_eq!(unknown["manager"], "unavailable");
+        assert_eq!(unknown["loaded"], serde_json::Value::Null);
+        assert_eq!(unknown["state"], "unknown");
+        assert_eq!(unknown["installed"], true, "custody is still reported");
+        assert_eq!(running["manager"], "answered");
         std::fs::write(&path, b"foreign").unwrap();
         assert!(status_with(&unit, &path, |_| reply(
             true,
