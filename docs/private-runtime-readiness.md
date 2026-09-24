@@ -59,6 +59,14 @@ independent production regression for each useful counterexample.
    Its browser identities and relay ran together on Mac B; cross-device browser
    transport, installed lifecycle and a real-duration soak remain open.
 
+The next readiness change adds a retained-request admission model and real
+cancellation and competing-publication regressions. Its [full model replay](evidence/private-admission-models-20260924.json)
+passed all 71 cases across 11 suites. The new normal case explored 1,628,479
+distinct states; eight deliberately broken variants produced their expected
+counterexamples, and a separate witness demonstrated successful admission.
+These are finite safety results under the documented assumptions, not a proof
+of the complete implementation or production readiness.
+
 ## Frozen admission contract
 
 IPC v7 adds retained-request review and separate confirmation. Review binds the
@@ -101,7 +109,7 @@ under five seconds is distinct from correctness and may fail honestly.
   Investigate wakeup or bounded long-polling before promising the same latency
   after idle; preserve explicit authority and resource limits.
 - Native delivery and offline catch-up passed across two physical Macs on one
-  LAN. The Tailcat path was not classified as direct or DERP; browser and
+  LAN. The Tailcat path was not classified as direct or DERP; cross-device browser and
   separate transport-fault cases remain unrun.
 - A sparse 24-hour soak requires a real elapsed run and explicit grant handoffs.
   A 24-hour 1 Hz run and 10,000-message single-mailbox run exceed current bounds.
