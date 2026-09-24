@@ -89,11 +89,16 @@ or Dioxus requirements.
 
 ## Phase 1a: Quiet-room delivery
 
-- **Status:** Deferred to PR110. The pilot keeps main's adaptive idle backoff
-  (five to thirty seconds, reset by staged or applied work); its unconditional
-  one-second poll was reverted before delivery, and no quiet-arrival
-  improvement is claimed. PR110 proposes an opt-in profile-bound polling
-  policy and owns the controlled before/after measurement.
+- **Status:** Delivered by PR110 (merged to main as `6cec817`, absorbed into
+  this branch). The pilot keeps the adaptive idle backoff as the profile
+  default (five to thirty seconds, reset by staged or applied work); its
+  unconditional one-second poll was reverted before delivery, and the pilot
+  claims no quiet-arrival improvement of its own. PR110's opt-in
+  `mailbox_polling: "interactive"` profile policy and its single-message
+  comparison own that claim; this branch's runner additions (`--quiet-samples`,
+  the 30-second idle window with per-client bytes/connections and per-process
+  CPU/RSS) are the tooling for the repeated equal-duration comparison the
+  acceptance below asks for, which has not been run yet.
 - **Depends on:** phase 0 delivery contract.
 - **Objective:** reduce the measured 28.667-second quiet-arrival acceptance delay.
 - **Approach:** choose the smallest measured improvement preserving transport
@@ -109,12 +114,14 @@ or Dioxus requirements.
 
 ## Phase 1b: Recipient relay admission
 
-- **Status:** Done locally. The production browser delivery qualification on
-  the current head records the recipient publishing its exact request through
-  prejoin sync, reviewing an authenticated invitation after multipage
-  discovery, refusing stale consent after sync/reload, then joining with live
-  replay at zero and preserved connection spend (sixteen facts, same-machine
-  synthetic identities). Independent-device evidence stays in phase 5.
+- **Status:** Done locally; rerun on `8047ffd` after the PR110 merge. The
+  production browser delivery qualification on that head records the
+  recipient publishing its exact request through prejoin sync, reviewing an
+  authenticated invitation after multipage discovery, refusing stale consent
+  after sync/reload, then joining with live replay at zero and preserved
+  connection spend (sixteen facts, same-machine synthetic identities; all 32
+  owned children stopped, Chrome's closure observed through its private log
+  file). Independent-device evidence stays in phase 5.
 - **Depends on:** 0.
 - **Objective:** after confidential bootstrap, review and explicitly join from an
   encrypted retained response without manually transferring that response file.
@@ -131,11 +138,13 @@ or Dioxus requirements.
 
 ## Phase 1c: Useful pilot and accurate operating instructions
 
-- **Status:** Done locally. The deterministic `agent-launch` pilot and its
-  mixed browser-plus-two-native-agents variant pass on the current head (the
-  mixed run records request, result, verified, human-review and completion
-  stages with exact digests, `realModel: NOT_RUN`, `externalDevice:
-  DEFERRED`); the one installed Codex run remains a single retained sample.
+- **Status:** Done locally; rerun on `8047ffd` after the PR110 merge. The
+  deterministic `agent-launch` pilot passes all nine cases on that head (four
+  stages at relay positions 4/6/8/10, 35 owned children, none forced) and its
+  mixed browser-plus-two-native-agents variant passes too (the mixed run
+  records request, result, verified, human-review and completion stages with
+  exact digests, `realModel: NOT_RUN`, `externalDevice: DEFERRED`); the one
+  installed Codex run remains a single retained sample.
 - **Depends on:** phase 0 pilot contract.
 - **Objective:** reproducibly exercise read, prepare, queue, delivery and
   authenticated acceptance with the existing stable launcher.
@@ -152,12 +161,15 @@ or Dioxus requirements.
 
 ## Phase 2: Joined private-room journey
 
-- **Status:** Done locally. The production-artifact mixed pilot joins one
-  browser owner and two native MCP agents through confidential offers and
-  exact encrypted admission files, completes the statistics task, removes the
-  reviewer with one-use review, applies the authenticated control offline,
-  reloads, and delivers the completion under a fresh scoped grant while the
-  original ciphertext, grants and claims stay byte-identical (three facts).
+- **Status:** Done locally; rerun on `8047ffd` after the PR110 merge. The
+  production-artifact mixed pilot joins one browser owner and two native MCP
+  agents through confidential offers and exact encrypted admission files,
+  completes the statistics task, removes the reviewer with one-use review,
+  applies the authenticated control offline, reloads, and delivers the
+  completion under a fresh scoped grant while the original ciphertext, grants
+  and claims stay byte-identical (three facts; 44 owned children stopped,
+  including the removed member's refused send judged at its declared exit 1
+  and three `direct-child` MCP receipts).
 - **Depends on:** 1a, 1b, 1c.
 - **Objective:** the pieces work together through the real user entry points.
 - **Acceptance:** create/admit, exchange work, go offline, reopen, catch up,
@@ -169,13 +181,14 @@ or Dioxus requirements.
 
 ## Phase 3: Drained mailbox maintenance
 
-- **Status:** Done locally. The joined `--generation-pilot` run (local only;
-  CI runs the mixed pilot without it) drains one browser owner and two native
-  controllers to a common head of 18, pauses all three durably, fences and
-  cuts over the host through check/prepare/fence/cutover/recover, and reaches
-  generation 1 with encrypted room state preserved, incoming starting at
-  zero, cumulative client and host spend preserved and no additional
-  allowance; `independentDevice: DEFERRED`.
+- **Status:** Done locally; rerun on `8047ffd` after the PR110 merge. The
+  joined `--generation-pilot` run (local only; CI runs the mixed pilot without
+  it) drains one browser owner and two native controllers to a common head of
+  18, pauses all three durably, fences and cuts over the host through
+  check/prepare/fence/cutover/recover, and reaches generation 1 with encrypted
+  room state preserved, incoming starting at zero, cumulative client and host
+  spend preserved and no additional allowance (82 owned children stopped);
+  `independentDevice: DEFERRED`.
 - **Depends on:** joined delivery/admission contract from 2.
 - **Objective:** allow a room to move beyond a mailbox generation's capacity.
 - **Approach:** follow the reviewed drain/fence/intent/cutover contract in
@@ -190,12 +203,13 @@ or Dioxus requirements.
 
 ## Phase 4: Owner and recovery experience
 
-- **Status:** Done locally. The production panel qualification passes twelve
-  facts including the ordered removal envelope under the real clock and the
-  account-authorized succession to the enrolled same-account device through
-  one distributed owner control (review captures at 1280 and 390 pixels); the
-  mixed pilot exercises removal with one-use review and reopen under a fresh
-  grant. Missing-owner custody still offers only the supported alternatives.
+- **Status:** Done locally; rerun on `8047ffd` after the PR110 merge. The
+  production panel qualification passes twelve facts including the ordered
+  removal envelope under the real clock and the account-authorized succession
+  to the enrolled same-account device through one distributed owner control
+  (review captures at 1280 and 390 pixels); the mixed pilot exercises removal
+  with one-use review and reopen under a fresh grant. Missing-owner custody
+  still offers only the supported alternatives.
 - **Depends on:** 2.
 - **Objective:** expose existing device, agent and recovery mechanisms coherently.
 - **Acceptance:** owner can inspect devices and agent authority, revoke or review
@@ -208,11 +222,14 @@ or Dioxus requirements.
 
 ## Phase 5: Delivery and independent-device acceptance
 
-- **Status:** In progress. Draft PR #115 carries the branch; delivery follows
-  `docs/main-policy.md` (current-head required checks, independent agent
-  review, CodeQL, conditional merge). The second-machine cases stay deferred
-  by the owner until the connection is ready; sleep/logout/reboot and the
-  sparse soak have no selected target or window and are not claimed.
+- **Status:** In progress. PR #115 carries the branch and leaves draft on the
+  commit that records this status; every local gate and the four real-Chrome
+  qualifications passed on `8047ffd` (implementation log), and the docs commit
+  on top changes no source. Delivery follows `docs/main-policy.md`
+  (current-head required checks, independent agent review recorded in the PR
+  body, CodeQL, conditional merge). The second-machine cases stay deferred by
+  the owner until the connection is ready; sleep/logout/reboot and the sparse
+  soak have no selected target or window and are not claimed.
 - **Depends on:** applicable local implementation phases and reviewed candidate.
 - **Objective:** ship the source/artifacts and prove the selected external route.
 - **Acceptance:** exact-current-head required checks, independent review,
@@ -469,3 +486,101 @@ or Dioxus requirements.
   and host spend preserved and no additional allowance. Its receipts, plan and
   fence are retained under the qualification output directory; the run is
   same-machine evidence and `independentDevice` stays `DEFERRED`.
+- PR110 merged to main (`6cec817`) while this branch's cargo gates were
+  running, so the gates were stopped and main was merged as `4ba579b` with
+  nine textual conflicts. Resolution: main's `polling::Policy`, admission
+  model, process guardian and two-Mac evidence win wherever this branch
+  equalled old main; the branch keeps the generation module and `lineage`
+  profile field, the pause paging fix, the download-slot wait, the drain
+  discards and the pilot flags. The qualification driver now runs fixture
+  commands and services under main's guardian (`spawnOwned`); the mixed
+  pilot's `agent-launch` children stay direct children because the guardian
+  gives its leader no stdin or environment and MCP stdio needs both, so the
+  cleanup receipt records them as `direct-child`. The runtime measurement
+  tool keeps the transparent meters, repeated quiet samples, idle window and
+  frozen-source admission on main's integer CPU sampling and polling
+  selection (the idle window reports `cpu_time_ns` and derived seconds; the
+  float parser and its test were dropped). `verify/cases.json` is the union of
+  both registrations: 12 suites, 78 cases. The readiness inventory merges
+  both Lean sentences, takes main's partial two-Mac status and admission
+  replay, and records that the pilot drivers leave `mailbox_polling` at its
+  adaptive default. Fast gates on the merged tree: rustfmt, the five Python
+  suites (69/5/16/41/4), the Node lifecycle/guardian/pilot suites (35) and
+  the verify evidence tests (49).
+- Post-merge cargo gates passed on the merged tree once `polling::Policy`
+  derived `Serialize`: clippy `-D warnings`, the `vhalla-cli` lane (247
+  passed, 3 filtered), the workspace doc tests and the no-default-features
+  identity (7) and social (1) tests. Those no-default-features steps overwrite
+  `target/debug/vhalla` without `experimental-private`, so the feature CLI
+  must be rebuilt before any qualification; the first post-merge qualification
+  attempt was refused for exactly that reason.
+- The post-merge mixed and generation pilots failed at the removed member's
+  refused send. The driver runs fixture commands under PR110's guardian, whose
+  exit status is its own cleanup verdict: it treated only exit 0 as a normal
+  self-exit, so a command expected to exit 1 failed cleanup; declaring the
+  expected status made the guardian exit 0, which the driver then read as the
+  command's exit. `spawnOwned` now passes `expectedExit` to the guardian, the
+  cleanup receipt records the leader's real exit, `stopOwned` waits briefly
+  for a receipt that lands after the exit event, and the driver's command
+  helper judges `receipt.guardian.leaderExit`, never the guardian's status.
+- The mixed run's Chrome cleanup then failed with `owned child stdio closure
+  was not observed before cleanup deadline` after twenty seconds. A pipe
+  watcher showed `chrome_crashpad_handler` (its own session) and four
+  `GoogleUpdater --wake-all` processes holding Chrome's inherited
+  stdout/stderr outside the owned group after every group member was gone.
+  Lengthening the closure bound was rejected as weaker evidence. The guardian
+  gained an `outputPath` launch option: it creates the file exclusively at
+  mode 0600, hands the leader that file as stdout/stderr and keeps no
+  descriptor, so no escaped descendant can hold the parent's pipes. The
+  delivery driver launches Chrome with it, the panel driver opens the same
+  kind of file for its direct Chrome child, and the retained `chrome.log` is
+  that file. A descriptor probe confirmed the leader inherits neither the
+  guardian's pipes nor its IPC channel. Chrome's flags are unchanged because
+  PR113/PR114 showed the crashpad and debugging-address flags break the
+  Linux runner. Three guardian tests pin the exit semantics, the escaped
+  descendant with and without the file, and option validation.
+- Independent review ran in three slices on the merged tree: browser product
+  and storage (no P0–P2; three P3 notes), tooling/formal/docs (one P1, the
+  expected-exit-1 failure above; P2: pin post-merge pilot runs to a commit,
+  record the traffic meters' bounds and health; seven P3 notes) and native
+  runtime/host (no P0/P1; P2: commit the `Serialize` derive; six P3 notes).
+  Load-bearing native checks were verified rather than read: relay join
+  admission, fence idempotence, cutover crash safety, TLS spend carry,
+  client transition, successor profile rewrite, merge exactness and
+  bound/secret handling. Fixed in `8047ffd`: the measurement fixture checks
+  its meters before shutdown (a refused or failed connection fails the
+  scenario) and names the bounds and the declared-not-verified frozen base
+  in its receipt scope; idle-window processes with fewer than two samples are
+  listed, not dropped; the pilot keeps a journey failure's label beside a
+  final-check failure; the generation fence refuses a predecessor config
+  without its CA digest instead of panicking; the delivery driver's second
+  tab attributes downloads to its own frame. Recorded follow-ups, none
+  blocking: `private-host serve` accepts a fenced predecessor without
+  `require_idle`; the revoked-credential refusal wording names no remedy;
+  legacy config canonicalization deserves a note in the maintenance guide; a
+  takeover-admitted member has no `delivery-pause` regression of its own; the
+  generation pilot hard-codes `/usr/bin/sqlite3` (local-only mode); the
+  `inspect_contact_response` refusal probe reads a field it does not check.
+- Full local rerun on `8047ffd` (24 September 2026, 21:29–22:11 UTC), every
+  step exit 0: `cargo fmt --check`; `clippy --workspace --all-targets
+  --all-features -D warnings`; the five Python suites (42/69/5/16/4); the
+  verify evidence tests (49); the CI Node step (38); the `vhalla-cli` lane with
+  CI's three live-mesh skips (24 test binaries, 247 passed, 0 failed, 3
+  filtered); the workspace doc tests; the no-default-features identity (7) and
+  social (1) tests; the `experimental-private` CLI rebuilt afterwards
+  (`7cf1e90c…`); then, on that binary and a locally built Trunk bundle
+  (manifest `546ddef6…`), the production delivery qualification (16 facts, 32
+  owned children stopped, no cleanup failures), `--mixed-pilot` (3 facts, 44
+  owned children stopped: the removed member's refused send at its declared
+  exit 1 and three `direct-child` MCP receipts among them),
+  `--generation-pilot` (3 facts; generation 1 at head 18 across three
+  controllers; 82 owned children stopped) and the panel `--production`
+  qualification (12 facts). Every cleanup receipt records Chrome's closure
+  observed through its private log file. The deterministic `agent-launch`
+  pilot then passed all nine cases on the same binary from a git-checkout
+  build receipt (source commit `8047ffd`, tree `301129b`, native inputs clean;
+  35 owned children, none forced). The other crate lanes ran on the merged
+  tree `4ba579b`; `8047ffd` changes only `vhalla-cli`, the browser tools and
+  the Python tools. `docs/performance.md` now names the meter bounds and the
+  unrecorded repeated comparison. PR #115 leaves draft on the docs commit
+  carrying this entry.
