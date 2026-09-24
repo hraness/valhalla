@@ -37,6 +37,7 @@ struct Fixture {
     contexts: [Context; 2],
     addr: SocketAddr,
     max_jobs: usize,
+    mailbox_polling: Option<&'static str>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -46,6 +47,14 @@ impl Fixture {
         Self::with_queue_capacity(max_records, mailbox_items, 64)
     }
     fn with_queue_capacity(max_records: u64, mailbox_items: usize, max_jobs: usize) -> Self {
+        Self::with_policy(max_records, mailbox_items, max_jobs, None)
+    }
+    fn with_policy(
+        max_records: u64,
+        mailbox_items: usize,
+        max_jobs: usize,
+        mailbox_polling: Option<&'static str>,
+    ) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let path = std::env::temp_dir().join(format!(
@@ -89,6 +98,7 @@ impl Fixture {
             contexts,
             addr,
             max_jobs,
+            mailbox_polling,
         };
         let issuer_key = KeyPair::generate().unwrap();
         let mut issuer = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -168,12 +178,16 @@ impl Fixture {
     }
     fn profile(&self, who: usize) -> Value {
         let c = self.contexts[who];
-        json!({"version":2,
+        let mut profile = json!({"version":2,
             "context":{"room":hex(c.scope.room.as_bytes()),"anchor":hex(c.scope.anchor.as_bytes()),"account":hex(c.account.as_bytes()),"device":hex(c.device.as_bytes())},
             "namespace":hex(ns().as_bytes()), "addr":self.addr.to_string(), "tls_name":NAME,
             "ca":self.p("ca.der"),"token":self.p("token"),"state":self.p(&format!("{who}-delivery")),
             "max_jobs":self.max_jobs,"max_bytes":8388608,"max_attempts":8,
-            "initial_backoff_secs":5,"max_backoff_secs":30,"emit_acceptance":true})
+            "initial_backoff_secs":5,"max_backoff_secs":30,"emit_acceptance":true});
+        if let Some(policy) = self.mailbox_polling {
+            profile["mailbox_polling"] = json!(policy);
+        }
+        profile
     }
     fn grant(&self, who: usize, name: &str, through: u64) -> Value {
         let mut command = self.room_command("agent-grant", who);
@@ -526,7 +540,16 @@ fn success(command: Command) {
 
 #[test]
 fn tls_delivery_survives_offline_restart_and_distinguishes_retention_from_recipient_claim() {
-    let f = Fixture::new();
+    delivery_survives_offline_restart(None);
+}
+
+#[test]
+fn interactive_polling_preserves_exact_delivery_restarts_and_grant_disclosure_limits() {
+    delivery_survives_offline_restart(Some("interactive"));
+}
+
+fn delivery_survives_offline_restart(mailbox_polling: Option<&'static str>) {
+    let f = Fixture::with_policy(128, 128, 64, mailbox_polling);
     let first = f.grant(OWNER, "first", 16);
     let mut owner = f.host(OWNER, "first", OWNER);
     let sequence = owner.queue(&first, "synthetic first message", 10);
@@ -757,7 +780,26 @@ fn foreign_delivery_profile_refuses_before_consuming_grant_or_mutating_queue() {
         "a new admission checkpoint cannot reinterpret retained custody"
     );
     assert_eq!(fs::read(f.p("0-delivery/binding")).unwrap(), binding);
-    f.write_json("0-delivery.json", &f.profile(OWNER));
+    for policy in [
+        json!("interactive"),
+        json!("unknown"),
+        json!(1),
+        Value::Null,
+    ] {
+        let mut changed = f.profile(OWNER);
+        changed["mailbox_polling"] = policy;
+        f.write_json("0-delivery.json", &changed);
+        let mut drifted = f.host(OWNER, "selected", OWNER);
+        drifted.refused();
+        assert!(
+            !f.p("selected-claim.json").exists(),
+            "mailbox policy drift or malformed selection must precede the grant claim"
+        );
+        assert_eq!(fs::read(f.p("0-delivery/binding")).unwrap(), binding);
+    }
+    let mut explicit_default = f.profile(OWNER);
+    explicit_default["mailbox_polling"] = json!("adaptive");
+    f.write_json("0-delivery.json", &explicit_default);
     let mut right = f.host(OWNER, "selected", OWNER);
     let status = right.call(&grant, "private_status", json!({}));
     assert_eq!(status["result"]["structuredContent"]["status"], "live");
@@ -768,6 +810,32 @@ fn foreign_delivery_profile_refuses_before_consuming_grant_or_mutating_queue() {
     init.arg("--config").arg(f.p("0-delivery.json"));
     assert!(!run(init).status.success());
     assert_eq!(fs::read(f.p("0-delivery/binding")).unwrap(), binding);
+}
+
+#[test]
+fn interactive_profile_cannot_silently_fall_back_to_adaptive() {
+    let f = Fixture::with_policy(128, 128, 64, Some("interactive"));
+    let grant = f.grant(OWNER, "selected", 4);
+    let binding = fs::read(f.p("0-delivery/binding")).unwrap();
+    assert_eq!(&binding[..10], b"VHDELHOST\x04");
+    for selection in [Some("adaptive"), None] {
+        let mut changed = f.profile(OWNER);
+        if let Some(policy) = selection {
+            changed["mailbox_polling"] = json!(policy);
+        } else {
+            changed.as_object_mut().unwrap().remove("mailbox_polling");
+        }
+        f.write_json("0-delivery.json", &changed);
+        let mut refused = f.host(OWNER, "selected", OWNER);
+        refused.refused();
+        assert!(!f.p("selected-claim.json").exists());
+        assert_eq!(fs::read(f.p("0-delivery/binding")).unwrap(), binding);
+    }
+    f.write_json("0-delivery.json", &f.profile(OWNER));
+    let mut selected = f.host(OWNER, "selected", OWNER);
+    let status = selected.call(&grant, "private_status", json!({}));
+    assert_eq!(status["result"]["structuredContent"]["status"], "live");
+    selected.close();
 }
 
 #[test]
@@ -1119,23 +1187,54 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
     });
     let second = f.grant(MEMBER, "after-admission", 128);
     let mut member = f.host(MEMBER, "after-admission", MEMBER);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // Receiving and signing each acceptance requires durable writes, while
+    // relay publication shares the driver's two-second work window. Bound a
+    // stalled driver separately from total throughput on a loaded CI host.
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(120);
+    let mut progress_deadline = started + Duration::from_secs(30);
+    let mut received = 0;
+    let mut progress = Vec::new();
+    let mut last_status = Value::Null;
     loop {
-        let count_received = f
-            .applied(MEMBER)
+        let markers = f.applied(MEMBER);
+        let count_received = markers
             .iter()
             .filter(|v| v["state"] == "locally-received")
             .count();
+        let now = Instant::now();
+        assert!(
+            (received..=count).contains(&count_received),
+            "received markers regressed or exceeded the input: {received} -> {count_received}/{count}"
+        );
+        // Check both existing deadlines before new evidence can refresh the
+        // progress clock or late completion can turn a timeout into success.
+        assert!(
+            now < deadline && now < progress_deadline,
+            "deferred messages did not resume: {count_received}/{count}; elapsed_ms={}; \
+             progress_ms_and_count={progress:?}; markers={}; staged={:?}; last_status={last_status}",
+            now.duration_since(started).as_millis(),
+            markers.len(),
+            fs::read_dir(f.p("1-delivery/scan/items")).map(|entries| entries.count())
+        );
+        if count_received > received {
+            received = count_received;
+            progress_deadline = now + Duration::from_secs(30);
+            // Strictly increasing counts bound this history to 65 entries.
+            progress.push((now.duration_since(started).as_millis(), received));
+        }
         if count_received == count {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "deferred messages did not resume: {count_received}/{count}"
-        );
         let probe = member.call(&second, "private_status", json!({}));
+        let status = &probe["result"]["structuredContent"];
+        last_status = json!({
+            "status": status["status"],
+            "inbox_head": status["inbox_head"],
+            "outbox_head": status["outbox_head"],
+        });
         assert_eq!(
-            probe["result"]["structuredContent"]["status"], "live",
+            status["status"], "live",
             "received={count_received}: {probe}"
         );
         thread::sleep(Duration::from_millis(100));

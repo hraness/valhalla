@@ -1,0 +1,181 @@
+{
+  "schema": "valhalla.private-admission-finite-model.v1",
+  "status": "pass",
+  "source_commit": "2d81499",
+  "scope": "Finite safety model with implementation correspondence; not an implementation or cryptographic proof",
+  "full_inventory": {
+    "suites": 11,
+    "cases": 71,
+    "passed": 71,
+    "receipt_sha256": "acc5a22abc95a40ac706cb6e688536a4bb4c8c79d0f196841b93eb32d21f673c"
+  },
+  "checker": {
+    "version": "1.7.4",
+    "url": "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "provenance": "SHA-256 measured from the official release asset on 2026-09-23; that older GitHub asset has no published digest field."
+  },
+  "cases": [
+    {
+      "case": "normal",
+      "expected": {
+        "kind": "success"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 5927568,
+        "distinct": 1628479
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "f1fe8693289af20c639b69bc503829e85dde275f2e94ef2d68cc3cdb3e94d572",
+      "log_sha256": "9038becceb1abee49cf8a5e0c9f10fecb2ff93690b816b3ecf982d61cc8f61b6"
+    },
+    {
+      "case": "witness-admitted",
+      "expected": {
+        "kind": "invariant",
+        "property": "NoSuccessfulAdmission"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 398685,
+        "distinct": 122720
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "513383a9e67b217cf30a6e605f1650d7ede5e18de9b9fe707894d669e49a1f61",
+      "log_sha256": "adca017a7453081d283d5c31b4da979001271898ff75fe621c2df2890f5a4ae8"
+    },
+    {
+      "case": "mutant-intervene",
+      "expected": {
+        "kind": "invariant",
+        "property": "ConsentLifetime"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 17,
+        "distinct": 17
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "b37a9f7b32811457622117848971b61e5a1f90764489ee456b08731b4ac454df",
+      "log_sha256": "ad5262589fe2afe60a6ee465c9f54536f480ad29476e775138de891fe5a8117f"
+    },
+    {
+      "case": "mutant-reload",
+      "expected": {
+        "kind": "invariant",
+        "property": "ConsentLifetime"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 18,
+        "distinct": 18
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "9e92e87f74ee5488331af2578e0f7c42e87eadc4a27173a1a64b06474391419a",
+      "log_sha256": "bd63fce67a8d1e6a8bc2f6ccd8dbea01e0017775d164c9df7406273283a2a31c"
+    },
+    {
+      "case": "mutant-consume",
+      "expected": {
+        "kind": "invariant",
+        "property": "ConsumedBeforeCheck"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 4694,
+        "distinct": 2910
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "01ea3657f6fb5e86deaafbee4deed2a7eb998cd1f57103433e8fe16947fdf95f",
+      "log_sha256": "33394964704d8c3719d1f9ead184ce45706fb816069cb4246e02a8fd5bd3a30d"
+    },
+    {
+      "case": "mutant-packet",
+      "expected": {
+        "kind": "invariant",
+        "property": "ExactReview"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 401920,
+        "distinct": 123243
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "aed20738ff833b053360fe4019dd06ca679f3a955b2cc6b719d1a41f00750df2",
+      "log_sha256": "04d0ad03b93c186b2faee91a70c1a639c0ec72d94914e5daea3daf232b03552e"
+    },
+    {
+      "case": "mutant-ciphertext",
+      "expected": {
+        "kind": "invariant",
+        "property": "ExactReview"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 399193,
+        "distinct": 122933
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "df48dd8ec1fb3569ec878734154e36c6348ea2972b75b70bbe7e2a098d248684",
+      "log_sha256": "f84ff16b95bcbcfcf522444d1e554ee7c493e749bf428365f98ff8f0538163f5"
+    },
+    {
+      "case": "mutant-membership",
+      "expected": {
+        "kind": "invariant",
+        "property": "CurrentMembership"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 896338,
+        "distinct": 242952
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "a80f69885bb4fd42add9a7e523750fd9e6da9984a294ef2c6b887c850f5430d4",
+      "log_sha256": "3a01a3e6dcaab26c117bfeac979935094fe72360fa3812f86670167733b8ffcf"
+    },
+    {
+      "case": "mutant-expiry",
+      "expected": {
+        "kind": "invariant",
+        "property": "LiveAtConfirmation"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 1611186,
+        "distinct": 399403
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "01389974b46f437fd6fdd6aa6fc886e13be7ee2354f1922660ed2faad568c087",
+      "log_sha256": "9a1f93bae5a0777840a476ba283b1dd3caecd9eeb842f73bf3f67421b9338974"
+    },
+    {
+      "case": "mutant-custody",
+      "expected": {
+        "kind": "invariant",
+        "property": "ExclusivePublication"
+      },
+      "verdict": "pass",
+      "states": {
+        "generated": 920042,
+        "distinct": 246865
+      },
+      "model_sha256": "3dddb945b3d8cd447b20ab504584ca26958618962e34494cc7808d04d8768181",
+      "config_sha256": "3373a71b1b58faaeecc777e86232cf6d46ab827805c809fbd811a49d361bc0b9",
+      "log_sha256": "d6a8ea7fabccb5791ca3706cbd59d05ccabac6fe035675ef70d2b22bf5c63c7e"
+    }
+  ],
+  "cleanup": {
+    "owned_group_absent": true,
+    "forced": false,
+    "independent_postflight": true
+  },
+  "retained_prior_failure": "The first run passed the 61 existing cases and rejected all ten new cases on an invalid record/string equality. Optional state was changed to presence-tagged records without removing invariants or reducing bounds. Both full runs are retained.",
+  "limits": [
+    "Two worker lifetimes, two reviews, two item identities, one intervening request, one membership change, one competing publication and three clock values",
+    "Atomic storage, cryptographic authenticity and distinct session identifiers are assumptions",
+    "Confirmation captures time on entry; no wall-clock publication deadline",
+    "No fairness, eventual delivery, full consensus, distributed revocation or production readiness claim"
+  ]
+}

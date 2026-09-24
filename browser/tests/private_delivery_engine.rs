@@ -1444,7 +1444,7 @@ fn admission_modified_confirmation_or_retained_item_cannot_rebind_review() {
         let writes = world.owner.disk.publishes();
         let operation = world.operation();
         let mut admission = admission::Admission::new([1; 16]).unwrap();
-        for field in 0..10 {
+        for field in 0..14 {
             let mut consent = admission
                 .review(
                     world.owner.kernel.as_mut().unwrap(),
@@ -1461,11 +1461,21 @@ fn admission_modified_confirmation_or_retained_item_cannot_rebind_review() {
                 1 => consent.device = device_key(&account(11)),
                 2 => consent.position += 1,
                 3 => consent.digest[0] ^= 1,
-                4 => consent.context = world.member.kernel.as_ref().unwrap().status().context,
+                4 => consent.context.account = device_key(&account(11)),
                 5 => consent.epoch += 1,
                 6 => consent.roster[0] ^= 1,
                 7 => consent.validity = Validity::new(now, now + 10).unwrap(),
                 8 => consent.session[0] ^= 1,
+                9 => consent.id += 1,
+                10 => consent.context.device = device_key(&account(11)),
+                11 => {
+                    consent.context.scope.room =
+                        vhalla_private_kernel::protocol::RoomId::from_bytes([7; 32]).unwrap()
+                }
+                12 => {
+                    consent.context.scope.anchor =
+                        vhalla_private_kernel::protocol::AnchorId::from_bytes([7; 32]).unwrap()
+                }
                 _ => {
                     consent.control_floor =
                         vhalla_private_kernel::protocol::ControlFloor::new(0, None).unwrap()
@@ -1553,5 +1563,339 @@ fn admission_membership_change_after_review_requires_fresh_consent() {
             .await
             .is_err());
         assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn admission_refused_confirmation_consumes_permission_before_retry() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let now = world.clock.get();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        let consent = admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        let writes = world.owner.disk.publishes();
+        let operation = world.operation();
+        let mut altered = consent.clone();
+        altered.id += 1;
+        assert!(matches!(
+            admission
+                .confirm(
+                    world.owner.kernel.as_mut().unwrap(),
+                    operation,
+                    &altered,
+                    &item,
+                    now
+                )
+                .await,
+            Err(vhalla_private_kernel::Error::Scope)
+        ));
+        // Correcting the packet does not restore the already-consumed permission.
+        assert!(matches!(
+            admission
+                .confirm(
+                    world.owner.kernel.as_mut().unwrap(),
+                    operation,
+                    &consent,
+                    &item,
+                    now
+                )
+                .await,
+            Err(vhalla_private_kernel::Error::Policy)
+        ));
+        assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn admission_failed_second_review_invalidates_prior_permission() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let now = world.clock.get();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        let consent = admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        let writes = world.owner.disk.publishes();
+        assert!(admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                device_key(&account(10)),
+                now
+            )
+            .await
+            .is_err());
+        let operation = world.operation();
+        assert!(matches!(
+            admission
+                .confirm(
+                    world.owner.kernel.as_mut().unwrap(),
+                    operation,
+                    &consent,
+                    &item,
+                    now
+                )
+                .await,
+            Err(vhalla_private_kernel::Error::Policy)
+        ));
+        assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+/// A single pending load exposes the real first await after Admission takes its
+/// permission. The underlying store still implements the same exact-image CAS.
+struct AdmissionLoadGate {
+    inner: Mem,
+    hold: Rc<Cell<bool>>,
+}
+impl Store for AdmissionLoadGate {
+    async fn load(&mut self, context: Context) -> Result<Option<Image>, StoreError> {
+        if self.hold.replace(false) {
+            futures::future::pending::<()>().await;
+        }
+        self.inner.load(context).await
+    }
+    async fn read(
+        &mut self,
+        context: Context,
+        key: RecordKey,
+    ) -> Result<Option<StoredRecord>, StoreError> {
+        self.inner.read(context, key).await
+    }
+    async fn publish(
+        &mut self,
+        context: Context,
+        expected: Option<&Image>,
+        next: &Image,
+        records: &[StoredRecord],
+    ) -> Result<(), StoreError> {
+        self.inner.publish(context, expected, next, records).await
+    }
+}
+
+#[test]
+fn admission_cancellation_during_membership_load_cannot_reuse_permission() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let now = world.clock.get();
+        let context = world.owner.kernel.as_ref().unwrap().status().context;
+        let hold = Rc::new(Cell::new(false));
+        let mut kernel = Kernel::open(
+            AdmissionLoadGate {
+                inner: world.owner.disk.clone(),
+                hold: hold.clone(),
+            },
+            &world.owner.key,
+            context,
+        )
+        .await
+        .unwrap();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        let consent = admission
+            .review(&mut kernel, 1, &item, &offer, recipient, now)
+            .await
+            .unwrap();
+        let writes = world.owner.disk.publishes();
+        let operation = world.operation();
+        hold.set(true);
+        let mut confirming =
+            Box::pin(admission.confirm(&mut kernel, operation, &consent, &item, now));
+        assert!(futures::poll!(&mut confirming).is_pending());
+        drop(confirming);
+        assert_eq!(writes, world.owner.disk.publishes());
+        assert!(matches!(
+            admission
+                .confirm(&mut kernel, operation, &consent, &item, now)
+                .await,
+            Err(vhalla_private_kernel::Error::Policy)
+        ));
+        assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn admission_competing_custody_refuses_without_restoring_consumed_permission() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let now = world.clock.get();
+        let context = world.owner.kernel.as_ref().unwrap().status().context;
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        let consent = admission
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                1,
+                &item,
+                &offer,
+                recipient,
+                now,
+            )
+            .await
+            .unwrap();
+        let mut rival = Kernel::open(world.owner.disk.clone(), &world.owner.key, context)
+            .await
+            .unwrap();
+        let operation = world.operation();
+        rival
+            .create_contact_offer(
+                operation,
+                device_key(&account(10)),
+                Validity::new(now, now + 600).unwrap(),
+                now,
+            )
+            .await
+            .unwrap();
+        // The rival changed the exact custody image without changing membership.
+        let membership = rival.membership().await.unwrap();
+        assert_eq!(membership.status().epoch, consent.epoch);
+        assert_eq!(membership.status().roster, consent.roster);
+        let writes = world.owner.disk.publishes();
+        let operation = world.operation();
+        assert!(matches!(
+            admission
+                .confirm(
+                    world.owner.kernel.as_mut().unwrap(),
+                    operation,
+                    &consent,
+                    &item,
+                    now
+                )
+                .await,
+            Err(vhalla_private_kernel::Error::Conflict)
+        ));
+        assert_eq!(writes, world.owner.disk.publishes());
+        // Reopening exact storage resolves stale custody, not old human consent.
+        let mut reopened = Kernel::open(world.owner.disk.clone(), &world.owner.key, context)
+            .await
+            .unwrap();
+        assert!(matches!(
+            admission
+                .confirm(&mut reopened, operation, &consent, &item, now)
+                .await,
+            Err(vhalla_private_kernel::Error::Policy)
+        ));
+        assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+/// Suspend only the next publication before delegating the exact CAS contract.
+/// This lets another real kernel commit after confirmation's membership load.
+struct AdmissionPublishGate {
+    inner: Mem,
+    gate: Rc<RefCell<Option<futures::channel::oneshot::Receiver<()>>>>,
+}
+impl Store for AdmissionPublishGate {
+    async fn load(&mut self, context: Context) -> Result<Option<Image>, StoreError> {
+        self.inner.load(context).await
+    }
+    async fn read(
+        &mut self,
+        context: Context,
+        key: RecordKey,
+    ) -> Result<Option<StoredRecord>, StoreError> {
+        self.inner.read(context, key).await
+    }
+    async fn publish(
+        &mut self,
+        context: Context,
+        expected: Option<&Image>,
+        next: &Image,
+        records: &[StoredRecord],
+    ) -> Result<(), StoreError> {
+        let gate = self.gate.borrow_mut().take();
+        if let Some(gate) = gate {
+            gate.await.map_err(|_| StoreError::Refused)?;
+        }
+        self.inner.publish(context, expected, next, records).await
+    }
+}
+
+#[test]
+fn admission_rival_publication_after_membership_snapshot_refuses_final_cas() {
+    block_on(async {
+        let mut world = build().await;
+        let (_, offer, item, recipient) = admission_fixture(&mut world, 9).await;
+        let now = world.clock.get();
+        let context = world.owner.kernel.as_ref().unwrap().status().context;
+        let gate = Rc::new(RefCell::new(None));
+        let mut kernel = Kernel::open(
+            AdmissionPublishGate {
+                inner: world.owner.disk.clone(),
+                gate: gate.clone(),
+            },
+            &world.owner.key,
+            context,
+        )
+        .await
+        .unwrap();
+        let mut rival = Kernel::open(world.owner.disk.clone(), &world.owner.key, context)
+            .await
+            .unwrap();
+        let mut admission = admission::Admission::new([1; 16]).unwrap();
+        let consent = admission
+            .review(&mut kernel, 1, &item, &offer, recipient, now)
+            .await
+            .unwrap();
+        let operation = world.operation();
+        let (resume, waiting) = futures::channel::oneshot::channel();
+        *gate.borrow_mut() = Some(waiting);
+        let writes = world.owner.disk.publishes();
+        let mut confirming =
+            Box::pin(admission.confirm(&mut kernel, operation, &consent, &item, now));
+        assert!(futures::poll!(&mut confirming).is_pending());
+        assert!(
+            gate.borrow().is_none(),
+            "confirmation reached Store.publish"
+        );
+        assert_eq!(writes, world.owner.disk.publishes());
+        rival
+            .create_contact_offer(
+                world.operation(),
+                device_key(&account(10)),
+                Validity::new(now, now + 600).unwrap(),
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(writes + 1, world.owner.disk.publishes());
+        resume.send(()).unwrap();
+        assert!(matches!(
+            confirming.await,
+            Err(vhalla_private_kernel::Error::Conflict)
+        ));
+        assert_eq!(writes + 1, world.owner.disk.publishes());
+        let mut reopened = Kernel::open(world.owner.disk.clone(), &world.owner.key, context)
+            .await
+            .unwrap();
+        assert!(matches!(
+            admission
+                .confirm(&mut reopened, operation, &consent, &item, now)
+                .await,
+            Err(vhalla_private_kernel::Error::Policy)
+        ));
+        assert_eq!(writes + 1, world.owner.disk.publishes());
     });
 }
