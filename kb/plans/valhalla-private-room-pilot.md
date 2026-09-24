@@ -633,3 +633,8 @@ or Dioxus requirements.
   through its log file in each. The deterministic `agent-launch` pilot
   passed 9/9 from a git-checkout receipt for `b51d60b` on the clean
   committed tree (35 owned children, none forced).
+- PR121 (platform, connection-tier and footprint decisions for native
+  private rooms; plans and the vault index only) landed on main during the
+  push; merged clean as `a56d90c`. Nothing under `crates/`, `browser/`,
+  `verify/` or `.github/` changed on main since `c84f585`, so the local
+  evidence above stands and CI runs on the merged head.
