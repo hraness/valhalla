@@ -319,4 +319,25 @@ on 2, 3, 5 and 7; 10 follows each first release.
   baseline the wait did not change; the budget needs its own decision
   rather than a regression fix. Still open for step 3: the same numbers on
   Linux and Windows, an active-profile measurement of the one-second
-  arrival bound, and the two-Mac idle run folded into step 9.
+  arrival bound, and the two-Mac idle run folded into step 9. A floor
+  check on the same release binary gives the budget decision real shape:
+  `--help` peaks at 7.4 MB, `identity init` at 9.3 MB and a one-shot
+  `private create` — no driver, no TLS, no delivery threads — at 13.0
+  MB, so the overage is the private-store/MLS baseline, not the
+  quiet-client runtime.
+- 25 September 2026, step 4 one-file invite: #138 merged as `ee94e18`.
+  `private invite` verifies the sealed host home and bundles a
+  confidential offer with one enrolled, unrevoked credential's relay
+  material — namespace, TLS name, CA, token and the advertised dial
+  addresses — into one owner-private file. `private join --invite`
+  authenticates the bundle against the expected owner and the joiner's
+  account, commits the fresh member store, lays down the delivery
+  profile in a new owner-private directory, initializes delivery state
+  and writes the encrypted admission request; `accept` and
+  `join --response` are unchanged. The bundle is packaging only: the
+  credential stays an ordinary revocable bearer capability and a
+  failure after commit is recovered through the granular commands,
+  never a rerun into the same store or directory. Focused tests cover
+  unenrolled, zero and revoked credential indexes, malformed, tampered
+  and mismatched bundles, unadvertised address selection, store and
+  delivery-directory reuse and conflicting join modes.
