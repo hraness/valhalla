@@ -838,6 +838,7 @@ fn over_limit_pre_auth_sockets_get_an_alert_and_progress_resumes() {
     worker.join().unwrap();
     assert_eq!(f.open().page(0, 64).unwrap().head, 1);
 }
+#[cfg(target_os = "linux")]
 fn read_alert(stream: &mut TcpStream) {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
