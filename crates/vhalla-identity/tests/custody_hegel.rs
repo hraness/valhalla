@@ -464,9 +464,15 @@ impl Case {
             0 if self.record_is_file(i) => {
                 tc.event("tamper:bit-flip");
                 let mut bytes = fs::read(&record).unwrap();
-                let offset = tc.draw(gs::integers::<usize>().max_value(bytes.len() - 1));
-                let bit = tc.draw(gs::integers::<u8>().max_value(7));
-                bytes[offset] ^= 1 << bit;
+                if bytes.is_empty() {
+                    // An emptied record has no bit to flip; append one drawn
+                    // byte so the tamper still corrupts the file.
+                    bytes.push(tc.draw(gs::integers::<u8>()));
+                } else {
+                    let offset = tc.draw(gs::integers::<usize>().max_value(bytes.len() - 1));
+                    let bit = tc.draw(gs::integers::<u8>().max_value(7));
+                    bytes[offset] ^= 1 << bit;
+                }
                 overwrite(&record, &bytes);
                 let inode = self.dirs[i].entries["identity"].inode;
                 self.wrote(i, inode, bytes.len() as u64, None);
