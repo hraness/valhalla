@@ -3,6 +3,9 @@ mod config;
 pub(crate) mod events;
 mod generation;
 pub(crate) mod launchd;
+// The systemd flow is compiled and unit-tested everywhere; only Linux calls it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) mod systemd;
 
 use config::{Config, Loaded};
 use std::{

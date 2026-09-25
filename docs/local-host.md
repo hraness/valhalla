@@ -100,6 +100,31 @@ service: unexpected IPC, permission, domain or output failures preserve the
 installed plist and refuse removal, including after an uncertain stop.
 No command installs the menubar or changes another service.
 
+On Linux the same three commands manage a per-user systemd unit named after
+the same label, `<label>.service`, in `$XDG_CONFIG_HOME/systemd/user` or
+`~/.config/systemd/user`. `install` refuses an active unit or a unit loaded
+from another file, writes the exact owner-only unit, reloads the user manager,
+enables and starts it, and requires an active readback from that file.
+`status` reports `supervisor: "systemd"`, custody (`installed`,
+`unit_current`) separately from manager state (`loaded`, `unit_matches`,
+`state`, `pid`, `last_exit_code`, `restarts`, `restart_loop_suspected`);
+where no user manager answers (a container, CI, no session) or the unit
+directory is unusable it reports `manager: "unavailable"` or
+`unit_directory: "unusable"` with unknown state rather than failing, while
+`install` and `uninstall` still fail closed.
+`uninstall` stops only a unit loaded from the exact owned file, waits for it
+to become inactive, removes the file and reloads. A `systemctl` failure never
+counts as absence. The unit restarts only after an unsuccessful exit with the
+same 30-second throttle and 15-second stop grace, runs with an owner-only
+umask, and appends stdout/stderr to `supervisor.log` in the home. User units
+run only while the user has a session unless lingering is enabled
+(`loginctl enable-linger`), which a server operator does once and which this
+command never does; the sealed `launch-agent.plist` remains an informational
+template on Linux. The real `systemctl --user` path is not exercised by CI,
+whose runners have no user manager: unit tests inject the manager replies,
+and a first Linux host still needs the foreground and supervised journeys
+run by an operator.
+
 The LaunchAgent starts at login, restarts unsuccessful exits with a 30-second
 throttle, and has a 15-second exit grace. It does not promise service before
 login, while logged out, or while the Mac sleeps. Its stdout/stderr go to

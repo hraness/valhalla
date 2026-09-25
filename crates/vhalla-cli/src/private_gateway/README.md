@@ -17,7 +17,8 @@ Lifecycle commands take the same canonical absolute config path:
   TLS or mailbox retention.
 - `vhalla private-gateway install CONFIG` validates the full configuration,
   writes the exact plist for that one label into `~/Library/LaunchAgents` and
-  bootstraps it. A foreign or changed plist at the label refuses; a plist this
+  bootstraps it (on Linux, the exact `<label>.service` user unit under
+  `~/.config/systemd/user`, enabled and started through `systemctl --user`). A foreign or changed plist at the label refuses; a plist this
   software emitted earlier (launchd output into `events.log`) is replaced with
   the current shape while its label is unloaded. The command never lists or
   touches other services in the GUI domain.
