@@ -813,3 +813,48 @@ remain exactly as implemented.
   record — is fixed on the same day (#146): the tamper step appends
   one drawn byte to an emptied record instead of drawing an offset
   into nothing.
+- 25 September 2026, step 7 — the second-laptop browser journey ran
+  live between the two Macs over Tailcat. A fresh room (699b1d8f) was
+  owned by the Mac A identity and a headed Chrome 153 instance on Mac B
+  joined it: confidential offer and encrypted request crossed as
+  bounded artifacts, the owner accepted, and the browser's device
+  (1f84e669) joined at epoch 1. The browser reached its mailbox through
+  its own loopback gateway on Mac B (`private-gateway serve` at the
+  fixed origin http://127.0.0.1:8790, separate browser capability)
+  whose upstream TLS went browser → gateway → `tailcat forward` 19473 →
+  Mac A's tailcat serve → `private-host` on 127.0.0.1:9473 — the only
+  reachable lane, since the host binds loopback. Bidirectional traffic
+  was measured both ways: the browser's message arrived in the owner's
+  CLI inbox (sender 1f84e669, sequence 1, alongside its admission
+  control), and the owner's reply appeared in the browser inbox about
+  two seconds after relay-push. The offline leg reaped Chrome cleanly;
+  the gateway was then SIGTERM-drained and restarted under the same
+  immutable configuration, and the reopened worker's connect-time
+  stableSha256 equalled the last committed image across every restart
+  — IndexedDB custody at an unchanged origin — with attempts and
+  charged bytes carried (43→45). B's receipt:
+  sha256 c78234490f32ab8a65ce6ab4fad992013267b78ff2c7843c48dc6f8d991c8f46;
+  B evidence under
+  `valhalla-qualification-20260923/browser-drive-20260925-r1/` and
+  `two-mac-browser-20260925-r1/`; A evidence under
+  `/private/tmp/vhalla-two-mac-live/browser-lane/`. One incident worth
+  retaining as a custody proof: the driver's first run was killed at a
+  session boundary mid-join; reopening the retained Chrome profile
+  produced the identical account key, so the already-minted offer stayed
+  valid and the run resumed — the model's resume-over-recreate rule
+  worked under a real kill. Findings: (a) relay client ops require
+  --tls-ca and --tls-name together with --addr/--token — omitting them
+  silently selects raw TCP and the TLS listener's alert reads back as a
+  "noncanonical frame" failure; (b) the installed v0.2.1 host, and even
+  the newest tag v0.2.3, predate the bounded-wait page protocol (#136)
+  and the whole current private-relay era (#115, #125) — no released
+  binary can serve a current-main gateway, so the run substituted a
+  source-built fixture host on the same port while preserving the
+  personal home, which was restored afterward; the release-record needs
+  a build that actually carries this protocol before public clients can
+  rely on an installed host; (c) the PR-101-era browser worker
+  occasionally never resolved a panel call under rapid scripted clicks
+  (busy latch, 45-second deadline, no surfaced error) — retried with an
+  action-aware wait, probe replays pass, worth a separate look.
+  Outstanding: the sleep/logout/reboot journey and the sparse soak; the
+  public-Internet lane still wants a genuinely public host.
