@@ -109,6 +109,21 @@ not establish an equal-duration idle-cost comparison. RSS is a sampled maximum,
 CPU time has 10-ms display resolution, and mailbox poll counts were not measured.
 Neither trial exercised a browser, another device or an Internet route.
 
+For a repeated, equal-duration comparison the runner accepts `--quiet-samples N`
+(1 to 20 independent fresh `quiet` fixtures, summarized as `quiet_summary`
+percentiles that require every expected sample) together with
+`--mailbox-polling`. Each `quiet` fixture also records an `idle_window` over the
+last 30 seconds of its 90-second quiet interval: per-client loopback
+connection and byte counters observed by byte-transparent meters that never
+decrypt TLS, per-process CPU time (`cpu_time_ns`) and sampled RSS for the host
+and agents, and the observer's own CPU time. The meters admit at most eight
+concurrent connections per client and bound each connection to 12 seconds and
+32 MiB; a connection they refused or failed before shutdown fails the scenario,
+and a process with fewer than two samples inside the window is listed under
+`insufficient_sample_processes` rather than dropped. No such repeated run has
+been recorded yet; the single-message trials above remain the only policy
+evidence.
+
 ### Measured native process result, 2026-09-23
 
 The first complete `--scenario all` run used optimized native source

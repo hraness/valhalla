@@ -4,8 +4,9 @@ use super::model::{self, blocked, halt, refusal, State};
 use core::future::Future;
 use sha2::{Digest, Sha256};
 use vhalla_private_kernel::{
-    protocol::ControlFloor, storage::Store, Context, Error as KernelError, Kernel,
-    MemberAcceptance, OperationId, OutboxKind, Phase,
+    protocol::{ControlFloor, Validity},
+    storage::Store,
+    Context, Error as KernelError, Kernel, MemberAcceptance, OperationId, OutboxKind, Phase,
 };
 use vhalla_private_relay::{
     codec, kind_byte, PositionedItem, RelayItem, RelayKind, RelayNamespace,
@@ -98,6 +99,8 @@ pub struct Summary {
     pub blocked: u8,
     pub refused: u64,
     pub admissions: u64,
+    pub prejoin: bool,
+    pub discovery_cursor: u64,
     pub review: bool,
 }
 /// One retained relay-delivered bootstrap item awaiting explicit admission.
@@ -187,7 +190,351 @@ pub struct Engine {
     raw: Vec<u8>,
     namespace: RelayNamespace,
 }
+pub(crate) struct PausePlan {
+    pub expected: Vec<u8>,
+    pub next: Vec<u8>,
+    pub image: vhalla_private_kernel::storage::Image,
+    pub receipt: model::generation::Receipt,
+}
 impl Engine {
+    fn prejoin(&self) -> bool {
+        self.state.discovery.as_ref().is_some_and(|d| !d.complete)
+    }
+    pub fn binding(&self) -> [u8; 32] {
+        self.state.binding
+    }
+    pub(crate) fn state(&self) -> &State {
+        &self.state
+    }
+    pub(crate) fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+    /// Reconcile only the exact image already committed by an atomic host
+    /// pause or selector publication. This performs no durable operation.
+    pub(crate) fn selected(raw: Vec<u8>, namespace: RelayNamespace) -> Result<Self> {
+        let state = State::decode(&raw).map_err(|_| Failure::Storage)?;
+        Ok(Self {
+            state,
+            raw,
+            namespace,
+        })
+    }
+    /// One explicitly budgeted legacy-safe scan page. Derived digest progress
+    /// restarts only on an explicit retry; transport spend never resets.
+    pub(crate) async fn drain_step<H: Host>(
+        &mut self,
+        host: &mut H,
+        transition: [u8; 32],
+        head: u64,
+        restart: bool,
+    ) -> Result<bool> {
+        self.fence(host).await?;
+        if transition == [0; 32]
+            || head > vhalla_private_relay::MAX_RELAY_ITEMS as u64
+            || self.prejoin()
+            || self.state.stopped()
+            || !self.state.drained()
+            || self.state.cursor != head
+        {
+            return Err(Failure::State);
+        }
+        let status = host.kernel()?.membership().await?.status();
+        if status.quarantined
+            || matches!(status.phase, Phase::AwaitingWelcome | Phase::Removed)
+            || self.state.sent != status.outbox_head
+            || self.state.control_sent != Some(status.control_floor)
+        {
+            return Err(Failure::State);
+        }
+        if restart || self.state.lineage.audit.is_none() {
+            self.state.lineage.audit = Some(model::Audit {
+                transition,
+                head,
+                digests: Vec::new(),
+            });
+            self.save(host, None, None).await?;
+        }
+        let audit = self.state.lineage.audit.as_ref().ok_or(Failure::State)?;
+        if audit.transition != transition || audit.head != head {
+            return Err(Failure::State);
+        }
+        let after = audit.digests.len() as u64;
+        let request = codec::page_request(after, model::PAGE).map_err(|_| Failure::Invalid)?;
+        let Some(raw) = self
+            .exchange(host, codec::OP_PAGE, &request, codec::MAX_RESPONSE + 4)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let page = codec::decode_page(&raw, after, model::PAGE).map_err(|_| Failure::Invalid)?;
+        if page.head != head
+            || page
+                .records
+                .iter()
+                .any(|r| r.item.namespace() != self.namespace)
+        {
+            // Keep the old derived scan and all charges as refusal evidence.
+            self.state.success();
+            self.save(host, None, None).await?;
+            return Err(Failure::State);
+        }
+        let audit = self.state.lineage.audit.as_mut().ok_or(Failure::State)?;
+        for record in page.records {
+            audit.digests.push(record.item.digest());
+        }
+        let complete = audit.digests.len() as u64 == head;
+        self.state.success();
+        self.save(host, None, None).await?;
+        Ok(complete)
+    }
+    /// Bind a completed scan to authenticated kernel custody. The host must
+    /// atomically compare both images and guard kernel publications before
+    /// presenting the receipt; merely preparing this value does not pause.
+    pub(crate) async fn pause_plan<H: Host>(
+        &mut self,
+        host: &mut H,
+        endpoint: [u8; 32],
+    ) -> Result<PausePlan> {
+        self.fence(host).await?;
+        let status = host.kernel()?.membership().await?.status();
+        let audit = self.state.lineage.audit.as_ref().ok_or(Failure::State)?;
+        if !self.state.drained()
+            || self.state.cursor != audit.head
+            || audit.digests.len() as u64 != audit.head
+            || self.state.sent != status.outbox_head
+            || self.state.control_sent != Some(status.control_floor)
+            || status.quarantined
+            || matches!(status.phase, Phase::AwaitingWelcome | Phase::Removed)
+        {
+            return Err(Failure::State);
+        }
+        let image = host.kernel()?.authenticated_image().await?;
+        let receipt = model::generation::Receipt {
+            context: status.context,
+            original_binding: self.state.lineage.original,
+            transition: audit.transition,
+            generation: self.state.lineage.generation,
+            namespace: *self.namespace.as_bytes(),
+            endpoint,
+            binding: self.state.binding,
+            head: audit.head,
+            items: model::generation::items_commitment(*self.namespace.as_bytes(), &audit.digests)
+                .map_err(|_| Failure::State)?,
+            outbox: self.state.sent,
+            controls: status.control_floor.sequence(),
+            image: Sha256::digest(image.as_bytes()).into(),
+            accounting: self.state.accounting(),
+            prior: self.state.lineage.prior,
+        };
+        let mut state = self.state.clone();
+        state.lineage.audit = None;
+        state.lineage.pause = Some(receipt.clone());
+        Ok(PausePlan {
+            expected: self.raw.clone(),
+            next: state.encode().map_err(|_| Failure::State)?,
+            image,
+            receipt,
+        })
+    }
+
+    /// Commit an explicitly reviewed response. The trusted controller consumes
+    /// its worker-held consent before calling this operation. Intent precedes
+    /// membership; the next connection publication never changes live cursors
+    /// or replenishes transport budgets.
+    pub async fn join_reviewed<H: Host>(
+        &mut self,
+        host: &mut H,
+        position: u64,
+        digest: [u8; 32],
+        reviewed: Validity,
+    ) -> Result<Summary> {
+        if !self.prejoin() {
+            return Err(Failure::State);
+        }
+        self.fence(host).await?;
+        host.revalidate().await?;
+        let item = self.retained(host, position).await?;
+        if item.digest() != digest {
+            return Err(Failure::State);
+        }
+        let now = host.now()?;
+        reviewed.check_at(now)?;
+        host.kernel()?
+            .inspect_contact_response(item.payload(), now)
+            .await?;
+        self.state.discovery.as_mut().ok_or(Failure::State)?.intent = true;
+        self.save(host, None, None).await?;
+        self.fence(host).await?;
+        host.revalidate().await?;
+        // Check review time again after every precommit await. The join uses
+        // this entry time; an indeterminate publication still reconciles exact
+        // committed bytes instead of pretending it can be canceled.
+        let now = host.now()?;
+        reviewed.check_at(now)?;
+        host.kernel()?.join_contact(item.payload(), now).await?;
+        if !host
+            .kernel()?
+            .contact_response_committed(item.payload())
+            .await?
+        {
+            return Err(Failure::State);
+        }
+        let d = self.state.discovery.as_mut().ok_or(Failure::State)?;
+        d.complete = true;
+        d.staged.clear();
+        d.applied = 0;
+        d.staged_after = d.cursor;
+        self.save(host, None, None).await?;
+        Ok(self.summary(true))
+    }
+
+    /// Publish the pending encrypted request and search from zero for a single
+    /// fully authenticated response. Neither scanning nor retaining a candidate
+    /// advances ordinary delivery, applies membership, or exposes application
+    /// plaintext. All attempts share this connection's lifetime accounting.
+    async fn discover<H: Host>(&mut self, host: &mut H) -> Result<Summary> {
+        if self.state.stopped() {
+            return Ok(self.summary(false));
+        }
+        if self
+            .state
+            .discovery
+            .as_ref()
+            .and_then(|d| d.response.as_ref())
+            .is_some()
+        {
+            return Ok(self.summary(true));
+        }
+        if self.stage_pending(host).await? {
+            let raw = self.state.pending.clone();
+            let item = RelayItem::decode(&raw).map_err(|_| Failure::Storage)?;
+            if item.kind() != RelayKind::Outbox(OutboxKind::ContactRequest)
+                || item.namespace() != self.namespace
+                || !Self::own_item(host, &item).await?
+            {
+                return Err(Failure::State);
+            }
+            let Some(reply) = self.exchange(host, codec::OP_PUT, &raw, 46).await? else {
+                return Ok(self.summary(false));
+            };
+            if codec::decode_receipt(&reply, &item).is_err() {
+                return self.halt(host, halt::RECEIPT).await;
+            }
+            self.state.sent = item.sequence();
+            self.state.pending.clear();
+            self.state.retained = self.state.retained.checked_add(1).ok_or(Failure::State)?;
+            self.state.success();
+            self.save(host, None, None).await?;
+        }
+        let d = self.state.discovery.as_ref().ok_or(Failure::State)?;
+        if d.staged.is_empty() {
+            let cursor = d.cursor;
+            let request = codec::page_request(cursor, model::PAGE).map_err(|_| Failure::Invalid)?;
+            let Some(raw) = self
+                .exchange(host, codec::OP_PAGE, &request, codec::MAX_RESPONSE + 4)
+                .await?
+            else {
+                return Ok(self.summary(false));
+            };
+            let page = match codec::decode_page(&raw, cursor, model::PAGE) {
+                Ok(page) => page,
+                Err(_) => return self.halt(host, halt::PAGE).await,
+            };
+            if page.head < cursor
+                || page
+                    .records
+                    .iter()
+                    .any(|r| r.item.namespace() != self.namespace)
+            {
+                return self.halt(host, halt::PAGE).await;
+            }
+            let d = self.state.discovery.as_mut().ok_or(Failure::State)?;
+            d.staged_after = cursor;
+            d.applied = 0;
+            if !page.records.is_empty() {
+                d.staged = raw;
+            }
+            self.state.success();
+            self.save(host, None, None).await?;
+        }
+        let d = self.state.discovery.as_ref().ok_or(Failure::State)?;
+        if d.staged.is_empty() {
+            return Ok(self.summary(false));
+        }
+        let page = codec::decode_page(&d.staged, d.staged_after, model::PAGE)
+            .map_err(|_| Failure::Storage)?;
+        let applied = d.applied as usize;
+        for record in page.records.iter().skip(applied) {
+            self.fence(host).await?;
+            host.revalidate().await?;
+            if record.item.namespace() != self.namespace {
+                return Err(Failure::State);
+            }
+            let mut retain = None;
+            if record.item.kind() == RelayKind::Outbox(OutboxKind::ContactInvitation) {
+                let now = host.now()?;
+                match host
+                    .kernel()?
+                    .inspect_contact_response(record.item.payload(), now)
+                    .await
+                {
+                    Ok(_) => {
+                        let bytes = record.item.encode().map_err(|_| Failure::Invalid)?;
+                        self.state
+                            .discovery
+                            .as_mut()
+                            .ok_or(Failure::State)?
+                            .response = Some(model::Admission {
+                            position: record.position,
+                            kind: kind_byte(record.item.kind()),
+                            len: bytes.len() as u32,
+                            digest: record.item.digest(),
+                        });
+                        retain = Some(bytes);
+                    }
+                    Err(KernelError::Time | KernelError::ClockRegressed) => {
+                        self.state.blocked = blocked::TIME;
+                        self.save(host, None, None).await?;
+                        return Ok(self.summary(false));
+                    }
+                    Err(
+                        KernelError::Bounds
+                        | KernelError::Encoding
+                        | KernelError::Authentication
+                        | KernelError::Scope
+                        | KernelError::Policy
+                        | KernelError::Mls
+                        | KernelError::Missing,
+                    ) => {
+                        // Only discovery passes this nonmatching ciphertext.
+                        // The ordinary live cursor remains zero.
+                    }
+                    Err(_) => return Err(Failure::Kernel),
+                }
+            }
+            self.state.blocked = 0;
+            let d = self.state.discovery.as_mut().ok_or(Failure::State)?;
+            d.cursor = record.position;
+            d.applied += 1;
+            if d.applied as usize == page.records.len() {
+                d.staged.clear();
+                d.applied = 0;
+                d.staged_after = d.cursor;
+            }
+            if retain.is_some() || d.staged.is_empty() {
+                self.save(
+                    host,
+                    retain.as_deref().map(|bytes| (record.position, bytes)),
+                    None,
+                )
+                .await?;
+            }
+            if retain.is_some() {
+                return Ok(self.summary(true));
+            }
+        }
+        Ok(self.summary(false))
+    }
     /// Create over an absent image or reopen the exact retained one. Reopen
     /// re-supplies the capability explicitly, which clears only a transient
     /// backoff pause; spent budgets, refusals and blocks remain.
@@ -209,6 +556,30 @@ impl Engine {
         if state.binding != bound || state.initial != initial {
             return Err(Failure::State);
         }
+        if let Some(pause) = &state.lineage.pause {
+            // Paused handles do not acquire a new owner or alter a clock. A
+            // reload may inspect history and finish this exact transition.
+            let context = host.kernel()?.membership().await?.status().context;
+            let image = host.kernel()?.authenticated_image().await?;
+            if pause.context != context
+                || pause.namespace != *namespace.as_bytes()
+                || pause.image != <[u8; 32]>::from(Sha256::digest(image.as_bytes()))
+            {
+                return Err(Failure::State);
+            }
+            return Ok(Self {
+                state,
+                raw: old.ok_or(Failure::State)?,
+                namespace,
+            });
+        }
+        let phase = host.kernel()?.membership().await?.status().phase;
+        if phase == Phase::AwaitingWelcome && state.discovery.is_none() {
+            if !create && !old.as_ref().is_some_and(|raw| State::legacy(raw)) {
+                return Err(Failure::State);
+            }
+            state.start_discovery().map_err(|_| Failure::State)?;
+        }
         // A cursor is permitted to pass deferred bytes only while their exact
         // indexed evidence exists. Missing/corrupt halves refuse reopening.
         for entry in state
@@ -218,6 +589,28 @@ impl Engine {
             .chain(&state.admissions)
         {
             Self::read_retained(host, namespace, entry).await?;
+        }
+        if let Some(discovery) = &mut state.discovery {
+            if let Some(entry) = &discovery.response {
+                let item = Self::read_retained(host, namespace, entry).await?;
+                let committed = host
+                    .kernel()?
+                    .contact_response_committed(item.payload())
+                    .await?;
+                if committed {
+                    if !discovery.intent {
+                        return Err(Failure::State);
+                    }
+                    discovery.complete = true;
+                    discovery.staged.clear();
+                    discovery.applied = 0;
+                    discovery.staged_after = discovery.cursor;
+                } else if discovery.complete || phase != Phase::AwaitingWelcome {
+                    return Err(Failure::State);
+                }
+            } else if phase != Phase::AwaitingWelcome {
+                return Err(Failure::State);
+            }
         }
         state.observe(now).map_err(|_| Failure::State)?;
         if !create {
@@ -246,8 +639,17 @@ impl Engine {
             pending: !self.state.pending.is_empty()
                 || !self.state.pending_control.is_empty()
                 || !self.state.staged.is_empty()
-                || !self.state.deferred.is_empty(),
-            stop: self.state.stop.code(),
+                || !self.state.deferred.is_empty()
+                || self
+                    .state
+                    .discovery
+                    .as_ref()
+                    .is_some_and(|d| !d.complete && !d.staged.is_empty()),
+            stop: if self.state.lineage.pause.is_some() {
+                4
+            } else {
+                self.state.stop.code()
+            },
             detail: self.state.detail,
             blocked: if self.state.blocked != 0 {
                 self.state.blocked
@@ -255,14 +657,25 @@ impl Engine {
                 self.state.deferred.first().map_or(0, |d| d.reason)
             },
             refused: self.state.refused_total,
-            admissions: self.state.admissions.len() as u64,
+            admissions: self.admissions().len() as u64,
+            prejoin: self.prejoin(),
+            discovery_cursor: self.state.discovery.as_ref().map_or(0, |d| d.cursor),
             review,
         }
     }
     pub fn admissions(&self) -> Vec<Admission> {
-        self.state
-            .admissions
-            .iter()
+        let items: Vec<&model::Admission> = if self.prejoin() {
+            self.state
+                .discovery
+                .as_ref()
+                .and_then(|d| d.response.as_ref())
+                .into_iter()
+                .collect()
+        } else {
+            self.state.admissions.iter().collect()
+        };
+        items
+            .into_iter()
             .filter_map(|a| {
                 Some(Admission {
                     position: a.position,
@@ -281,9 +694,17 @@ impl Engine {
         self.fence(host).await?;
         let entry = self
             .state
-            .admissions
-            .iter()
-            .find(|a| a.position == position)
+            .discovery
+            .as_ref()
+            .filter(|d| !d.complete)
+            .and_then(|d| d.response.as_ref())
+            .filter(|a| a.position == position)
+            .or_else(|| {
+                self.state
+                    .admissions
+                    .iter()
+                    .find(|a| a.position == position)
+            })
             .cloned()
             .ok_or(Failure::State)?;
         Self::read_retained(host, self.namespace, &entry).await
@@ -311,6 +732,15 @@ impl Engine {
     /// retained item leaves the store; nothing is pruned automatically.
     pub async fn discard<H: Host>(&mut self, host: &mut H, position: u64) -> Result<Summary> {
         self.fence(host).await?;
+        if self.prejoin() {
+            let d = self.state.discovery.as_mut().ok_or(Failure::State)?;
+            if d.intent || d.response.as_ref().is_none_or(|a| a.position != position) {
+                return Err(Failure::State);
+            }
+            d.response = None;
+            self.save(host, None, Some(position)).await?;
+            return Ok(self.summary(false));
+        }
         let at = self
             .state
             .admissions
@@ -545,6 +975,12 @@ impl Engine {
     pub async fn sync<H: Host>(&mut self, host: &mut H) -> Result<Summary> {
         self.fence(host).await?;
         let initial = host.kernel()?.membership().await?.status();
+        if initial.phase == Phase::AwaitingWelcome && !initial.quarantined && self.prejoin() {
+            return self.discover(host).await;
+        }
+        if self.prejoin() {
+            return Err(Failure::State);
+        }
         if initial.quarantined
             || !matches!(
                 initial.phase,
@@ -836,6 +1272,21 @@ impl Engine {
             // Canonical encrypted bootstrap artifacts require dedicated,
             // user-selected admission; retain them for that explicit path.
             RelayKind::Outbox(OutboxKind::ContactRequest | OutboxKind::ContactInvitation) => {
+                if self.state.discovery.as_ref().is_some_and(|d| {
+                    d.complete
+                        && d.response.as_ref().is_some_and(|a| {
+                            a.position == record.position && a.digest == record.item.digest()
+                        })
+                }) {
+                    if !host
+                        .kernel()?
+                        .contact_response_committed(record.item.payload())
+                        .await?
+                    {
+                        return Err(Failure::State);
+                    }
+                    return Ok(Outcome::Applied);
+                }
                 let encoded = record.item.encode().map_err(|_| Failure::Invalid)?;
                 let admission = model::Admission {
                     position: record.position,

@@ -70,8 +70,135 @@ pub struct AdmissionConsent {
     pub validity: Validity,
 }
 
+/// One worker-held decision to join from an authenticated encrypted response.
+/// These private details are never relay metadata or a portable membership grant.
+#[derive(Clone, PartialEq, Eq)]
+pub struct JoinConsent {
+    /// Fresh unlocked worker session; never survives a reload.
+    pub session: [u8; 16],
+    /// Nonzero review identifier within that session.
+    pub id: u64,
+    /// Exact unchanged recipient state before joining.
+    pub pending: Status,
+    /// Exact selected delivery capability profile commitment.
+    pub connection: [u8; 32],
+    /// Retained response's mailbox position; never a live-history checkpoint.
+    pub position: u64,
+    /// Commitment to the complete retained relay item.
+    pub digest: [u8; 32],
+    /// Authenticated pending contact request commitment.
+    pub request: [u8; 32],
+    /// Commitment to the encrypted response inspected by the kernel.
+    pub response: [u8; 32],
+    /// Short review interval within every checked signed validity interval.
+    pub validity: Validity,
+    /// Fully checked candidate membership without durable publication.
+    pub proposed: Membership,
+}
+
+/// Caller-selected operations only. No generic signature, arbitrary route or storage key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenerationConsent {
+    /// Exact retained room/controller identity.
+    pub context: Context,
+    /// Private operator-selected transition.
+    pub transition: [u8; 32],
+    /// Successor number, without changing MLS custody.
+    pub generation: u64,
+    /// Reviewed successor mailbox.
+    pub namespace: [u8; 32],
+    /// Exact successor profile commitment.
+    pub binding: [u8; 32],
+    /// Exact permanent predecessor fence.
+    pub fence: [u8; 32],
+    /// This controller's immutable private pause receipt.
+    pub receipt: [u8; 32],
+    /// Cumulative byte ceiling; generation changes never reset spend.
+    pub byte_ceiling: u64,
+    /// Explicit cumulative attempt ceiling.
+    pub attempt_ceiling: u64,
+    /// Short worker review lifetime.
+    pub validity: Validity,
+}
+/// Progress of an explicit bounded drain scan, or its committed private receipt.
+pub struct GenerationReport {
+    /// Exact selected custody.
+    pub context: Context,
+    /// Current predecessor generation.
+    pub generation: u64,
+    /// Number of ordered positions checked from zero.
+    pub scanned: u64,
+    /// Operator-selected common terminal.
+    pub head: u64,
+    /// Real lifetime shared connection attempts, including older generations.
+    pub attempts: u64,
+    /// Real lifetime shared charged wire bytes.
+    pub wire_bytes: u64,
+    /// Retained cumulative attempt allowance; no automatic increase.
+    pub attempt_ceiling: u64,
+    /// Retained lifetime byte allowance.
+    pub byte_ceiling: u64,
+    /// Nonempty only after atomic durable pause; keep private.
+    pub receipt: Bytes,
+}
+impl GenerationReport {
+    pub(crate) fn valid(&self) -> bool {
+        self.generation < 16
+            && (4096..=65536).contains(&self.attempt_ceiling)
+            && self.byte_ceiling == 1024 * 1024 * 1024
+            && self.attempts <= self.attempt_ceiling
+            && self.wire_bytes <= self.byte_ceiling
+            && self.head <= vhalla_private_relay::MAX_RELAY_ITEMS as u64
+            && self.scanned <= self.head
+            && (self.receipt.is_empty() || (self.receipt.len() == 546 && self.scanned == self.head))
+    }
+}
+
+/// Worker-held exact membership review for removal or a live owner handoff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnerConsent {
+    /// Full locally authenticated snapshot; newer membership requires review.
+    pub status: Status,
+    /// Complete signed enrollment selected from that snapshot.
+    pub target: SignedDeviceEnrollment,
+    /// True for same-account ownership handoff; false for removal.
+    pub succession: bool,
+    /// Finite review lifetime inside current owner and target enrollments.
+    pub validity: Validity,
+}
+
 /// Caller-selected operations only. No generic signature, arbitrary route or storage key.
 pub enum Request {
+    /// Review a roster-selected device without changing membership.
+    ReviewOwnerAction {
+        /// Complete selected device identifier.
+        device: Key,
+        /// False removes; true hands ownership to the same account's device.
+        succession: bool,
+    },
+    /// Check one bounded page of a drained predecessor and pause at completion.
+    DeliveryDrain {
+        /// Explicit nonzero transition identity.
+        transition: [u8; 32],
+        /// Common exact mailbox head.
+        head: u64,
+        /// Explicitly restart derived scan progress, preserving spent budget.
+        restart: bool,
+    },
+    /// Review an exact same-origin successor profile and complete host fence.
+    ReviewGeneration {
+        /// Confidential selected browser profile JSON.
+        profile: Bytes,
+        /// Private portable host fence JSON.
+        fence: Bytes,
+        /// Explicit cumulative attempt ceiling, never a new unspent counter.
+        attempt_ceiling: u64,
+    },
+    /// Consume the unchanged worker-held generation review once.
+    ConfirmGeneration {
+        /// Exact displayed transition and finite authority.
+        consent: Box<GenerationConsent>,
+    },
     /// Irreversibly select private mode and revalidate the saved account pair.
     Enter {
         /// Exact encrypted envelope already authenticated by this worker.
@@ -119,6 +246,16 @@ pub enum Request {
         operation: OperationId,
         /// Complete metadata shown by the review step.
         consent: Box<AdmissionConsent>,
+    },
+    /// Authenticate one retained response without consuming membership.
+    ReviewJoinResponse {
+        /// Exact position selected from this connection's discovered response.
+        position: u64,
+    },
+    /// Consume an unchanged worker-held response review and join exactly once.
+    ConfirmJoinResponse {
+        /// Exact candidate and pending state displayed by the review step.
+        consent: Box<JoinConsent>,
     },
     /// Discard one retained bootstrap item explicitly; nothing else changes.
     DeliveryDiscard {
@@ -323,6 +460,7 @@ pub struct Preview {
     pub enrollment: SignedDeviceEnrollment,
 }
 /// Authenticated local membership report; it does not prove global freshness.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Membership {
     /// Retained local epoch, floor, roster and lifecycle state.
     pub status: Status,
@@ -447,6 +585,10 @@ pub struct DeliveryReport {
     pub admissions: u64,
     /// A membership control was applied; review the roster before continuing.
     pub review: bool,
+    /// Only invitation discovery is active; no live history has been processed.
+    pub prejoin: bool,
+    /// Separate invitation-search progress, never a live-history checkpoint.
+    pub discovery_cursor: u64,
 }
 /// One retained relay-delivered bootstrap item awaiting explicit admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -464,6 +606,12 @@ pub struct AdmissionItem {
 pub const MAX_ADMISSION_ITEMS: usize = 8;
 /// One bounded reply to an explicit panel or worker request.
 pub enum Response {
+    /// Exact locally authenticated owner action awaiting confirmation.
+    OwnerReview(Box<OwnerConsent>),
+    /// Bounded drain progress or exact committed private pause receipt.
+    Generation(GenerationReport),
+    /// Same-origin successor selection awaiting explicit confirmation.
+    GenerationReview(Box<GenerationConsent>),
     /// Bounded local progress after explicit relay configuration or sync.
     Delivery(DeliveryReport),
     /// Retained relay-delivered bootstrap items awaiting explicit admission.
@@ -483,6 +631,8 @@ pub enum Response {
     Draft(Box<Consent>),
     /// Authenticated retained request awaiting explicit owner confirmation.
     AdmissionReview(Box<AdmissionConsent>),
+    /// Authenticated proposed membership awaiting explicit recipient confirmation.
+    JoinReview(Box<JoinConsent>),
     /// Locally committed artifact; no network delivery is implied.
     Artifact {
         /// Complete context of the selected local room/device.
@@ -629,6 +779,10 @@ impl Response {
     /// Return the complete selected context, absent only for account-only entry.
     pub fn context(&self) -> Option<Context> {
         match self {
+            Self::OwnerReview(c) => Some(c.status.context),
+            Self::Generation(report) => Some(report.context),
+            Self::GenerationReview(c) => Some(c.context),
+            Self::JoinReview(c) => Some(c.pending.context),
             Self::Entered(_) => None,
             Self::Delivery(report) => Some(report.context),
             Self::Prepared(p) => Some(p.context),
@@ -659,6 +813,12 @@ impl Response {
 #[derive(Clone, Copy, PartialEq, Eq)]
 /// Response correlation tag; never an authority or permission token.
 pub enum ReplyKind {
+    /// Reviewed removal or handoff authority.
+    OwnerReview,
+    /// Drain progress or committed pause receipt.
+    Generation,
+    /// Exact successor review.
+    GenerationReview,
     /// Local relay progress only.
     Delivery,
     /// Bounded retained relay-delivered admission listing.
@@ -673,6 +833,8 @@ pub enum ReplyKind {
     Draft,
     /// Session-held review of a retained encrypted admission request.
     AdmissionReview,
+    /// Session-held review of an encrypted invitation response.
+    JoinReview,
     /// Committed ordinary outbox artifact.
     Artifact,
     /// Explicit confidential offer output.
@@ -709,6 +871,12 @@ impl Request {
     /// Expected closed response kind used by the generation-checked UI broker.
     pub fn reply_kind(&self) -> ReplyKind {
         match self {
+            Self::ReviewOwnerAction { .. } => ReplyKind::OwnerReview,
+            Self::DeliveryDrain { .. } => ReplyKind::Generation,
+            Self::ReviewGeneration { .. } => ReplyKind::GenerationReview,
+            Self::ConfirmGeneration { .. } => ReplyKind::Delivery,
+            Self::ReviewJoinResponse { .. } => ReplyKind::JoinReview,
+            Self::ConfirmJoinResponse { .. } => ReplyKind::Membership,
             Self::ReviewAdmission { .. } => ReplyKind::AdmissionReview,
             Self::ConfirmAdmission { .. } => ReplyKind::Artifact,
             Self::Enter { .. } => ReplyKind::Entered,
@@ -756,6 +924,10 @@ impl Response {
     /// Closed report kind for exact request/response correlation.
     pub fn kind(&self) -> ReplyKind {
         match self {
+            Self::OwnerReview(_) => ReplyKind::OwnerReview,
+            Self::Generation(_) => ReplyKind::Generation,
+            Self::GenerationReview(_) => ReplyKind::GenerationReview,
+            Self::JoinReview(_) => ReplyKind::JoinReview,
             Self::AdmissionReview(_) => ReplyKind::AdmissionReview,
             Self::Entered(_) => ReplyKind::Entered,
             Self::Delivery(_) => ReplyKind::Delivery,

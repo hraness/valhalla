@@ -18,6 +18,291 @@ fn item(sequence: u64) -> RelayItem {
     )
     .unwrap()
 }
+
+#[test]
+fn browser_pause_receipt_matches_shared_native_golden_vector() {
+    let vector = include_str!("../../vectors/private-controller-pause-v1.json");
+    let selected = |field: &str| {
+        vector
+            .split(&format!("\"{field}\": \""))
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+    };
+    let decode = |raw: &str| {
+        raw.as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let raw = decode(selected("encoded_hex"));
+    let receipt = model::generation::Receipt::decode(&raw).unwrap();
+    assert_eq!(receipt.encode().unwrap(), raw);
+    assert_eq!(
+        receipt.commitment().unwrap().as_slice(),
+        decode(selected("commitment"))
+    );
+    for at in 0..raw.len() {
+        assert!(model::generation::Receipt::decode(&raw[..at]).is_err());
+    }
+    let mut corrupt = raw.clone();
+    corrupt[425] = 0;
+    assert!(model::generation::Receipt::decode(&corrupt).is_err());
+    corrupt = raw.clone();
+    corrupt[450] ^= 1;
+    assert!(model::generation::Receipt::decode(&corrupt).is_err());
+    corrupt = raw;
+    corrupt.push(0);
+    assert!(model::generation::Receipt::decode(&corrupt).is_err());
+}
+
+#[test]
+fn v4_lineage_upgrade_preserves_real_shared_spend_and_finite_bounds() {
+    let mut state = State::new([1; 32], [2; 16], 0, 100);
+    assert!(state.reserve(100, 4096).unwrap());
+    let mut v4 = state.encode().unwrap();
+    v4.truncate(v4.len() - 91);
+    v4[7] = 4;
+    let upgraded = State::decode(&v4).unwrap();
+    assert_eq!(upgraded.accounting(), state.accounting());
+    assert_eq!(upgraded.lineage.generation, 0);
+    assert_eq!(upgraded.lineage.original, state.binding);
+    assert!(upgraded.lineage.audit.is_none());
+    const {
+        assert!(model::MAX_STATE < 5 * 1024 * 1024);
+    }
+    let mut audit = upgraded;
+    audit.lineage.audit = Some(model::Audit {
+        transition: [3; 32],
+        head: 4096,
+        digests: vec![[4; 32]; 4096],
+    });
+    assert!(State::decode(&audit.encode().unwrap()).is_ok());
+    audit.lineage.audit.as_mut().unwrap().digests.push([4; 32]);
+    assert!(audit.encode().is_err());
+}
+
+#[test]
+fn complete_digest_list_and_largest_four_item_page_fit_the_existing_image_limit() {
+    let namespace = RelayNamespace::from_bytes([3; 32]).unwrap();
+    let payload = vec![42; vhalla_private_relay::MAX_RELAY_PAYLOAD];
+    let largest = |sequence| {
+        RelayItem::new(
+            namespace,
+            sequence,
+            OperationId::from_bytes([4; 16]).unwrap(),
+            OutboxKind::Application,
+            &payload,
+        )
+        .unwrap()
+    };
+    let mut state = State::new([1; 32], [2; 16], 0, 100);
+    state.lineage.audit = Some(model::Audit {
+        transition: [3; 32],
+        head: 4096,
+        digests: vec![[4; 32]; 4096],
+    });
+    state.pending = largest(1).encode().unwrap();
+    state.control_sent = Some(vhalla_private_kernel::protocol::ControlFloor::new(0, None).unwrap());
+    state.pending_control = RelayItem::new(
+        namespace,
+        1,
+        OperationId::from_bytes([5; 16]).unwrap(),
+        vhalla_private_relay::RelayKind::Control,
+        &payload,
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    state.staged = codec::encode_page(&RelayPage {
+        head: 4096,
+        next: Some(4),
+        records: (1..=4)
+            .map(|position| PositionedItem {
+                position,
+                item: largest(position),
+            })
+            .collect(),
+    })
+    .unwrap();
+    let raw = state.encode().unwrap();
+    assert!(raw.len() < model::MAX_STATE && model::MAX_STATE < 5 * 1024 * 1024);
+    let restored = State::decode(&raw).unwrap();
+    assert_eq!(restored.lineage.audit.unwrap().digests.len(), 4096);
+    assert_eq!(restored.staged, state.staged);
+    assert_eq!(restored.pending, state.pending);
+    assert_eq!(restored.pending_control, state.pending_control);
+    // Discovery may never create a second staged page alongside this one.
+    state.discovery = Some(model::Discovery {
+        staged: state.staged.clone(),
+        ..Default::default()
+    });
+    assert!(state.encode().is_err());
+}
+
+#[test]
+fn invitation_discovery_has_separate_checked_progress_and_one_bounded_candidate() {
+    let invitation = RelayItem::new(
+        RelayNamespace::from_bytes([3; 32]).unwrap(),
+        1,
+        OperationId::from_bytes([4; 16]).unwrap(),
+        OutboxKind::ContactInvitation,
+        b"authenticated encrypted invitation",
+    )
+    .unwrap();
+    let page = RelayPage {
+        head: 3,
+        next: None,
+        records: vec![
+            PositionedItem {
+                position: 1,
+                item: item(1),
+            },
+            PositionedItem {
+                position: 2,
+                item: invitation.clone(),
+            },
+            PositionedItem {
+                position: 3,
+                item: item(2),
+            },
+        ],
+    };
+    let mut state = State::new([1; 32], [2; 16], 0, 100);
+    state.start_discovery().unwrap();
+    let d = state.discovery.as_mut().unwrap();
+    d.cursor = 2;
+    d.applied = 2;
+    d.staged = codec::encode_page(&page).unwrap();
+    d.response = Some(model::Admission {
+        position: 2,
+        kind: vhalla_private_relay::kind_byte(invitation.kind()),
+        len: invitation.encode().unwrap().len() as u32,
+        digest: invitation.digest(),
+    });
+    let raw = state.encode().unwrap();
+    let decoded = State::decode(&raw).unwrap();
+    assert_eq!(decoded.cursor, 0);
+    assert_eq!(decoded.staged_after, 0);
+    assert_eq!(decoded.applied, 0);
+    assert!(decoded.admissions.is_empty());
+    assert_eq!(decoded.discovery.as_ref().unwrap().cursor, 2);
+    for n in 0..raw.len() {
+        assert!(State::decode(&raw[..n]).is_err());
+    }
+    let mut trailing = raw.clone();
+    trailing.push(0);
+    assert!(State::decode(&trailing).is_err());
+
+    let mut invalid = decoded.clone();
+    invalid.admissions.push(
+        invalid
+            .discovery
+            .as_ref()
+            .unwrap()
+            .response
+            .clone()
+            .unwrap(),
+    );
+    assert!(
+        invalid.encode().is_err(),
+        "discovery never authorizes an ordinary admission ahead of cursor"
+    );
+    let mut invalid = decoded.clone();
+    invalid
+        .discovery
+        .as_mut()
+        .unwrap()
+        .response
+        .as_mut()
+        .unwrap()
+        .position = 3;
+    assert!(invalid.encode().is_err());
+    let mut invalid = decoded.clone();
+    invalid.discovery.as_mut().unwrap().applied = 1;
+    assert!(invalid.encode().is_err());
+    let mut invalid = decoded.clone();
+    invalid.discovery.as_mut().unwrap().complete = true;
+    assert!(
+        invalid.encode().is_err(),
+        "completion requires a durable intent"
+    );
+    let d = state.discovery.as_mut().unwrap();
+    d.intent = true;
+    d.complete = true;
+    assert!(
+        state.encode().is_err(),
+        "completed discovery cannot retain a second staged page"
+    );
+    let d = state.discovery.as_mut().unwrap();
+    d.staged.clear();
+    d.applied = 0;
+    d.staged_after = d.cursor;
+    assert!(state.encode().is_ok());
+    state
+        .admissions
+        .push(state.discovery.as_ref().unwrap().response.clone().unwrap());
+    assert!(
+        state.encode().is_err(),
+        "ordinary position invariant survives joining"
+    );
+}
+
+#[test]
+fn legacy_pending_conversion_preserves_charges_and_refuses_ambiguous_progress() {
+    let mut state = State::new([1; 32], [2; 16], 0, 100);
+    assert!(state.reserve(100, 4096).unwrap());
+    let original = state;
+    for version in 1..=3 {
+        let mut raw = original.encode().unwrap();
+        raw.truncate(raw.len() - 91); // v5 initial lineage, without scan/pause/intent.
+        assert_eq!(raw.pop(), Some(0)); // v4's absent discovery discriminator.
+        if version == 1 {
+            raw.truncate(152); // Original twelve counters, then one stop flag.
+            raw.push(0);
+            raw.extend_from_slice(&[0; 8]); // Empty pending and staged blobs.
+        } else if version == 2 {
+            raw.drain(165..167); // No deferred index or control floor in v2.
+            raw.truncate(raw.len() - 4); // No pending-control blob.
+        }
+        raw[7] = version;
+        assert!(State::legacy(&raw));
+        let mut legacy = State::decode(&raw).unwrap();
+        legacy.start_discovery().unwrap();
+        assert_eq!(legacy.attempts, original.attempts);
+        assert_eq!(legacy.wire_bytes, original.wire_bytes);
+        assert_eq!(legacy.failures, original.failures);
+        assert_eq!(legacy.retry_at, original.retry_at);
+        assert_eq!(legacy.wall, original.wall);
+        assert!(legacy.start_discovery().is_err());
+    }
+    for field in 0..8 {
+        let mut ambiguous = original.clone();
+        match field {
+            0 => {
+                ambiguous.initial = 1;
+                ambiguous.cursor = 1;
+                ambiguous.staged_after = 1;
+            }
+            1 => {
+                ambiguous.cursor = 1;
+                ambiguous.staged_after = 1;
+            }
+            2 => ambiguous.sent = 1,
+            3 => ambiguous.retained = 1,
+            4 => ambiguous.pending = item(1).encode().unwrap(),
+            5 => ambiguous.received = 1,
+            6 => ambiguous.refused_total = 1,
+            _ => ambiguous.blocked = model::blocked::TIME,
+        }
+        assert!(ambiguous.start_discovery().is_err());
+        assert!(ambiguous.discovery.is_none());
+    }
+}
 #[test]
 fn interrupted_attempt_keeps_exact_pending_bytes_and_charged_backoff() {
     let mut s = State::new([1; 32], [2; 16], 17, 100);
@@ -262,8 +547,10 @@ fn version_two_images_upgrade_without_resetting_exact_pending_or_budgets() {
     state.pending = item(1).encode().unwrap();
     assert!(state.reserve(100, 4096).unwrap());
     let mut old = state.encode().unwrap();
-    // v3 added an empty deferred index and absent control floor after v2's
-    // empty admission index, plus an empty pending-control blob at the end.
+    old.truncate(old.len() - 91); // v5 initial lineage.
+    old.pop(); // v4 absent discovery tag
+               // v3 added an empty deferred index and absent control floor after v2's
+               // empty admission index, plus an empty pending-control blob at the end.
     assert_eq!(&old[163..167], &[0, 0, 0, 0]);
     old.drain(165..167);
     old.truncate(old.len() - 4);
@@ -275,7 +562,7 @@ fn version_two_images_upgrade_without_resetting_exact_pending_or_budgets() {
     assert_eq!(upgraded.retry_at, state.retry_at);
     assert_eq!(upgraded.cursor, 17);
     assert!(upgraded.deferred.is_empty());
-    assert_eq!(upgraded.encode().unwrap()[7], 3);
+    assert_eq!(upgraded.encode().unwrap()[7], 5);
 }
 
 #[test]
@@ -290,5 +577,5 @@ fn version_one_stopped_image_remains_stopped_after_upgrade() {
     assert_eq!(upgraded.stop, model::Stop::Refused);
     assert_eq!(upgraded.detail, model::halt::LEGACY);
     assert!(upgraded.deferred.is_empty());
-    assert_eq!(upgraded.encode().unwrap()[7], 3);
+    assert_eq!(upgraded.encode().unwrap()[7], 5);
 }

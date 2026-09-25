@@ -60,7 +60,7 @@ test('readiness and privacy limitations stay discoverable from the home page', (
   expect(privateRooms).toContain('experimental-private');
   expect(privateRooms).toContain('The offer itself is secret');
   expect(privateRooms).toContain('account-key backup cannot reconstruct');
-  expect(privateRooms).toContain('no automatic network delivery');
+  expect(privateRooms).toContain('independent-machine operation requires separate testing');
   const security=pages.get('/docs/security/')!;
   expect(security).toContain('not ready');
   expect(security).toContain('Cloud inference is a disclosure');

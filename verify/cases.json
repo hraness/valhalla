@@ -1109,6 +1109,92 @@
           }
         }
       ]
+    },
+    {
+      "id": "private-generation",
+      "module": "verify/private-generation/PrivateGeneration.tla",
+      "claim": "Drained controllers and a conditional predecessor fence precede durable successor selection without losing prior usage or history.",
+      "status": "design-only",
+      "bounds": "Two controllers, one application and acceptance each, one concurrent old writer, two generations.",
+      "assumptions": [
+        "Trusted complete controller inventory is an explicit operator input; the relay cannot discover private membership.",
+        "Atomic metadata transactions and immutable intent bindings; no cryptography, physical durability or live provider theorem.",
+        "Safety only: an offline or undrained controller may prevent transition indefinitely."
+      ],
+      "sources": [
+        {
+          "path": "docs/private-rotation-contract.md",
+          "symbols": [
+            "Drain",
+            "Fence",
+            "Cutover"
+          ],
+          "role": "contract"
+        }
+      ],
+      "cases": [
+        {
+          "id": "normal",
+          "config": "verify/private-generation/normal.cfg",
+          "expected": {
+            "kind": "success"
+          }
+        },
+        {
+          "id": "mutant-missing-controller",
+          "config": "verify/private-generation/mutant-missing-controller.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "CompleteInventory"
+          },
+          "historical_trace": "verify/private-generation/counterexamples/mutant-missing-controller.json"
+        },
+        {
+          "id": "mutant-changed-head",
+          "config": "verify/private-generation/mutant-changed-head.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "ConditionalHead"
+          },
+          "historical_trace": "verify/private-generation/counterexamples/mutant-changed-head.json"
+        },
+        {
+          "id": "mutant-automatic-output",
+          "config": "verify/private-generation/mutant-automatic-output.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "AutomaticOutputDrained"
+          },
+          "historical_trace": "verify/private-generation/counterexamples/mutant-automatic-output.json"
+        },
+        {
+          "id": "mutant-missing-intent",
+          "config": "verify/private-generation/mutant-missing-intent.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "IntentBeforeSelection"
+          },
+          "historical_trace": "verify/private-generation/counterexamples/mutant-missing-intent.json"
+        },
+        {
+          "id": "mutant-reset-spend",
+          "config": "verify/private-generation/mutant-reset-spend.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "PreservedSpend"
+          },
+          "historical_trace": "verify/private-generation/counterexamples/mutant-reset-spend.json"
+        },
+        {
+          "id": "mutant-lost-archive",
+          "config": "verify/private-generation/mutant-lost-archive.cfg",
+          "expected": {
+            "kind": "invariant",
+            "property": "PreservedArchive"
+          },
+          "historical_trace": "verify/private-generation/counterexamples/mutant-lost-archive.json"
+        }
+      ]
     }
   ]
 }

@@ -3,6 +3,8 @@
 mod admission;
 #[path = "delivery.rs"]
 mod delivery;
+#[path = "owner_actions.rs"]
+mod owner_actions;
 pub(super) fn abort_delivery() {
     delivery::abort();
 }
@@ -83,7 +85,10 @@ pub struct Session {
     // Kernel, drafts and archive handles drop before account custody. No public
     // accessor returns any of these fields or an alternate signing handle.
     kernel: Option<Kernel<IndexedPrivateStore>>,
+    kernel_generation: Option<vhalla_browser_storage::private_rooms::DeliveryGeneration>,
     delivery: Option<delivery::Delivery>,
+    generation_review: Option<delivery::ReviewedSuccessor>,
+    owner_actions: owner_actions::OwnerActions,
     creation: Option<Creation>,
     message: Option<PendingMessage>,
     admission: admission::Admission,
@@ -150,7 +155,10 @@ impl Session {
             .map_err(|_| Failure::Invalid)?;
         Ok(Self {
             kernel: None,
+            kernel_generation: None,
             delivery: None,
+            generation_review: None,
+            owner_actions: owner_actions::OwnerActions::default(),
             creation: None,
             message: None,
             admission: admission::Admission::new(admission_session)?,
@@ -191,6 +199,14 @@ impl Session {
             .identity
             .private_storage_key(context)
             .map_err(|_| Failure::IdentityChanged)?;
+        self.kernel = Some(Kernel::open(store, &key, context).await?);
+        Ok(())
+    }
+    async fn reopen_after_generation(&mut self, context: Context) -> Result<()> {
+        self.kernel.take().ok_or(Failure::State)?;
+        let key = self.identity.private_storage_key(context)?;
+        let store = IndexedPrivateStore::open(Namespace::new(PROFILE), context).await?;
+        self.kernel_generation = store.generation();
         self.kernel = Some(Kernel::open(store, &key, context).await?);
         Ok(())
     }
@@ -257,9 +273,93 @@ impl Session {
     }
 
     async fn execute_selected(&mut self, request: Request) -> Result<Response> {
+        if !matches!(request, Request::ConfirmGeneration { .. }) {
+            self.generation_review = None;
+        }
         self.admission.before(&request);
+        self.owner_actions.before(&request);
+        if let Some(kernel) = &self.kernel {
+            if !matches!(
+                &request,
+                Request::Membership
+                    | Request::Outbox { .. }
+                    | Request::Inbox { .. }
+                    | Request::Controls { .. }
+                    | Request::ControlProofs { .. }
+                    | Request::ForkEvidence
+                    | Request::ArchiveExport
+                    | Request::ArchiveExportNext
+            ) {
+                let current = delivery::generation(kernel.status().context).await?;
+                let allow_paused = matches!(
+                    &request,
+                    Request::DeliveryConnect { .. }
+                        | Request::DeliveryDrain { .. }
+                        | Request::ReviewGeneration { .. }
+                        | Request::ConfirmGeneration { .. }
+                        | Request::DeliveryAdmissions
+                        | Request::DeliveryAdmission { .. }
+                );
+                if current != self.kernel_generation
+                    || (current.is_some_and(|g| g.paused) && !allow_paused)
+                {
+                    return Err(Failure::State);
+                }
+            }
+        }
         let time = now()?;
         match request {
+            Request::ReviewOwnerAction { device, succession } => {
+                self.message = None;
+                let kernel = self.kernel.as_mut().ok_or(Failure::State)?;
+                let consent = self
+                    .owner_actions
+                    .review(kernel, device, succession, || {
+                        now().map_err(|_| vhalla_private_kernel::Error::Time)
+                    })
+                    .await?;
+                Ok(Response::OwnerReview(Box::new(consent)))
+            }
+            Request::DeliveryDrain {
+                transition,
+                head,
+                restart,
+            } => {
+                self.message = None;
+                let context = self.kernel()?.status().context;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let report = delivery
+                    .drain(self, context, transition, head, restart)
+                    .await;
+                self.delivery = Some(delivery);
+                Ok(Response::Generation(report?))
+            }
+            Request::ReviewGeneration {
+                profile,
+                fence,
+                attempt_ceiling,
+            } => {
+                self.message = None;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let review = delivery
+                    .review_successor(self, profile, fence, attempt_ceiling)
+                    .await;
+                self.delivery = Some(delivery);
+                let review = review?;
+                let consent = review.consent.clone();
+                self.generation_review = Some(review);
+                Ok(Response::GenerationReview(Box::new(consent)))
+            }
+            Request::ConfirmGeneration { consent } => {
+                let review = self.generation_review.take().ok_or(Failure::State)?;
+                if *consent != review.consent {
+                    return Err(Failure::State);
+                }
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let report = delivery.confirm_successor(self, review).await;
+                self.delivery = Some(delivery);
+                Ok(Response::Delivery(report?))
+            }
             Request::Enter { .. } => Err(Failure::State),
             Request::PrepareOwner(validity) => {
                 self.empty()?;
@@ -329,6 +429,7 @@ impl Session {
                     },
                 )
                 .await?;
+                self.kernel_generation = store.generation();
                 let kernel = match creation.kind {
                     CreationKind::Owner(draft) => {
                         draft
@@ -350,6 +451,7 @@ impl Session {
                 // never initializes an absent image, FORMAT, device or ratchet.
                 let key = self.identity.private_storage_key(context)?;
                 let store = IndexedPrivateStore::open(Namespace::new(PROFILE), context).await?;
+                self.kernel_generation = store.generation();
                 self.kernel = Some(Kernel::open(store, &key, context).await?);
                 self.membership().await
             }
@@ -433,6 +535,57 @@ impl Session {
                     )
                     .await?;
                 Ok(Response::AdmissionReview(Box::new(consent)))
+            }
+            Request::ReviewJoinResponse { position } => {
+                self.message = None;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let binding = delivery.binding();
+                let item = delivery.retained(self, position).await;
+                self.delivery = Some(delivery);
+                let item = item?;
+                self.kernel()?;
+                let consent = self
+                    .admission
+                    .review_join(
+                        self.kernel.as_mut().ok_or(Failure::State)?,
+                        binding,
+                        position,
+                        &item,
+                        now()?,
+                    )
+                    .await?;
+                Ok(Response::JoinReview(Box::new(consent)))
+            }
+            Request::ConfirmJoinResponse { consent } => {
+                self.message = None;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let binding = delivery.binding();
+                let item = delivery.retained(self, consent.position).await;
+                self.delivery = Some(delivery);
+                let item = item?;
+                self.kernel()?;
+                self.admission
+                    .authorize_join(
+                        self.kernel.as_mut().ok_or(Failure::State)?,
+                        binding,
+                        &consent,
+                        &item,
+                        now()?,
+                    )
+                    .await?;
+                let mut delivery = self.delivery.take().ok_or(Failure::State)?;
+                let result = delivery
+                    .join_reviewed(
+                        self,
+                        consent.pending.context,
+                        consent.position,
+                        consent.digest,
+                        consent.validity,
+                    )
+                    .await;
+                self.delivery = Some(delivery);
+                result?;
+                self.membership().await
             }
             Request::ConfirmAdmission { operation, consent } => {
                 self.message = None;
@@ -552,7 +705,11 @@ impl Session {
             }
             Request::Join(raw) => {
                 self.message = None;
-                self.kernel()?.join_contact(&raw, time).await?;
+                let context = self.kernel()?.status().context;
+                let retained = delivery::retained_image(context).await?;
+                self.revalidate().await?;
+                admission::Admission::join_file(self.kernel()?, retained.as_deref(), &raw, time)
+                    .await?;
                 self.membership().await
             }
             Request::Receive(raw) => {
@@ -570,9 +727,14 @@ impl Session {
             }
             Request::Remove { operation, device } => {
                 self.message = None;
-                let kernel = self.kernel()?;
+                let kernel = self.kernel.as_mut().ok_or(Failure::State)?;
+                self.owner_actions
+                    .confirm(kernel, device, false, || {
+                        now().map_err(|_| vhalla_private_kernel::Error::Time)
+                    })
+                    .await?;
                 let context = kernel.status().context;
-                let output = kernel.remove(operation, device, time).await?;
+                let output = kernel.remove(operation, device, now()?).await?;
                 Ok(Response::Artifact {
                     context,
                     artifact: artifact(&output),
@@ -599,14 +761,27 @@ impl Session {
                 validity,
             } => {
                 self.message = None;
+                let reviewed = self
+                    .owner_actions
+                    .confirm(
+                        self.kernel.as_mut().ok_or(Failure::State)?,
+                        successor,
+                        true,
+                        || now().map_err(|_| vhalla_private_kernel::Error::Time),
+                    )
+                    .await?;
+                if reviewed.target.claims().validity != validity {
+                    return Err(Failure::State);
+                }
                 let request = self
                     .kernel()?
                     .succession_request(successor, validity)
                     .await?;
                 let grant = self.identity.sign_private_succession(&request)?;
+                reviewed.validity.check_at(now()?)?;
                 let kernel = self.kernel()?;
                 let context = kernel.status().context;
-                let output = kernel.succeed(operation, grant, time).await?;
+                let output = kernel.succeed(operation, grant, now()?).await?;
                 Ok(Response::Artifact {
                     context,
                     artifact: artifact(&output),

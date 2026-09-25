@@ -304,8 +304,8 @@ loopback HTTP gateway, which owns the upstream TLS credential. Its selected
 origin/namespace/checkpoint and retry state survive reload in IndexedDB; the
 browser capability is supplied explicitly and stays in worker memory. Browser
 status distinguishes relay retention from local inbox commitment. It emits signed
-acceptances but does not yet verify received acceptances against its sender outbox.
-The [browser guide](../browser/README.md) records that limit. Local hosting requires
+acceptances and verifies incoming device claims against its original sender
+outbox. The [browser guide](../browser/README.md) describes these checks. Local hosting requires
 no paid server or public domain; independent-machine and public-service claims
 still require their own operational evidence.
 
@@ -430,8 +430,7 @@ pauses delivery. Exhausted grants or retries require an explicit operator decisi
 never deletion of retained state to restore credits.
 
 Further product claims require additional work and qualification: install-free
-remote browser networking, verified incoming acceptance status in the browser,
-certificate renewal, live custody transfer, enforced agent compartments and
+remote browser networking, safe live custody transfer, enforced agent compartments and
 independent-machine/public-relay operation. None permits key-only restoration of
 an old device, implicit dead-owner recovery, or public upload of secret offers.
 

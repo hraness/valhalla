@@ -1,7 +1,7 @@
 # Gateway configuration
 
 `vhalla private-gateway serve /absolute/private/gateway.json` serves a packaged
-production browser UI and one fixed TLS relay at a stable loopback origin.
+production browser UI and explicitly configured TLS relays at a stable loopback origin.
 Run it as a separate foreground process alongside the TLS host. It connects as
 a TLS client and never opens a second mailbox writer. The host's LaunchAgent
 manages the relay only; it does not start the browser gateway.
@@ -81,6 +81,21 @@ with at most one terminal newline. TLS uses the exact supplied CA/server name;
 there is no ambient trust or plaintext fallback. Asset manifest purpose must be
 `production`, every allowed file's size/hash must match, and the complete in-memory
 allowlist is bounded to 64 files/64 MiB. Unlisted files cannot be served.
+
+For a drained mailbox transition, format 2 adds a `retained` array containing
+the predecessor routes. Each entry has exactly `namespace`,
+`browser_token_file` and `upstream`, with the same shapes as the active fields.
+Keep `listen` unchanged: moving the browser origin would select a different
+IndexedDB store. The active route plus retained routes are limited to 16.
+Each namespace and browser capability must be distinct. No browser capability
+may equal any route's TLS credential.
+
+Requests select only an enrolled namespace using the existing request header.
+They cannot choose a destination, TLS name or redirect. All routes share the
+gateway's connection, request and byte limits. The old TLS host retains its
+permanent fence, allowing reads and exact already-stored retries while refusing
+new items. Configuring a route does not migrate a browser profile or authorize
+a generation change; the paused controller must complete that separately.
 
 The current browser requires the exact numeric host `127.0.0.1`. Choose a fixed
 non-default HTTP port; port 80 refuses because browser origins omit its explicit

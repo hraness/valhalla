@@ -90,7 +90,7 @@ async function invoke(page, functionDeclaration, args = []) {
   return result.result.value;
 }
 async function setFile(page,id,path) {
-  await evaluate(page,`qshow(${JSON.stringify(id)});true`);
+  await invoke(page,`function(id){qshow(id);return true;}`,[id]);
   const {root}=await call('DOM.getDocument',{},page.sessionId);
   const {nodeId}=await call('DOM.querySelector',{nodeId:root.nodeId,selector:'#'+id},page.sessionId);
   if (!nodeId) throw Error('missing file input '+id);
@@ -111,7 +111,7 @@ async function keypress(page,id,key,code,virtualKey) {
 }
 async function download(page,button,extension) {
   const previous=new Set(downloads.keys());
-  await evaluate(page,`qclick(${JSON.stringify(button)})`);
+  await invoke(page,`function(button){return qclick(button);}`,[button]);
   let item;
   await wait(()=>{
     item=[...downloads.values()].find(d=>!previous.has(d.guid)&&d.filename?.endsWith('.'+extension));
@@ -217,14 +217,14 @@ async function restartArchive(page) {
   await wait(async()=>{try{return await evaluate(page,"!!document.getElementById('unlock')&&!document.getElementById('unlock').disabled");}catch{return false;}},'archive client reload');
   await evaluate(page,`(async()=>{${helpers} qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','archive reload unlock');await qclick('private-enter');await qwait(()=>!qid('private-import-archive').disabled,'archive reload entry');return true;})()`);
 }
-async function screenshot(page,width) {
+async function screenshot(page,width,focus='private-room-title',label='private-panel') {
   // An occluded background target may never produce a compositor frame, which
   // leaves captureScreenshot unanswered; foreground the target first, and if a
   // capture is still dropped retry once on a fresh overlay. A detached session
   // surfaces through the Runtime.evaluate probe instead of hanging silently.
   await call('Page.bringToFront',{},page.sessionId);
   await call('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false},page.sessionId);
-  const bounds=await evaluate(page,"(()=>{qshow('private-room-title');const panel=qid('private-panel');qassert(document.documentElement.scrollWidth<=innerWidth+1,'horizontal document overflow');for(const e of panel.querySelectorAll('button,input,textarea,select,pre')){if(!e.getClientRects().length)continue;const r=e.getBoundingClientRect();qassert(r.left>=-1&&r.right<=innerWidth+1,'private control overflow: '+e.id);}return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth};})()");
+  const bounds=await invoke(page,`function(focus){qshow(focus);const panel=qid('private-panel');qassert(document.documentElement.scrollWidth<=innerWidth+1,'horizontal document overflow');for(const e of panel.querySelectorAll('button,input,textarea,select,pre')){if(!e.getClientRects().length)continue;const r=e.getBoundingClientRect();qassert(r.left>=-1&&r.right<=innerWidth+1,'private control overflow: '+e.id);}return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth};}`,[focus]);
   let data;
   try{({data}=await Promise.race([call('Page.captureScreenshot',{format:'png'},page.sessionId),new Promise((_,j)=>setTimeout(()=>j(Error('capture stall')),15000))]));}
   catch(e){if(e.message!=='capture stall')throw e;
@@ -232,7 +232,7 @@ async function screenshot(page,width) {
     await call('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false},page.sessionId);
     await evaluate(page,'1');
     ({data}=await call('Page.captureScreenshot',{format:'png'},page.sessionId));}
-  const path=join(output,'private-panel-'+width+'.png');await writeFile(path,Buffer.from(data,'base64'));screenshots.push({...bounds,file:path});
+  const path=join(output,label+'-'+width+'.png');await writeFile(path,Buffer.from(data,'base64'));screenshots.push({...bounds,file:path});
 }
 async function task(abortSignal) {
   signal=abortSignal;
@@ -271,9 +271,17 @@ async function task(abortSignal) {
   // producing compositor frames on demand, which leaves Page.captureScreenshot
   // unanswered. These flags disable only scheduling throttles, never a
   // behavior under test.
-  const chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-background-timer-throttling','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
-  children.push(chrome);chrome.stderr.on('data',c=>chromeLog=(chromeLog+c).slice(-131072));
-  await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
+  // Chrome writes to a private log file rather than inheriting this driver's
+  // pipe: its crash handler leaves the browser's process tree by design and
+  // can outlive it, and an inherited pipe would withhold the closure evidence
+  // cleanup requires. A child with no pipes closes as soon as it exits.
+  const chromeLogPath=join(output,'chrome.log');
+  const chromeLogFile=await open(chromeLogPath,'wx',0o600);
+  let chrome;
+  try{chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-background-timer-throttling','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore',chromeLogFile.fd,chromeLogFile.fd]}));}
+  finally{await chromeLogFile.close();}
+  children.push(chrome);
+  await wait(async()=>{chromeLog=(await readFile(chromeLogPath,'utf8').catch(()=>'')).slice(-131072);return /DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome);},'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);
   await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
@@ -383,7 +391,10 @@ async function task(abortSignal) {
   await setFile(member,'private-control-file',addition.path);
   await evaluate(member,"(async()=>{await qclick('private-apply-control');await qidle();return true;})()");
   const memberDevice=await invoke(owner,`async function(account){await qclick('private-refresh');await qidle();const match=qid('private-membership-details').textContent.match(new RegExp('Account '+account+'\\\\nDevice ([0-9a-f]{64})'));qassert(match,'member device absent from owner roster');return match[1];}`,[member.publicKey]);
-  await invoke(owner,`async function(device){qset('private-remove-device',device);await qclick('private-remove');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'owner roster did not shrink');return true;}`,[memberDevice]);
+  await invoke(owner,`async function(account,device){qset('private-remove-device',device);qassert(qid('private-remove').disabled,'removal usable without review');await qclick('private-remove-review');await qidle();const review=qid('private-owner-consent').textContent;qassert(review.includes(account)&&review.includes(device)&&review.includes('Review removal and rekey')&&review.includes('Epoch ')&&review.includes('Roster ')&&review.includes('Control floor ')&&review.includes('expires at'),'removal review omitted exact target or current membership');return true;}`,[member.publicKey,memberDevice]);
+  for(const width of [1280,390])await screenshot(owner,width,'private-owner-consent','private-removal-review');
+  await call('Emulation.clearDeviceMetricsOverride',{},owner.sessionId);
+  await evaluate(owner,"(async()=>{await qclick('private-remove');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'owner roster did not shrink');qassert(qid('private-remove').disabled,'removal review remained reusable');return true;})()");
   await wait(()=>evaluate(owner,'qaURLs.size<8'),'owner download slot');
   const removal=await download(owner,'private-download-output','vhcontrol');
   // Signed-control inspection: the owner exports the removal's plaintext
@@ -467,10 +478,13 @@ async function task(abortSignal) {
   // successor issues controls after the handoff floor.
   await reopen(owner);await reopen(fresh);
   const freshDevice=await evaluate(fresh,`(async()=>{await qclick('private-refresh');await qidle();const m=qid('private-membership-details').textContent.match(/Device ([0-9a-f]{64})/);qassert(m,'fresh device key absent');return m[1];})()`);
-  await invoke(owner,`async function(device){qset('private-succeed-device',device);await qclick('private-succeed');qassert(qid('private-succeed-device').disabled,'successor input is editable during mutation');await qidle();qassert(qid('private-secret-output').hidden&&qid('private-download-secret').disabled,'succession retained a stale offer');qassert(qid('private-remove').disabled&&qid('private-renew').disabled&&qid('private-succeed').disabled&&qid('private-offer').disabled,'predecessor kept owner actions');qassert(!qid('private-prepare-message').disabled,'predecessor lost ordinary membership');return true;}`,[freshDevice]);
+  await invoke(owner,`async function(account,device){qset('private-succeed-device',device);qassert(qid('private-succeed').disabled,'handoff usable without review');await qclick('private-succeed-review');await qidle();const review=qid('private-owner-consent').textContent;qassert(review.includes(account)&&review.includes(device)&&review.includes('Review ownership handoff')&&review.includes('Epoch ')&&review.includes('Roster ')&&review.includes('Control floor ')&&review.includes('expires at'),'handoff review omitted exact target or current membership');return true;}`,[fresh.publicKey,freshDevice]);
+  for(const width of [1280,390])await screenshot(owner,width,'private-owner-consent','private-handoff-review');
+  await call('Emulation.clearDeviceMetricsOverride',{},owner.sessionId);
+  await evaluate(owner,"(async()=>{await qclick('private-succeed');qassert(qid('private-succeed-device').disabled,'successor input is editable during mutation');await qidle();qassert(qid('private-secret-output').hidden&&qid('private-download-secret').disabled,'succession retained a stale offer');qassert(qid('private-remove-review').disabled&&qid('private-remove').disabled&&qid('private-renew').disabled&&qid('private-succeed-review').disabled&&qid('private-succeed').disabled&&qid('private-offer').disabled,'predecessor kept owner actions');qassert(!qid('private-prepare-message').disabled,'predecessor lost ordinary membership');return true;})()");
   const handoff=await download(owner,'private-download-output','vhcontrol');
   await setFile(fresh,'private-control-file',handoff.path);
-  await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'succession churned the roster');qassert(!qid('private-remove').disabled&&!qid('private-renew').disabled&&!qid('private-succeed').disabled&&!qid('private-offer').disabled,'successor lacks owner actions');return true;})()");
+  await evaluate(fresh,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-membership-summary').textContent.includes('2 admitted devices'),'succession churned the roster');qassert(!qid('private-remove-review').disabled&&!qid('private-renew').disabled&&!qid('private-succeed-review').disabled&&!qid('private-offer').disabled,'successor lacks owner review actions');qassert(qid('private-remove').disabled&&qid('private-succeed').disabled,'successor inherited a predecessor consent');return true;})()");
   // The promoted successor issues the next owner control; the demoted
   // predecessor applies it in floor order like any member.
   await evaluate(fresh,"(async()=>{await qclick('private-renew');await qidle();return true;})()");
@@ -485,6 +499,6 @@ async function task(abortSignal) {
 }
 
 await runQualification({work:task,timeoutMs:300000,
-  cleanup:async()=>{try{await cleanupOwned({children,server,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);}},
+  cleanup:async()=>cleanupOwned({children,server,socket,pending}),
   publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));},
 });

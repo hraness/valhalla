@@ -45,24 +45,32 @@ export function childStopped(child) {
 
 // All commands stay subordinate to a finite IPC guardian. `detached` creates
 // its dedicated POSIX group; it is deliberately never unref'd or abandoned.
-export function spawnOwned(executable, args, {role, timeoutMs = 380000, graceMs = 2000} = {}) {
+// `expectedExit` is the only exit status the guardian treats as a normal
+// self-exit. `outputPath` sends the command's stdout/stderr to a fresh private
+// file instead of this parent's pipes, for commands whose descendants leave
+// the group by design and could otherwise hold those pipes open.
+export function spawnOwned(executable, args, {role, timeoutMs = 380000, graceMs = 2000, expectedExit = 0, outputPath} = {}) {
   if (!['darwin','linux'].includes(process.platform)) throw Error('owned process groups require macOS or Linux');
   if (typeof executable !== 'string' || !executable.startsWith('/') ||
       !Array.isArray(args) || args.some(arg => typeof arg !== 'string') ||
       typeof role !== 'string' || !/^[a-z0-9-]{1,64}$/.test(role) ||
       !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 420000 ||
-      !Number.isInteger(graceMs) || graceMs < 1 || graceMs > 10000) throw Error('invalid owned command');
+      !Number.isInteger(graceMs) || graceMs < 1 || graceMs > 10000 ||
+      !Number.isInteger(expectedExit) || expectedExit < 0 || expectedExit > 255 ||
+      (outputPath !== undefined && (typeof outputPath !== 'string' || !outputPath.startsWith('/') || outputPath.length > 4096))) {
+    throw Error('invalid owned command');
+  }
   const child = trackChild(spawn(process.execPath,
     [fileURLToPath(new URL('./qualification_process_guardian.mjs', import.meta.url))],
     {detached:true, stdio:['ignore','pipe','pipe','ipc']}));
   const state = childStates.get(child);
-  Object.assign(state, {group:child.pid, role, guardian:true, graceMs, guardianReceipt:null});
+  Object.assign(state, {group:child.pid, role, guardian:true, graceMs, expectedExit, outputPath:outputPath ?? null, guardianReceipt:null});
   child.on('message', message => {
     if (message?.type === 'cleanup' && message.receipt?.group === child.pid && message.receipt.role === role) {
       state.guardianReceipt = message.receipt;
     }
   });
-  child.send({type:'launch', executable, args, role, timeoutMs, graceMs}, error => {
+  child.send({type:'launch', executable, args, role, timeoutMs, graceMs, expectedExit, outputPath:outputPath ?? null}, error => {
     if (error) state.spawnError = error;
   });
   return child;
@@ -120,6 +128,18 @@ async function stopOwned(child, state, killMs) {
       if (child.connected) child.send({type:'stop'}, error => { if (error) state.spawnError = error; });
     });
   }
+  // The guardian flushes its cleanup receipt before exiting, but this parent
+  // can observe the exit before that last message is read. Wait, bounded, for
+  // the receipt or the channel's closure before judging the evidence.
+  if (!state.guardianReceipt && child.connected) {
+    await new Promise(resolve => {
+      const done = () => { clearTimeout(timer); child.off('disconnect', done); child.off('message', arrived); resolve(); };
+      const arrived = () => { if (state.guardianReceipt) done(); };
+      const timer = setTimeout(done, killMs);
+      child.on('message', arrived); child.once('disconnect', done);
+      if (state.guardianReceipt || !child.connected) done();
+    });
+  }
   let absent = state.group === undefined && childStopped(child);
   let observation;
   try {
@@ -168,10 +188,15 @@ async function finishChildStop(child, state, graceMs, killMs) {
   try {
     await (state.guardian ? stopOwned(child, state, killMs) : stopDirect(child, state, graceMs, killMs));
   } catch (error) { failure = error; }
-  const closed = await observeChildClose(state, killMs);
+  // The closure wait is finite and recorded in the receipt.
+  const closeDeadlineMs = killMs;
+  const closeStarted = performance.now();
+  const closed = await observeChildClose(state, closeDeadlineMs);
   const receipt = state.cleanup ??= {role:state.role ?? 'direct-child', pid:child.pid ?? null,
     group:state.group ?? null, status:'failed', exitCode:child.exitCode, signal:child.signalCode};
   receipt.closeObserved = closed;
+  receipt.closeDeadlineMs = closeDeadlineMs;
+  receipt.closeWaitMs = Math.round(performance.now() - closeStarted);
   if (!closed) {
     failure ??= Error('owned child stdio closure was not observed before cleanup deadline');
     // Dispose only this parent's FDs after latching failed evidence. An escaped

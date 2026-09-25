@@ -9,6 +9,11 @@ pub const LOCATOR_BYTES: usize = 136;
 /// Every private text/file input shares lock cleanup and busy-state handling.
 pub const PRIVATE_INPUTS: &[&str] = &[
     "private-delivery-profile",
+    "private-generation-transition",
+    "private-generation-head",
+    "private-generation-fence",
+    "private-generation-profile",
+    "private-generation-attempts",
     "private-owner",
     "private-recipient",
     "private-remove-device",

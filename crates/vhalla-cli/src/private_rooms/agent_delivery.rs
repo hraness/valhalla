@@ -1,6 +1,6 @@
 //! Independently configured trusted host delivery; never an agent tool.
 use super::{files, hex, now, unhex};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -44,9 +44,10 @@ const TICK_BYTES: usize = 4 * 1024 * 1024;
 const PENDING_MAX: Duration = Duration::from_secs(300);
 
 mod applied;
+pub(super) mod generation;
 mod polling;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     version: u32,
@@ -65,6 +66,8 @@ struct Config {
     emit_acceptance: bool,
     #[serde(default)]
     initial_cursor: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lineage: Option<generation::Lineage>,
     /// Mailbox cadence is distinct from outbound job retry authority. The
     /// faster policy must be selected before initializing a new profile.
     #[serde(default)]
@@ -74,7 +77,7 @@ struct Config {
     encoded: Vec<u8>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ContextConfig {
     room: String,
@@ -86,10 +89,11 @@ impl Config {
     fn load(path: &Path, context: Context) -> Result<(Self, RelayNamespace, TlsRelay), String> {
         let bytes = files::read(path, 16384, false)?;
         let mut c: Self = serde_json::from_slice(&bytes).map_err(|_| REFUSED)?;
-        if ![1, 2].contains(&c.version) {
+        if ![1, 2, 3].contains(&c.version) || (c.version == 3) != c.lineage.is_some() {
             return Err(REFUSED.into());
         }
         c.encoded = bytes.to_vec();
+        generation::check_selection(path, &c)?;
         let key = |s: &str| Key::from_bytes(unhex(s)?).map_err(|_| REFUSED.to_string());
         let selected = Context {
             scope: PrivateRoomScope {
@@ -279,7 +283,7 @@ pub(super) fn open_queue(
         _ => return Err(REFUSED.into()),
     };
     let (config, namespace, relay) = Config::load(Path::new(args.value("config")?), context)?;
-    if stream == "control" && config.version != 2 {
+    if stream == "control" && ![2, 3].contains(&config.version) {
         return Err(
             "control delivery requires an explicit delivery-upgrade of this legacy profile".into(),
         );
@@ -549,7 +553,8 @@ pub(super) struct Driver {
 impl Driver {
     pub(super) fn open(path: &Path, context: Context) -> Result<Self, String> {
         let (config, namespace, relay) = Config::load(path, context)?;
-        if config.version != 2 {
+        generation::check_active(&config)?;
+        if ![2, 3].contains(&config.version) {
             return Err("legacy delivery profile requires delivery-upgrade before another agent-serve launch".into());
         }
         let (directory, uid) =
@@ -590,6 +595,7 @@ impl Driver {
         if controls.policy() != (config.limits(), config.retry()) {
             return Err(REFUSED.into());
         }
+        generation::verify_baselines(&config, context, &queue, &controls)?;
         let (control_outgoing, _) = controls.driver_checkpoint().map_err(|_| REFUSED)?;
         let staged_head = scan.cursor();
         let (cp_outgoing, cp_applied) = queue.driver_checkpoint().map_err(|_| REFUSED)?;
@@ -670,7 +676,13 @@ impl Driver {
                 // A retained watermark above the joining boundary must name
                 // an exact existing queue item. Never interpret a checkpoint
                 // alone as evidence that a control was enqueued or delivered.
-                if self.control_outgoing > page.base.sequence() {
+                if self.control_outgoing > page.base.sequence()
+                    && !self
+                        .controls
+                        .predecessor_baseline()
+                        .map_err(|_| REFUSED)?
+                        .is_some_and(|(head, _)| self.control_outgoing == head)
+                {
                     let boundary = rpc
                         .host()
                         .encrypted_controls(Some(self.control_outgoing - 1), 1)
@@ -775,7 +787,13 @@ impl Driver {
     /// watermark must already have a durable job. The queue publishes jobs
     /// before the checkpoint advances, so a gap means torn or foreign state.
     async fn boundary(&mut self, rpc: &mut RpcSession) -> Result<(), String> {
-        if self.outgoing == 0 {
+        if self.outgoing == 0
+            || self
+                .queue
+                .predecessor_baseline()
+                .map_err(|_| REFUSED)?
+                .is_some_and(|(head, _)| self.outgoing == head)
+        {
             return Ok(());
         }
         let page = rpc

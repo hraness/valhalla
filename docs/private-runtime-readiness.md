@@ -1,8 +1,11 @@
 # Private runtime readiness continuation
 
-This continuation starts from `1cff4f5fc202b1a1a987d6ae52672188956774b0`.
-Private rooms remain opt-in. Local qualification is not independent-device or
-production activation evidence.
+This continuation started from `1cff4f5fc202b1a1a987d6ae52672188956774b0`
+and merged in PR101 at `4b08106`. The implementation and local measurements
+below describe that delivered change. The active follow-on work is the
+[private-room pilot plan](../kb/plans/valhalla-private-room-pilot.md).
+Independent-device qualification is deferred while the user prepares the
+connection. Private rooms remain opt-in.
 
 ## Existing foundation
 
@@ -11,9 +14,12 @@ recovery and browser qualification. PR98 added six maintained TLA+ suites with
 26 cases and repaired a host recovery fence exposed by a counterexample. PR99
 closed that formal plan. Kani checks production spent-nonce logic; Verus checks
 a ledger reference implementation with sampled Rust correspondence. The Lean
-weighted-certificate proofs now have a maintained required CI check and signed
-Rust conformance cases. Their theorem applies to one fixed roster and signing
-context under honest non-equivocation; it does not prove cross-round consensus.
+weighted-certificate trial became a required CI check in PR105 with signed
+Rust conformance cases. It checks 24 theorems and a shared conformance corpus
+consumed by both Rust verifiers; its theorem applies to one fixed roster and
+signing context under honest non-equivocation, and it proves neither
+cross-round consensus nor the complete implementations. See the
+[Lean trial](../kb/plans/valhalla-lean-assurance-trial.md).
 See [formal rigor](../kb/plans/valhalla-formal-rigor.md) for exact claims and limits.
 
 During this continuation, PR102 expanded the maintained inventory to ten TLA+
@@ -101,7 +107,7 @@ monotonic observations, sampled RSS and disk allocation. Observation timestamps
 are bounds, not invented internal event times. An exploratory acceptance p95
 under five seconds is distinct from correctness and may fail honestly.
 
-## Remaining production decisions and gates
+## Follow-on work and remaining operating tests
 
 - The explicit interactive mailbox policy has a [local quiet-arrival comparison](evidence/private-quiet-policies-20260924.json):
   one message after 90 seconds idle reached the receiver in 1.005 seconds and
@@ -109,17 +115,23 @@ under five seconds is distinct from correctness and may fail honestly.
   took 26.639 and 28.649 seconds. Both preserved correctness and cleanup. These
   single-message trials do not establish production percentiles, Internet
   latency or equal-duration idle CPU cost. The historical 100-message 1 Hz run
-  used an earlier candidate and remains separate evidence.
+  used an earlier candidate and remains separate evidence. The pilot drivers
+  leave `mailbox_polling` at its adaptive default and claim no quiet-arrival
+  improvement of their own.
 - Native delivery and offline catch-up passed across two physical Macs on one
   LAN. The Tailcat path was not classified as direct or DERP; cross-device browser and
   separate transport-fault cases remain unrun.
 - A sparse 24-hour soak requires a real elapsed run and explicit grant handoffs.
   A 24-hour 1 Hz run and 10,000-message single-mailbox run exceed current bounds.
-- Mailbox/credential rotation is modeled and gated; seamless migration is not
-  implemented. Preserve capacity refusals and retained recovery evidence.
-- Recipient-side retained response review/prejoin delivery remains a separate
-  scoped contract. Device transfer, rollback resistance and browser background
-  persistence retain their documented limitations.
+- [Drained mailbox rollover](private-generations.md) is implemented, and the
+  joined browser/native/host transition passes the local generation pilot on
+  one machine (the pilot driver's `--generation-pilot` mode, outside CI).
+  Offline undrained migration remains unsupported; preserve capacity refusals
+  and all transition records.
+- Recipient-side retained response review and prejoin transport pass the
+  production browser delivery qualification on the same machine; that run is
+  not independent-device evidence. Device transfer, rollback resistance and
+  browser background persistence retain their documented limitations.
 - Production activation needs relevant operational evidence and exact artifact
   identity; finite proofs and local passing tests alone do not establish it.
 
@@ -146,5 +158,5 @@ and sender reopens. All claims were observed within 12.00 seconds after the
 first recipient reopen. The runner's 18 contract tests passed.
 See [runtime measurements](performance.md#actual-private-cli-process-measurement)
 for the frozen runner, candidate and completed workload results. Required
-current-head CI, final delivery status and independent-device gates remain
-separate from these local checks.
+current-head CI and source delivery completed in PR101. Published artifact
+identity and independent-device results remain separate from these local checks.

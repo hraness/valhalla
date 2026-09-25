@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 use vhalla_private_native::relay::{
-    http::{Assets, BrowserCapability, Gateway, GatewayLimits, MAX_ASSET_BYTES},
+    http::{Assets, BrowserCapability, Gateway, GatewayLimits, GatewayRoute, MAX_ASSET_BYTES},
     net::RelayToken,
     tls::TlsRelay,
     RelayNamespace, MAX_RELAY_ITEMS,
@@ -46,6 +46,15 @@ struct Config {
     upstream: Upstream,
     assets_dir: PathBuf,
     initial_cursor: String,
+    #[serde(default)]
+    retained: Vec<Retained>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Retained {
+    namespace: String,
+    browser_token_file: PathBuf,
+    upstream: Upstream,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -173,7 +182,9 @@ fn assets(root: &Path) -> Result<Assets, String> {
 pub(crate) fn load(path: &Path) -> Result<(Gateway, SocketAddr), String> {
     let config: Config = serde_json::from_slice(&private(path, 65536)?)
         .map_err(|_| "gateway configuration malformed")?;
-    if config.format != 1
+    if ![1, 2].contains(&config.format)
+        || (config.format == 1 && !config.retained.is_empty())
+        || config.retained.len() > 15
         || !config.listen.ip().is_loopback()
         || config.listen.port() == 0
         || config
@@ -183,36 +194,58 @@ pub(crate) fn load(path: &Path) -> Result<(Gateway, SocketAddr), String> {
             .is_none_or(|n| n.to_string() != config.initial_cursor || n > MAX_RELAY_ITEMS as u64)
     {
         return Err(
-            "gateway needs format 1, fixed loopback port and canonical initial_cursor within mailbox capacity".into(),
+            "gateway needs format 1 or 2, at most 15 retained routes, fixed loopback port and canonical initial_cursor within mailbox capacity".into(),
         );
     }
-    let namespace = RelayNamespace::from_bytes(hex(&config.namespace)?)
-        .map_err(|_| "gateway namespace refused")?;
-    let browser_token = Zeroizing::new(token(&config.browser_token_file)?);
-    let upstream_token = Zeroizing::new(token(&config.upstream.token_file)?);
-    if *browser_token == *upstream_token {
-        return Err("browser capability must differ from upstream TLS credential".into());
+    let mut routes = vec![route(
+        &config.namespace,
+        &config.browser_token_file,
+        &config.upstream,
+    )?];
+    for retained in &config.retained {
+        routes.push(route(
+            &retained.namespace,
+            &retained.browser_token_file,
+            &retained.upstream,
+        )?);
     }
-    let client = TlsRelay::new(
-        config.upstream.addr,
-        &config.upstream.tls_name,
-        private(&config.upstream.tls_ca_file, 65536)?.to_vec(),
-        RelayToken::from_bytes(*upstream_token)
-            .map_err(|_| "gateway upstream credential refused")?,
-        namespace,
-    )
-    .map_err(|_| "gateway TLS profile refused")?;
-    let gateway = Gateway::new(
+    let gateway = Gateway::with_routes(
         config.listen,
-        namespace,
-        BrowserCapability::from_bytes(*browser_token)
-            .map_err(|_| "gateway browser capability refused")?,
-        client,
+        routes,
         assets(&config.assets_dir)?,
         GatewayLimits::default(),
     )
     .map_err(|_| "gateway policy refused")?;
     Ok((gateway, config.listen))
+}
+fn route(
+    namespace: &str,
+    browser_token_file: &Path,
+    upstream: &Upstream,
+) -> Result<GatewayRoute, String> {
+    let namespace =
+        RelayNamespace::from_bytes(hex(namespace)?).map_err(|_| "gateway namespace refused")?;
+    let browser_token = Zeroizing::new(token(browser_token_file)?);
+    let upstream_token = Zeroizing::new(token(&upstream.token_file)?);
+    if *browser_token == *upstream_token {
+        return Err("browser capability must differ from upstream TLS credential".into());
+    }
+    let client = TlsRelay::new(
+        upstream.addr,
+        &upstream.tls_name,
+        private(&upstream.tls_ca_file, 65536)?.to_vec(),
+        RelayToken::from_bytes(*upstream_token)
+            .map_err(|_| "gateway upstream credential refused")?,
+        namespace,
+    )
+    .map_err(|_| "gateway TLS profile refused")?;
+    GatewayRoute::new(
+        namespace,
+        BrowserCapability::from_bytes(*browser_token)
+            .map_err(|_| "gateway browser capability refused")?,
+        client,
+    )
+    .map_err(|_| "gateway route refused".into())
 }
 /// Canonical absolute path used for labels, argv and the sibling event log.
 fn resolve(path: &Path) -> Result<PathBuf, String> {
