@@ -199,8 +199,12 @@ membership removal and relay transport-token revocation are separate actions.
   already-running service keeps its fixed credential set until restarted.
 - `revoke-credential HOME INDEX` marks that enrolled identity inactive; repeated
   revocation is idempotent. Its token, stable quota identity and retained mailbox
-  stay intact. Revoking every credential is allowed; subsequent serving refuses
-  until an explicit add or replacement supplies an active credential.
+  stay intact. Revoking every credential is allowed; subsequent serving refuses,
+  naming the mailbox directory and credential indexes, until an explicit add or
+  replacement supplies an active credential. After a
+  [mailbox transition](private-generations.md), each earlier mailbox also needs
+  one active credential from those enrolled before its transition, so only a
+  replacement restores it.
 - `replace-credential HOME INDEX` mints a new token for the same identity and
   increments its generation. It explicitly reactivates a revoked identity.
   Previously spent quota remains charged to that identity. The old token is

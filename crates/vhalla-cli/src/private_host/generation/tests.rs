@@ -290,6 +290,28 @@ fn invalid_targets_or_allowances_do_not_publish_intent() {
     }
 }
 #[test]
+fn legacy_config_encoding_names_the_sealed_rewrite_and_then_passes() {
+    let mut f = Fixture::new();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&config::read(&f.home, "config.json", 65536).unwrap()).unwrap();
+    assert!(legacy.as_object_mut().unwrap().remove("mailbox").is_some());
+    let bytes = serde_json::to_vec(&legacy).unwrap();
+    config::rewrite(&f.home, "config.json", &bytes).unwrap();
+    config::rewrite(&f.home, "complete", config::digest(&bytes).as_bytes()).unwrap();
+    assert_eq!(config::load(&f.home).unwrap().config.mailbox, "mailbox");
+    f.plan.config_sha256 = config::digest(&bytes);
+    f.write_plan();
+    assert!(check(&f.home, &f.plan_path(), &f.receipts, false)
+        .unwrap_err()
+        .contains("renew HOME --leaf-days N"));
+    assert!(!present(&f.home, PENDING, 1024).unwrap());
+    config::renew(&f.home, Some(30)).unwrap();
+    f.plan.config_sha256 = config::digest(&config::read(&f.home, "config.json", 65536).unwrap());
+    f.write_plan();
+    check(&f.home, &f.plan_path(), &f.receipts, true).unwrap();
+    assert!(present(&f.home, PENDING, 1024).unwrap());
+}
+#[test]
 fn unenrolled_credentials_require_service_start_before_preparing() {
     let mut f = Fixture::new();
     let (_, id) = config::add_credential(&f.home).unwrap();

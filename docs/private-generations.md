@@ -34,7 +34,11 @@ loopback listener for the successor. The host itself must listen on loopback;
 TLS name. The host serves the predecessor and successor on their separate saved
 ports after cutover; it keeps old messages readable and allows exact retries of
 already saved items.
-New writes to the predecessor refuse permanently.
+New writes to the predecessor refuse permanently. Each earlier mailbox accepts
+only the credentials enrolled before its transition. If all of them are later
+revoked, `private-host serve` refuses to start and names that mailbox directory
+and its credential indexes. `private-host replace-credential HOME INDEX` issues
+a fresh token for one of them without resetting its quota.
 
 For a browser, keep the same gateway origin and saved browser identity. Gateway
 configuration version 2 accepts one active route and up to 15 `retained`
@@ -125,6 +129,14 @@ unchanged binary receipt. Prepare one private JSON plan with these fields:
 | `controllers` | Complete list described below |
 | `allowances` | Explicit additions to cumulative relay allowances, or `[]` |
 
+The host also requires those bytes to be the encoding that the current release
+writes. A home created by an older release can hold an equivalent `config.json`
+in an older encoding, for example one without the `mailbox` field.
+`generation-check` then refuses and names the fix: while the service is stopped,
+run `vhalla private-host renew HOME --leaf-days N` once. It issues a new serving
+certificate under the same CA and rewrites `config.json`, keeping the TLS name,
+credentials and mailbox. Compute `config_sha256` from the rewritten file.
+
 Each controller entry contains `credential_id`, `room`, `anchor`, `account`,
 `device`, `controller_id`, `original_profile_binding`, `profile_binding`,
 `endpoint` and `receipt_commitment`. Copy the exact receipt fields and the
@@ -151,6 +163,12 @@ exact plan and receipts. Fence checks that the complete mailbox still has the
 reviewed head before refusing new nonduplicate writes. Cutover carries the quota
 ledger into the successor and publishes the sealed host selection. Keep the
 resulting `generation-N.fence.json` with the plan and receipts.
+
+From prepare until cutover or recovery finishes, `private-host serve` refuses to
+start. An installed LaunchAgent or systemd unit that restarts the service
+therefore cannot reopen the old mailbox and change its head mid-transition. Once
+prepared, finish the fence and cutover; after that the service starts with the
+successor selected and the earlier mailbox kept for reads and exact retries.
 
 ## Select the successor on every controller
 

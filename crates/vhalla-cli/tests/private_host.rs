@@ -877,8 +877,14 @@ fn revoking_all_credentials_is_loadable_and_refuses_new_service_admission() {
     ok(&run(f.command("status")));
     let refused = run(f.command("serve"));
     assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("all transport credentials are revoked")
+        stderr.contains("enrolled in mailbox directory \"mailbox\" are revoked"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("replace-credential HOME INDEX` for credential index 1 or 2"),
+        "{stderr}"
     );
     let mut replacement = f.command("replace-credential");
     replacement.arg("2");
@@ -1061,7 +1067,18 @@ fn drained_generation_retains_old_tls_retries_and_carries_spend_to_successor() {
             .arg(&receipts);
         ok(&run(command));
     }
+    let pending_refusal = || {
+        let refused = run(f.command("serve"));
+        assert!(!refused.status.success());
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            stderr.contains("generation transition is pending"),
+            "{stderr}"
+        );
+    };
+    pending_refusal();
     ok(&run(f.command("generation-fence")));
+    pending_refusal();
     ok(&run(f.command("generation-cutover")));
     let next = FileStore::open(f.home().join("mailbox-2"), successor).unwrap();
     let carried = Service::credential_spend(&next).unwrap();
@@ -1146,4 +1163,35 @@ fn drained_generation_retains_old_tls_retries_and_carries_spend_to_successor() {
     assert_eq!(Service::credential_spend(&old).unwrap().len(), 2);
     let next = FileStore::open(f.home().join("mailbox-2"), successor).unwrap();
     assert_eq!(Service::credential_spend(&next).unwrap().len(), 3);
+    drop(old);
+    drop(next);
+    for index in ["1", "2"] {
+        let mut revoke = f.command("revoke-credential");
+        revoke.arg(index);
+        ok(&run(revoke));
+    }
+    let refused = run(f.command("serve"));
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("enrolled in mailbox directory \"mailbox\" are revoked"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("credential index 1 or 2"), "{stderr}");
+    let mut replace = f.command("replace-credential");
+    replace.arg("1");
+    ok(&run(replace));
+    let replaced = TlsRelay::new(
+        f.addr,
+        "local-host.test.invalid",
+        fs::read(f.home().join("ca.der")).unwrap(),
+        RelayToken::from_bytes(f.token(1)).unwrap(),
+        old_namespace,
+    )
+    .unwrap();
+    let mut server = f.serve();
+    assert_eq!(replaced.page(0, 4).unwrap().records[0].item, item);
+    assert!(matches!(old_client.page(0, 4), Err(NetError::Denied)));
+    assert_eq!(third.page(0, 4).unwrap().head, 1);
+    server.stop();
 }

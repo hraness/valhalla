@@ -84,35 +84,58 @@ fn browser_accounting_cannot_be_split_or_forged() {
     assert!(ControllerPauseReceipt::decode(&extended).is_err());
 }
 
-#[test]
-fn native_boundaries_and_lineage_are_not_optional() {
+fn native_sample() -> ControllerPauseReceipt {
     let mut value = sample();
-    let normal = LedgerSnapshot {
-        outgoing: 5,
-        applied: 3,
-        retained_jobs: 4,
-        canonical_bytes: 100,
-        charged_attempts: 6,
-        outages: 2,
-        resumes: 1,
-        commitment: [12; 32],
-    };
-    let controls = LedgerSnapshot {
-        outgoing: 2,
-        applied: 0,
-        retained_jobs: 2,
-        canonical_bytes: 200,
-        charged_attempts: 2,
-        outages: 0,
-        resumes: 0,
-        commitment: [13; 32],
-    };
     value.accounting = Accounting::NativeSplit {
-        normal,
-        controls,
+        normal: LedgerSnapshot {
+            outgoing: 5,
+            applied: 3,
+            retained_jobs: 4,
+            canonical_bytes: 100,
+            charged_attempts: 6,
+            outages: 2,
+            resumes: 1,
+            commitment: [12; 32],
+        },
+        controls: LedgerSnapshot {
+            outgoing: 2,
+            applied: 0,
+            retained_jobs: 2,
+            canonical_bytes: 200,
+            charged_attempts: 2,
+            outages: 0,
+            resumes: 0,
+            commitment: [13; 32],
+        },
         normal_total_byte_ceiling: 1000,
         control_total_byte_ceiling: 1000,
     };
+    value
+}
+
+#[test]
+fn native_receipt_matches_shared_golden_vector() {
+    let vector = include_str!("../../../../../vectors/private-controller-pause-native-v1.json");
+    let selected = |field: &str| {
+        vector
+            .rsplit(&format!("\"{field}\": \""))
+            .next()
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+    };
+    let hex = |raw: &[u8]| raw.iter().map(|v| format!("{v:02x}")).collect::<String>();
+    let value = native_sample();
+    let raw = value.encode().unwrap();
+    assert_eq!(hex(&raw), selected("encoded_hex"));
+    assert_eq!(hex(&value.commitment().unwrap()), selected("commitment"));
+    assert_eq!(ControllerPauseReceipt::decode(&raw).unwrap(), value);
+}
+
+#[test]
+fn native_boundaries_and_lineage_are_not_optional() {
+    let mut value = native_sample();
     let raw = value.encode().unwrap();
     assert_eq!(raw.len(), NATIVE_RECEIPT_BYTES);
     assert_eq!(ControllerPauseReceipt::decode(&raw).unwrap(), value);

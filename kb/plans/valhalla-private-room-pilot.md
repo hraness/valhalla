@@ -648,3 +648,45 @@ or Dioxus requirements.
   main; Phase 5's delivery half is done. Second-machine qualification,
   sleep/logout/reboot and the sparse soak remain NOT RUN and deferred by
   the owner; the reviewer follow-ups listed above stay open.
+- A follow-up branch closes out the six non-blocking review findings on
+  `dd0580f` (25 September 2026), on a main advanced by PR122 (`1329c6a`):
+  `private-host serve` refuses while a generation transition is pending,
+  so a supervised restart cannot reopen the predecessor and move its head
+  between prepare and fence/cutover or recovery; the all-revoked refusal
+  names the mailbox directory and the `replace-credential` indexes that
+  keep the identity's quota; `generation-check`'s canonical-encoding
+  refusal names the sealed `renew --leaf-days N` rewrite, and the
+  maintenance guides document it plus the earlier-mailbox credential
+  rule; `checkpoint_admitted_member_pauses_from_its_joining_floor` admits
+  a third device through a contact offer and pauses its drained
+  controller through a real relay (mutation-tested: with the pre-fix
+  control paging restored it fails at `delivery-pause`); the local
+  `--generation-pilot` takes an explicit `--sqlite3` executable checked
+  up front instead of hard-coding `/usr/bin/sqlite3`, and
+  `vectors/private-controller-pause-native-v1.json` pins the native
+  split-accounting receipt byte-for-byte; the delivery driver's download
+  refusal probe observes status writes instead of requiring changed
+  text, and a kernel test pins `inspect_contact_response` refusing as
+  `Missing` after join. Full local rerun on `dd0580f` (01:05–02:02 UTC),
+  every step exit 0: `cargo fmt --check`; `clippy --workspace
+  --all-targets --all-features -D warnings`; the `vhalla-cli` lane with
+  CI's three live-mesh skips (24 binaries, 259 passed, 0 failed, 3
+  filtered); the private crate lanes (267); doc tests (43); identity (7)
+  and social (1) without default features; the five Python suites
+  (69/5/16/42/4) and the verify suite (49); the CI Node step (40);
+  host generation unit tests including the legacy-encoding refusal and
+  sealed rewrite (39); the rebuilt `experimental-private` CLI
+  (`489587ce…`) on a locally built production Trunk bundle
+  (`308ccfd…`, `purpose: production`): delivery (16 facts, 32 owned
+  children stopped, none forced), `--mixed-pilot` (3 facts, 44 stopped),
+  `--generation-pilot --sqlite3 /usr/bin/sqlite3` (3 facts, 82 stopped;
+  generation 1 at terminal head 18 across three controllers, predecessor
+  room state and cumulative spend preserved) and panel `--production`
+  (12 facts), Chrome's closure observed through its log file in each;
+  the deterministic `agent-launch` pilot 9/9 from a git-checkout build
+  receipt for `dd0580f`. Independent read-only review found no P0/P1/P2
+  findings; its optional P3 notes are applied or accepted. Delivered as
+  PR #128 under the consolidated non-strict ruleset attested by PR126
+  (`25b29f8`); merge and readback pending its required checks.
+  Second-machine qualification, sleep/logout/reboot and the sparse soak
+  remain NOT RUN and deferred by the owner.

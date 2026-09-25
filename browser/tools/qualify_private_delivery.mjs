@@ -7,23 +7,34 @@ import {runMixedPilot} from './private_mixed_pilot.mjs';
 import {drainMixedGeneration, transitionMixedGeneration} from './private_generation_pilot.mjs';
 import {createConnection, createServer as createTcpServer} from 'node:net';
 import {createHash} from 'node:crypto';
-import {readFile, writeFile, mkdir, mkdtemp, chmod, open} from 'node:fs/promises';
-import {resolve, join} from 'node:path';
+import {readFile, writeFile, mkdir, mkdtemp, chmod, open, access, stat} from 'node:fs/promises';
+import {constants as fsConstants} from 'node:fs';
+import {resolve, join, isAbsolute} from 'node:path';
 
 const [artifactArg, chromeExecutable, outputArg, cliArg, opensslArg, ...flags] = process.argv.slice(2);
-if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M] [--parent-stdin] [--mixed-pilot] [--generation-pilot]');
+if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M] [--parent-stdin] [--mixed-pilot] [--generation-pilot --sqlite3 ABSOLUTE_PATH]');
 process.umask(0o077);
 const options={};
 for(let i=0;i<flags.length;i++){
   const flag=flags[i];
   if(Object.hasOwn(options,flag))throw Error('duplicate flag: '+flag);
   if(flag==='--parent-stdin'||flag==='--mixed-pilot'||flag==='--generation-pilot'){options[flag]=true;continue;}
+  if(flag==='--sqlite3'){
+    const value=flags[++i];
+    if(!value||!isAbsolute(value))throw Error('--sqlite3 requires an absolute executable path');
+    options[flag]=value;continue;
+  }
   if(flag!=='--gateway-port'&&flag!=='--tls-port')throw Error('unknown flag: '+flag);
   const value=flags[++i];
   if(!/^[0-9]+$/.test(value??''))throw Error(flag+' requires a decimal loopback port');
   options[flag]=Number(value);
 }
 options.generationPilot=!!options['--generation-pilot'];
+if(options.generationPilot!==Object.hasOwn(options,'--sqlite3'))throw Error('--generation-pilot and --sqlite3 ABSOLUTE_PATH are required together; the pilot observes stores read-only through that sqlite3');
+if(options.generationPilot){
+  await access(options['--sqlite3'],fsConstants.X_OK);
+  if(!(await stat(options['--sqlite3'])).isFile())throw Error('--sqlite3 must name an executable file');
+}
 options.mixedPilot=!!options['--mixed-pilot']||options.generationPilot;
 const artifact = resolve(artifactArg), output = resolve(outputArg);
 const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -153,7 +164,7 @@ async function download(page,button,extension) {
   // refusal, then surface any refusal the click still produced.
   await wait(()=>[...downloads.values()].filter(d=>d.frameId===page.frameId&&Date.now()-d.at<31000).length<8,button+' download slot');
   const previous=new Set(downloads.keys());
-  const refused=await invoke(page,`async function(button){const s=qid('private-status');const before=s.textContent;await qclick(button);await new Promise(r=>setTimeout(r,0));return s.dataset.error==='true'&&s.textContent!==before?s.textContent:'';}`,[button]);
+  const refused=await invoke(page,`async function(button){const s=qid('private-status');let written=false;const observer=new MutationObserver(()=>{written=true;});observer.observe(s,{attributes:true,childList:true,characterData:true,subtree:true});try{await qclick(button);await new Promise(r=>setTimeout(r,0));}finally{if(observer.takeRecords().length)written=true;observer.disconnect();}return written&&s.dataset.error==='true'?s.textContent:'';}`,[button]);
   if(refused)throw Error(button+' refused: '+refused);
   let item;
   await wait(()=>{
@@ -594,7 +605,7 @@ async function task(abortSignal) {
     const result=await runMixedPilot({account,enter,evaluate,invoke,setFile,download,retainCreation,
       connect,profileFile,sync,head,command,privateFile,send,reload,leave,wait,removeMember,captureReview,
       cli,output,namespace,tlsAddress,gatewayOrigin,browserCapability,children,signal,
-      generationPilot:!!options.generationPilot,hostHome,
+      generationPilot:!!options.generationPilot,hostHome,sqlite3:options['--sqlite3'],
       nativeCredential:options.generationPilot?nativeCredential:undefined,
       drainGeneration:options.generationPilot?drainMixedGeneration:undefined,
       transitionGeneration:options.generationPilot?transitionMixedGeneration:undefined,
