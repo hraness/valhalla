@@ -42,11 +42,11 @@ fn binding(limits: Limits, fence: GenerationFence, intent: [u8; 32]) -> Result<V
     Ok(raw)
 }
 
-fn present(path: &Path, uid: u32, limit: usize) -> Result<bool> {
-    custody::private_file_present(path, uid, limit).map_err(|_| Error::Storage)
+fn present(path: &Path, owner: Owner, limit: usize) -> Result<bool> {
+    custody::private_file_present(path, owner, limit).map_err(|_| Error::Storage)
 }
 
-fn inventory(path: &Path, uid: u32) -> Result<BTreeSet<String>> {
+fn inventory(path: &Path, owner: Owner) -> Result<BTreeSet<String>> {
     let mut names = BTreeSet::new();
     for entry in fs::read_dir(path).map_err(|_| Error::Storage)? {
         let entry = entry.map_err(|_| Error::Storage)?;
@@ -60,7 +60,7 @@ fn inventory(path: &Path, uid: u32) -> Result<BTreeSet<String>> {
             "relay.db" | "relay.db-journal" => MAX_RELAY_DB_BYTES,
             _ => return Err(Error::Storage),
         };
-        if !present(&entry.path(), uid, limit)? || !names.insert(name) {
+        if !present(&entry.path(), owner, limit)? || !names.insert(name) {
             return Err(Error::Storage);
         }
     }
@@ -136,7 +136,7 @@ impl FileStore {
         let path = parent.join(requested.file_name().ok_or(Error::Storage)?);
         let (parent_directory, parent_uid) =
             custody::open_private_directory(&parent).map_err(|_| Error::Storage)?;
-        let (directory, uid) = match fs::symlink_metadata(&path) {
+        let (directory, owner) = match fs::symlink_metadata(&path) {
             Ok(_) => custody::open_private_directory(&path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 custody::create_private_directory(&path)
@@ -144,14 +144,14 @@ impl FileStore {
             Err(_) => return Err(Error::Storage),
         }
         .map_err(|_| Error::Storage)?;
-        if uid != parent_uid {
+        if owner != parent_uid {
             return Err(Error::Storage);
         }
         boundary(0)?;
-        let names = inventory(&path, uid)?;
+        let names = inventory(&path, owner)?;
         let marker = path.join(CREATION);
         let prior = if names.contains(CREATION) {
-            custody::read_private_file(&marker, uid, MARKER_LIMIT).map_err(|_| Error::Storage)?
+            custody::read_private_file(&marker, owner, MARKER_LIMIT).map_err(|_| Error::Storage)?
         } else {
             Vec::new()
         };
@@ -163,7 +163,7 @@ impl FileStore {
         }
         let lock_path = path.join("lock");
         let lock = if names.contains("lock") {
-            custody::open_private_file(&lock_path, uid, 0)
+            custody::open_private_file(&lock_path, owner, 0)
         } else {
             custody::create_private_file(&lock_path)
         }
@@ -172,13 +172,13 @@ impl FileStore {
         boundary(1)?;
         // Re-read under mailbox custody before appending any known prefix.
         let mut marker_file = if names.contains(CREATION) {
-            custody::open_private_file(&marker, uid, MARKER_LIMIT)
+            custody::open_private_file(&marker, owner, MARKER_LIMIT)
         } else {
             custody::create_private_file(&marker)
         }
         .map_err(|_| Error::Storage)?;
         let held =
-            custody::read_private_file(&marker, uid, MARKER_LIMIT).map_err(|_| Error::Storage)?;
+            custody::read_private_file(&marker, owner, MARKER_LIMIT).map_err(|_| Error::Storage)?;
         if held != prior {
             return Err(Error::Conflict);
         }
@@ -197,7 +197,7 @@ impl FileStore {
             .and_then(|()| marker_file.sync_all())
             .and_then(|()| directory.sync_all())
             .map_err(|_| Error::Storage)?;
-        if custody::read_private_file(&marker, uid, MARKER_LIMIT).map_err(|_| Error::Storage)?
+        if custody::read_private_file(&marker, owner, MARKER_LIMIT).map_err(|_| Error::Storage)?
             != expected
         {
             return Err(Error::Storage);
@@ -205,7 +205,7 @@ impl FileStore {
         boundary(4)?;
         let db_path = path.join("relay.db");
         let db_guard = if names.contains("relay.db") {
-            custody::open_private_file(&db_path, uid, MAX_RELAY_DB_BYTES)
+            custody::open_private_file(&db_path, owner, MAX_RELAY_DB_BYTES)
         } else {
             custody::create_private_file(&db_path)
         }

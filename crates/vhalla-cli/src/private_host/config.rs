@@ -13,7 +13,7 @@ use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use vhalla_private_native::relay::{
     net::RelayToken, tls, tls::Service, FileStore, Limits, RelayNamespace,
 };
@@ -114,17 +114,17 @@ pub(super) fn resolve(path: &Path) -> Result<PathBuf, String> {
     }
     Ok(parent.join(name))
 }
-fn owner(home: &Path) -> Result<(fs::File, u32), String> {
-    let (directory, uid) = custody::open_private_directory(home).map_err(|_| REFUSED)?;
-    if uid != rustix::process::geteuid().as_raw() {
+fn owner(home: &Path) -> Result<(fs::File, Owner), String> {
+    let (directory, owner) = custody::open_private_directory(home).map_err(|_| REFUSED)?;
+    if owner != Owner::current().map_err(|_| REFUSED)? {
         return Err(REFUSED.into());
     }
-    Ok((directory, uid))
+    Ok((directory, owner))
 }
 /// One stable inode serializes maintenance and startup selection independently
 /// of the mailbox writer. Never unlink or replace this file, even after exit.
 pub(super) fn maintenance_lock(home: &Path) -> Result<fs::File, String> {
-    let (directory, uid) = owner(home)?;
+    let (directory, owner) = owner(home)?;
     let path = home.join("maintenance.lock");
     match custody::create_private_file(&path) {
         Ok(file) => {
@@ -135,7 +135,7 @@ pub(super) fn maintenance_lock(home: &Path) -> Result<fs::File, String> {
         Err(custody::Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(_) => return Err(REFUSED.into()),
     }
-    let file = custody::open_private_file(&path, uid, 0).map_err(|_| REFUSED)?;
+    let file = custody::open_private_file(&path, owner, 0).map_err(|_| REFUSED)?;
     file.try_lock().map_err(|error| match error {
         fs::TryLockError::WouldBlock => {
             "host maintenance busy; retry after the active operation completes".to_owned()
@@ -143,9 +143,8 @@ pub(super) fn maintenance_lock(home: &Path) -> Result<fs::File, String> {
         fs::TryLockError::Error(_) => REFUSED.to_owned(),
     })?;
     let named = fs::symlink_metadata(&path).map_err(|_| REFUSED)?;
-    let held = file.metadata().map_err(|_| REFUSED)?;
-    custody::check_regular_file(&named, uid, 0).map_err(|_| REFUSED)?;
-    if named.dev() != held.dev() || named.ino() != held.ino() {
+    custody::check_regular_file(&path, &named, owner, 0).map_err(|_| REFUSED)?;
+    if !custody::same_file(&path, &file).map_err(|_| REFUSED)? {
         return Err(REFUSED.into());
     }
     Ok(file)
@@ -156,9 +155,9 @@ pub(super) fn valid_leaf_lifetime(seconds: i64) -> bool {
     (86400..AUTHORITY_LIFETIME_SECONDS).contains(&seconds)
 }
 pub(super) fn read(home: &Path, name: &str, limit: usize) -> Result<Zeroizing<Vec<u8>>, String> {
-    let (_, uid) = owner(home)?;
+    let (_, owner) = owner(home)?;
     Ok(Zeroizing::new(
-        custody::read_private_file(&home.join(name), uid, limit).map_err(|_| REFUSED)?,
+        custody::read_private_file(&home.join(name), owner, limit).map_err(|_| REFUSED)?,
     ))
 }
 /// Consume only bytes matching the selected immutable manifest, even if a
@@ -180,10 +179,10 @@ pub(super) fn write(home: &Path, name: &str, bytes: &[u8]) -> Result<(), String>
     if bytes.len() > 65536 {
         return Err(REFUSED.into());
     }
-    let (directory, uid) = owner(home)?;
+    let (directory, owner) = owner(home)?;
     let path = home.join(name);
     let mut file = custody::create_private_file(&path).map_err(|_| REFUSED)?;
-    custody::check_regular_file(&file.metadata().map_err(|_| REFUSED)?, uid, 65536)
+    custody::check_regular_file(&path, &file.metadata().map_err(|_| REFUSED)?, owner, 65536)
         .map_err(|_| REFUSED)?;
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
@@ -539,12 +538,12 @@ pub(super) fn rewrite(home: &Path, name: &str, bytes: &[u8]) -> Result<(), Strin
     {
         return Err(REFUSED.into());
     }
-    let (directory, uid) = owner(home)?;
+    let (directory, owner) = owner(home)?;
     let tmp = home.join(format!("{name}.rewrite-tmp"));
     // A selected target may be absent (additive publication), but unsafe
     // existing custody is never repaired by replacing it.
-    custody::private_file_present(&home.join(name), uid, 65536).map_err(|_| REFUSED)?;
-    if custody::private_file_present(&tmp, uid, 65536).map_err(|_| REFUSED)? {
+    custody::private_file_present(&home.join(name), owner, 65536).map_err(|_| REFUSED)?;
+    if custody::private_file_present(&tmp, owner, 65536).map_err(|_| REFUSED)? {
         fs::remove_file(&tmp).map_err(|_| REFUSED)?;
     }
     let mut file = custody::create_private_file(&tmp).map_err(|_| REFUSED)?;
@@ -566,10 +565,10 @@ pub(super) fn rewrite(home: &Path, name: &str, bytes: &[u8]) -> Result<(), Strin
 const SEAL_PENDING: &str = "seal.pending";
 const SEAL_BACKUP: &str = ".seal-backup";
 
-fn seal_scratch(home: &Path, uid: u32) -> Result<(Option<Vec<u8>>, Vec<String>), String> {
+fn seal_scratch(home: &Path, owner: Owner) -> Result<(Option<Vec<u8>>, Vec<String>), String> {
     let pending = home.join(SEAL_PENDING);
-    let pending = if custody::private_file_present(&pending, uid, 64).map_err(|_| REFUSED)? {
-        Some(custody::read_private_file(&pending, uid, 64).map_err(|_| REFUSED)?)
+    let pending = if custody::private_file_present(&pending, owner, 64).map_err(|_| REFUSED)? {
+        Some(custody::read_private_file(&pending, owner, 64).map_err(|_| REFUSED)?)
     } else {
         None
     };
@@ -585,7 +584,7 @@ fn seal_scratch(home: &Path, uid: u32) -> Result<(Option<Vec<u8>>, Vec<String>),
         if let Some(file) = name.strip_suffix(SEAL_BACKUP) {
             if !file.is_empty() && !file.contains(['/', '\\']) {
                 let path = home.join(name);
-                if custody::private_file_present(&path, uid, 65536).map_err(|_| REFUSED)? {
+                if custody::private_file_present(&path, owner, 65536).map_err(|_| REFUSED)? {
                     backups.push(name.to_owned());
                 } else {
                     return Err(REFUSED.into());
@@ -595,9 +594,9 @@ fn seal_scratch(home: &Path, uid: u32) -> Result<(Option<Vec<u8>>, Vec<String>),
     }
     Ok((pending, backups))
 }
-fn sealed_config(home: &Path, uid: u32) -> Option<Vec<u8>> {
-    let config = custody::read_private_file(&home.join("config.json"), uid, 65536).ok()?;
-    let complete = custody::read_private_file(&home.join("complete"), uid, 64).ok()?;
+fn sealed_config(home: &Path, owner: Owner) -> Option<Vec<u8>> {
+    let config = custody::read_private_file(&home.join("config.json"), owner, 65536).ok()?;
+    let complete = custody::read_private_file(&home.join("complete"), owner, 64).ok()?;
     (complete.as_slice() == digest(&config).as_bytes()).then_some(config)
 }
 fn remove_seal_scratch(home: &Path, backups: &[String]) -> Result<(), String> {
@@ -608,9 +607,9 @@ fn remove_seal_scratch_with(
     backups: &[String],
     mut sync_directory: impl FnMut(&fs::File) -> std::io::Result<()>,
 ) -> Result<(), String> {
-    let (directory, uid) = owner(home)?;
+    let (directory, owner) = owner(home)?;
     let pending = home.join(SEAL_PENDING);
-    if custody::private_file_present(&pending, uid, 64).map_err(|_| REFUSED)? {
+    if custody::private_file_present(&pending, owner, 64).map_err(|_| REFUSED)? {
         fs::remove_file(&pending).map_err(|_| REFUSED)?;
     }
     // A previous process can have unlinked the marker without reaching its
@@ -637,9 +636,9 @@ fn restore_seal_backups_with(
     backups: &[String],
     mut after_restore: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
-    let (_, uid) = owner(home)?;
+    let (_, owner) = owner(home)?;
     let config_bytes =
-        custody::read_private_file(&home.join("config.json.seal-backup"), uid, 65536)
+        custody::read_private_file(&home.join("config.json.seal-backup"), owner, 65536)
             .map_err(|_| REFUSED)?;
     let config: Config = serde_json::from_slice(&config_bytes).map_err(|_| REFUSED)?;
     validate_config(home, &config)?;
@@ -647,26 +646,26 @@ fn restore_seal_backups_with(
     for name in backups {
         let target = name.strip_suffix(SEAL_BACKUP).ok_or(REFUSED)?;
         let bytes =
-            custody::read_private_file(&home.join(name), uid, 65536).map_err(|_| REFUSED)?;
+            custody::read_private_file(&home.join(name), owner, 65536).map_err(|_| REFUSED)?;
         if target != "config.json" && config.files.get(target) != Some(&digest(&bytes)) {
             return Err(REFUSED.into());
         }
     }
     for name in backups {
         let backup = home.join(name);
-        if !custody::private_file_present(&backup, uid, 65536).map_err(|_| REFUSED)? {
+        if !custody::private_file_present(&backup, owner, 65536).map_err(|_| REFUSED)? {
             return Err(REFUSED.into());
         }
         let target = name.strip_suffix(SEAL_BACKUP).ok_or(REFUSED)?;
         let bytes =
-            Zeroizing::new(custody::read_private_file(&backup, uid, 65536).map_err(|_| REFUSED)?);
+            Zeroizing::new(custody::read_private_file(&backup, owner, 65536).map_err(|_| REFUSED)?);
         // Never consume the snapshot: another interruption can replay every
         // file, including config.json, from these same durable source bytes.
         rewrite(home, target, &bytes)?;
         after_restore(target)?;
     }
     let restored =
-        custody::read_private_file(&home.join("config.json"), uid, 65536).map_err(|_| REFUSED)?;
+        custody::read_private_file(&home.join("config.json"), owner, 65536).map_err(|_| REFUSED)?;
     let _: Config = serde_json::from_slice(&restored).map_err(|_| REFUSED)?;
     rewrite(home, "complete", digest(&restored).as_bytes())
 }
@@ -674,9 +673,9 @@ fn restore_seal_backups_with(
 /// Runs before every mutating command so a torn update is always re-runnable;
 /// read paths stay strict and still refuse a torn home.
 pub(super) fn recover_seal(home: &Path) -> Result<(), String> {
-    let (_, uid) = owner(home)?;
-    let (pending, backups) = seal_scratch(home, uid)?;
-    let consistent = sealed_config(home, uid);
+    let (_, owner) = owner(home)?;
+    let (pending, backups) = seal_scratch(home, owner)?;
+    let consistent = sealed_config(home, owner);
     let config_backup = backups.iter().any(|name| name == "config.json.seal-backup");
     match (pending.as_deref(), consistent.as_deref()) {
         // No mutation in progress; stale backups are inert scratch.
@@ -694,7 +693,7 @@ pub(super) fn recover_seal(home: &Path) -> Result<(), String> {
         // backup, the commit never happened and data files may have drifted.
         (Some(b"committing"), Some(config)) if config_backup => {
             let backup =
-                custody::read_private_file(&home.join("config.json.seal-backup"), uid, 65536)
+                custody::read_private_file(&home.join("config.json.seal-backup"), owner, 65536)
                     .map_err(|_| REFUSED)?;
             if config == backup.as_slice() {
                 restore_seal_backups(home, &backups)?;
@@ -719,11 +718,11 @@ pub(super) fn recover(home: &Path) -> Result<(), String> {
 /// exists, then mark the file phase. Callers must pass a `load`ed home.
 pub(super) fn begin_seal(home: &Path, extra: &[&str]) -> Result<(), String> {
     recover_seal(home)?;
-    let (_, uid) = owner(home)?;
+    let (_, owner) = owner(home)?;
     for name in ["config.json"].iter().chain(extra.iter()) {
         let path = home.join(name);
-        if custody::private_file_present(&path, uid, 65536).map_err(|_| REFUSED)? {
-            let bytes = custody::read_private_file(&path, uid, 65536).map_err(|_| REFUSED)?;
+        if custody::private_file_present(&path, owner, 65536).map_err(|_| REFUSED)? {
+            let bytes = custody::read_private_file(&path, owner, 65536).map_err(|_| REFUSED)?;
             rewrite(home, &format!("{name}{SEAL_BACKUP}"), &bytes)?;
         }
     }
@@ -744,8 +743,8 @@ pub(super) fn commit_seal(home: &Path, config: &Config) -> Result<(), String> {
     let bytes = serde_json::to_vec(config).map_err(|_| REFUSED)?;
     rewrite(home, "config.json", &bytes)?;
     rewrite(home, "complete", digest(&bytes).as_bytes())?;
-    let (_, uid) = owner(home)?;
-    let (_, backups) = seal_scratch(home, uid)?;
+    let (_, owner) = owner(home)?;
+    let (_, backups) = seal_scratch(home, owner)?;
     remove_seal_scratch(home, &backups)
 }
 
@@ -1139,8 +1138,8 @@ mod tests {
             ] {
                 rewrite(&home.0, name, b"interrupted mutation").unwrap();
             }
-            let (_, uid) = owner(&home.0).unwrap();
-            let (_, mut backups) = seal_scratch(&home.0, uid).unwrap();
+            let (_, owner) = owner(&home.0).unwrap();
+            let (_, mut backups) = seal_scratch(&home.0, owner).unwrap();
             backups.sort();
             let mut restored = 0;
             assert!(restore_seal_backups_with(&home.0, &backups, |_| {
@@ -1325,8 +1324,8 @@ mod tests {
         let _lock = maintenance_lock(&home.0).unwrap();
         let sealed = snapshot(&home.0);
         begin_seal(&home.0, &["server.der", "connection.json"]).unwrap();
-        let (_, uid) = owner(&home.0).unwrap();
-        let (_, backups) = seal_scratch(&home.0, uid).unwrap();
+        let (_, owner) = owner(&home.0).unwrap();
+        let (_, backups) = seal_scratch(&home.0, owner).unwrap();
         // This is the visible state a retry can see after process interruption
         // between unlink and sync. The test checks ordering, not power loss.
         fs::remove_file(home.0.join(SEAL_PENDING)).unwrap();
@@ -1364,8 +1363,8 @@ mod tests {
                 ] {
                     rewrite(&home.0, name, b"interrupted update").unwrap();
                 }
-                let (_, uid) = owner(&home.0).unwrap();
-                let (_, mut backups) = seal_scratch(&home.0, uid).unwrap();
+                let (_, owner) = owner(&home.0).unwrap();
+                let (_, mut backups) = seal_scratch(&home.0, owner).unwrap();
                 backups.sort();
                 let retained: BTreeMap<_, _> = backups
                     .iter()
@@ -1403,8 +1402,8 @@ mod tests {
         begin_seal(&home.0, &["connection.json"]).unwrap();
         let new_connection = b"new synthetic connection document";
         rewrite(&home.0, "connection.json", new_connection).unwrap();
-        let (_, uid) = owner(&home.0).unwrap();
-        assert!(sealed_config(&home.0, uid).is_some());
+        let (_, owner) = owner(&home.0).unwrap();
+        assert!(sealed_config(&home.0, owner).is_some());
         assert!(
             load(&home.0).is_err(),
             "the old pair cannot admit mixed files"
@@ -1419,7 +1418,7 @@ mod tests {
         load(&home.0).unwrap();
 
         rewrite(&home.0, "connection.json", b"drifted live file").unwrap();
-        assert!(sealed_config(&home.0, uid).is_some());
+        assert!(sealed_config(&home.0, owner).is_some());
         assert!(load(&home.0).is_err());
         let before = snapshot(&home.0);
         assert!(recover_seal(&home.0).is_err());
@@ -1435,7 +1434,7 @@ mod tests {
             read(&home.0, "config.json", 65536).unwrap().as_slice(),
             bytes
         );
-        assert_eq!(seal_scratch(&home.0, uid).unwrap(), (None, Vec::new()));
+        assert_eq!(seal_scratch(&home.0, owner).unwrap(), (None, Vec::new()));
         load(&home.0).unwrap();
     }
 
@@ -1446,8 +1445,8 @@ mod tests {
             let _lock = maintenance_lock(&home.0).unwrap();
             let sealed = snapshot(&home.0);
             begin_seal(&home.0, &["server.der", "connection.json"]).unwrap();
-            let (directory, uid) = owner(&home.0).unwrap();
-            let (_, mut backups) = seal_scratch(&home.0, uid).unwrap();
+            let (directory, owner) = owner(&home.0).unwrap();
+            let (_, mut backups) = seal_scratch(&home.0, owner).unwrap();
             backups.sort();
             fs::remove_file(home.0.join(SEAL_PENDING)).unwrap();
             directory.sync_all().unwrap();
@@ -1469,8 +1468,8 @@ mod tests {
         for name in ["config.json", "server.der", "connection.json"] {
             rewrite(&home.0, name, b"interrupted update").unwrap();
         }
-        let (_, uid) = owner(&home.0).unwrap();
-        let (_, mut backups) = seal_scratch(&home.0, uid).unwrap();
+        let (_, owner) = owner(&home.0).unwrap();
+        let (_, mut backups) = seal_scratch(&home.0, owner).unwrap();
         backups.sort();
         rewrite(&home.0, backups.last().unwrap(), b"corrupt backup").unwrap();
         let before = snapshot(&home.0);

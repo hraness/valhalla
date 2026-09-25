@@ -738,4 +738,48 @@ remain exactly as implemented.
   held page request and Linux units are recorded as merged but untagged.
   The site's documented source revision moved from v0.2.3 to `8e6cb21` so the
   linked source matches the described commands.
+- 25 September 2026, step 6 custody portability (#145 on
+  `claude/windows-custody-20260925`): `vhalla-custody` becomes a
+  platform-neutral facade over `unix` and `windows` backends behind
+  the unchanged contract — exclusive-create refuse-existing
+  semantics, owner-only objects, link and reparse refusal, post-open
+  identity, bounded reads and bounded lock retries. Ownership moves
+  from a `u32` uid to an opaque `Owner`: the effective uid on Unix,
+  the process token's user SID on Windows. The Windows backend
+  builds each private object's descriptor from SDDL with a protected
+  DACL holding exactly one ACE — full control for the object's
+  owner — with the owner set explicitly so an elevated token cannot
+  substitute Administrators, and refuses a NULL, absent, inherited
+  or multi-ACE DACL the way `0600`/`0700` refuses a wider mode;
+  SYSTEM and Administrators grants are deliberately not tolerated.
+  Opens carry `FILE_FLAG_OPEN_REPARSE_POINT` (the `O_NOFOLLOW`
+  role), directories open through `FILE_FLAG_BACKUP_SEMANTICS` so
+  `sync_all` reaches `FlushFileBuffers`, and identity after open
+  compares the volume serial and file index from
+  `GetFileInformationByHandle` on two live handles — the NTFS
+  analogue of `dev`/`ino`; FAT-family filesystems cannot satisfy the
+  contract. `check_regular_file` gained a `path` parameter and
+  `same_file`/`same_open_file` became public because Windows answers
+  owner, DACL and link count only from a live handle; every custody
+  caller — the stores, the CLI private-host and private-rooms paths,
+  the private-native relay and grant code, and the public peer —
+  moved to `Owner` in the same change, so no caller retains a raw
+  uid. CI gains a `windows-portable` lane on `windows-latest` wired
+  into `required`: custody clippy and its test suite, `cargo check
+  --workspace` (every crate compile-checks for
+  `x86_64-pc-windows-msvc`, verified locally — the Unix-gated store,
+  peer and private-native modules compile empty), and test-target
+  compile for the ten crates whose dev-dependencies are pure Rust.
+  `cargo check` is compile coverage only: the CLI is not yet claimed
+  to link on Windows, so no Windows release archive ships. Local
+  gates: fmt, custody clippy on both targets, custody tests, and
+  workspace clippy `--all-features --all-targets` all pass; the
+  workspace test run still stops in
+  `vhalla-identity/tests/custody_hegel.rs`'s
+  `interleaved_faults_preserve_exact_open_and_sign_semantics` on a
+  pre-existing model subtraction overflow reproduced on the clean
+  parent tree — unrelated to this change. Still open for step 6: a
+  `cargo build` link check and runtime tests for the CLI on
+  `windows-latest`, a release archive once it links, and the Windows
+  host service lifecycle.
 

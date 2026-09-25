@@ -616,9 +616,9 @@ fn exact_unpublished_prefix_recovers_but_committed_corruption_is_not_rewritten()
         event.encode()
     );
     let path = store.record_path(1);
-    let uid = store.uid;
+    let owner = store.owner;
     drop(store);
-    let file = open(&path, uid, MAX_RECORD_BYTES).unwrap();
+    let file = open(&path, owner, MAX_RECORD_BYTES).unwrap();
     file.set_len(17).unwrap();
     file.sync_all().unwrap();
     assert!(Store::open(temp.path(), f.scope, limits(), None).is_err());
@@ -637,21 +637,21 @@ fn duplicate_checks_full_key_scope_sequence_record_and_head_indexes() {
         let head_path = store.author_path(f.author()).join(HEAD);
         match damage {
             0 => {
-                let file = open(&index_path, store.uid, INDEX_BYTES).unwrap();
+                let file = open(&index_path, store.owner, INDEX_BYTES).unwrap();
                 file.set_len(7).unwrap();
             }
             1 => {
                 fs::remove_file(store.record_path(1)).unwrap();
             }
             2 => {
-                let file = open(&head_path, store.uid, INDEX_BYTES).unwrap();
+                let file = open(&head_path, store.owner, INDEX_BYTES).unwrap();
                 file.set_len(7).unwrap();
             }
             _ => {
                 let mut index =
-                    Index::decode(&read(&index_path, store.uid, INDEX_BYTES).unwrap()).unwrap();
+                    Index::decode(&read(&index_path, store.owner, INDEX_BYTES).unwrap()).unwrap();
                 index.sequence = 2;
-                let mut file = open(&index_path, store.uid, INDEX_BYTES).unwrap();
+                let mut file = open(&index_path, store.owner, INDEX_BYTES).unwrap();
                 file.write_all(&index.encode()).unwrap();
             }
         }

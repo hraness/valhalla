@@ -315,7 +315,7 @@ mod mac {
         thread,
         time::{Duration, Instant},
     };
-    use vhalla_custody as custody;
+    use vhalla_custody::{self as custody, Owner};
     const MAX_OUTPUT: u64 = 65536;
     struct Reply {
         success: bool,
@@ -418,13 +418,13 @@ mod mac {
         Ok(directory(create)?.join(format!("{}.plist", spec.label)))
     }
     fn expected(spec: &AgentSpec, path: &Path) -> Result<bool, String> {
-        let uid = rustix::process::geteuid().as_raw();
-        if !custody::private_file_present(path, uid, 65536).map_err(|_| REFUSED)? {
+        let owner = Owner::current().map_err(|_| REFUSED)?;
+        if !custody::private_file_present(path, owner, 65536).map_err(|_| REFUSED)? {
             return Ok(false);
         }
         if !ours(
             spec,
-            &custody::read_private_file(path, uid, 65536).map_err(|_| REFUSED)?,
+            &custody::read_private_file(path, owner, 65536).map_err(|_| REFUSED)?,
         ) {
             return Err("refusing a foreign or changed LaunchAgent at the selected label".into());
         }
@@ -435,11 +435,11 @@ mod mac {
     /// shape. Foreign content refuses. Decisions derive from these bytes, never
     /// from a second read.
     fn installed_shape(spec: &AgentSpec, path: &Path) -> Result<Option<bool>, String> {
-        let uid = rustix::process::geteuid().as_raw();
-        if !custody::private_file_present(path, uid, 65536).map_err(|_| REFUSED)? {
+        let owner = Owner::current().map_err(|_| REFUSED)?;
+        if !custody::private_file_present(path, owner, 65536).map_err(|_| REFUSED)? {
             return Ok(None);
         }
-        let bytes = custody::read_private_file(path, uid, 65536).map_err(|_| REFUSED)?;
+        let bytes = custody::read_private_file(path, owner, 65536).map_err(|_| REFUSED)?;
         if !ours(spec, &bytes) {
             return Err("refusing a foreign or changed LaunchAgent at the selected label".into());
         }

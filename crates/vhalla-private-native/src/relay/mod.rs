@@ -11,7 +11,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::{collections::BTreeMap, fs::File, path::Path};
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use vhalla_private_kernel::OperationId;
 #[cfg(test)]
 use vhalla_private_kernel::OutboxKind;
@@ -244,13 +244,14 @@ impl FileStore {
     /// Namespace and immutable quotas must match the caller's explicit choice.
     pub fn open(path: impl AsRef<Path>, namespace: RelayNamespace) -> Result<Self> {
         let path = custody::absolute(path.as_ref()).map_err(|_| Error::Storage)?;
-        let (directory, uid) =
+        let (directory, owner) =
             custody::open_private_directory(&path).map_err(|_| Error::Storage)?;
         let lock =
-            custody::open_private_file(&path.join("lock"), uid, 0).map_err(|_| Error::Storage)?;
+            custody::open_private_file(&path.join("lock"), owner, 0).map_err(|_| Error::Storage)?;
         custody::acquire_exclusive(&lock).map_err(|_| Error::Storage)?;
-        let db_guard = custody::open_private_file(&path.join("relay.db"), uid, MAX_RELAY_DB_BYTES)
-            .map_err(|_| Error::Storage)?;
+        let db_guard =
+            custody::open_private_file(&path.join("relay.db"), owner, MAX_RELAY_DB_BYTES)
+                .map_err(|_| Error::Storage)?;
         let conn = Connection::open(path.join("relay.db")).map_err(|_| Error::Storage)?;
         configure_database(&conn)?;
         let (limits, format) = read_meta(&conn, namespace)?;

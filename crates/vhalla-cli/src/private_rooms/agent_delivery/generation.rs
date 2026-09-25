@@ -136,9 +136,9 @@ fn locked(
     ns: RelayNamespace,
     relay: &TlsRelay,
 ) -> Result<(File, DeliveryStore, DeliveryStore, ScanDirectory), String> {
-    let (_, uid) = custody::open_private_directory(&config.state).map_err(|_| REFUSED)?;
+    let (_, owner) = custody::open_private_directory(&config.state).map_err(|_| REFUSED)?;
     let lock =
-        custody::open_private_file(&config.state.join("lock"), uid, 0).map_err(|_| REFUSED)?;
+        custody::open_private_file(&config.state.join("lock"), owner, 0).map_err(|_| REFUSED)?;
     custody::acquire_exclusive(&lock).map_err(|_| REFUSED)?;
     if config.initial_cursor != 0
         || ![2, 3].contains(&config.version)
@@ -472,8 +472,8 @@ fn exact(path: &Path, expected: &[u8]) -> Result<(), String> {
         return Err(REFUSED.into());
     }
     let parent = path.parent().ok_or(REFUSED)?;
-    let (directory, uid) = custody::open_private_directory(parent).map_err(|_| REFUSED)?;
-    let present = custody::private_file_present(path, uid, 32768).map_err(|_| REFUSED)?;
+    let (directory, owner) = custody::open_private_directory(parent).map_err(|_| REFUSED)?;
+    let present = custody::private_file_present(path, owner, 32768).map_err(|_| REFUSED)?;
     let prior = if present {
         files::read(path, 32768, false)?.to_vec()
     } else {
@@ -483,7 +483,7 @@ fn exact(path: &Path, expected: &[u8]) -> Result<(), String> {
         return Err(REFUSED.into());
     }
     let mut file = if present {
-        custody::open_private_file(path, uid, 32768)
+        custody::open_private_file(path, owner, 32768)
     } else {
         custody::create_private_file(path)
     }
@@ -711,7 +711,7 @@ fn initialize_successor(
     };
     let path = &next.state;
     let present = path.symlink_metadata().is_ok();
-    let (directory, uid) = if present {
+    let (directory, owner) = if present {
         custody::open_private_directory(path)
     } else {
         custody::create_private_directory(path)
@@ -719,7 +719,7 @@ fn initialize_successor(
     .map_err(|_| REFUSED)?;
     let lock_path = path.join("lock");
     let lock = if lock_path.symlink_metadata().is_ok() {
-        custody::open_private_file(&lock_path, uid, 0)
+        custody::open_private_file(&lock_path, owner, 0)
     } else {
         custody::create_private_file(&lock_path)
     }

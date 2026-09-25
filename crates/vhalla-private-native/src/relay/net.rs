@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 
 /// Bounded per-socket IO deadlines; a stalled peer cannot hold the server.
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
@@ -310,14 +310,14 @@ impl std::error::Error for ScanFailure {}
 
 fn read_cursor(
     directory: &Path,
-    uid: u32,
+    owner: Owner,
     initial_cursor: u64,
 ) -> std::result::Result<u64, ScanFailure> {
     let path = directory.join("cursor");
-    if !custody::private_file_present(&path, uid, 8).map_err(|_| ScanFailure::Storage)? {
+    if !custody::private_file_present(&path, owner, 8).map_err(|_| ScanFailure::Storage)? {
         return Ok(initial_cursor);
     }
-    let raw = custody::read_private_file(&path, uid, 8).map_err(|_| ScanFailure::Storage)?;
+    let raw = custody::read_private_file(&path, owner, 8).map_err(|_| ScanFailure::Storage)?;
     let bytes = raw.try_into().map_err(|_| ScanFailure::Corrupt)?;
     let cursor = u64::from_be_bytes(bytes);
     if cursor < initial_cursor || cursor > MAX_RELAY_ITEMS as u64 {
@@ -329,20 +329,21 @@ fn read_cursor(
 // published item. Neither a foreign value nor an orphan may be silently erased.
 fn validate_cursor_pending(
     directory: &Path,
-    uid: u32,
+    owner: Owner,
     cursor: u64,
 ) -> std::result::Result<(), ScanFailure> {
     let pending = directory.join("cursor.tmp");
-    if custody::private_file_present(&pending, uid, 8).map_err(|_| ScanFailure::Storage)? {
+    if custody::private_file_present(&pending, owner, 8).map_err(|_| ScanFailure::Storage)? {
         let next = cursor
             .checked_add(1)
             .filter(|n| *n <= MAX_RELAY_ITEMS as u64)
             .ok_or(ScanFailure::Corrupt)?;
-        let raw = custody::read_private_file(&pending, uid, 8).map_err(|_| ScanFailure::Storage)?;
+        let raw =
+            custody::read_private_file(&pending, owner, 8).map_err(|_| ScanFailure::Storage)?;
         if !next.to_be_bytes().starts_with(&raw)
             || !custody::private_file_present(
                 &item_path(&directory.join("items"), next),
-                uid,
+                owner,
                 MAX_ITEM_BYTES,
             )
             .map_err(|_| ScanFailure::Storage)?
@@ -356,17 +357,17 @@ fn publish_cursor(
     directory: &Path,
     handle: &File,
     cursor: u64,
-    uid: u32,
+    owner: Owner,
 ) -> std::result::Result<(), ScanFailure> {
     let tmp = directory.join("cursor.tmp");
     // Reconcile only the exact next-position scratch prefix. A conflicting
     // bounded private file is evidence, not permission to overwrite it.
     validate_cursor_pending(
         directory,
-        uid,
+        owner,
         cursor.checked_sub(1).ok_or(ScanFailure::Corrupt)?,
     )?;
-    if custody::private_file_present(&tmp, uid, 8).map_err(|_| ScanFailure::Storage)? {
+    if custody::private_file_present(&tmp, owner, 8).map_err(|_| ScanFailure::Storage)? {
         fs::remove_file(&tmp).map_err(|_| ScanFailure::Storage)?;
     }
     let mut file = custody::create_private_file(&tmp).map_err(|_| ScanFailure::Storage)?;
@@ -413,15 +414,15 @@ fn items_signature(scan: &ScanDirectory) -> std::result::Result<[u8; 32], ScanFa
 }
 fn signature_file(
     directory: &Path,
-    uid: u32,
+    owner: Owner,
 ) -> std::result::Result<Option<[u8; 32]>, ScanFailure> {
     let path = directory.join("signature");
-    if !custody::private_file_present(&path, uid, SIGNATURE_FILE_BYTES)
+    if !custody::private_file_present(&path, owner, SIGNATURE_FILE_BYTES)
         .map_err(|_| ScanFailure::Storage)?
     {
         return Ok(None);
     }
-    let raw = custody::read_private_file(&path, uid, SIGNATURE_FILE_BYTES)
+    let raw = custody::read_private_file(&path, owner, SIGNATURE_FILE_BYTES)
         .map_err(|_| ScanFailure::Storage)?;
     Ok(raw.try_into().ok())
 }
@@ -429,14 +430,14 @@ fn write_signature(
     directory: &Path,
     handle: &File,
     signature: [u8; 32],
-    uid: u32,
+    owner: Owner,
 ) -> std::result::Result<(), ScanFailure> {
     let tmp = directory.join("signature.tmp");
     match fs::symlink_metadata(&tmp) {
         Ok(_) => {
             // Only this holder's bounded scratch may be replaced; a foreign
             // or oversized file is evidence, not an overwrite target.
-            if !custody::private_file_present(&tmp, uid, SIGNATURE_FILE_BYTES)
+            if !custody::private_file_present(&tmp, owner, SIGNATURE_FILE_BYTES)
                 .map_err(|_| ScanFailure::Storage)?
             {
                 return Err(ScanFailure::Corrupt);
@@ -516,7 +517,7 @@ pub struct ScanDirectory {
     directory: File,
     items: File,
     _lock: File,
-    uid: u32,
+    owner: Owner,
     namespace: RelayNamespace,
     initial_cursor: u64,
     cursor: u64,
@@ -574,10 +575,10 @@ impl ScanDirectory {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
             Err(_) => return Err(ScanFailure::Storage),
         };
-        let (dir, uid) =
+        let (dir, owner) =
             custody::ensure_private_directory(&path).map_err(|_| ScanFailure::Storage)?;
         let binding = path.join("namespace");
-        let bound = custody::private_file_present(&binding, uid, SCAN_MAGIC.len() + 40)
+        let bound = custody::private_file_present(&binding, owner, SCAN_MAGIC.len() + 40)
             .map_err(|_| ScanFailure::Storage)?;
         if !bound {
             // A lock-only interrupted initialization has no mailbox data. All
@@ -593,11 +594,11 @@ impl ScanDirectory {
         let lock = if bound {
             // A bound directory must retain its original lock inode. Never
             // recreate a missing lock while another process may still hold it.
-            custody::open_private_file(&lock_path, uid, 0).map_err(|_| ScanFailure::Storage)?
+            custody::open_private_file(&lock_path, owner, 0).map_err(|_| ScanFailure::Storage)?
         } else {
             match custody::create_private_file(&lock_path) {
                 Ok(file) => file,
-                Err(_) => custody::open_private_file(&lock_path, uid, 0)
+                Err(_) => custody::open_private_file(&lock_path, owner, 0)
                     .map_err(|_| ScanFailure::Storage)?,
             }
         };
@@ -607,10 +608,10 @@ impl ScanDirectory {
         })?;
         // Recheck under the lock: another initializer may have finished while
         // this caller was acquiring custody.
-        if custody::private_file_present(&binding, uid, SCAN_MAGIC.len() + 40)
+        if custody::private_file_present(&binding, owner, SCAN_MAGIC.len() + 40)
             .map_err(|_| ScanFailure::Storage)?
         {
-            let raw = custody::read_private_file(&binding, uid, SCAN_MAGIC.len() + 40)
+            let raw = custody::read_private_file(&binding, owner, SCAN_MAGIC.len() + 40)
                 .map_err(|_| ScanFailure::Storage)?;
             if raw != expected {
                 return Err(ScanFailure::Scope);
@@ -631,7 +632,7 @@ impl ScanDirectory {
         }
         let (items, items_uid) = custody::ensure_private_directory(&path.join("items"))
             .map_err(|_| ScanFailure::Storage)?;
-        if items_uid != uid {
+        if items_uid != owner {
             return Err(ScanFailure::Storage);
         }
         dir.sync_all().map_err(|_| ScanFailure::Storage)?;
@@ -640,13 +641,13 @@ impl ScanDirectory {
                 .and_then(|parent| parent.sync_all())
                 .map_err(|_| ScanFailure::Storage)?;
         }
-        let cursor = read_cursor(&path, uid, initial_cursor)?;
+        let cursor = read_cursor(&path, owner, initial_cursor)?;
         let out = Self {
             path,
             directory: dir,
             items,
             _lock: lock,
-            uid,
+            owner,
             namespace,
             initial_cursor,
             cursor,
@@ -684,12 +685,12 @@ impl ScanDirectory {
     /// interruption evidence; only the next scan can reconcile it.
     pub fn positions(&self) -> std::result::Result<Vec<u64>, ScanFailure> {
         self.check_deadline()?;
-        validate_cursor_pending(&self.path, self.uid, self.cursor)?;
+        validate_cursor_pending(&self.path, self.owner, self.cursor)?;
         // Idle-rescan fast path: an exact validated signature covers this
         // entry set and cursor, so committed positions are contiguous by
         // construction without reopening every file.
         let signature = items_signature(self)?;
-        if signature_file(&self.path, self.uid)? == Some(signature) {
+        if signature_file(&self.path, self.owner)? == Some(signature) {
             return Ok(((self.initial_cursor + 1)..=self.cursor).collect());
         }
         let mut positions = Vec::new();
@@ -706,7 +707,7 @@ impl ScanDirectory {
                 .file_name()
                 .into_string()
                 .map_err(|_| ScanFailure::Corrupt)?;
-            let handle = custody::open_private_file(&entry.path(), self.uid, MAX_ITEM_BYTES)
+            let handle = custody::open_private_file(&entry.path(), self.owner, MAX_ITEM_BYTES)
                 .map_err(|_| ScanFailure::Storage)?;
             let length =
                 usize::try_from(handle.metadata().map_err(|_| ScanFailure::Storage)?.len())
@@ -744,7 +745,7 @@ impl ScanDirectory {
         // Publish the validated snapshot so the next idle reopen takes the
         // fast path. The directory is unchanged since the sweep under this
         // exclusive guard, so the earlier signature still describes it.
-        write_signature(&self.path, &self.directory, signature, self.uid)?;
+        write_signature(&self.path, &self.directory, signature, self.owner)?;
         Ok(positions)
     }
 
@@ -757,7 +758,7 @@ impl ScanDirectory {
         }
         let raw = custody::read_private_file(
             &item_path(&self.path.join("items"), position),
-            self.uid,
+            self.owner,
             MAX_ITEM_BYTES,
         )
         .map_err(|_| ScanFailure::Storage)?;
@@ -775,10 +776,10 @@ impl ScanDirectory {
         let items = self.path.join("items");
         let target = item_path(&items, record.position);
         let tmp = items.join("item.tmp");
-        if custody::private_file_present(&target, self.uid, MAX_ITEM_BYTES)
+        if custody::private_file_present(&target, self.owner, MAX_ITEM_BYTES)
             .map_err(|_| ScanFailure::Storage)?
         {
-            let retained = custody::read_private_file(&target, self.uid, MAX_ITEM_BYTES)
+            let retained = custody::read_private_file(&target, self.owner, MAX_ITEM_BYTES)
                 .map_err(|_| ScanFailure::Storage)?;
             if retained != encoded {
                 return Err(ScanFailure::Corrupt);
@@ -788,10 +789,10 @@ impl ScanDirectory {
             self.items.sync_all().map_err(|_| ScanFailure::Storage)?;
             return Ok(false);
         }
-        if custody::private_file_present(&tmp, self.uid, MAX_ITEM_BYTES)
+        if custody::private_file_present(&tmp, self.owner, MAX_ITEM_BYTES)
             .map_err(|_| ScanFailure::Storage)?
         {
-            let retained = custody::read_private_file(&tmp, self.uid, MAX_ITEM_BYTES)
+            let retained = custody::read_private_file(&tmp, self.owner, MAX_ITEM_BYTES)
                 .map_err(|_| ScanFailure::Storage)?;
             if !encoded.starts_with(&retained) {
                 return Err(ScanFailure::Corrupt);
@@ -897,7 +898,7 @@ impl ScanDirectory {
             {
                 scanned += usize::from(self.publish_item(record)?);
                 self.check_deadline()?;
-                publish_cursor(&self.path, &self.directory, record.position, self.uid)?;
+                publish_cursor(&self.path, &self.directory, record.position, self.owner)?;
                 self.cursor = record.position;
                 #[cfg(test)]
                 self.fail_at(PublicationFault::CursorPublished)?;
@@ -907,13 +908,13 @@ impl ScanDirectory {
                 // that the selected source no longer acknowledges.
                 if custody::private_file_present(
                     &self.path.join("items/item.tmp"),
-                    self.uid,
+                    self.owner,
                     MAX_ITEM_BYTES,
                 )
                 .map_err(|_| ScanFailure::Storage)?
                     || custody::private_file_present(
                         &item_path(&self.path.join("items"), self.cursor + 1),
-                        self.uid,
+                        self.owner,
                         MAX_ITEM_BYTES,
                     )
                     .map_err(|_| ScanFailure::Storage)?

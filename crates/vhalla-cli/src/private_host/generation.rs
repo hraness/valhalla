@@ -6,7 +6,7 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fs, net::SocketAddr, path::Path};
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use vhalla_private_native::{
     client::generation::ControllerPauseReceipt,
     relay::{
@@ -112,8 +112,8 @@ fn successor_mailbox(generation: u64) -> String {
     format!("mailbox-{}", generation + 2)
 }
 fn present(home: &Path, name: &str, limit: usize) -> Result<bool, String> {
-    let (_, uid) = custody::open_private_directory(home).map_err(|_| REFUSED)?;
-    custody::private_file_present(&home.join(name), uid, limit).map_err(|_| REFUSED.into())
+    let (_, owner) = custody::open_private_directory(home).map_err(|_| REFUSED)?;
+    custody::private_file_present(&home.join(name), owner, limit).map_err(|_| REFUSED.into())
 }
 fn immutable(home: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
     publication::publish(home, name, bytes)
@@ -277,7 +277,7 @@ fn validate_receipt(raw: &[u8], c: &Controller, plan: &Plan) -> Result<(), Strin
     Ok(())
 }
 fn read_external(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
-    custody::read_private_file(path, rustix::process::geteuid().as_raw(), limit)
+    custody::read_private_file(path, Owner::current().map_err(|_| TRANSITION_ERROR)?, limit)
         .map_err(|_| TRANSITION_ERROR.into())
 }
 

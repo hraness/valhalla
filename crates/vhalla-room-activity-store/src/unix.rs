@@ -8,7 +8,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use vhalla_room_activity::{
     AdmissionContext, AuthorChain, ChainPosition, RoomScope, VerifiedEvent,
 };
@@ -139,7 +139,7 @@ pub struct Store {
     records: File,
     authors: File,
     _lock: File,
-    uid: u32,
+    owner: Owner,
     scope: RoomScope,
     limits: Limits,
     pin: Pin,
@@ -155,15 +155,15 @@ impl Store {
             return Err(Error::Conflict);
         }
         let path = custody::absolute(path.as_ref()).map_err(map_custody)?;
-        let (directory, uid) = custody::create_private_directory(&path).map_err(map_custody)?;
+        let (directory, owner) = custody::create_private_directory(&path).map_err(map_custody)?;
         let lock = create(&path.join(LOCK))?;
         custody::acquire_exclusive(&lock).map_err(map_custody)?;
         lock.sync_all()?;
-        let (records, ruid) =
+        let (records, rowner) =
             custody::create_private_directory(&path.join(RECORDS)).map_err(map_custody)?;
-        let (authors, auid) =
+        let (authors, aowner) =
             custody::create_private_directory(&path.join(AUTHORS)).map_err(map_custody)?;
-        if ruid != uid || auid != uid {
+        if rowner != owner || aowner != owner {
             return Err(Error::UnsafePath);
         }
         write_new(&path.join(FORMAT), &codec::format(scope, limits))?;
@@ -178,7 +178,7 @@ impl Store {
             records,
             authors,
             _lock: lock,
-            uid,
+            owner,
             scope,
             limits,
             pin: Pin::EMPTY,
@@ -197,20 +197,20 @@ impl Store {
     ) -> Result<Self, Error> {
         limits.check()?;
         let path = custody::absolute(path.as_ref()).map_err(map_custody)?;
-        let (directory, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
-        let lock = open(&path.join(LOCK), uid, 0)?;
+        let (directory, owner) = custody::open_private_directory(&path).map_err(map_custody)?;
+        let lock = open(&path.join(LOCK), owner, 0)?;
         if lock.metadata()?.len() != 0 {
             return Err(Error::Corrupt);
         }
         custody::acquire_exclusive(&lock).map_err(map_custody)?;
         let (actual_scope, actual_limits) =
-            codec::decode_format(&read(&path.join(FORMAT), uid, FORMAT_BYTES)?)?;
+            codec::decode_format(&read(&path.join(FORMAT), owner, FORMAT_BYTES)?)?;
         if actual_scope != scope || actual_limits != limits {
             return Err(Error::Conflict);
         }
-        let records = open_dir(&path.join(RECORDS), uid)?;
-        let authors = open_dir(&path.join(AUTHORS), uid)?;
-        let pin = Pin::decode(&read(&path.join(HEAD), uid, PIN_BYTES)?)?;
+        let records = open_dir(&path.join(RECORDS), owner)?;
+        let authors = open_dir(&path.join(AUTHORS), owner)?;
+        let pin = Pin::decode(&read(&path.join(HEAD), owner, PIN_BYTES)?)?;
         if expected.is_some_and(|e| e != pin) {
             return Err(Error::Freshness);
         }
@@ -223,7 +223,7 @@ impl Store {
             records,
             authors,
             _lock: lock,
-            uid,
+            owner,
             scope,
             limits,
             pin,
@@ -411,7 +411,7 @@ impl Store {
         self.check_pin()?;
         if self.present(INTENT_TEMP, MAX_INTENT_BYTES)? {
             if self.validate_staged_intent()?.is_some() {
-                open(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+                open(&self.path.join(INTENT_TEMP), self.owner, MAX_INTENT_BYTES)?.sync_all()?;
                 self.step(Step::IntentSynced)?;
                 fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
                 self.step(Step::IntentRenamed)?;
@@ -497,12 +497,12 @@ impl Store {
         // unless this append just synced the same inode and root directory
         // entry in this critical section and carries the token proving it.
         if durable.is_none() {
-            open(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+            open(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?.sync_all()?;
             self.directory.sync_all()?;
             self.step(Step::RecoveryIntentSynced)?;
         }
         // O_NOFOLLOW on the final record file does not protect its parent.
-        open_dir(&self.path.join(RECORDS), self.uid)?;
+        open_dir(&self.path.join(RECORDS), self.owner)?;
         let committed = self.pin == intent.next;
         let author = intent.record.event.claims().author;
         let author_dir = self.ensure_author_dir(author)?;
@@ -520,8 +520,8 @@ impl Store {
         author_dir.sync_all()?;
         self.step(Step::SequenceIndexed)?;
         let author_head = self.author_path(author).join(HEAD);
-        if exists(&author_head, self.uid, INDEX_BYTES)? {
-            let current = Index::decode(&read(&author_head, self.uid, INDEX_BYTES)?)?;
+        if exists(&author_head, self.owner, INDEX_BYTES)? {
+            let current = Index::decode(&read(&author_head, self.owner, INDEX_BYTES)?)?;
             if Some(current) != intent.old && current != index {
                 return Err(Error::Corrupt);
             }
@@ -543,7 +543,7 @@ impl Store {
         self.step(Step::DirectorySynced)?;
         // Intent is the only removed evidence, after its exact durable result exists.
         let persisted = Intent::decode(
-            &read(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?,
+            &read(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?,
             self.scope,
             self.limits,
         )?;
@@ -571,11 +571,11 @@ impl Store {
             return Err(Error::Corrupt);
         }
         if let Some(next) = self.pin.count.checked_add(1) {
-            if exists(&self.record_path(next), self.uid, MAX_RECORD_BYTES)? {
+            if exists(&self.record_path(next), self.owner, MAX_RECORD_BYTES)? {
                 return Err(Error::Corrupt);
             }
         }
-        let raw = read(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?;
+        let raw = read(&self.path.join(INTENT_TEMP), self.owner, MAX_INTENT_BYTES)?;
         let intent = Intent::decode_staged(&raw, self.pin, self.scope, self.limits)?;
         if let Some(intent) = &intent {
             self.validate_intent_structure(intent)?;
@@ -592,7 +592,7 @@ impl Store {
     }
     fn validate_intent(&self) -> Result<Intent, Error> {
         let intent = Intent::decode(
-            &read(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?,
+            &read(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?,
             self.scope,
             self.limits,
         )?;
@@ -643,14 +643,14 @@ impl Store {
             return Err(Error::RecoveryRequired);
         }
         if let Some(next) = self.pin.count.checked_add(1) {
-            if exists(&self.record_path(next), self.uid, MAX_RECORD_BYTES)? {
+            if exists(&self.record_path(next), self.owner, MAX_RECORD_BYTES)? {
                 return Err(Error::RecoveryRequired);
             }
         }
         Ok(())
     }
     fn check_pin(&self) -> Result<(), Error> {
-        if Pin::decode(&read(&self.path.join(HEAD), self.uid, PIN_BYTES)?)? != self.pin {
+        if Pin::decode(&read(&self.path.join(HEAD), self.owner, PIN_BYTES)?)? != self.pin {
             return Err(Error::Conflict);
         }
         Ok(())
@@ -688,9 +688,9 @@ impl Store {
         if ordinal == 0 || ordinal > ceiling {
             return Err(Error::Corrupt);
         }
-        open_dir(&self.path.join(RECORDS), self.uid)?;
+        open_dir(&self.path.join(RECORDS), self.owner)?;
         let record = Record::decode(
-            &required_read(&self.record_path(ordinal), self.uid, MAX_RECORD_BYTES)?,
+            &required_read(&self.record_path(ordinal), self.owner, MAX_RECORD_BYTES)?,
             self.scope,
         )?;
         if record.ordinal != ordinal || record.bytes > self.limits.max_history_bytes {
@@ -734,10 +734,10 @@ impl Store {
             return Ok(None);
         }
         let path = self.sequence_path(author, sequence);
-        if !exists(&path, self.uid, INDEX_BYTES)? {
+        if !exists(&path, self.owner, INDEX_BYTES)? {
             return Ok(None);
         }
-        let index = Index::decode(&read(&path, self.uid, INDEX_BYTES)?)?;
+        let index = Index::decode(&read(&path, self.owner, INDEX_BYTES)?)?;
         if index.sequence != sequence {
             return Err(Error::Corrupt);
         }
@@ -759,7 +759,7 @@ impl Store {
             return Ok(None);
         }
         let path = self.author_path(author).join(HEAD);
-        if !exists(&path, self.uid, INDEX_BYTES)? {
+        if !exists(&path, self.owner, INDEX_BYTES)? {
             // Author directories are created only after durable intent. Without
             // that intent, an existing directory with no head is torn state.
             if !self.present(INTENT, MAX_INTENT_BYTES)? {
@@ -767,13 +767,13 @@ impl Store {
             }
             return Ok(None);
         }
-        Index::decode(&read(&path, self.uid, INDEX_BYTES)?).map(Some)
+        Index::decode(&read(&path, self.owner, INDEX_BYTES)?).map(Some)
     }
     fn has_author_dir(&self, author: [u8; 32]) -> Result<bool, Error> {
-        open_dir(&self.path.join(AUTHORS), self.uid)?;
+        open_dir(&self.path.join(AUTHORS), self.owner)?;
         match fs::symlink_metadata(self.author_path(author)) {
             Ok(_) => {
-                open_dir(&self.author_path(author), self.uid)?;
+                open_dir(&self.author_path(author), self.owner)?;
                 Ok(true)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -782,11 +782,11 @@ impl Store {
     }
     fn ensure_author_dir(&self, author: [u8; 32]) -> Result<File, Error> {
         if self.has_author_dir(author)? {
-            return open_dir(&self.author_path(author), self.uid);
+            return open_dir(&self.author_path(author), self.owner);
         }
-        let (directory, uid) =
+        let (directory, owner) =
             custody::create_private_directory(&self.author_path(author)).map_err(map_custody)?;
-        if uid != self.uid {
+        if owner != self.owner {
             return Err(Error::UnsafePath);
         }
         directory.sync_all()?;
@@ -803,19 +803,19 @@ impl Store {
         self.author_path(author).join(format!("{sequence:020}"))
     }
     fn present(&self, name: &str, max: usize) -> Result<bool, Error> {
-        exists(&self.path.join(name), self.uid, max)
+        exists(&self.path.join(name), self.owner, max)
     }
     fn write_known(&self, path: &Path, bytes: &[u8], allow_prefix: bool) -> Result<(), Error> {
-        if exists(path, self.uid, bytes.len())? {
-            let retained = read(path, self.uid, bytes.len())?;
+        if exists(path, self.owner, bytes.len())? {
+            let retained = read(path, self.owner, bytes.len())?;
             if retained == bytes {
-                open(path, self.uid, bytes.len())?.sync_all()?;
+                open(path, self.owner, bytes.len())?.sync_all()?;
                 return Ok(());
             }
             if !allow_prefix || !bytes.starts_with(&retained) {
                 return Err(Error::Corrupt);
             }
-            let mut file = open(path, self.uid, bytes.len())?;
+            let mut file = open(path, self.owner, bytes.len())?;
             file.write_all(bytes)?;
             file.set_len(bytes.len() as u64)?;
             file.sync_all()?;
@@ -838,22 +838,22 @@ impl Store {
                 .map_err(|_| Error::UnsafePath)?;
             match name.as_str() {
                 AUTHORS | RECORDS => {
-                    open_dir(&entry.path(), self.uid)?;
+                    open_dir(&entry.path(), self.owner)?;
                 }
                 LOCK => {
-                    open(&entry.path(), self.uid, 0)?;
+                    open(&entry.path(), self.owner, 0)?;
                 }
                 FORMAT => {
-                    open(&entry.path(), self.uid, FORMAT_BYTES)?;
+                    open(&entry.path(), self.owner, FORMAT_BYTES)?;
                 }
                 HEAD | HEAD_TEMP => {
-                    open(&entry.path(), self.uid, PIN_BYTES)?;
+                    open(&entry.path(), self.owner, PIN_BYTES)?;
                 }
                 INTENT | INTENT_TEMP => {
-                    open(&entry.path(), self.uid, MAX_INTENT_BYTES)?;
+                    open(&entry.path(), self.owner, MAX_INTENT_BYTES)?;
                 }
                 AUTHOR_TEMP => {
-                    open(&entry.path(), self.uid, INDEX_BYTES)?;
+                    open(&entry.path(), self.owner, INDEX_BYTES)?;
                 }
                 _ => return Err(Error::UnsafePath),
             }
@@ -902,14 +902,14 @@ enum Step {
 fn create(path: &Path) -> Result<File, Error> {
     custody::create_private_file(path).map_err(map_custody)
 }
-fn open(path: &Path, uid: u32, max: usize) -> Result<File, Error> {
-    custody::open_private_file(path, uid, max).map_err(map_custody)
+fn open(path: &Path, owner: Owner, max: usize) -> Result<File, Error> {
+    custody::open_private_file(path, owner, max).map_err(map_custody)
 }
-fn read(path: &Path, uid: u32, max: usize) -> Result<Vec<u8>, Error> {
-    custody::read_private_file(path, uid, max).map_err(map_custody)
+fn read(path: &Path, owner: Owner, max: usize) -> Result<Vec<u8>, Error> {
+    custody::read_private_file(path, owner, max).map_err(map_custody)
 }
-fn required_read(path: &Path, uid: u32, max: usize) -> Result<Vec<u8>, Error> {
-    read(path, uid, max).map_err(|e| match e {
+fn required_read(path: &Path, owner: Owner, max: usize) -> Result<Vec<u8>, Error> {
+    read(path, owner, max).map_err(|e| match e {
         Error::Io(e) if e.kind() == io::ErrorKind::NotFound => Error::Corrupt,
         other => other,
     })
@@ -920,15 +920,15 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     file.sync_all()?;
     Ok(())
 }
-fn open_dir(path: &Path, uid: u32) -> Result<File, Error> {
+fn open_dir(path: &Path, owner: Owner) -> Result<File, Error> {
     let (directory, actual) = custody::open_private_directory(path).map_err(map_custody)?;
-    if actual != uid {
+    if actual != owner {
         return Err(Error::UnsafePath);
     }
     Ok(directory)
 }
-fn exists(path: &Path, uid: u32, max: usize) -> Result<bool, Error> {
-    custody::private_file_present(path, uid, max).map_err(map_custody)
+fn exists(path: &Path, owner: Owner, max: usize) -> Result<bool, Error> {
+    custody::private_file_present(path, owner, max).map_err(map_custody)
 }
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;

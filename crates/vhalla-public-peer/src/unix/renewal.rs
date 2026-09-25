@@ -2,7 +2,7 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use std::{fs, io::Write};
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use vhalla_public_protocol::{AdvertisementClaims, UnsignedAdvertisement, PROTOCOL_VERSION};
 
 /// Signed route lifetime (24 hours); renewal is attempted after half its lifetime.
@@ -456,7 +456,7 @@ fn inject(selected: Option<Fault>, at: Fault) -> Result<(), Error> {
 struct Publisher {
     dir: PathBuf,
     directory: File,
-    uid: u32,
+    owner: Owner,
     _lock: File,
     scope: Scope,
     reservation: Reservation,
@@ -467,7 +467,7 @@ struct Publisher {
 }
 impl Publisher {
     fn create(dir: &Path, scope: Scope, clock: u64) -> Result<Self, Error> {
-        let (directory, uid) = custody::create_private_directory(dir).map_err(Error::Custody)?;
+        let (directory, owner) = custody::create_private_directory(dir).map_err(Error::Custody)?;
         let lock = custody::create_private_file(&dir.join("lock")).map_err(Error::Custody)?;
         custody::acquire_exclusive(&lock).map_err(Error::Custody)?;
         lock.sync_all()?;
@@ -476,7 +476,7 @@ impl Publisher {
         Ok(Self {
             dir: dir.into(),
             directory,
-            uid,
+            owner,
             _lock: lock,
             scope,
             reservation: Reservation {
@@ -513,10 +513,11 @@ impl Publisher {
         clock: u64,
         mode: Option<activity_mode::Selection>,
     ) -> Result<Self, Error> {
-        let (directory, uid) = custody::open_private_directory(dir).map_err(Error::Custody)?;
-        let lock = custody::open_private_file(&dir.join("lock"), uid, 0).map_err(Error::Custody)?;
+        let (directory, owner) = custody::open_private_directory(dir).map_err(Error::Custody)?;
+        let lock =
+            custody::open_private_file(&dir.join("lock"), owner, 0).map_err(Error::Custody)?;
         custody::acquire_exclusive(&lock).map_err(Error::Custody)?;
-        let activity_mode = activity_mode::read_selected_mode(dir, uid, &scope, mode)?;
+        let activity_mode = activity_mode::read_selected_mode(dir, owner, &scope, mode)?;
         let capabilities = activity_mode::capabilities(activity_mode.is_some())?;
         for (index, entry) in fs::read_dir(dir)?.enumerate() {
             let entry = entry?;
@@ -535,8 +536,8 @@ impl Publisher {
                 return Err(Error::State("unexpected publisher artifact"));
             }
         }
-        let committed = read_optional(dir, uid, SEQUENCE, RESERVATION_BYTES)?;
-        let pending = read_optional(dir, uid, "sequence.tmp", RESERVATION_BYTES)?;
+        let committed = read_optional(dir, owner, SEQUENCE, RESERVATION_BYTES)?;
+        let pending = read_optional(dir, owner, "sequence.tmp", RESERVATION_BYTES)?;
         let old = committed
             .as_deref()
             .map(|raw| Reservation::decode(raw, &scope))
@@ -578,8 +579,8 @@ impl Publisher {
         if clock < reservation.issued {
             return Err(Error::ClockRollback);
         }
-        let advertisement = read_optional(dir, uid, ADVERTISEMENT, MAX_ADVERTISEMENT_BYTES)?;
-        let pending_ad = read_optional(dir, uid, "advertisement.tmp", MAX_ADVERTISEMENT_BYTES)?;
+        let advertisement = read_optional(dir, owner, ADVERTISEMENT, MAX_ADVERTISEMENT_BYTES)?;
+        let pending_ad = read_optional(dir, owner, "advertisement.tmp", MAX_ADVERTISEMENT_BYTES)?;
         let partial_ad = if let Some(raw) = pending_ad.as_deref() {
             let expected = scope
                 .unsigned_ad(reservation, capabilities)?
@@ -632,13 +633,13 @@ impl Publisher {
         // Only validated artifacts are reconciled. Persist the highest floor
         // before discarding a temp; all later publications skip above it.
         if next == Some(reservation) && old != Some(reservation) {
-            custody::open_private_file(&dir.join("sequence.tmp"), uid, RESERVATION_BYTES)
+            custody::open_private_file(&dir.join("sequence.tmp"), owner, RESERVATION_BYTES)
                 .map_err(Error::Custody)?
                 .sync_all()?;
             fs::rename(dir.join("sequence.tmp"), dir.join(SEQUENCE))?;
             directory.sync_all()?;
         } else {
-            custody::open_private_file(&dir.join(SEQUENCE), uid, RESERVATION_BYTES)
+            custody::open_private_file(&dir.join(SEQUENCE), owner, RESERVATION_BYTES)
                 .map_err(Error::Custody)?
                 .sync_all()?;
             directory.sync_all()?;
@@ -654,7 +655,7 @@ impl Publisher {
         Ok(Self {
             dir: dir.into(),
             directory,
-            uid,
+            owner,
             _lock: lock,
             scope: scope.clone(),
             reservation,
@@ -681,17 +682,21 @@ impl Publisher {
         }
         if read_optional(
             &self.dir,
-            self.uid,
+            self.owner,
             activity_mode::MODE,
             activity_mode::MODE_BYTES,
         )? != self.activity_mode
-            || read_optional(&self.dir, self.uid, SEQUENCE, RESERVATION_BYTES)? != self.persisted
-            || read_optional(&self.dir, self.uid, ADVERTISEMENT, MAX_ADVERTISEMENT_BYTES)?
-                != self.advertisement
-            || read_optional(&self.dir, self.uid, "sequence.tmp", RESERVATION_BYTES)?.is_some()
+            || read_optional(&self.dir, self.owner, SEQUENCE, RESERVATION_BYTES)? != self.persisted
             || read_optional(
                 &self.dir,
-                self.uid,
+                self.owner,
+                ADVERTISEMENT,
+                MAX_ADVERTISEMENT_BYTES,
+            )? != self.advertisement
+            || read_optional(&self.dir, self.owner, "sequence.tmp", RESERVATION_BYTES)?.is_some()
+            || read_optional(
+                &self.dir,
+                self.owner,
                 "advertisement.tmp",
                 MAX_ADVERTISEMENT_BYTES,
             )?
@@ -802,8 +807,13 @@ fn check_partial_reservation(raw: &[u8], scope: &Scope, old: Reservation) -> Res
     }
     Ok(())
 }
-fn read_optional(dir: &Path, uid: u32, name: &str, max: usize) -> Result<Option<Vec<u8>>, Error> {
-    match custody::read_private_file(&dir.join(name), uid, max) {
+fn read_optional(
+    dir: &Path,
+    owner: Owner,
+    name: &str,
+    max: usize,
+) -> Result<Option<Vec<u8>>, Error> {
+    match custody::read_private_file(&dir.join(name), owner, max) {
         Ok(raw) => Ok(Some(raw)),
         Err(custody::Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(Error::Custody(error)),

@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use vhalla_core::RealmId;
-use vhalla_custody::{self as custody, Error as CustodyError};
+use vhalla_custody::{self as custody, Error as CustodyError, Owner};
 use vhalla_rooms::{
     registry::{DirectoryPolicy, Registry},
     DirectoryId,
@@ -230,7 +230,7 @@ pub struct Store {
     path: PathBuf,
     directory: File,
     _lock: File,
-    uid: u32,
+    owner: Owner,
     registry: Registry,
     pin: Pin,
     #[cfg(test)]
@@ -250,7 +250,7 @@ impl Store {
     ) -> Result<Self, Error> {
         let registry = Registry::new(directory, realm, policy, eligible)?;
         let path = absolute(path.as_ref())?;
-        let (directory_file, uid) =
+        let (directory_file, owner) =
             custody::create_private_directory(&path).map_err(map_custody)?;
         let lock = create_private(&path.join(LOCK))?;
         acquire(&lock)?;
@@ -268,7 +268,7 @@ impl Store {
             path,
             directory: directory_file,
             _lock: lock,
-            uid,
+            owner,
             registry,
             pin,
             #[cfg(test)]
@@ -281,19 +281,19 @@ impl Store {
     /// The optional external anchor requires exact equality, including generation.
     pub fn open(path: impl AsRef<Path>, expected: Option<Pin>) -> Result<Self, Error> {
         let path = absolute(path.as_ref())?;
-        let (directory, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
-        let lock = open_private(&path.join(LOCK), uid, 0)?;
+        let (directory, owner) = custody::open_private_directory(&path).map_err(map_custody)?;
+        let lock = open_private(&path.join(LOCK), owner, 0)?;
         if lock.metadata()?.len() != 0 {
             return Err(Error::Corrupt);
         }
         acquire(&lock)?;
-        let pin = Pin::decode(&read_bounded(&path.join(PIN), uid, PIN_BYTES)?)?;
+        let pin = Pin::decode(&read_bounded(&path.join(PIN), owner, PIN_BYTES)?)?;
         if expected.is_some_and(|expected| expected != pin) {
             return Err(Error::Freshness);
         }
         let raw = read_bounded(
             &path.join(bundle_name(pin.physical)),
-            uid,
+            owner,
             vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
         )?;
         let registry = Registry::restore(&raw).map_err(|_| Error::Corrupt)?;
@@ -304,7 +304,7 @@ impl Store {
             path,
             directory,
             _lock: lock,
-            uid,
+            owner,
             registry,
             pin,
             #[cfg(test)]
@@ -441,7 +441,7 @@ impl Store {
             return Err(Error::Corrupt);
         }
         self.audit_copies(None)?;
-        let raw = read_bounded(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?;
+        let raw = read_bounded(&self.path.join(INTENT_TEMP), self.owner, MAX_INTENT_BYTES)?;
         let generation = self.pin.generation.checked_add(1).ok_or(Error::Capacity)?;
         let mut prefix = Vec::new();
         prefix.extend_from_slice(INTENT_MAGIC);
@@ -482,7 +482,7 @@ impl Store {
         if self.validate_staged_intent()?.is_some() {
             // Establish scratch durability again after an uncertain original
             // write/sync before making it the authoritative intent.
-            open_private(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+            open_private(&self.path.join(INTENT_TEMP), self.owner, MAX_INTENT_BYTES)?.sync_all()?;
             self.step(Step::IntentSynced)?;
             fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
             self.step(Step::IntentRenamed)?;
@@ -497,7 +497,7 @@ impl Store {
         Ok(())
     }
     fn validate_intent(&self) -> Result<Intent, Error> {
-        let raw = read_bounded(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?;
+        let raw = read_bounded(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?;
         let intent = Intent::decode(&raw)?;
         if self.pin != intent.expected && self.pin != intent.next {
             return Err(Error::Conflict);
@@ -512,14 +512,14 @@ impl Store {
     }
     fn finish_intent(&mut self, intent: Intent, reconciled: bool) -> Result<Publication, Error> {
         // A retry after an uncertain initial sync must establish durability again.
-        open_private(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+        open_private(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?.sync_all()?;
         self.directory.sync_all()?;
         let snapshot = intent.registry.snapshot();
         let bundle = bundle_name(intent.next.physical);
         if self.exists(&bundle)? {
             if read_bounded(
                 &self.path.join(&bundle),
-                self.uid,
+                self.owner,
                 vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
             )? != snapshot
             {
@@ -527,7 +527,7 @@ impl Store {
             }
             open_private(
                 &self.path.join(&bundle),
-                self.uid,
+                self.owner,
                 vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
             )?
             .sync_all()?;
@@ -594,13 +594,13 @@ impl Store {
         synced: Step,
     ) -> Result<(), Error> {
         if self.exists(name)? {
-            let retained = read_bounded(&self.path.join(name), self.uid, bytes.len())?;
+            let retained = read_bounded(&self.path.join(name), self.owner, bytes.len())?;
             if !bytes.starts_with(&retained) {
                 return Err(Error::Corrupt);
             }
             // Complete only a known prefix of the exact retained intent. Neither
             // unrelated bytes nor a different candidate is overwritten.
-            let mut file = open_private(&self.path.join(name), self.uid, bytes.len())?;
+            let mut file = open_private(&self.path.join(name), self.owner, bytes.len())?;
             file.write_all(bytes)?;
             file.set_len(bytes.len() as u64)?;
             self.step(written)?;
@@ -614,7 +614,7 @@ impl Store {
         self.step(synced)
     }
     fn remove_matching_temp(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
-        let retained = read_bounded(&self.path.join(name), self.uid, bytes.len())?;
+        let retained = read_bounded(&self.path.join(name), self.owner, bytes.len())?;
         if !bytes.starts_with(&retained) {
             return Err(Error::Corrupt);
         }
@@ -640,7 +640,7 @@ impl Store {
         {
             let raw = read_bounded(
                 &self.path.join(&name),
-                self.uid,
+                self.owner,
                 vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
             )?;
             let old = Registry::restore(&raw).map_err(|_| Error::Corrupt)?;
@@ -655,8 +655,9 @@ impl Store {
         for name in obsolete {
             self.check_pin()?;
             check_regular(
+                &self.path.join(&name),
                 &fs::symlink_metadata(self.path.join(&name))?,
-                self.uid,
+                self.owner,
                 vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
             )?;
             fs::remove_file(self.path.join(name))?;
@@ -689,7 +690,12 @@ impl Store {
             } else {
                 vhalla_rooms::registry::MAX_SNAPSHOT_BYTES
             };
-            check_regular(&fs::symlink_metadata(entry.path())?, self.uid, bound)?;
+            check_regular(
+                &entry.path(),
+                &fs::symlink_metadata(entry.path())?,
+                self.owner,
+                bound,
+            )?;
             names.push(name);
         }
         Ok(names)
@@ -703,7 +709,7 @@ impl Store {
         {
             let raw = read_bounded(
                 &self.path.join(&name),
-                self.uid,
+                self.owner,
                 vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
             )?;
             let copy = Registry::restore(&raw).map_err(|_| Error::Corrupt)?;
@@ -724,7 +730,7 @@ impl Store {
     fn exists(&self, name: &str) -> Result<bool, Error> {
         match fs::symlink_metadata(self.path.join(name)) {
             Ok(meta) => {
-                check_regular(&meta, self.uid, MAX_INTENT_BYTES)?;
+                check_regular(&self.path.join(name), &meta, self.owner, MAX_INTENT_BYTES)?;
                 Ok(true)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -734,7 +740,7 @@ impl Store {
     fn load_bundle(&self, pin: Pin) -> Result<Registry, Error> {
         let raw = read_bounded(
             &self.path.join(bundle_name(pin.physical)),
-            self.uid,
+            self.owner,
             vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
         )?;
         let registry = Registry::restore(&raw).map_err(|_| Error::Corrupt)?;
@@ -744,7 +750,7 @@ impl Store {
         Ok(registry)
     }
     fn read_pin(&self) -> Result<Pin, Error> {
-        Pin::decode(&read_bounded(&self.path.join(PIN), self.uid, PIN_BYTES)?)
+        Pin::decode(&read_bounded(&self.path.join(PIN), self.owner, PIN_BYTES)?)
     }
     fn check_pin(&self) -> Result<(), Error> {
         if self.read_pin()? != self.pin {
@@ -820,19 +826,19 @@ fn is_bundle(name: &str) -> bool {
 fn create_private(path: &Path) -> Result<File, Error> {
     custody::create_private_file(path).map_err(map_custody)
 }
-fn check_directory(path: &Path) -> Result<u32, Error> {
+fn check_directory(path: &Path) -> Result<Owner, Error> {
     custody::open_private_directory(path)
-        .map(|(_, uid)| uid)
+        .map(|(_, owner)| owner)
         .map_err(map_custody)
 }
-fn check_regular(meta: &Metadata, uid: u32, max: usize) -> Result<(), Error> {
-    custody::check_regular_file(meta, uid, max).map_err(map_custody)
+fn check_regular(path: &Path, meta: &Metadata, owner: Owner, max: usize) -> Result<(), Error> {
+    custody::check_regular_file(path, meta, owner, max).map_err(map_custody)
 }
-fn open_private(path: &Path, uid: u32, max: usize) -> Result<File, Error> {
-    custody::open_private_file(path, uid, max).map_err(map_custody)
+fn open_private(path: &Path, owner: Owner, max: usize) -> Result<File, Error> {
+    custody::open_private_file(path, owner, max).map_err(map_custody)
 }
-fn read_bounded(path: &Path, uid: u32, max: usize) -> Result<Vec<u8>, Error> {
-    custody::read_private_file(path, uid, max).map_err(map_custody)
+fn read_bounded(path: &Path, owner: Owner, max: usize) -> Result<Vec<u8>, Error> {
+    custody::read_private_file(path, owner, max).map_err(map_custody)
 }
 fn acquire(lock: &File) -> Result<(), Error> {
     custody::acquire_exclusive(lock).map_err(map_custody)
@@ -847,31 +853,31 @@ fn acquire(lock: &File) -> Result<(), Error> {
 /// reconcile: they fail `RecoveryRequired` for explicit `recover` first.
 pub fn read_registry(path: impl AsRef<Path>) -> Result<Registry, Error> {
     let path = absolute(path.as_ref())?;
-    let uid = check_directory(&path)?;
-    let lock = open_private(&path.join(LOCK), uid, 0)?;
+    let owner = check_directory(&path)?;
+    let lock = open_private(&path.join(LOCK), owner, 0)?;
     if lock.metadata()?.len() != 0 {
         return Err(Error::Corrupt);
     }
     acquire_shared(&lock)?;
-    let pin = Pin::decode(&read_bounded(&path.join(PIN), uid, PIN_BYTES)?)?;
+    let pin = Pin::decode(&read_bounded(&path.join(PIN), owner, PIN_BYTES)?)?;
     let raw = read_bounded(
         &path.join(bundle_name(pin.physical)),
-        uid,
+        owner,
         vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
     )?;
     let registry = Registry::restore(&raw).map_err(|_| Error::Corrupt)?;
     if Pin::for_registry(pin.generation, &registry) != pin {
         return Err(Error::Corrupt);
     }
-    if present(&path, uid, INTENT, MAX_INTENT_BYTES)?
-        || present(&path, uid, INTENT_TEMP, MAX_INTENT_BYTES)?
+    if present(&path, owner, INTENT, MAX_INTENT_BYTES)?
+        || present(&path, owner, INTENT_TEMP, MAX_INTENT_BYTES)?
         || present(
             &path,
-            uid,
+            owner,
             BUNDLE_TEMP,
             vhalla_rooms::registry::MAX_SNAPSHOT_BYTES,
         )?
-        || present(&path, uid, PIN_TEMP, PIN_BYTES)?
+        || present(&path, owner, PIN_TEMP, PIN_BYTES)?
     {
         return Err(Error::RecoveryRequired);
     }
@@ -882,8 +888,8 @@ fn acquire_shared(lock: &File) -> Result<(), Error> {
     custody::acquire_shared(lock).map_err(map_custody)
 }
 
-fn present(path: &Path, uid: u32, name: &str, max: usize) -> Result<bool, Error> {
-    custody::private_file_present(&path.join(name), uid, max).map_err(map_custody)
+fn present(path: &Path, owner: Owner, name: &str, max: usize) -> Result<bool, Error> {
+    custody::private_file_present(&path.join(name), owner, max).map_err(map_custody)
 }
 
 #[cfg(test)]

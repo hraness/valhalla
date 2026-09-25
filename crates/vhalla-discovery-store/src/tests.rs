@@ -549,8 +549,8 @@ fn lock_child() {
         return;
     };
     let path = PathBuf::from(path);
-    let (_, uid) = directory(&path).unwrap();
-    let file = open_private(&path.join(LOCK), uid, 0).unwrap();
+    let (_, owner) = directory(&path).unwrap();
+    let file = open_private(&path.join(LOCK), owner, 0).unwrap();
     assert!(matches!(acquire(&file), Err(Error::Busy)));
 }
 

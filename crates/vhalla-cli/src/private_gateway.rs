@@ -88,11 +88,11 @@ fn private(path: &Path, max: usize) -> Result<Zeroizing<Vec<u8>>, String> {
     if !path.is_absolute() {
         return Err("gateway configuration needs absolute paths".into());
     }
-    let (_dir, uid) = vhalla_custody::open_private_directory(
+    let (_dir, owner) = vhalla_custody::open_private_directory(
         path.parent().ok_or("gateway private parent required")?,
     )
     .map_err(|_| "gateway configuration parent must be owner-private 0700")?;
-    vhalla_custody::read_private_file(path, uid, max)
+    vhalla_custody::read_private_file(path, owner, max)
         .map(Zeroizing::new)
         .map_err(|_| "gateway configuration must be bounded owner-private 0600 files".into())
 }

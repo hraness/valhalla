@@ -365,16 +365,20 @@ impl DeliveryStore {
         endpoint: EndpointId,
     ) -> Result<Self> {
         let path = custody::absolute(path.as_ref()).map_err(|_| Error::Storage)?;
-        let (directory, uid) =
+        let (directory, owner) =
             custody::open_private_directory(&path).map_err(|_| Error::Storage)?;
         let lock =
-            custody::open_private_file(&path.join("lock"), uid, 0).map_err(|_| Error::Corrupt)?;
+            custody::open_private_file(&path.join("lock"), owner, 0).map_err(|_| Error::Corrupt)?;
         custody::acquire_exclusive(&lock).map_err(|_| Error::Busy)?;
         let db_guard =
-            custody::open_private_file(&path.join("delivery.db"), uid, MAX_DATABASE_BYTES)
+            custody::open_private_file(&path.join("delivery.db"), owner, MAX_DATABASE_BYTES)
                 .map_err(|_| Error::Corrupt)?;
-        if custody::private_file_present(&path.join("delivery.db-journal"), uid, MAX_DATABASE_BYTES)
-            .map_err(|_| Error::Corrupt)?
+        if custody::private_file_present(
+            &path.join("delivery.db-journal"),
+            owner,
+            MAX_DATABASE_BYTES,
+        )
+        .map_err(|_| Error::Corrupt)?
         { /* SQLite recovers exact owned rollback evidence. */
         }
         let conn = Connection::open_with_flags(

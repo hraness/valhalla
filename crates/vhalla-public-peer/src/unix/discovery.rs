@@ -4,7 +4,7 @@ use super::*;
 use http_body_util::BodyExt;
 use sha2::{Digest, Sha256};
 use std::{fs, io::Write, time::Instant};
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use vhalla_public_protocol::discovery::{
     DiscoveryKind, DiscoveryRequest, PeerPage, Registration, RegistrationReceipt,
     UnsignedDiscoveryResponse, UnsignedRegistrationChallenge, MAX_REGISTRATION_BYTES,
@@ -450,7 +450,7 @@ struct Registry {
     path: PathBuf,
     directory: File,
     _lock: File,
-    uid: u32,
+    owner: Owner,
     state: Snapshot,
     poisoned: bool,
 }
@@ -471,7 +471,7 @@ impl Registry {
         fault: Option<Fault>,
     ) -> Result<Self, Error> {
         let path = custody::absolute(&config.directory).map_err(Error::Custody)?;
-        let (directory, uid) = if config.create_new {
+        let (directory, owner) = if config.create_new {
             custody::create_private_directory(&path)
         } else {
             custody::open_private_directory(&path)
@@ -480,7 +480,7 @@ impl Registry {
         let lock = if config.create_new {
             custody::create_private_file(&path.join("lock"))
         } else {
-            custody::open_private_file(&path.join("lock"), uid, 0)
+            custody::open_private_file(&path.join("lock"), owner, 0)
         }
         .map_err(Error::Custody)?;
         custody::acquire_exclusive(&lock).map_err(Error::Custody)?;
@@ -496,7 +496,7 @@ impl Registry {
             path,
             directory,
             _lock: lock,
-            uid,
+            owner,
             state: empty,
             poisoned: false,
         };
@@ -555,7 +555,7 @@ impl Registry {
                 // A previous publisher may have died after final rename but
                 // before directory sync. Re-establish the validated stable
                 // image's durability even when time has not advanced.
-                custody::open_private_file(&out.path.join(SNAPSHOT), uid, SNAPSHOT_BYTES)
+                custody::open_private_file(&out.path.join(SNAPSHOT), owner, SNAPSHOT_BYTES)
                     .map_err(Error::Custody)?
                     .sync_all()?;
                 inject(fault, Fault::StableFileSync)?;
@@ -566,7 +566,7 @@ impl Registry {
                 fs::remove_file(out.path.join(TEMP))?;
                 out.directory.sync_all()?;
             } else if pending.is_some() {
-                custody::open_private_file(&out.path.join(TEMP), uid, SNAPSHOT_BYTES)
+                custody::open_private_file(&out.path.join(TEMP), owner, SNAPSHOT_BYTES)
                     .map_err(Error::Custody)?
                     .sync_all()?;
                 fs::rename(out.path.join(TEMP), out.path.join(SNAPSHOT))?;
@@ -580,7 +580,7 @@ impl Registry {
         match fs::symlink_metadata(self.path.join(name)) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(Error::Io(e)),
-            Ok(_) => custody::read_private_file(&self.path.join(name), self.uid, SNAPSHOT_BYTES)
+            Ok(_) => custody::read_private_file(&self.path.join(name), self.owner, SNAPSHOT_BYTES)
                 .map(Some)
                 .map_err(Error::Custody),
         }

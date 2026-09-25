@@ -98,8 +98,8 @@ impl Identity {
     /// directory entries, symlinks and hardlinks. Never create or repair files.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, IdentityError> {
         let path = path.as_ref();
-        let (_, uid) = custody::open_private_directory(path)?;
-        let lock = custody::open_private_file(&path.join("lock"), uid, 0)?;
+        let (_, owner) = custody::open_private_directory(path)?;
+        let lock = custody::open_private_file(&path.join("lock"), owner, 0)?;
         custody::acquire_exclusive(&lock)?;
         let mut count = 0;
         for entry in fs::read_dir(path)? {
@@ -112,7 +112,7 @@ impl Identity {
         if count != 2 {
             return Err(IdentityError::Corrupt);
         }
-        let raw = custody::read_private_file(&path.join("identity"), uid, RECORD_BYTES)?;
+        let raw = custody::read_private_file(&path.join("identity"), owner, RECORD_BYTES)?;
         let seed = decode(raw.as_ref())?;
         Ok(Self {
             key: SigningKey::from_bytes(&seed),

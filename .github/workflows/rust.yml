@@ -112,6 +112,37 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # Whole-workspace `cargo check` coverage: every crate compile-checks for
+  # x86_64-pc-windows-msvc today (Unix-specific internals are `cfg(unix)`
+  # modules inside portable crates, not Unix-only crates). `cargo check` is
+  # compile coverage only — it does not prove the CLI links, and no Windows
+  # release packaging is claimed. Test targets compile only for the crates
+  # whose dev-dependencies are pure Rust; the rest pull C-backed dev-deps
+  # (hegeltest) that this lane does not yet qualify. vhalla-custody runs its
+  # full lint and test suite on the Windows backend. Do not widen silently:
+  # only what this lane verifies belongs in it.
+  windows-portable:
+    name: Windows portable checks
+    needs: quality
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: workspace-windows
+      - name: Custody lint and tests
+        run: |
+          cargo clippy -p vhalla-custody --all-targets --all-features --locked -- -D warnings
+          cargo test -p vhalla-custody --all-targets --locked
+      - name: Workspace compile coverage
+        run: cargo check --workspace --locked
+      - name: Portable core test-code compile coverage
+        run: cargo check -p vhalla-wire -p vhalla-policy -p vhalla-witness -p vhalla-botcaptcha -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-private-relay -p vhalla-rooms-app --all-targets --locked
+
   workspace-aux:
     name: Workspace auxiliary checks
     needs: quality
@@ -334,7 +365,7 @@ jobs:
   required:
     name: Required
     if: always()
-    needs: [quality, workspace-tests, workspace-aux, browser-artifact, prototype-checks, kani-spent, formal, main-policy, desktop, site, security]
+    needs: [quality, workspace-tests, windows-portable, workspace-aux, browser-artifact, prototype-checks, kani-spent, formal, main-policy, desktop, site, security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -342,6 +373,7 @@ jobs:
         env:
           QUALITY: ${{ needs.quality.result }}
           WORKSPACE_TESTS: ${{ needs.workspace-tests.result }}
+          WINDOWS_PORTABLE: ${{ needs.windows-portable.result }}
           WORKSPACE_AUX: ${{ needs.workspace-aux.result }}
           BROWSER: ${{ needs.browser-artifact.result }}
           PROTOTYPES: ${{ needs.prototype-checks.result }}
@@ -354,6 +386,7 @@ jobs:
         run: |
           test "$QUALITY" = success
           test "$WORKSPACE_TESTS" = success
+          test "$WINDOWS_PORTABLE" = success
           test "$WORKSPACE_AUX" = success
           test "$BROWSER" = success
           test "$PROTOTYPES" = success

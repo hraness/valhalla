@@ -11,7 +11,7 @@ use std::{
     io::{Seek, SeekFrom, Write},
     path::Path,
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 
 const ROTATED: &str = "events.log.1";
 /// Total live log bound; one rotated generation is kept alongside it.
@@ -22,12 +22,12 @@ const SUPERVISOR_LIMIT: u64 = 256 * 1024;
 const LINE_MAX: usize = 512;
 const REFUSED: &str = "event log refused; preserve the owner-private home";
 
-fn owner(dir: &Path) -> Result<(fs::File, u32), String> {
-    let (directory, uid) = custody::open_private_directory(dir).map_err(|_| REFUSED)?;
-    if uid != rustix::process::geteuid().as_raw() {
+fn owner(dir: &Path) -> Result<(fs::File, Owner), String> {
+    let (directory, owner) = custody::open_private_directory(dir).map_err(|_| REFUSED)?;
+    if owner != Owner::current().map_err(|_| REFUSED)? {
         return Err(REFUSED.into());
     }
-    Ok((directory, uid))
+    Ok((directory, owner))
 }
 fn clean(value: &str, limit: usize) -> Result<&str, String> {
     if value.is_empty()
@@ -59,20 +59,20 @@ pub(crate) fn append(dir: &Path, event: &str, fields: &[(&str, &str)]) -> Result
     if line.len() > LINE_MAX {
         return Err(REFUSED.into());
     }
-    let (directory, uid) = owner(dir)?;
+    let (directory, owner) = owner(dir)?;
     let path = dir.join(LOG_NAME);
     // A live log that another writer pushed past its bound (an earlier agent
     // shape redirected launchd output here) is still owner-private evidence:
     // rotate it into the single earlier generation instead of refusing every
     // later append, which would otherwise turn each restart into a crash loop.
-    if let Some(len) = private_length(&path, uid, LIMIT)? {
+    if let Some(len) = private_length(&path, owner, LIMIT)? {
         if len + line.len() as u64 > LIMIT {
             rotate(&path, &dir.join(ROTATED))?;
         }
     }
     let mut file =
-        if custody::private_file_present(&path, uid, LIMIT as usize).map_err(|_| REFUSED)? {
-            custody::open_private_file(&path, uid, LIMIT as usize).map_err(|_| REFUSED)?
+        if custody::private_file_present(&path, owner, LIMIT as usize).map_err(|_| REFUSED)? {
+            custody::open_private_file(&path, owner, LIMIT as usize).map_err(|_| REFUSED)?
         } else {
             custody::create_private_file(&path).map_err(|_| REFUSED)?
         };
@@ -85,13 +85,13 @@ pub(crate) fn append(dir: &Path, event: &str, fields: &[(&str, &str)]) -> Result
 /// Length of the owner-private regular file at `path`, `None` when absent. A
 /// foreign type, link, owner or mode refuses; exceeding `limit` does not,
 /// because callers rotate oversized evidence rather than discarding it.
-fn private_length(path: &Path, uid: u32, limit: u64) -> Result<Option<u64>, String> {
+fn private_length(path: &Path, owner: Owner, limit: u64) -> Result<Option<u64>, String> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(REFUSED.into()),
     };
-    match custody::check_regular_file(&meta, uid, limit as usize) {
+    match custody::check_regular_file(path, &meta, owner, limit as usize) {
         Ok(()) | Err(custody::Error::Capacity) => Ok(Some(meta.len())),
         Err(_) => Err(REFUSED.into()),
     }
@@ -115,9 +115,9 @@ fn rotate(path: &Path, rotated: &Path) -> Result<(), String> {
 /// nothing, so no caller can turn its outcome into a failed start.
 pub(crate) fn bound_supervisor_output(dir: &Path) {
     let outcome: Result<Option<u64>, String> = (|| {
-        let (directory, uid) = owner(dir)?;
+        let (directory, owner) = owner(dir)?;
         let path = dir.join(SUPERVISOR_LOG_NAME);
-        match private_length(&path, uid, SUPERVISOR_LIMIT)? {
+        match private_length(&path, owner, SUPERVISOR_LIMIT)? {
             Some(len) if len > SUPERVISOR_LIMIT => {
                 rotate(&path, &dir.join(SUPERVISOR_ROTATED))?;
                 custody::create_private_file(&path).map_err(|_| REFUSED)?;
@@ -140,12 +140,12 @@ pub(crate) fn bound_supervisor_output(dir: &Path) {
 /// Most recent complete lines, oldest first, for operator inspection. A torn
 /// or oversized log refuses rather than guessing; missing logs are empty.
 pub(crate) fn tail(dir: &Path, lines: usize) -> Result<Vec<String>, String> {
-    let (_directory, uid) = owner(dir)?;
+    let (_directory, owner) = owner(dir)?;
     let path = dir.join(LOG_NAME);
-    if !custody::private_file_present(&path, uid, LIMIT as usize).map_err(|_| REFUSED)? {
+    if !custody::private_file_present(&path, owner, LIMIT as usize).map_err(|_| REFUSED)? {
         return Ok(Vec::new());
     }
-    let bytes = custody::read_private_file(&path, uid, LIMIT as usize).map_err(|_| REFUSED)?;
+    let bytes = custody::read_private_file(&path, owner, LIMIT as usize).map_err(|_| REFUSED)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| REFUSED)?;
     if !text.is_ascii() {
         return Err(REFUSED.into());

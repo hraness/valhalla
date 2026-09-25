@@ -4,10 +4,22 @@ version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Shared Unix local-custody primitives for owner-only directories, private files, stable reads, and exclusive/shared locks."
+description = "Shared local-custody primitives for owner-only directories, private files, stable reads, and exclusive/shared locks on Unix and Windows."
 
-[dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+rustix = { version = "=1.1.4", features = ["process"] }
 
-[lints]
-workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_Threading"] }
+
+# Mirrors the workspace lints except `unsafe_code`, which is `deny` rather than
+# `forbid` so the Windows backend module can scope `#[allow(unsafe_code)]` to
+# its Win32 FFI boundary — the only place this crate calls unsafe code.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[lints.clippy]
+all = "warn"

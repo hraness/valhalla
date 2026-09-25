@@ -9,7 +9,7 @@
 use super::config::Loaded;
 use super::{config::Config, launchd::SUPERVISOR_LOG_NAME, REFUSED};
 use std::{collections::BTreeMap, ffi::OsString, path::Path};
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 
 /// A fully resolved per-user unit: the exact label plus the exact unit file
 /// bytes it must contain. `alternates` names earlier emitted shapes that stay
@@ -165,11 +165,11 @@ fn ours(spec: &UnitSpec, bytes: &[u8]) -> bool {
 /// exact current shape, `Some(false)` for an admissible earlier shape. Foreign
 /// content refuses. Decisions derive from these bytes, never a second read.
 fn installed_shape(spec: &UnitSpec, path: &Path) -> Result<Option<bool>, String> {
-    let uid = rustix::process::geteuid().as_raw();
-    if !custody::private_file_present(path, uid, 65536).map_err(|_| REFUSED)? {
+    let owner = Owner::current().map_err(|_| REFUSED)?;
+    if !custody::private_file_present(path, owner, 65536).map_err(|_| REFUSED)? {
         return Ok(None);
     }
-    let bytes = custody::read_private_file(path, uid, 65536).map_err(|_| REFUSED)?;
+    let bytes = custody::read_private_file(path, owner, 65536).map_err(|_| REFUSED)?;
     if !ours(spec, &bytes) {
         return Err("refusing a foreign or changed unit file at the selected label".into());
     }

@@ -12,7 +12,7 @@ use std::{
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use vhalla_private_kernel::{
     protocol::{AnchorId, Key, PrivateRoomScope, RoomId},
     Context, Status,
@@ -229,13 +229,13 @@ impl LaunchGrant {
         Ok((grant, authority, status))
     }
 
-    fn claim_path(&self) -> Result<(PathBuf, std::fs::File, u32), Error> {
+    fn claim_path(&self) -> Result<(PathBuf, std::fs::File, Owner), Error> {
         let parent = self.receipt.parent().ok_or(Error::Receipt)?;
         let canonical = parent.canonicalize().map_err(|_| Error::Receipt)?;
         let path = canonical.join(self.receipt.file_name().ok_or(Error::Receipt)?);
-        let (directory, uid) =
+        let (directory, owner) =
             custody::open_private_directory(&canonical).map_err(|_| Error::Receipt)?;
-        Ok((path, directory, uid))
+        Ok((path, directory, owner))
     }
 
     /// Durably reserve the entire allowance. This happens once, immediately
@@ -245,14 +245,14 @@ impl LaunchGrant {
     /// truncate or reinterpret this file after uncertainty; an exact process
     /// restart refuses even if no tool call completed.
     pub(super) fn claim(&self, status: Status) -> Result<(), Error> {
-        let (path, directory, uid) = self.claim_path()?;
+        let (path, directory, owner) = self.claim_path()?;
         let bytes = serde_json::to_vec(&json!({"format":"vhalla-agent-launch-claim-v1", "grant_id":self.id, "grant_sha256":hex(&self.digest), "authority":"entire grant consumed; never restart or delete to renew", "expires_at":self.expires, "context":context_json(status), "epoch":status.epoch.to_string(), "roster":hex(&status.roster)})).map_err(|_| Error::Receipt)?;
         let mut file = custody::create_private_file(&path).map_err(|_| Error::Receipt)?;
         file.write_all(&bytes)
             .and_then(|_| file.sync_all())
             .and_then(|_| directory.sync_all())
             .map_err(|_| Error::Receipt)?;
-        if custody::read_private_file(&path, uid, MAX_GRANT_BYTES).map_err(|_| Error::Receipt)?
+        if custody::read_private_file(&path, owner, MAX_GRANT_BYTES).map_err(|_| Error::Receipt)?
             != bytes
         {
             return Err(Error::Receipt);

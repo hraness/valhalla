@@ -300,9 +300,9 @@ fn retained_scan(
 ) -> Result<ScanDirectory, String> {
     // ScanDirectory also supports explicit first-time initialization. This host
     // already has initialized custody: absent children must not reset its cursor.
-    let (_, uid) = custody::open_private_directory(path).map_err(|_| REFUSED)?;
-    custody::open_private_file(&path.join("namespace"), uid, 1024).map_err(|_| REFUSED)?;
-    custody::open_private_file(&path.join("lock"), uid, 0).map_err(|_| REFUSED)?;
+    let (_, owner) = custody::open_private_directory(path).map_err(|_| REFUSED)?;
+    custody::open_private_file(&path.join("namespace"), owner, 1024).map_err(|_| REFUSED)?;
+    custody::open_private_file(&path.join("lock"), owner, 0).map_err(|_| REFUSED)?;
     custody::open_private_directory(&path.join("items")).map_err(|_| REFUSED)?;
     ScanDirectory::open_from(path, namespace, initial_cursor).map_err(|_| REFUSED.into())
 }
@@ -462,8 +462,8 @@ pub(super) fn initialize(path: &Path, context: Context) -> Result<(), String> {
 /// its own configured queue allowance; this command is the authorization to add it.
 pub(super) fn upgrade(path: &Path, context: Context) -> Result<(), String> {
     let (c, ns, relay) = Config::load(path, context)?;
-    let (_, uid) = custody::open_private_directory(&c.state).map_err(|_| REFUSED)?;
-    let lock = custody::open_private_file(&c.state.join("lock"), uid, 0).map_err(|_| REFUSED)?;
+    let (_, owner) = custody::open_private_directory(&c.state).map_err(|_| REFUSED)?;
+    let lock = custody::open_private_file(&c.state.join("lock"), owner, 0).map_err(|_| REFUSED)?;
     custody::acquire_exclusive(&lock).map_err(|_| REFUSED)?;
     if *files::read(&c.state.join("binding"), 1024, false)? != binding(context, ns, &relay, &c) {
         return Err(REFUSED.into());
@@ -499,7 +499,7 @@ fn publish_control_version_with(
         .map_err(|_| REFUSED)?;
     let name = absolute.file_name().ok_or(REFUSED)?;
     let target = parent.join(name);
-    let (directory, uid) = custody::open_private_directory(&parent).map_err(|_| REFUSED)?;
+    let (directory, owner) = custody::open_private_directory(&parent).map_err(|_| REFUSED)?;
     if files::read(&target, 16384, false)?.as_slice() != expected {
         return Err(REFUSED.into());
     }
@@ -519,12 +519,12 @@ fn publish_control_version_with(
     let mut scratch = name.to_os_string();
     scratch.push(".controls-upgrade-tmp");
     let scratch = parent.join(scratch);
-    let present = custody::private_file_present(&scratch, uid, 16384).map_err(|_| REFUSED)?;
+    let present = custody::private_file_present(&scratch, owner, 16384).map_err(|_| REFUSED)?;
     if version == 2 {
         // A previous rename may have returned uncertainty before its barrier.
         directory.sync_all().map_err(|_| REFUSED)?;
         if present {
-            let prefix = custody::read_private_file(&scratch, uid, 16384).map_err(|_| REFUSED)?;
+            let prefix = custody::read_private_file(&scratch, owner, 16384).map_err(|_| REFUSED)?;
             if !next.starts_with(&prefix) {
                 return Err(REFUSED.into());
             }
@@ -535,11 +535,11 @@ fn publish_control_version_with(
         return Ok(());
     }
     let mut file = if present {
-        custody::open_private_file(&scratch, uid, 16384).map_err(|_| REFUSED)?
+        custody::open_private_file(&scratch, owner, 16384).map_err(|_| REFUSED)?
     } else {
         custody::create_private_file(&scratch).map_err(|_| REFUSED)?
     };
-    let prefix = custody::read_private_file(&scratch, uid, 16384).map_err(|_| REFUSED)?;
+    let prefix = custody::read_private_file(&scratch, owner, 16384).map_err(|_| REFUSED)?;
     if !next.starts_with(&prefix) {
         return Err(REFUSED.into());
     }
@@ -666,10 +666,10 @@ impl Driver {
         if ![2, 3].contains(&config.version) {
             return Err("legacy delivery profile requires delivery-upgrade before another agent-serve launch".into());
         }
-        let (directory, uid) =
+        let (directory, owner) =
             custody::open_private_directory(&config.state).map_err(|_| REFUSED)?;
-        let lock =
-            custody::open_private_file(&config.state.join("lock"), uid, 0).map_err(|_| REFUSED)?;
+        let lock = custody::open_private_file(&config.state.join("lock"), owner, 0)
+            .map_err(|_| REFUSED)?;
         custody::acquire_exclusive(&lock).map_err(|_| REFUSED)?;
         if *files::read(&config.state.join("binding"), 1024, false)?
             != binding(context, namespace, &relay, &config)
