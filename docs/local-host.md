@@ -1,9 +1,10 @@
 # Local private-room host
 
-A mostly persistent Mac can host the opaque private relay. No paid cloud is
-required. The native path is a CLI agent, a fixed local Tailcat forward, the
-Mac's Tailcat server, and the loopback TLS mailbox. Both the TLS trust selection
-and per-client relay authentication remain active through the overlay.
+A laptop or server you control can host the opaque private relay. No paid cloud
+is required. Clients reach the relay on the same machine, directly over your
+network or the Internet when the host has an address they can dial, or through
+a Tailcat forward when the host sits behind NAT. Every route uses the same
+pinned TLS certificate check and a separate relay token for each client.
 
 Private rooms run only on machines participants control, a laptop or a server;
 nothing is hosted for them. The [native-only plan](../kb/plans/valhalla-private-rooms-native-only.md)
@@ -18,9 +19,10 @@ and does not prove that a person read a message.
 
 Choose a stable, reviewed executable and a never-used directory. Its parent must
 exist. The command creates the directory with mode `0700`; generated files are
-owner-only `0600`. The default listener is `127.0.0.1:9473`; wildcard and remote
-listeners are refused. The TLS name is a pinned certificate name and does not
-need public DNS.
+owner-only `0600`. The default listener is `127.0.0.1:9473`, which only this
+machine can reach; read [Choose how clients reach the host](#choose-how-clients-reach-the-host)
+before passing a LAN or public address to `--listen`. The TLS name is a pinned
+certificate name and does not need public DNS.
 
 ```sh
 /absolute/vhalla private-host init /private/operator/valhalla-host \
@@ -43,8 +45,9 @@ Initialization creates:
 - Immutable `config.json`, a completion commitment, and exact file commitments.
   Partial initialization, changed selections, linked files, unsafe permissions,
   and existing homes refuse rather than being repaired or reset.
-- A non-secret `connection.json` containing the namespace, local listen address,
-  TLS name, CA fingerprint and expiry. It contains no client token or private key.
+- A non-secret `connection.json` containing the namespace, the listen address,
+  `addresses` (where clients dial), the TLS name, CA fingerprint and expiry. It
+  contains no client token or private key.
 - A reviewable `launch-agent.plist` containing only the selected executable,
   exact canonical home, and bounded process supervision settings.
 
@@ -67,16 +70,17 @@ are not forcibly interruptible; the service does not claim a hard deadline for
 an unhealthy disk. Storage uncertainty exits with failure and requires an exact
 reopen. Starting a second owner of the same mailbox refuses.
 
-The TLS service bounds pre-authentication work three ways: a fixed worker cap,
-a per-window handshake rate, and a handshake-phase deadline tighter than the
-whole request deadline, so trickling unauthenticated sockets free their slots
-early. Over-limit sockets receive a bounded fatal TLS alert rather than a
-silent drop, and authenticated capacity refusals return an explicit retryable
-status. Each credential's per-window byte budget is billed on the actual
-encoded response size, not a worst-case page reservation. Item publication and
-its per-key quota charge commit in one transaction behind a single post-commit
-durability barrier, and per-key quota lookups are indexed rather than scanning
-retained history.
+The TLS service bounds pre-authentication work four ways: a fixed worker cap,
+a per-window handshake rate, a per-machine share of both for peers that are
+not on the host, and a handshake-phase deadline tighter than the whole request
+deadline, so trickling unauthenticated sockets free their slots early.
+Over-limit sockets receive a bounded fatal TLS alert rather than a silent drop,
+and authenticated capacity refusals return an explicit retryable status. Each
+credential's per-window byte budget is billed on the actual encoded response
+size, not a worst-case page reservation. Item publication and its per-key quota
+charge commit in one transaction behind a single post-commit durability
+barrier, and per-key quota lookups are indexed rather than scanning retained
+history.
 
 Stop the foreground process with Ctrl-C before installing the LaunchAgent so it
 can acquire the same mailbox. On macOS, the following commands manage only the
@@ -244,13 +248,60 @@ serves all retained generations on their saved ports, at most 16. Later-added
 credentials belong only to the newer mailbox; replacement and revocation apply
 to the same stable identity wherever it was enrolled. Each retained generation
 needs an active enrolled credential to serve. The Tailcat template below
-forwards one port and does not configure these additional routes.
+forwards one port and does not configure these additional routes. Mailbox
+generations need a host on a loopback listener; `generation-check` refuses a
+host that listens on a LAN or public address.
+
+## Choose how clients reach the host
+
+Every client dials the host over the same pinned TLS 1.3 connection with its
+own token. Only the host's listener changes with where the clients are:
+
+| Clients are | Host listener | Clients dial |
+| --- | --- | --- |
+| On this machine | `--listen 127.0.0.1:9473` (the default) | `127.0.0.1:9473` |
+| On the same network: home or office Wi-Fi, a LAN, a cloud VPC | `--listen 192.168.1.20:9473`, this machine's LAN address | `192.168.1.20:9473` |
+| On the Internet, and the host has a public address | `--listen 203.0.113.7:9473` | `203.0.113.7:9473` |
+| On the Internet, and the host is a cloud server whose interface holds a private address | `--listen 10.0.0.5:9473 --advertise 203.0.113.7:9473` | `203.0.113.7:9473` |
+| On the Internet, and the host sits behind a home router | the default loopback listener plus [Tailcat](#explicit-tailcat-wiring) | each client's own Tailcat forward |
+
+For example, a laptop that hosts agents on the same Wi-Fi network:
+
+```sh
+/absolute/vhalla private-host init /private/operator/valhalla-host \
+  --listen 192.168.1.20:9473 --executable /absolute/stable/vhalla
+```
+
+`addresses` in `connection.json` and in `status` lists what clients dial: the
+`--advertise` addresses when given, otherwise the listener. Clients that dial
+the host directly need nothing else installed.
+
+- Give a LAN host a fixed address first, for example a DHCP reservation in the
+  router. Each client's delivery profile records the address and port it
+  dials, so a changed address needs new client profiles.
+- Allow the port through any host or cloud firewall. These commands never
+  change firewall rules.
+- `--listen` takes one unicast address of this machine. Wildcards (`0.0.0.0`,
+  `::`), multicast, broadcast and link-local addresses are refused.
+  `--advertise` takes up to four distinct non-loopback addresses and needs a
+  non-loopback listener.
+- Anyone who can reach a network listener can open connections to it. A client
+  must complete TLS 1.3 against this host's CA and TLS name before it sends a
+  token, and a request without a valid token never reads the mailbox. The host
+  serves at most 16 connections at once and starts at most 256 handshakes per
+  second. Each other machine (for IPv6, each /64 network) may hold four of
+  those connections and start 64 of those handshakes per second; loopback
+  peers, including Tailcat forwards, share only the totals. Excess connections
+  receive a TLS alert, and clients retry later. Each request has a 10-second
+  deadline, of which the handshake may use four seconds. Connections from many
+  machines at once can still delay service.
 
 ## Explicit Tailcat wiring
 
-Tailcat is a separate native process and must be installed and reviewed
-independently. The following syntax was checked against the installed pinned
-Tailcat **v0.7.0** source and command help. Its `serve` command accepts a bare
+Use Tailcat when clients cannot dial the host directly, such as a laptop behind
+a home router. Tailcat is a separate native process and must be installed and
+reviewed independently. The following syntax was checked against the installed
+pinned Tailcat **v0.7.0** source and command help. Its `serve` command accepts a bare
 port and forwards to that port on localhost; later upstream mapped-port syntax
 must not be copied into this pinned configuration.
 ([Tailcat v0.7.0 CLI source](https://github.com/tailscale/tailcat/blob/v0.7.0/cmd/tailcat/tailcat.go))
@@ -297,9 +348,10 @@ On each client, select one fixed local forwarding port:
 
 The client's [delivery profile](cli-agents.md#local-hosting-and-persistent-tls-delivery)
 then uses `127.0.0.1:19473`, the exact TLS name, transferred `ca.der`, selected
-namespace and its own token file. The listener address in `connection.json` is
-the host-side address; it is not automatically a remotely reachable endpoint.
-Keep the client port fixed because it is part of the persisted endpoint binding.
+namespace and its own token file. For a loopback host, `listen` and `addresses`
+in `connection.json` name the host machine only; a Tailcat client dials its own
+forward instead. Keep the client port fixed because it is part of the persisted
+endpoint binding.
 Do not use Tailcat's `all`, `exit-node`, SSH, file or exec services for this relay.
 Tailcat startup and supervision are deliberately separate from the relay's
 LaunchAgent; these commands do not silently install or activate the overlay.

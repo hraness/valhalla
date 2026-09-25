@@ -137,6 +137,7 @@ pub(super) fn validate_selection(config: &Config) -> Result<(), String> {
     }
     if config.retained_generations.is_empty()
         || config.retained_generations.len() >= MAX_GENERATIONS
+        || !super::loopback(config.listen)
     {
         return Err(REFUSED.into());
     }
@@ -176,6 +177,11 @@ pub(super) fn validate_selection(config: &Config) -> Result<(), String> {
 }
 fn validate_plan(plan: &Plan, loaded: &Loaded) -> Result<(), String> {
     let config = &loaded.config;
+    // Successors are loopback listeners on this machine; moving the clients of
+    // a LAN or public listener is the separate host-change design.
+    if !super::loopback(config.listen) {
+        return Err("mailbox generations need a host on a loopback listener; a LAN or public host keeps its current mailbox".into());
+    }
     if plan.version != 1
         || !plan.complete_controller_inventory
         || plan.generation != config.retained_generations.len() as u64

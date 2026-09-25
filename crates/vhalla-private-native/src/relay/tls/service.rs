@@ -1,7 +1,12 @@
 use super::*;
 use crate::relay::{FileStore, Limits, MAX_RELAY_ITEMS};
 use rusqlite::{params, OptionalExtension};
-use std::{collections::BTreeMap, net::TcpListener, sync::Mutex, thread};
+use std::{
+    collections::BTreeMap,
+    net::{IpAddr, TcpListener},
+    sync::Mutex,
+    thread,
+};
 
 #[cfg(test)]
 #[path = "ledger_tests.rs"]
@@ -39,6 +44,9 @@ pub struct Credential {
 }
 /// Fixed admission limits validated before accepting any connection. Work windows
 /// restart with the service; retained storage quotas survive process restart.
+/// A peer that is not on this machine is further held to a quarter of the
+/// connection slots and a quarter of each window's handshakes, keyed by its
+/// IPv4 address or IPv6 /64; loopback peers share only the global bounds.
 #[derive(Clone, Copy, Debug)]
 pub struct ServiceLimits {
     /// Maximum live handshake/request threads; excess sockets get a bounded
@@ -86,7 +94,8 @@ struct State {
 /// behind a single post-commit durability barrier. Socket reads/writes never
 /// hold the mailbox mutex. Finite credential work and in-flight caps prevent
 /// one authenticated key from using every service slot. Pre-authentication
-/// work is bounded three ways: worker count, handshakes per window, and a
+/// work is bounded four ways: worker count, handshakes per window, per-source
+/// shares of both for peers that are not on this machine, and a
 /// handshake-phase deadline tighter than the whole request; over-limit
 /// sockets get a bounded fatal alert instead of a silent drop.
 pub struct Service {
@@ -288,7 +297,8 @@ impl Service {
         listener
             .set_nonblocking(true)
             .map_err(|_| NetError::Unavailable)?;
-        let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
+        let mut workers: Vec<(thread::JoinHandle<()>, Option<IpAddr>)> = Vec::new();
+        let mut sources = Sources::new(max, max_handshakes);
         let mut accepted = 0u64;
         let mut window_start = Instant::now();
         let mut handshakes = 0u32;
@@ -303,8 +313,12 @@ impl Service {
             }
             let mut index = 0;
             while index < workers.len() {
-                if workers[index].is_finished() {
-                    if workers.swap_remove(index).join().is_err() {
+                if workers[index].0.is_finished() {
+                    let (worker, remote) = workers.swap_remove(index);
+                    if let Some(remote) = remote {
+                        sources.release(remote);
+                    }
+                    if worker.join().is_err() {
                         failure = Some(NetError::Unavailable);
                     }
                 } else {
@@ -314,7 +328,7 @@ impl Service {
             if failure.is_some() {
                 break;
             }
-            let (stream, _) = match listener.accept() {
+            let (stream, peer) = match listener.accept() {
                 Ok(pair) => pair,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     // A finite park handles a panic before the worker's explicit
@@ -332,8 +346,17 @@ impl Service {
             if window_start.elapsed() >= window {
                 window_start = Instant::now();
                 handshakes = 0;
+                sources.next_window();
             }
-            if workers.len() >= max || handshakes >= max_handshakes {
+            // The per-source share is charged only once the global bounds admit
+            // the socket, so a refusal never consumes a source's allowance. The
+            // failure paths below end admission; any path that continues after a
+            // charge must release it.
+            let remote = remote_source(peer.ip());
+            if workers.len() >= max
+                || handshakes >= max_handshakes
+                || remote.is_some_and(|remote| !sources.admit(remote))
+            {
                 refuse(stream);
                 continue;
             }
@@ -354,7 +377,7 @@ impl Service {
                     let _ = serve_one(stream, config, state, deadline);
                     supervisor.unpark();
                 }) {
-                Ok(worker) => workers.push(worker),
+                Ok(worker) => workers.push((worker, remote)),
                 Err(_) => {
                     failure = Some(NetError::Unavailable);
                     break;
@@ -364,7 +387,7 @@ impl Service {
         // Close the listening endpoint before draining existing deadline-bound
         // sockets. A poisoned service cannot keep admitting a false healthy route.
         drop(listener);
-        for worker in workers {
+        for (worker, _) in workers {
             if worker.join().is_err() {
                 failure = Some(NetError::Unavailable);
             }
@@ -385,6 +408,69 @@ impl Service {
 /// The TLS handshake phase is bounded tighter than the whole request so a
 /// slowly trickling ClientHello cannot occupy a worker for `request_timeout`.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
+/// Most distinct remote sources counted in one window. A new source beyond it
+/// is refused until the window turns, so a spread-out flood cannot grow the
+/// table without bound.
+const MAX_TRACKED_SOURCES: usize = 4096;
+/// Per-source shares for peers that are not on this machine: each may hold a
+/// quarter of the connection slots and start a quarter of a window's
+/// handshakes, so one misbehaving machine cannot occupy the whole service.
+struct Sources {
+    live_limit: usize,
+    window_limit: u32,
+    live: BTreeMap<IpAddr, usize>,
+    started: BTreeMap<IpAddr, u32>,
+}
+impl Sources {
+    fn new(max_connections: usize, max_handshakes: u32) -> Self {
+        Self {
+            live_limit: (max_connections / 4).max(1),
+            window_limit: (max_handshakes / 4).max(1),
+            live: BTreeMap::new(),
+            started: BTreeMap::new(),
+        }
+    }
+    /// Charge one handshake to `source`, or refuse without charging it.
+    fn admit(&mut self, source: IpAddr) -> bool {
+        let started = self.started.get(&source).copied().unwrap_or(0);
+        if self.live.get(&source).copied().unwrap_or(0) >= self.live_limit
+            || started >= self.window_limit
+            || (started == 0 && self.started.len() >= MAX_TRACKED_SOURCES)
+        {
+            return false;
+        }
+        *self.live.entry(source).or_default() += 1;
+        *self.started.entry(source).or_default() += 1;
+        true
+    }
+    /// Return the slot of a finished worker admitted for `source`.
+    fn release(&mut self, source: IpAddr) {
+        if let Some(live) = self.live.get_mut(&source) {
+            *live = live.saturating_sub(1);
+            if *live == 0 {
+                self.live.remove(&source);
+            }
+        }
+    }
+    fn next_window(&mut self) {
+        self.started.clear();
+    }
+}
+/// The per-source key for a peer, or `None` for this machine. Loopback peers,
+/// which include an overlay forward that terminates here, share only the
+/// global bounds. IPv4-mapped IPv6 peers count as IPv4; other IPv6 peers group
+/// by /64 because one network usually controls a whole /64.
+fn remote_source(peer: IpAddr) -> Option<IpAddr> {
+    match peer.to_canonical() {
+        ip if ip.is_loopback() => None,
+        IpAddr::V6(ip) => {
+            let mut octets = ip.octets();
+            octets[8..].fill(0);
+            Some(IpAddr::V6(octets.into()))
+        }
+        ip => Some(ip),
+    }
+}
 /// Answer an over-limit pre-authentication socket with a bounded fatal
 /// internal_error alert, then release it. A real client reads an explicit
 /// retryable refusal instead of silence; the tight timeouts prevent an
@@ -598,5 +684,97 @@ fn put(state: &mut State, id: [u8; 16], raw: &[u8]) -> Result<(u8, Vec<u8>)> {
             }
             Ok((status(error), Vec::new()))
         }
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    fn ip(text: &str) -> IpAddr {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn loopback_peers_are_exempt_and_remote_ipv6_groups_by_its_64() {
+        for local in ["127.0.0.1", "127.5.6.7", "::1", "::ffff:127.0.0.1"] {
+            assert_eq!(remote_source(ip(local)), None, "{local}");
+        }
+        assert_eq!(remote_source(ip("192.168.1.20")), Some(ip("192.168.1.20")));
+        assert_eq!(
+            remote_source(ip("::ffff:192.168.1.20")),
+            Some(ip("192.168.1.20"))
+        );
+        assert_eq!(
+            remote_source(ip("2001:db8:1:2:aaaa:bbbb:cccc:dddd")),
+            Some(ip("2001:db8:1:2::"))
+        );
+        assert_eq!(
+            remote_source(ip("2001:db8:1:2::9")),
+            remote_source(ip("2001:db8:1:2:ffff::1"))
+        );
+        assert_ne!(
+            remote_source(ip("2001:db8:1:2::9")),
+            remote_source(ip("2001:db8:1:3::9"))
+        );
+    }
+
+    #[test]
+    fn shares_are_a_quarter_of_the_global_bounds_and_never_zero() {
+        let default = Sources::new(16, 256);
+        assert_eq!((default.live_limit, default.window_limit), (4, 64));
+        let smallest = Sources::new(2, 4);
+        assert_eq!((smallest.live_limit, smallest.window_limit), (1, 1));
+    }
+
+    #[test]
+    fn one_source_holds_at_most_its_share_and_released_slots_return() {
+        let mut sources = Sources::new(8, 1024);
+        let (a, b) = (ip("198.51.100.1"), ip("198.51.100.2"));
+        assert!(sources.admit(a) && sources.admit(a));
+        assert!(
+            !sources.admit(a),
+            "a third live connection exceeds the share"
+        );
+        assert!(sources.admit(b), "another source keeps its own share");
+        sources.release(a);
+        assert!(sources.admit(a));
+        sources.release(a);
+        sources.release(a);
+        sources.release(b);
+        assert!(sources.live.is_empty(), "finished workers leave no entries");
+    }
+
+    #[test]
+    fn handshakes_per_window_are_charged_per_source_until_the_window_turns() {
+        let mut sources = Sources::new(64, 16);
+        let (a, b) = (ip("198.51.100.1"), ip("198.51.100.2"));
+        for _ in 0..4 {
+            assert!(sources.admit(a));
+            sources.release(a);
+        }
+        assert!(
+            !sources.admit(a),
+            "a fifth handshake exceeds the window share"
+        );
+        assert!(!sources.live.contains_key(&a), "a refusal charges nothing");
+        assert!(sources.admit(b));
+        sources.next_window();
+        assert!(sources.admit(a));
+    }
+
+    #[test]
+    fn new_sources_are_refused_once_the_window_table_is_full() {
+        let mut sources = Sources::new(64, u32::MAX);
+        let numbered = |n: u32| IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + n));
+        for index in 0..MAX_TRACKED_SOURCES as u32 {
+            assert!(sources.admit(numbered(index)));
+            sources.release(numbered(index));
+        }
+        let known = numbered(0);
+        let unknown = ip("203.0.113.9");
+        assert!(sources.admit(known), "a counted source keeps its allowance");
+        assert!(!sources.admit(unknown));
+        sources.next_window();
+        assert!(sources.admit(unknown));
     }
 }
