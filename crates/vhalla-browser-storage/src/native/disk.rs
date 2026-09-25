@@ -7,7 +7,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Point {
@@ -25,7 +25,7 @@ pub(super) enum Point {
 }
 pub(super) struct Disk {
     path: PathBuf,
-    uid: u32,
+    owner: Owner,
     directory: File,
     #[cfg(test)]
     pub fault: Option<Point>,
@@ -45,14 +45,14 @@ fn check(error: custody::Error) -> Error {
 impl Disk {
     pub fn create(path: &Path) -> Result<(Self, File), Error> {
         let path = custody::absolute(path).map_err(check)?;
-        let (directory, uid) = custody::create_private_directory(&path).map_err(check)?;
+        let (directory, owner) = custody::create_private_directory(&path).map_err(check)?;
         let lock = custody::create_private_file(&path.join("lock")).map_err(check)?;
         custody::acquire_exclusive(&lock).map_err(check)?;
         lock.sync_all().map_err(io)?;
         Ok((
             Self {
                 path,
-                uid,
+                owner,
                 directory,
                 #[cfg(test)]
                 fault: None,
@@ -64,13 +64,13 @@ impl Disk {
     }
     pub fn open(path: &Path) -> Result<(Self, File), Error> {
         let path = custody::absolute(path).map_err(check)?;
-        let (directory, uid) = custody::open_private_directory(&path).map_err(check)?;
-        let lock = custody::open_private_file(&path.join("lock"), uid, 0).map_err(check)?;
+        let (directory, owner) = custody::open_private_directory(&path).map_err(check)?;
+        let lock = custody::open_private_file(&path.join("lock"), owner, 0).map_err(check)?;
         custody::acquire_exclusive(&lock).map_err(check)?;
         Ok((
             Self {
                 path,
-                uid,
+                owner,
                 directory,
                 #[cfg(test)]
                 fault: None,
@@ -90,7 +90,7 @@ impl Disk {
         Ok(())
     }
     pub fn present(&self, name: &str, max: usize) -> Result<bool, Error> {
-        custody::private_file_present(&self.path.join(name), self.uid, max).map_err(check)
+        custody::private_file_present(&self.path.join(name), self.owner, max).map_err(check)
     }
     pub fn optional(&self, name: &str, max: usize) -> Result<Option<Vec<u8>>, Error> {
         if self.present(name, max)? {
@@ -100,7 +100,7 @@ impl Disk {
         }
     }
     pub fn read(&self, name: &str, max: usize) -> Result<Vec<u8>, Error> {
-        custody::read_private_file(&self.path.join(name), self.uid, max).map_err(check)
+        custody::read_private_file(&self.path.join(name), self.owner, max).map_err(check)
     }
     pub fn sync(&self) -> Result<(), Error> {
         self.directory.sync_all().map_err(io)?;
@@ -114,7 +114,7 @@ impl Disk {
             .map_err(io)
     }
     pub fn resync(&self, name: &str, max: usize) -> Result<(), Error> {
-        custody::open_private_file(&self.path.join(name), self.uid, max)
+        custody::open_private_file(&self.path.join(name), self.owner, max)
             .map_err(check)?
             .sync_all()
             .map_err(io)?;
@@ -135,7 +135,7 @@ impl Disk {
         // Only a verified protected intent authorizes replacement of its scratch
         // file. A partial scratch file is never treated as accepted evidence.
         let mut file = if self.present(name, max)? {
-            custody::open_private_file(&self.path.join(name), self.uid, max).map_err(check)?
+            custody::open_private_file(&self.path.join(name), self.owner, max).map_err(check)?
         } else {
             custody::create_private_file(&self.path.join(name)).map_err(check)?
         };

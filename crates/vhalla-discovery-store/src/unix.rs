@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use vhalla_attention::{Attention, ReaderScope};
-use vhalla_custody::{self as custody, Error as CustodyError};
+use vhalla_custody::{self as custody, Error as CustodyError, Owner};
 use vhalla_discovery::DiscoveryState;
 use vhalla_social::RecordId;
 use vhalla_social_store::Store as SocialStore;
@@ -333,7 +333,7 @@ pub struct Store {
     path: PathBuf,
     directory: File,
     _lock: File,
-    uid: u32,
+    owner: Owner,
     image: Image,
     #[cfg(test)]
     fault: Option<Step>,
@@ -356,7 +356,7 @@ impl Store {
             return Err(Error::UnsafePath);
         };
         let path = parent.join(path.file_name().ok_or(Error::UnsafePath)?);
-        let (directory, uid) = custody::create_private_directory(&path).map_err(map_custody)?;
+        let (directory, owner) = custody::create_private_directory(&path).map_err(map_custody)?;
         let lock = create_private(&path.join(LOCK))?;
         acquire(&lock)?;
         lock.sync_all()?;
@@ -373,7 +373,7 @@ impl Store {
             path,
             directory,
             _lock: lock,
-            uid,
+            owner,
             image,
             #[cfg(test)]
             fault: None,
@@ -387,10 +387,10 @@ impl Store {
         expected: Option<Pin>,
     ) -> Result<Self, Error> {
         let path = absolute(path.as_ref())?;
-        let (directory, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
-        let lock = open_private(&path.join(LOCK), uid, 0)?;
+        let (directory, owner) = custody::open_private_directory(&path).map_err(map_custody)?;
+        let lock = open_private(&path.join(LOCK), owner, 0)?;
         acquire(&lock)?;
-        let image = Image::decode(&read_bounded(&path.join(STATE), uid, MAX_BYTES)?, scope)?;
+        let image = Image::decode(&read_bounded(&path.join(STATE), owner, MAX_BYTES)?, scope)?;
         if expected.is_some_and(|expected| expected != image.pin()) {
             return Err(Error::Freshness);
         };
@@ -398,7 +398,7 @@ impl Store {
             path,
             directory,
             _lock: lock,
-            uid,
+            owner,
             image,
             #[cfg(test)]
             fault: None,
@@ -533,7 +533,7 @@ impl Store {
         if self.exists(INTENT)? || self.exists(TEMP)? {
             return Err(Error::Corrupt);
         }
-        let raw = read_bounded(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?;
+        let raw = read_bounded(&self.path.join(INTENT_TEMP), self.owner, MAX_INTENT_BYTES)?;
         let generation = self
             .image
             .generation
@@ -576,7 +576,7 @@ impl Store {
     fn reconcile_staged(&mut self, sources: &SocialStore) -> Result<(), Error> {
         if let Some(intent) = self.staged_intent()? {
             validate_candidate(&self.image.state, &intent.next.state, sources)?;
-            open_private(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+            open_private(&self.path.join(INTENT_TEMP), self.owner, MAX_INTENT_BYTES)?.sync_all()?;
             self.step(Step::IntentSynced)?;
             fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
             self.step(Step::IntentRenamed)?;
@@ -590,7 +590,7 @@ impl Store {
     }
     fn intent(&self) -> Result<Intent, Error> {
         let intent = Intent::decode(
-            &read_bounded(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?,
+            &read_bounded(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?,
             self.image.state.scope,
         )?;
         if self.pin() != intent.expected && self.pin() != intent.next.pin() {
@@ -609,16 +609,16 @@ impl Store {
         validate_candidate(&self.image.state, &intent.next.state, sources)?;
         // Re-establish authoritative intent durability after an uncertain
         // rename/directory sync before publishing any successor state.
-        open_private(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+        open_private(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?.sync_all()?;
         self.directory.sync_all()?;
         let next_bytes = intent.next.encode();
         if self.pin() == intent.expected {
             let mut file = if self.exists(TEMP)? {
-                let retained = read_bounded(&self.path.join(TEMP), self.uid, MAX_BYTES)?;
+                let retained = read_bounded(&self.path.join(TEMP), self.owner, MAX_BYTES)?;
                 if !next_bytes.starts_with(&retained) {
                     return Err(Error::Corrupt);
                 };
-                open_private(&self.path.join(TEMP), self.uid, MAX_BYTES)?
+                open_private(&self.path.join(TEMP), self.owner, MAX_BYTES)?
             } else {
                 create_private(&self.path.join(TEMP))?
             };
@@ -635,7 +635,7 @@ impl Store {
             return Err(Error::Conflict);
         };
         let disk = Image::decode(
-            &read_bounded(&self.path.join(STATE), self.uid, MAX_BYTES)?,
+            &read_bounded(&self.path.join(STATE), self.owner, MAX_BYTES)?,
             self.image.state.scope,
         )?;
         if disk.pin() != intent.next.pin() {
@@ -643,13 +643,13 @@ impl Store {
         };
         self.image = disk;
         if self.exists(TEMP)? {
-            let retained = read_bounded(&self.path.join(TEMP), self.uid, MAX_BYTES)?;
+            let retained = read_bounded(&self.path.join(TEMP), self.owner, MAX_BYTES)?;
             if !next_bytes.starts_with(&retained) {
                 return Err(Error::Corrupt);
             };
             fs::remove_file(self.path.join(TEMP))?;
         }
-        let retained = read_bounded(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?;
+        let retained = read_bounded(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?;
         if retained != intent.encode() {
             return Err(Error::Conflict);
         };
@@ -664,7 +664,7 @@ impl Store {
     }
     fn check_disk(&self) -> Result<(), Error> {
         if Image::decode(
-            &read_bounded(&self.path.join(STATE), self.uid, MAX_BYTES)?,
+            &read_bounded(&self.path.join(STATE), self.owner, MAX_BYTES)?,
             self.image.state.scope,
         )?
         .pin()
@@ -678,7 +678,7 @@ impl Store {
     fn exists(&self, name: &str) -> Result<bool, Error> {
         match fs::symlink_metadata(self.path.join(name)) {
             Ok(meta) => {
-                regular(&meta, self.uid, MAX_INTENT_BYTES)?;
+                regular(&self.path.join(name), &meta, self.owner, MAX_INTENT_BYTES)?;
                 Ok(true)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -701,7 +701,12 @@ impl Store {
                 INTENT | INTENT_TEMP => MAX_INTENT_BYTES,
                 _ => return Err(Error::UnsafePath),
             };
-            regular(&fs::symlink_metadata(entry.path())?, self.uid, max)?;
+            regular(
+                &entry.path(),
+                &fs::symlink_metadata(entry.path())?,
+                self.owner,
+                max,
+            )?;
         }
         Ok(())
     }
@@ -804,20 +809,20 @@ fn absolute(path: &Path) -> Result<PathBuf, Error> {
     custody::absolute(path).map_err(map_custody)
 }
 #[cfg(test)]
-fn directory(path: &Path) -> Result<(File, u32), Error> {
+fn directory(path: &Path) -> Result<(File, Owner), Error> {
     custody::open_private_directory(path).map_err(map_custody)
 }
-fn regular(meta: &Metadata, uid: u32, max: usize) -> Result<(), Error> {
-    custody::check_regular_file(meta, uid, max).map_err(map_custody)
+fn regular(path: &Path, meta: &Metadata, owner: Owner, max: usize) -> Result<(), Error> {
+    custody::check_regular_file(path, meta, owner, max).map_err(map_custody)
 }
 fn create_private(path: &Path) -> Result<File, Error> {
     custody::create_private_file(path).map_err(map_custody)
 }
-fn open_private(path: &Path, uid: u32, max: usize) -> Result<File, Error> {
-    custody::open_private_file(path, uid, max).map_err(map_custody)
+fn open_private(path: &Path, owner: Owner, max: usize) -> Result<File, Error> {
+    custody::open_private_file(path, owner, max).map_err(map_custody)
 }
-fn read_bounded(path: &Path, uid: u32, max: usize) -> Result<Vec<u8>, Error> {
-    custody::read_private_file(path, uid, max).map_err(map_custody)
+fn read_bounded(path: &Path, owner: Owner, max: usize) -> Result<Vec<u8>, Error> {
+    custody::read_private_file(path, owner, max).map_err(map_custody)
 }
 fn acquire(file: &File) -> Result<(), Error> {
     custody::acquire_exclusive(file).map_err(map_custody)

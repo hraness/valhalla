@@ -1,10 +1,9 @@
 //! Immutable generation records become visible only after a complete write.
 //! Callers hold the host maintenance lock throughout publication/recovery.
-use super::{config, custody, TRANSITION_ERROR};
+use super::{config, custody, Owner, TRANSITION_ERROR};
 use std::{
     fs,
     io::{Seek, SeekFrom, Write},
-    os::unix::fs::MetadataExt,
     path::Path,
 };
 
@@ -26,13 +25,13 @@ fn publish_with(
     {
         return Err(TRANSITION_ERROR.into());
     }
-    let (directory, uid) = custody::open_private_directory(home).map_err(|_| TRANSITION_ERROR)?;
-    if uid != rustix::process::geteuid().as_raw() {
+    let (directory, owner) = custody::open_private_directory(home).map_err(|_| TRANSITION_ERROR)?;
+    if owner != Owner::current().map_err(|_| TRANSITION_ERROR)? {
         return Err(TRANSITION_ERROR.into());
     }
     let path = home.join(name);
     // Neither a torn final record nor different complete bytes are replaced.
-    if custody::private_file_present(&path, uid, 65536).map_err(|_| TRANSITION_ERROR)? {
+    if custody::private_file_present(&path, owner, 65536).map_err(|_| TRANSITION_ERROR)? {
         return if config::read(home, name, 65536)?.as_slice() == bytes {
             directory.sync_all().map_err(|_| TRANSITION_ERROR.into())
         } else {
@@ -53,8 +52,8 @@ fn publish_with(
     }
     let staged = home.join(&staged_name);
     let mut file =
-        if custody::private_file_present(&staged, uid, 65536).map_err(|_| TRANSITION_ERROR)? {
-            custody::open_private_file(&staged, uid, 65536).map_err(|_| TRANSITION_ERROR)?
+        if custody::private_file_present(&staged, owner, 65536).map_err(|_| TRANSITION_ERROR)? {
+            custody::open_private_file(&staged, owner, 65536).map_err(|_| TRANSITION_ERROR)?
         } else {
             let file = custody::create_private_file(&staged).map_err(|_| TRANSITION_ERROR)?;
             directory.sync_all().map_err(|_| TRANSITION_ERROR)?;
@@ -80,11 +79,9 @@ fn publish_with(
         return Err(TRANSITION_ERROR.into());
     }
     let named = fs::symlink_metadata(&staged).map_err(|_| TRANSITION_ERROR)?;
-    let held = file.metadata().map_err(|_| TRANSITION_ERROR)?;
-    custody::check_regular_file(&named, uid, 65536).map_err(|_| TRANSITION_ERROR)?;
-    if named.dev() != held.dev()
-        || named.ino() != held.ino()
-        || custody::private_file_present(&path, uid, 65536).map_err(|_| TRANSITION_ERROR)?
+    custody::check_regular_file(&staged, &named, owner, 65536).map_err(|_| TRANSITION_ERROR)?;
+    if !custody::same_file(&staged, &file).map_err(|_| TRANSITION_ERROR)?
+        || custody::private_file_present(&path, owner, 65536).map_err(|_| TRANSITION_ERROR)?
     {
         return Err(TRANSITION_ERROR.into());
     }

@@ -278,6 +278,7 @@ fn menubar(args: &[std::ffi::OsString]) -> Result<(), String> {
     }
 }
 
+#[cfg(unix)]
 const MENUBAR_LAUNCH_AGENT: &str = "com.hraness.valhalla.menubar";
 
 /// `state_directory()/bin/vhalla-menubar` — the stable per-user install
@@ -418,6 +419,7 @@ fn launchctl(args: &[&str]) -> Result<(), String> {
     }
 }
 
+#[cfg(unix)]
 fn launch_agent_plist(binary: &std::path::Path) -> String {
     let path = binary.to_string_lossy();
     let escaped = path

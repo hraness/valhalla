@@ -4,7 +4,6 @@ use super::*;
 use std::{
     fs::File,
     io::{Seek, SeekFrom},
-    os::unix::fs::MetadataExt,
 };
 use vhalla_private_kernel::{
     recovery::{IMAGE_FRAGMENT_BYTES, MAX_ARCHIVE_PAGE_BYTES},
@@ -64,9 +63,10 @@ impl Reader {
             return Err(REFUSED.into());
         }
         let path = resolved(path).map_err(|_| REFUSED)?;
-        let (directory, uid) =
+        let (directory, owner) =
             custody::open_private_directory(path.parent().ok_or(REFUSED)?).map_err(|_| REFUSED)?;
-        let mut file = custody::open_private_file(&path, uid, bounds.bytes).map_err(|_| REFUSED)?;
+        let mut file =
+            custody::open_private_file(&path, owner, bounds.bytes).map_err(|_| REFUSED)?;
         custody::acquire_shared(&file).map_err(|_| REFUSED)?;
         let size = file.metadata().map_err(|_| REFUSED)?.len();
         let mut header = [0; HEADER];
@@ -147,7 +147,7 @@ pub(crate) struct Writer {
     file: File,
     directory: File,
     path: PathBuf,
-    uid: u32,
+    owner: Owner,
     bounds: Bounds,
     bytes: u64,
     pages: u64,
@@ -163,7 +163,7 @@ impl Writer {
             return Err(FAILED.into());
         }
         let path = resolved(path).map_err(|_| FAILED)?;
-        let (directory, uid) =
+        let (directory, owner) =
             custody::open_private_directory(path.parent().ok_or(FAILED)?).map_err(|_| FAILED)?;
         let file = custody::create_private_file(&path).map_err(|_| FAILED)?;
         custody::acquire_exclusive(&file).map_err(|_| FAILED)?;
@@ -171,7 +171,7 @@ impl Writer {
             file,
             directory,
             path,
-            uid,
+            owner,
             bounds,
             bytes: 0,
             pages: 0,
@@ -225,11 +225,12 @@ impl Writer {
             .sync_all()
             .and_then(|_| self.directory.sync_all())
             .map_err(|_| FAILED)?;
-        let actual = custody::open_private_file(&self.path, self.uid, self.bounds.bytes)
+        let actual = custody::open_private_file(&self.path, self.owner, self.bounds.bytes)
             .map_err(|_| FAILED)?;
-        let before = self.file.metadata().map_err(|_| FAILED)?;
         let after = actual.metadata().map_err(|_| FAILED)?;
-        if before.dev() != after.dev() || before.ino() != after.ino() || after.len() != self.bytes {
+        if !custody::same_open_file(&self.file, &actual).map_err(|_| FAILED)?
+            || after.len() != self.bytes
+        {
             return Err(FAILED.into());
         }
         Ok(())

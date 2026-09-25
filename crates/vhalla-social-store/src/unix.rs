@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use vhalla_core::RealmId;
-use vhalla_custody::{self as custody, Error as CustodyError};
+use vhalla_custody::{self as custody, Error as CustodyError, Owner};
 use vhalla_social::{
     archive::{Archive, Limits, MAX_SNAPSHOT_BYTES},
     EvidenceRoot,
@@ -222,7 +222,7 @@ pub struct Store {
     path: PathBuf,
     directory: File,
     _lock: File,
-    uid: u32,
+    owner: Owner,
     archive: Archive,
     pin: Pin,
     #[cfg(test)]
@@ -234,7 +234,7 @@ impl Store {
     pub fn create(path: impl AsRef<Path>, realm: RealmId, limits: Limits) -> Result<Self, Error> {
         let archive = Archive::new(realm, limits)?;
         let path = absolute(path.as_ref())?;
-        let (directory, uid) = custody::create_private_directory(&path).map_err(map_custody)?;
+        let (directory, owner) = custody::create_private_directory(&path).map_err(map_custody)?;
         let lock = create_private(&path.join(LOCK))?;
         acquire(&lock)?;
         lock.sync_all()?;
@@ -251,7 +251,7 @@ impl Store {
             path,
             directory,
             _lock: lock,
-            uid,
+            owner,
             archive,
             pin,
             #[cfg(test)]
@@ -269,19 +269,19 @@ impl Store {
         expected: Option<Pin>,
     ) -> Result<Self, Error> {
         let path = absolute(path.as_ref())?;
-        let (directory, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
-        let lock = open_private(&path.join(LOCK), uid, 0)?;
+        let (directory, owner) = custody::open_private_directory(&path).map_err(map_custody)?;
+        let lock = open_private(&path.join(LOCK), owner, 0)?;
         if lock.metadata()?.len() != 0 {
             return Err(Error::Corrupt);
         }
         acquire(&lock)?;
-        let pin = Pin::decode(&read_bounded(&path.join(PIN), uid, PIN_BYTES)?)?;
+        let pin = Pin::decode(&read_bounded(&path.join(PIN), owner, PIN_BYTES)?)?;
         if expected.is_some_and(|expected| expected != pin) {
             return Err(Error::Freshness);
         }
         let raw = read_bounded(
             &path.join(bundle_name(pin.physical)),
-            uid,
+            owner,
             MAX_SNAPSHOT_BYTES,
         )?;
         let archive = Archive::from_snapshot(realm, limits, &raw)?;
@@ -292,7 +292,7 @@ impl Store {
             path,
             directory,
             _lock: lock,
-            uid,
+            owner,
             archive,
             pin,
             #[cfg(test)]
@@ -428,7 +428,7 @@ impl Store {
             return Err(Error::Corrupt);
         }
         self.audit_copies(None)?;
-        let raw = read_bounded(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?;
+        let raw = read_bounded(&self.path.join(INTENT_TEMP), self.owner, MAX_INTENT_BYTES)?;
         let generation = self.pin.generation.checked_add(1).ok_or(Error::Capacity)?;
         let mut prefix = Vec::new();
         prefix.extend_from_slice(INTENT_MAGIC);
@@ -469,7 +469,7 @@ impl Store {
         if self.validate_staged_intent()?.is_some() {
             // Establish scratch durability again after an uncertain original
             // write/sync before making it the authoritative intent.
-            open_private(&self.path.join(INTENT_TEMP), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+            open_private(&self.path.join(INTENT_TEMP), self.owner, MAX_INTENT_BYTES)?.sync_all()?;
             self.step(Step::IntentSynced)?;
             fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
             self.step(Step::IntentRenamed)?;
@@ -484,7 +484,7 @@ impl Store {
         Ok(())
     }
     fn validate_intent(&self) -> Result<Intent, Error> {
-        let raw = read_bounded(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?;
+        let raw = read_bounded(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?;
         let intent = Intent::decode(&raw, self.archive.realm(), self.archive.limits())?;
         if self.pin != intent.expected && self.pin != intent.next {
             return Err(Error::Conflict);
@@ -501,15 +501,15 @@ impl Store {
     }
     fn finish_intent(&mut self, intent: Intent, reconciled: bool) -> Result<Publication, Error> {
         // A retry after an uncertain initial sync must establish durability again.
-        open_private(&self.path.join(INTENT), self.uid, MAX_INTENT_BYTES)?.sync_all()?;
+        open_private(&self.path.join(INTENT), self.owner, MAX_INTENT_BYTES)?.sync_all()?;
         self.directory.sync_all()?;
         let snapshot = intent.archive.snapshot();
         let bundle = bundle_name(intent.next.physical);
         if self.exists(&bundle)? {
-            if read_bounded(&self.path.join(&bundle), self.uid, MAX_SNAPSHOT_BYTES)? != snapshot {
+            if read_bounded(&self.path.join(&bundle), self.owner, MAX_SNAPSHOT_BYTES)? != snapshot {
                 return Err(Error::Corrupt);
             }
-            open_private(&self.path.join(&bundle), self.uid, MAX_SNAPSHOT_BYTES)?.sync_all()?;
+            open_private(&self.path.join(&bundle), self.owner, MAX_SNAPSHOT_BYTES)?.sync_all()?;
             if self.exists(BUNDLE_TEMP)? {
                 self.remove_matching_temp(BUNDLE_TEMP, &snapshot)?;
             }
@@ -573,13 +573,13 @@ impl Store {
         synced: Step,
     ) -> Result<(), Error> {
         if self.exists(name)? {
-            let retained = read_bounded(&self.path.join(name), self.uid, bytes.len())?;
+            let retained = read_bounded(&self.path.join(name), self.owner, bytes.len())?;
             if !bytes.starts_with(&retained) {
                 return Err(Error::Corrupt);
             }
             // Complete only a known prefix of the exact retained intent. Neither
             // unrelated bytes nor a different signed candidate is overwritten.
-            let mut file = open_private(&self.path.join(name), self.uid, bytes.len())?;
+            let mut file = open_private(&self.path.join(name), self.owner, bytes.len())?;
             file.write_all(bytes)?;
             file.set_len(bytes.len() as u64)?;
             self.step(written)?;
@@ -593,7 +593,7 @@ impl Store {
         self.step(synced)
     }
     fn remove_matching_temp(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
-        let retained = read_bounded(&self.path.join(name), self.uid, bytes.len())?;
+        let retained = read_bounded(&self.path.join(name), self.owner, bytes.len())?;
         if !bytes.starts_with(&retained) {
             return Err(Error::Corrupt);
         }
@@ -614,7 +614,7 @@ impl Store {
             .into_iter()
             .filter(|name| is_bundle(name) && *name != current)
         {
-            let raw = read_bounded(&self.path.join(&name), self.uid, MAX_SNAPSHOT_BYTES)?;
+            let raw = read_bounded(&self.path.join(&name), self.owner, MAX_SNAPSHOT_BYTES)?;
             let old = Archive::from_snapshot(self.archive.realm(), self.archive.limits(), &raw)?;
             if bundle_name(old.physical_digest()) != name {
                 return Err(Error::Corrupt);
@@ -627,8 +627,9 @@ impl Store {
         for name in obsolete {
             self.check_pin()?;
             check_regular(
+                &self.path.join(&name),
                 &fs::symlink_metadata(self.path.join(&name))?,
-                self.uid,
+                self.owner,
                 MAX_SNAPSHOT_BYTES,
             )?;
             fs::remove_file(self.path.join(name))?;
@@ -661,7 +662,12 @@ impl Store {
             } else {
                 MAX_SNAPSHOT_BYTES
             };
-            check_regular(&fs::symlink_metadata(entry.path())?, self.uid, bound)?;
+            check_regular(
+                &entry.path(),
+                &fs::symlink_metadata(entry.path())?,
+                self.owner,
+                bound,
+            )?;
             names.push(name);
         }
         Ok(names)
@@ -673,7 +679,7 @@ impl Store {
             .into_iter()
             .filter(|name| is_bundle(name) && *name != current)
         {
-            let raw = read_bounded(&self.path.join(&name), self.uid, MAX_SNAPSHOT_BYTES)?;
+            let raw = read_bounded(&self.path.join(&name), self.owner, MAX_SNAPSHOT_BYTES)?;
             let copy = Archive::from_snapshot(self.archive.realm(), self.archive.limits(), &raw)?;
             if bundle_name(copy.physical_digest()) != name {
                 return Err(Error::Corrupt);
@@ -692,7 +698,7 @@ impl Store {
     fn exists(&self, name: &str) -> Result<bool, Error> {
         match fs::symlink_metadata(self.path.join(name)) {
             Ok(meta) => {
-                check_regular(&meta, self.uid, MAX_INTENT_BYTES)?;
+                check_regular(&self.path.join(name), &meta, self.owner, MAX_INTENT_BYTES)?;
                 Ok(true)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -702,7 +708,7 @@ impl Store {
     fn load_bundle(&self, pin: Pin) -> Result<Archive, Error> {
         let raw = read_bounded(
             &self.path.join(bundle_name(pin.physical)),
-            self.uid,
+            self.owner,
             MAX_SNAPSHOT_BYTES,
         )?;
         let archive = Archive::from_snapshot(self.archive.realm(), self.archive.limits(), &raw)?;
@@ -712,7 +718,7 @@ impl Store {
         Ok(archive)
     }
     fn read_pin(&self) -> Result<Pin, Error> {
-        Pin::decode(&read_bounded(&self.path.join(PIN), self.uid, PIN_BYTES)?)
+        Pin::decode(&read_bounded(&self.path.join(PIN), self.owner, PIN_BYTES)?)
     }
     fn check_pin(&self) -> Result<(), Error> {
         if self.read_pin()? != self.pin {
@@ -785,14 +791,14 @@ fn is_bundle(name: &str) -> bool {
 fn create_private(path: &Path) -> Result<File, Error> {
     custody::create_private_file(path).map_err(map_custody)
 }
-fn check_regular(meta: &Metadata, uid: u32, max: usize) -> Result<(), Error> {
-    custody::check_regular_file(meta, uid, max).map_err(map_custody)
+fn check_regular(path: &Path, meta: &Metadata, owner: Owner, max: usize) -> Result<(), Error> {
+    custody::check_regular_file(path, meta, owner, max).map_err(map_custody)
 }
-fn open_private(path: &Path, uid: u32, max: usize) -> Result<File, Error> {
-    custody::open_private_file(path, uid, max).map_err(map_custody)
+fn open_private(path: &Path, owner: Owner, max: usize) -> Result<File, Error> {
+    custody::open_private_file(path, owner, max).map_err(map_custody)
 }
-fn read_bounded(path: &Path, uid: u32, max: usize) -> Result<Vec<u8>, Error> {
-    custody::read_private_file(path, uid, max).map_err(map_custody)
+fn read_bounded(path: &Path, owner: Owner, max: usize) -> Result<Vec<u8>, Error> {
+    custody::read_private_file(path, owner, max).map_err(map_custody)
 }
 fn acquire(lock: &File) -> Result<(), Error> {
     custody::acquire_exclusive(lock).map_err(map_custody)
@@ -811,26 +817,26 @@ pub fn read_archive(
     limits: Limits,
 ) -> Result<Archive, Error> {
     let path = absolute(path.as_ref())?;
-    let (_, uid) = custody::open_private_directory(&path).map_err(map_custody)?;
-    let lock = open_private(&path.join(LOCK), uid, 0)?;
+    let (_, owner) = custody::open_private_directory(&path).map_err(map_custody)?;
+    let lock = open_private(&path.join(LOCK), owner, 0)?;
     if lock.metadata()?.len() != 0 {
         return Err(Error::Corrupt);
     }
     acquire_shared(&lock)?;
-    let pin = Pin::decode(&read_bounded(&path.join(PIN), uid, PIN_BYTES)?)?;
+    let pin = Pin::decode(&read_bounded(&path.join(PIN), owner, PIN_BYTES)?)?;
     let raw = read_bounded(
         &path.join(bundle_name(pin.physical)),
-        uid,
+        owner,
         MAX_SNAPSHOT_BYTES,
     )?;
     let archive = Archive::from_snapshot(realm, limits, &raw)?;
     if Pin::for_archive(pin.generation, &archive) != pin {
         return Err(Error::Corrupt);
     }
-    if present(&path, uid, INTENT, MAX_INTENT_BYTES)?
-        || present(&path, uid, INTENT_TEMP, MAX_INTENT_BYTES)?
-        || present(&path, uid, BUNDLE_TEMP, MAX_SNAPSHOT_BYTES)?
-        || present(&path, uid, PIN_TEMP, PIN_BYTES)?
+    if present(&path, owner, INTENT, MAX_INTENT_BYTES)?
+        || present(&path, owner, INTENT_TEMP, MAX_INTENT_BYTES)?
+        || present(&path, owner, BUNDLE_TEMP, MAX_SNAPSHOT_BYTES)?
+        || present(&path, owner, PIN_TEMP, PIN_BYTES)?
     {
         return Err(Error::RecoveryRequired);
     }
@@ -841,8 +847,8 @@ fn acquire_shared(lock: &File) -> Result<(), Error> {
     custody::acquire_shared(lock).map_err(map_custody)
 }
 
-fn present(path: &Path, uid: u32, name: &str, max: usize) -> Result<bool, Error> {
-    custody::private_file_present(&path.join(name), uid, max).map_err(map_custody)
+fn present(path: &Path, owner: Owner, name: &str, max: usize) -> Result<bool, Error> {
+    custody::private_file_present(&path.join(name), owner, max).map_err(map_custody)
 }
 
 #[cfg(test)]

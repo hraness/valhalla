@@ -12,10 +12,9 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
     io::{Read, Write},
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 
 /// Maximum encrypted whole-state image, including 40-byte AEAD overhead.
 pub const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024 + 40;
@@ -229,7 +228,7 @@ pub struct NativePrivateStore {
     directory: File,
     db_guard: File,
     _lock: File,
-    uid: u32,
+    owner: Owner,
     context: Context,
     limits: Limits,
     poisoned: bool,
@@ -244,7 +243,7 @@ impl NativePrivateStore {
     pub fn create_new(path: impl AsRef<Path>, context: Context, limits: Limits) -> Result<Self> {
         limits.check()?;
         let path = resolved_parent(path.as_ref()).map_err(|_| Error::Refused)?;
-        let (directory, uid) =
+        let (directory, owner) =
             custody::create_private_directory(&path).map_err(|_| Error::Refused)?;
         // Once the directory exists, initialization errors are uncertain. It may
         // not be reused/reset; open either validates the complete store or refuses.
@@ -303,7 +302,7 @@ impl NativePrivateStore {
                 directory,
                 db_guard,
                 _lock: lock,
-                uid,
+                owner,
                 context,
                 limits,
                 poisoned: true,
@@ -327,9 +326,9 @@ impl NativePrivateStore {
     /// Missing, partial and foreign markers remain intact and are refused.
     pub fn locate_context(path: impl AsRef<Path>) -> Result<Context> {
         let path = resolved_parent(path.as_ref()).map_err(|_| Error::Corrupt)?;
-        let (_directory, uid) =
+        let (_directory, owner) =
             custody::open_private_directory(&path).map_err(|_| Error::Corrupt)?;
-        let raw = custody::read_private_file(&path.join("FORMAT"), uid, FORMAT_BYTES)
+        let raw = custody::read_private_file(&path.join("FORMAT"), owner, FORMAT_BYTES)
             .map_err(|_| Error::Corrupt)?;
         if raw.len() != FORMAT_BYTES {
             return Err(Error::Corrupt);
@@ -349,16 +348,16 @@ impl NativePrivateStore {
     /// checked before SQLite can recover its rollback journal. No CREATE flag.
     pub fn open(path: impl AsRef<Path>, expected: Context) -> Result<Self> {
         let path = resolved_parent(path.as_ref()).map_err(|_| Error::Corrupt)?;
-        let (directory, uid) =
+        let (directory, owner) =
             custody::open_private_directory(&path).map_err(|_| Error::Corrupt)?;
         let lock =
-            custody::open_private_file(&path.join("lock"), uid, 0).map_err(|_| Error::Corrupt)?;
+            custody::open_private_file(&path.join("lock"), owner, 0).map_err(|_| Error::Corrupt)?;
         custody::acquire_exclusive(&lock).map_err(|_| Error::Refused)?;
-        let raw = custody::read_private_file(&path.join("FORMAT"), uid, FORMAT_BYTES)
+        let raw = custody::read_private_file(&path.join("FORMAT"), owner, FORMAT_BYTES)
             .map_err(|_| Error::Corrupt)?;
         let limits = parse_format(&raw, expected)?;
-        inventory(&path, uid, limits)?;
-        let db_guard = custody::open_private_file(&path.join(DB), uid, limits.database_bytes())
+        inventory(&path, owner, limits)?;
+        let db_guard = custody::open_private_file(&path.join(DB), owner, limits.database_bytes())
             .map_err(|_| Error::Corrupt)?;
         if db_guard.metadata().map_err(|_| Error::Corrupt)?.len() < 4096 {
             return Err(Error::Corrupt);
@@ -381,7 +380,7 @@ impl NativePrivateStore {
             directory,
             db_guard,
             _lock: lock,
-            uid,
+            owner,
             context: expected,
             limits,
             poisoned: true,
@@ -561,17 +560,17 @@ impl NativePrivateStore {
         value
     }
     fn check_files(&self) -> Result<()> {
-        inventory(&self.path, self.uid, self.limits)?;
-        let current =
-            custody::open_private_file(&self.path.join(DB), self.uid, self.limits.database_bytes())
-                .map_err(|_| Error::Corrupt)?
-                .metadata()
-                .map_err(|_| Error::Corrupt)?;
-        let kept = self.db_guard.metadata().map_err(|_| Error::Corrupt)?;
-        if (current.dev(), current.ino()) != (kept.dev(), kept.ino()) {
+        inventory(&self.path, self.owner, self.limits)?;
+        let current = custody::open_private_file(
+            &self.path.join(DB),
+            self.owner,
+            self.limits.database_bytes(),
+        )
+        .map_err(|_| Error::Corrupt)?;
+        if !custody::same_open_file(&current, &self.db_guard).map_err(|_| Error::Corrupt)? {
             return Err(Error::Corrupt);
         }
-        if custody::read_private_file(&self.path.join("FORMAT"), self.uid, FORMAT_BYTES)
+        if custody::read_private_file(&self.path.join("FORMAT"), self.owner, FORMAT_BYTES)
             .map_err(|_| Error::Corrupt)?
             != format(self.context, self.limits)
         {
@@ -836,7 +835,7 @@ fn parse_format(raw: &[u8], context: Context) -> Result<Limits> {
     }
     Ok(limits)
 }
-fn inventory(path: &Path, uid: u32, limits: Limits) -> Result<()> {
+fn inventory(path: &Path, owner: Owner, limits: Limits) -> Result<()> {
     let mut count = 0;
     for entry in fs::read_dir(path).map_err(|_| Error::Corrupt)? {
         count += 1;
@@ -847,7 +846,7 @@ fn inventory(path: &Path, uid: u32, limits: Limits) -> Result<()> {
         let name = entry.file_name();
         let name = name.to_str().ok_or(Error::Corrupt)?;
         if name == "delivery-generations" {
-            generation::inventory(&entry.path(), uid)?;
+            generation::inventory(&entry.path(), owner)?;
             continue;
         }
         let max = match name {
@@ -857,7 +856,7 @@ fn inventory(path: &Path, uid: u32, limits: Limits) -> Result<()> {
             JOURNAL => limits.database_bytes() + 32 * 1024 * 1024,
             _ => return Err(Error::Corrupt),
         };
-        custody::open_private_file(&entry.path(), uid, max).map_err(|_| Error::Corrupt)?;
+        custody::open_private_file(&entry.path(), owner, max).map_err(|_| Error::Corrupt)?;
     }
     if count < 3 {
         return Err(Error::Corrupt);

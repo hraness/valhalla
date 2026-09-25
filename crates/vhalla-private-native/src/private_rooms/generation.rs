@@ -5,7 +5,7 @@ const MAX_GENERATIONS: u64 = 16;
 const MAX_RECEIPT: usize = 650;
 const SELECT_MAGIC: &[u8; 9] = b"VHCDSELE\x01";
 
-pub(super) fn inventory(path: &Path, uid: u32) -> Result<()> {
+pub(super) fn inventory(path: &Path, owner: Owner) -> Result<()> {
     custody::open_private_directory(path).map_err(|_| Error::Corrupt)?;
     let mut count = 0;
     for entry in fs::read_dir(path).map_err(|_| Error::Corrupt)? {
@@ -24,7 +24,8 @@ pub(super) fn inventory(path: &Path, uid: u32) -> Result<()> {
         {
             return Err(Error::Corrupt);
         }
-        custody::open_private_file(&entry.path(), uid, MAX_RECEIPT).map_err(|_| Error::Corrupt)?;
+        custody::open_private_file(&entry.path(), owner, MAX_RECEIPT)
+            .map_err(|_| Error::Corrupt)?;
     }
     Ok(())
 }
@@ -46,7 +47,7 @@ impl NativePrivateStore {
         let path = self.path.join(DIRECTORY);
         match path.symlink_metadata() {
             Ok(_) => {
-                inventory(&path, self.uid)?;
+                inventory(&path, self.owner)?;
                 Ok(Some(path))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -64,7 +65,7 @@ impl NativePrivateStore {
         for generation in 0..MAX_GENERATIONS {
             let pause_path = path.join(format!("{generation:02}.pause"));
             let selected_path = path.join(format!("{generation:02}.selected"));
-            if !custody::private_file_present(&pause_path, self.uid, MAX_RECEIPT)
+            if !custody::private_file_present(&pause_path, self.owner, MAX_RECEIPT)
                 .map_err(|_| Error::Corrupt)?
             {
                 // A later generation without its predecessors is corruption.
@@ -84,17 +85,17 @@ impl NativePrivateStore {
                 }
                 return Ok(!previous_selected);
             }
-            let raw = custody::read_private_file(&pause_path, self.uid, MAX_RECEIPT)
+            let raw = custody::read_private_file(&pause_path, self.owner, MAX_RECEIPT)
                 .map_err(|_| Error::Corrupt)?;
             if !valid_receipt(&raw, generation) {
                 return Ok(true);
             }
-            if !custody::private_file_present(&selected_path, self.uid, MAX_RECEIPT)
+            if !custody::private_file_present(&selected_path, self.owner, MAX_RECEIPT)
                 .map_err(|_| Error::Corrupt)?
             {
                 return Ok(true);
             }
-            let selected = custody::read_private_file(&selected_path, self.uid, MAX_RECEIPT)
+            let selected = custody::read_private_file(&selected_path, self.owner, MAX_RECEIPT)
                 .map_err(|_| Error::Corrupt)?;
             if selected.len() != 73
                 || &selected[..9] != SELECT_MAGIC
@@ -140,13 +141,13 @@ impl NativePrivateStore {
         for previous in 0..generation {
             let old = custody::read_private_file(
                 &path.join(format!("{previous:02}.pause")),
-                self.uid,
+                self.owner,
                 MAX_RECEIPT,
             )
             .map_err(|_| Error::Refused)?;
             let selected = custody::read_private_file(
                 &path.join(format!("{previous:02}.selected")),
-                self.uid,
+                self.owner,
                 MAX_RECEIPT,
             )
             .map_err(|_| Error::Refused)?;
@@ -160,7 +161,7 @@ impl NativePrivateStore {
         }
         if custody::private_file_present(
             &path.join(format!("{generation:02}.selected")),
-            self.uid,
+            self.owner,
             MAX_RECEIPT,
         )
         .map_err(|_| Error::Refused)?
@@ -189,7 +190,7 @@ impl NativePrivateStore {
         let path = self.generation_directory()?.ok_or(Error::Refused)?;
         let stored = custody::read_private_file(
             &path.join(format!("{generation:02}.pause")),
-            self.uid,
+            self.owner,
             MAX_RECEIPT,
         )
         .map_err(|_| Error::Refused)?;
@@ -205,10 +206,10 @@ impl NativePrivateStore {
     fn append_exact(&mut self, directory: &Path, name: &str, expected: &[u8]) -> Result<()> {
         use std::io::{Seek, SeekFrom};
         let target = directory.join(name);
-        let present = custody::private_file_present(&target, self.uid, MAX_RECEIPT)
+        let present = custody::private_file_present(&target, self.owner, MAX_RECEIPT)
             .map_err(|_| Error::Corrupt)?;
         let prior = if present {
-            custody::read_private_file(&target, self.uid, MAX_RECEIPT)
+            custody::read_private_file(&target, self.owner, MAX_RECEIPT)
                 .map_err(|_| Error::Corrupt)?
         } else {
             Vec::new()
@@ -218,7 +219,7 @@ impl NativePrivateStore {
         }
         self.poisoned = true;
         let mut file = if present {
-            custody::open_private_file(&target, self.uid, MAX_RECEIPT)
+            custody::open_private_file(&target, self.owner, MAX_RECEIPT)
         } else {
             custody::create_private_file(&target)
         }
@@ -230,7 +231,7 @@ impl NativePrivateStore {
         File::open(directory)
             .and_then(|f| f.sync_all())
             .map_err(|_| Error::Uncertain)?;
-        if custody::read_private_file(&target, self.uid, MAX_RECEIPT)
+        if custody::read_private_file(&target, self.owner, MAX_RECEIPT)
             .map_err(|_| Error::Uncertain)?
             != expected
         {

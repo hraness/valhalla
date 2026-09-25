@@ -7,7 +7,7 @@ use std::{
     io::{self, Write},
     path::{Component, Path, PathBuf},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 
 pub(super) const MAX_TRANSACTION_BYTES: usize = 256 * 1024;
 const DIRECTORIES: [&str; 4] = ["pages", "evidence", "authors", "feed"];
@@ -24,7 +24,7 @@ const ROOT_FILES: [&str; 7] = [
 pub(super) struct Disk {
     pub path: PathBuf,
     pub directory: File,
-    pub uid: u32,
+    pub owner: Owner,
     _lock: File,
     #[cfg(test)]
     pub fault: std::cell::RefCell<Option<(&'static str, &'static str)>>,
@@ -46,14 +46,14 @@ impl Disk {
     }
     pub fn create(path: &Path) -> Result<Self, Error> {
         let path = custody::absolute(path).map_err(map)?;
-        let (directory, uid) = custody::create_private_directory(&path).map_err(map)?;
+        let (directory, owner) = custody::create_private_directory(&path).map_err(map)?;
         let lock = custody::create_private_file(&path.join("lock")).map_err(map)?;
         custody::acquire_exclusive(&lock).map_err(map)?;
         lock.sync_all()?;
         for name in DIRECTORIES {
-            let (child, owner) =
+            let (child, child_owner) =
                 custody::create_private_directory(&path.join(name)).map_err(map)?;
-            if owner != uid {
+            if child_owner != owner {
                 return Err(Error::UnsafePath);
             }
             child.sync_all()?;
@@ -65,7 +65,7 @@ impl Disk {
         Ok(Self {
             path,
             directory,
-            uid,
+            owner,
             _lock: lock,
             #[cfg(test)]
             fault: std::cell::RefCell::new(None),
@@ -73,12 +73,13 @@ impl Disk {
     }
     pub fn open(path: &Path) -> Result<Self, Error> {
         let path = custody::absolute(path).map_err(map)?;
-        let (directory, uid) = custody::open_private_directory(&path).map_err(map)?;
-        let lock = custody::open_private_file(&path.join("lock"), uid, 0).map_err(map)?;
+        let (directory, owner) = custody::open_private_directory(&path).map_err(map)?;
+        let lock = custody::open_private_file(&path.join("lock"), owner, 0).map_err(map)?;
         custody::acquire_exclusive(&lock).map_err(map)?;
         for name in DIRECTORIES {
-            let (_, owner) = custody::open_private_directory(&path.join(name)).map_err(map)?;
-            if owner != uid {
+            let (_, child_owner) =
+                custody::open_private_directory(&path.join(name)).map_err(map)?;
+            if child_owner != owner {
                 return Err(Error::UnsafePath);
             }
         }
@@ -98,7 +99,7 @@ impl Disk {
         Ok(Self {
             path,
             directory,
-            uid,
+            owner,
             _lock: lock,
             #[cfg(test)]
             fault: std::cell::RefCell::new(None),
@@ -137,7 +138,7 @@ impl Disk {
             self.path.clone()
         };
         let (directory, owner) = custody::open_private_directory(&parent).map_err(map)?;
-        if owner != self.uid {
+        if owner != self.owner {
             return Err(Error::UnsafePath);
         }
         Ok((self.path.join(relative), directory))
@@ -155,8 +156,8 @@ impl Disk {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(e.into()),
             Ok(_) => {
-                let (_, uid) = custody::open_private_directory(&path).map_err(map)?;
-                if uid != self.uid {
+                let (_, owner) = custody::open_private_directory(&path).map_err(map)?;
+                if owner != self.owner {
                     return Err(Error::UnsafePath);
                 }
                 Ok(true)
@@ -166,12 +167,12 @@ impl Disk {
     /// Creation is valid only after a durable terminal intent protects its HEAD.
     pub fn ensure_author(&self, author: &str) -> Result<(), Error> {
         let path = self.path.join("authors").join(author);
-        let (directory, uid) = if self.has_author(author)? {
+        let (directory, owner) = if self.has_author(author)? {
             custody::open_private_directory(&path).map_err(map)?
         } else {
             custody::create_private_directory(&path).map_err(map)?
         };
-        if uid != self.uid {
+        if owner != self.owner {
             return Err(Error::UnsafePath);
         }
         directory.sync_all()?;
@@ -182,7 +183,7 @@ impl Disk {
     }
     pub fn read(&self, name: &str, max: usize) -> Result<Vec<u8>, Error> {
         let (path, _) = self.checked_path(name)?;
-        custody::read_private_file(&path, self.uid, max).map_err(map)
+        custody::read_private_file(&path, self.owner, max).map_err(map)
     }
     pub fn optional(&self, name: &str, max: usize) -> Result<Option<Vec<u8>>, Error> {
         match self.read(name, max) {
@@ -210,7 +211,7 @@ impl Disk {
             return Err(Error::UnsafePath);
         }
         let (path, parent) = self.checked_path(name)?;
-        if custody::private_file_present(&path, self.uid, MAX_TRANSACTION_BYTES).map_err(map)? {
+        if custody::private_file_present(&path, self.owner, MAX_TRANSACTION_BYTES).map_err(map)? {
             fs::remove_file(path)?;
             parent.sync_all()?;
         }
@@ -239,7 +240,7 @@ impl Disk {
                 return Err(Error::Conflict);
             }
             let (path, parent) = self.checked_path(name)?;
-            custody::open_private_file(&path, self.uid, bytes.len())
+            custody::open_private_file(&path, self.owner, bytes.len())
                 .map_err(map)?
                 .sync_all()?;
             parent.sync_all()?;
@@ -255,7 +256,7 @@ impl Disk {
         }
         if current == next {
             let (path, parent) = self.checked_path(name)?;
-            custody::open_private_file(&path, self.uid, next.len())
+            custody::open_private_file(&path, self.owner, next.len())
                 .map_err(map)?
                 .sync_all()?;
             parent.sync_all()?;
@@ -278,7 +279,7 @@ impl Disk {
         }
         if current.as_deref() == Some(next) {
             let (path, parent) = self.checked_path(name)?;
-            custody::open_private_file(&path, self.uid, next.len())
+            custody::open_private_file(&path, self.owner, next.len())
                 .map_err(map)?
                 .sync_all()?;
             parent.sync_all()?;
@@ -293,7 +294,7 @@ impl Disk {
             return Err(Error::Corrupt);
         }
         let (path, parent) = self.checked_path("INTENT")?;
-        custody::open_private_file(&path, self.uid, expected.len())
+        custody::open_private_file(&path, self.owner, expected.len())
             .map_err(map)?
             .sync_all()?;
         parent.sync_all()?;

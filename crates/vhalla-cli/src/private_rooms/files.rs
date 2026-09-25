@@ -2,7 +2,7 @@ use std::{
     io::{IsTerminal, Read, Write},
     path::{Path, PathBuf},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use zeroize::Zeroizing;
 
 pub(super) mod archive;
@@ -36,10 +36,10 @@ pub(super) fn read(
             .map_err(|_| "private input read failed")?;
     } else {
         let path = resolved(path)?;
-        let (_directory, uid) =
+        let (_directory, owner) =
             custody::open_private_directory(path.parent().ok_or("missing private parent")?)
                 .map_err(|_| "input parent must be owner-private 0700")?;
-        let mut file = custody::open_private_file(&path, uid, limit)
+        let mut file = custody::open_private_file(&path, owner, limit)
             .map_err(|_| "input must be bounded, regular, owner-private 0600 and not linked")?;
         let size = usize::try_from(
             file.metadata()
@@ -71,14 +71,15 @@ pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         return Err(OUTPUT_ERROR.into());
     }
     let path = resolved(path).map_err(|_| OUTPUT_ERROR)?;
-    let (directory, uid) = custody::open_private_directory(path.parent().ok_or(OUTPUT_ERROR)?)
+    let (directory, owner) = custody::open_private_directory(path.parent().ok_or(OUTPUT_ERROR)?)
         .map_err(|_| OUTPUT_ERROR)?;
     // Output is a recoverable copy, never state authority. A failed prefix is
     // preserved; exact kernel evidence supports retry to a fresh output path.
     let mut file = custody::create_private_file(&path).map_err(|_| OUTPUT_ERROR)?;
     custody::check_regular_file(
+        &path,
         &file.metadata().map_err(|_| OUTPUT_ERROR)?,
-        uid,
+        owner,
         OUTPUT_LIMIT,
     )
     .map_err(|_| OUTPUT_ERROR)?;

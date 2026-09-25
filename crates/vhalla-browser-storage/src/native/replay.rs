@@ -13,7 +13,7 @@ use std::{
     io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
-use vhalla_custody as custody;
+use vhalla_custody::{self as custody, Owner};
 use vhalla_public_client::{
     checkpoint::{
         incomplete_successor, AuthenticatedCheckpoint, CheckpointHead, MAX_CHECKPOINT_BYTES,
@@ -43,7 +43,7 @@ enum Point {
 /// One exclusively owned verified replica and its authenticated durable prefix.
 pub struct NativeReplay {
     path: PathBuf,
-    uid: u32,
+    owner: Owner,
     directory: File,
     _lock: File,
     key: Zeroizing<[u8; 32]>,
@@ -91,7 +91,7 @@ impl NativeReplay {
     ) -> Result<Self, Error> {
         let client = CertifiedClient::new(bootstrap, pin).map_err(client_error)?;
         let path = custody::absolute(path.as_ref()).map_err(custody_error)?;
-        let (directory, uid) = custody::create_private_directory(&path).map_err(custody_error)?;
+        let (directory, owner) = custody::create_private_directory(&path).map_err(custody_error)?;
         let lock = custody::create_private_file(&path.join("lock")).map_err(custody_error)?;
         custody::acquire_exclusive(&lock).map_err(custody_error)?;
         lock.sync_all().map_err(io)?;
@@ -116,7 +116,7 @@ impl NativeReplay {
             .seal(&key, 0, [0; 32]);
         let mut out = Self {
             path,
-            uid,
+            owner,
             directory,
             _lock: lock,
             key,
@@ -145,26 +145,27 @@ impl NativeReplay {
         }
         let network = bootstrap.network_id();
         let path = custody::absolute(path.as_ref()).map_err(custody_error)?;
-        let (directory, uid) = custody::open_private_directory(&path).map_err(custody_error)?;
-        let lock = custody::open_private_file(&path.join("lock"), uid, 0).map_err(custody_error)?;
+        let (directory, owner) = custody::open_private_directory(&path).map_err(custody_error)?;
+        let lock =
+            custody::open_private_file(&path.join("lock"), owner, 0).map_err(custody_error)?;
         custody::acquire_exclusive(&lock).map_err(custody_error)?;
-        if custody::read_private_file(&path.join("FORMAT"), uid, FORMAT_BYTES)
+        if custody::read_private_file(&path.join("FORMAT"), owner, FORMAT_BYTES)
             .map_err(custody_error)?
             != format(network, pin)
         {
             return Err(Error::WrongScope);
         }
         let key_raw = Zeroizing::new(
-            custody::read_private_file(&path.join("KEY"), uid, 32).map_err(custody_error)?,
+            custody::read_private_file(&path.join("KEY"), owner, 32).map_err(custody_error)?,
         );
         let key =
             Zeroizing::new(<[u8; 32]>::try_from(key_raw.as_slice()).map_err(|_| Error::Corrupt)?);
         let present = |name: &str| {
-            custody::private_file_present(&path.join(name), uid, MAX_CHECKPOINT_BYTES)
+            custody::private_file_present(&path.join(name), owner, MAX_CHECKPOINT_BYTES)
                 .map_err(custody_error)
         };
         let read = |name: &str| {
-            custody::read_private_file(&path.join(name), uid, MAX_CHECKPOINT_BYTES)
+            custody::read_private_file(&path.join(name), owner, MAX_CHECKPOINT_BYTES)
                 .map_err(custody_error)
         };
         let current = if present("STATE")? {
@@ -201,7 +202,7 @@ impl NativeReplay {
         };
         let mut out = Self {
             path,
-            uid,
+            owner,
             directory,
             _lock: lock,
             key,
@@ -336,15 +337,15 @@ impl NativeReplay {
         Ok(())
     }
     fn read(&self, name: &str) -> Result<Vec<u8>, Error> {
-        custody::read_private_file(&self.path.join(name), self.uid, MAX_CHECKPOINT_BYTES)
+        custody::read_private_file(&self.path.join(name), self.owner, MAX_CHECKPOINT_BYTES)
             .map_err(custody_error)
     }
     fn present(&self, name: &str) -> Result<bool, Error> {
-        custody::private_file_present(&self.path.join(name), self.uid, MAX_CHECKPOINT_BYTES)
+        custody::private_file_present(&self.path.join(name), self.owner, MAX_CHECKPOINT_BYTES)
             .map_err(custody_error)
     }
     fn resync(&self, name: &str, max: usize) -> Result<(), Error> {
-        custody::open_private_file(&self.path.join(name), self.uid, max)
+        custody::open_private_file(&self.path.join(name), self.owner, max)
             .map_err(custody_error)?
             .sync_all()
             .map_err(io)?;
@@ -372,7 +373,7 @@ impl NativeReplay {
         }
         let mut file = custody::open_private_file(
             &self.path.join("STATE.tmp"),
-            self.uid,
+            self.owner,
             MAX_CHECKPOINT_BYTES,
         )
         .map_err(custody_error)?;

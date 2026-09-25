@@ -110,7 +110,7 @@ impl DeliveryStore {
             .map_err(|_| Error::Storage)?
             .join(requested.file_name().ok_or(Error::Storage)?);
         let existed = path.symlink_metadata().is_ok();
-        let (directory, uid) = if existed {
+        let (directory, owner) = if existed {
             custody::open_private_directory(&path)
         } else {
             custody::create_private_directory(&path)
@@ -135,7 +135,7 @@ impl DeliveryStore {
         intent.extend(seed.receipt);
         let intent_path = path.join("creation");
         let has_intent =
-            custody::private_file_present(&intent_path, uid, 1024).map_err(|_| Error::Corrupt)?;
+            custody::private_file_present(&intent_path, owner, 1024).map_err(|_| Error::Corrupt)?;
         let mut count = 0;
         for entry in std::fs::read_dir(&path).map_err(|_| Error::Corrupt)? {
             count += 1;
@@ -151,15 +151,15 @@ impl DeliveryStore {
         }
         let lock_path = path.join("lock");
         let lock =
-            if custody::private_file_present(&lock_path, uid, 0).map_err(|_| Error::Corrupt)? {
-                custody::open_private_file(&lock_path, uid, 0)
+            if custody::private_file_present(&lock_path, owner, 0).map_err(|_| Error::Corrupt)? {
+                custody::open_private_file(&lock_path, owner, 0)
             } else {
                 custody::create_private_file(&lock_path)
             }
             .map_err(|_| Error::Storage)?;
         custody::acquire_exclusive(&lock).map_err(|_| Error::Busy)?;
         let prior = if has_intent {
-            custody::read_private_file(&intent_path, uid, 1024).map_err(|_| Error::Corrupt)?
+            custody::read_private_file(&intent_path, owner, 1024).map_err(|_| Error::Corrupt)?
         } else {
             Vec::new()
         };
@@ -169,7 +169,7 @@ impl DeliveryStore {
             return Err(Error::Conflict);
         }
         let mut intent_file = if has_intent {
-            custody::open_private_file(&intent_path, uid, 1024)
+            custody::open_private_file(&intent_path, owner, 1024)
         } else {
             custody::create_private_file(&intent_path)
         }
@@ -181,23 +181,23 @@ impl DeliveryStore {
             .and_then(|_| intent_file.sync_all())
             .and_then(|_| directory.sync_all())
             .map_err(|_| Error::Storage)?;
-        if custody::read_private_file(&intent_path, uid, 1024).map_err(|_| Error::Corrupt)?
+        if custody::read_private_file(&intent_path, owner, 1024).map_err(|_| Error::Corrupt)?
             != intent
         {
             return Err(Error::Corrupt);
         }
         creation_point(2)?;
         let db_path = path.join("delivery.db");
-        let db = if custody::private_file_present(&db_path, uid, MAX_DATABASE_BYTES)
+        let db = if custody::private_file_present(&db_path, owner, MAX_DATABASE_BYTES)
             .map_err(|_| Error::Corrupt)?
         {
-            custody::open_private_file(&db_path, uid, MAX_DATABASE_BYTES)
+            custody::open_private_file(&db_path, owner, MAX_DATABASE_BYTES)
         } else {
             custody::create_private_file(&db_path)
         }
         .map_err(|_| Error::Storage)?;
         creation_point(3)?;
-        custody::private_file_present(&path.join("delivery.db-journal"), uid, MAX_DATABASE_BYTES)
+        custody::private_file_present(&path.join("delivery.db-journal"), owner, MAX_DATABASE_BYTES)
             .map_err(|_| Error::Corrupt)?;
         let conn = Connection::open_with_flags(
             &db_path,

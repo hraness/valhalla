@@ -144,8 +144,8 @@ pub(super) fn publish(path: &Path, expected: &[u8]) -> Result<(), String> {
         return Err(REFUSED.into());
     }
     let parent = path.parent().ok_or(REFUSED)?;
-    let (directory, uid) = custody::open_private_directory(parent).map_err(|_| REFUSED)?;
-    if custody::private_file_present(path, uid, MAX_BYTES).map_err(|_| REFUSED)? {
+    let (directory, owner) = custody::open_private_directory(parent).map_err(|_| REFUSED)?;
+    if custody::private_file_present(path, owner, MAX_BYTES).map_err(|_| REFUSED)? {
         if files::read(path, MAX_BYTES, false)?.as_slice() != expected {
             return Err(REFUSED.into());
         }
@@ -154,8 +154,8 @@ pub(super) fn publish(path: &Path, expected: &[u8]) -> Result<(), String> {
     }
     let pending = path.with_extension("pending");
     let mut file =
-        if custody::private_file_present(&pending, uid, MAX_BYTES).map_err(|_| REFUSED)? {
-            custody::open_private_file(&pending, uid, MAX_BYTES).map_err(|_| REFUSED)?
+        if custody::private_file_present(&pending, owner, MAX_BYTES).map_err(|_| REFUSED)? {
+            custody::open_private_file(&pending, owner, MAX_BYTES).map_err(|_| REFUSED)?
         } else {
             custody::create_private_file(&pending).map_err(|_| REFUSED)?
         };

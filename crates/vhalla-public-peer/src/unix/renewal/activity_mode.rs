@@ -62,11 +62,11 @@ fn encode_selected(scope: &Scope, selected: Selection) -> Vec<u8> {
 }
 pub(super) fn read_selected_mode(
     dir: &Path,
-    uid: u32,
+    owner: Owner,
     scope: &Scope,
     expected: Option<Selection>,
 ) -> Result<Option<Vec<u8>>, Error> {
-    let retained = read_optional(dir, uid, MODE, MODE_BYTES)?;
+    let retained = read_optional(dir, owner, MODE, MODE_BYTES)?;
     let expected = expected.map(|config| encode_selected(scope, config));
     if retained != expected {
         return Err(Error::State(
@@ -74,7 +74,7 @@ pub(super) fn read_selected_mode(
         ));
     }
     if retained.is_some() {
-        custody::open_private_file(&dir.join(MODE), uid, MODE_BYTES)
+        custody::open_private_file(&dir.join(MODE), owner, MODE_BYTES)
             .map_err(Error::Custody)?
             .sync_all()?;
     }
