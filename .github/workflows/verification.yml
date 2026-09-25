@@ -71,4 +71,6 @@ jobs:
           curl -sSfL https://github.com/verus-lang/verus/releases/download/release/0.2026.09.13.671956e/verus-0.2026.09.13.671956e-x86-linux.zip -o verus.zip
           echo '08c85b96e0fbbbdcb1b3a9fa8943dce7598c3e7b343680820f649b4e1efda4b4  verus.zip' | sha256sum -c -
           unzip -q verus.zip
-      - run: ./verus-x86-linux/verus --crate-type=lib verify/ledger.rs
+      - run: |
+          ./verus-x86-linux/verus --crate-type=lib verify/ledger.rs
+          ./verus-x86-linux/verus --crate-type=lib verify/private-egress/egress.rs
