@@ -83,7 +83,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/vhalla" "$out/"
           tar -czf "${out}.tar.gz" "$out"
           shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-cli-${{ matrix.target }}
           path: |
@@ -121,7 +121,7 @@ jobs:
           cp desktop/target/aarch64-apple-darwin/release/vhalla-menubar "$out/"
           tar -czf "${out}.tar.gz" "$out"
           shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-menubar-aarch64-apple-darwin
           path: |
@@ -152,7 +152,7 @@ jobs:
           python3 .github/scripts/verify_browser_artifact.py "$out" --manifest-sha256 "$QUALIFIED_MANIFEST_SHA256"
           tar -czf "${out}.tar.gz" "$out"
           shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-browser
           path: |

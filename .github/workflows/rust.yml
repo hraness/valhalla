@@ -104,7 +104,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
       - name: Retain failed live-mesh soak diagnostics
         if: failure() && matrix.name == 'cli-heavy'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-heavy-soak-diagnostics
           path: ${{ runner.temp }}/vhalla-cli-node-soak-*
@@ -285,7 +285,7 @@ jobs:
         run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/release/examples/browser_fixture" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-product-results" --recovery
       - name: Retain bounded browser runtime evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vhalla-browser-runtime-evidence
           path: |
@@ -324,7 +324,7 @@ jobs:
         run: |
           digest="$(python3 .github/scripts/verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-delivery-results/receipt.json")"
           printf 'manifest_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vhalla-browser
           path: browser/dist
@@ -448,7 +448,7 @@ jobs:
         run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
       - name: Retain site visual evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vhalla-site-visual-evidence
           path: |
@@ -472,7 +472,7 @@ jobs:
         run: python3 .github/scripts/audit_dependencies.py --output-dir "$RUNNER_TEMP/security-reports"
       - name: Retain complete security evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: security-reports
           path: ${{ runner.temp }}/security-reports
