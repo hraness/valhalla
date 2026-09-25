@@ -838,6 +838,114 @@ fn over_limit_pre_auth_sockets_get_an_alert_and_progress_resumes() {
     worker.join().unwrap();
     assert_eq!(f.open().page(0, 64).unwrap().head, 1);
 }
+fn read_alert(stream: &mut TcpStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut alert = [0; 7];
+    stream.read_exact(&mut alert).unwrap();
+    assert_eq!(alert, [0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x50]);
+}
+fn awaits_client_hello(stream: &TcpStream) -> bool {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let mut byte = [0; 1];
+    matches!(
+        (&mut &*stream).read(&mut byte).map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+    )
+}
+#[test]
+fn loopback_peers_share_only_the_global_connection_bound() {
+    let f = Fixture::new();
+    let cert = certificates();
+    // Eight slots would give a remote source two. Loopback peers, which
+    // include an overlay forward carrying several clients, may use them all.
+    let limits = ServiceLimits {
+        max_connections: 8,
+        request_timeout: Duration::from_secs(3),
+        window: Duration::from_secs(60),
+        ..ServiceLimits::default()
+    };
+    let (addr, worker) = f.serve(&cert, vec![credential(1, 7)], limits, 4);
+    let held: Vec<TcpStream> = (0..3).map(|_| TcpStream::connect(addr).unwrap()).collect();
+    thread::sleep(Duration::from_millis(150));
+    assert!(
+        awaits_client_hello(&held[2]),
+        "third loopback socket refused"
+    );
+    client(addr, &cert, 7).submit(&item(1)).unwrap();
+    drop(held);
+    worker.join().unwrap();
+    assert_eq!(f.open().page(0, 64).unwrap().head, 1);
+}
+/// The routed source address of this host, found by connecting a UDP socket
+/// (which sends nothing) toward a documentation address, provided the host
+/// also accepts its own TCP connections on it.
+#[cfg(target_os = "linux")]
+fn routed_address() -> Option<std::net::IpAddr> {
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    probe.connect("192.0.2.1:9").ok()?;
+    let ip = probe.local_addr().ok()?.ip();
+    if ip.is_loopback() || ip.is_unspecified() {
+        return None;
+    }
+    let listener = TcpListener::bind((ip, 0)).ok()?;
+    TcpStream::connect_timeout(&listener.local_addr().ok()?, Duration::from_secs(2)).ok()?;
+    Some(ip)
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn a_remote_source_is_held_to_its_share_while_other_peers_progress() {
+    let Some(ip) = routed_address() else {
+        eprintln!("skipped: this host has no routed non-loopback IPv4 address");
+        return;
+    };
+    let f = Fixture::new();
+    let cert = certificates();
+    // Eight slots and 16 handshakes per window give each remote source two
+    // live connections and four handshakes per window. Held sockets end when
+    // dropped, so the long deadline only removes timing sensitivity.
+    let limits = ServiceLimits {
+        max_connections: 8,
+        request_timeout: Duration::from_secs(3),
+        window: Duration::from_secs(60),
+        requests_per_window: 8,
+        ..ServiceLimits::default()
+    };
+    let key = Credential {
+        requests_per_window: 4,
+        ..credential(1, 7)
+    };
+    let service = Service::new(f.open(), cert.config.clone(), vec![key], limits).unwrap();
+    // A wildcard test listener lets this host dial itself both as a remote
+    // source (its routed address) and as a loopback peer.
+    let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (remote, local) = (
+        SocketAddr::new(ip, port),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    );
+    let worker = thread::spawn(move || service.serve(listener, Some(7)).unwrap());
+    let held = [
+        TcpStream::connect(remote).unwrap(),
+        TcpStream::connect(remote).unwrap(),
+    ];
+    assert!(held.iter().all(awaits_client_hello));
+    read_alert(&mut TcpStream::connect(remote).unwrap());
+    drop(held);
+    thread::sleep(Duration::from_millis(300));
+    // Released slots return: the third handshake in this window completes.
+    client(remote, &cert, 7).submit(&item(1)).unwrap();
+    drop(TcpStream::connect(remote).unwrap());
+    // The fifth handshake exceeds the source's window share...
+    read_alert(&mut TcpStream::connect(remote).unwrap());
+    // ...while a loopback peer still has the global allowance.
+    client(local, &cert, 7).submit(&item(2)).unwrap();
+    worker.join().unwrap();
+    assert_eq!(f.open().page(0, 64).unwrap().head, 2);
+}
 #[test]
 fn per_key_charge_index_is_created_and_repaired_idempotently() {
     let f = Fixture::new();

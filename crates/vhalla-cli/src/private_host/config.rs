@@ -69,6 +69,11 @@ pub(super) struct Config {
     pub retained_generations: Vec<RetainedGeneration>,
     pub label: String,
     pub listen: SocketAddr,
+    /// Addresses clients dial instead of `listen`, for a network listener whose
+    /// reachable address differs (a cloud server behind 1:1 NAT). Empty means
+    /// clients dial `listen`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advertise: Vec<SocketAddr>,
     pub tls_name: String,
     pub executable: PathBuf,
     pub namespace: String,
@@ -263,19 +268,26 @@ pub(super) fn initialize(
     name: &str,
     executable: &Path,
 ) -> Result<Loaded, String> {
-    initialize_with_leaf_lifetime(path, listen, name, executable, time::Duration::days(365))
+    initialize_with_leaf_lifetime(
+        path,
+        listen,
+        &[],
+        name,
+        executable,
+        time::Duration::days(365),
+    )
 }
 
 pub(super) fn initialize_with_leaf_lifetime(
     path: &Path,
     listen: SocketAddr,
+    advertise: &[SocketAddr],
     name: &str,
     executable: &Path,
     leaf_lifetime: time::Duration,
 ) -> Result<Loaded, String> {
     let home = resolve(path)?;
-    if !super::loopback(listen)
-        || listen.port() == 0
+    if !super::listener_selection(listen, advertise)
         || name.len() > 253
         || name.is_empty()
         || !valid_leaf_lifetime(leaf_lifetime.whole_seconds())
@@ -320,6 +332,7 @@ pub(super) fn initialize_with_leaf_lifetime(
         retained_generations: Vec::new(),
         label: label(&home)?,
         listen,
+        advertise: advertise.to_vec(),
         tls_name: name.to_owned(),
         executable,
         namespace: hex(namespace.as_bytes()),
@@ -419,8 +432,7 @@ pub(super) fn load_for_stop(path: &Path) -> Result<Loaded, String> {
 fn validate_config(home: &Path, config: &Config) -> Result<(), String> {
     if ![1, 2, 3].contains(&config.version)
         || config.label != label(&resolve(home)?)?
-        || !super::loopback(config.listen)
-        || config.listen.port() == 0
+        || !super::listener_selection(config.listen, &config.advertise)
         || !config.executable.is_absolute()
         || config.certificate_expires_at <= config.created_at
         || config.authority_expires_at <= config.certificate_expires_at
@@ -497,6 +509,15 @@ pub(super) fn load(path: &Path) -> Result<Loaded, String> {
     Ok(loaded)
 }
 
+/// Addresses a client dials directly: the advertised ones, else the listener.
+pub(super) fn addresses(config: &Config) -> Vec<SocketAddr> {
+    if config.advertise.is_empty() {
+        vec![config.listen]
+    } else {
+        config.advertise.clone()
+    }
+}
+
 /// The client-facing document a member copies into a delivery profile. It
 /// carries no token and no private path outside the home.
 pub(super) fn connection_document(
@@ -504,7 +525,7 @@ pub(super) fn connection_document(
     config: &Config,
     previous: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    let mut document = serde_json::json!({"version":1,"namespace":config.namespace,"listen":config.listen,"tls_name":config.tls_name,"ca_file":"ca.der","ca_sha256":digest(&read(home,"ca.der",65536)?),"certificate_expires_at":config.certificate_expires_at,"mailbox":config.mailbox,"transport":"TLS 1.3; copy CA and one separate private credential through a trusted channel","client_tokens":"not included"});
+    let mut document = serde_json::json!({"version":1,"namespace":config.namespace,"listen":config.listen,"addresses":addresses(config),"tls_name":config.tls_name,"ca_file":"ca.der","ca_sha256":digest(&read(home,"ca.der",65536)?),"certificate_expires_at":config.certificate_expires_at,"mailbox":config.mailbox,"transport":"TLS 1.3; copy CA and one separate private credential through a trusted channel","client_tokens":"not included"});
     if let Some(previous) = previous {
         document["previous_namespace"] = previous.into();
     }
@@ -1007,6 +1028,7 @@ mod tests {
             initialize_with_leaf_lifetime(
                 &home,
                 "127.0.0.1:9473".parse().unwrap(),
+                &[],
                 "maintenance.test.invalid",
                 &std::env::current_exe().unwrap(),
                 time::Duration::days(1),
@@ -1244,6 +1266,7 @@ mod tests {
             assert!(initialize_with_leaf_lifetime(
                 &home,
                 "127.0.0.1:9473".parse().unwrap(),
+                &[],
                 "ttl.test.invalid",
                 &std::env::current_exe().unwrap(),
                 time::Duration::days(days)
