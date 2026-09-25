@@ -215,14 +215,22 @@ context bind the persistent queue; rotating the token does not redirect old jobs
 `emit_acceptance` separately authorizes host-generated recipient receipts, even
 when the agent's own message permission is read-only.
 
-To poll a quiet mailbox more often, add `"mailbox_polling": "interactive"`
-before the first `delivery-init`. This mode waits five seconds after an empty
-scan, or one second for 30 seconds after newly queued or observed work. The
-default, `"adaptive"`, waits 10, 20, then at most 30 seconds after successive
-empty scans. Interactive mode trades up to six times as many steady idle TLS
-exchanges for a shorter wait to discover incoming messages. These intervals
-exclude scheduler, network and processing time; they are not delivery deadlines.
-Network errors retain their separate retry delay in both modes.
+On a host that supports it, the driver holds one bounded page request open on
+its own connection; the host answers it as soon as a new item is retained or
+when the wait expires, up to one minute. A quiet mailbox then costs about one
+exchange per minute, and a new message surfaces within one driver tick. A host
+that predates the held request refuses it once, and the driver stays on timed
+scans.
+
+For those hosts, `"mailbox_polling": "interactive"` before the first
+`delivery-init` polls a quiet mailbox more often. This mode waits five seconds
+after an empty scan, or one second for 30 seconds after newly queued or
+observed work. The default, `"adaptive"`, waits 10, 20, then at most 30
+seconds after successive empty scans. Interactive mode trades up to six times
+as many steady idle TLS exchanges for a shorter wait to discover incoming
+messages. These intervals exclude scheduler, network and processing time; they
+are not delivery deadlines. Network errors retain their separate retry delay
+in both modes.
 
 The polling choice binds the delivery state. Editing it after initialization
 refuses; there is no in-place policy migration. Omitting the field preserves the
@@ -297,7 +305,8 @@ and revalidates restored applied markers in bounded passes against exact staged
 items and authenticated kernel history. It preserves the old durable checkpoint
 while verification catches up; marker filenames alone never justify progress.
 Revalidation does not encrypt a replacement, issue a new acceptance or apply an
-unseen control. Mailbox polling follows the selected policy and repolls on the
+unseen control. Mailbox polling follows the selected policy when timed
+scanning applies and repolls on the
 next tick when a page still has staged work; network errors back off separately (1s to 30s)
 without touching staged evidence. There is no lifetime poll cap: a quiet room
 never silently exhausts its driver's attention. A staged item whose kernel

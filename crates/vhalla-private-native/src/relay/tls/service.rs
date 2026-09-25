@@ -4,7 +4,7 @@ use rusqlite::{params, OptionalExtension};
 use std::{
     collections::BTreeMap,
     net::{IpAddr, TcpListener},
-    sync::Mutex,
+    sync::{Condvar, Mutex, MutexGuard},
     thread,
 };
 
@@ -61,6 +61,9 @@ pub struct ServiceLimits {
     pub requests_per_window: u32,
     /// Total request plus actual encoded response bytes per window.
     pub bytes_per_window: u64,
+    /// Upper bound on how long one authenticated page request may stay open
+    /// waiting for newly retained items. Zero disables waiting entirely.
+    pub max_wait: Duration,
 }
 impl Default for ServiceLimits {
     fn default() -> Self {
@@ -70,6 +73,7 @@ impl Default for ServiceLimits {
             window: Duration::from_secs(1),
             requests_per_window: 128,
             bytes_per_window: 64 * 1024 * 1024,
+            max_wait: Duration::from_secs(60),
         }
     }
 }
@@ -98,9 +102,13 @@ struct State {
 /// shares of both for peers that are not on this machine, and a
 /// handshake-phase deadline tighter than the whole request; over-limit
 /// sockets get a bounded fatal alert instead of a silent drop.
+/// An admitted page request may also wait up to `max_wait` for a committed
+/// put; committed put responses wake waiting page workers on `notify`, and
+/// each waiter still occupies its connection, in-flight and window shares.
 pub struct Service {
     state: Arc<Mutex<State>>,
     config: Arc<ServerConfig>,
+    notify: Arc<Condvar>,
 }
 
 impl Service {
@@ -145,6 +153,7 @@ impl Service {
             || limits.requests_per_window > 1_000_000
             || limits.bytes_per_window < 2
             || limits.bytes_per_window > 1024 * 1024 * 1024
+            || limits.max_wait > Duration::from_secs(120)
             || credentials.is_empty()
             || credentials.len() > 64
             || config.max_early_data_size != 0
@@ -249,6 +258,7 @@ impl Service {
         selected.alpn_protocols = vec![protocol(store.namespace())];
         let config = Arc::new(selected);
         Ok(Self {
+            notify: Arc::new(Condvar::new()),
             state: Arc::new(Mutex::new(State {
                 store,
                 credentials,
@@ -297,6 +307,10 @@ impl Service {
         listener
             .set_nonblocking(true)
             .map_err(|_| NetError::Unavailable)?;
+        // Workers watch this rather than the caller's stop flag: a finite
+        // `serve` limit or a failure ends admission without setting it, and
+        // held page waits must still answer promptly while draining.
+        let draining = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut workers: Vec<(thread::JoinHandle<()>, Option<IpAddr>)> = Vec::new();
         let mut sources = Sources::new(max, max_handshakes);
         let mut accepted = 0u64;
@@ -369,12 +383,14 @@ impl Service {
             handshakes += 1;
             let state = self.state.clone();
             let config = self.config.clone();
+            let notify = self.notify.clone();
+            let stopped = draining.clone();
             let deadline = Instant::now() + timeout;
             let supervisor = thread::current();
             match thread::Builder::new()
                 .name("vhalla-relay-tls".into())
                 .spawn(move || {
-                    let _ = serve_one(stream, config, state, deadline);
+                    let _ = serve_one(stream, config, state, notify, stopped, deadline);
                     supervisor.unpark();
                 }) {
                 Ok(worker) => workers.push((worker, remote)),
@@ -387,6 +403,10 @@ impl Service {
         // Close the listening endpoint before draining existing deadline-bound
         // sockets. A poisoned service cannot keep admitting a false healthy route.
         drop(listener);
+        // Held page waits answer their current page instead of keeping the
+        // drain waiting on their expiry.
+        draining.store(true, std::sync::atomic::Ordering::Release);
+        self.notify.notify_all();
         for (worker, _) in workers {
             if worker.join().is_err() {
                 failure = Some(NetError::Unavailable);
@@ -510,6 +530,8 @@ fn serve_one(
     stream: TcpStream,
     config: Arc<ServerConfig>,
     state: Arc<Mutex<State>>,
+    notify: Arc<Condvar>,
+    draining: Arc<std::sync::atomic::AtomicBool>,
     deadline: Instant,
 ) -> Result<()> {
     // The pre-authentication phase gets a tighter bound than the whole
@@ -596,8 +618,20 @@ fn serve_one(
         state: state.clone(),
         id,
     };
+    let mut reply_deadline = deadline;
     let response = if request[0] == OP_PUT {
         put(&mut s, id, &request[33..])
+    } else if let Some((after, limit, wait_ms)) = page_wait_fields(&request) {
+        // A held page keeps its admitted slot and this request's charges for
+        // the whole bounded wait; the response gets a fresh write reserve
+        // because the original deadline may already have elapsed.
+        let until =
+            Instant::now() + Duration::from_millis(u64::from(wait_ms)).min(s.limits.max_wait);
+        reply_deadline = until + WRITE_RESERVE;
+        tls.sock.deadline = reply_deadline;
+        let (guard, outcome) = waited_page(s, &notify, &draining, after, limit, until);
+        s = guard;
+        outcome
     } else {
         dispatch(&mut s.store, request[0], &request[33..])
     };
@@ -611,6 +645,11 @@ fn serve_one(
         s.poisoned = true;
     }
     drop(s);
+    // A put commits or refutes under the same lock the waiters re-read; wake
+    // them only after releasing it so they do not park straight back on it.
+    if request[0] == OP_PUT {
+        notify.notify_all();
+    }
     let (code, body) = response?;
     // Bill the exact response frame now that its size is known. One admitted
     // response may exceed the window by at most its own bounded size; later
@@ -622,9 +661,70 @@ fn serve_one(
         }
         s.global.bytes = s.global.bytes.saturating_add(billed);
     }
-    let result = write_frame(&mut tls, code, &body, deadline);
+    let result = write_frame(&mut tls, code, &body, reply_deadline);
     drop(admitted);
     result
+}
+/// A condvar wake under a held page is a local re-check, not a wire exchange:
+/// capping each step this way keeps a stop flag or poisoned state observable
+/// on a quiet mailbox even without a notifying put.
+const WAIT_WAKE: Duration = Duration::from_secs(10);
+/// Socket budget reserved for writing a waited page's response after the hold
+/// itself ends; the request's own deadline may already have elapsed by then.
+const WRITE_RESERVE: Duration = Duration::from_secs(5);
+/// Decode the extra two-byte wait bound on a 12-byte page request. Any other
+/// body length stays on the ordinary path and draws the canonical refusal.
+fn page_wait_fields(request: &[u8]) -> Option<(u64, usize, u16)> {
+    if request.len() == 45 && request[0] == OP_PAGE {
+        Some((
+            u64::from_be_bytes(request[33..41].try_into().expect("bounded")),
+            u16::from_be_bytes(request[41..43].try_into().expect("bounded")) as usize,
+            u16::from_be_bytes(request[43..45].try_into().expect("bounded")),
+        ))
+    } else {
+        None
+    }
+}
+/// Answer a page request that asked to be held open. The mailbox is re-read
+/// under the shared mutex until records appear, the bounded wait expires, the
+/// service stops, or another worker poisons it; every iteration stays inside
+/// the caller's admitted slot and each wait step remains bounded.
+fn waited_page<'a>(
+    s: MutexGuard<'a, State>,
+    notify: &Condvar,
+    draining: &std::sync::atomic::AtomicBool,
+    after: u64,
+    limit: usize,
+    until: Instant,
+) -> (MutexGuard<'a, State>, Result<(u8, Vec<u8>)>) {
+    let mut s = s;
+    loop {
+        match s.store.page(after, limit) {
+            Err(error) => return (s, Ok((status(error), Vec::new()))),
+            Ok(page) => {
+                // A poisoned mailbox fails closed: another worker already saw
+                // durable uncertainty, so this page cannot be trusted as new.
+                if s.poisoned {
+                    return (s, Err(NetError::Unavailable));
+                }
+                let remaining = until.saturating_duration_since(Instant::now());
+                if !page.records.is_empty()
+                    || remaining.is_zero()
+                    || draining.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    return (s, encode_page(&page).map(|body| (STATUS_OK, body)));
+                }
+                match notify.wait_timeout(s, remaining.min(WAIT_WAKE)) {
+                    Ok((guard, _)) => s = guard,
+                    // A poisoned mutex still yields its guard so the caller's
+                    // own poison check keeps working; the request fails closed.
+                    Err(poisoned) => {
+                        return (poisoned.into_inner().0, Err(NetError::Unavailable));
+                    }
+                }
+            }
+        }
+    }
 }
 fn put(state: &mut State, id: [u8; 16], raw: &[u8]) -> Result<(u8, Vec<u8>)> {
     let item = match RelayItem::decode(raw) {

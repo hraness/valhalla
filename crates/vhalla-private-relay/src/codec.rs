@@ -3,6 +3,7 @@ use crate::{
     Error, PositionedItem, RelayItem, RelayPage, RelayReceipt, MAGIC, MAX_RELAY_PAGE,
     MAX_RELAY_PAYLOAD,
 };
+use std::time::Duration;
 /// Closed adapter failures. None carries ciphertext, tokens or addresses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetError {
@@ -147,6 +148,16 @@ pub fn page_request(after: u64, limit: usize) -> NetResult<Vec<u8>> {
     }
     let mut request = after.to_be_bytes().to_vec();
     request.extend_from_slice(&(limit as u16).to_be_bytes());
+    Ok(request)
+}
+/// Encode a page request the host may hold open up to `wait` before answering.
+/// The extra two bytes make it a distinct request shape: a host that predates
+/// bounded waits answers STATUS_BOUNDS and the caller falls back to polling.
+/// The response is the same canonical page, empty on expiry.
+pub fn page_wait_request(after: u64, limit: usize, wait: Duration) -> NetResult<Vec<u8>> {
+    let wait_ms = u16::try_from(wait.as_millis()).map_err(|_| NetError::Bounds)?;
+    let mut request = page_request(after, limit)?;
+    request.extend_from_slice(&wait_ms.to_be_bytes());
     Ok(request)
 }
 /// Decode and validate one immutable contiguous mailbox page.

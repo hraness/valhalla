@@ -78,10 +78,20 @@ pub(super) async fn exchange(
     let controller = AbortController::new().map_err(|_| Error::Refused)?;
     let cancel = controller.clone();
     let callback = Closure::new(move || cancel.abort());
+    // A waited page may stay open for its whole bounded hold; the abort timer
+    // covers that hold plus ordinary connect and response time. Every other
+    // request keeps the unchanged ten-second bound.
+    let timeout = match codec::decode_frame(frame, codec::MAX_REQUEST) {
+        Ok((codec::OP_PAGE, body)) if body.len() == 12 => i32::from(u16::from_be_bytes(
+            body[10..12].try_into().expect("bounded"),
+        ))
+        .saturating_add(12_000),
+        _ => 10_000,
+    };
     let timer = scope
         .set_timeout_with_callback_and_timeout_and_arguments_0(
             callback.as_ref().unchecked_ref(),
-            10_000,
+            timeout,
         )
         .map_err(|_| Error::Refused)?;
     ACTIVE.with(|slot| *slot.borrow_mut() = Some(controller.clone()));

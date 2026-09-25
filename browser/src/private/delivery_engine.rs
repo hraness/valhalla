@@ -12,6 +12,13 @@ use vhalla_private_relay::{
     codec, kind_byte, PositionedItem, RelayItem, RelayKind, RelayNamespace,
 };
 
+/// How long one sync page request may stay open waiting for newly retained
+/// items. The loopback gateway clamps it inside its own request deadline, so
+/// an explicit sync gesture catches arrivals without another click; a host
+/// that predates the wait answers bounds and the engine retries the ordinary
+/// page shape on the same gesture.
+const SYNC_WAIT: core::time::Duration = core::time::Duration::from_secs(8);
+
 #[derive(Clone, Copy, Debug)]
 pub enum Failure {
     Invalid,
@@ -189,6 +196,10 @@ pub struct Engine {
     state: State,
     raw: Vec<u8>,
     namespace: RelayNamespace,
+    /// This host already refused the waited page shape with bounds, so later
+    /// gestures skip straight to the ordinary shape. In-memory only: a host
+    /// upgrade after a worker restart is picked up by a fresh probe.
+    wait_refused: bool,
 }
 pub(crate) struct PausePlan {
     pub expected: Vec<u8>,
@@ -217,6 +228,7 @@ impl Engine {
             state,
             raw,
             namespace,
+            wait_refused: false,
         })
     }
     /// One explicitly budgeted legacy-safe scan page. Derived digest progress
@@ -261,7 +273,13 @@ impl Engine {
         let after = audit.digests.len() as u64;
         let request = codec::page_request(after, model::PAGE).map_err(|_| Failure::Invalid)?;
         let Some(raw) = self
-            .exchange(host, codec::OP_PAGE, &request, codec::MAX_RESPONSE + 4)
+            .exchange(
+                host,
+                codec::OP_PAGE,
+                &request,
+                codec::MAX_RESPONSE + 4,
+                None,
+            )
             .await?
         else {
             return Ok(false);
@@ -414,7 +432,7 @@ impl Engine {
             {
                 return Err(Failure::State);
             }
-            let Some(reply) = self.exchange(host, codec::OP_PUT, &raw, 46).await? else {
+            let Some(reply) = self.exchange(host, codec::OP_PUT, &raw, 46, None).await? else {
                 return Ok(self.summary(false));
             };
             if codec::decode_receipt(&reply, &item).is_err() {
@@ -429,9 +447,15 @@ impl Engine {
         let d = self.state.discovery.as_ref().ok_or(Failure::State)?;
         if d.staged.is_empty() {
             let cursor = d.cursor;
-            let request = codec::page_request(cursor, model::PAGE).map_err(|_| Failure::Invalid)?;
+            let (body, fallback) = self.page_bodies(cursor)?;
             let Some(raw) = self
-                .exchange(host, codec::OP_PAGE, &request, codec::MAX_RESPONSE + 4)
+                .exchange(
+                    host,
+                    codec::OP_PAGE,
+                    &body,
+                    codec::MAX_RESPONSE + 4,
+                    fallback.as_deref(),
+                )
                 .await?
             else {
                 return Ok(self.summary(false));
@@ -571,6 +595,7 @@ impl Engine {
                 state,
                 raw: old.ok_or(Failure::State)?,
                 namespace,
+                wait_refused: false,
             });
         }
         let phase = host.kernel()?.membership().await?.status().phase;
@@ -623,6 +648,7 @@ impl Engine {
             state,
             raw,
             namespace,
+            wait_refused: false,
         })
     }
     pub fn summary(&self, review: bool) -> Summary {
@@ -777,6 +803,17 @@ impl Engine {
         }
         Ok(())
     }
+    /// The page request pair for one gesture: the waited shape first unless
+    /// this host already refused it, then the ordinary shape as the fallback.
+    fn page_bodies(&self, after: u64) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let request = codec::page_request(after, model::PAGE).map_err(|_| Failure::Invalid)?;
+        if self.wait_refused {
+            return Ok((request, None));
+        }
+        let waited = codec::page_wait_request(after, model::PAGE, SYNC_WAIT)
+            .map_err(|_| Failure::Invalid)?;
+        Ok((waited, Some(request)))
+    }
     async fn halt<T, H: Host>(&mut self, host: &mut H, detail: u8) -> Result<T> {
         self.state.halt(detail);
         self.save(host, None, None).await?;
@@ -788,49 +825,67 @@ impl Engine {
         op: u8,
         body: &[u8],
         maximum: usize,
+        fallback: Option<&[u8]>,
     ) -> Result<Option<Vec<u8>>> {
-        self.fence(host).await?;
-        host.revalidate().await?;
-        let frame = codec::frame(op, body);
-        let reservation = frame.len() + maximum;
-        let now = host.now()?;
-        let reserved = self
-            .state
-            .reserve(now, reservation)
-            .map_err(|_| Failure::State)?;
-        self.save(host, None, None).await?;
-        if !reserved {
-            return Ok(None);
-        }
-        let raw = host.exchange(&frame, maximum).await;
-        self.fence(host).await?;
-        host.revalidate().await?;
-        let raw = match raw {
-            Ok(raw) => raw,
-            Err(TransportError::Retry) => return Ok(None),
-            Err(TransportError::Authorization) => return Err(Failure::State),
-            Err(TransportError::Refused) => return self.halt(host, halt::FRAME).await,
-        };
-        let (status, body) = match codec::decode_frame(&raw, maximum.saturating_sub(4)) {
-            Ok(frame) => frame,
-            Err(_) => return self.halt(host, halt::FRAME).await,
-        };
-        match codec::decode_status(status, body) {
-            Ok(body) => {
-                // A canonical reply charges its exact bytes; the caller saves
-                // this together with the progress it produces.
-                self.state.settle(reservation, frame.len() + raw.len());
-                Ok(Some(body))
+        for (attempt, body) in [Some(body), fallback].into_iter().flatten().enumerate() {
+            self.fence(host).await?;
+            host.revalidate().await?;
+            let frame = codec::frame(op, body);
+            let reservation = frame.len() + maximum;
+            let now = host.now()?;
+            let reserved = self
+                .state
+                .reserve(now, reservation)
+                .map_err(|_| Failure::State)?;
+            self.save(host, None, None).await?;
+            if !reserved {
+                return Ok(None);
             }
-            Err(codec::NetError::Denied) => Err(Failure::State),
-            Err(
-                codec::NetError::Capacity
-                | codec::NetError::Unavailable
-                | codec::NetError::Connect
-                | codec::NetError::Timeout,
-            ) => Ok(None),
-            Err(_) => self.halt(host, halt::FRAME).await,
+            let raw = host.exchange(&frame, maximum).await;
+            self.fence(host).await?;
+            host.revalidate().await?;
+            let raw = match raw {
+                Ok(raw) => raw,
+                Err(TransportError::Retry) => return Ok(None),
+                Err(TransportError::Authorization) => return Err(Failure::State),
+                Err(TransportError::Refused) => return self.halt(host, halt::FRAME).await,
+            };
+            let (status, body) = match codec::decode_frame(&raw, maximum.saturating_sub(4)) {
+                Ok(frame) => frame,
+                Err(_) => return self.halt(host, halt::FRAME).await,
+            };
+            match codec::decode_status(status, body) {
+                Ok(body) => {
+                    // A canonical reply charges its exact bytes; the caller saves
+                    // this together with the progress it produces.
+                    self.state.settle(reservation, frame.len() + raw.len());
+                    return Ok(Some(body));
+                }
+                // A host that predates the bounded wait refuses the extended
+                // shape with bounds: charge the refused attempt, remember the
+                // refusal for later gestures, then send the ordinary request
+                // the caller supplied as its fallback. The canonical reply is
+                // a completed exchange, so the attempt's pessimistic failure
+                // charge is released before the retry reserves its own. A
+                // bounds answer to that ordinary request stays the malformed
+                // evidence it always was.
+                Err(codec::NetError::Bounds) if attempt == 0 && fallback.is_some() => {
+                    self.state.settle(reservation, frame.len() + raw.len());
+                    self.wait_refused = true;
+                    self.state.success();
+                    continue;
+                }
+                Err(codec::NetError::Denied) => return Err(Failure::State),
+                Err(
+                    codec::NetError::Capacity
+                    | codec::NetError::Unavailable
+                    | codec::NetError::Connect
+                    | codec::NetError::Timeout,
+                ) => return Ok(None),
+                Err(_) => return self.halt(host, halt::FRAME).await,
+            }
         }
+        Ok(None)
     }
     async fn own_item<H: Host>(host: &mut H, item: &RelayItem) -> Result<bool> {
         if item.kind() == RelayKind::Control {
@@ -1021,7 +1076,8 @@ impl Engine {
                 let item = RelayItem::decode(&raw).map_err(|_| Failure::Storage)?;
                 let (floor, control_first) = self.pending_control_order(host, &item).await?;
                 if control_first {
-                    let Some(reply) = self.exchange(host, codec::OP_PUT, &raw, 46).await? else {
+                    let Some(reply) = self.exchange(host, codec::OP_PUT, &raw, 46, None).await?
+                    else {
                         return Ok(self.summary(false));
                     };
                     if codec::decode_receipt(&reply, &item).is_err() {
@@ -1044,7 +1100,7 @@ impl Engine {
                 return Err(Failure::State);
             }
             let raw = self.state.pending.clone();
-            let Some(reply) = self.exchange(host, codec::OP_PUT, &raw, 46).await? else {
+            let Some(reply) = self.exchange(host, codec::OP_PUT, &raw, 46, None).await? else {
                 return Ok(self.summary(false));
             };
             if codec::decode_receipt(&reply, &item).is_err() {
@@ -1109,10 +1165,15 @@ impl Engine {
         context: Context,
     ) -> Result<Option<Summary>> {
         if self.state.staged.is_empty() {
-            let request = codec::page_request(self.state.cursor, model::PAGE)
-                .map_err(|_| Failure::Invalid)?;
+            let (body, fallback) = self.page_bodies(self.state.cursor)?;
             let Some(raw) = self
-                .exchange(host, codec::OP_PAGE, &request, codec::MAX_RESPONSE + 4)
+                .exchange(
+                    host,
+                    codec::OP_PAGE,
+                    &body,
+                    codec::MAX_RESPONSE + 4,
+                    fallback.as_deref(),
+                )
                 .await?
             else {
                 return Ok(Some(self.summary(false)));
