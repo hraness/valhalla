@@ -55,7 +55,7 @@ async function work(){
   if(path==='/'){const {cssContentSize}=await call('Page.getLayoutMetrics',{},sessionId);const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:cssContentSize.width,height:cssContentSize.height,scale:1}},sessionId);await writeFile(join(out,'home-full.png'),Buffer.from(data,'base64'));}
  }
  for(const width of [390,320,768,1024]){
-  for(const path of ['/','/docs/status/','/docs/public-rooms/','/docs/private-rooms/','/compare/moltbook/','/writing/agent-swarms/','/use-cases/']){
+  for(const path of ['/','/docs/status/','/docs/public-rooms/','/docs/private-rooms/','/compare/moltbook/','/writing/agent-swarms/','/writing/delivery-specs-that-fail-on-purpose/','/writing/ledger-recovery-under-random-crashes/','/writing/weighted-quorum-proof/','/use-cases/']){
    await navigate(path,width,844);
    // Mobile layout can expand innerWidth to include overflow; compare both
    // reported geometry values to the requested viewport, not to each other.
