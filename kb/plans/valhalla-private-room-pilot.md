@@ -685,8 +685,17 @@ or Dioxus requirements.
   (12 facts), Chrome's closure observed through its log file in each;
   the deterministic `agent-launch` pilot 9/9 from a git-checkout build
   receipt for `dd0580f`. Independent read-only review found no P0/P1/P2
-  findings; its optional P3 notes are applied or accepted. Delivered as
-  PR #128 under the consolidated non-strict ruleset attested by PR126
-  (`25b29f8`); merge and readback pending its required checks.
-  Second-machine qualification, sleep/logout/reboot and the sparse soak
-  remain NOT RUN and deferred by the owner.
+  findings; its optional P3 notes are applied or accepted. PR #128 merged
+  to main as `cd0421e` (squash of `3c203d8`, 03:11 UTC) after two
+  mid-flight main integrations: PR126 (`25b29f8`) and PR127 (`0291f1b`)
+  replaced the reviewed ruleset with the shared-baseline `Protect main
+  delivery` ruleset, whose single required context is the `Required`
+  aggregate (CodeQL and the Analyze jobs keep reporting advisory-only),
+  and PR125 (`b519083`, LAN/public host listen) needed one unioned
+  conflict in this file's successor-selection paragraph. One
+  `private_agent_delivery` acceptance wait timed out once under CI load
+  and passed on rerun; the shared 20-second `await_outbox` bound is
+  unchanged. Readback: `cd0421e` is `origin/main` and its tree is
+  identical to `3c203d8`. Second-machine qualification,
+  sleep/logout/reboot and the sparse soak remain NOT RUN and deferred by
+  the owner.
