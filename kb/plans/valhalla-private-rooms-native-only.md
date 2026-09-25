@@ -341,3 +341,41 @@ on 2, 3, 5 and 7; 10 follows each first release.
   unenrolled, zero and revoked credential indexes, malformed, tampered
   and mismatched bundles, unadvertised address selection, store and
   delivery-directory reuse and conflicting join modes.
+- 25 September 2026, step 5 Tailcat overlay: #139 merged as `55451db`.
+  `private-host tailcat-plist` emits a per-user systemd unit on Linux
+  alongside the existing macOS plist: the same executable, saved-key and
+  output custody checks, a distinct `.tailcat` label, a 30-second
+  restart throttle and `StandardOutput=null` so the capability address
+  cannot reach the journal. The unit path writes `ExecStart` literally
+  and refuses rather than escapes a path that cannot appear there
+  unambiguously, so a home containing whitespace or shell punctuation is
+  refused on Linux where the plist's XML still carries it on macOS.
+  Linux release packaging needed no new code: the release workflow
+  already ships an `x86_64-unknown-linux-gnu` tarball and SHA-256
+  manifest from the same validate-gated build as macOS. Still open for
+  step 5: an operator-run install/status/uninstall journey on a real
+  Linux machine.
+- 25 September 2026, two-device live run (step 9 partial): one release
+  build — sha256
+  `569488144e9c441fe8312b0c16f31ed76b7b7786dbc1f9424bc55e3cc14277c6`,
+  compiled at `ee94e18` — on two MacBooks, HRA2 (host, 172.16.16.153)
+  and HRANESS1 (member, 172.16.16.155). The step-4 invite carried the
+  member from bundle to admission request in one command per lane.
+  A room served on the host's LAN listen address delivered a published
+  message into the member's store about 0.7 seconds after the outbound
+  page committed — inside the one-second arrival bound — and a second
+  room reached the member through a Tailcat serve/forward pair in the
+  same time, the member binding its forward to the advertised loopback
+  port so the bundle's dial address resolved verbatim. Idle, the
+  member's agent held exactly one page connection, matching the
+  quiet-client shape the harness asserts. Host processes sampled 12.0
+  to 12.3 MB RSS; the member agent 13.1 MB — the same private-store/MLS
+  baseline noted under step 3, not a delivery regression. Two operator
+  details surfaced: `accept` requires the member's declared validity
+  window to sit inside the offer's own bounds, and one account identity
+  serializes `agent-serve` runs (the docs' "one active custodian"
+  wording). Retained receipts: `/private/tmp/vhalla-two-mac-live` on
+  HRA2, `~/Documents/valhalla-live-20260925` on HRANESS1. Still open:
+  the public-Internet lane, Windows and Linux resource numbers, sleep,
+  logout and reboot recovery, and the sparse server soak.
+
