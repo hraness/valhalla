@@ -76,7 +76,7 @@ export function deliveryObservation(raw) {
   return v;
 }
 
-async function sql(h,path,query){const result=await h.command('/usr/bin/sqlite3',['-readonly','-json','-cmd','.timeout 1000',path,query]);return JSON.parse(result.stdout||'[]');}
+async function sql(h,path,query){const result=await h.command(h.sqlite3,['-readonly','-json','-cmd','.timeout 1000',path,query]);return JSON.parse(result.stdout||'[]');}
 async function queue(h,state,stream){const path=join(state,stream,'delivery.db');const [v]=await sql(h,path,'SELECT outgoing,applied,(SELECT count(*) FROM jobs WHERE state!=2 OR uncertain!=0) AS pending FROM driver WHERE id=1');require(v,'queue checkpoint absent');return v;}
 async function inventory(path){const rows=[];for(const entry of await readdir(path,{withFileTypes:true})){require(!entry.isSymbolicLink(),'fixture custody symlink');const p=join(path,entry.name);if(entry.isDirectory())for(const [name,digest] of await inventory(p))rows.push([entry.name+'/'+name,digest]);else{require(entry.isFile(),'unexpected custody object');rows.push([entry.name,sha(await readFile(p))]);}}return rows.sort(([a],[b])=>a.localeCompare(b));}
 function preserves(old,next){const values=new Map(next);require(old.every(([name,digest])=>values.get(name)===digest),'prior encrypted custody changed or disappeared');}

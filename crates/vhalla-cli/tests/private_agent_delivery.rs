@@ -34,7 +34,7 @@ const MEMBER: usize = 1;
 
 struct Fixture {
     path: PathBuf,
-    contexts: [Context; 2],
+    contexts: Vec<Context>,
     addr: SocketAddr,
     max_jobs: usize,
     mailbox_polling: Option<&'static str>,
@@ -88,7 +88,7 @@ impl Fixture {
             let request = member.key_package(op(1)).await.unwrap();
             let invitation = owner.invite(op(2), request.bytes(), valid).await.unwrap();
             member.join(invitation.bytes()).await.unwrap();
-            [owner_context, member_context]
+            vec![owner_context, member_context]
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -948,6 +948,148 @@ fn drained_controller_pause_blocks_new_authoring_and_stale_driver_without_losing
         assert_eq!(original.records[0].artifact().unwrap().bytes(), ciphertext);
     });
     assert_eq!(f.client().page(0, 1).unwrap().head, head);
+}
+
+#[test]
+fn checkpoint_admitted_member_pauses_from_its_joining_floor() {
+    use vhalla_private_kernel::protocol::Key;
+    use vhalla_private_native::client::generation::ControllerPauseReceipt;
+    const THIRD: usize = 2;
+    let mut f = Fixture::new();
+    let third_context = runtime().block_on(async {
+        let mut owner = RoomSession::open(
+            Identity::open(f.p("0-id")).unwrap(),
+            f.p("0-room"),
+            f.contexts[OWNER],
+        )
+        .await
+        .unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid = Validity::new(now - 1, now + 1800).unwrap();
+        let identity = Identity::create_new(f.p("2-id")).unwrap();
+        let recipient = Key::from_bytes(identity.public_key()).unwrap();
+        let offer = owner
+            .create_contact_offer(op(200), recipient, valid)
+            .await
+            .unwrap();
+        let mut third = RoomCreation::from_contact(
+            identity,
+            offer.confidential_bytes(),
+            f.contexts[OWNER].account,
+            valid,
+        )
+        .unwrap()
+        .commit(
+            f.p("2-room"),
+            Limits {
+                max_records: 128,
+                max_record_bytes: 8 * 1024 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+        let request = third
+            .contact_request(op(201), offer.confidential_bytes())
+            .await
+            .unwrap();
+        let welcome = owner
+            .accept_contact(op(202), request.bytes(), valid)
+            .await
+            .unwrap();
+        third.join_contact(welcome.bytes()).await.unwrap();
+        let status = third.status().unwrap();
+        assert!(third
+            .encrypted_controls(status.history_base, 1)
+            .await
+            .is_err());
+        third.encrypted_controls_from(None, 1).await.unwrap();
+        status.context
+    });
+    f.contexts.push(third_context);
+    f.write_json("2-delivery.json", &f.profile(THIRD));
+    let mut init = f.room_command("delivery-init", THIRD);
+    init.arg("--config").arg(f.p("2-delivery.json"));
+    success(init);
+    let _relay = f.relay();
+    let owner_grant = f.grant(OWNER, "checkpoint-owner", 32);
+    let third_grant = f.grant(THIRD, "checkpoint-third", 32);
+    let mut owner = f.host(OWNER, "checkpoint-owner", OWNER);
+    let mut third = f.host(THIRD, "checkpoint-third", THIRD);
+    let sequence = owner.queue(&owner_grant, "retained before checkpoint pause", 245);
+    owner.await_outbox(&owner_grant, sequence, |v| {
+        v["member_acceptances"]
+            .as_array()
+            .is_some_and(|a| a.len() == 1)
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let head = loop {
+        let head = f.client().page(0, 1).unwrap().head;
+        let mut drained = head > 0;
+        for (who, host, grant) in [
+            (OWNER, &mut owner, &owner_grant),
+            (THIRD, &mut third, &third_grant),
+        ] {
+            let mut positions: Vec<u64> = f
+                .applied(who)
+                .iter()
+                .map(|v| v["position"].as_str().unwrap().parse().unwrap())
+                .collect();
+            positions.sort_unstable();
+            drained &= positions == (1..=head).collect::<Vec<_>>();
+            for sequence in 1..=host.outbox_head(grant) {
+                let record = host.outbox(grant, sequence);
+                match record["kind"].as_str().unwrap() {
+                    "key_package" | "invitation" | "contact_offer" => (),
+                    _ => {
+                        drained &= record["relay"]["state"] == "retained"
+                            && record["relay"]["uncertain"] == false
+                    }
+                }
+            }
+        }
+        if drained && f.client().page(0, 1).unwrap().head == head {
+            break head;
+        }
+        assert!(Instant::now() < deadline, "checkpoint member did not drain");
+        thread::sleep(Duration::from_millis(100));
+    };
+    owner.close();
+    third.close();
+    let mut bootstrap: Vec<String> = f
+        .applied(THIRD)
+        .iter()
+        .filter(|v| v["state"] == "dedicated-bootstrap-command-required")
+        .map(|v| v["digest"].as_str().unwrap().to_owned())
+        .collect();
+    bootstrap.sort();
+    assert!(!bootstrap.is_empty());
+    f.write_json("2-reviewed-bootstrap.json", &json!(bootstrap));
+    let mut pause = f.room_command("delivery-pause", THIRD);
+    pause
+        .arg("--config")
+        .arg(f.p("2-delivery.json"))
+        .args([
+            "--transition",
+            &hex(&[232; 32]),
+            "--head",
+            &head.to_string(),
+        ])
+        .arg("--out")
+        .arg(f.p("2-pause.receipt"))
+        .arg("--reviewed-bootstrap")
+        .arg(f.p("2-reviewed-bootstrap.json"));
+    success(pause);
+    let receipt =
+        ControllerPauseReceipt::decode(&fs::read(f.p("2-pause.receipt")).unwrap()).unwrap();
+    assert_eq!(receipt.context, third_context);
+    assert_eq!(receipt.terminal_head, head);
+    assert_eq!(
+        fs::read(f.p("2-delivery/generation.pause")).unwrap(),
+        receipt.encode().unwrap()
+    );
 }
 
 #[test]

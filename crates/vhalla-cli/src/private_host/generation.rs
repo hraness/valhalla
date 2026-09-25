@@ -120,7 +120,7 @@ fn immutable(home: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
 }
 pub(super) fn require_idle(home: &Path) -> Result<(), String> {
     if present(home, PENDING, 65536)? {
-        Err("generation transition is pending; finish its exact fence/cutover or recover it before other maintenance".into())
+        Err("generation transition is pending; finish its exact fence/cutover or recover it before serving or other maintenance".into())
     } else {
         Ok(())
     }
@@ -460,9 +460,7 @@ pub(super) fn check(
     if config::digest(&serde_json::to_vec(&loaded.config).map_err(|_| TRANSITION_ERROR)?)
         != plan.config_sha256
     {
-        return Err(
-            "generation maintenance requires the unchanged canonical host configuration".into(),
-        );
+        return Err("host config.json is not in the canonical encoding this release writes, for example because an older release wrote it; rewrite it once with `vhalla private-host renew HOME --leaf-days N`, which keeps the CA, TLS name, credentials and mailbox, then recompute config_sha256 from the rewritten file".into());
     }
     let generation = plan.generation;
     let intent = Intent {

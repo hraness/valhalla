@@ -126,6 +126,14 @@ fn contact_response_inspection_preserves_pending_key_package_and_matches_committ
             .await
             .unwrap());
         assert!(pair.member_disk.snapshot() == after);
+        assert!(matches!(
+            pair.member
+                .inspect_contact_response(response.bytes(), pair.now)
+                .await,
+            Err(Error::Missing)
+        ));
+        assert!(pair.member_disk.snapshot() == after);
+        assert!(!pair.member.needs_reopen());
         let message = pair
             .owner
             .test_send(op(102), b"after inspection", pair.now)

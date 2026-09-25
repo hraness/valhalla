@@ -167,6 +167,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
         }
         Some("serve") if args.len() == 3 => {
             let maintenance = config::maintenance_lock(home)?;
+            generation::require_idle(home)?;
             serve(config::load(home)?, maintenance)
         }
         Some(action @ ("status" | "install" | "uninstall"))
@@ -263,7 +264,18 @@ fn service_ids(home: &Path, config: &Config, allowed: &[String]) -> Result<Servi
         });
     }
     if credentials.is_empty() {
-        return Err("all transport credentials are revoked for this generation; explicitly replace an enrolled credential before serving".into());
+        let indexes: Vec<String> = config
+            .credential_ids
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| allowed.contains(id))
+            .map(|(index, _)| (index + 1).to_string())
+            .collect();
+        return Err(format!(
+            "all transport credentials enrolled in mailbox directory \"{}\" are revoked; run `vhalla private-host replace-credential HOME INDEX` for credential index {} to issue a fresh token that keeps its quota, then retry",
+            config.mailbox,
+            indexes.join(" or ")
+        ));
     }
     Service::new(
         FileStore::open(home.join(&config.mailbox), namespace).map_err(|_| REFUSED)?,
