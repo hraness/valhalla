@@ -101,6 +101,8 @@ pub(super) fn template_ours(loaded: &Loaded, template: &[u8]) -> Result<bool, St
 
 /// Generate only an exact one-port overlay template. This neither creates a key
 /// nor installs or executes Tailcat, and never publishes its capability address.
+/// Linux takes the systemd unit in `systemd::tailcat_unit` instead.
+#[cfg(not(target_os = "linux"))]
 pub(super) fn tailcat_plist(
     loaded: &Loaded,
     binary: &Path,
