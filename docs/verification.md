@@ -96,6 +96,17 @@ design evidence; it does not claim the current host/client implementation
 already supports that transition. Its mutations expose orphaned pending jobs,
 reset spent accounting and receipts relabeled to another namespace.
 
+The same transition system is proved in Verus in
+`verify/private-rotation/rotation.rs`: all six checked invariants
+(`TypeOK`, `NoOrphans`, `PreservedSpend`, `BoundReceipts`, `Conservation`,
+`FrozenHead`) are inductive over `normal.cfg`'s `Next`, strengthened by three
+auxiliaries (preparation implies drained and fenced, and no job carries a
+future generation). Each mutant configuration is proved to reach a violation
+of the invariant TLC reports for it, and a completion witness reaches the
+post-cutover state with both jobs retained. This remains design evidence for
+the contract; it strengthens the model claims from finite enumeration to
+induction but says nothing new about implementation correspondence.
+
 `verify/private-generation` covers the staged generation transition separately:
 complete controller inventory, a common drained head, durable pause, conditional
 fencing, durable successor intent, retained history and cumulative spending. Six
