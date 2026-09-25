@@ -409,7 +409,21 @@ on 2, 3, 5 and 7; 10 follows each first release.
   VM provisioning killed the first grant; a fresh grant ran clean.
   Still open: the public-Internet lane, Windows, sleep/logout/reboot,
   the second-laptop browser route, and the sparse soak (the VM host
-  and Tailcat units stay up as the soak pair).
+  and Tailcat units stay up as the soak pair). A second lane then put
+  the mailbox itself on the VM: a fresh room on the same Mac owner used
+  the VM's `private-host` as its mailbox, with the owner dialling
+  through a `tailcat forward` into the serve unit — the NAT-behind-
+  Linux-host case. The member VM imported, requested, was accepted and
+  joined through the granular commands (the one-file invite reads the
+  host's sealed home, so cross-machine owner/host pairs still onboard
+  through `offer`/`import`/`request`/`accept`/`join` plus an
+  out-of-band credential copy — worth a docs note). A published owner
+  message reached the Linux host through the tunnel and was applied in
+  the VM member's store about 0.33 seconds after the outbound page
+  committed. Under that active delivery the host sampled 20.2 MB RSS
+  — above its settled idle figure and the first honest look at the
+  Linux host's loaded footprint; the 16 MB budget holds at idle and is
+  crossed under load on this platform.
 - 25 September 2026, step 10 public copy and release record (this change).
   The site's private-room page now describes the native-only deployment —
   one participant hosts the mailbox, every member dials out over pinned TLS,
