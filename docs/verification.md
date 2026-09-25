@@ -70,6 +70,18 @@ validation, so a production-only edit cannot bypass it. The sampled
 with production maps and snapshot reopening; this is not a general equivalence
 proof and remains a separately maintained executable projection.
 
+A second Verus use translates an existing TLA+ model rather than production
+code: `verify/private-egress/egress.rs` re-states `PrivateEgress.tla` as a
+transition system and proves the safety invariant inductively, with machine-
+checked mutant counterexample and reachability witnesses. Unlike the ledger
+model it proves a *specification*, so it adds nothing about implementation
+correspondence; what it buys is that the finite-instance model-checking claim
+becomes a proof over every execution of that instance.
+
+```console
+verus --crate-type=lib verify/private-egress/egress.rs
+```
+
 ## TLA+ finite protocol checks
 
 `verify/private-delivery` explores durable deferred items, out-of-order control
@@ -107,6 +119,17 @@ past the monotone capture frontier, allowing the control to overtake an older
 application. The real TLS backlog regression exercises that defect in native
 delivery. The model assumes source artifacts exist and does not establish
 global message order, remote availability or source-publication correctness.
+
+The same transition system is also proved in Verus in
+`verify/private-egress/egress.rs`: `OldBeforeControl` is inductive over the
+normal configuration's `Next` once two auxiliary invariants are added
+(nothing staged or retained exceeds the capture count; a captured item is
+never dropped before retention). The proof additionally checks that the
+`TailFastPath` mutant genuinely reaches a violation and that the safe model
+reaches the completed cutover — the proof-side analogue of the suite's
+counterexample and reachability controls. This lifts the safety claim for
+this model from finite enumeration to induction; the correspondence to
+production is unchanged and still rests on the named regression tests.
 
 `verify/rooms-held-reply` checks the rooms node's sequential connector boundary:
 preserved oneshot custody, durable preparation and confirmed candidate admission
