@@ -39,7 +39,7 @@ sh prototypes/discovery-parity/verify.sh
 ```
 
 On managed Hraness hosts, run `verify.sh` through the installed absolute
-`oompa-host-run --mode=shared --lane=compute` wrapper. The root integration owner
+`host-run --mode=shared --lane=compute` wrapper. The root integration owner
 runs the complete repository gate separately.
 
 `RUSTC` selects the normal Cargo compiler; optional `WASM_RUSTC` overrides it for

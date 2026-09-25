@@ -22,6 +22,72 @@ fn record(position: u64, value: u8) -> StoredRecord {
 }
 
 #[test]
+fn generation_format_is_explicit_and_retains_exact_custody_limits() {
+    let context = context();
+    let limits = Limits::default();
+    let legacy = format_frame(context, limits).unwrap();
+    let guarded = guarded_format_frame(context, limits).unwrap();
+    assert!(!guarded_format(&legacy));
+    assert!(guarded_format(&guarded));
+    assert_eq!(parse_format(context, &guarded), Ok(limits));
+    assert_ne!(
+        &guarded[..8],
+        FORMAT,
+        "an old writer rejects the new format"
+    );
+    assert_eq!(&legacy[8..152], &guarded[8..152]);
+    assert!(delivery_selector_key(context).starts_with(&prefix(context)));
+}
+
+#[test]
+fn delivery_selector_is_canonical_bounded_and_never_unpauses_generation_zero() {
+    let selected = DeliveryGeneration {
+        generation: 0,
+        binding: [1; 32],
+        namespace: [2; 32],
+        paused: true,
+        transition: [3; 32],
+    };
+    let raw = selected.encode().unwrap();
+    assert_eq!(raw.len(), DeliveryGeneration::BYTES);
+    assert_eq!(DeliveryGeneration::decode(&raw), Ok(selected));
+    for at in 0..raw.len() {
+        assert!(DeliveryGeneration::decode(&raw[..at]).is_err());
+        let mut corrupt = raw.clone();
+        corrupt[at] ^= 1;
+        assert!(DeliveryGeneration::decode(&corrupt).is_err());
+    }
+    let mut extra = raw;
+    extra.push(0);
+    assert!(DeliveryGeneration::decode(&extra).is_err());
+    assert!(DeliveryGeneration {
+        paused: false,
+        ..selected
+    }
+    .encode()
+    .is_err());
+    assert!(DeliveryGeneration {
+        generation: 16,
+        ..selected
+    }
+    .encode()
+    .is_err());
+    assert!(DeliveryGeneration {
+        transition: [0; 32],
+        ..selected
+    }
+    .encode()
+    .is_err());
+    assert!(DeliveryGeneration {
+        generation: 1,
+        paused: false,
+        ..selected
+    }
+    .encode()
+    .is_ok());
+}
+
+#[test]
 fn full_context_format_limits_and_prefix_are_exact() {
     let ctx = context();
     let limits = Limits::default();

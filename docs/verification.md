@@ -84,6 +84,15 @@ design evidence; it does not claim the current host/client implementation
 already supports that transition. Its mutations expose orphaned pending jobs,
 reset spent accounting and receipts relabeled to another namespace.
 
+`verify/private-generation` covers the staged generation transition separately:
+complete controller inventory, a common drained head, durable pause, conditional
+fencing, durable successor intent, retained history and cumulative spending. Six
+mutations omit a controller, ignore a changed head, skip generated acceptance
+work, select without an intent, reset spending and discard the archive. It checks
+finite safety; actual storage fault tests and native/browser journeys are
+required to connect it to production behavior. It does not establish that an
+offline participant becomes available or that a physical inventory is complete.
+
 `verify/private-publication` explores two competing sessions, a roster-bound
 draft, cancellation before/after commit, exact retained recovery, readback and
 local revocation. Release linearizes at the final successful authority check;

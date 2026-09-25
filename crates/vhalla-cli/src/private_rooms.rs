@@ -33,6 +33,8 @@ pub const HELP: &str = "vhalla private agent-serve ID STORE --grant PRIVATE_JSON
 vhalla private agent-launch ID STORE --policy PRIVATE_JSON --session-dir PRIVATE_DIR [--delivery PRIVATE_JSON]
 vhalla private delivery-init ID STORE --config PRIVATE_JSON
 vhalla private delivery-upgrade ID STORE --config PRIVATE_JSON
+vhalla private delivery-pause ID STORE --config PRIVATE_JSON --transition HEX64 --head N --out PRIVATE_RECEIPT [--reviewed-bootstrap PRIVATE_JSON]
+vhalla private delivery-transition ID STORE --config PRIVATE_JSON --successor PRIVATE_JSON --receipt PRIVATE_RECEIPT --fence PRIVATE_JSON
 vhalla private delivery-resume ID STORE --config PRIVATE_JSON [--stream outbox|control] [--job DIGEST64]
 vhalla private delivery-status ID STORE --config PRIVATE_JSON [--stream outbox|control] [--after N] [--limit N] --out FILE
 vhalla private agent-grant ID STORE --mode read-only|read-write --disclosure PRIVATE_JSON --receipt NEW_CLAIM --out NEW_GRANT [--lifetime SECONDS --inbox-after N --inbox-through N --follow-inbox true|false --max-messages N --max-body-bytes N --max-read-records N --max-read-bytes N --max-preparations N]
@@ -101,6 +103,8 @@ impl Args {
         let command = raw[1].to_str().ok_or(HELP)?;
         let allowed: &[&str] = match command {
             "delivery-init" | "delivery-upgrade" => &["config"],
+            "delivery-pause" => &["config", "transition", "head", "out", "reviewed-bootstrap"],
+            "delivery-transition" => &["config", "successor", "receipt", "fence"],
             "delivery-resume" => &["config", "stream", "job"],
             "delivery-status" => &["config", "stream", "after", "limit", "out"],
             "agent-grant" => &[
@@ -250,6 +254,7 @@ impl Args {
                 && !matches!(**name, "tls-ca" | "tls-name")
                 && !(command == "agent-grant"
                     && !matches!(**name, "mode" | "disclosure" | "receipt" | "out"))
+                && !(command == "delivery-pause" && **name == "reviewed-bootstrap")
                 && !(command == "delivery-status" && matches!(**name, "after" | "limit" | "stream"))
                 && !(command == "relay-submit"
                     && matches!(**name, "addr" | "token" | "mailbox" | "namespace"))
@@ -435,6 +440,12 @@ async fn execute(args: Args) -> Result<(), String> {
     let mut room = RoomSession::open(identity, args.store()?, context)
         .await
         .map_err(|_| REFUSED)?;
+    if args.command == "delivery-pause" {
+        return agent_delivery::generation::pause(&args, room).await;
+    }
+    if args.command == "delivery-transition" {
+        return agent_delivery::generation::transition(&args, room).await;
+    }
     match args.command.as_str() {
         "delivery-init" => agent_delivery::initialize(
             Path::new(args.value("config")?),

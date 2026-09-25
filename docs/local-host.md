@@ -5,6 +5,10 @@ required. The native path is a CLI agent, a fixed local Tailcat forward, the
 Mac's Tailcat server, and the loopback TLS mailbox. Both the TLS trust selection
 and per-client relay authentication remain active through the overlay.
 
+Private rooms run only on machines participants control, a laptop or a server;
+nothing is hosted for them. The [native-only plan](../kb/plans/valhalla-private-rooms-native-only.md)
+records that decision, the server-host work and the open choices.
+
 This command needs `experimental-private`. It never opens an account identity,
 MLS room, archive, browser key, or menubar authority. The host stores bounded
 opaque ciphertext. Relay retention is distinct from a recipient's signed claim
@@ -96,6 +100,31 @@ service: unexpected IPC, permission, domain or output failures preserve the
 installed plist and refuse removal, including after an uncertain stop.
 No command installs the menubar or changes another service.
 
+On Linux the same three commands manage a per-user systemd unit named after
+the same label, `<label>.service`, in `$XDG_CONFIG_HOME/systemd/user` or
+`~/.config/systemd/user`. `install` refuses an active unit or a unit loaded
+from another file, writes the exact owner-only unit, reloads the user manager,
+enables and starts it, and requires an active readback from that file.
+`status` reports `supervisor: "systemd"`, custody (`installed`,
+`unit_current`) separately from manager state (`loaded`, `unit_matches`,
+`state`, `pid`, `last_exit_code`, `restarts`, `restart_loop_suspected`);
+where no user manager answers (a container, CI, no session) or the unit
+directory is unusable it reports `manager: "unavailable"` or
+`unit_directory: "unusable"` with unknown state rather than failing, while
+`install` and `uninstall` still fail closed.
+`uninstall` stops only a unit loaded from the exact owned file, waits for it
+to become inactive, removes the file and reloads. A `systemctl` failure never
+counts as absence. The unit restarts only after an unsuccessful exit with the
+same 30-second throttle and 15-second stop grace, runs with an owner-only
+umask, and appends stdout/stderr to `supervisor.log` in the home. User units
+run only while the user has a session unless lingering is enabled
+(`loginctl enable-linger`), which a server operator does once and which this
+command never does; the sealed `launch-agent.plist` remains an informational
+template on Linux. The real `systemctl --user` path is not exercised by CI,
+whose runners have no user manager: unit tests inject the manager replies,
+and a first Linux host still needs the foreground and supervised journeys
+run by an operator.
+
 The LaunchAgent starts at login, restarts unsuccessful exits with a 30-second
 throttle, and has a 15-second exit grace. It does not promise service before
 login, while logged out, or while the Mac sleeps. Its stdout/stderr go to
@@ -178,10 +207,11 @@ membership removal and relay transport-token revocation are separate actions.
   the new current token through the same trusted private channel as enrollment.
 - `rotate` refuses without changing the home. A new namespace does not move
   retained or uncertain client work, even when this relay is empty or stopped.
-  Live generation transitions remain gated until durable fencing, controller
-  drain/recovery, preserved receipt context and aggregate capacity accounting
-  are implemented and qualified. Preserve the existing namespace and queues;
-  do not point a recreated delivery state at an empty mailbox to bypass limits.
+  The separate staged `generation-*` commands require every controller to drain
+  and pause, an exact private inventory, a conditional permanent fence and
+  preserved cumulative allowances. Follow the
+  [mailbox maintenance guide](private-generations.md). Preserve the existing
+  namespace and queues; never recreate delivery state to bypass limits.
 - `renew` reissues the serving leaf under the retained CA with the operator's
   persisted leaf lifetime, capped strictly before CA expiry. It refuses when `ca-key.der` is
   absent or the CA has expired — a new CA is a new host, not a renewal. The
@@ -207,6 +237,14 @@ do not edit the version or restore an old manifest to downgrade, since doing so
 could resurrect revoked authority. Use a compatible binary or a reviewed
 state-preserving migration. Recovery of an interrupted upgrade selects the
 complete old or new sealed snapshot, including credential authority.
+
+A completed mailbox transition selects configuration version 3 and keeps every
+predecessor's namespace, mailbox, listener and enrolled credential IDs. The host
+serves all retained generations on their saved ports, at most 16. Later-added
+credentials belong only to the newer mailbox; replacement and revocation apply
+to the same stable identity wherever it was enrolled. Each retained generation
+needs an active enrolled credential to serve. The Tailcat template below
+forwards one port and does not configure these additional routes.
 
 ## Explicit Tailcat wiring
 

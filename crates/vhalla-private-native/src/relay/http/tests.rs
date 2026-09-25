@@ -122,7 +122,7 @@ fn canonical_submit_receipt_and_unavailable_status_are_forwarded() {
     for fail in [false, true] {
         let (gateway, listener, fake) = fixture(Duration::from_secs(1), fail);
         let item = RelayItem::new(
-            gateway.0.namespace,
+            RelayNamespace::from_bytes([9; 32]).unwrap(),
             1,
             OperationId::from_bytes([3; 16]).unwrap(),
             OutboxKind::Application,
@@ -198,8 +198,8 @@ fn capabilities_redact_and_nonloopback_or_unbounded_policy_refuse() {
     let assets = Assets::new(BTreeMap::from([("index.html".into(), vec![1])])).unwrap();
     assert!(Gateway::configured(
         "0.0.0.0:8000".parse().unwrap(),
-        gateway.0.namespace,
-        gateway.0.capability.clone(),
+        RelayNamespace::from_bytes([9; 32]).unwrap(),
+        gateway.0.routes[&[9; 32]].capability.clone(),
         fake,
         assets,
         GatewayLimits::default()
@@ -257,6 +257,117 @@ fn constructor_refuses_default_http_port_before_dial() {
         ),
         Err(NetError::Bounds)
     ));
+}
+
+#[test]
+fn retained_generations_require_their_exact_namespace_capability_and_body() {
+    use vhalla_private_kernel::{OperationId, OutboxKind};
+    for (namespace, capability, body_namespace, expected) in [
+        (9, 8, 9, Some(0)),
+        (10, 7, 10, Some(1)),
+        (10, 8, 10, None),
+        (11, 7, 11, None),
+        (10, 7, 9, None),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let calls: Vec<_> = (0..2)
+            .map(|_| {
+                Arc::new(Fake {
+                    calls: AtomicUsize::new(0),
+                    fail: false,
+                })
+            })
+            .collect();
+        let routes = BTreeMap::from([
+            (
+                [9; 32],
+                Route {
+                    capability: BrowserCapability::from_bytes([8; 32]).unwrap(),
+                    upstream: calls[0].clone(),
+                },
+            ),
+            (
+                [10; 32],
+                Route {
+                    capability: BrowserCapability::from_bytes([7; 32]).unwrap(),
+                    upstream: calls[1].clone(),
+                },
+            ),
+        ]);
+        let gateway = Gateway::configured_routes(
+            listener.local_addr().unwrap(),
+            routes,
+            Assets::new(BTreeMap::from([(
+                "index.html".into(),
+                b"production".to_vec(),
+            )]))
+            .unwrap(),
+            GatewayLimits::default(),
+        )
+        .unwrap();
+        let item = RelayItem::new(
+            RelayNamespace::from_bytes([body_namespace; 32]).unwrap(),
+            1,
+            OperationId::from_bytes([3; 16]).unwrap(),
+            OutboxKind::Application,
+            b"unchanged ciphertext",
+        )
+        .unwrap();
+        let body = frame(OP_PUT, &item.encode().unwrap());
+        let header = format!("POST {ENDPOINT} HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nAuthorization: Bearer {}\r\nX-Vhalla-Namespace: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            gateway.0.host, gateway.origin(), format!("{capability:02x}").repeat(32), format!("{namespace:02x}").repeat(32), body.len());
+        let response = exchange(gateway, listener, &[header.as_bytes(), &body].concat());
+        assert_eq!(response.starts_with(b"HTTP/1.1 200"), expected.is_some());
+        for (index, counter) in calls.iter().enumerate() {
+            assert_eq!(
+                counter.calls.load(Ordering::SeqCst),
+                usize::from(expected == Some(index))
+            );
+        }
+    }
+}
+
+#[test]
+fn route_constructor_rejects_ambiguous_or_cross_disclosed_credentials() {
+    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let route = |ns, browser, upstream| {
+        let namespace = RelayNamespace::from_bytes([ns; 32]).unwrap();
+        GatewayRoute::new(
+            namespace,
+            BrowserCapability::from_bytes([browser; 32]).unwrap(),
+            TlsRelay::new(
+                "127.0.0.1:1".parse().unwrap(),
+                "localhost",
+                certificate.cert.der().to_vec(),
+                super::super::net::RelayToken::from_bytes([upstream; 32]).unwrap(),
+                namespace,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    for (routes, error) in [
+        (vec![], NetError::Bounds),
+        (vec![route(9, 8, 7), route(9, 6, 5)], NetError::Conflict),
+        (vec![route(9, 8, 7), route(10, 8, 5)], NetError::Conflict),
+        (vec![route(9, 8, 7), route(10, 6, 8)], NetError::Denied),
+        (
+            (1..=17).map(|n| route(n, n + 20, 100)).collect(),
+            NetError::Bounds,
+        ),
+    ] {
+        let assets = Assets::new(BTreeMap::from([("index.html".into(), vec![1])])).unwrap();
+        assert_eq!(
+            Gateway::with_routes(
+                "127.0.0.1:8000".parse().unwrap(),
+                routes,
+                assets,
+                GatewayLimits::default()
+            )
+            .map(|_| ()),
+            Err(error)
+        );
+    }
 }
 
 #[test]
@@ -571,7 +682,13 @@ fn upstream_unwind_is_uncertain_even_when_gateway_budget_is_healthy() {
         }
     }
     let (mut gateway, listener, _) = fixture(Duration::from_millis(200), false);
-    Arc::get_mut(&mut gateway.0).unwrap().upstream = Arc::new(PanickingUpstream);
+    Arc::get_mut(&mut gateway.0)
+        .unwrap()
+        .routes
+        .values_mut()
+        .next()
+        .unwrap()
+        .upstream = Arc::new(PanickingUpstream);
     let state = gateway.0.clone();
     let address = listener.local_addr().unwrap();
     let raw = request(&gateway, &frame(OP_PAGE, &page_request(0, 1).unwrap()));

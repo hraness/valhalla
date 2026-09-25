@@ -1,4 +1,4 @@
-//! Loopback-only, same-origin browser gateway to one authenticated TLS relay.
+//! Loopback-only, same-origin browser gateway to explicitly selected TLS relays.
 //! No mailbox is opened here. Admission precedes upstream network effects.
 use super::{codec::*, net::NetError, tls::TlsRelay, RelayItem, RelayNamespace};
 use std::{
@@ -17,7 +17,7 @@ use std::{
 mod tests;
 type Result<T> = std::result::Result<T, NetError>;
 const HEADER_MAX: usize = 8192;
-/// Fixed HTTP endpoint; callers cannot choose an upstream route.
+/// Fixed HTTP endpoint; callers cannot choose an upstream address.
 pub const ENDPOINT: &str = "/private-relay/v1";
 /// Public UI artifact memory cap, separate from relay ciphertext bounds.
 pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
@@ -170,13 +170,42 @@ struct State {
     address: SocketAddr,
     host: String,
     origin: String,
-    namespace: RelayNamespace,
-    capability: BrowserCapability,
+    routes: BTreeMap<[u8; 32], Route>,
     limits: GatewayLimits,
-    upstream: Arc<dyn Upstream>,
     assets: Assets,
     budget: Mutex<Budget>,
     unhealthy: AtomicBool,
+}
+struct Route {
+    capability: BrowserCapability,
+    upstream: Arc<dyn Upstream>,
+}
+/// One immutable operator-selected route. A browser selects only its namespace;
+/// it can never supply a network address, TLS name, credential or redirect.
+pub struct GatewayRoute {
+    namespace: RelayNamespace,
+    capability: BrowserCapability,
+    upstream: TlsRelay,
+}
+impl GatewayRoute {
+    /// Keep a separate browser capability and the exact pinned TLS profile.
+    pub fn new(
+        namespace: RelayNamespace,
+        capability: BrowserCapability,
+        upstream: TlsRelay,
+    ) -> Result<Self> {
+        if upstream.token_matches(&capability.0) {
+            return Err(NetError::Denied);
+        }
+        if upstream.namespace() != namespace {
+            return Err(NetError::Scope);
+        }
+        Ok(Self {
+            namespace,
+            capability,
+            upstream,
+        })
+    }
 }
 /// Bounded host-owned HTTP gateway, independent from room/identity custody.
 pub struct Gateway(Arc<State>);
@@ -192,26 +221,82 @@ impl Gateway {
         assets: Assets,
         limits: GatewayLimits,
     ) -> Result<Self> {
-        if upstream.token_matches(&capability.0) {
-            return Err(NetError::Denied);
-        }
-        if upstream.namespace() != namespace {
-            return Err(NetError::Scope);
-        }
-        Self::configured(
+        Self::with_routes(
             address,
-            namespace,
-            capability,
-            Arc::new(upstream),
+            vec![GatewayRoute::new(namespace, capability, upstream)?],
             assets,
             limits,
         )
     }
+    /// Retain up to sixteen exact generations at one stable browser origin.
+    /// All routes share admission budgets and shutdown custody. A predecessor's
+    /// TLS host enforces its permanent fence; this gateway cannot unfence it.
+    pub fn with_routes(
+        address: SocketAddr,
+        routes: Vec<GatewayRoute>,
+        assets: Assets,
+        limits: GatewayLimits,
+    ) -> Result<Self> {
+        if routes.is_empty() || routes.len() > 16 {
+            return Err(NetError::Bounds);
+        }
+        // No browser capability may disclose any route's upstream credential.
+        for (index, route) in routes.iter().enumerate() {
+            if routes
+                .iter()
+                .any(|other| other.upstream.token_matches(&route.capability.0))
+            {
+                return Err(NetError::Denied);
+            }
+            if routes[..index]
+                .iter()
+                .any(|other| other.capability.0 == route.capability.0)
+            {
+                return Err(NetError::Conflict);
+            }
+        }
+        let mut selected = BTreeMap::new();
+        for route in routes {
+            if selected
+                .insert(
+                    *route.namespace.as_bytes(),
+                    Route {
+                        capability: route.capability,
+                        upstream: Arc::new(route.upstream),
+                    },
+                )
+                .is_some()
+            {
+                return Err(NetError::Conflict);
+            }
+        }
+        Self::configured_routes(address, selected, assets, limits)
+    }
+    #[cfg(test)]
     fn configured(
         address: SocketAddr,
         namespace: RelayNamespace,
         capability: BrowserCapability,
         upstream: Arc<dyn Upstream>,
+        assets: Assets,
+        limits: GatewayLimits,
+    ) -> Result<Self> {
+        Self::configured_routes(
+            address,
+            BTreeMap::from([(
+                *namespace.as_bytes(),
+                Route {
+                    capability,
+                    upstream,
+                },
+            )]),
+            assets,
+            limits,
+        )
+    }
+    fn configured_routes(
+        address: SocketAddr,
+        routes: BTreeMap<[u8; 32], Route>,
         assets: Assets,
         limits: GatewayLimits,
     ) -> Result<Self> {
@@ -224,9 +309,7 @@ impl Gateway {
             address,
             origin: format!("http://{host}"),
             host,
-            namespace,
-            capability,
-            upstream,
+            routes,
             assets,
             limits,
             budget: Mutex::new(Budget {
@@ -553,9 +636,17 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
         || request.path != ENDPOINT
         || get("origin") != Some(state.origin.as_str())
         || get("content-type") != Some("application/octet-stream")
-        || !get("authorization").is_some_and(|v| state.capability.matches(v))
-        || get("x-vhalla-namespace").and_then(hex32).as_ref() != Some(state.namespace.as_bytes())
     {
+        return response(&mut socket, 403, "text/plain", b"request refused");
+    }
+    let selected = get("x-vhalla-namespace").and_then(hex32);
+    let Some((namespace, route)) = selected
+        .as_ref()
+        .and_then(|id| state.routes.get_key_value(id))
+    else {
+        return response(&mut socket, 403, "text/plain", b"request refused");
+    };
+    if !get("authorization").is_some_and(|value| route.capability.matches(value)) {
         return response(&mut socket, 403, "text/plain", b"request refused");
     }
     let length =
@@ -576,7 +667,7 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
     };
     match op {
         OP_PUT => {
-            if !RelayItem::decode(body).is_ok_and(|i| i.namespace() == state.namespace) {
+            if !RelayItem::decode(body).is_ok_and(|i| i.namespace().as_bytes() == namespace) {
                 return response(&mut socket, 400, "text/plain", b"request refused");
             }
         }
@@ -594,7 +685,7 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
         _ => return response(&mut socket, 400, "text/plain", b"request refused"),
     }
     *upstream_uncertain = true;
-    let exchange = state.upstream.exchange(op, body, socket.deadline);
+    let exchange = route.upstream.exchange(op, body, socket.deadline);
     *upstream_uncertain = false;
     let (status, body) = match exchange {
         Ok(body) => (STATUS_OK, body),

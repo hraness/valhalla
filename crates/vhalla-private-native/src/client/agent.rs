@@ -45,6 +45,9 @@ impl RoomSession {
     /// host must explicitly reopen the retained identity and room state.
     pub fn into_agent(mut self, grant: LocalGrant) -> Result<OwnedAgentRoomSession> {
         self.status()?;
+        if self.live()?.delivery_paused {
+            return Err(vhalla_private_kernel::storage::StoreError::Refused.into());
+        }
         let custody = self.custody.take().ok_or(Error::Locked)?;
         let session = AgentRoomSession::new(custody.kernel, grant).map_err(Error::Agent)?;
         Ok(OwnedAgentRoomSession {

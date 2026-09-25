@@ -14,6 +14,8 @@ mod engine;
 #[allow(dead_code)]
 #[path = "../src/private/delivery_model.rs"]
 mod model;
+#[path = "../src/private/owner_actions.rs"]
+mod owner_actions;
 #[allow(dead_code)]
 #[path = "../src/private/wire.rs"]
 pub mod private_wire;
@@ -54,6 +56,7 @@ struct Disk {
     image: Option<Image>,
     records: BTreeMap<RecordKey, StoredRecord>,
     publishes: usize,
+    loads: usize,
 }
 #[derive(Clone, Default)]
 struct Mem(Rc<RefCell<Disk>>);
@@ -64,7 +67,8 @@ impl Mem {
 }
 impl Store for Mem {
     async fn load(&mut self, context: Context) -> Result<Option<Image>, StoreError> {
-        let disk = self.0.borrow();
+        let mut disk = self.0.borrow_mut();
+        disk.loads += 1;
         if disk.context.is_some_and(|old| old != context) {
             return Err(StoreError::Corrupt);
         }
@@ -177,6 +181,10 @@ struct Device {
     skew: u64,
     /// Fail one exact retained-item transaction before or after its commit.
     retention_fault: u8,
+    /// 1: before intent, 2: after intent, 3: before completion, 4: after completion.
+    join_fault: u8,
+    /// Advance the wall clock once, immediately after durable join intent.
+    join_delay: u64,
 }
 impl Host for Device {
     type Store = Mem;
@@ -218,6 +226,18 @@ impl Host for Device {
         if fault == 1 {
             return Err(Failure::Storage);
         }
+        let transition = model::State::decode(next).unwrap().discovery;
+        let join_fault = if transition.as_ref().is_some_and(|d| d.intent && !d.complete)
+            && matches!(self.join_fault, 1 | 2)
+            || transition.as_ref().is_some_and(|d| d.complete) && matches!(self.join_fault, 3 | 4)
+        {
+            std::mem::take(&mut self.join_fault)
+        } else {
+            0
+        };
+        if matches!(join_fault, 1 | 3) {
+            return Err(Failure::Storage);
+        }
         if retain.is_some_and(|(position, _)| self.retained.contains_key(&position))
             || discard.is_some_and(|position| !self.retained.contains_key(&position))
         {
@@ -235,7 +255,11 @@ impl Host for Device {
         }
         self.image = Some(next.to_vec());
         self.image_writes += 1;
-        if fault == 2 {
+        if transition.as_ref().is_some_and(|d| d.intent && !d.complete) && self.join_delay != 0 {
+            self.clock
+                .set(self.clock.get() + std::mem::take(&mut self.join_delay));
+        }
+        if fault == 2 || matches!(join_fault, 2 | 4) {
             return Err(Failure::Storage);
         }
         Ok(())
@@ -461,6 +485,9 @@ impl World {
 }
 
 async fn build() -> World {
+    build_with_member(false).await
+}
+async fn build_with_member(same_account: bool) -> World {
     // OpenMLS validates leaf lifetimes against real time, so the model's
     // epoch is the real wall clock; per-device skew still comes from `skew`.
     let now = std::time::SystemTime::now()
@@ -470,7 +497,7 @@ async fn build() -> World {
     let clock = Rc::new(Cell::new(now));
     let mailbox = Rc::new(RefCell::new(Mailbox::default()));
     let owner_account = account(5);
-    let member_account = account(6);
+    let member_account = account(if same_account { 5 } else { 6 });
     // Stay inside the MLS leaf-node lifetime bound (about three months).
     let validity = Validity::new(now - 30, now + 28 * 86400).unwrap();
     let draft = OwnerDraft::new(device_key(&owner_account), validity).unwrap();
@@ -521,6 +548,8 @@ async fn build() -> World {
         clock: clock.clone(),
         skew: 0,
         retention_fault: 0,
+        join_fault: 0,
+        join_delay: 0,
     };
     let mut member = Device {
         kernel: Some(member_kernel),
@@ -533,6 +562,8 @@ async fn build() -> World {
         clock: clock.clone(),
         skew: 0,
         retention_fault: 0,
+        join_fault: 0,
+        join_delay: 0,
     };
     let _owner_engine = Engine::open(&mut owner, namespace, [9; 32], [7; 16], 0, true)
         .await
@@ -1228,6 +1259,711 @@ async fn admission_fixture(world: &mut World, seed: u8) -> (Kernel<Mem>, Vec<u8>
     (member, offer.confidential_bytes().to_vec(), item, recipient)
 }
 
+async fn pending_recipient(world: &mut World, seed: u8) -> (Device, RelayItem) {
+    let (kernel, _, request, _) = admission_fixture(world, seed).await;
+    let context = kernel.status().context;
+    let disk = kernel.into_store();
+    let key = StorageKey::from_secret([seed; 32]).unwrap();
+    let kernel = Kernel::open(disk.clone(), &key, context).await.unwrap();
+    (
+        Device {
+            kernel: Some(kernel),
+            disk,
+            key,
+            image: None,
+            retained: BTreeMap::new(),
+            image_writes: 0,
+            mailbox: world.mailbox.clone(),
+            clock: world.clock.clone(),
+            skew: 0,
+            retention_fault: 0,
+            join_fault: 0,
+            join_delay: 0,
+        },
+        request,
+    )
+}
+
+async fn response_for(world: &mut World, request: &RelayItem) -> RelayItem {
+    let operation = world.operation();
+    let now = world.clock.get();
+    let output = world
+        .owner
+        .kernel
+        .as_mut()
+        .unwrap()
+        .accept_contact(
+            operation,
+            request.payload(),
+            Validity::new(now, now + 600).unwrap(),
+            now,
+        )
+        .await
+        .unwrap();
+    RelayItem::from_artifact(world.namespace, &output).unwrap()
+}
+
+async fn discover_response(engine: &mut Engine, recipient: &mut Device) -> engine::Admission {
+    for _ in 0..30 {
+        let summary = engine.sync(recipient).await.unwrap();
+        assert!(summary.prejoin);
+        assert_eq!(
+            (summary.cursor, summary.fetched, summary.received),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            recipient.kernel.as_ref().unwrap().status().phase,
+            Phase::AwaitingWelcome
+        );
+        assert!(summary.admissions <= 1);
+        assert_eq!(summary.blocked, 0);
+        if let Some(item) = engine.admissions().first() {
+            return *item;
+        }
+    }
+    panic!("authenticated response not discovered within bounded pages");
+}
+
+async fn reviewed_join(engine: &mut Engine, recipient: &mut Device, entry: engine::Admission) {
+    let item = engine.retained(recipient, entry.position).await.unwrap();
+    let mut review = admission::Admission::new([31; 16]).unwrap();
+    let now = recipient.clock.get();
+    let consent = review
+        .review_join(
+            recipient.kernel.as_mut().unwrap(),
+            engine.binding(),
+            entry.position,
+            &item,
+            now,
+        )
+        .await
+        .unwrap();
+    // Use the real response and command codecs across the consent boundary.
+    let raw = private_wire::Response::JoinReview(Box::new(consent.clone()))
+        .encode()
+        .unwrap();
+    let private_wire::Response::JoinReview(shown) = private_wire::Response::decode(&raw).unwrap()
+    else {
+        panic!("recipient review reply");
+    };
+    assert!(*shown == consent);
+    let command = private_wire::Request::ConfirmJoinResponse { consent: shown };
+    let private_wire::Request::ConfirmJoinResponse { consent: shown } =
+        private_wire::Request::decode(&command.encode().unwrap()).unwrap()
+    else {
+        panic!("recipient confirmation");
+    };
+    review.before(&command);
+    review
+        .authorize_join(
+            recipient.kernel.as_mut().unwrap(),
+            engine.binding(),
+            &shown,
+            &item,
+            now,
+        )
+        .await
+        .unwrap();
+    engine
+        .join_reviewed(recipient, entry.position, entry.digest, consent.validity)
+        .await
+        .unwrap();
+    assert!(
+        review
+            .authorize_join(
+                recipient.kernel.as_mut().unwrap(),
+                engine.binding(),
+                &shown,
+                &item,
+                now
+            )
+            .await
+            .is_err(),
+        "consent is consumed once"
+    );
+}
+
+#[test]
+fn pending_connection_refuses_untrusted_start_and_only_adopts_empty_legacy_progress() {
+    block_on(async {
+        let mut world = build().await;
+        let (mut recipient, _) = pending_recipient(&mut world, 9).await;
+        let writes = recipient.disk.publishes();
+        assert!(
+            Engine::open(&mut recipient, world.namespace, [9; 32], [31; 16], 1, true)
+                .await
+                .is_err()
+        );
+        assert!(recipient.image.is_none());
+        assert_eq!(recipient.disk.publishes(), writes);
+        let mut legacy = model::State::new([9; 32], [31; 16], 0, world.clock.get());
+        assert!(legacy.reserve(world.clock.get(), 1000).unwrap());
+        let mut raw = legacy.encode().unwrap();
+        raw.truncate(raw.len() - 91); // v5 initial lineage.
+        assert_eq!(raw.pop(), Some(0));
+        raw[7] = 3;
+        recipient.image = Some(raw.clone());
+        let delivery = Engine::open(&mut recipient, world.namespace, [9; 32], [32; 16], 0, false)
+            .await
+            .unwrap();
+        assert!(delivery.summary(false).prejoin);
+        assert_eq!(delivery.summary(false).attempts, 1);
+        assert_eq!(delivery.summary(false).wire_bytes, 1000);
+        assert_eq!(recipient.disk.publishes(), writes);
+        // A previous image with ordinary progress is never reset or reinterpreted.
+        for field in 0..3 {
+            let mut progress = legacy.clone();
+            match field {
+                0 => {
+                    progress.cursor = 1;
+                    progress.staged_after = 1;
+                }
+                1 => progress.sent = 1,
+                _ => {
+                    progress.pending = RelayItem::new(
+                        world.namespace,
+                        1,
+                        op(99),
+                        OutboxKind::ContactRequest,
+                        b"retained earlier request",
+                    )
+                    .unwrap()
+                    .encode()
+                    .unwrap()
+                }
+            }
+            let mut raw = progress.encode().unwrap();
+            raw.truncate(raw.len() - 91); // v5 initial lineage.
+            raw.pop();
+            raw[7] = 3;
+            recipient.image = Some(raw.clone());
+            let image_writes = recipient.image_writes;
+            assert!(
+                Engine::open(&mut recipient, world.namespace, [9; 32], [33; 16], 0, false)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(recipient.image, Some(raw));
+            assert_eq!(recipient.image_writes, image_writes);
+            assert_eq!(recipient.disk.publishes(), writes);
+        }
+    });
+}
+
+#[test]
+fn file_join_cannot_bypass_durable_prejoin_progress_after_reload() {
+    block_on(async {
+        let mut world = build().await;
+        let (mut recipient, request) = pending_recipient(&mut world, 9).await;
+        let response = response_for(&mut world, &request).await;
+        let delivery = Engine::open(&mut recipient, world.namespace, [9; 32], [31; 16], 0, true)
+            .await
+            .unwrap();
+        drop(delivery); // No active connection handle, as after worker reload.
+        let context = recipient.kernel.as_ref().unwrap().status().context;
+        recipient.reopen_kernel(context).await.unwrap();
+        let pending = recipient.kernel.as_ref().unwrap().status();
+        let writes = recipient.disk.publishes();
+        let image = recipient.load().await.unwrap();
+        assert!(admission::Admission::join_file(
+            recipient.kernel.as_mut().unwrap(),
+            image.as_deref(),
+            response.payload(),
+            world.clock.get()
+        )
+        .await
+        .is_err());
+        // Unknown/legacy evidence is also refusal, never invented absence.
+        assert!(admission::Admission::join_file(
+            recipient.kernel.as_mut().unwrap(),
+            Some(b"unknown prior connection"),
+            response.payload(),
+            world.clock.get()
+        )
+        .await
+        .is_err());
+        assert_eq!(recipient.kernel.as_ref().unwrap().status(), pending);
+        assert_eq!(recipient.disk.publishes(), writes);
+        assert_eq!(recipient.image, image);
+        // A separate fresh recipient still has the established file-only path.
+        let (mut fresh, request) = pending_recipient(&mut world, 10).await;
+        let response = response_for(&mut world, &request).await;
+        let image = fresh.load().await.unwrap();
+        admission::Admission::join_file(
+            fresh.kernel.as_mut().unwrap(),
+            image.as_deref(),
+            response.payload(),
+            world.clock.get(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fresh.kernel.as_ref().unwrap().status().phase,
+            Phase::MemberJoined
+        );
+    });
+}
+
+#[test]
+fn recipient_discovery_replays_active_three_member_history_from_zero_after_exact_review() {
+    block_on(async {
+        let mut world = build().await;
+        world.send(0).await;
+        world.sync(0).await;
+        world.renew().await;
+        world.sync(0).await;
+        world.send(0).await;
+        world.sync(0).await;
+        world.converge().await;
+        // An existing member committed an old-epoch output while offline. Its
+        // eventual mailbox position does not become safe because it is late.
+        world.send(1).await;
+        let member_kernel = world.member.kernel.as_mut().unwrap();
+        let page = member_kernel
+            .outbox(member_kernel.status().outbox_head - 1, 1)
+            .await
+            .unwrap();
+        let delayed =
+            RelayItem::from_artifact(world.namespace, page.records[0].artifact().unwrap()).unwrap();
+        let (mut recipient, request) = pending_recipient(&mut world, 9).await;
+        let mut delivery =
+            Engine::open(&mut recipient, world.namespace, [9; 32], [31; 16], 0, true)
+                .await
+                .unwrap();
+        let before = recipient.disk.publishes();
+        delivery.sync(&mut recipient).await.unwrap();
+        let before_floor = world.owner.kernel.as_ref().unwrap().status().control_floor;
+        let response = response_for(&mut world, &request).await;
+        let control = world
+            .owner
+            .kernel
+            .as_mut()
+            .unwrap()
+            .encrypted_controls(before_floor, 1)
+            .await
+            .unwrap();
+        world
+            .mailbox
+            .borrow_mut()
+            .put(RelayItem::from_control(world.namespace, &control.records[0]).unwrap());
+        let operation = world.operation();
+        let now = world.clock.get();
+        let owner = world.owner.kernel.as_mut().unwrap();
+        let draft = owner
+            .prepare_message(b"message before invitation response")
+            .unwrap();
+        let message = owner.send(operation, &draft, now).await.unwrap();
+        let message = RelayItem::from_artifact(world.namespace, &message).unwrap();
+        let message_digest = message.digest();
+        world.mailbox.borrow_mut().put(message);
+        for index in 0..(model::MAX_ADMISSIONS + 3) {
+            world.inject(if index % 2 == 0 {
+                OutboxKind::ContactInvitation
+            } else {
+                OutboxKind::ContactRequest
+            });
+        }
+        world.mailbox.borrow_mut().put(response.clone());
+        world.mailbox.borrow_mut().put(delayed);
+        let entry = discover_response(&mut delivery, &mut recipient).await;
+        assert_eq!(entry.digest, response.digest());
+        assert_eq!(
+            recipient.disk.publishes(),
+            before,
+            "discovery never publishes a kernel image"
+        );
+        assert_eq!(
+            recipient.retained.len(),
+            1,
+            "foreign bootstrap items cannot fill candidate capacity"
+        );
+        let message_position = world
+            .mailbox
+            .borrow()
+            .items
+            .iter()
+            .position(|i| i.digest() == message_digest)
+            .unwrap() as u64
+            + 1;
+        assert!(message_position < entry.position);
+        let spent = delivery.summary(false);
+        reviewed_join(&mut delivery, &mut recipient, entry).await;
+        let joined = delivery.summary(false);
+        assert!(!joined.prejoin);
+        assert_eq!((joined.cursor, joined.fetched, joined.received), (0, 0, 0));
+        assert_eq!(
+            (joined.attempts, joined.wire_bytes),
+            (spent.attempts, spent.wire_bytes)
+        );
+        assert_eq!(recipient.kernel.as_ref().unwrap().status().members, 3);
+        let mut hit_capacity = false;
+        for _ in 0..50 {
+            let summary = delivery.sync(&mut recipient).await.unwrap();
+            if summary.blocked == model::blocked::ADMISSIONS_FULL {
+                hit_capacity = true;
+                let position = delivery.admissions()[0].position;
+                delivery.discard(&mut recipient, position).await.unwrap();
+            }
+            if summary.cursor == world.mailbox.borrow().head() {
+                break;
+            }
+        }
+        let summary = delivery.summary(false);
+        assert!(
+            hit_capacity,
+            "ordinary replay preserves its honest bounded admission stop"
+        );
+        assert_eq!(summary.cursor, world.mailbox.borrow().head());
+        assert!(
+            summary.refused >= 3,
+            "old ciphertext and below-base controls get consulted kernel verdicts"
+        );
+        let inbox = recipient
+            .kernel
+            .as_mut()
+            .unwrap()
+            .inbox(0, 16)
+            .await
+            .unwrap();
+        assert_eq!(
+            inbox.records.len(),
+            1,
+            "old member plaintext was never recovered"
+        );
+        assert_eq!(
+            inbox.records[0].body(),
+            b"message before invitation response"
+        );
+        assert!(
+            recipient.retained.contains_key(&entry.position),
+            "exact join evidence survives replay"
+        );
+    });
+}
+
+#[test]
+fn recipient_join_intent_reconciles_both_stores_without_automatic_admission() {
+    block_on(async {
+        for fault in 1..=4 {
+            let mut world = build().await;
+            let (mut recipient, request) = pending_recipient(&mut world, 9).await;
+            let response = response_for(&mut world, &request).await;
+            world.mailbox.borrow_mut().put(response);
+            let mut delivery =
+                Engine::open(&mut recipient, world.namespace, [9; 32], [31; 16], 0, true)
+                    .await
+                    .unwrap();
+            let entry = discover_response(&mut delivery, &mut recipient).await;
+            let item = delivery
+                .retained(&mut recipient, entry.position)
+                .await
+                .unwrap();
+            let now = world.clock.get();
+            let mut review = admission::Admission::new([31; 16]).unwrap();
+            let consent = review
+                .review_join(
+                    recipient.kernel.as_mut().unwrap(),
+                    delivery.binding(),
+                    entry.position,
+                    &item,
+                    now,
+                )
+                .await
+                .unwrap();
+            review
+                .authorize_join(
+                    recipient.kernel.as_mut().unwrap(),
+                    delivery.binding(),
+                    &consent,
+                    &item,
+                    now,
+                )
+                .await
+                .unwrap();
+            let spent = delivery.summary(false);
+            recipient.join_fault = fault;
+            assert!(matches!(
+                delivery
+                    .join_reviewed(
+                        &mut recipient,
+                        entry.position,
+                        entry.digest,
+                        consent.validity
+                    )
+                    .await,
+                Err(Failure::Storage)
+            ));
+            let context = recipient.kernel.as_ref().unwrap().status().context;
+            recipient.reopen_kernel(context).await.unwrap();
+            let writes = recipient.disk.publishes();
+            let mut reopened =
+                Engine::open(&mut recipient, world.namespace, [9; 32], [32; 16], 0, false)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                recipient.disk.publishes(),
+                writes,
+                "reconciliation is never join-as-probe"
+            );
+            let summary = reopened.summary(false);
+            assert_eq!((summary.cursor, summary.fetched), (0, 0));
+            assert_eq!(
+                (summary.attempts, summary.wire_bytes),
+                (spent.attempts, spent.wire_bytes)
+            );
+            assert_eq!(summary.prejoin, fault <= 2);
+            if fault <= 2 {
+                assert_eq!(
+                    recipient.kernel.as_ref().unwrap().status().phase,
+                    Phase::AwaitingWelcome
+                );
+                let mut stale = admission::Admission::new([32; 16]).unwrap();
+                assert!(stale
+                    .authorize_join(
+                        recipient.kernel.as_mut().unwrap(),
+                        reopened.binding(),
+                        &consent,
+                        &item,
+                        now
+                    )
+                    .await
+                    .is_err());
+                reviewed_join(&mut reopened, &mut recipient, entry).await;
+            }
+            assert_eq!(
+                recipient.kernel.as_ref().unwrap().status().phase,
+                Phase::MemberJoined
+            );
+            assert!(
+                model::State::decode(recipient.image.as_ref().unwrap())
+                    .unwrap()
+                    .discovery
+                    .unwrap()
+                    .complete
+            );
+        }
+    });
+}
+
+#[test]
+fn discovered_candidate_and_position_commit_together_across_retention_faults() {
+    block_on(async {
+        for fault in 1..=2 {
+            let mut world = build().await;
+            let (mut recipient, request) = pending_recipient(&mut world, 9).await;
+            let response = response_for(&mut world, &request).await;
+            world.mailbox.borrow_mut().put(response.clone());
+            let mut delivery =
+                Engine::open(&mut recipient, world.namespace, [9; 32], [31; 16], 0, true)
+                    .await
+                    .unwrap();
+            let writes = recipient.disk.publishes();
+            recipient.retention_fault = fault;
+            assert!(matches!(
+                delivery.sync(&mut recipient).await,
+                Err(Failure::Storage)
+            ));
+            let mut reopened =
+                Engine::open(&mut recipient, world.namespace, [9; 32], [32; 16], 0, false)
+                    .await
+                    .unwrap();
+            assert_eq!(recipient.disk.publishes(), writes);
+            assert_eq!(reopened.summary(false).cursor, 0);
+            assert_eq!(reopened.admissions().len(), usize::from(fault == 2));
+            let entry = discover_response(&mut reopened, &mut recipient).await;
+            assert_eq!(entry.digest, response.digest());
+            assert_eq!(recipient.retained.len(), 1);
+            assert_eq!(recipient.disk.publishes(), writes);
+            // Missing either half is evidence loss, never a reason to rescan
+            // while silently forgetting the selected response.
+            recipient.retained.remove(&entry.position);
+            let image = recipient.image.clone();
+            assert!(
+                Engine::open(&mut recipient, world.namespace, [9; 32], [33; 16], 0, false)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(recipient.image, image);
+            assert_eq!(recipient.disk.publishes(), writes);
+        }
+    });
+}
+
+#[test]
+fn join_review_expiry_is_rechecked_after_durable_intent_before_membership() {
+    block_on(async {
+        let mut world = build().await;
+        let (mut recipient, request) = pending_recipient(&mut world, 9).await;
+        let response = response_for(&mut world, &request).await;
+        world.mailbox.borrow_mut().put(response);
+        let mut delivery =
+            Engine::open(&mut recipient, world.namespace, [9; 32], [31; 16], 0, true)
+                .await
+                .unwrap();
+        let entry = discover_response(&mut delivery, &mut recipient).await;
+        let item = delivery
+            .retained(&mut recipient, entry.position)
+            .await
+            .unwrap();
+        let mut review = admission::Admission::new([31; 16]).unwrap();
+        let now = world.clock.get();
+        let consent = review
+            .review_join(
+                recipient.kernel.as_mut().unwrap(),
+                delivery.binding(),
+                entry.position,
+                &item,
+                now,
+            )
+            .await
+            .unwrap();
+        review
+            .authorize_join(
+                recipient.kernel.as_mut().unwrap(),
+                delivery.binding(),
+                &consent,
+                &item,
+                now,
+            )
+            .await
+            .unwrap();
+        let writes = recipient.disk.publishes();
+        recipient.join_delay = 301;
+        assert!(delivery
+            .join_reviewed(
+                &mut recipient,
+                entry.position,
+                entry.digest,
+                consent.validity
+            )
+            .await
+            .is_err());
+        assert_eq!(recipient.disk.publishes(), writes);
+        assert_eq!(
+            recipient.kernel.as_ref().unwrap().status().phase,
+            Phase::AwaitingWelcome
+        );
+        let state = model::State::decode(recipient.image.as_ref().unwrap()).unwrap();
+        assert!(state.discovery.as_ref().unwrap().intent);
+        assert!(!state.discovery.as_ref().unwrap().complete);
+        let mut reopened =
+            Engine::open(&mut recipient, world.namespace, [9; 32], [32; 16], 0, false)
+                .await
+                .unwrap();
+        assert!(reopened.summary(false).prejoin);
+        reviewed_join(&mut reopened, &mut recipient, entry).await;
+        assert_eq!(
+            recipient.kernel.as_ref().unwrap().status().phase,
+            Phase::MemberJoined
+        );
+    });
+}
+
+#[test]
+fn recipient_review_is_read_only_exact_and_invalidated_by_sync_reload_or_expiry() {
+    block_on(async {
+        let mut world = build().await;
+        let (mut recipient, request) = pending_recipient(&mut world, 9).await;
+        let response = response_for(&mut world, &request).await;
+        let now = world.clock.get();
+        let writes = recipient.disk.publishes();
+        let pending = recipient.kernel.as_ref().unwrap().status();
+        let mut review = admission::Admission::new([31; 16]).unwrap();
+        for field in 0..9 {
+            let mut consent = review
+                .review_join(
+                    recipient.kernel.as_mut().unwrap(),
+                    [9; 32],
+                    1,
+                    &response,
+                    now,
+                )
+                .await
+                .unwrap();
+            match field {
+                0 => consent.connection[0] ^= 1,
+                1 => consent.position += 1,
+                2 => consent.digest[0] ^= 1,
+                3 => consent.request[0] ^= 1,
+                4 => consent.response[0] ^= 1,
+                5 => consent.proposed.status.epoch += 1,
+                6 => consent.pending.clock += 1,
+                7 => consent.session[0] ^= 1,
+                _ => consent.id += 1,
+            }
+            assert!(review
+                .authorize_join(
+                    recipient.kernel.as_mut().unwrap(),
+                    [9; 32],
+                    &consent,
+                    &response,
+                    now
+                )
+                .await
+                .is_err());
+        }
+        for request in [
+            private_wire::Request::DeliverySync,
+            private_wire::Request::Membership,
+        ] {
+            let consent = review
+                .review_join(
+                    recipient.kernel.as_mut().unwrap(),
+                    [9; 32],
+                    1,
+                    &response,
+                    now,
+                )
+                .await
+                .unwrap();
+            review.before(&request);
+            assert!(review
+                .authorize_join(
+                    recipient.kernel.as_mut().unwrap(),
+                    [9; 32],
+                    &consent,
+                    &response,
+                    now
+                )
+                .await
+                .is_err());
+        }
+        let consent = review
+            .review_join(
+                recipient.kernel.as_mut().unwrap(),
+                [9; 32],
+                1,
+                &response,
+                now,
+            )
+            .await
+            .unwrap();
+        assert!(review
+            .authorize_join(
+                recipient.kernel.as_mut().unwrap(),
+                [9; 32],
+                &consent,
+                &response,
+                now + 301
+            )
+            .await
+            .is_err());
+        let mut reopened = admission::Admission::new([32; 16]).unwrap();
+        assert!(reopened
+            .authorize_join(
+                recipient.kernel.as_mut().unwrap(),
+                [9; 32],
+                &consent,
+                &response,
+                now
+            )
+            .await
+            .is_err());
+        assert_eq!(recipient.disk.publishes(), writes);
+        assert_eq!(recipient.kernel.as_ref().unwrap().status(), pending);
+    });
+}
+
 #[test]
 fn admission_review_is_read_only_and_confirm_consumes_exact_request_once() {
     block_on(async {
@@ -1567,6 +2303,382 @@ fn admission_membership_change_after_review_requires_fresh_consent() {
 }
 
 #[test]
+fn legacy_drain_hashes_every_position_charges_real_bytes_and_reopens_paused_read_only() {
+    block_on(async {
+        let mut world = build().await;
+        for _ in 0..5 {
+            world.send(0).await;
+        }
+        world.converge().await;
+        let head = world.mailbox.borrow().head();
+        assert!(
+            head >= 5,
+            "messages and verified acceptance records share the mailbox"
+        );
+        let state = model::State::decode(world.owner.image.as_ref().unwrap()).unwrap();
+        assert!(state.drained());
+        let before = state.accounting();
+        let kernel_image = world.owner.disk.0.borrow().image.clone();
+        let kernel_writes = world.owner.disk.publishes();
+        let mut legacy = state.encode().unwrap();
+        legacy.truncate(legacy.len() - 91);
+        legacy[7] = 4;
+        world.owner.image = Some(legacy);
+        let mut engine = Engine::open(
+            &mut world.owner,
+            world.namespace,
+            [9; 32],
+            [8; 16],
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(engine.pause_plan(&mut world.owner, [1; 32]).await.is_err());
+        assert!(!engine
+            .drain_step(&mut world.owner, [42; 32], head, false)
+            .await
+            .unwrap());
+        assert_eq!(
+            engine.state().lineage.audit.as_ref().unwrap().digests.len(),
+            4
+        );
+        assert!(engine.pause_plan(&mut world.owner, [1; 32]).await.is_err());
+        let page_count = head.div_ceil(4);
+        for page in 1..page_count {
+            assert_eq!(
+                engine
+                    .drain_step(&mut world.owner, [42; 32], head, false)
+                    .await
+                    .unwrap(),
+                page + 1 == page_count
+            );
+        }
+        let after = engine.state().accounting();
+        assert_eq!(after.attempts, before.attempts + page_count);
+        let expected_charge: u64 = (0..head)
+            .step_by(4)
+            .map(|position| {
+                let request =
+                    codec::frame(codec::OP_PAGE, &codec::page_request(position, 4).unwrap());
+                (request.len() + world.mailbox.borrow().page(position, 4).len()) as u64
+            })
+            .sum();
+        assert_eq!(after.wire_bytes, before.wire_bytes + expected_charge);
+        assert_eq!(
+            (after.retained, after.received, after.refused_total),
+            (before.retained, before.received, before.refused_total)
+        );
+        let plan = engine.pause_plan(&mut world.owner, [1; 32]).await.unwrap();
+        let digests = world
+            .mailbox
+            .borrow()
+            .items
+            .iter()
+            .map(RelayItem::digest)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            plan.receipt.items,
+            model::generation::items_commitment(*world.namespace.as_bytes(), &digests).unwrap()
+        );
+        assert_eq!(plan.receipt.accounting, after);
+        let mut intent = model::State::decode(&plan.next).unwrap();
+        assert!(
+            intent.successor().is_err(),
+            "pause alone cannot select a route"
+        );
+        let selected = model::Successor {
+            namespace: [6; 32],
+            binding: [5; 32],
+            fence: [4; 32],
+            byte_ceiling: model::WIRE_BYTES,
+            attempt_ceiling: model::ATTEMPTS + 1024,
+        };
+        intent.lineage.intent = Some(selected);
+        let raw_intent = intent.encode().unwrap();
+        let mut successor = model::State::decode(&raw_intent)
+            .unwrap()
+            .successor()
+            .unwrap();
+        assert_eq!(
+            (successor.sent, successor.control_sent),
+            (state.sent, state.control_sent)
+        );
+        assert_eq!(
+            (successor.initial, successor.cursor, successor.staged_after),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            (
+                successor.attempts,
+                successor.wire_bytes,
+                successor.retained,
+                successor.received,
+                successor.refused_total
+            ),
+            (
+                after.attempts,
+                after.wire_bytes,
+                after.retained,
+                after.received,
+                after.refused_total
+            )
+        );
+        assert_eq!(successor.lineage.prior, plan.receipt.commitment().unwrap());
+        assert_eq!(successor.lineage.original, state.binding);
+        assert_eq!(successor.lineage.generation, 1);
+        assert_eq!(successor.lineage.attempt_ceiling, selected.attempt_ceiling);
+        assert!(successor.lineage.pause.is_none() && successor.lineage.intent.is_none());
+        for (byte_ceiling, attempt_ceiling) in [
+            (model::WIRE_BYTES - 1, 8192),
+            (model::WIRE_BYTES + 1, 8192),
+            (model::WIRE_BYTES, 4095),
+        ] {
+            intent.lineage.intent = Some(model::Successor {
+                byte_ceiling,
+                attempt_ceiling,
+                ..selected
+            });
+            assert!(intent.successor().is_err());
+        }
+        // A new namespace does not rescue an exhausted lifetime byte budget.
+        successor.wire_bytes = model::WIRE_BYTES;
+        assert!(!successor.reserve(world.clock.get(), 1).unwrap());
+        assert_eq!(successor.stop, model::Stop::Exhausted);
+        assert_eq!(successor.wire_bytes, model::WIRE_BYTES);
+        assert!(world.owner.disk.0.borrow().image == kernel_image);
+        assert_eq!(world.owner.disk.publishes(), kernel_writes);
+        assert_eq!(world.owner.image.as_ref().unwrap(), &plan.expected);
+        world.owner.image = Some(plan.next.clone()); // Atomic storage behavior has real-IDB coverage.
+        let writes = world.owner.image_writes;
+        let mut paused = Engine::open(
+            &mut world.owner,
+            world.namespace,
+            [9; 32],
+            [99; 16],
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(world.owner.image_writes, writes);
+        assert_eq!(world.owner.image.as_ref().unwrap(), &plan.next);
+        assert_eq!(paused.sync(&mut world.owner).await.unwrap().stop, 4);
+        assert!(paused
+            .drain_step(&mut world.owner, [42; 32], head, false)
+            .await
+            .is_err());
+        assert_eq!(world.owner.image_writes, writes);
+        assert!(world.owner.disk.0.borrow().image == kernel_image);
+    });
+}
+
+#[test]
+fn changed_drain_head_requires_explicit_retry_and_never_refunds_spend() {
+    block_on(async {
+        let mut world = build().await;
+        for _ in 0..5 {
+            world.send(0).await;
+        }
+        world.converge().await;
+        let head = world.mailbox.borrow().head();
+        let engine = &mut world.owner_engine;
+        assert!(!engine
+            .drain_step(&mut world.owner, [42; 32], head, false)
+            .await
+            .unwrap());
+        let original = engine
+            .state()
+            .lineage
+            .audit
+            .as_ref()
+            .unwrap()
+            .digests
+            .clone();
+        let spent = engine.state().accounting();
+        world.mailbox.borrow_mut().items.push(
+            RelayItem::new(
+                world.namespace,
+                1234,
+                op(1234),
+                OutboxKind::Application,
+                b"foreign malformed ciphertext",
+            )
+            .unwrap(),
+        );
+        assert!(engine
+            .drain_step(&mut world.owner, [42; 32], head, false)
+            .await
+            .is_err());
+        assert_eq!(
+            engine.state().lineage.audit.as_ref().unwrap().digests,
+            original
+        );
+        assert_eq!(engine.state().attempts, spent.attempts + 1);
+        assert!(engine.state().wire_bytes > spent.wire_bytes);
+        // A reconnect and ordinary sync authenticate/resolve the new head. The
+        // stale derived scan cannot silently change its selected terminal.
+        world.owner_engine = Engine::open(
+            &mut world.owner,
+            world.namespace,
+            [9; 32],
+            [8; 16],
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        world.converge().await;
+        let spent = world.owner_engine.state().accounting();
+        assert!(world
+            .owner_engine
+            .drain_step(&mut world.owner, [42; 32], head + 1, false)
+            .await
+            .is_err());
+        assert!(!world
+            .owner_engine
+            .drain_step(&mut world.owner, [42; 32], head + 1, true)
+            .await
+            .unwrap());
+        assert_eq!(world.owner_engine.state().attempts, spent.attempts + 1);
+        assert!(world.owner_engine.state().wire_bytes > spent.wire_bytes);
+        for page in 1..(head + 1).div_ceil(4) {
+            assert_eq!(
+                world
+                    .owner_engine
+                    .drain_step(&mut world.owner, [42; 32], head + 1, false)
+                    .await
+                    .unwrap(),
+                page + 1 == (head + 1).div_ceil(4)
+            );
+        }
+        let plan = world
+            .owner_engine
+            .pause_plan(&mut world.owner, [1; 32])
+            .await
+            .unwrap();
+        assert_eq!(plan.receipt.head, head + 1);
+        assert_eq!(plan.receipt.accounting.refused_total, spent.refused_total);
+    });
+}
+
+#[test]
+fn drain_refuses_unrelayed_kernel_change_retained_admission_and_inflight_reservation() {
+    block_on(async {
+        let mut world = build().await;
+        world.converge().await;
+        assert!(world
+            .owner_engine
+            .drain_step(&mut world.owner, [42; 32], 0, false)
+            .await
+            .unwrap());
+        world.send(0).await;
+        assert!(world
+            .owner_engine
+            .pause_plan(&mut world.owner, [1; 32])
+            .await
+            .is_err());
+        world.converge().await;
+        world.inject(OutboxKind::ContactRequest);
+        world.converge().await;
+        let head = world.mailbox.borrow().head();
+        let spent = world.owner_engine.state().accounting();
+        assert!(world
+            .owner_engine
+            .drain_step(&mut world.owner, [42; 32], head, true)
+            .await
+            .is_err());
+        assert_eq!(world.owner_engine.state().accounting(), spent);
+        world.discard(0).await;
+        let mut state = world.owner_engine.state().clone();
+        assert!(state.reserve(world.clock.get(), 400).unwrap());
+        assert!(
+            !state.drained(),
+            "an admitted in-flight network operation prevents pause"
+        );
+        world.owner.image = Some(state.encode().unwrap());
+        let mut engine =
+            Engine::selected(world.owner.image.clone().unwrap(), world.namespace).unwrap();
+        assert!(engine
+            .drain_step(&mut world.owner, [42; 32], head, true)
+            .await
+            .is_err());
+        assert!(engine.pause_plan(&mut world.owner, [1; 32]).await.is_err());
+    });
+}
+
+#[test]
+fn owner_review_is_read_only_one_use_exact_and_invalidated_by_other_requests() {
+    block_on(async {
+        let mut world = build().await;
+        let mut actions = owner_actions::OwnerActions::default();
+        let now = world.clock.get();
+        let writes = world.owner.disk.publishes();
+        let kernel = world.owner.kernel.as_mut().unwrap();
+        assert!(actions
+            .confirm(kernel, world.member_device, false, || Ok(now))
+            .await
+            .is_err());
+        let consent = actions
+            .review(kernel, world.member_device, false, || Ok(now))
+            .await
+            .unwrap();
+        assert_eq!(consent.target.claims().device, world.member_device);
+        assert_eq!(consent.status, kernel.status());
+        assert_eq!(world.owner.disk.publishes(), writes);
+        // A wrong target consumes the review too; it cannot be retried with
+        // the right target without showing the current snapshot again.
+        assert!(actions
+            .confirm(kernel, consent.status.context.device, false, || Ok(now))
+            .await
+            .is_err());
+        assert!(actions
+            .confirm(kernel, world.member_device, false, || Ok(now))
+            .await
+            .is_err());
+        for intervening in [
+            private_wire::Request::Membership,
+            private_wire::Request::DeliverySync,
+        ] {
+            actions
+                .review(kernel, world.member_device, false, || Ok(now))
+                .await
+                .unwrap();
+            actions.before(&intervening);
+            assert!(actions
+                .confirm(kernel, world.member_device, false, || Ok(now))
+                .await
+                .is_err());
+        }
+        actions
+            .review(kernel, world.member_device, false, || Ok(now))
+            .await
+            .unwrap();
+        actions.before(&private_wire::Request::Remove {
+            operation: op(444),
+            device: world.member_device,
+        });
+        assert!(actions
+            .confirm(kernel, world.member_device, true, || Ok(now))
+            .await
+            .is_err());
+        actions
+            .review(kernel, world.member_device, false, || Ok(now))
+            .await
+            .unwrap();
+        actions
+            .confirm(kernel, world.member_device, false, || Ok(now))
+            .await
+            .unwrap();
+        assert!(actions
+            .confirm(kernel, world.member_device, false, || Ok(now))
+            .await
+            .is_err());
+        assert_eq!(world.owner.disk.publishes(), writes);
+    });
+}
+
+#[test]
 fn admission_refused_confirmation_consumes_permission_before_retry() {
     block_on(async {
         let mut world = build().await;
@@ -1614,6 +2726,83 @@ fn admission_refused_confirmation_consumes_permission_before_retry() {
             Err(vhalla_private_kernel::Error::Policy)
         ));
         assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn owner_review_rechecks_clock_after_membership_and_refuses_changed_snapshot() {
+    block_on(async {
+        let mut world = build().await;
+        let mut actions = owner_actions::OwnerActions::default();
+        let now = world.clock.get();
+        let loads = world.owner.disk.0.borrow().loads;
+        let disk = world.owner.disk.clone();
+        let consent = actions
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                world.member_device,
+                false,
+                || {
+                    assert!(disk.0.borrow().loads > loads);
+                    Ok(now)
+                },
+            )
+            .await
+            .unwrap();
+        let loads = disk.0.borrow().loads;
+        assert!(actions
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                world.member_device,
+                false,
+                || {
+                    assert!(disk.0.borrow().loads > loads);
+                    Ok(consent.validity.expires_at() + 1)
+                }
+            )
+            .await
+            .is_err());
+        actions
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                world.member_device,
+                false,
+                || Ok(now),
+            )
+            .await
+            .unwrap();
+        world.renew().await;
+        assert!(actions
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                world.member_device,
+                false,
+                || Ok(now)
+            )
+            .await
+            .is_err());
+        let owner = world.owner.kernel.as_ref().unwrap().status().context.device;
+        assert!(actions
+            .review(world.owner.kernel.as_mut().unwrap(), owner, false, || Ok(
+                now
+            ))
+            .await
+            .is_err());
+        assert!(actions
+            .review(world.member.kernel.as_mut().unwrap(), owner, false, || Ok(
+                now
+            ))
+            .await
+            .is_err());
+        assert!(actions
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                world.member_device,
+                true,
+                || Ok(now)
+            )
+            .await
+            .is_err());
     });
 }
 
@@ -1733,6 +2922,49 @@ fn admission_cancellation_during_membership_load_cannot_reuse_permission() {
             Err(vhalla_private_kernel::Error::Policy)
         ));
         assert_eq!(writes, world.owner.disk.publishes());
+    });
+}
+
+#[test]
+fn live_same_account_owner_handoff_requires_the_selected_current_device() {
+    block_on(async {
+        let mut world = build_with_member(true).await;
+        let now = world.clock.get();
+        let mut actions = owner_actions::OwnerActions::default();
+        let consent = actions
+            .review(
+                world.owner.kernel.as_mut().unwrap(),
+                world.member_device,
+                true,
+                || Ok(now),
+            )
+            .await
+            .unwrap();
+        let confirmed = actions
+            .confirm(
+                world.owner.kernel.as_mut().unwrap(),
+                world.member_device,
+                true,
+                || Ok(now),
+            )
+            .await
+            .unwrap();
+        assert_eq!(consent, confirmed);
+        let kernel = world.owner.kernel.as_mut().unwrap();
+        let request = kernel
+            .succession_request(world.member_device, consent.target.claims().validity)
+            .await
+            .unwrap();
+        let grant = request.sign(&world.account).unwrap();
+        kernel.succeed(op(555), grant, now).await.unwrap();
+        assert_eq!(
+            kernel.membership().await.unwrap().owner().claims().device,
+            world.member_device
+        );
+        assert!(actions
+            .review(kernel, consent.status.context.device, true, || Ok(now))
+            .await
+            .is_err());
     });
 }
 

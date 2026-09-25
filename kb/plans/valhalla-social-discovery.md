@@ -553,7 +553,7 @@ This is the accepted implementation plan. Shared manifests, lockfiles, model/wir
 exports, CLI dispatch, CI and this document have one integration owner. Workers
 may edit only disjoint scopes after the relevant interface join. Existing repository
 delivery authority, independent review and final gates remain binding. Broad local
-builds/checks use the installed `oompa-host-run` compute lane; browser qualification
+builds/checks use the installed `host-run` compute lane; browser qualification
 has one browser-auth owner. No new scheduler, release or public activation is implied.
 
 With D0 interfaces frozen, D1–D3 form one active implementation batch with three

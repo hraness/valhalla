@@ -1,6 +1,6 @@
 # Private rooms for CLI agents
 
-The maintained `vhalla private agent-serve` command is a local MCP server for
+The maintained `vhalla private agent-launch` command is a local MCP server for
 existing CLI agents, including Codex and Devin. It binds one existing account,
 room, device, epoch and roster for one finite session. Use a build containing
 `experimental-private`; the release workflow includes this feature. Source
@@ -23,7 +23,7 @@ receives the material they read. The host declaration below is not a provider
 attestation or an operating-system sandbox. Room text is untrusted content;
 it does not authorize granting more tools or changing the disclosure boundary.
 
-## Prepare one launch
+## Prepare a reusable launch command
 
 First complete explicit confidential admission with the
 [private-room commands](private-rooms.md). `private inspect` writes authenticated
@@ -46,7 +46,42 @@ example (replace the descriptive values before use):
 }
 ```
 
-Generate a new grant and select a never-used claim path:
+For an agent that starts a new MCP process each session, save a reviewed policy
+as a private JSON file. The launcher creates a fresh numbered grant and claim
+under one private session directory for each process. For example:
+
+```json
+{
+  "version": 1,
+  "mode": "read-write",
+  "follow_inbox": true,
+  "lifetime": 900,
+  "max_preparations": 64,
+  "max_messages": 32,
+  "max_body_bytes": 131072,
+  "max_read_records": 256,
+  "max_read_bytes": 33554432,
+  "max_launches": 4,
+  "disclosure": {
+    "host": "My Mac, existing Codex CLI",
+    "provider": "the provider selected for this session",
+    "model": "the selected model",
+    "processing_policy": "I authorize this provider to process these room messages",
+    "allow_cooperating_host": true
+  }
+}
+```
+
+Set the disclosure values before use. The command stays the same across the
+four authorized launches:
+
+```sh
+vhalla private agent-launch /absolute/account /absolute/room \
+  --policy /private/config/policy.json --session-dir /private/config/sessions
+```
+
+For manual control over one grant, `agent-grant` and `agent-serve` remain
+available. Select new grant and claim paths:
 
 ```sh
 vhalla private agent-grant /absolute/account /absolute/room \
@@ -74,19 +109,19 @@ Codex and Devin sessions.
 
 ## Connect the CLI
 
-Use absolute paths to the admitted executable, identity, room and private grant.
+Use absolute paths to the admitted executable, identity, room and private policy.
 Codex supports a local stdio process configured as an MCP server; its
 configuration is shared with other local Codex clients.
 ([Official Codex MCP documentation](https://developers.openai.com/codex/mcp))
 
 ```sh
-codex mcp add valhalla -- /absolute/vhalla private agent-serve \
-  /absolute/account /absolute/room --grant /private/config/grant-001.json
+codex mcp add valhalla -- /absolute/vhalla private agent-launch \
+  /absolute/account /absolute/room --policy /private/config/policy.json \
+  --session-dir /private/config/sessions
 ```
 
 For project-specific Codex setup, use a trusted project's `.codex/config.toml`
-with the equivalent command/args, rather than registering the same one-use grant
-for unrelated sessions. Use `required = true`, `startup_timeout_sec = 30` and
+with the equivalent command/args. Use `required = true`, `startup_timeout_sec = 30` and
 `tool_timeout_sec = 35` so a failed launch is visible. Keep that local config out
 of source control. The stdio server requires pipes and emits only MCP JSON;
 running it directly in an interactive terminal is deliberately refused.
@@ -95,11 +130,12 @@ Devin's installed CLI supports project-local registration, as verified with
 `devin mcp add --help` on 22 September 2026:
 
 ```sh
-devin mcp add valhalla --scope local -- /absolute/vhalla private agent-serve \
-  /absolute/account /absolute/room --grant /private/config/grant-001.json
+devin mcp add valhalla --scope local -- /absolute/vhalla private agent-launch \
+  /absolute/account /absolute/room --policy /private/config/policy.json \
+  --session-dir /private/config/sessions
 ```
 
-Start only the intended agent after preparing the grant. Codex app-server
+Start only the intended agent after reviewing the policy. Codex app-server
 0.155.1 was exercised with `thread/start` and `mcpServer/tool/call`. Its separate
 `mcpServerStatus/list` inventory probe opens another MCP process; do not use that
 probe to restart or diagnose an already consumed one-use grant. Inspect the
@@ -109,6 +145,27 @@ is not a successful MCP connection. Check that all five tools are present, call
 `private_status`, and verify the selected room and grant. The server supports
 MCP `2026-07-28` and initialization-based `2025-11-25`; unsupported versions
 refuse rather than relaxing scope.
+
+## Review and end an agent session
+
+The numbered `NNNN-grant.json` in the selected session directory records that
+launch's room, account, device, epoch, roster, expiry, permissions, maximum
+allowances and declared provider. Its matching claim records one-use admission;
+it does not record the current remaining allowance. Keep both files private.
+In the running agent session, call `private_status` with the selected grant ID
+to inspect the authenticated local context and remaining allowances.
+
+Closing the MCP process ends its grant. Stop the intended agent through its
+normal client controls and remove or disable that project's MCP registration
+to prevent another launch. The stable launcher may mint another grant within
+the reviewed policy's launch limit; stopping one process does not revoke that
+policy. Preserve the session directory and every grant and claim. Deleting them
+would lose the evidence needed to reconcile uncertain queued work.
+
+A membership change ends the current roster-bound grant. Review the resulting
+devices and current roster before authorizing another launch. Removing a device
+ends that device's room membership; it is separate from ending one agent process.
+Neither action recalls plaintext that an authorized provider already received.
 
 ## Local hosting and persistent TLS delivery
 

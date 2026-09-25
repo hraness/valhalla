@@ -38,6 +38,49 @@ impl KernelStore {
             .map(Self)
             .map_err(store_error)
     }
+
+    /// Commitment to the current encrypted image under the retained store lock.
+    #[cfg(feature = "client")]
+    pub(crate) fn image_commitment(&mut self, context: Context) -> Result<[u8; 32], StoreError> {
+        use sha2::{Digest, Sha256};
+        let image = self
+            .0
+            .load(native_context(context)?)
+            .map_err(store_error)?
+            .ok_or(StoreError::Refused)?;
+        Ok(Sha256::digest(image).into())
+    }
+
+    #[cfg(feature = "client")]
+    pub(crate) fn delivery_is_paused(&self) -> Result<bool, StoreError> {
+        self.0.delivery_is_paused().map_err(store_error)
+    }
+
+    #[cfg(feature = "client")]
+    pub(crate) fn pause_delivery(
+        &mut self,
+        context: Context,
+        generation: u64,
+        image: [u8; 32],
+        receipt: &[u8],
+    ) -> Result<(), StoreError> {
+        self.0
+            .pause_delivery(native_context(context)?, generation, image, receipt)
+            .map_err(store_error)
+    }
+
+    #[cfg(feature = "client")]
+    pub(crate) fn select_delivery_successor(
+        &mut self,
+        context: Context,
+        generation: u64,
+        receipt: &[u8],
+        successor: [u8; 32],
+    ) -> Result<(), StoreError> {
+        self.0
+            .select_delivery_successor(native_context(context)?, generation, receipt, successor)
+            .map_err(store_error)
+    }
 }
 
 impl Store for KernelStore {

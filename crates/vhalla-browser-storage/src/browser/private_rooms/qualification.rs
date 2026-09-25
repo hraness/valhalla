@@ -505,9 +505,12 @@ pub async fn run(
         matches!(store.read(ctx, event.key()).await, Err(StoreError::Corrupt)),
         "oversized stored blob accepted",
     )?;
+    generation::run(namespace, contexts[0], &hook).await?;
     control(&hook, "finish")?;
     Ok("private IndexedDB absent database remains absent; missing and lost FORMAT refuse without replacing retained evidence; exact CAS, strict completion, stale tabs, cancellation, markers, orphan keys and bounded refusal passed".into())
 }
 
 #[cfg(feature = "private-archive-qualification")]
 pub mod archive;
+
+mod generation;

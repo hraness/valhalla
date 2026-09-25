@@ -82,6 +82,49 @@ class ContractTests(unittest.TestCase):
                     with self.subTest(key=key), self.assertRaises(m.MeasurementError):
                         m.admit_candidate(binary, proof, root)
 
+    def test_frozen_candidate_checks_all_files_and_labels_modified_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "Cargo.lock").write_bytes(b"lock")
+            (source / "input.rs").write_bytes(b"source")
+            binary, proof = root / "vhalla", root / "proof.json"
+            binary.write_bytes(b"candidate")
+            binary.chmod(0o700)
+            valid = {"kind": "frozen-source-v1", "passed": True, "source_clean_at_build": False,
+                     "source_commit": "a" * 40, "source_tree": "b" * 40, "source_patch_sha256": "c" * 64,
+                     "source_inputs": {path.name: m.sha256(path) for path in source.iterdir()},
+                     "lockfile_sha256": m.sha256(source / "Cargo.lock"), "artifact": {"sha256": m.sha256(binary)}}
+            m.write_json(proof, valid)
+            result = m.admit_candidate(binary, proof, source)
+            self.assertFalse(result["source_clean_at_build"])
+            self.assertEqual(result["source_patch_sha256"], "c" * 64)
+            self.assertIn("declared base commit/tree (not verified against a checkout)", result["source_identity_scope"])
+            m.write_json(proof, {**valid, "source_patch_sha256": ""})
+            with self.assertRaisesRegex(m.MeasurementError, "patch identity"):
+                m.admit_candidate(binary, proof, source)
+            m.write_json(proof, valid)
+            (source / "unexpected.rs").write_bytes(b"extra")
+            with self.assertRaisesRegex(m.MeasurementError, "captured inputs"):
+                m.admit_candidate(binary, proof, source)
+            (source / "unexpected.rs").unlink()
+            (source / "input.rs").write_bytes(b"changed")
+            with self.assertRaisesRegex(m.MeasurementError, "captured inputs"):
+                m.admit_candidate(binary, proof, source)
+
+    def test_repeated_quiet_distribution_requires_every_expected_sample(self):
+        def result(milliseconds, passed=True):
+            return {"correctness_passed": passed, "messages": [{"queue_request_ns": 0,
+                     "claim_observed_ns": milliseconds * 1_000_000}]}
+        partial = m.quiet_summary([result(1)], 20)
+        self.assertFalse(partial["acceptance_p95_under_5s"])
+        complete = m.quiet_summary([result(n) for n in range(1000, 1020)], 20)
+        self.assertEqual(complete["percentiles_ms"]["p95"], 1018)
+        self.assertTrue(complete["acceptance_p95_under_5s"])
+        self.assertFalse(m.quiet_summary([result(1000, False)], 1)["acceptance_p95_under_5s"])
+        self.assertFalse(m.quiet_summary([result(5000)], 1)["acceptance_p95_under_5s"])
+
     def test_log_bound_preserves_prior_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events.jsonl"
@@ -141,6 +184,62 @@ class AsyncContractTests(unittest.IsolatedAsyncioTestCase):
         args = self.fixture.private_args("offer-inspect", "b", False, offer="path")
         self.assertEqual(args[3:], ["--offer", "path"])
 
+    async def test_transparent_meter_counts_both_directions_and_cleans_ownership(self):
+        class Reader:
+            def __init__(self, body):
+                self.parts = [body, b""]
+            async def read(self, size):
+                return self.parts.pop(0)
+        class Writer:
+            def __init__(self):
+                self.body = bytearray()
+                self.closed = False
+                self.eof = False
+            def write(self, body):
+                self.body.extend(body)
+            async def drain(self):
+                pass
+            def can_write_eof(self):
+                return True
+            def write_eof(self):
+                self.eof = True
+            def close(self):
+                self.closed = True
+            async def wait_closed(self):
+                pass
+        downstream, upstream = Writer(), Writer()
+        async def connect(*args):
+            return Reader(b"encrypted reply"), upstream
+        meter = m.TrafficMeter(("127.0.0.1", 1))
+        with patch.object(m.asyncio, "open_connection", connect):
+            await meter.accept(Reader(b"encrypted request"), downstream)
+        self.assertEqual(upstream.body, b"encrypted request")
+        self.assertEqual(downstream.body, b"encrypted reply")
+        self.assertEqual(meter.counts, {"connections": 1, "completed": 1, "failed": 0, "refused": 0,
+                         "upstream_bytes": 17, "downstream_bytes": 15})
+        self.assertFalse(meter.tasks)
+        self.assertTrue(downstream.closed and upstream.closed and downstream.eof and upstream.eof)
+
+        cancelled = asyncio.Event()
+        class BrokenReader:
+            async def read(self, size):
+                raise OSError("synthetic forwarding failure")
+        class BlockedReader:
+            async def read(self, size):
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+        downstream, upstream = Writer(), Writer()
+        async def broken_connect(*args):
+            return BlockedReader(), upstream
+        with patch.object(m.asyncio, "open_connection", broken_connect):
+            await asyncio.wait_for(meter.accept(BrokenReader(), downstream), 1)
+        self.assertTrue(cancelled.is_set(), "opposite forwarding task must be collected")
+        self.assertEqual(meter.counts["failed"], 1)
+        self.assertFalse(meter.tasks)
+        self.assertTrue(downstream.closed and upstream.closed)
+
     async def test_polling_selection_changes_no_retry_or_authority_fields(self):
         self.fixture.contexts["a"] = {"room": "r", "anchor": "a", "account": "k", "device": "d"}
         self.fixture.connection = {"namespace": "n"}
@@ -188,6 +287,54 @@ class AsyncContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics["queue_to_receiver_observation_ms"]["observed_count"], 0)
         self.assertFalse(metrics["receiver_p95_under_5s"])
         self.assertFalse(self.fixture.complete())
+
+    async def test_resource_failure_cannot_be_ignored_until_after_measurement(self):
+        async def failure():
+            raise m.MeasurementError("synthetic sampler deadline")
+        task = asyncio.create_task(failure())
+        self.fixture.resource_task = task
+        await asyncio.sleep(0)
+        with self.assertRaisesRegex(m.MeasurementError, "sampler deadline"):
+            self.fixture.monitor_check()
+        self.fixture.resource_task = None
+
+    async def test_idle_cost_uses_elapsed_window_and_one_process_identity(self):
+        before = {"monotonic_ns": 0, "inflight": 0, **m.TrafficMeter(("", 0)).counts}
+        after = {**before, "monotonic_ns": 30_000_000_000, "connections": 30}
+        self.fixture.idle_start, self.fixture.idle_end = {"a": before}, {"a": after}
+        self.fixture.idle_observer_cpu_start, self.fixture.idle_observer_cpu_end = 1, 1.1
+        self.fixture.samples = [
+            {"monotonic_ns": 1_000_000_000, "cpu_time_ns": {"host": 100_000_000}, "rss_bytes": {"host": 1024},
+             "process_start_identity": {"host": {"pid": 1, "lstart": "same"}}},
+            {"monotonic_ns": 29_000_000_000, "cpu_time_ns": {"host": 400_000_000, "agent-b-1": 5_000_000},
+             "rss_bytes": {"host": 2048, "agent-b-1": 512},
+             "process_start_identity": {"host": {"pid": 1, "lstart": "same"}, "agent-b-1": {"pid": 3, "lstart": "later"}}}]
+        window = self.fixture.metrics()["idle_window"]
+        self.assertEqual(window["clients"]["a"]["connections_per_minute"], 60)
+        self.assertEqual(window["processes"]["host"]["cpu_time_ns"], 300_000_000)
+        self.assertAlmostEqual(window["processes"]["host"]["cpu_seconds"], 0.3)
+        self.assertEqual(window["processes"]["host"]["sample_span_seconds"], 28)
+        self.assertAlmostEqual(window["processes"]["host"]["one_core_percent"], 300_000_000 / 1e7 / 28)
+        self.assertEqual(window["processes"]["host"]["rss_max_bytes"], 2048)
+        # One sample inside the window is no idle measurement; the process is named, not dropped.
+        self.assertNotIn("agent-b-1", window["processes"])
+        self.assertEqual(window["insufficient_sample_processes"], ["agent-b-1"])
+        self.fixture.samples[-1]["process_start_identity"]["host"]["pid"] = 2
+        with self.assertRaisesRegex(m.MeasurementError, "different process identities"):
+            self.fixture.metrics()
+
+    async def test_meter_refusal_or_failure_before_shutdown_fails_the_scenario(self):
+        self.fixture.meters = {"a": m.TrafficMeter(("", 0)), "b": m.TrafficMeter(("", 0))}
+        self.fixture.meters["a"].counts["connections"] = 3
+        self.fixture.meters["a"].counts["completed"] = 3
+        self.fixture.meter_health()
+        self.assertIn("at most 8 concurrent connections", self.fixture.metrics()["traffic_scope"])
+        for field in ("refused", "failed"):
+            self.fixture.meters["b"].counts[field] = 1
+            with self.assertRaisesRegex(m.MeasurementError, "refused or failed connections before shutdown"):
+                self.fixture.meter_health()
+            self.fixture.meters["b"].counts[field] = 0
+        self.fixture.meters = {}
 
     async def test_cpu_metrics_keep_process_generations_separate(self):
         self.fixture.samples = [
@@ -276,6 +423,22 @@ class AsyncContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(child.forced)
         self.assertEqual(self.fixture.cleanup[0]["pid"], child.process.pid)
         self.fixture.children.clear()  # expected forced failure already asserted
+
+    async def test_meter_drain_shares_cleanup_deadline_and_forced_cleanup_collects_it(self):
+        class SlowMeter:
+            forced = False
+            async def close(meter, force=False):
+                if force:
+                    meter.forced = True
+                else:
+                    await asyncio.sleep(10)
+        meter = SlowMeter()
+        self.fixture.meters["synthetic"] = meter
+        with patch.object(m, "CLEANUP_SECONDS", 0.02):
+            with self.assertRaisesRegex(m.MeasurementError, "graceful cleanup"):
+                await asyncio.wait_for(self.fixture.shutdown(), 1)
+        self.assertTrue(meter.forced)
+        self.fixture.meters.clear()
 
     async def test_acceptance_target_and_censored_counts_do_not_hide_receiver_only_success(self):
         self.fixture.messages[1] = {"index": 0, "scheduled_ns": 0, "prepare_request_ns": 1,

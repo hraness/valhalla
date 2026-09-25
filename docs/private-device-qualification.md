@@ -177,9 +177,11 @@ The browser has an eight-item deferred queue, four-item incoming pages and at mo
 two outgoing artifacts per sync. Native delivery also has finite queues, deadlines
 and grants. An observed capacity/review stop is not evidence of unlimited liveness.
 Published control custody missing under a v2 native profile must refuse; upgrade
-must not recreate it. Namespace/generation rotation remains **GATED**:
-`private-host rotate` refuses, and the
-[rotation contract](private-rotation-contract.md) is design work, not a recovery command.
+must not recreate it. `private-host rotate` still refuses. The staged
+[drained mailbox transition](private-generations.md) is a separate operation
+requiring every controller, retained predecessor routes and exact pause/fence
+evidence. Its independent-device and multiport overlay cases remain **NOT RUN**
+until explicitly exercised on the selected devices.
 
 ## Separately agree disruptive device cases
 
@@ -216,7 +218,7 @@ Return one redacted `qualification.json` (or equivalent table) containing:
 At closeout stop only owned foreground processes; uninstall only qualification
 LaunchAgents that were explicitly installed, using their matching maintained
 commands. Preserve synthetic custody and failed evidence for review. A pass names
-the exact tested candidate and routes; unrun disruptive cases, gated rotation and
+the exact tested candidate and routes; unrun disruptive cases, remote rollover and
 public-internet/independent-validator claims remain unqualified.
 
 Source references: [native steel thread](../crates/vhalla-cli/tests/private_steel_thread.rs),

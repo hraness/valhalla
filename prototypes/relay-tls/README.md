@@ -30,7 +30,7 @@ cargo test --locked --manifest-path prototypes/relay-tls/Cargo.toml
 cargo clippy --locked --manifest-path prototypes/relay-tls/Cargo.toml --all-targets -- -D warnings
 ```
 
-On Hraness hosts, run each command through the installed absolute `hra-host-run`
+On Hraness hosts, run each command through the installed absolute `host-run`
 with `--mode=shared --lane=compute`. Select the complete Rust toolchain in that
 child's `PATH`, plus explicit matching `RUSTC` and `RUSTDOC`, if a Homebrew compiler
 otherwise takes precedence. `--offline` is supported after the standalone lock's

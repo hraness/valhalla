@@ -127,3 +127,6 @@ The [22 September review](design-review-2026-09-22.md) tracks code repairs and
 spikes. The [recovery policy experiment](../prototypes/device-recovery-policy/README.md)
 records the dead-device authority constraint. The Mac is the selected first host.
 Independent-host execution remains separate from the selected local-first scope.
+A hosted browser gateway is not part of the product: the
+[native-only plan](../kb/plans/valhalla-private-rooms-native-only.md) keeps every
+relay and gateway on a participant's laptop or server.

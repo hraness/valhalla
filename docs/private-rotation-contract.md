@@ -1,23 +1,37 @@
 # Private delivery generation transition
 
-Status: proposed contract, not an implemented migration. The existing
-`private-host rotate` creates a new mailbox and namespace while retaining old
-files. That operation alone does not move live clients or pending delivery.
+Status: implementation and verification contract for the staged
+`private-host generation-*` commands. The legacy `private-host rotate` still
+refuses without changing the home. Local and independent-device verification
+are recorded separately in the [active plan](../kb/plans/valhalla-private-room-pilot.md).
+The [mailbox maintenance guide](private-generations.md) describes the commands,
+private plan, controller review and recovery steps.
 
-The first supported transition should require a drained predecessor. It must
+The first transition requires a drained predecessor. It must
 preserve the exact MLS device, ratchets, account/room custody, committed outputs,
 attempt evidence and verified receipt history. It must never reinterpret an
 archive as a live sender or restart counters under the same device key.
 
 ## Required transition
 
-1. A trusted operator selects the exact old and new namespace and endpoint pins.
+1. A trusted operator selects the exact old and new namespace and endpoint pins,
+   and privately inventories every required controller using the namespace.
+   Current room membership alone cannot enumerate pending joiners or other
+   controllers in a shared namespace. Missing or unaccounted-for controllers
+   refuse the drained-only transition.
    A relay reply cannot authorize redirection or a higher starting cursor.
    Pause new authoring on all participating controllers and drain all known
-   never-retained jobs before fencing. The drain includes encrypted controls.
+   never-retained jobs before fencing. The drain includes encrypted controls,
+   inbound applications and the member acceptances they generate. Bring every
+   controller to one common head, then durably pause its mutators.
 2. The old service durably fences new nonduplicate PUTs while continuing exact
-   retries and PAGE. Its terminal retained head is fixed after admitted writes
-   drain. Stopping one client does not fence other clients.
+   retries and PAGE. The fence succeeds only if its expected terminal head still
+   matches after admitted writes drain. If the head changes after controllers
+   durably pause, fencing refuses and preserves those pauses and the pending
+   plan. There is no automatic unpause or replacement plan: this case requires
+   separately reviewed recovery of the added work.
+   Stopping one client does not fence other clients. Fencing before inbound work
+   has produced its acceptance output can strand that output permanently.
 3. Every migrating controller resolves all pending, uncertain and stopped jobs;
    drains staged/deferred inbound work and explicitly handles retained admission
    artifacts; and reaches that terminal mailbox head. Its authenticated kernel
@@ -40,7 +54,9 @@ archive as a live sender or restart counters under the same device key.
    approval of any new finite allowance. A new directory is not permission to
    reset attempts, uncertainty, quota evidence or provider authority.
 
-Absent any precondition, refuse the transition and keep the predecessor usable.
+Absent any precondition, refuse the transition and preserve predecessor evidence.
+After a durable fence, predecessor usability means reads and exact retries;
+recovery never silently restores admission of new writes.
 After an uncertain transition, reconcile its exact intent and existing stores;
 do not delete and recreate either generation. If a browser tab still holds old
 custody, its stale generation must fail before networking or output.
@@ -60,6 +76,20 @@ that itself needs an unavailable final slot nor a quota reset is a recovery
 mechanism. The host's durable quota ledger, client finite budgets, and kernel
 record/byte limits are distinct; a transition must identify which one exhausted.
 No arbitrary history pruning is authorized by this design.
+
+The first implementation retains at most 16 generations and inventories at
+most 32 controllers. The native queue and browser transport lifetime byte
+ceilings remain at most 1 GiB; moving to a new namespace does not renew them.
+Browser transport attempts may receive an explicit cumulative allowance up to
+65,536. Relay credential storage allowances are separate: the host carries prior
+spending and adds only the finite amounts recorded in its private plan.
+
+Controller pause receipts are private records from cooperating owners. Their
+commitments bind the context, original controller, connection, terminal mailbox,
+encrypted kernel image, and counters. They are not peer signatures. A host can
+check every supplied record and enrolled transport identity, but it relies on
+the operator's assertion that the physical-controller inventory is complete.
+Keep that inventory and its receipts out of public logs and relay messages.
 
 ## Acceptance evidence
 

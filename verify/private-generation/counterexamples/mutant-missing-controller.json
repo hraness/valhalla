@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "scope": "current finite-model counterexample, not an implementation execution",
+  "model_sha256": "59d3a509c80851b73663feea79cd3710d16c8e74da396210097a03ba05948afe",
+  "config_sha256": "e75b161182b89a06d9f03c99af62565d4f6e6d9925558812aa6e5e5c69aac569",
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "expected": {
+    "kind": "invariant",
+    "property": "CompleteInventory"
+  },
+  "states": [
+    {
+      "state": 1,
+      "action": "Init",
+      "tlc_text": "<Initial predicate>\n/\\ pending = {}\n/\\ online = {a, b}\n/\\ paused = {}\n/\\ fenced = FALSE\n/\\ applied = (a :> {} @@ b :> {})\n/\\ spent = (a :> 0 @@ b :> 0)\n/\\ archive = (a :> {} @@ b :> {})\n/\\ observed = (a :> {} @@ b :> {})\n/\\ selected = (a :> 0 @@ b :> 0)\n/\\ stored = {}\n/\\ terminal = {}\n/\\ created = {}\n/\\ intent = (a :> FALSE @@ b :> FALSE)"
+    },
+    {
+      "state": 2,
+      "action": "Pause",
+      "tlc_text": "<Pause line 68, col 13 to line 73, col 80 of module PrivateGeneration>\n/\\ pending = {}\n/\\ online = {a, b}\n/\\ paused = {a}\n/\\ fenced = FALSE\n/\\ applied = (a :> {} @@ b :> {})\n/\\ spent = (a :> 0 @@ b :> 0)\n/\\ archive = (a :> {} @@ b :> {})\n/\\ observed = (a :> {} @@ b :> {})\n/\\ selected = (a :> 0 @@ b :> 0)\n/\\ stored = {}\n/\\ terminal = {}\n/\\ created = {}\n/\\ intent = (a :> FALSE @@ b :> FALSE)"
+    },
+    {
+      "state": 3,
+      "action": "Fence",
+      "tlc_text": "<Fence line 82, col 10 to line 86, col 67 of module PrivateGeneration>\n/\\ pending = {}\n/\\ online = {a, b}\n/\\ paused = {a}\n/\\ fenced = TRUE\n/\\ applied = (a :> {} @@ b :> {})\n/\\ spent = (a :> 0 @@ b :> 0)\n/\\ archive = (a :> {} @@ b :> {})\n/\\ observed = (a :> {} @@ b :> {})\n/\\ selected = (a :> 0 @@ b :> 0)\n/\\ stored = {}\n/\\ terminal = {}\n/\\ created = {}\n/\\ intent = (a :> FALSE @@ b :> FALSE)"
+    }
+  ],
+  "loop": null
+}

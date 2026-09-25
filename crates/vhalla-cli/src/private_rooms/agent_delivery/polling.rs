@@ -1,7 +1,7 @@
 //! Monotonic mailbox scheduling, separate from durable outbound retry policy.
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const ADAPTIVE_BASE: Duration = Duration::from_secs(5);
 const ADAPTIVE_MAX: Duration = Duration::from_secs(30);
@@ -14,7 +14,7 @@ const ERROR_MAX: Duration = Duration::from_secs(30);
 /// An explicit selection for a new delivery profile. Adaptive retains the
 /// existing cadence; interactive spends more empty TLS exchanges to discover
 /// arrivals sooner. Neither policy is a delivery-latency guarantee.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Policy {
     #[default]

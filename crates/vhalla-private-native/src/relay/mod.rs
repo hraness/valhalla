@@ -17,6 +17,9 @@ use vhalla_private_kernel::OperationId;
 use vhalla_private_kernel::OutboxKind;
 
 mod codec;
+mod generation;
+mod generation_creation;
+pub use generation::GenerationFence;
 /// Trusted-host exact-ciphertext offline job custody.
 pub mod delivery;
 /// Loopback same-origin browser adapter forwarding exclusively over TLS.
@@ -167,8 +170,9 @@ impl Store {
 
 /// A durable single-process file-backed relay mailbox.
 ///
-/// The directory contains only an SQLite database, a persistent lock file and
-/// no room/account metadata. The lock is advisory and held for the lifetime of
+/// The directory contains an SQLite database, a persistent lock file, and an
+/// opaque creation binding for explicit successors. No room/account metadata
+/// is stored. The lock is advisory and held for the lifetime of
 /// this value, so callers must open one mailbox handle per process. SQLite is
 /// kept in rollback-journal mode and every successful mutation is synchronized
 /// before the receipt is returned. A crash leaves the database for explicit
@@ -180,6 +184,10 @@ pub struct FileStore {
     _lock: File,
     namespace: RelayNamespace,
     limits: Limits,
+    format: u8,
+    needs_reopen: bool,
+    #[cfg(test)]
+    maintenance_fault: Option<generation::MaintenanceFault>,
 }
 
 impl FileStore {
@@ -223,6 +231,10 @@ impl FileStore {
             _lock: lock,
             namespace,
             limits,
+            format: 2,
+            needs_reopen: false,
+            #[cfg(test)]
+            maintenance_fault: None,
         };
         out.validate()?;
         Ok(out)
@@ -241,7 +253,7 @@ impl FileStore {
             .map_err(|_| Error::Storage)?;
         let conn = Connection::open(path.join("relay.db")).map_err(|_| Error::Storage)?;
         configure_database(&conn)?;
-        let limits = read_meta(&conn, namespace)?;
+        let (limits, format) = read_meta(&conn, namespace)?;
         let out = Self {
             conn,
             directory,
@@ -249,6 +261,10 @@ impl FileStore {
             _lock: lock,
             namespace,
             limits,
+            format,
+            needs_reopen: false,
+            #[cfg(test)]
+            maintenance_fault: None,
         };
         out.validate()?;
         Ok(out)
@@ -278,6 +294,7 @@ impl FileStore {
     /// `sync` once. A staged write never fsyncs mid-transaction where the
     /// barrier cannot cover the commit. Receipt semantics equal `put`.
     pub(crate) fn put_staged(&mut self, item: RelayItem) -> Result<RelayReceipt> {
+        self.live()?;
         if item.namespace() != self.namespace {
             return Err(Error::Scope);
         }
@@ -296,6 +313,12 @@ impl FileStore {
                 digest: item.digest(),
                 duplicate: true,
             });
+        }
+        // An already retained item remains an exact retry. The local fence
+        // explains why this generation has no capacity for any new item;
+        // transport framing and historical receipts stay unchanged.
+        if self.fenced()? {
+            return Err(Error::Capacity);
         }
         let operation_exists: Option<Vec<u8>> = self
             .conn
@@ -358,6 +381,7 @@ impl FileStore {
 
     /// Read a bounded immutable page in ascending relay position.
     pub fn page(&self, after: u64, limit: usize) -> Result<RelayPage> {
+        self.live()?;
         if limit == 0 || limit > MAX_RELAY_PAGE {
             return Err(Error::Bounds);
         }
@@ -436,6 +460,7 @@ impl FileStore {
         for row in rows {
             row.map_err(|_| Error::Storage)?;
         }
+        self.generation_fence()?;
         Ok(())
     }
 }
@@ -447,7 +472,7 @@ fn configure_database(conn: &Connection) -> Result<()> {
     .map_err(|_| Error::Storage)
 }
 
-fn read_meta(conn: &Connection, expected: RelayNamespace) -> Result<Limits> {
+fn read_meta(conn: &Connection, expected: RelayNamespace) -> Result<(Limits, u8)> {
     // Format 2 orders items by mailbox-assigned position; a v1 sequence-keyed
     // database lacks this column and refuses rather than migrating.
     let (format, namespace, max_items, max_bytes): (i64, Vec<u8>, i64, i64) = conn
@@ -457,7 +482,7 @@ fn read_meta(conn: &Connection, expected: RelayNamespace) -> Result<Limits> {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|_| Error::Storage)?;
-    if format != 2 {
+    if ![2, 3].contains(&format) {
         return Err(Error::Scope);
     }
     if namespace.as_slice() != expected.as_bytes() || max_items <= 0 || max_bytes <= 0 {
@@ -468,7 +493,7 @@ fn read_meta(conn: &Connection, expected: RelayNamespace) -> Result<Limits> {
         max_bytes: usize::try_from(max_bytes).map_err(|_| Error::Bounds)?,
     };
     limits.check()?;
-    Ok(limits)
+    Ok((limits, format as u8))
 }
 
 fn decode_row(row: &Row<'_>, namespace: RelayNamespace) -> rusqlite::Result<PositionedItem> {
