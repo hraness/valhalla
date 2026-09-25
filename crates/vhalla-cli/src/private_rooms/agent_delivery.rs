@@ -9,6 +9,11 @@ use std::{
     io::ErrorKind,
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+        Arc,
+    },
+    thread,
     time::{Duration, Instant},
 };
 use vhalla_custody as custody;
@@ -42,6 +47,105 @@ const TICK_BYTES: usize = 4 * 1024 * 1024;
 /// healing; the launch ends for reconciliation instead of stalling the
 /// contiguous applied watermark silently.
 const PENDING_MAX: Duration = Duration::from_secs(300);
+/// How long one held page request may stay open on the host's relay. The
+/// server clamps to its own maximum; a quiet client therefore emits at most
+/// one relay exchange per minute while nothing arrives.
+const WATCH_WAIT: Duration = Duration::from_secs(60);
+/// One wait round trip's outer bound: the hold plus connect, handshake and
+/// response time for a single exchange.
+const WATCH_EXCHANGE: Duration = Duration::from_secs(30);
+/// Watch worker states observed by `poll`: still holding requests, closed on
+/// a transient failure (re-armed by the next proven scan), or refused the
+/// waited request shape — a host that predates it stays on plain polling.
+const WATCH_LIVE: u8 = 0;
+const WATCH_TRANSIENT: u8 = 1;
+const WATCH_UNSUPPORTED: u8 = 2;
+
+/// One held-page mailbox watch on its own relay connection, so a tick never
+/// blocks on a minute-scale wait. The worker only publishes the largest head
+/// it observed; the driver re-validates through `scan_page_until`, so the
+/// hint accelerates a scan but can never fabricate staged evidence.
+struct Watch {
+    /// Largest mailbox head the worker has observed from the relay.
+    head: Arc<AtomicU64>,
+    /// Driver's staged head; the worker never waits below it.
+    cursor: Arc<AtomicU64>,
+    /// WATCH_LIVE / WATCH_TRANSIENT / WATCH_UNSUPPORTED.
+    state: Arc<AtomicU8>,
+    /// Set when the driver drops or replaces this watch; the worker exits
+    /// after its current exchange rather than starting another wait.
+    stop: Arc<AtomicBool>,
+    join: thread::JoinHandle<()>,
+}
+impl Watch {
+    fn spawn(relay: TlsRelay, staged_head: u64) -> Self {
+        let head = Arc::new(AtomicU64::new(staged_head));
+        let cursor = Arc::new(AtomicU64::new(staged_head));
+        let state = Arc::new(AtomicU8::new(WATCH_LIVE));
+        let stop = Arc::new(AtomicBool::new(false));
+        let join = thread::spawn({
+            let (head, cursor, state, stop) =
+                (head.clone(), cursor.clone(), state.clone(), stop.clone());
+            move || {
+                let mut after = staged_head;
+                while !stop.load(Ordering::Acquire) {
+                    after = after.max(cursor.load(Ordering::Acquire));
+                    match relay.page_wait_until(
+                        after,
+                        1,
+                        WATCH_WAIT,
+                        Instant::now() + WATCH_WAIT + WATCH_EXCHANGE,
+                    ) {
+                        Ok(page) => {
+                            head.fetch_max(page.head, Ordering::Release);
+                            // Advance past observed arrivals so the next held
+                            // request blocks again instead of echoing them.
+                            after = after.max(page.head);
+                        }
+                        Err(error) => {
+                            state.store(
+                                match error {
+                                    // Bounds means a host that predates the
+                                    // bounded wait; a refused or foreign
+                                    // credential cannot hold a page either.
+                                    NetError::Bounds
+                                    | NetError::Malformed
+                                    | NetError::Denied
+                                    | NetError::Scope => WATCH_UNSUPPORTED,
+                                    _ => WATCH_TRANSIENT,
+                                },
+                                Ordering::Release,
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        Self {
+            head,
+            cursor,
+            state,
+            stop,
+            join,
+        }
+    }
+    /// Whether the worker still holds its request loop open. A worker that
+    /// ended without recording its terminal state (panic) is not live.
+    fn live(&self) -> bool {
+        self.state.load(Ordering::Acquire) == WATCH_LIVE && !self.join.is_finished()
+    }
+    /// Whether a dead watch may be re-armed once a scan proves the path.
+    /// Anything but an explicit refusal re-arms through the transient path.
+    fn rearmable(&self) -> bool {
+        self.state.load(Ordering::Acquire) != WATCH_UNSUPPORTED
+    }
+}
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
 
 mod applied;
 pub(super) mod generation;
@@ -549,6 +653,11 @@ pub(super) struct Driver {
     boundary_checked: bool,
     polling: polling::Schedule,
     scan_full: bool,
+    /// Held-page mailbox watch on its own connection. `None` only before the
+    /// first poll; a dead entry stays as the re-arm decision record.
+    watch: Option<Watch>,
+    /// A dead watch's termination already charged the cadence once.
+    watch_dead: bool,
 }
 impl Driver {
     pub(super) fn open(path: &Path, context: Context) -> Result<Self, String> {
@@ -625,6 +734,8 @@ impl Driver {
             boundary_checked: cp_outgoing == 0,
             polling,
             scan_full: false,
+            watch: None,
+            watch_dead: false,
         })
     }
     /// One bounded host tick between RPCs. Kernel uncertainty ends the grant;
@@ -979,14 +1090,42 @@ impl Driver {
         Ok(())
     }
 
-    /// Poll the relay mailbox under the selected cadence. A nonempty page or a
-    /// cursor still behind the observed head repolls on the next tick; a quiet
-    /// room uses its selected idle interval; errors back off without touching
-    /// staged evidence. No lifetime attempt cap: only the current pass counts.
+    /// Poll the relay mailbox under the selected cadence. A live held-page
+    /// watch replaces scheduled polls entirely: arrivals surface within one
+    /// tick of the observed head advancing. When no watch holds — dead or
+    /// refused by an older host — the ordinary cadence applies unchanged, and
+    /// a transiently dead watch re-arms on the next proven scan.
     fn poll(&mut self, deadline: Instant) -> Result<(), String> {
-        if self.scan_full || !self.polling.due(Instant::now()) {
+        if self.scan_full {
             return Ok(());
         }
+        if self.watch.is_none() {
+            self.watch = Some(Watch::spawn(self.relay.clone(), self.staged_head));
+        }
+        let watch = self.watch.as_ref().expect("spawned");
+        watch.cursor.store(self.staged_head, Ordering::Release);
+        if watch.live() {
+            if watch.head.load(Ordering::Acquire) > self.staged_head {
+                return self.scan_page(deadline);
+            }
+            return Ok(());
+        }
+        if !self.watch_dead {
+            // The held exchange ended like a failed scan: charge the cadence
+            // once so polling resumes without a fresh burst.
+            self.polling.network_error(Instant::now());
+            self.watch_dead = true;
+        }
+        if self.polling.due(Instant::now()) {
+            self.scan_page(deadline)?;
+        }
+        Ok(())
+    }
+
+    /// One bounded page scan; a nonempty page or a cursor still behind the
+    /// observed head repolls on the next tick. On success a transiently dead
+    /// watch re-arms against the now-proven path.
+    fn scan_page(&mut self, deadline: Instant) -> Result<(), String> {
         match self.scan.scan_page_until(&self.relay, PAGE, deadline) {
             Ok(report) => {
                 self.staged_head = self.scan.cursor();
@@ -994,6 +1133,14 @@ impl Driver {
                     Instant::now(),
                     report.scanned > 0 || self.staged_head < report.head,
                 );
+                if self
+                    .watch
+                    .as_ref()
+                    .is_some_and(|watch| !watch.live() && watch.rearmable())
+                {
+                    self.watch = Some(Watch::spawn(self.relay.clone(), self.staged_head));
+                    self.watch_dead = false;
+                }
             }
             Err(ScanFailure::Net(
                 NetError::Connect | NetError::Timeout | NetError::Capacity | NetError::Unavailable,

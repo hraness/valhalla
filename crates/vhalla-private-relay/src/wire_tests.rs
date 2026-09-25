@@ -1,5 +1,6 @@
 use super::*;
 use crate::codec::*;
+use std::time::Duration;
 fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes()
         .as_chunks::<2>()
@@ -58,6 +59,22 @@ fn hostile_frames_pages_status_and_receipt_are_bounded() {
     assert!(decode_status(255, b"").is_err());
     assert!(page_request(0, 0).is_err());
     assert!(page_request(0, 65).is_err());
+    // A waited page request is the same head plus a two-byte wait bound;
+    // a host that predates it answers bounds-refusal instead of hanging.
+    assert_eq!(
+        page_wait_request(0x0102030405060708, 64, Duration::from_secs(60)).unwrap(),
+        bytes("01020304050607080040ea60")
+    );
+    assert_eq!(
+        page_wait_request(9, 1, Duration::ZERO).unwrap(),
+        page_request(9, 1)
+            .unwrap()
+            .into_iter()
+            .chain([0, 0])
+            .collect::<Vec<u8>>()
+    );
+    assert!(page_wait_request(0, 0, Duration::from_secs(1)).is_err());
+    assert!(page_wait_request(0, 64, Duration::from_millis(65536)).is_err());
     let absent = decode_page(&[0; 11], 9, 1).unwrap();
     assert_eq!(absent.head, 0);
     assert!(absent.records.is_empty());

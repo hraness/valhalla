@@ -2,12 +2,14 @@ use super::*;
 use std::sync::atomic::AtomicUsize;
 struct Fake {
     calls: AtomicUsize,
+    bodies: std::sync::Mutex<Vec<Vec<u8>>>,
     fail: bool,
 }
 impl Upstream for Fake {
     fn exchange(&self, op: u8, body: &[u8], deadline: Instant) -> Result<Vec<u8>> {
         assert!(deadline > Instant::now());
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.bodies.lock().unwrap().push(body.to_vec());
         if self.fail {
             return Err(NetError::Timeout);
         }
@@ -27,6 +29,7 @@ fn fixture(timeout: Duration, fail: bool) -> (Gateway, TcpListener, Arc<Fake>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fake = Arc::new(Fake {
         calls: AtomicUsize::new(0),
+        bodies: std::sync::Mutex::new(Vec::new()),
         fail,
     });
     let assets = Assets::new(BTreeMap::from([(
@@ -144,6 +147,34 @@ fn canonical_submit_receipt_and_unavailable_status_are_forwarded() {
                     .position,
                 7
             );
+        }
+    }
+}
+#[test]
+fn page_admits_the_bounded_wait_shape_and_refuses_other_lengths() {
+    // The ordinary 10-byte page and the 12-byte bounded-wait page forward
+    // their exact bodies upstream; every other length never dials.
+    for (length, admitted) in [
+        (9usize, false),
+        (10, true),
+        (11, false),
+        (12, true),
+        (13, false),
+    ] {
+        let (gateway, listener, fake) = fixture(Duration::from_secs(1), false);
+        let mut body = page_request(0, 1).unwrap();
+        body.resize(length, 0);
+        let raw = request(&gateway, &frame(OP_PAGE, &body));
+        let response = exchange(gateway, listener, &raw);
+        assert_eq!(
+            response.starts_with(b"HTTP/1.1 200"),
+            admitted,
+            "length {length}"
+        );
+        let bodies = fake.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), usize::from(admitted), "length {length}");
+        if admitted {
+            assert_eq!(bodies[0], body, "upstream must see the exact body");
         }
     }
 }
@@ -274,6 +305,7 @@ fn retained_generations_require_their_exact_namespace_capability_and_body() {
             .map(|_| {
                 Arc::new(Fake {
                     calls: AtomicUsize::new(0),
+                    bodies: std::sync::Mutex::new(Vec::new()),
                     fail: false,
                 })
             })

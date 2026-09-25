@@ -117,6 +117,9 @@ pub fn server_config(chain: Vec<Vec<u8>>, key: Vec<u8>) -> Result<Arc<ServerConf
 
 /// One explicitly scoped authenticated endpoint; the credential is sent only
 /// after the configured CA and exact server name pass a completed handshake.
+/// Cloning shares the same selected trust and credential in this process so a
+/// held-page watch can own its own connection.
+#[derive(Clone)]
 pub struct TlsRelay {
     address: SocketAddr,
     name: ServerName<'static>,
@@ -231,6 +234,34 @@ impl TlsRelay {
             OP_PAGE,
             &request,
             deadline.min(Instant::now() + MAX_EXCHANGE),
+        )?;
+        let page = decode_page(&body, after, limit)?;
+        if page
+            .records
+            .iter()
+            .any(|r| r.item.namespace() != self.namespace)
+        {
+            return Err(NetError::Scope);
+        }
+        Ok(page)
+    }
+    /// Fetch one page asking the host to hold the request open up to `wait`
+    /// for newly retained items. The caller's deadline is additionally capped
+    /// at `wait + MAX_EXCHANGE`; a host that predates the bounded wait answers
+    /// bounds-refusal, which callers use to select ordinary polling instead.
+    /// An empty page on expiry carries the same contract as an immediate one.
+    pub fn page_wait_until(
+        &self,
+        after: u64,
+        limit: usize,
+        wait: Duration,
+        deadline: Instant,
+    ) -> Result<RelayPage> {
+        let request = page_wait_request(after, limit, wait)?;
+        let body = self.exchange(
+            OP_PAGE,
+            &request,
+            deadline.min(Instant::now() + wait + MAX_EXCHANGE),
         )?;
         let page = decode_page(&body, after, limit)?;
         if page

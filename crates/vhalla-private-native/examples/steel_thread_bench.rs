@@ -715,6 +715,7 @@ mod bench {
                 window: Duration::from_secs(1),
                 requests_per_window: 100_000,
                 bytes_per_window: 1024 * 1024 * 1024,
+                ..ServiceLimits::default()
             },
         )
         .map_err(debug)?;

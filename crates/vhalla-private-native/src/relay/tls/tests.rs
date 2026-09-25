@@ -1030,3 +1030,121 @@ fn explicit_stop_drains_admitted_handshake_and_releases_exact_custody() {
         0
     );
 }
+#[test]
+fn waited_page_wakes_on_committed_put_and_expires_quiet() {
+    let f = Fixture::new();
+    let cert = certificates();
+    // The held page keeps its in-flight charge for the whole wait, so the
+    // waking put needs a second slot under the same credential.
+    let mut waited = credential(1, 7);
+    waited.max_inflight = 2;
+    // Three accepted connections: the held page, the waking put, the expiry.
+    let (addr, worker) = f.serve(&cert, vec![waited], ServiceLimits::default(), 3);
+    let c = client(addr, &cert, 7);
+    let (send, receive) = std::sync::mpsc::channel();
+    let waiting = thread::spawn({
+        let c = c.clone();
+        move || send.send(c.page_wait_until(0, 8, Duration::from_secs(30), deadline()))
+    });
+    // Give the request its admission window so the put lands while it holds.
+    thread::sleep(Duration::from_millis(200));
+    c.submit(&item(1)).unwrap();
+    let page = receive
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    assert_eq!(page.head, 1);
+    assert_eq!(page.records.len(), 1);
+    waiting.join().unwrap().unwrap();
+    // An empty mailbox answers at the bounded wait with an empty page.
+    let quiet = c
+        .page_wait_until(
+            1,
+            8,
+            Duration::from_millis(200),
+            Instant::now() + Duration::from_secs(30),
+        )
+        .unwrap();
+    assert_eq!(quiet.head, 1);
+    assert!(quiet.records.is_empty());
+    worker.join().unwrap();
+}
+#[test]
+fn waited_page_respects_the_service_wait_cap_and_drains_promptly() {
+    let f = Fixture::new();
+    let cert = certificates();
+    let service = Service::new(
+        f.open(),
+        cert.config.clone(),
+        vec![credential(1, 7)],
+        ServiceLimits {
+            max_wait: Duration::from_millis(300),
+            ..ServiceLimits::default()
+        },
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker = thread::spawn({
+        let stop = stop.clone();
+        move || service.serve_until(listener, None, stop)
+    });
+    let c = client(addr, &cert, 7);
+    // A client asking to hold a minute only holds to the service's own cap.
+    let start = Instant::now();
+    let page = c
+        .page_wait_until(
+            0,
+            8,
+            Duration::from_secs(60),
+            Instant::now() + Duration::from_secs(90),
+        )
+        .unwrap();
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert_eq!(page.head, 0);
+    assert!(page.records.is_empty());
+    // A request still holding when admission ends answers instead of parking
+    // past drain; shutdown never waits out the remaining hold.
+    let (send, receive) = std::sync::mpsc::channel();
+    let waiting = thread::spawn({
+        let c = c.clone();
+        move || {
+            send.send(c.page_wait_until(
+                0,
+                8,
+                Duration::from_secs(60),
+                Instant::now() + Duration::from_secs(90),
+            ))
+        }
+    });
+    thread::sleep(Duration::from_millis(300));
+    let start = Instant::now();
+    stop.store(true, Ordering::Release);
+    let page = receive
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    assert!(page.records.is_empty());
+    waiting.join().unwrap().unwrap();
+    worker.join().unwrap().unwrap();
+    assert!(start.elapsed() < Duration::from_secs(10));
+}
+#[test]
+fn overlong_service_wait_cap_refuses_construction() {
+    let f = Fixture::new();
+    let cert = certificates();
+    assert_eq!(
+        Service::new(
+            f.open(),
+            cert.config,
+            vec![credential(1, 7)],
+            ServiceLimits {
+                max_wait: Duration::from_secs(121),
+                ..ServiceLimits::default()
+            },
+        )
+        .err(),
+        Some(NetError::Bounds)
+    );
+}

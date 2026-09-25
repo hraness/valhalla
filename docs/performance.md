@@ -116,11 +116,14 @@ percentiles that require every expected sample) together with
 last 30 seconds of its 90-second quiet interval: per-client loopback
 connection and byte counters observed by byte-transparent meters that never
 decrypt TLS, per-process CPU time (`cpu_time_ns`) and sampled RSS for the host
-and agents, and the observer's own CPU time. The meters admit at most eight
-concurrent connections per client and bound each connection to 12 seconds and
-32 MiB; a connection they refused or failed before shutdown fails the scenario,
-and a process with fewer than two samples inside the window is listed under
-`insufficient_sample_processes` rather than dropped. No such repeated run has
+and agents, and the observer's own CPU time. A quiet client that opens more
+than one relay connection inside the window fails the scenario, matching the
+held-page target of about one exchange per minute while idle. The meters admit
+at most eight concurrent connections per client and bound each connection to
+95 seconds and 32 MiB — a bound that must cover a full held page, unlike the
+earlier 12-second bound; a connection they refused or failed before shutdown
+fails the scenario, and a process with fewer than two samples inside the window
+is listed under `insufficient_sample_processes` rather than dropped. No such repeated run has
 been recorded yet; the single-message trials above remain the only policy
 evidence.
 

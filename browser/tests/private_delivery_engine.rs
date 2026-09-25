@@ -119,6 +119,11 @@ impl Store for Mem {
 #[derive(Default)]
 struct Mailbox {
     items: Vec<RelayItem>,
+    /// Answer a waited page with bounds, like a host built before the wait.
+    legacy_pages: bool,
+    /// Shape counters for the two admitted page body lengths.
+    ordinary_pages: usize,
+    waited_pages: usize,
 }
 impl Mailbox {
     fn head(&self) -> u64 {
@@ -280,8 +285,16 @@ impl Host for Device {
                 mailbox.put(RelayItem::decode(body).map_err(|_| TransportError::Refused)?)
             }
             codec::OP_PAGE => {
-                if body.len() != 10 {
+                if !matches!(body.len(), 10 | 12) {
                     return Err(TransportError::Refused);
+                }
+                if body.len() == 10 {
+                    mailbox.ordinary_pages += 1;
+                } else {
+                    mailbox.waited_pages += 1;
+                }
+                if body.len() == 12 && mailbox.legacy_pages {
+                    return Ok(codec::frame(codec::STATUS_BOUNDS, &[]));
                 }
                 let after = u64::from_be_bytes(body[..8].try_into().expect("bounded"));
                 let limit = u16::from_be_bytes(body[8..10].try_into().expect("bounded")) as usize;
@@ -3129,5 +3142,47 @@ fn admission_rival_publication_after_membership_snapshot_refuses_final_cas() {
             Err(vhalla_private_kernel::Error::Policy)
         ));
         assert_eq!(writes + 1, world.owner.disk.publishes());
+    });
+}
+
+/// A host built before the bounded wait answers the waited page shape with
+/// bounds; the same sync gesture retries the ordinary shape and still
+/// converges to the mailbox head.
+#[test]
+fn waited_pages_fall_back_to_ordinary_requests_on_older_hosts() {
+    block_on(async {
+        let mut world = build().await;
+        world.mailbox.borrow_mut().legacy_pages = true;
+        world.send(0).await;
+        world.sync(0).await.unwrap();
+        let summary = world.sync(1).await.unwrap();
+        assert_eq!(summary.received, 1);
+        assert_eq!(summary.cursor, 1);
+        let mailbox = world.mailbox.borrow();
+        assert!(
+            mailbox.waited_pages > 0,
+            "the sync must try the waited shape"
+        );
+        assert!(
+            mailbox.ordinary_pages > 0,
+            "a bounds reply must retry the ordinary shape"
+        );
+    });
+}
+
+/// With the wait-capable mailbox the waited shape is answered directly; no
+/// ordinary retry is needed for a sync to converge.
+#[test]
+fn waited_pages_are_answered_directly_on_current_hosts() {
+    block_on(async {
+        let mut world = build().await;
+        world.send(0).await;
+        world.sync(0).await.unwrap();
+        let summary = world.sync(1).await.unwrap();
+        assert_eq!(summary.received, 1);
+        assert_eq!(summary.cursor, 1);
+        let mailbox = world.mailbox.borrow();
+        assert!(mailbox.waited_pages > 0);
+        assert_eq!(mailbox.ordinary_pages, 0, "no fallback needed");
     });
 }

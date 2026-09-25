@@ -193,7 +193,7 @@ class TrafficMeter:
         self.tasks.add(task)
         upstream = None
         try:
-            async with asyncio.timeout(12):
+            async with asyncio.timeout(95):
                 remote, upstream = await asyncio.open_connection(*self.target)
                 async def copy(source, destination, field):
                     total = 0
@@ -685,6 +685,16 @@ class Fixture:
             self.monitor_check()
             self.idle_observer_cpu_end = time.process_time()
             self.idle_end = {who: meter.snapshot() for who, meter in self.meters.items()}
+            # A held-page watch reopens one bounded exchange only after a wait
+            # of at least the watch's hold, so a quiet client cannot begin
+            # more than one relay connection inside a 30-second window.
+            for who, meter in self.meters.items():
+                opened = (self.idle_end[who]["connections"]
+                          - self.idle_start[who]["connections"])
+                require(opened <= 1,
+                        f"idle client {who} opened {opened} relay connections inside "
+                        f"{IDLE_MEASURE_SECONDS}s; the held-page watch must keep idle "
+                        "traffic at about one exchange per minute")
             self.quiet_end_ns = time.monotonic_ns()
         if self.scenario == "offline":
             await self.close_agent("b")
@@ -900,7 +910,7 @@ class Fixture:
                   "rss_scope": "1s samples of owned CLI PIDs; observed maximum is a lower bound, not lifetime maximum RSS",
                   "traffic": {who: meter.snapshot() for who, meter in self.meters.items()},
                   "traffic_scope": "byte-transparent per-client loopback TCP; end-to-end pinned TLS; one connection per current exchange; bytes include TLS overhead; "
-                                   "the meter admits at most 8 concurrent connections per client and bounds each connection to 12 s and 32 MiB; "
+                                   "the meter admits at most 8 concurrent connections per client and bounds each connection to 95 s and 32 MiB; "
                                    "a refused or failed connection before shutdown fails the scenario",
                   "cpu_scope": "1s ps time samples of owned host/agent PIDs, accumulated user + system CPU time; display resolution is recorded per sample, not the kernel clock resolution; final lifetime CPU and per-PAGE attribution are unmeasured"}
         result["measurement_ended_ns"] = ended

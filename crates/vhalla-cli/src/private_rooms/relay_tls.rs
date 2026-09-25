@@ -24,11 +24,15 @@ fn number(value: &Value, field: &str) -> Result<u64, String> {
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("TLS configuration needs unsigned {field}"))
 }
-fn fields(value: &Value, allowed: &[&str]) -> Result<(), String> {
+fn fields(value: &Value, required: &[&str], optional: &[&str]) -> Result<(), String> {
     let object = value
         .as_object()
         .ok_or("TLS configuration object required")?;
-    if object.len() != allowed.len() || object.keys().any(|key| !allowed.contains(&key.as_str())) {
+    if object
+        .keys()
+        .any(|key| !required.contains(&key.as_str()) && !optional.contains(&key.as_str()))
+        || required.iter().any(|key| !object.contains_key(*key))
+    {
         return Err("TLS configuration has missing or unknown fields".into());
     }
     Ok(())
@@ -83,6 +87,9 @@ pub(super) fn execute(args: &Args) -> Result<(), String> {
             "bytes_per_window",
             "credentials",
         ],
+        // `max_wait_ms` bounds one held page request; absent keeps the
+        // service default so existing configurations stay valid.
+        &["max_wait_ms"],
     )?;
     let limits = ServiceLimits {
         max_connections: usize::try_from(number(&value, "max_connections")?)
@@ -92,6 +99,11 @@ pub(super) fn execute(args: &Args) -> Result<(), String> {
         requests_per_window: u32::try_from(number(&value, "requests_per_window")?)
             .map_err(|_| "TLS work bound")?,
         bytes_per_window: number(&value, "bytes_per_window")?,
+        max_wait: match value.get("max_wait_ms") {
+            Some(value) => Duration::from_millis(value.as_u64().ok_or("TLS max wait bound")?),
+            // Absent keeps the service default; the service validates the cap.
+            None => ServiceLimits::default().max_wait,
+        },
     };
     let keys = value
         .get("credentials")
@@ -116,6 +128,7 @@ pub(super) fn execute(args: &Args) -> Result<(), String> {
                 "requests_per_window",
                 "bytes_per_window",
             ],
+            &[],
         )?;
         let paths = key
             .get("token_files")

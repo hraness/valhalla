@@ -154,8 +154,21 @@ impl Upstream for TlsRelay {
                 .map(encode_receipt),
             OP_PAGE => {
                 let after = u64::from_be_bytes(body[..8].try_into().expect("validated"));
-                let limit = u16::from_be_bytes(body[8..].try_into().expect("validated")) as usize;
-                encode_page(&self.page_until(after, limit, deadline)?)
+                let limit = u16::from_be_bytes(body[8..10].try_into().expect("validated")) as usize;
+                let page = if body.len() == 12 {
+                    // Forward the bounded wait, clamped so the relay still
+                    // answers inside this gateway request's own deadline.
+                    let wait_ms = u16::from_be_bytes(body[10..12].try_into().expect("validated"));
+                    let wait = Duration::from_millis(u64::from(wait_ms)).min(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .saturating_sub(Duration::from_secs(2)),
+                    );
+                    self.page_wait_until(after, limit, wait, deadline)?
+                } else {
+                    self.page_until(after, limit, deadline)?
+                };
+                encode_page(&page)
             }
             _ => Err(NetError::Bounds),
         }
@@ -672,10 +685,12 @@ fn handle_tracked(state: &State, stream: TcpStream, upstream_uncertain: &mut boo
             }
         }
         OP_PAGE => {
-            if body.len() != 10
+            // The two extra bytes ask the relay to hold the request open for
+            // newly retained items, bounded by this connection's own deadline.
+            if !matches!(body.len(), 10 | 12)
                 || page_request(
                     u64::from_be_bytes(body[..8].try_into().expect("bounded")),
-                    u16::from_be_bytes(body[8..].try_into().expect("bounded")) as usize,
+                    u16::from_be_bytes(body[8..10].try_into().expect("bounded")) as usize,
                 )
                 .is_err()
             {

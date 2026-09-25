@@ -297,7 +297,10 @@ the host directly need nothing else installed.
   those connections and start 64 of those handshakes per second; loopback
   peers, including Tailcat forwards, share only the totals. Excess connections
   receive a TLS alert, and clients retry later. Each request has a 10-second
-  deadline, of which the handshake may use four seconds. Connections from many
+  deadline, of which the handshake may use four seconds. A page request may
+  ask to stay open until new items arrive, up to one minute per request; the
+  hold keeps its admitted connection and request slots the whole time, and a
+  stopping host answers held requests immediately. Connections from many
   machines at once can still delay service.
 
 ## Explicit Tailcat wiring
