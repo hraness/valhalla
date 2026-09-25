@@ -61,7 +61,7 @@ export const articleAdmissions = [
     href: '/writing/ledger-recovery-under-random-crashes/',
     lifecycle: 'indexable',
     readerJob: 'Learn how to test that a hash-chained ledger reloads correctly after a restart, using vhalla\'s ledger crate as the worked example.',
-    nonObviousAnswer: 'Restore after every step of a random history and keep running on the restored copy, so later steps exercise restarted state; this is how a checkpoint lost across restore was found and pinned as a two-restore regression. Proofs (Verus, Kani) cover the append rule and the spent-set decision, not durability.',
+    nonObviousAnswer: 'Restore after every step of a random history and keep running on the restored copy, so later steps exercise restarted state; this is how a restore that refused a checkpoint sitting behind the newest event was found and pinned as a two-restore regression. Proofs (Verus, Kani) cover the append rule and the spent-set decision, not durability.',
     originalContribution: 'Maps three verification tools to the three components they cover in vhalla, from the Hegel property, the Verus model and the Kani harnesses in the repository.',
     hostFit: 'An on-host technique post about vhalla\'s own ledger crate, which is foundation work not yet wired into rooms.',
     nearestUrls: [
@@ -120,7 +120,7 @@ export const articleAdmissions = [
     ],
     observations: [
       'The guarantee covers only the certified room directory; message delivery in public rooms does not wait on it, so the proof says nothing about message order or delivery.',
-      'The one defect tied to this work was first suspected by reading source and then reproduced by the Lean-generated comparison, so the demonstrated value is reproduction and regression protection rather than discovery.',
+      'The one defect tied to this work was first suspected by reading source and then reproduced by a separate real-signature regression test, so the demonstrated value is regression protection rather than discovery.',
     ],
     scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 2, hostFit: 1, voiceIntegrity: 2, maintenanceValue: 1 },
     owner: 'Hraness',

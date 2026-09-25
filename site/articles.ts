@@ -48,9 +48,9 @@ export const articles: Article[] = [
   article({
     slug: 'delivery-specs-that-fail-on-purpose',
     title: 'Testing Valhalla\'s delivery rules with bugs that must fail',
-    dek: 'Valhalla\'s model check fails unless each of its 51 planted delivery bugs breaks the rule it names.',
+    dek: 'Valhalla\'s model check fails unless each of its planted bugs breaks the rule it names.',
     eyebrow: 'Technique',
-    navLabel: 'Planted delivery bugs',
+    navLabel: 'Planted bugs',
     published: '2026-09-24',
     tags: ['vhalla', 'TLA+', 'model checking', 'message delivery', 'retries', 'offline'],
     links: [
