@@ -297,3 +297,26 @@ on 2, 3, 5 and 7; 10 follows each first release.
   dials the runner's routed address to exercise the per-source refusals and
   a network-listener round trip. Still open for step 2: floods of slow and
   half-open clients from many sources, and a LAN run between two machines.
+- 25 September 2026, step 3 quiet clients: #136 merged as `fab2301`.
+  `OP_PAGE` accepts a 12-byte waited shape (`wait_ms`) alongside the
+  ordinary 10-byte request; a host that predates it answers bounds and the
+  client retries the ordinary body on the same gesture, so timed polling
+  stays the fallback. The TLS service holds a page request open up to
+  `max_wait` (60-second default, 120-second cap, `max_wait_ms` optional in
+  the relay configuration), wakes it on each committed put or on drain, and
+  keeps it billed against its admission quotas; a poisoned store fails
+  closed. The delivery driver runs one lazy watch on a second connection
+  that publishes only the observed mailbox head; the bounded scan still
+  validates and stages every record, and a dead or refused watch falls back
+  to the existing cadence. The browser sends an eight-second wait on
+  discovery and sync gestures and remembers a refusal for the worker's
+  life. Measured on this Mac with release binaries of the parent commit
+  and the change through the same quiet scenario: idle relay connections
+  went from two per minute to none inside the 30-second window, post-quiet
+  delivery acceptance from 28.7 to 3.6 seconds, host 11.8 MB sampled RSS,
+  agents 13.7 to 13.9 MB and under 0.4 percent of a core. The agent figure
+  exceeds the 12-megabyte client budget in both builds, a pre-existing
+  baseline the wait did not change; the budget needs its own decision
+  rather than a regression fix. Still open for step 3: the same numbers on
+  Linux and Windows, an active-profile measurement of the one-second
+  arrival bound, and the two-Mac idle run folded into step 9.
