@@ -43,7 +43,8 @@ state or private invitations.
   and require the kernel. These features are also off by default.
 
 The CLI's optional `experimental-private` feature exposes create, signed offer
-inspection/import, encrypted contact request/response, message send/receive,
+inspection/import, one-file invite bundle creation and consumption, encrypted
+contact request/response, message send/receive,
 exact retry/export, membership inspection, removal, owner renewal, owner-device
 succession, signed control-proof export, owner-control observation and
 fork-evidence reporting. Its

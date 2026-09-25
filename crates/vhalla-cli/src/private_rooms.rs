@@ -27,6 +27,7 @@ mod agent_setup;
 mod archive;
 mod delivery_resume;
 mod files;
+mod invite;
 mod relay_tls;
 
 pub const HELP: &str = "vhalla private agent-serve ID STORE --grant PRIVATE_JSON [--delivery PRIVATE_JSON]
@@ -42,10 +43,11 @@ vhalla private create ID NEW_STORE --not-before UNIX --expires UNIX [--max-recor
 vhalla private inspect ID STORE --out PRIVATE_JSON
 vhalla private offer-inspect ID --offer FILE|- --owner KEY64 --out PRIVATE_JSON
 vhalla private offer ID STORE --recipient KEY64 --operation OP32 --not-before UNIX --expires UNIX --out SECRET_FILE
+vhalla private invite ID STORE --recipient KEY64 --operation OP32 --not-before UNIX --expires UNIX --host PRIVATE_HOST_HOME --credential N --out INVITE_FILE
 vhalla private import ID NEW_STORE --offer FILE|- --owner KEY64 --room ROOM64 --anchor ANCHOR64 --not-before UNIX --expires UNIX [--max-records N --max-bytes N]
 vhalla private request ID STORE --offer FILE|- --operation OP32 --out ENCRYPTED_REQUEST
 vhalla private accept ID STORE --request FILE --operation OP32 --not-before UNIX --expires UNIX --out ENCRYPTED_RESPONSE
-vhalla private join ID STORE --response FILE
+vhalla private join ID STORE --response FILE | --invite INVITE_FILE --owner KEY64 --operation OP32 --not-before UNIX --expires UNIX --delivery-dir NEW_PRIVATE_DIR --out ENCRYPTED_REQUEST [--addr IP:PORT] [--max-records N --max-bytes N]
 vhalla private send ID STORE --text FILE|- --operation OP32 --epoch N --roster HASH64 --out CIPHERTEXT
 vhalla private receive ID STORE --message FILE --out PRIVATE_PLAINTEXT
 vhalla private outbox ID STORE --after N --limit N --out PRIVATE_JSON
@@ -137,6 +139,15 @@ impl Args {
             "inspect" => &["out"],
             "offer-inspect" => &["offer", "owner", "out"],
             "offer" => &["recipient", "operation", "not-before", "expires", "out"],
+            "invite" => &[
+                "recipient",
+                "operation",
+                "not-before",
+                "expires",
+                "host",
+                "credential",
+                "out",
+            ],
             "import" => &[
                 "offer",
                 "owner",
@@ -149,7 +160,19 @@ impl Args {
             ],
             "request" => &["offer", "operation", "out"],
             "accept" => &["request", "operation", "not-before", "expires", "out"],
-            "join" => &["response"],
+            "join" => &[
+                "response",
+                "invite",
+                "owner",
+                "operation",
+                "not-before",
+                "expires",
+                "delivery-dir",
+                "addr",
+                "out",
+                "max-records",
+                "max-bytes",
+            ],
             "send" => &["text", "operation", "epoch", "roster", "out"],
             "receive" => &["message", "out"],
             "outbox" | "inbox" => &["after", "limit", "out"],
@@ -250,7 +273,8 @@ impl Args {
             }
         }
         for required in allowed.iter().filter(|name| {
-            !matches!(**name, "max-records" | "max-items" | "max-bytes")
+            command != "join"
+                && !matches!(**name, "max-records" | "max-items" | "max-bytes")
                 && !matches!(**name, "tls-ca" | "tls-name")
                 && !(command == "agent-grant"
                     && !matches!(**name, "mode" | "disclosure" | "receipt" | "out"))
@@ -267,6 +291,30 @@ impl Args {
                 && !(command == "delivery-resume" && matches!(**name, "job" | "stream"))
         }) {
             if !flags.contains_key(*required) {
+                return Err("missing required private option; see private --help".into());
+            }
+        }
+        if command == "join" {
+            let response = flags.contains_key("response");
+            let invite = flags.contains_key("invite");
+            if response == invite || (response && flags.len() != 1) {
+                return Err(
+                    "join takes exactly one input: --response, or --invite with its setup options"
+                        .into(),
+                );
+            }
+            if invite
+                && [
+                    "owner",
+                    "operation",
+                    "not-before",
+                    "expires",
+                    "delivery-dir",
+                    "out",
+                ]
+                .iter()
+                .any(|name| !flags.contains_key(*name))
+            {
                 return Err("missing required private option; see private --help".into());
             }
         }
@@ -430,6 +478,9 @@ async fn execute(args: Args) -> Result<(), String> {
             .map_err(|_| REFUSED)?;
         return Ok(());
     }
+    if args.command == "join" && args.flags.contains_key("invite") {
+        return invite::join(&args, identity).await;
+    }
     let hint = NativePrivateStore::locate_context(args.store()?).map_err(|_| REFUSED)?;
     let context = context(hint.as_bytes())?;
     if context.account != account {
@@ -473,6 +524,7 @@ async fn execute(args: Args) -> Result<(), String> {
                 .map_err(|_| REFUSED)?;
             args.output(secret.confidential_bytes())?;
         }
+        "invite" => invite::invite(&args, &mut room).await?,
         "request" => {
             let raw = args.input("offer", OFFER_LIMIT, true)?;
             let result = room

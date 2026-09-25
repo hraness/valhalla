@@ -1582,6 +1582,54 @@ it. A pending device whose request expires cannot silently replace its
 KeyPackage; preserve that state and use an explicitly fresh device namespace
 for a new attempt.
 
+### One invite file: bundled offer and delivery material
+
+When the room's relay is an enrolled `private-host` home, the owner can package
+the confidential offer with one credential's relay material instead of moving
+separate files. `private invite` verifies the sealed host configuration, takes
+one enrolled, unrevoked `--credential` index and emits a single owner-private
+JSON bundle containing the offer, relay namespace, TLS name, CA certificate,
+that credential's token and the advertised dial addresses.
+
+```sh
+vhalla private invite owner-key owner-room \
+  --recipient "$PRIVATE_MEMBER_KEY" \
+  --operation 00000000000000000000000000000001 \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_OFFER_UNTIL" \
+  --host private-host-home --credential 2 \
+  --out private-files/invite.json
+```
+
+The bundle is a bearer capability: whoever holds it can request this one
+enrollment and deliver to the relay as that credential. Transfer it through an
+independently confidential channel like the offer it contains; revoking or
+replacing the credential later revokes its relay access without touching room
+membership. A failed invite write preserves the consumed offer operation for
+exact retry.
+
+The recipient consumes the bundle in one step. `private join --invite` checks
+the offer against the expected `--owner` and the current account, selects the
+first advertised address (or an explicit `--addr` that must appear in the
+bundle), commits the fresh member store, lays down `ca.der`, `token.hex` and a
+`delivery.json` profile inside a new owner-private `--delivery-dir`, initializes
+its delivery state and writes the encrypted admission request.
+
+```sh
+vhalla private join member-key member-room \
+  --invite private-files/invite.json --owner "$PRIVATE_OWNER_KEY" \
+  --operation 00000000000000000000000000000001 \
+  --not-before "$PRIVATE_FROM" --expires "$PRIVATE_UNTIL" \
+  --delivery-dir member-delivery \
+  --out private-files/request.cipher
+```
+
+Admission then completes with the unchanged `accept` and `join --response`
+pair. A failure after store commit leaves the store, delivery directory and
+consumed operations in place; recover through the granular commands, never by
+rerunning `join --invite` into the same store or directory. The plain
+`join --response` path takes no other options, and `agent-serve --delivery`
+consumes the generated `delivery.json` unchanged.
+
 ### Same-account fresh device
 
 A second device under one account is a distinct member, not a clone. Restore
