@@ -58,7 +58,7 @@ def main():
     rows = get(base + "/rulesets?includes_parents=false&per_page=100")
     matches = [row for row in rows if row.get("name") == expected["name"]]
     if len(matches) != 1:
-        parser.exit(1, "expected exactly one repository-owned Valhalla checked-PR ruleset\n")
+        parser.exit(1, f"expected exactly one repository-owned ruleset named {expected['name']!r}\n")
     observed = get(base + "/rulesets/" + str(matches[0]["id"]))
     errors = check_rule(expected, observed, args.public_view)
     properties = get(base + "/properties/values")
