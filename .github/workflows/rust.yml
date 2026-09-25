@@ -202,7 +202,7 @@ jobs:
           python3 -m unittest discover -s tools -p 'test_*.py'
         env:
           NO_COLOR: "true"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Qualification process cleanup regressions
@@ -441,7 +441,7 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Site tests and production build
         run: bun run check:site
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Static site responsive, keyboard and CSP qualification
