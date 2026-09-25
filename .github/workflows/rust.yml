@@ -331,7 +331,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  check:
+  required:
+    name: Required
     if: always()
     needs: [quality, workspace-tests, workspace-aux, browser-artifact, prototype-checks, kani-spent, formal, main-policy, desktop, site, security]
     runs-on: ubuntu-latest
