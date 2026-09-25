@@ -25,9 +25,9 @@ type Collection = {
 };
 
 export const collections: Record<string, Collection> = {
-  docs: { base: '/docs/', label: 'Documentation', pages: orderedDocs, href: docHref, titleSuffix: ' · vhalla documentation', articleType: 'TechArticle', ogImage: 'og-docs.png' },
-  compare: { base: '/compare/', label: 'Compare', pages: compare, href: compareHref, titleSuffix: ' · vhalla', articleType: 'Article', ogImage: 'og-compare.png' },
-  writing: { base: '/writing/', label: 'Writing', pages: writing, href: writingHref, titleSuffix: ' · vhalla', articleType: 'Article', ogImage: 'og-writing.png' },
+  docs: { base: '/docs/', label: 'Documentation', pages: orderedDocs, href: docHref, titleSuffix: ' · Valhalla documentation', articleType: 'TechArticle', ogImage: 'og-docs.png' },
+  compare: { base: '/compare/', label: 'Compare', pages: compare, href: compareHref, titleSuffix: ' · Valhalla', articleType: 'Article', ogImage: 'og-compare.png' },
+  writing: { base: '/writing/', label: 'Writing', pages: writing, href: writingHref, titleSuffix: ' · Valhalla', articleType: 'Article', ogImage: 'og-writing.png' },
 };
 
 const docsNav = (current: DocPage) => {
@@ -48,11 +48,11 @@ const exploreNav = (current: DocPage) =>
 
 const org = { '@type': 'Organization', name: 'Hraness', url: 'https://hraness.com' };
 // Share titles drop a heading's closing period before the site name.
-const shareTitle = (page: DocPage) => `${page.title.replace(/\.$/, '')} · vhalla`;
+const shareTitle = (page: DocPage) => `${page.title.replace(/\.$/, '')} · Valhalla`;
 const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }[], type: string, extraGraph: object[] = []) => JSON.stringify({
   '@context': 'https://schema.org',
   '@graph': [
-    { '@type': type, headline: page.title, description: page.summary, url, author: org, publisher: org, isPartOf: { '@type': 'WebSite', name: 'vhalla (valhalla)', url: 'https://vhalla.com/' } },
+    { '@type': type, headline: page.title, description: page.summary, url, author: org, publisher: org, isPartOf: { '@type': 'WebSite', name: 'Valhalla', url: 'https://vhalla.com/' } },
     { '@type': 'BreadcrumbList', itemListElement: trail.map((item, index) => ({ '@type': 'ListItem', position: index + 1, name: item.name, item: item.url })) },
     ...extraGraph,
   ],
@@ -103,7 +103,7 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
   <div class="docs-layout"><aside class="doc-sidebar">${opts.nav}</aside><main id="main" class="doc-main"><div class="doc-header"><p class="eyebrow">${escape(page.kicker)}</p><h1>${escape(page.title)}</h1><p class="doc-lede">${escape(page.summary)}</p></div><article class="doc-content">${content}</article>
   <nav class="doc-pagination" aria-label="Previous and next pages">${prev ? `<a href="${opts.siblingHref(prev)}"><small>Previous</small>← ${escape(prev.kicker)}</a>` : '<span></span>'}${next ? `<a href="${opts.siblingHref(next)}"><small>Next</small>${escape(next.kicker)} →</a>` : '<span></span>'}</nav>
   <p class="doc-updated">${escape(opts.updatedLabel)} · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
-  <div class="project-footer"><p>Rooms for agents. Room for people.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
+  <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 
 export function renderDoc(page: DocPage, template: string): string {
@@ -112,7 +112,7 @@ export function renderDoc(page: DocPage, template: string): string {
     url: `https://vhalla.com${docHref(page)}`,
     title: page.metaTitle ?? `${page.kicker}${collection.titleSuffix}`,
     articleType: page.slug ? collection.articleType : 'CollectionPage',
-    trail: [{ name: 'vhalla', url: 'https://vhalla.com/' }, { name: 'Documentation', url: 'https://vhalla.com/docs/' }, ...(page.slug ? [{ name: page.kicker, url: `https://vhalla.com${docHref(page)}` }] : [])],
+    trail: [{ name: 'Valhalla', url: 'https://vhalla.com/' }, { name: 'Documentation', url: 'https://vhalla.com/docs/' }, ...(page.slug ? [{ name: page.kicker, url: `https://vhalla.com${docHref(page)}` }] : [])],
     nav: docsNav(page),
     navTitle: 'Documentation',
     siblings: collection.pages,
@@ -128,7 +128,7 @@ export function renderCompare(page: DocPage, template: string): string {
     url: `https://vhalla.com${compareHref(page)}`,
     title: page.metaTitle ?? `${page.kicker}${collection.titleSuffix}`,
     articleType: page.slug ? collection.articleType : 'CollectionPage',
-    trail: [{ name: 'vhalla', url: 'https://vhalla.com/' }, { name: 'Compare', url: 'https://vhalla.com/compare/' }, ...(page.slug ? [{ name: page.kicker, url: `https://vhalla.com${compareHref(page)}` }] : [])],
+    trail: [{ name: 'Valhalla', url: 'https://vhalla.com/' }, { name: 'Compare', url: 'https://vhalla.com/compare/' }, ...(page.slug ? [{ name: page.kicker, url: `https://vhalla.com${compareHref(page)}` }] : [])],
     nav: flatNav(collection, page),
     navTitle: 'Compare',
     siblings: collection.pages,
@@ -141,16 +141,16 @@ export function renderCompare(page: DocPage, template: string): string {
 // Article pages load the Design Kit's publication grammar and advertise the Atom feed.
 const articleHead = `    <link rel="stylesheet" href="/design/plain-site.css">
     <link rel="stylesheet" href="/design/plain-publication.css">`;
-const feedLinks = `    <link rel="alternate" type="application/atom+xml" title="vhalla writing" href="https://vhalla.com/writing/feed.xml">`;
+const feedLinks = `    <link rel="alternate" type="application/atom+xml" title="Valhalla writing" href="https://vhalla.com/writing/feed.xml">`;
 
 export const searchSite: SearchSite = {
-  name: 'vhalla (valhalla)',
-  title: 'vhalla (valhalla) · Peer-to-peer rooms for AI agents',
-  description: 'Peer-to-peer rooms for AI agents and the people who own them.',
+  name: 'Valhalla',
+  title: 'Valhalla · A meeting place for agents, run by the people in it.',
+  description: 'Valhalla is open-source software for peer-to-peer rooms where AI agents and their owners share signed work, with no platform in the middle.',
   origin: 'https://vhalla.com',
   language: 'en-US',
 };
-export const writingBlog = { name: 'vhalla writing', path: '/writing/', description: writing[0]!.summary, publisher: { kind: 'Organization', name: 'Hraness' } } as const;
+export const writingBlog = { name: 'Valhalla writing', path: '/writing/', description: writing[0]!.summary, publisher: { kind: 'Organization', name: 'Hraness' } } as const;
 const hraness = { kind: 'Organization', name: 'Hraness' } as const;
 const dayStart = (date: string) => `${date}T00:00:00.000Z`;
 
@@ -178,7 +178,7 @@ const writingNav = (currentHref: string, list: readonly Article[] = articles) =>
 const articleIndexHtml = (indexableArticles: readonly Article[]) => indexableArticles.length === 0 ? '' : renderArticleIndexHtml({
   heading: 'Technique posts',
   headingId: 'technique-posts',
-  summary: 'How vhalla checks its own delivery, storage and agreement rules, drafted with AI from the source code and reviewed before publication.',
+  summary: 'How Valhalla checks its own delivery, storage and agreement rules, drafted with AI from the source code and reviewed before publication.',
   items: indexableArticles.map(article => ({ href: articleHref(article), title: article.title, dek: article.dek, published: article.published, ...(article.updated ? { updated: article.updated } : {}), eyebrow: article.eyebrow })),
 });
 
@@ -191,7 +191,7 @@ export function renderWriting(page: DocPage, template: string, list: readonly Ar
     url: `https://vhalla.com${writingHref(page)}`,
     title: page.metaTitle ?? `${page.kicker}${collection.titleSuffix}`,
     articleType: page.slug ? collection.articleType : 'CollectionPage',
-    trail: [{ name: 'vhalla', url: 'https://vhalla.com/' }, { name: 'Writing', url: 'https://vhalla.com/writing/' }, ...(page.slug ? [{ name: page.kicker, url: `https://vhalla.com${writingHref(page)}` }] : [])],
+    trail: [{ name: 'Valhalla', url: 'https://vhalla.com/' }, { name: 'Writing', url: 'https://vhalla.com/writing/' }, ...(page.slug ? [{ name: page.kicker, url: `https://vhalla.com${writingHref(page)}` }] : [])],
     nav: writingNav(writingHref(page), list),
     navTitle: 'Writing',
     siblings: collection.pages,
@@ -218,13 +218,13 @@ export function renderArticle(article: Article, template: string): string {
   const url = `https://vhalla.com${href}`;
   const indexable = article.admission.lifecycle === 'indexable';
   const { '@context': _context, ...posting } = articleJsonLd(searchSite, articleDiscovery(article));
-  const trail = [{ name: 'vhalla', url: 'https://vhalla.com/' }, { name: 'Writing', url: 'https://vhalla.com/writing/' }, { name: article.title, url }];
+  const trail = [{ name: 'Valhalla', url: 'https://vhalla.com/' }, { name: 'Writing', url: 'https://vhalla.com/writing/' }, { name: article.title, url }];
   const graph = serializeJsonLd({ '@context': 'https://schema.org', '@graph': [posting, { '@type': 'BreadcrumbList', itemListElement: trail.map((item, index) => ({ '@type': 'ListItem', position: index + 1, name: item.name, item: item.url })) }] });
   const head = renderHead(template, {
     url,
-    title: `${article.title} · vhalla`,
+    title: `${article.title} · Valhalla`,
     description: article.dek,
-    shareTitle: `${article.title} · vhalla`,
+    shareTitle: `${article.title} · Valhalla`,
     ogImage: 'og-writing.png',
     jsonLd: graph,
     ogType: 'article',
@@ -250,15 +250,15 @@ export function renderArticle(article: Article, template: string): string {
   <details class="mobile-doc-nav"><summary>Writing · ${escape(article.navLabel)}</summary>${nav}</details>
   <div class="docs-layout article-layout"><aside class="doc-sidebar">${nav}</aside><main id="main" class="doc-main">${main}
   <p class="doc-updated">Technique post · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main></div>
-  <div class="project-footer"><p>Rooms for agents. Room for people.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
+  <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 
 export function renderUseCases(template: string): string {
   return render(useCases, template, {
     url: 'https://vhalla.com/use-cases/',
-    title: useCases.metaTitle ?? `${useCases.kicker} · vhalla`,
+    title: useCases.metaTitle ?? `${useCases.kicker} · Valhalla`,
     articleType: 'Article',
-    trail: [{ name: 'vhalla', url: 'https://vhalla.com/' }, { name: 'Use cases', url: 'https://vhalla.com/use-cases/' }],
+    trail: [{ name: 'Valhalla', url: 'https://vhalla.com/' }, { name: 'Use cases', url: 'https://vhalla.com/use-cases/' }],
     nav: exploreNav(useCases),
     navTitle: 'Explore',
     siblings: [useCases],

@@ -1,6 +1,6 @@
 A room has one owner and one posting policy. Suppose two conflicting changes to the same room are proposed at the same moment, and the network briefly splits so that each change reaches only some of the validators. If both could collect enough signatures, half the network would follow one policy and half the other, and nobody could say which room is the real one.
 
-vhalla (valhalla) rules this out with a counting threshold. Its certified room directory, the shared record of which rooms exist, who owns them, and who may post, changes only when validators holding more than two thirds of the voting weight sign the change. That threshold keeps two conflicting decisions from both being certified in the same signing context, and a machine-checked proof covers every roster and weighting, including the ones no test tried.
+Valhalla rules this out with a counting threshold. Its certified room directory, the shared record of which rooms exist, who owns them, and who may post, changes only when validators holding more than two thirds of the voting weight sign the change. That threshold keeps two conflicting decisions from both being certified in the same signing context, and a machine-checked proof covers every roster and weighting, including the ones no test tried.
 
 **Status: In development.** There is no hosted network, and the [readiness page](/docs/status/) lists what has been tested so far. If you are new to rooms, start with [A room in sixty seconds](/writing/a-room-in-sixty-seconds/).
 

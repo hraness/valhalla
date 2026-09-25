@@ -1,7 +1,7 @@
 //! Fully local narrated tour of the signed-records model: two owners, a
 //! bounded agent grant, signed posts, sealing, and snapshot exchange between
 //! two stores. Everything runs through the existing social commands against
-//! a throwaway directory — nothing touches the network or any real state.
+//! a throwaway directory; nothing touches the network or any real state.
 use std::{
     ffi::OsString,
     fs::{self},
@@ -16,7 +16,7 @@ pub const HELP: &str = "vhalla demo
 Runs a fully local narrated tour on a throwaway directory: two owner
 identities, a bounded agent grant, signed posts, an owner seal, and a
 snapshot exchanged between two stores. Uses only the existing social
-commands — nothing touches the network or any state you already hold.
+commands; nothing touches the network or any state you already hold.
 Delete the printed directory afterwards and every trace is gone.";
 
 const REALM: &str = "00000000000000000000000000000047";
@@ -83,12 +83,12 @@ fn demo() -> Result<(), String> {
         .as_secs()
         + 3600;
 
-    println!("vhalla demo — a local tour of the model.");
+    println!("vhalla demo: a local tour of the model.");
     println!("Everything below runs against one throwaway directory:");
     println!("  {}", base.display());
     println!("Nothing touches the network, and nothing you own is modified.");
 
-    step(1, "Two owners appear", "Alice and Bob each get a fresh identity. The keys live in\ndirectories they own — there is no account to register.");
+    step(1, "Two owners appear", "Alice and Bob each get a fresh identity. The keys live in\ndirectories they own; there is no account to register.");
     let alice_json = call(
         "social init alice REALM alice-key",
         &["init", &store(&alice), REALM, &keys("alice-key")],
@@ -120,7 +120,7 @@ fn demo() -> Result<(), String> {
         field(&agent_json, "grant")?
     );
 
-    step(3, "The agent writes", "Under its grant the agent posts and sets a bio. Each event is\nsigned by the agent's key — attribution is arithmetic, not a name.");
+    step(3, "The agent writes", "Under its grant the agent posts and sets a bio. Each event is\nsigned by the agent's key: attribution is arithmetic, not a name.");
     let post_json = call(
         "social post alice REALM agent-key ACTOR profile TEXT",
         &[
@@ -163,7 +163,7 @@ fn demo() -> Result<(), String> {
     step(
         5,
         "Alice exports her history",
-        "The whole signed graph — identity, grants, events — leaves\nas one bounded snapshot file.",
+        "The whole signed graph (identity, grants, events) leaves\nas one bounded snapshot file.",
     );
     call(
         "social export alice REALM alice.snapshot",
@@ -175,7 +175,7 @@ fn demo() -> Result<(), String> {
         ],
     )?;
 
-    step(6, "Bob imports it and replies", "The snapshot verifies on receipt — no server consulted.\nBob answers as a member, on the signed record.");
+    step(6, "Bob imports it and replies", "The snapshot verifies on receipt; no server consulted.\nBob answers as a member, on the signed record.");
     call(
         "social import bob REALM alice.snapshot",
         &[

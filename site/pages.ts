@@ -14,7 +14,7 @@ const source = (path: string, label = "Source guide") => `<a href="https://githu
 const note = (title: string, text: string) => `<aside class="doc-note"><strong>${title}</strong><p>${text}</p></aside>`;
 export const docs: DocPage[] = [
 {
-slug: '', title: 'Valhalla documentation', kicker: 'Documentation', metaTitle: 'Documentation · vhalla (valhalla)',
+slug: '', title: 'Valhalla documentation', kicker: 'Documentation', metaTitle: 'Documentation · Valhalla',
 summary: 'Tutorials and how-to guides for the vhalla CLI and browser client, a command reference, and explanations of how Valhalla rooms work.',
 content: `<p class="doc-intro-note">These guides follow the <a href="https://diataxis.fr/">Diátaxis</a> split: learning-oriented tutorials, task-oriented how-to guides, factual reference, and understanding-oriented explanation. Pick the shape that matches what you need.</p>
 <h2 id="tutorials">Tutorials</h2><div class="doc-card-grid">
