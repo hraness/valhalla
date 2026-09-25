@@ -27,13 +27,7 @@
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          {"context": "check"},
-          {"context": "CodeQL"},
-          {"context": "Analyze (python)"},
-          {"context": "Analyze (actions)"},
-          {"context": "Analyze (c-cpp)"},
-          {"context": "Analyze (rust)"},
-          {"context": "Analyze (javascript-typescript)"}
+          {"context": "Required", "integration_id": 15368}
         ]
       }
     }
