@@ -9,10 +9,15 @@ approvals and does not require resolved review threads; it does require an
 extra approval for changes that carry no author attribution. Independent
 agent review remains the source-review gate.
 
-The required checks are the Rust `check` aggregate, the managed `CodeQL`
-security verdict, and the five `Analyze` language jobs. The `CodeQL` context
-is the code-scanning verdict, so a green `Analyze` job alone does not satisfy
-it. Checks are non-strict: the candidate does not have to include current
+The single required check is `Required`, the Rust workflow's terminal
+aggregate bound to the GitHub Actions app. It needs every blocking job —
+quality, the workspace test shards, auxiliary checks, the browser production
+artifact, prototype checks, Kani, the formal verification suite, this policy
+audit, the desktop build, the site, and the dependency audit — so branch
+policy stays stable as the job set evolves. The managed `CodeQL` verdict and
+the `Analyze` language jobs keep reporting on every change as advisory
+checks; per the shared Hraness CI policy they are not required contexts.
+Checks are non-strict: the candidate does not have to include current
 main, so auto-merge does not stall behind another merge.
 
 The reviewed source is [main-ruleset.json](../.github/main-ruleset.json). The
@@ -28,7 +33,9 @@ On 23 September 2026 the repository ran the reviewed ruleset
 checks and required thread resolution
 ([readback](evidence/main-policy-20260923.json)). On 25 September 2026 the
 shared baseline replaced it with the current ruleset
-([readback](evidence/main-policy-20260925.json)).
+([readback](evidence/main-policy-20260925.json)), and the same sweep moved
+the gate to the single `Required` context
+([readback](evidence/main-policy-20260925-required.json)).
 
 Run the full read-only administrative audit with:
 
