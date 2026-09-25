@@ -124,6 +124,18 @@ The three mutations release before confirmation, retarget a stale draft and
 ignore revocation. Native pending-publication and competing-custody regressions
 remain necessary to justify the model's atomic-publication abstraction.
 
+The same transition system is proved in Verus in
+`verify/private-publication/publication.rs`: `ConfirmedOutput`,
+`DraftBinding` and `AuthorizedOutput` are inductive over `normal.cfg`'s
+`Next`, strengthened by four auxiliaries (ready/done implies confirmed,
+released implies done, revision equals stored count plus roster, and a stored
+session never re-enters a pre-publication phase). Each mutant is proved to
+reach its recorded violation — early release breaks `ConfirmedOutput`,
+retarget breaks `DraftBinding`, revocation-breaking release breaks
+`AuthorizedOutput` — and a completion witness runs the full safe lifecycle.
+This strengthens the model claims from finite enumeration to induction; it
+changes nothing about the production-correspondence obligations above.
+
 `verify/private-egress` checks sender-local order with three committed artifacts,
 one membership control and one queue slot. Its mutation stages a new receipt
 past the monotone capture frontier, allowing the control to overtake an older
