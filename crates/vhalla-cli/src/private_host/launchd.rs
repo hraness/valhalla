@@ -1,6 +1,8 @@
 //! Per-user, exact-identity LaunchAgent ownership. Never manages unrelated services.
+#[cfg(not(target_os = "linux"))]
+use super::config;
 use super::{
-    config::{self, Config, Loaded},
+    config::{Config, Loaded},
     REFUSED,
 };
 use std::path::Path;
