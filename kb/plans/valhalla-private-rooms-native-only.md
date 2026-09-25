@@ -201,7 +201,8 @@ contracts frozen in the readiness and pilot plans.
    browser-only participant.
 8. **Host change.** Extend the drained mailbox-generation contract from the
    pilot plan to a successor on a different host with a changed endpoint,
-   accepted only through an explicit reviewed owner control; model first.
+   accepted only through an explicit reviewed owner control; model first
+   (the model is the dated section below).
 9. **Independent-device acceptance.** A laptop host and a server host on a
    LAN and across the Internet, direct and through Tailcat with path
    classification; a Windows client; sleep, logout and reboot on the laptop
@@ -256,6 +257,302 @@ on 2, 3, 5 and 7; 10 follows each first release.
 - The owner asked that the mechanics be decided here rather than by them;
   these calls optimise for one binary, one file, no inbound ports for
   participants, and idle cost that is not noticeable.
+
+## Step 8 model — a mailbox successor on a different host (25 September 2026)
+
+This section is the model for step 8. No code changes accompany it; it names
+what the shipped contract does, the delta a different host introduces, and the
+owner-control gate that makes the move an explicit decision rather than an
+observed redirect. Sources: `crates/vhalla-cli/src/private_rooms.rs`,
+`crates/vhalla-cli/src/private_rooms/agent_delivery.rs` and
+`agent_delivery/generation.rs`, `crates/vhalla-cli/src/private_host/generation.rs`,
+`crates/vhalla-private-native/src/private_rooms/generation.rs`,
+`crates/vhalla-private-native/src/relay/delivery.rs` and
+`relay/delivery/generation.rs`, `crates/vhalla-private-native/src/relay/tls.rs`,
+`crates/vhalla-private-protocol/src/records.rs`,
+`crates/vhalla-private-kernel/src/engine/controls.rs`,
+`crates/vhalla-cli/tools/qualify_private_generation.py`,
+`docs/private-generations.md`, `docs/private-rotation-contract.md` and
+`verify/private-generation/README.md`.
+
+### The shipped same-host contract
+
+`private delivery-init` consumes a fresh version-2 profile and initializes its
+state directory; `delivery-upgrade` establishes the split control queue an old
+profile lacks — a profile without the control stream cannot take part in a
+transition. During operation the driver forwards the kernel's authenticated
+encrypted controls into the mailbox's `RelayKind::Control` lane (any joined
+member may forward its suffix; dedup makes identical forwards one item) and
+ordinary outbox artifacts into the outbox lane; mailbox positions are one
+shared ordered sequence across both kinds.
+
+`delivery-pause ID STORE --config --transition HEX64 --head N --out RECEIPT`
+re-authenticates the complete drained state — every mailbox position staged
+and applied through the scan, `outbox_head`, `control_head`, both queue
+ledgers and the retained applied markers, including a reviewed digest list
+for any bootstrap items via `--reviewed-bootstrap` — then produces a 650-byte
+`VHCDRAIN` pause receipt committing room context, transition, generation,
+namespace, endpoint commitment, profile binding, terminal head, items
+commitment, both stream heads, the MLS image commitment and per-stream
+accounting. The kernel retains the receipt as `NN.pause` and refuses all
+publication (`publish` checks `delivery_is_paused`) until a successor is
+selected. The receipt is private operator evidence of an exact drained state;
+it is not a peer signature, not delivery proof, and authorizes nothing alone.
+
+On the host, `private-host generation-check HOME --plan --receipts` validates
+the complete controller inventory — every enrolled credential ID, including
+revoked ones, mapped to a decoded receipt that matches the plan's context,
+endpoint, profile and receipt commitments — plus the pinned expected head and
+items commitment against the live mailbox. `generation-prepare` additionally
+publishes the immutable intent, per-controller receipts and a
+`generation.pending` marker that blocks `serve`. `generation-fence`
+re-checks the head and writes the store's permanent fence and the exportable
+`generation-N.fence.json`; `generation-cutover` verifies the exact fence,
+seeds the successor mailbox (`FileStore::create_successor` bound to the fence
+and intent digest) with the fenced credential-spend snapshot and the plan's
+bounded allowances, and seals a version-3 selection that retains every
+predecessor's namespace, mailbox, listener and credential IDs;
+`generation-recover` finishes or re-checks that state without ever unfencing.
+
+`delivery-transition ID STORE --config --successor --receipt --fence`
+re-verifies the receipt against the predecessor's stored pause, ledger
+snapshots and image commitment, checks the fence against the receipt and both
+profiles, then writes the durable intent, seeds successor stores from the
+receipt's accounting, atomically replaces the selected profile and records
+the kernel `NN.selected` marker. `delivery-resume` re-arms stopped jobs under
+the same profile while the driver is offline; `delivery-status` exports
+per-stream queue state for the drain. `agent-serve` refuses a stale profile
+copy before any network effect.
+
+What each artifact does not prove is as specified in
+[the transition contract](../../docs/private-rotation-contract.md): a relay
+receipt proves only that opaque bytes were retained at a position; the fence
+proves the predecessor closed at the exact expected head; the intent proves
+the reviewed selection; none authorizes a successor by itself.
+
+The shipped contract is same-host by construction. `validate_plan` refuses a
+predecessor host on a non-loopback listener and requires a loopback
+`successor_address`; `planned_selection` clones the predecessor config, so the
+successor inherits the same CA, TLS name and credential identities and differs
+only in namespace, mailbox directory and listen port. The member side
+enforces the same boundary: `check_fence` requires the fence's single
+`tls_name`/`ca_sha256` to equal both profiles' TLS identity. The shipped
+contract's genuine degrees of freedom are therefore one machine, one host
+identity, one credential basis, a fresh namespace and a fresh port.
+`qualify_private_generation.py` proves exactly that shape: two native
+controllers drain to a common head, both pause, the host fences and cuts
+over, members transition to a changed address and namespace under unchanged
+CA, TLS name and credentials, and the run asserts preserved spend, retained
+predecessor reads and exact retries, no replay into the successor and clean
+recovery. The 25 September two-Mac run moved no mailbox between machines —
+its two rooms were separate — so cross-host continuation of one room is
+unproven.
+
+### The cross-host delta
+
+A successor on a different host changes every field that identifies where and
+how a member connects: the dial address, the TLS name, the CA, the relay
+namespace, the derived endpoint commitment (`EndpointId::tls` binds address,
+name, CA bytes and namespace; it deliberately excludes the token so rotation
+cannot redirect queued work), the credential identity and token (credential
+IDs are random per home — `private-host init` mints fresh ones), the host
+identity itself (the successor home's sealed configuration and CA key live
+under different custody, possibly on a different machine and a different
+operator), and possibly the reachability path — a successor behind NAT
+changes whether a member needs a Tailcat forward and which address it dials.
+
+Stable across the move: the room scope, anchor, account and device context;
+the MLS image commitment; the transition ID and the generation relationship;
+the predecessor's terminal head, items commitment and fence commitment;
+outbox and control ordering — the control stream remains a sequence domain
+independent of mailbox positions; the pause receipt commitments; cumulative
+per-stream accounting (outgoing/applied watermarks, retained jobs, canonical
+bytes, charged attempts, outages, resumes, prior ledger commitment); and the
+member's profile policy fields.
+
+Invariants the model preserves: no replay of predecessor ciphertext into the
+successor (a copied item is not an exact retry — its retention identity is
+the original namespace and position); no fork — one successor namespace, one
+reviewed descriptor, one generation; no duplicate application — the new
+mailbox starts its scan at position zero because positions are
+namespace-local, while application markers and kernel state continue
+unchanged; no unjustified cursor advance — outgoing and control watermarks
+begin exactly at the authenticated predecessor heads; no nonduplicate write
+to the fenced predecessor ever; outgoing/control streams stay separated;
+quota is cumulative — the successor mailbox opens with prior spend already
+charged and any additional allowance explicit in the reviewed plan; and a
+member updates its complete delivery profile — namespace, address, TLS name,
+CA, endpoint commitment and token/capability — never just the address. The
+predecessor host keeps serving its fenced mailbox read-only for history and
+exact retries on its own saved port — which requires retaining at least one
+active enrolled credential for that generation; the successor host serves
+the new namespace on its own listener. The two homes share nothing but the
+reviewed evidence package.
+
+### The reviewed owner control
+
+The authorization is a new owner control: one `ControlChange` variant — call
+it `MailboxSuccessor` — inside the existing signed-and-encrypted control
+machinery (`SignedOwnerControl` over `OwnerControlClaims`, KIND 4 records, a
+new envelope kind beside 1–4). Like every control it is signed by the room's
+pinned owner device, sequenced on the `parent` floor, bound to the room
+scope, and carried under an MLS commit — an empty commit whose only effect
+is the required epoch step; the change admits no device, moves no owner
+authority and mutates no membership. Authentication, ordering, fork
+detection and quarantine machinery are unchanged; the extension is
+vocabulary only. Its payload binds, at minimum: the transition ID; the
+predecessor and successor generation ordinals and namespaces; the expected
+terminal head, items commitment and the exact fence commitment that may
+exist — all computable at authoring time, since the fence commitment is a
+pure function of transition, namespaces, head and items; the successor
+endpoint descriptor — a bounded list of dial addresses with the TLS name and
+CA digest, and the namespace-derived endpoint commitment; the successor host
+commitment — the digest of the successor home's sealed configuration, which
+pins its CA, name, credential identities and listener; the credential
+mapping from each predecessor identity to a successor credential identity
+plus the digest of each member's replacement token file; the per-credential
+allowance additions (the same 4,096-item/256-MiB bounds); the controller
+inventory digest; and freshness — the review timestamp and a not-after
+expiry checked at transition time.
+
+Ordering is constrained by two facts: publication refuses once a member is
+paused, and a fence is terminal. The owner therefore authors the control
+after the drain converges — when head, items commitment and fence commitment
+are all predictable — and publishes it into the predecessor's control lane
+as the terminal write. Members apply it like any control while still live,
+drain it to the terminal head it named, and pause; the pause receipt's
+`control_head` then proves the member had accepted the authorization before
+it stopped mutating, and the fence's items commitment pins the control item
+itself in the drained history. A binary too old to apply the kind fails its
+drain and never pauses, so the transition stalls visibly instead of
+producing a member that skipped the review.
+
+`delivery-transition` gains the gate: in addition to today's receipt, fence
+and profile checks it must find exactly one `MailboxSuccessor` control for
+the transition in the member's retained control history at a floor at or
+below the receipt's `control_head`, verify its owner-device signature
+against the retained floor's owner set, confirm every bound field —
+transition, generations, namespaces, head, items commitment, fence
+commitment, endpoint descriptor, host commitment, this member's credential
+mapping and token digest, allowances, inventory digest — and confirm the
+successor profile's derived endpoint commitment appears in the reviewed
+descriptor. The fence document gains `successor_tls_name`,
+`successor_ca_sha256`, `successor_endpoint` and `successor_host` fields beside
+the predecessor's, and `check_fence` compares next-profile identity against
+the descriptor rather than requiring equality with the predecessor's. The
+kernel's `NN.selected` then records the successor profile binding, which
+already commits the new endpoint — the review decision, fence, receipt and
+selected binding all chain to the same transition.
+
+A relay retention receipt, a TLS handshake, a page response, an endpoint
+announcement or the successor host's existence authorize nothing. Neither
+does relay metadata about the successor namespace. The delivered token file
+travels owner-privately like the invite bundle did; the control binds only
+its digest, so the confidential channel never enters the signed artifact.
+
+On the successor host, the owner-plus-successor-operator flow mirrors
+check/prepare/fence: a new staged command — `generation-accept` — creates or
+prepares the successor home under the plan's chosen namespace, enrolls the
+mapped credential set with prior spend carried from an exported
+fenced-spend snapshot, writes the seeded successor mailbox
+(`create_successor` binds the imported fence and intent digests) and refuses
+any deviation from the fence document. The predecessor home's `PENDING`
+marker, sealed selection and recovery commands stay unchanged; the successor
+home gets the same pending/exact-recover discipline on its side of the move.
+The fence document, intent file, receipts and spend snapshot cross between
+operators through the same owner-private channel as today's plan and
+receipts.
+
+### Failure and refusal model
+
+Every case refuses safely, preserves predecessor and successor stores plus
+all evidence, and reconciles from the durable intent — never by deleting or
+recreating either generation, never unfencing, never unpausing, never
+advancing a cursor on an ambiguous announcement.
+
+- A member offline during the drain produces no receipt; the plan's complete
+  inventory refuses and the whole transition stalls. Undrained or offline
+  migration stays separate future work.
+- A changed head after pauses: the conditional fence refuses; pauses and the
+  pending plan stand; recovery is separately reviewed, as today.
+- Host fenced but successor unreachable: a member's transition is local
+  evidence-keeping — it may complete selection while the successor is down;
+  resumption then retries the dead endpoint under the existing bounded
+  retry policy, identical to an ordinary outage.
+- An owner control that reached only some members cannot happen in-band —
+  the drained terminal head includes the control item — and a member that
+  retained but could not apply it never pauses, so the inventory blocks.
+- A successor descriptor announced without the complete signed control —
+  relay metadata, a TLS endpoint alone, an unsigned file — never advances
+  anything: `delivery-transition` requires the applied control.
+- Conflicting successor announcements: the transition refuses when more than
+  one valid `MailboxSuccessor` names the same transition ID at or below the
+  pause floor; precedence is never silently chosen.
+- A stale control after a newer generation is selected fails its generation
+  and transition binding.
+- A copied old profile or receipt cannot select itself: the existing stale
+  selection and active-profile guards apply unchanged.
+- Wrong namespace, TLS name, CA, dial address, host commitment, fence,
+  generation, room context, controller receipt, or a member credential
+  mapping not in the reviewed map: each is an exact field comparison against
+  the control, receipt and fence and each refuses.
+- A quota mismatch or an attempted reset: successor stores seed from the
+  receipt's accounting and the host seeds mapped spend from the exported
+  snapshot; any deviation refuses.
+- Crashes at each boundary — before/after the durable intent, before/after
+  successor initialization, before/after the atomic profile selection — are
+  recovered by rerunning the exact command, which reconciles the retained
+  intent and refuses substitution, as the harness asserts today.
+- A host restart mid-transition: `generation.pending` keeps `serve` refused
+  until the exact fence/cutover or recover finishes, on both homes.
+- A member that missed cutover entirely retains its paused predecessor
+  profile; it reconciles by obtaining the reviewed control evidence and the
+  fence and running the same transition — it cannot invent a successor.
+- A botched authorized control discovered after the fence has no in-band
+  correction path: the predecessor accepts no further items and paused
+  members cannot apply a new control. This is the contract's hard edge —
+  the authorization is the last reviewed act before fencing — and recovery
+  is explicitly out of this contract, same as a post-pause head change.
+
+### Test and qualification plan
+
+Extend `qualify_private_generation.py` into a two-home shape — or a sibling
+harness sharing its fixture — that runs two real `private-host` homes with
+distinct CAs, TLS names, namespaces, credential sets and listeners; the full
+drain including the published successor control; the predecessor fence; the
+evidence package carried between homes as private files; `generation-accept`
+seeding the second home with mapped credentials and carried spend; member
+`delivery-transition` onto the new endpoint identity; `delivery-resume` and
+fresh post-cutover delivery through the successor; predecessor reads and one
+exact retained retry against the fenced mailbox; and the receipt-level
+assertions already pinned (lineage rows, inherited ledgers, empty successor
+queues, no replayed items, unchanged ciphertext). Negative cases: a forged
+descriptor, a swapped CA or TLS name, a stale or second conflicting control,
+a control for the wrong room, generation or transition, a missing token
+digest, a quota reset attempt, each crash boundary on both homes and both
+member sides, an offline member blocking the inventory, and the successor
+host dead after the fence. Then the live gates, separately run and recorded:
+a loopback multi-home run on one machine, a two-machine run over the LAN
+listener and over a Tailcat forward pair — the Tailcat template forwards one
+port per generation, so remote multi-generation routes need their own
+reviewed configuration — and a member that joins the room only through the
+successor. A local pass is not evidence of public-Internet operation, sleep,
+logout or reboot recovery, Windows or Linux resource behaviour, or Tailcat
+multiport forwarding; a real two-machine cross-host move is its own gate,
+distinct from the 25 September separate-rooms run.
+
+### Non-goals for step 8
+
+Step 8 changes no kernel admission, MLS membership or custody rule, no
+device key, ratchet or room state handling, no confidential offer, request,
+accept or join machinery, no contact admission semantics, no offer
+transport, no message encryption, no owner or device succession, no relay
+retention semantics, no host quota bounds, no agent-grant authority and no
+browser origin or custody semantics. The browser controller follows the same
+contract: same gateway origin, a new retained route for the successor
+upstream, an IndexedDB selector that commits the new binding, and the
+unchanged cumulative attempt and byte ceilings. Kernel admission and custody
+remain exactly as implemented.
 
 ## Implementation log
 
