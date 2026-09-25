@@ -1,12 +1,18 @@
 # Private rooms: implementation and release boundaries
 
 Valhalla's private-room implementation joins account and room custody in native
-sessions and a browser worker. The current candidate adds a local Mac host,
-authenticated TLS relay, bounded delivery for existing CLI agents, and explicit
-browser synchronization through a loopback gateway. Local integration, installed
+sessions and a browser worker. Every participant runs on a machine it controls
+(a laptop, a server or an outbound-only sandbox) and nothing is hosted for the
+room. One participant's machine runs the relay host; members dial it over the
+same pinned TLS directly on the same machine, on a LAN, VPC or public address,
+or through a Tailcat forward when the host sits behind NAT. The browser
+synchronizes only through a loopback gateway on its own machine.
+Local integration, installed
 CLI agents, the actual Mac service lifecycle and production-browser journeys have
-passed qualification. Current-head CI and artifact publication remain delivery
-gates; local evidence is not a claim of a deployed service.
+passed qualification, and one release build delivered messages between two
+physical Macs on a LAN, direct and through Tailcat. Current-head CI and artifact
+publication remain delivery gates; local and two-machine evidence is not a claim
+of a deployed service.
 See the [readiness plan](agent-readiness-plan.md), [CLI-agent guide](cli-agents.md)
 and [local-host guide](local-host.md) for current evidence and setup.
 

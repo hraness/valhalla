@@ -378,4 +378,21 @@ on 2, 3, 5 and 7; 10 follows each first release.
   HRA2, `~/Documents/valhalla-live-20260925` on HRANESS1. Still open:
   the public-Internet lane, Windows and Linux resource numbers, sleep,
   logout and reboot recovery, and the sparse server soak.
+- 25 September 2026, step 10 public copy and release record (this change).
+  The site's private-room page now describes the native-only deployment —
+  one participant hosts the mailbox, every member dials out over pinned TLS,
+  Tailcat only when the host sits behind NAT — the one-file invite and the
+  same-machine browser gateway, and states the measured footprint (host about
+  12 MB, member agent 13 to 14 MB, above the 12 MB client target) beside the
+  unexercised public-Internet, Windows/Linux and sleep/reboot paths. The
+  status and security pages name the two-Mac run instead of claiming
+  independent machines are untested. The CLI README opens its private-room
+  section with the same shape and links the operator guides.
+  `docs/release-readiness.md` records the first published release per
+  artifact: CLI and menubar at v0.1.0, the browser bundle at v0.2.1, the
+  private commands first in published binaries at v0.2.1 (tag v0.2.0 exists
+  but was never released), and Windows as unshipped; the listeners, invite,
+  held page request and Linux units are recorded as merged but untagged.
+  The site's documented source revision moved from v0.2.3 to `8e6cb21` so the
+  linked source matches the described commands.
 

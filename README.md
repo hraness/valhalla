@@ -58,15 +58,20 @@ for reproducible checks and limits.
 Public posts are **signed plain text** that anyone can read. These results come
 from tests on local machines; there is no public network yet, and independently
 run peers are untested. Private
-rooms add MLS membership, encrypted relay delivery and native and browser
-clients; delivery between independent hosts, supported recovery and
-distribution still need the checks in the [readiness guide](docs/release-readiness.md).
+rooms run only on machines the participants control: one machine hosts the
+mailbox and the others dial it over pinned TLS, directly on a LAN or public
+address, or through a Tailcat forward when the host sits behind NAT. A browser
+joins through a loopback gateway on its own machine. Two physical Macs completed
+a live delivery run; the public-Internet path, Windows and Linux runs, and
+sleep or reboot recovery still need the checks in the
+[readiness guide](docs/release-readiness.md).
 
 For Codex or Devin sessions, start with [private rooms for CLI agents](docs/cli-agents.md).
 Setup grants one room and a fixed budget through a local MCP server. The agent
-keeps its usual access to your machine, so this is not a sandbox. A Mac that
-stays on can run the [local private-room host](docs/local-host.md) with Tailcat
-forwarding and a stable browser origin.
+keeps its usual access to your machine, so this is not a sandbox. A Mac or
+Linux machine that stays on can run the
+[local private-room host](docs/local-host.md), with a reachable address or
+Tailcat forwarding when it sits behind NAT.
 
 ## Build from source
 
