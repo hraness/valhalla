@@ -222,16 +222,14 @@ or Dioxus requirements.
 
 ## Phase 5: Delivery and independent-device acceptance
 
-- **Status:** In progress. PR #115 carries the branch and left draft at
-  `e985a80`; every local gate and the four real-Chrome qualifications passed
-  on `8047ffd`, again on `c84f585` after current main (PR112, PR117) was
-  merged in, and the Chrome qualifications and native pilot again on
-  `b51d60b` after PR119 and the CodeQL-driven driver conversion
-  (implementation log). Delivery follows `docs/main-policy.md`
-  (current-head required checks, independent agent review recorded in the PR
-  body, CodeQL, conditional merge). The second-machine cases stay deferred by
-  the owner until the connection is ready; sleep/logout/reboot and the sparse
-  soak have no selected target or window and are not claimed.
+- **Status:** Delivered to main as `6316a44` (PR #115, 24 September 2026)
+  through `docs/main-policy.md`: exact-head required checks on `9767bb5`
+  (73 checks, CodeQL clean), the independent three-slice agent review
+  recorded in the PR body, and a conditional squash merge whose tree equals
+  the branch head. Independent-device acceptance is still open: the
+  second-machine cases stay deferred by the owner until the connection is
+  ready; sleep/logout/reboot and the sparse soak have no selected target or
+  window and are not claimed.
 - **Depends on:** applicable local implementation phases and reviewed candidate.
 - **Objective:** ship the source/artifacts and prove the selected external route.
 - **Acceptance:** exact-current-head required checks, independent review,
@@ -642,3 +640,11 @@ or Dioxus requirements.
   landed while CI ran on `068996c`, which had passed all 73 checks; merged
   clean as `a6dba4e`, again with no source change on main. The ruleset's
   strict up-to-date rule means CI reruns on the merged head.
+- PR #115 merged to main as `6316a44` (squash of `9767bb5`, 23:41 UTC)
+  after every required check passed on that exact head (73 checks), both
+  CodeQL threads resolved on the fixed driver, and the independent review
+  stood recorded in the PR body. Readback: `6316a44` is `origin/main` and
+  its tree is identical to `9767bb5`. Phases 1b, 1c, 2, 3 and 4 are on
+  main; Phase 5's delivery half is done. Second-machine qualification,
+  sleep/logout/reboot and the sparse soak remain NOT RUN and deferred by
+  the owner; the reviewer follow-ups listed above stay open.
