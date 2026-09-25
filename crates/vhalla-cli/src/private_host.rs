@@ -23,7 +23,7 @@ use vhalla_private_native::relay::{
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen IP:PORT] [--advertise IP:PORT[,IP:PORT...]] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private TLS mailbox with a separate credential per client. It listens on 127.0.0.1:9473 unless --listen names another address of this machine, such as its LAN or public address; --advertise lists up to four addresses clients dial instead, such as a cloud server's public address. install, status and uninstall manage a LaunchAgent on macOS or a systemd user unit on Linux. Maintenance activates at the next drained service restart. No account keys, automatic update, firewall changes, or cloud provisioning.";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen IP:PORT] [--advertise IP:PORT[,IP:PORT...]] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_TEMPLATE\nOwner-private TLS mailbox with a separate credential per client. It listens on 127.0.0.1:9473 unless --listen names another address of this machine, such as its LAN or public address; --advertise lists up to four addresses clients dial instead, such as a cloud server's public address. install, status and uninstall manage a LaunchAgent on macOS or a systemd user unit on Linux; tailcat-plist writes the matching overlay template on each. Maintenance activates at the next drained service restart. No account keys, automatic update, firewall changes, or cloud provisioning.";
 const REFUSED: &str = "local host refused; preserve the exact home, configuration, certificates and mailbox; never reset retained custody";
 /// Status marks the leaf for explicit operator renewal inside this window.
 const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
@@ -117,7 +117,11 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             if !binary.is_absolute() || !key.is_absolute() || !output.is_absolute() {
                 return Err(HELP.into());
             }
-            launchd::tailcat_plist(&config::load(home)?, binary, key, output)
+            let loaded = config::load(home)?;
+            #[cfg(target_os = "linux")]
+            return systemd::tailcat_unit(&loaded, binary, key, output);
+            #[cfg(not(target_os = "linux"))]
+            return launchd::tailcat_plist(&loaded, binary, key, output);
         }
         Some("add-credential") if args.len() == 3 => {
             let (index, id) = config::add_credential(home)?;

@@ -1,6 +1,8 @@
 //! Per-user, exact-identity LaunchAgent ownership. Never manages unrelated services.
+#[cfg(not(target_os = "linux"))]
+use super::config;
 use super::{
-    config::{self, Config, Loaded},
+    config::{Config, Loaded},
     REFUSED,
 };
 use std::path::Path;
@@ -101,6 +103,8 @@ pub(super) fn template_ours(loaded: &Loaded, template: &[u8]) -> Result<bool, St
 
 /// Generate only an exact one-port overlay template. This neither creates a key
 /// nor installs or executes Tailcat, and never publishes its capability address.
+/// Linux takes the systemd unit in `systemd::tailcat_unit` instead.
+#[cfg(not(target_os = "linux"))]
 pub(super) fn tailcat_plist(
     loaded: &Loaded,
     binary: &Path,
@@ -172,7 +176,7 @@ pub(super) fn tailcat_plist(
 
 // Pinned Tailcat v0.7.0 `serve` accepts bare ports and proxies them to
 // localhost; it does not support the later upstream PORT:TARGET syntax.
-fn tailcat_port(config: &Config) -> Result<String, String> {
+pub(super) fn tailcat_port(config: &Config) -> Result<String, String> {
     if config.listen.ip() != std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
         || config.listen.port() == 0
     {

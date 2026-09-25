@@ -24,9 +24,13 @@ use vhalla_private_native::relay::{
 struct Fixture {
     root: PathBuf,
     addr: SocketAddr,
+    home_name: &'static str,
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_home("host & retained")
+    }
+    fn with_home(home_name: &'static str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "vhalla-local-host-{}-{}",
@@ -37,10 +41,14 @@ impl Fixture {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
-        Self { root, addr }
+        Self {
+            root,
+            addr,
+            home_name,
+        }
     }
     fn home(&self) -> PathBuf {
-        self.root.join("host & retained")
+        self.root.join(self.home_name)
     }
     fn command(&self, action: &str) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_vhalla"));
@@ -896,6 +904,13 @@ fn revoking_all_credentials_is_loadable_and_refuses_new_service_admission() {
 
 #[test]
 fn tailcat_template_uses_only_saved_private_key_and_exact_one_port_without_activation() {
+    // The plist template XML-escapes its argv, so the hostile fixture home is
+    // safe on macOS; systemd ExecStart splits on whitespace, so the unit path
+    // refuses any home it could not name unambiguously and this test exercises
+    // the custody matrix through a space-free home, then asserts that refusal.
+    #[cfg(target_os = "linux")]
+    let f = Fixture::with_home("host");
+    #[cfg(not(target_os = "linux"))]
     let f = Fixture::new();
     ok(&f.init());
     let key = f.home().join("tailcat.private.json");
@@ -922,6 +937,13 @@ fn tailcat_template_uses_only_saved_private_key_and_exact_one_port_without_activ
     let text = std::str::from_utf8(&plist).unwrap();
     assert!(text.contains("--key="));
     assert!(text.contains("tailcat.private.json"));
+    #[cfg(target_os = "linux")]
+    {
+        assert!(text.contains(&format!("serve {}\n", f.addr.port())));
+        assert!(text.contains("StandardOutput=null\n"));
+        assert!(text.contains("WantedBy=default.target\n"));
+    }
+    #[cfg(not(target_os = "linux"))]
     assert!(text.contains(&format!(
         "<string>serve</string><string>{}</string>",
         f.addr.port()
@@ -947,6 +969,24 @@ fn tailcat_template_uses_only_saved_private_key_and_exact_one_port_without_activ
     std::os::unix::fs::symlink(f.home().join("retained-overlay-key"), &key).unwrap();
     assert!(!run(command()).status.success());
     assert!(!out.exists());
+    #[cfg(target_os = "linux")]
+    {
+        let hostile = Fixture::new();
+        ok(&hostile.init());
+        let hostile_key = hostile.home().join("tailcat.private.json");
+        fs::write(&hostile_key, secret).unwrap();
+        fs::set_permissions(&hostile_key, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut refused = hostile.command("tailcat-plist");
+        refused
+            .arg("--binary")
+            .arg(env!("CARGO_BIN_EXE_vhalla"))
+            .arg("--key")
+            .arg(&hostile_key)
+            .arg("--out")
+            .arg(hostile.home().join("tailcat.service"));
+        assert!(!run(refused).status.success());
+        assert!(!hostile.home().join("tailcat.service").exists());
+    }
 }
 
 #[test]
