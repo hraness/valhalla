@@ -378,6 +378,38 @@ on 2, 3, 5 and 7; 10 follows each first release.
   HRA2, `~/Documents/valhalla-live-20260925` on HRANESS1. Still open:
   the public-Internet lane, Windows and Linux resource numbers, sleep,
   logout and reboot recovery, and the sparse server soak.
+- 25 September 2026, step 5 Linux operator journey and a Linux client
+  lane (step 9 partial): a release build compiled at `8e6cb21` — the
+  same tree as the two-Mac run plus the step-5 log merge — inside a
+  real Linux machine, the Lima VM `hra-release` (Ubuntu 26.04 LTS,
+  aarch64, four cores, 4 GiB). The host journey ran end to end under
+  the systemd user manager: `private-host init` created the home once
+  the binary and parent satisfied custody (the installer correctly
+  refused a group-writable copy and a non-private location);
+  `install` produced an enabled, active unit; `status --probe` reached
+  the live TLS listener; `journalctl --user` showed no capability
+  address; `tailcat-plist` emitted and activated the `.tailcat`
+  overlay unit with `StandardOutput=null`; `uninstall` removed the
+  unit while preserving the home. Settled RSS on Linux: host 15.9 MB
+  (within the 16 MB budget after the initial 20.5 MB startup sample),
+  Tailcat overlay 21.4 MB. For the client lane the VM joined a fresh
+  room on the Mac host's LAN listener through the step-4 invite —
+  `join --invite`, `accept`, `join --response` — and ran an
+  outbound-only `agent-serve` with a finite grant; a published
+  message was applied in the member store about 0.15 seconds after
+  the outbound page committed, inside the one-second bound, over
+  exactly one held page connection. The member agent sampled 19.4 MB
+  RSS — above the 12 MB client budget and above the macOS figure,
+  consistent with the private-store/MLS baseline being larger on
+  Linux; the budget decision noted under step 3 now has Linux data.
+  Two operational details surfaced: each `private` command mints its
+  own fresh operation id (passing the invite's id to `accept` is a
+  retained-operation `Conflict`), and `agent-serve` closes a grant
+  on any detected wall-clock regression — a one-time NTP slew after
+  VM provisioning killed the first grant; a fresh grant ran clean.
+  Still open: the public-Internet lane, Windows, sleep/logout/reboot,
+  the second-laptop browser route, and the sparse soak (the VM host
+  and Tailcat units stay up as the soak pair).
 - 25 September 2026, step 10 public copy and release record (this change).
   The site's private-room page now describes the native-only deployment —
   one participant hosts the mailbox, every member dials out over pinned TLS,
