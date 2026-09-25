@@ -1607,7 +1607,12 @@ for a new attempt.
 
 When the room's relay is an enrolled `private-host` home, the owner can package
 the confidential offer with one credential's relay material instead of moving
-separate files. `private invite` verifies the sealed host configuration, takes
+separate files. `--host` reads the sealed host home, so the owner must run
+`invite` on the machine that hosts the mailbox (or where a faithful private
+copy of that home exists); when the mailbox lives on someone else's server,
+use the granular offer/import/request/accept/join flow above and hand the
+recipient `connection.json`, `ca.der` and one `client-N.token` instead.
+`private invite` verifies the sealed host configuration, takes
 one enrolled, unrevoked `--credential` index and emits a single owner-private
 JSON bundle containing the offer, relay namespace, TLS name, CA certificate,
 that credential's token and the advertised dial addresses.
