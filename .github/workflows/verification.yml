@@ -75,3 +75,4 @@ jobs:
           ./verus-x86-linux/verus --crate-type=lib verify/ledger.rs
           ./verus-x86-linux/verus --crate-type=lib verify/private-egress/egress.rs
           ./verus-x86-linux/verus --crate-type=lib verify/private-rotation/rotation.rs
+          ./verus-x86-linux/verus --crate-type=lib verify/private-publication/publication.rs
