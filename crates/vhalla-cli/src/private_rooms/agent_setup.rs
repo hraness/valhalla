@@ -195,7 +195,7 @@ impl GrantSpec {
     }
 }
 
-fn canonical_new_path(path: &Path, what: &str) -> Result<PathBuf, String> {
+pub(super) fn canonical_new_path(path: &Path, what: &str) -> Result<PathBuf, String> {
     let absolute = custody::absolute(path).map_err(|_| format!("invalid {what} path"))?;
     let parent = absolute
         .parent()

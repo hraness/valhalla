@@ -301,6 +301,47 @@ fn service_ids(home: &Path, config: &Config, allowed: &[String]) -> Result<Servi
     .map_err(|_| REFUSED.into())
 }
 
+/// Read-only material `private invite` embeds for one participant: the
+/// published dial addresses plus one enrolled, unrevoked credential's token.
+/// The whole home is verified against its sealed manifest before any value is
+/// read, so a bundle can only carry current attested host material.
+pub(crate) struct InviteMaterial {
+    pub namespace: String,
+    pub tls_name: String,
+    pub addresses: Vec<SocketAddr>,
+    pub ca: Vec<u8>,
+    pub token: Vec<u8>,
+}
+pub(crate) fn invite_material(home: &Path, index: usize) -> Result<InviteMaterial, String> {
+    let loaded = config::load(home)?;
+    if index == 0 || index > loaded.config.credential_ids.len() {
+        return Err(format!(
+            "credential index {index} is not enrolled; run `vhalla private-host status HOME` for the enrolled indexes"
+        ));
+    }
+    let id = &loaded.config.credential_ids[index - 1];
+    if loaded.config.revoked_credential_ids.contains(id) {
+        return Err(format!(
+            "credential index {index} is revoked; run `vhalla private-host replace-credential HOME {index}` for a fresh token that keeps its quota"
+        ));
+    }
+    let raw = config::read_bound(
+        &loaded.home,
+        &loaded.config,
+        &format!("client-{index}.token"),
+        65,
+    )?;
+    let text = std::str::from_utf8(&raw).map_err(|_| REFUSED)?;
+    let token = config::decode_hex::<32>(text.trim_end_matches('\n'))?;
+    Ok(InviteMaterial {
+        namespace: loaded.config.namespace.clone(),
+        tls_name: loaded.config.tls_name.clone(),
+        addresses: config::addresses(&loaded.config),
+        ca: config::read_bound(&loaded.home, &loaded.config, "ca.der", 65536)?.to_vec(),
+        token: token.to_vec(),
+    })
+}
+
 /// A live probe performs the real pinned-TLS authenticated empty-page check
 /// against the configured listener and reports the outcome without secrets.
 fn probe(loaded: &Loaded) -> Result<serde_json::Value, String> {

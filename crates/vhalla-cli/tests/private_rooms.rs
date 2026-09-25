@@ -5,6 +5,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::Write,
+    net::TcpListener,
     os::unix::fs::{symlink, DirBuilderExt, MetadataExt, PermissionsExt},
     path::PathBuf,
     process::{Command, Output, Stdio},
@@ -2199,4 +2200,335 @@ fn private_cli_relay_submit_checks_an_explicit_namespace_before_transport() {
             .head,
         1
     );
+}
+
+#[test]
+fn private_cli_invite_bundle_carries_member_store_delivery_and_request() {
+    let f = Fixture::new();
+    // A real private-host home supplies the credential, CA and dial addresses.
+    let host = f.root.join("host-home");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let init = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .args(["private-host", "init"])
+        .arg(&host)
+        .args([
+            "--listen".to_string(),
+            addr.to_string(),
+            "--tls-name".into(),
+            "invite.test.invalid".into(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "private-host init: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    f.ok("create", "owner-key", Some("owner-room"), &f.validity());
+    let mut flags = f.validity();
+    flags.extend([
+        ("recipient", f.member.clone()),
+        ("operation", op(1)),
+        ("host", host.to_str().unwrap().to_owned()),
+        ("credential", "2".into()),
+        ("out", f.path("invite")),
+    ]);
+    f.ok("invite", "owner-key", Some("owner-room"), &flags);
+    assert_eq!(
+        fs::metadata(f.root.join("invite")).unwrap().mode() & 0o777,
+        0o600
+    );
+    let invite: Value = serde_json::from_slice(&fs::read(f.root.join("invite")).unwrap()).unwrap();
+    assert_eq!(invite["kind"], "valhalla-private-invite");
+    assert_eq!(invite["version"], serde_json::json!(1));
+    assert_eq!(
+        invite["relay"]["addresses"],
+        serde_json::json!([addr.to_string()])
+    );
+    assert_eq!(
+        invite["relay"]["token"].as_str().unwrap(),
+        std::str::from_utf8(&fs::read(host.join("client-2.token")).unwrap())
+            .unwrap()
+            .trim_end()
+    );
+
+    // One command on the member side: fresh store, delivery profile and the
+    // encrypted admission request.
+    let delivery = f.root.join("member-delivery");
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("invite")),
+        ("owner", f.owner.clone()),
+        ("operation", op(1)),
+        ("delivery-dir", delivery.to_str().unwrap().to_owned()),
+        ("addr", addr.to_string()),
+        ("out", f.path("request")),
+    ]);
+    f.ok("join", "member-key", Some("member-room"), &flags);
+    let profile: Value =
+        serde_json::from_slice(&fs::read(delivery.join("delivery.json")).unwrap()).unwrap();
+    assert_eq!(profile["addr"], addr.to_string());
+    assert_eq!(profile["tls_name"], "invite.test.invalid");
+    // initialize() publishes the control-delivery activation version in place.
+    assert_eq!(profile["version"], serde_json::json!(2));
+    assert_eq!(profile["context"]["account"], f.member);
+    assert_eq!(
+        profile["namespace"],
+        serde_json::from_slice::<Value>(&fs::read(host.join("connection.json")).unwrap()).unwrap()
+            ["namespace"]
+    );
+    assert!(delivery.join("delivery-state").join("lock").exists());
+    assert!(delivery.join("delivery-state").join("scan").exists());
+    assert!(f.root.join("request").exists());
+
+    // Admission still completes through the existing accept/join pair.
+    let mut flags = f.validity();
+    flags.extend([
+        ("request", f.path("request")),
+        ("operation", op(2)),
+        ("out", f.path("response")),
+    ]);
+    f.ok("accept", "owner-key", Some("owner-room"), &flags);
+    f.ok(
+        "join",
+        "member-key",
+        Some("member-room"),
+        &[("response", f.path("response"))],
+    );
+    let inspected = f.inspect("member-key", "member-room", "member-inspect");
+    assert_eq!(inspected["status"]["members"], 2);
+}
+
+#[test]
+fn private_cli_invite_and_join_refuse_wrong_or_reused_material() {
+    let f = Fixture::new();
+    let host = f.root.join("host-home");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let init = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .args(["private-host", "init"])
+        .arg(&host)
+        .args([
+            "--listen".to_string(),
+            addr.to_string(),
+            "--tls-name".into(),
+            "invite.test.invalid".into(),
+        ])
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+
+    f.ok("create", "owner-key", Some("owner-room"), &f.validity());
+    let mut flags = f.validity();
+    flags.extend([
+        ("recipient", f.member.clone()),
+        ("operation", op(1)),
+        ("host", host.to_str().unwrap().to_owned()),
+        ("credential", "1".into()),
+        ("out", f.path("invite")),
+    ]);
+    f.ok("invite", "owner-key", Some("owner-room"), &flags);
+    // init enrolls credential indexes 1 and 2; zero and unenrolled indexes
+    // refuse before consuming an offer.
+    for index in ["0", "3"] {
+        let mut flags = f.validity();
+        flags.extend([
+            ("recipient", f.member.clone()),
+            ("operation", op(3)),
+            ("host", host.to_str().unwrap().to_owned()),
+            ("credential", index.into()),
+            ("out", f.path("bad-invite")),
+        ]);
+        assert!(!f
+            .run("invite", "owner-key", Some("owner-room"), &flags, None)
+            .status
+            .success());
+        assert!(!f.root.join("bad-invite").exists());
+    }
+    // A revoked credential refuses even though its index is still enrolled.
+    let revoke = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .args(["private-host", "revoke-credential"])
+        .arg(&host)
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(revoke.status.success());
+    let mut flags = f.validity();
+    flags.extend([
+        ("recipient", f.member.clone()),
+        ("operation", op(4)),
+        ("host", host.to_str().unwrap().to_owned()),
+        ("credential", "1".into()),
+        ("out", f.path("bad-invite")),
+    ]);
+    assert!(!f
+        .run("invite", "owner-key", Some("owner-room"), &flags, None)
+        .status
+        .success());
+    assert!(!f.root.join("bad-invite").exists());
+
+    // join --invite refuses malformed, tampered and mismatched bundles before
+    // creating anything.
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("bad-bundle")),
+        ("owner", f.owner.clone()),
+        ("operation", op(1)),
+        ("delivery-dir", f.path("member-delivery")),
+        ("out", f.path("request")),
+    ]);
+    for raw in [
+        serde_json::json!({}).to_string(),
+        serde_json::json!({"kind":"other","version":1,"offer":"00","relay":{"namespace":"00","tls_name":"x","ca":"00","token":"00","addresses":[]}}).to_string(),
+        serde_json::json!({"kind":"valhalla-private-invite","version":2,"offer":"00","relay":{"namespace":"00","tls_name":"x","ca":"00","token":"00","addresses":[]}}).to_string(),
+        serde_json::json!({"kind":"valhalla-private-invite","version":1,"offer":"00","relay":{"namespace":"00","tls_name":"x","ca":"00","token":"00","addresses":[]},"extra":1}).to_string(),
+    ] {
+        f.write("bad-bundle", raw.as_bytes());
+        assert!(!f
+            .run("join", "member-key", Some("member-room"), &flags, None)
+            .status
+            .success());
+        assert!(!f.root.join("member-room").exists());
+        assert!(!f.root.join("member-delivery").exists());
+        assert!(!f.root.join("request").exists());
+    }
+    // A bundle whose offer was swapped for a different room's material fails
+    // offer authentication rather than membership creation.
+    let mut tampered: Value =
+        serde_json::from_slice(&fs::read(f.root.join("invite")).unwrap()).unwrap();
+    let offer = tampered["offer"].as_str().unwrap().to_owned();
+    let replacement = if offer.starts_with('0') { '1' } else { '0' };
+    tampered["offer"] = format!("{replacement}{}", &offer[1..]).into();
+    f.write("bad-bundle", &serde_json::to_vec(&tampered).unwrap());
+    assert!(!f
+        .run("join", "member-key", Some("member-room"), &flags, None)
+        .status
+        .success());
+    assert!(!f.root.join("member-room").exists());
+
+    // An explicit --addr must be one the bundle advertises.
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("invite")),
+        ("owner", f.owner.clone()),
+        ("operation", op(1)),
+        ("delivery-dir", f.path("member-delivery")),
+        ("addr", "10.255.255.1:9999".into()),
+        ("out", f.path("request")),
+    ]);
+    assert!(!f
+        .run("join", "member-key", Some("member-room"), &flags, None)
+        .status
+        .success());
+    assert!(!f.root.join("member-room").exists());
+    assert!(!f.root.join("member-delivery").exists());
+
+    // A genuine bundle minted for a different recipient refuses admission for
+    // this member account, and the real bundle refuses a mismatched --owner.
+    let other = vhalla_identity::Identity::create_new(f.root.join("other-key")).unwrap();
+    let other_key: String = other
+        .public_key()
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect();
+    let mut flags = f.validity();
+    flags.extend([
+        ("recipient", other_key.clone()),
+        ("operation", op(4)),
+        ("host", host.to_str().unwrap().to_owned()),
+        ("credential", "2".into()),
+        ("out", f.path("other-invite")),
+    ]);
+    f.ok("invite", "owner-key", Some("owner-room"), &flags);
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("other-invite")),
+        ("owner", f.owner.clone()),
+        ("operation", op(1)),
+        ("delivery-dir", f.path("member-delivery")),
+        ("out", f.path("request")),
+    ]);
+    assert!(!f
+        .run("join", "member-key", Some("member-room"), &flags, None)
+        .status
+        .success());
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("invite")),
+        ("owner", other_key),
+        ("operation", op(1)),
+        ("delivery-dir", f.path("member-delivery")),
+        ("out", f.path("request")),
+    ]);
+    assert!(!f
+        .run("join", "member-key", Some("member-room"), &flags, None)
+        .status
+        .success());
+    assert!(!f.root.join("member-room").exists());
+    assert!(!f.root.join("member-delivery").exists());
+
+    // The real bundle joins once; the second use into an existing store and
+    // conflicting join modes both refuse.
+    let delivery = f.root.join("member-delivery");
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("invite")),
+        ("owner", f.owner.clone()),
+        ("operation", op(1)),
+        ("delivery-dir", delivery.to_str().unwrap().to_owned()),
+        ("out", f.path("request")),
+    ]);
+    f.ok("join", "member-key", Some("member-room"), &flags);
+    // A second join into the same store is refused at custody: the delivery
+    // directory is fresh so the refusal is the used store, not the directory.
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("invite")),
+        ("owner", f.owner.clone()),
+        ("operation", op(1)),
+        ("delivery-dir", f.path("member-delivery-2")),
+        ("out", f.path("request-again")),
+    ]);
+    assert!(!f
+        .run("join", "member-key", Some("member-room"), &flags, None)
+        .status
+        .success());
+    assert!(!f.root.join("request-again").exists());
+    assert!(!f.root.join("member-delivery-2").exists());
+    // A fresh store with an existing delivery directory refuses before any
+    // store work: the directory must be a new private path.
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("invite")),
+        ("owner", f.owner.clone()),
+        ("operation", op(1)),
+        ("delivery-dir", f.path("member-delivery")),
+        ("out", f.path("request-again")),
+    ]);
+    assert!(!f
+        .run("join", "member-key", Some("member-room-2"), &flags, None)
+        .status
+        .success());
+    assert!(!f.root.join("member-room-2").exists());
+    let mut flags = f.validity();
+    flags.extend([
+        ("invite", f.path("invite")),
+        ("response", f.path("response")),
+        ("owner", f.owner.clone()),
+        ("operation", op(1)),
+        ("delivery-dir", f.path("other-delivery")),
+        ("out", f.path("request-again")),
+    ]);
+    assert!(!f
+        .run("join", "member-key", Some("member-room"), &flags, None)
+        .status
+        .success());
+    assert!(!f
+        .run("join", "member-key", Some("member-room"), &[], None)
+        .status
+        .success());
 }
