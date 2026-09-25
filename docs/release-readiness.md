@@ -349,3 +349,28 @@ An authenticated `OP_PAGE` exchange through the gateway to the host
 mailbox returned `STATUS_OK` end to end; the production mailbox head
 remains 0 and no synthetic traffic was admitted. The pinned Tailcat
 v0.7.0 overlay service was not changed.
+
+## Platform availability by release
+
+Every tag runs the same tag-driven release workflow: the complete Rust and
+site validation at that commit, then one tarball per artifact with a `.sha256`
+sidecar, published only after downloaded-byte re-verification. The first
+published release carrying each artifact:
+
+| Artifact | Target | First release |
+| --- | --- | --- |
+| `vhalla` CLI | `aarch64-apple-darwin` | v0.1.0 |
+| `vhalla` CLI | `x86_64-unknown-linux-gnu` | v0.1.0 |
+| `vhalla-menubar` | `aarch64-apple-darwin` | v0.1.0 |
+| `valhalla-browser` | browser bundle | v0.2.1 |
+| `vhalla` CLI | Windows | not shipped; no Windows target, CI job or artifact exists |
+
+The private-room commands (`experimental-private`, including `private`,
+`private-host`, `private-gateway` and `agent-serve`) first shipped in published
+binaries at v0.2.1. Tag v0.2.0 exists on a commit with the same feature set,
+but no GitHub release was published for it.
+
+Merged on `main` but not yet in a tagged release as of v0.2.3: the
+non-loopback `private-host` listeners and `--advertise` addresses, the held
+page request for quiet idle clients, the bundled `private invite` file, and
+the Linux systemd units for the host, gateway and Tailcat overlay.

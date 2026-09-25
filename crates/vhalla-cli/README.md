@@ -75,6 +75,10 @@ leave a draft; retries never overwrite an already published release.
 The workflow uses only the repository `GITHUB_TOKEN`. These are developer
 binaries without application signing or notarization.
 
+The CLI and menubar archives have shipped in every published release since
+v0.1.0, the first tag, and the browser archive joined at v0.2.1. There is no
+Windows or Intel-Mac artifact.
+
 The release feature selection preserves paired networking, social sync, the
 room-directory CLI/TUI, public-peer commands and private-room tooling. The
 Platonik adapter and `game replay` command were removed from current source.
@@ -1472,10 +1476,27 @@ publisher does not implicitly register itself or change discovery policy.
 ## Local encrypted private-room files (experimental-private)
 
 Build with `cargo build --locked -p vhalla-cli --features experimental-private --bin vhalla`. This optional Unix feature uses the maintained private-room
-controller, MLS kernel and encrypted SQLite store. It adds no network listener,
-relay client, public directory entry, agent tool registration or automatic
-background task. The default CLI dependency graph does not enable these tools.
+controller, MLS kernel and encrypted SQLite store. Enabling the feature installs
+commands only: nothing listens, dials or runs in the background until explicitly
+invoked. The default CLI dependency graph does not enable these tools.
 Use `vhalla private --help` for the complete command list.
+
+Private rooms run only on machines the participants control; nothing is hosted
+for them. One participant's machine runs `private-host`, a mailbox with fixed
+item and byte quotas that stores opaque ciphertext. Every other participant
+connects out to it over the same pinned TLS 1.3 connection with its own token:
+on the same machine's loopback, on a LAN, VPC or public address the host binds
+with `private-host init --listen`, or through a Tailcat serve/forward pair when
+the host sits behind NAT. A browser joins through `private-gateway`, a
+same-origin loopback gateway on its own machine, and an agent runs
+outbound-only under a finite one-use grant through `agent-launch` or
+`agent-serve`. The [local host guide](../../docs/local-host.md) covers host
+setup, the listener tiers and supervision; the
+[CLI-agent guide](../../docs/cli-agents.md) covers grants and delivery.
+`private invite` and `private join --invite` below package one member's
+onboarding into a single owner-private file. The private commands first shipped
+in release binaries at v0.2.1; the non-loopback listeners, bundled invite and
+Linux supervisor units are on `main` and not yet in a tagged release.
 
 A private store belongs to one complete room/anchor/account/device context. The
 existing account identity and room store remain separate explicit paths. Create
@@ -2182,6 +2203,11 @@ by this native command.
 ## Explicit private relay TLS
 
 The optional `experimental-private` build includes server-authenticated TLS.
+The managed form is `private-host` from the
+[local host guide](../../docs/local-host.md): it generates the CA, credentials
+and mailbox, supervises the service, and chooses the listener tier for the
+room. The commands below are the explicit adapter form, for operators wiring
+their own certificates and mailboxes.
 Keep plain `relay-serve` and plain `--addr` clients on loopback. For TLS, select
 an explicit numeric address, independent CA certificate and exact DNS server
 name; the client never falls back to plaintext. CA/server certificates are DER,
