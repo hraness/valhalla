@@ -922,6 +922,13 @@ fn tailcat_template_uses_only_saved_private_key_and_exact_one_port_without_activ
     let text = std::str::from_utf8(&plist).unwrap();
     assert!(text.contains("--key="));
     assert!(text.contains("tailcat.private.json"));
+    #[cfg(target_os = "linux")]
+    {
+        assert!(text.contains(&format!("serve {}\n", f.addr.port())));
+        assert!(text.contains("StandardOutput=null\n"));
+        assert!(text.contains("WantedBy=default.target\n"));
+    }
+    #[cfg(not(target_os = "linux"))]
     assert!(text.contains(&format!(
         "<string>serve</string><string>{}</string>",
         f.addr.port()

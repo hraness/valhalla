@@ -172,7 +172,7 @@ pub(super) fn tailcat_plist(
 
 // Pinned Tailcat v0.7.0 `serve` accepts bare ports and proxies them to
 // localhost; it does not support the later upstream PORT:TARGET syntax.
-fn tailcat_port(config: &Config) -> Result<String, String> {
+pub(super) fn tailcat_port(config: &Config) -> Result<String, String> {
     if config.listen.ip() != std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
         || config.listen.port() == 0
     {

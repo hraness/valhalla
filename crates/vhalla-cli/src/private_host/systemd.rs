@@ -6,7 +6,6 @@
 //! take the `systemctl` runner and the unit path as parameters so they are
 //! platform-independent and tested everywhere; only the real command and the
 //! per-user unit directory are Linux-specific.
-#[cfg(target_os = "linux")]
 use super::config::Loaded;
 use super::{config::Config, launchd::SUPERVISOR_LOG_NAME, REFUSED};
 use std::{collections::BTreeMap, ffi::OsString, path::Path};
@@ -50,6 +49,22 @@ pub(crate) fn unit_text(
     args: &[&str],
     log: &str,
 ) -> Result<String, String> {
+    let output = format!("append:{}", argument(log)?);
+    unit_text_with(description, executable, args, &output)
+}
+
+/// The Tailcat overlay discards service output like the plist's `/dev/null`:
+/// its capability address must not land in the journal.
+fn tailcat_unit_text(description: &str, executable: &str, args: &[&str]) -> Result<String, String> {
+    unit_text_with(description, executable, args, "null")
+}
+
+fn unit_text_with(
+    description: &str,
+    executable: &str,
+    args: &[&str],
+    output: &str,
+) -> Result<String, String> {
     if description.is_empty() || description.chars().any(|c| c < ' ' || c == '\u{7f}') {
         return Err(REFUSED.into());
     }
@@ -58,9 +73,8 @@ pub(crate) fn unit_text(
         exec.push(' ');
         exec.push_str(argument(arg)?);
     }
-    let log = argument(log)?;
     Ok(format!(
-        "[Unit]\nDescription={description}\n\n[Service]\nType=simple\nExecStart={exec}\nRestart=on-failure\nRestartSec=30\nTimeoutStopSec=15\nUMask=0077\nStandardOutput=append:{log}\nStandardError=append:{log}\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription={description}\n\n[Service]\nType=simple\nExecStart={exec}\nRestart=on-failure\nRestartSec=30\nTimeoutStopSec=15\nUMask=0077\nStandardOutput={output}\nStandardError={output}\n\n[Install]\nWantedBy=default.target\n"
     ))
 }
 
@@ -79,6 +93,60 @@ pub(super) fn spec(home: &Path, c: &Config) -> Result<UnitSpec, String> {
         )?,
         alternates: Vec::new(),
     })
+}
+
+/// Linux counterpart of `launchd::tailcat_plist`: write only an exact
+/// one-port overlay user unit. The same executable, saved-key and output
+/// custody checks apply; this neither installs nor executes Tailcat and
+/// never publishes its capability address.
+pub(super) fn tailcat_unit(
+    loaded: &Loaded,
+    binary: &Path,
+    key: &Path,
+    output: &Path,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let port = super::launchd::tailcat_port(&loaded.config)?;
+    let binary = binary
+        .canonicalize()
+        .map_err(|_| "selected Tailcat executable unavailable")?;
+    let metadata = std::fs::metadata(&binary).map_err(|_| REFUSED)?;
+    if !metadata.is_file() || metadata.mode() & 0o111 == 0 || metadata.mode() & 0o6022 != 0 {
+        return Err("Tailcat must be an explicit regular executable without set-ID or group/world write bits".into());
+    }
+    let key = super::config::resolve(key)?;
+    // Custody validation only: the selected Tailcat binary authenticates its own
+    // saved-key format at activation. Do not print or reinterpret key material.
+    let retained_key = super::config::read(
+        key.parent().ok_or(REFUSED)?,
+        key.file_name().and_then(|n| n.to_str()).ok_or(REFUSED)?,
+        65536,
+    )?;
+    if retained_key.is_empty() {
+        return Err("saved Tailcat key must already exist; never use an ephemeral key".into());
+    }
+    let output = super::config::resolve(output)?;
+    let label = format!("{}.tailcat", loaded.config.label);
+    let args = [
+        format!("--key={}", key.to_str().ok_or(REFUSED)?),
+        "serve".to_owned(),
+        port,
+    ];
+    let unit = tailcat_unit_text(
+        &format!("Valhalla private host Tailcat overlay {label}"),
+        binary.to_str().ok_or(REFUSED)?,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?;
+    super::config::write(
+        output.parent().ok_or(REFUSED)?,
+        output.file_name().and_then(|n| n.to_str()).ok_or(REFUSED)?,
+        unit.as_bytes(),
+    )?;
+    println!(
+        "{}",
+        serde_json::json!({"status":"template-created","systemd_unit":output,"label":label,"installed":false})
+    );
+    Ok(())
 }
 
 pub(crate) fn unit_name(spec: &UnitSpec) -> String {
@@ -596,6 +664,55 @@ mod tests {
         assert!(unit
             .unit
             .contains("append:/srv/valhalla-host/supervisor.log\n"));
+    }
+
+    #[test]
+    fn tailcat_unit_writes_exact_one_port_overlay_and_refuses_unsafe_material() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = home("tailcat");
+        let loaded = Loaded {
+            home: dir.clone(),
+            config: crate::private_host::launchd::test_config("me.vhalla.private-host.unit-test"),
+        };
+        let binary = dir.join("tailcat");
+        std::fs::write(&binary, b"synthetic tailcat").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let key = dir.join("tailcat.private.json");
+        std::fs::write(&key, b"saved key fixture").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let out = dir.join("tailcat.service");
+        let run = || tailcat_unit(&loaded, &binary, &key, &out);
+        run().unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        let exec = format!(
+            "ExecStart={} --key={} serve 9473\n",
+            binary.canonicalize().unwrap().to_str().unwrap(),
+            key.canonicalize().unwrap().to_str().unwrap()
+        );
+        assert!(text.contains(&exec), "{text}");
+        assert!(text.contains("Description=Valhalla private host Tailcat overlay me.vhalla.private-host.unit-test.tailcat\n"));
+        assert!(text.contains("Restart=on-failure\nRestartSec=30\n"));
+        assert!(text.contains("StandardOutput=null\nStandardError=null\n"));
+        assert!(text.contains("WantedBy=default.target\n"));
+        assert!(!text.contains("supervisor.log"));
+        // The emitted file is owner-private and refused on reuse.
+        assert_eq!(std::fs::metadata(&out).unwrap().mode() & 0o7777, 0o600);
+        assert!(run().is_err());
+        // A non-executable or group/world-writable binary refuses; an unsafe or
+        // missing saved key refuses.
+        let mut mode = std::fs::metadata(&binary).unwrap().permissions();
+        mode.set_mode(0o644);
+        std::fs::set_permissions(&binary, mode).unwrap();
+        assert!(run().is_err());
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(run().is_err());
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_file(&key).unwrap();
+        assert!(run().is_err());
+        std::fs::write(&key, b"saved key fixture").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        run().unwrap();
     }
 
     #[test]

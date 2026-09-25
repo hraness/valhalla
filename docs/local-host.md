@@ -337,6 +337,10 @@ creating the saved key:
   --out /private/operator/valhalla-host/tailcat-agent.plist
 ```
 
+On Linux the same command emits a per-user systemd unit instead, for example
+`--out .../tailcat.service`, installed like the relay's unit under
+`~/.config/systemd/user` and managed through `systemctl --user`.
+
 This validates selected executable/key/output file custody, maps only the relay's
 one configured bare TCP port, requires the relay to bind exactly `127.0.0.1`,
 uses a distinct `.tailcat` label and a 30-second restart
@@ -344,8 +348,8 @@ throttle, and discards stdout/stderr rather than logging its capability address.
 It neither interprets the private-key format nor executes, installs or starts
 Tailcat. The selected Tailcat version must validate its own saved key at actual
 activation. Existing outputs and linked/unsafe key files refuse without mutation.
-Review and install the overlay plist separately; the relay's `uninstall` command
-does not remove the independently managed overlay service.
+Review and install the overlay plist or unit separately; the relay's `uninstall`
+command does not remove the independently managed overlay service.
 
 On each client, select one fixed local forwarding port:
 
