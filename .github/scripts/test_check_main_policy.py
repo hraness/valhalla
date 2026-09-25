@@ -47,7 +47,7 @@ class MainPolicyTests(unittest.TestCase):
                 elif mutation == "app":
                     checks["required_status_checks"][0]["integration_id"] = None
                 else:
-                    checks["strict_required_status_checks_policy"] = False
+                    checks["strict_required_status_checks_policy"] = True
                 self.assertTrue(check_rule(self.expected, actual))
 
 
