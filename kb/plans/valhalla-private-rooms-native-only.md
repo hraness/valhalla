@@ -2,7 +2,7 @@
 title: "Private rooms run where you are: native hosts only"
 type: plan
 area: private-rooms
-status: accepted
+status: in-progress
 tags:
   - architecture
   - operations
@@ -276,3 +276,24 @@ on 2, 3, 5 and 7; 10 follows each first release.
   host 11 MB RSS and 0.0 percent CPU after 37 hours, gateway 19 MB, Tailcat
   server 32 MB and 0.0 percent CPU; Tailcat binaries about 6 MiB compressed
   for Linux, macOS and Windows.
+- 25 September 2026, step 5 supervisor: #122 merged as `1329c6a`. On Linux,
+  `private-host` and `private-gateway` `install`, `status` and `uninstall`
+  manage a per-user systemd unit under the LaunchAgent's exact-identity rules;
+  the flows are unit-tested on every platform with injected `systemctl`
+  replies, and `status` reports an unavailable user manager instead of
+  failing. Still open for step 5: the Tailcat overlay unit, an operator-run
+  journey on a Linux host with a user manager, and release packaging.
+- 25 September 2026, step 2 listeners: #125 merged as `b519083`.
+  `private-host init --listen`
+  accepts one unicast address of the machine (wildcard, multicast, broadcast
+  and link-local refused) and `--advertise` up to four addresses clients
+  dial instead, for a cloud server behind 1:1 NAT; `connection.json` and
+  `status` carry `addresses`. The relay holds each peer that is not loopback,
+  keyed by IPv4 address or IPv6 /64, to a quarter of the connection slots and
+  a quarter of each window's handshakes, and caps the per-window source table
+  at 4,096 entries; loopback peers, including Tailcat forwards, share only
+  the totals. Mailbox generations and the Tailcat template stay
+  loopback-only; moving the clients of a network host is step 8. Linux CI
+  dials the runner's routed address to exercise the per-source refusals and
+  a network-listener round trip. Still open for step 2: floods of slow and
+  half-open clients from many sources, and a LAN run between two machines.

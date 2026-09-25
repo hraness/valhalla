@@ -23,7 +23,7 @@ use vhalla_private_native::relay::{
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen LOOPBACK_IP:PORT] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private local TLS mailbox, distinct client credentials, explicit macOS LaunchAgent lifecycle. Maintenance activates at the next drained service restart. No account keys, automatic update, public listener, or cloud provisioning.";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen IP:PORT] [--advertise IP:PORT[,IP:PORT...]] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_PLIST\nOwner-private TLS mailbox with a separate credential per client. It listens on 127.0.0.1:9473 unless --listen names another address of this machine, such as its LAN or public address; --advertise lists up to four addresses clients dial instead, such as a cloud server's public address. install, status and uninstall manage a LaunchAgent on macOS or a systemd user unit on Linux. Maintenance activates at the next drained service restart. No account keys, automatic update, firewall changes, or cloud provisioning.";
 const REFUSED: &str = "local host refused; preserve the exact home, configuration, certificates and mailbox; never reset retained custody";
 /// Status marks the leaf for explicit operator renewal inside this window.
 const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
@@ -36,6 +36,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
     match args[1].to_str() {
         Some("init") => {
             let mut listen: SocketAddr = "127.0.0.1:9473".parse().map_err(|_| REFUSED)?;
+            let mut advertise = Vec::new();
             let mut name = "relay.valhalla.invalid".to_owned();
             let mut executable = std::env::current_exe().map_err(|_| REFUSED)?;
             let mut leaf_days = 365i64;
@@ -51,6 +52,15 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                 match flag {
                     "--listen" => {
                         listen = pair[1].to_str().ok_or(HELP)?.parse().map_err(|_| HELP)?
+                    }
+                    "--advertise" => {
+                        advertise = pair[1]
+                            .to_str()
+                            .ok_or(HELP)?
+                            .split(',')
+                            .map(str::parse)
+                            .collect::<Result<Vec<SocketAddr>, _>>()
+                            .map_err(|_| HELP)?
                     }
                     "--tls-name" => name = pair[1].to_str().ok_or(HELP)?.to_owned(),
                     "--executable" => {
@@ -71,19 +81,23 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                     _ => return Err(HELP.into()),
                 }
             }
-            if !listen.ip().is_loopback() || listen.port() == 0 {
-                return Err("local host requires an explicit nonzero loopback endpoint; expose it only through a separately reviewed encrypted overlay".into());
+            if !endpoint(listen) {
+                return Err("--listen needs one unicast IP address of this machine and a nonzero port; wildcard, multicast, broadcast, link-local and scoped addresses are refused".into());
+            }
+            if !listener_selection(listen, &advertise) {
+                return Err("--advertise needs a LAN or public --listen address and at most four distinct unicast, non-loopback addresses with nonzero ports".into());
             }
             let loaded = config::initialize_with_leaf_lifetime(
                 home,
                 listen,
+                &advertise,
                 &name,
                 &executable,
                 time::Duration::days(leaf_days),
             )?;
             println!(
                 "{}",
-                serde_json::json!({"status":"initialized","home":loaded.home,"connection":loaded.home.join("connection.json"),"launch_agent":loaded.home.join("launch-agent.plist"),"label":loaded.config.label})
+                serde_json::json!({"status":"initialized","home":loaded.home,"connection":loaded.home.join("connection.json"),"addresses":config::addresses(&loaded.config),"launch_agent":loaded.home.join("launch-agent.plist"),"label":loaded.config.label})
             );
             Ok(())
         }
@@ -186,6 +200,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                 "status" => {
                     let now = time::OffsetDateTime::now_utc().unix_timestamp();
                     let mut report = serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"log":loaded.home.join(launchd::LOG_NAME),"supervisor_log":loaded.home.join(launchd::SUPERVISOR_LOG_NAME),"recent_events":events::tail(&loaded.home,8)?});
+                    report["addresses"] = serde_json::json!(config::addresses(&loaded.config));
                     report["active_credentials"] = (loaded.config.credential_ids.len()
                         - loaded.config.revoked_credential_ids.len())
                     .into();
@@ -389,6 +404,9 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
                     )?;
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                    return Err(format!("relay listener {address} is not an address of this machine; clients dial it, so restore that address (for example with a DHCP reservation) rather than changing the listener"));
+                }
                 Err(_) => return Err("local relay bind refused".into()),
             }
         }
@@ -428,4 +446,118 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
 fn loopback(listen: SocketAddr) -> bool {
     matches!(listen.ip(), IpAddr::V4(ip) if ip.is_loopback())
         || matches!(listen.ip(),IpAddr::V6(ip) if ip.is_loopback())
+}
+
+/// Most addresses a host advertises in place of its listener.
+const MAX_ADVERTISED: usize = 4;
+
+/// One dialable unicast IP address with a nonzero port. Wildcards, multicast,
+/// broadcast, IPv4-mapped IPv6, zoned IPv6 and link-local addresses are
+/// refused, so the bound socket, the connection document and each client's
+/// pinned endpoint all name one address that means the same on every link.
+fn endpoint(address: SocketAddr) -> bool {
+    address.port() != 0
+        && match address {
+            SocketAddr::V4(v4) => {
+                let ip = v4.ip();
+                !ip.is_unspecified()
+                    && !ip.is_multicast()
+                    && !ip.is_broadcast()
+                    && !ip.is_link_local()
+            }
+            SocketAddr::V6(v6) => {
+                let ip = v6.ip();
+                v6.scope_id() == 0
+                    && !ip.is_unspecified()
+                    && !ip.is_multicast()
+                    && !ip.is_unicast_link_local()
+                    && ip.to_ipv4_mapped().is_none()
+            }
+        }
+}
+
+/// A listener and the addresses clients dial instead of it. Advertising is
+/// only for a network listener whose reachable address differs, such as a
+/// cloud server whose interface holds a private address behind 1:1 NAT.
+fn listener_selection(listen: SocketAddr, advertise: &[SocketAddr]) -> bool {
+    endpoint(listen)
+        && advertise.len() <= MAX_ADVERTISED
+        && (advertise.is_empty() || !loopback(listen))
+        && advertise.iter().all(|a| endpoint(*a) && !loopback(*a))
+        && advertise
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            == advertise.len()
+}
+
+#[cfg(test)]
+mod listener_tests {
+    use super::*;
+    fn at(text: &str) -> SocketAddr {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_listener_names_one_dialable_unicast_address() {
+        for good in [
+            "127.0.0.1:9473",
+            "[::1]:9473",
+            "192.168.1.20:9473",
+            "10.0.0.5:9473",
+            "203.0.113.7:443",
+            "[2001:db8::7]:9473",
+            "[fd00::20]:9473",
+        ] {
+            assert!(endpoint(at(good)), "{good}");
+        }
+        for bad in [
+            "192.168.1.20:0",
+            "0.0.0.0:9473",
+            "[::]:9473",
+            "224.0.0.1:9473",
+            "255.255.255.255:9473",
+            "169.254.10.20:9473",
+            "[ff02::1]:9473",
+            "[fe80::1]:9473",
+            "[fe80::1%2]:9473",
+            "[2001:db8::7%2]:9473",
+            "[::ffff:192.168.1.20]:9473",
+        ] {
+            assert!(!endpoint(at(bad)), "{bad}");
+        }
+    }
+
+    #[test]
+    fn advertised_addresses_are_distinct_remote_and_only_for_network_listeners() {
+        let lan = at("10.0.0.5:9473");
+        let public = at("203.0.113.7:9473");
+        assert!(listener_selection(at("127.0.0.1:9473"), &[]));
+        assert!(listener_selection(lan, &[]));
+        assert!(listener_selection(lan, &[public]));
+        assert!(listener_selection(
+            lan,
+            &[
+                public,
+                at("[2001:db8::7]:9473"),
+                at("198.51.100.2:9473"),
+                at("198.51.100.3:1")
+            ]
+        ));
+        assert!(!listener_selection(at("127.0.0.1:9473"), &[public]));
+        assert!(!listener_selection(lan, &[at("127.0.0.1:9473")]));
+        assert!(!listener_selection(lan, &[at("0.0.0.0:9473")]));
+        assert!(!listener_selection(lan, &[public, public]));
+        assert!(!listener_selection(
+            lan,
+            &[
+                public,
+                at("198.51.100.1:9473"),
+                at("198.51.100.2:9473"),
+                at("198.51.100.3:9473"),
+                at("198.51.100.4:9473")
+            ]
+        ));
+        assert!(!listener_selection(at("0.0.0.0:9473"), &[public]));
+    }
 }

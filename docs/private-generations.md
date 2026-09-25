@@ -29,9 +29,11 @@ delete a queue, change a namespace in place or copy a live device to perform
 this operation.
 
 Choose a fresh 32-byte transition identifier, fresh namespace and unused
-loopback listener for the successor. Retain the CA and TLS name. The host serves
-the predecessor and successor on their separate saved ports after cutover;
-it keeps old messages readable and allows exact retries of already saved items.
+loopback listener for the successor. The host itself must listen on loopback;
+`generation-check` refuses a host on a LAN or public address. Retain the CA and
+TLS name. The host serves the predecessor and successor on their separate saved
+ports after cutover; it keeps old messages readable and allows exact retries of
+already saved items.
 New writes to the predecessor refuse permanently. Each earlier mailbox accepts
 only the credentials enrolled before its transition. If all of them are later
 revoked, `private-host serve` refuses to start and names that mailbox directory

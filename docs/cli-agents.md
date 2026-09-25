@@ -169,10 +169,13 @@ Neither action recalls plaintext that an authorized provider already received.
 
 ## Local hosting and persistent TLS delivery
 
-Use [local host setup](local-host.md) to initialize the Mac mailbox, keep its
-service running and configure a saved Tailcat key when remote access is needed.
-Host sleep delays delivery; it does not lose or renew the queued work. No paid
-server or public domain is required.
+Use [local host setup](local-host.md) to initialize the host mailbox on a laptop
+or server, keep its service running, and choose how clients reach it: on the
+same machine, directly over a LAN or the Internet, or through a saved Tailcat
+key when the host sits behind NAT. Set `addr` to one of the `addresses` in the
+host's `connection.json`, or to your own Tailcat forward. Host sleep delays
+delivery; it does not lose or renew the queued work. No paid server or public
+domain is required.
 
 Without `--delivery`, queueing is durable local storage only. A separately
 selected host profile can submit exact retained ciphertext and stage incoming

@@ -319,6 +319,130 @@ fn partial_existing_foreign_and_mutated_homes_refuse_without_repair() {
 }
 
 #[test]
+fn listener_selection_refuses_wildcards_and_misdirected_advertisements() {
+    let lan = ["--listen", "192.0.2.10:9473", "--advertise"];
+    let cases: &[&[&str]] = &[
+        &["--listen", "0.0.0.0:9473"],
+        &["--listen", "[::]:9473"],
+        &["--listen", "224.0.0.1:9473"],
+        &["--listen", "192.0.2.10:0"],
+        &["--listen", "[fe80::1]:9473"],
+        &["--advertise", "203.0.113.7:9473"],
+        &[lan[0], lan[1], lan[2], "127.0.0.1:9473"],
+        &[lan[0], lan[1], lan[2], "0.0.0.0:9473"],
+        &[lan[0], lan[1], lan[2], "203.0.113.7:9473,203.0.113.7:9473"],
+        &[lan[0], lan[1], lan[2], "203.0.113.7:9473,"],
+        &[
+            lan[0],
+            lan[1],
+            lan[2],
+            "203.0.113.1:1,203.0.113.2:1,203.0.113.3:1,203.0.113.4:1,203.0.113.5:1",
+        ],
+    ];
+    for flags in cases {
+        let f = Fixture::new();
+        let mut command = f.command("init");
+        command.args(*flags);
+        assert!(!run(command).status.success(), "{flags:?}");
+        assert!(!f.home().exists(), "{flags:?}");
+    }
+}
+
+#[test]
+fn network_listener_records_the_addresses_clients_dial() {
+    // Initialization binds nothing, so documentation addresses stand in for a
+    // cloud server's private interface and the public address clients dial.
+    let f = Fixture::new();
+    let mut command = f.command("init");
+    command.args([
+        "--listen",
+        "192.0.2.10:9473",
+        "--advertise",
+        "203.0.113.7:9473,[2001:db8::7]:9473",
+        "--tls-name",
+        "local-host.test.invalid",
+    ]);
+    let initialized = run(command);
+    ok(&initialized);
+    let dial = serde_json::json!(["203.0.113.7:9473", "[2001:db8::7]:9473"]);
+    let printed: Value = serde_json::from_slice(&initialized.stdout).unwrap();
+    assert_eq!(printed["addresses"], dial);
+    assert_eq!(f.json("config.json")["listen"], "192.0.2.10:9473");
+    assert_eq!(f.json("config.json")["advertise"], dial);
+    assert_eq!(f.json("connection.json")["listen"], "192.0.2.10:9473");
+    assert_eq!(f.json("connection.json")["addresses"], dial);
+    let status = run(f.command("status"));
+    ok(&status);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["addresses"], dial);
+    // A loopback host lists its listener and writes no advertise field.
+    let local = Fixture::new();
+    ok(&local.init());
+    assert_eq!(
+        local.json("connection.json")["addresses"],
+        serde_json::json!([local.addr.to_string()])
+    );
+    assert!(local.json("config.json").get("advertise").is_none());
+}
+
+/// The routed source address of this host, found by connecting a UDP socket
+/// (which sends nothing) toward a documentation address, provided the host
+/// also accepts its own TCP connections on it.
+#[cfg(target_os = "linux")]
+fn routed_address() -> Option<std::net::IpAddr> {
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    probe.connect("192.0.2.1:9").ok()?;
+    let ip = probe.local_addr().ok()?.ip();
+    if ip.is_loopback() || ip.is_unspecified() {
+        return None;
+    }
+    let listener = TcpListener::bind((ip, 0)).ok()?;
+    std::net::TcpStream::connect_timeout(&listener.local_addr().ok()?, Duration::from_secs(2))
+        .ok()?;
+    Some(ip)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn network_listener_serves_clients_that_dial_its_address() {
+    let Some(ip) = routed_address() else {
+        eprintln!("skipped: this host has no routed non-loopback IPv4 address");
+        return;
+    };
+    let mut f = Fixture::new();
+    let probe = TcpListener::bind((ip, 0)).unwrap();
+    f.addr = probe.local_addr().unwrap();
+    drop(probe);
+    ok(&f.init());
+    assert_eq!(
+        f.json("connection.json")["addresses"],
+        serde_json::json!([f.addr.to_string()])
+    );
+    let mut server = f.serve();
+    let item = RelayItem::new(
+        f.namespace(),
+        1,
+        OperationId::from_bytes([4; 16]).unwrap(),
+        OutboxKind::Application,
+        b"synthetic ciphertext over a network listener",
+    )
+    .unwrap();
+    assert_eq!(f.client(1).submit(&item).unwrap().position, 1);
+    assert_eq!(f.client(2).page(0, 1).unwrap().records[0].item, item);
+    let probed = run({
+        let mut command = f.command("status");
+        command.arg("--probe");
+        command
+    });
+    ok(&probed);
+    let probed: Value = serde_json::from_slice(&probed.stdout).unwrap();
+    assert_eq!(probed["probe"]["probed"], true);
+    // The listener is the routed address only; loopback is not served.
+    assert!(std::net::TcpStream::connect(("127.0.0.1", f.addr.port())).is_err());
+    server.stop();
+}
+
+#[test]
 fn add_credential_and_recovery_extend_the_sealed_home_without_rebinding_members() {
     let f = Fixture::new();
     ok(&f.init());
