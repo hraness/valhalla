@@ -67,7 +67,7 @@ export const articles: Article[] = [
     published: '2026-09-24',
     tags: ['crash recovery', 'stateful testing', 'Hegel', 'Verus', 'Kani', 'Rust', 'vhalla'],
     links: [
-      { label: 'Receipts, not logs', href: '/writing/receipts-not-logs/', reason: 'What vhalla keeps as evidence of what was sent.' },
+      { label: 'Receipts, not logs', href: '/writing/receipts-not-logs/', reason: 'What Valhalla keeps as evidence of what was sent.' },
     ],
   }),
   article({

@@ -34,7 +34,7 @@ export const articleAdmissions = [
       source('Assurance notes: claims, limits and how counterexamples map to regression tests', 'verify/README.md'),
       source('Relay storage model notes: exact duplicates keep their original position', 'verify/relay-quota/README.md'),
       source('CI workflow that runs every registered model', '.github/workflows/verification.yml'),
-      source('vhalla README: status and install', 'README.md'),
+      source('Valhalla README: status and install', 'README.md'),
     ],
     observations: [
       'Of the 51 planted bugs, 50 must fail on a named invariant and one (rooms-held-reply mutant-deadline) must fail on a named temporal property, so the runner checks exit codes per rule kind.',
@@ -76,7 +76,7 @@ export const articleAdmissions = [
       source('Contributor rules: Hegel porting and the Kani pilot\'s coverage and exclusions', 'AGENTS.md'),
       source('CI: the kani-spent job, required by the final aggregate check', '.github/workflows/rust.yml'),
       source('CI: the Verus job in the verification workflow', '.github/workflows/verification.yml'),
-      source('vhalla README: status', 'README.md'),
+      source('Valhalla README: status', 'README.md'),
     ],
     observations: [
       'The recovery property keeps running on the restored copy, so every later step exercises state that has already been through a restart.',

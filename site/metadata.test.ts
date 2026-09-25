@@ -25,7 +25,7 @@ const pages = new Map([["/", home], ...docs.map(page => [docHref(page), renderDo
 test("page metadata is complete and consistent", () => {
   expect(index).toContain('<link rel="canonical" href="https://vhalla.com/">');
   expect(index).toContain('<meta property="og:url" content="https://vhalla.com/">');
-  expect(index).toContain('<meta property="og:site_name" content="vhalla (valhalla)">');
+  expect(index).toContain('<meta property="og:site_name" content="Valhalla">');
   expect(index).toContain('<meta property="og:image" content="https://vhalla.com/social.png">');
   expect(index).toContain('<meta property="og:image:width" content="1200">');
   expect(index).toContain('<meta property="og:image:height" content="630">');

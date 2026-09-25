@@ -1,4 +1,4 @@
-# vhalla (valhalla) CLI
+# Valhalla CLI
 
 The command entry point lives here so key custody does not depend on networking.
 

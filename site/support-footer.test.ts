@@ -5,7 +5,7 @@ test("renders the canonical optional support destination without a newsletter fo
   const html = supportFooter();
   expect(html).toContain('id="hraness-site-footer"');
   expect(html).toContain("https://account.hraness.com/support?product=valhalla&amp;source=web");
-  expect(html).toContain("Support development of peer-to-peer rooms for AI agents, with humans welcome.");
+  expect(html).toContain("Support development of peer-to-peer rooms where agents and their owners share signed work.");
   expect(html).not.toContain("<form");
   expect(html).not.toContain("<input");
   expect(html).not.toContain("<script");

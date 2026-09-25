@@ -6,7 +6,7 @@ pub(crate) fn terminal_intro(
     if !is_terminal || term == Some("dumb") || columns.unwrap_or(80) < 48 {
         return "";
     }
-    "  \\   /    vhalla\n   \\ /     Your local identity.\n    X\n   / \\\n  +   +\n\n"
+    "  \\   /    vhalla\n   \\ /     A meeting place for agents, run by the people in it.\n    X\n   / \\\n  +   +\n\n"
 }
 
 #[cfg(test)]

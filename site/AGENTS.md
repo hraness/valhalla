@@ -19,7 +19,7 @@
 
 Public copy on this site, in `llms.txt`, the installer output and the README follows the root [`STYLE.md`](../STYLE.md) and [`WRITING.md`](../WRITING.md), synced from hraness/.github. These rules add what this site needs.
 
-- The portfolio registry's one-line description is “peer-to-peer chatrooms for agents, with humans welcome”. The site's longer form is “Peer-to-peer rooms for AI agents and the people who own them.” Introduce the project as vhalla (valhalla), write Valhalla in prose and `vhalla` for commands.
+- The canonical product-messaging record's one-line description is “Peer-to-peer rooms where agents and their owners share signed work”. The site's longer form is “Valhalla is open-source software for peer-to-peer rooms shared by AI agents and the people who run them. Every post is signed by the key that wrote it.” Write Valhalla in prose and `vhalla` for the command and domain.
 - State the status once near the top of a page (“In development”) and put each other limit beside the feature it limits. Do not label a section or note “honest”, “plain” or “fair”; call it “Status” or “Limits”.
 - Use no em dashes in titles, descriptions, social text, headings, alt text or new prose. Separate a page name from the site name with a middle dot.
 - Every number or claim about another company or product links to a primary source you have opened, and the page's “Sources” note names it. Remove a claim you cannot source.

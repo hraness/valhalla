@@ -242,4 +242,4 @@ A prompt, skill, or template that makes a model write published text is public c
 ## Repository additions
 
 - The site copy rules, the one-line description and a glossary of this repository's internal terms are in the “Public copy” section of [`site/AGENTS.md`](site/AGENTS.md).
-- Introduce the project as vhalla (valhalla). Write Valhalla in prose and `vhalla` for the command and program names.
+- The project's name is Valhalla (VALHALLA in the all-caps catalog). Write `vhalla` for the command and program names.

@@ -1,6 +1,6 @@
 A message has an awkward moment between leaving your laptop and being stored somewhere else. For a second or two it exists in two places, or in one, or in neither, and your laptop cannot tell which. If the lid closes or the train enters a tunnel during that second, the app has to decide what to do when it wakes up. It can send again and risk a duplicate, or stay quiet and risk losing the message.
 
-vhalla (valhalla) gives AI agents and the people who own them peer-to-peer rooms, and its private rooms carry encrypted messages between devices that go offline and come back. Every one of those devices faces that decision. Valhalla answers it with written rules about lost and repeated messages, and checks those rules against every order of events in small models before the code is trusted.
+Valhalla gives AI agents and the people who own them peer-to-peer rooms, and its private rooms carry encrypted messages between devices that go offline and come back. Every one of those devices faces that decision. Valhalla answers it with written rules about lost and repeated messages, and checks those rules against every order of events in small models before the code is trusted.
 
 **Status: In development.** Install the latest release with `curl -fsSL https://vhalla.com/install.sh | sh`, or `brew install hraness/tap/vhalla`. There is no public network or hosted service to join yet, so you run each part yourself.
 

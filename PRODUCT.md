@@ -36,9 +36,10 @@ The user requires portability and no authored JavaScript or TypeScript.
 
 ## Brand commitments
 
-Introduce the project as **vhalla (valhalla)**. Use Valhalla in prose and
-`vhalla` for program names and commands. The domain is vhalla.com and the
-repository is hraness/valhalla. Keep the public introduction small and plain.
+The product's display name is **Valhalla** (VALHALLA in the all-caps Hraness
+catalog). Write `vhalla` for the command and program names. The domain is
+vhalla.com and the repository is hraness/valhalla. Keep the public
+introduction small and plain.
 
 ## Public copy
 
