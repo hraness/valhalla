@@ -283,8 +283,8 @@ on 2, 3, 5 and 7; 10 follows each first release.
   replies, and `status` reports an unavailable user manager instead of
   failing. Still open for step 5: the Tailcat overlay unit, an operator-run
   journey on a Linux host with a user manager, and release packaging.
-- 25 September 2026, step 2 listeners on
-  `claude/private-host-lan-listen-20260925`: `private-host init --listen`
+- 25 September 2026, step 2 listeners: #125 merged as `b519083`.
+  `private-host init --listen`
   accepts one unicast address of the machine (wildcard, multicast, broadcast
   and link-local refused) and `--advertise` up to four addresses clients
   dial instead, for a cloud server behind 1:1 NAT; `connection.json` and
