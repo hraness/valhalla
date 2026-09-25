@@ -110,8 +110,16 @@ contracts frozen in the readiness and pilot plans.
    separately, as today.
 4. **Imperceptible when idle.** Budgets, measured as sampled RSS and CPU time
    in the existing runtime harness: host at most 16 MB and no measurable CPU
-   at idle; client at most 12 MB and at most one relay request per minute at
-   idle; message arrival latency under one second while a session is active.
+   at idle; client at most one relay request per minute at idle; message
+   arrival latency under one second while a session is active. The client
+   memory budget was revised after measurement — see the 25 September log
+   entry: it is now the measured private-store/MLS process floor (about
+   13 MB on macOS, about 19 MB on Linux for the current link) plus at most
+   4 MB of delivery-runtime overhead, under a 24 MB absolute idle cap;
+   the original flat 12 MB was unreachable because the floor alone
+   exceeds it. The host's 16 MB is a settled-idle figure; a loaded guardrail
+   of 32 MB bounds transient delivery work (a Linux host sampled 20.2 MB
+   mid-delivery).
    Today's client polls with a fresh TLS exchange every 1 to 5 seconds while
    active and every 5 to 30 seconds while idle, which is where idle cost goes.
    The relay's page operation gains a bounded wait: the host holds an
@@ -783,3 +791,25 @@ remain exactly as implemented.
   `windows-latest`, a release archive once it links, and the Windows
   host service lifecycle.
 
+- 25 September 2026, decisions from measurement: the client memory
+  budget in decision 4 is revised from a flat 12 MB to the measured
+  private-store/MLS process floor — a one-shot `private create`
+  peaks at 13.0 MB on macOS before any delivery thread exists, and
+  the idle `agent-serve` adds only 0.1 to 0.9 MB on top (13.1 to
+  13.9 MB observed) — plus a 4 MB delivery-overhead allowance under
+  a 24 MB absolute idle cap. On Linux the same floor lands at about
+  19.4 MB, so the 12 MB figure was unreachable on either platform
+  without redesigning the MLS/store baseline; the floor itself is
+  the candidate for footprint work if it ever matters, not the
+  delivery path. The host budget stays 16 MB but is now specified
+  as settled idle, with a 32 MB loaded guardrail for transient
+  delivery work (Linux host: 15.9 MB idle, 20.2 MB mid-delivery).
+  Request budgets are unchanged: at most one relay request per
+  minute at idle, sub-second arrival while active — both met (one
+  held page connection, 0.15 to 0.7 second arrivals). Separately,
+  the Hegel model flake that `vhalla-custody`'s CI run surfaced —
+  `interleaved_faults_preserve_exact_open_and_sign_semantics`
+  underflowing `bytes.len() - 1` when an earlier rewrite emptied the
+  record — is fixed on the same day (#146): the tamper step appends
+  one drawn byte to an emptied record instead of drawing an offset
+  into nothing.
