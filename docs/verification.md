@@ -176,6 +176,23 @@ remain. Other cases challenge consumed backups, premature cleanup and admission
 using only matching config/completion files. Atomic durable replacement remains
 an assumption; these checks do not simulate physical filesystem power loss.
 
+The same transition system is proved in Verus in
+`verify/host-recovery/recovery.rs`: `TypeOK`, `RestoreEvidence`,
+`RestartEvidence`, `SealedAdmission`, `CompletedSnapshot` and
+`RefusalKeepsEvidence` are inductive over `normal.cfg`'s `Next`, strengthened
+by nine auxiliaries (a non-`none` marker, visible or durable, always stands
+next to the full backup set; the files/sync/cleanup phases pin the marker
+values their entries establish; and the post-commit window plus the written
+files carry the whole snapshot into `done`). The same invariant is also proved
+inductive over `uncertain.cfg`'s `AllowCorruption` faults, matching that
+configuration's positive TLC result. Each mutant is proved to reach its
+recorded violation — consuming a backup breaks `RestoreEvidence`, cleanup
+before sync and skipping the absent-marker barrier both break
+`RestartEvidence`, and pair-only admission breaks `SealedAdmission` — and a
+completion witness runs a seal through one interrupted recovery to `done`.
+This strengthens the model claims from finite enumeration to induction; it
+changes nothing about the production-correspondence obligations above.
+
 `verify/rooms-frontier` separates journal commitment, the two snapshot stores,
 the full application frontier and finalization replies. Four positive root
 schedules include empty batches and changes to only one store. Seven mutants
