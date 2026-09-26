@@ -12,6 +12,9 @@ mod endpoint;
 mod private_gateway;
 
 #[cfg(all(unix, feature = "experimental-private"))]
+mod local_network;
+
+#[cfg(all(unix, feature = "experimental-private"))]
 mod private_host;
 
 #[cfg(feature = "experimental-private")]
@@ -307,6 +310,48 @@ fn identity_error(
         IdentityError::Io(error) => format!(
             "Couldn't read or write {dir}: {error}\nIf this was init, check the folder before trying again: it may already hold a new key.\n→ vhalla identity show {dir}"
         ),
+    }
+}
+
+/// Plain words for an invitation the paired-chat commands can't use.
+#[cfg(feature = "experimental-network")]
+fn invitation_error(error: vhalla_session::InvitationError) -> String {
+    use vhalla_session::InvitationError;
+    match error {
+        InvitationError::Malformed => {
+            "That invitation is damaged or incomplete. Ask the owner to send it again\n→ vhalla help experimental"
+        }
+        InvitationError::Key => {
+            "That invitation names an invalid key, or invites its own owner\n→ vhalla help experimental"
+        }
+        InvitationError::Issuer => {
+            "That invitation was signed by a different owner than the one you named. Check the owner key\n→ vhalla help experimental"
+        }
+        InvitationError::Signature => {
+            "That invitation's signature doesn't check out. Don't use it; ask the owner for a new one\n→ vhalla help experimental"
+        }
+        InvitationError::Expired => {
+            "That invitation has expired. Ask the owner for a new one\n→ vhalla help experimental"
+        }
+    }
+    .into()
+}
+
+/// Plain words for the file that records invitations already used.
+#[cfg(feature = "experimental-network")]
+fn spent_error(error: vhalla_native::SpentError, path: &str) -> String {
+    use vhalla_native::SpentError;
+    match error {
+        SpentError::AlreadySpent => {
+            "That invitation was already used. Each one works once; ask the owner for a new one\n→ vhalla help experimental".into()
+        }
+        SpentError::Capacity => format!(
+            "{path} has recorded as many used invitations as it can hold. Use a new identity folder for more\n→ vhalla identity init NEW_DIR"
+        ),
+        SpentError::Malformed => format!(
+            "{path} is damaged, so vhalla can't tell which invitations were used. Nothing was sent. Keep the file\n→ vhalla help experimental"
+        ),
+        SpentError::Io => format!("Couldn't read or write {path}\n→ ls -l {path}"),
     }
 }
 
@@ -841,7 +886,7 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         return Err("see vhalla --help for experimental command arguments".into());
     }
     let identity = vhalla_identity::Identity::open(&args[2 + offset])
-        .map_err(|e| format!("identity: {e:?}"))?;
+        .map_err(|e| identity_error("show", std::path::Path::new(&args[2 + offset]), e))?;
     if mode == "invite" {
         // invite <dir> <invitee64> <realm32> <room32> <epoch> <expiry>
         let invitee: [u8; 32] = hex_bytes(text(3 + offset)?, 32)?
@@ -869,7 +914,7 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         getrandom::fill(&mut nonce).map_err(|_| "entropy unavailable".to_string())?;
         let invitation = identity
             .issue_invitation(invitee, realm, room, epoch, expires_at, nonce)
-            .map_err(|e| format!("invitation: {e:?}"))?;
+            .map_err(invitation_error)?;
         let encoded = hex(&invitation.encode());
         return emit(
             json,
@@ -897,8 +942,8 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
                 .unwrap_or("127.0.0.1");
             let mut listener = if invited {
                 let raw = hex_bytes(text(4 + offset)?, vhalla_native::INVITATION_BYTES)?;
-                let invitation = vhalla_native::Invitation::decode(&raw)
-                    .map_err(|e| format!("invitation: {e:?}"))?;
+                let invitation =
+                    vhalla_native::Invitation::decode(&raw).map_err(invitation_error)?;
                 Listener::bind_with_invitation_on(identity, invitation, listen)
                     .await
                     .map_err(|e| e.to_string())?
@@ -964,25 +1009,23 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             let (invitation, owner, route, body) = if invited {
                 // send <dir> invitation <hex> <owner64> <route> <expiry> <msg>
                 let raw = hex_bytes(text(4 + offset)?, vhalla_native::INVITATION_BYTES)?;
-                let invitation = vhalla_native::Invitation::decode(&raw)
-                    .map_err(|e| format!("invitation: {e:?}"))?;
+                let invitation =
+                    vhalla_native::Invitation::decode(&raw).map_err(invitation_error)?;
                 let owner = peer_app(text(5 + offset)?)?;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_err(|_| "clock before Unix epoch".to_string())?
                     .as_secs();
-                invitation
-                    .verify_at(owner, now)
-                    .map_err(|e| format!("invitation: {e:?}"))?;
+                invitation.verify_at(owner, now).map_err(invitation_error)?;
                 // One local redemption per identity: the nonce is consumed
                 // durably before dialing, so a verified invitation can never
                 // be replayed from this identity after a restart.
                 let spent_path = format!("{}.spent", text(2 + offset)?);
                 let mut spent = vhalla_native::SpentFile::open(&spent_path)
-                    .map_err(|e| format!("spent file: {e:?}"))?;
+                    .map_err(|e| spent_error(e, &spent_path))?;
                 spent
                     .consume(invitation.claims().nonce)
-                    .map_err(|e| format!("invitation already spent: {e:?}"))?;
+                    .map_err(|e| spent_error(e, &spent_path))?;
                 let expires = text(7 + offset)?
                     .parse()
                     .map_err(|_| "invalid expiry".to_string())?;
@@ -1093,6 +1136,37 @@ mod identity_copy_tests {
             ),
             "The folder that should hold /tmp/missing/me doesn't exist. Nothing was created\n→ mkdir -p /tmp/missing"
         );
+    }
+
+    #[cfg(feature = "experimental-network")]
+    #[test]
+    fn invitation_and_spent_errors_read_as_sentences() {
+        use vhalla_native::SpentError;
+        use vhalla_session::InvitationError;
+        let mut texts: Vec<String> = [
+            InvitationError::Malformed,
+            InvitationError::Key,
+            InvitationError::Issuer,
+            InvitationError::Signature,
+            InvitationError::Expired,
+        ]
+        .into_iter()
+        .map(invitation_error)
+        .collect();
+        for error in [
+            SpentError::AlreadySpent,
+            SpentError::Capacity,
+            SpentError::Malformed,
+            SpentError::Io,
+        ] {
+            texts.push(spent_error(error, "/tmp/me.spent"));
+        }
+        for text in texts {
+            let rendered = cli::render_error(&text, cli::Audience::Human, PLAIN);
+            assert!(rendered.starts_with("✗ "), "{rendered}");
+            assert_eq!(rendered.matches("\n→ ").count(), 1, "{rendered}");
+            assert!(!rendered.contains("Error"), "{rendered}");
+        }
     }
 
     #[test]

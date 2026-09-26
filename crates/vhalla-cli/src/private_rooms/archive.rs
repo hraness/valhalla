@@ -3,7 +3,7 @@ use super::*;
 use files::archive::{Bounds, Reader, Writer};
 use vhalla_private_native::archive::{ArchiveExporter, ArchiveInput, ArchiveSession};
 
-const REFUSED: &str = "archive operation refused or interrupted; preserve source file and all stores; resume only exact receiving state with the SAME archive, or use archive-inspect to reconcile a completed finalization; never reset or activate an archive";
+pub(super) const REFUSED: &str = "archive operation refused or interrupted; preserve source file and all stores; resume only exact receiving state with the SAME archive, or use archive-inspect to reconcile a completed finalization; never reset or activate an archive";
 
 pub(super) async fn execute(args: Args, identity: Identity) -> Result<(), String> {
     if args.command == "archive-export" {

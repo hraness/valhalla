@@ -107,12 +107,13 @@ impl Style {
     }
 }
 
+/// Ends the first line as a sentence. The case is left alone: a line may
+/// start with a folder name, and changing it would name a different folder.
 fn sentence(line: &str) -> String {
-    let mut chars = line.chars();
-    let mut text: String = match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => return String::new(),
-    };
+    let mut text = line.to_owned();
+    if text.is_empty() {
+        return text;
+    }
     if !text.ends_with(['.', '?', '!', ':']) {
         text.push('.');
     }
@@ -126,6 +127,20 @@ fn sentence(line: &str) -> String {
 pub(crate) fn render_error(error: &str, audience: Audience, style: Style) -> String {
     if audience != Audience::Human {
         return format!("vhalla: {error}\n");
+    }
+    let error = plain_refusal(error).unwrap_or(error);
+    // Some commands answer a wrong subcommand with their usage lines. Keep
+    // them exactly as written so they can be copied.
+    let first = error.lines().next().unwrap_or_default();
+    if first.starts_with("vhalla ") || first.starts_with("usage: ") {
+        let mut text = format!(
+            "{} That isn't a command vhalla knows. Usage:\n",
+            style.fail()
+        );
+        for line in error.lines() {
+            text.push_str(&format!("  {line}\n"));
+        }
+        return text;
     }
     let mut lines = error.lines();
     let mut text = format!(
@@ -143,6 +158,23 @@ pub(crate) fn render_error(error: &str, audience: Audience, style: Style) -> Str
         }
     }
     text
+}
+
+/// Plain words for the fixed refusal lines private rooms print. Scripts and
+/// agents keep the exact line; only people see the translation.
+fn plain_refusal(error: &str) -> Option<&'static str> {
+    #[cfg(all(unix, feature = "experimental-private"))]
+    if let Some(text) = crate::private_host::plain_refusal(error)
+        .or_else(|| crate::private_gateway::plain_refusal(error))
+    {
+        return Some(text);
+    }
+    #[cfg(feature = "experimental-private")]
+    if let Some(text) = crate::private_rooms::plain_refusal(error) {
+        return Some(text);
+    }
+    let _ = error;
+    None
 }
 
 pub(crate) fn report_error(error: &str) {
@@ -220,6 +252,26 @@ pub(crate) fn unknown_command(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn errors_keep_folder_case_and_usage_lines_verbatim() {
+        let plain = Style {
+            color: false,
+            ascii: false,
+        };
+        assert_eq!(
+            render_error(
+                "me already exists\n→ vhalla identity init NEW_DIR",
+                Audience::Human,
+                plain
+            ),
+            "✗ me already exists.\n→ vhalla identity init NEW_DIR\n"
+        );
+        assert_eq!(
+            render_error("vhalla private x ID\n  --flag VALUE", Audience::Human, plain),
+            "✗ That isn't a command vhalla knows. Usage:\n  vhalla private x ID\n    --flag VALUE\n"
+        );
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 
@@ -275,7 +327,7 @@ mod tests {
                 Audience::Human,
                 PLAIN
             ),
-            "✗ Local relay bind refused.\n  Keep the host folder.\n→ vhalla private-host status HOME\n"
+            "✗ local relay bind refused.\n  Keep the host folder.\n→ vhalla private-host status HOME\n"
         );
     }
 

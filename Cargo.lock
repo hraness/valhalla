@@ -6325,6 +6325,7 @@ dependencies = [
  "vhalla-rooms-node",
  "vhalla-rooms-store",
  "vhalla-rooms-tui",
+ "vhalla-session",
  "vhalla-social",
  "vhalla-social-store",
  "zeroize",

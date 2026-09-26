@@ -20,7 +20,7 @@ const SUPERVISOR_ROTATED: &str = "supervisor.log.1";
 /// Live supervisor output bound; one rotated generation is kept alongside it.
 const SUPERVISOR_LIMIT: u64 = 256 * 1024;
 const LINE_MAX: usize = 512;
-const REFUSED: &str = "event log refused; preserve the owner-private home";
+pub(super) const REFUSED: &str = "event log refused; preserve the owner-private home";
 
 fn owner(dir: &Path) -> Result<(fs::File, Owner), String> {
     let (directory, owner) = custody::open_private_directory(dir).map_err(|_| REFUSED)?;

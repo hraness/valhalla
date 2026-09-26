@@ -31,6 +31,43 @@ mod files;
 mod invite;
 mod relay_tls;
 
+/// Plain words for a person at a terminal. Scripts and agents keep the exact
+/// refusal text, which qualification tools match. Each keeps the rule that
+/// matters: nothing is reset or recreated to get past a refusal.
+pub(crate) fn plain_refusal(error: &str) -> Option<&'static str> {
+    #[cfg(unix)]
+    if error == agent::REFUSED {
+        return Some(
+            "The agent couldn't start, or it lost its connection\n\
+             Keep the grant receipt and the room, and finish any step that may be half done. Ask the host for a new grant; never delete a receipt to start over.\n\
+             → vhalla help private",
+        );
+    }
+    Some(match error {
+        REFUSED => {
+            "The private room couldn't finish that step. Nothing was reset\n\
+             Keep the store as it is and open it again. Never reset or recreate a device to get past this.\n\
+             → vhalla private inspect ID STORE --out PRIVATE_JSON"
+        }
+        agent_delivery::REFUSED => {
+            "The host couldn't deliver to the agent\n\
+             Keep the room, the queue and its delivery records. Reconcile them before the next granted launch.\n\
+             → vhalla help private"
+        }
+        delivery_resume::REFUSED => {
+            "Couldn't resume delivery\n\
+             Keep the queue and its delivery records. Stop any running agent-serve, then retry with the same profile.\n\
+             → vhalla help private"
+        }
+        archive::REFUSED => {
+            "The archive step was refused or interrupted\n\
+             Keep the source file and every store. Resume with the same archive, or check a finished one with archive-inspect. Never reset or activate an archive.\n\
+             → vhalla help private"
+        }
+        _ => return None,
+    })
+}
+
 pub const HELP: &str = "vhalla private agent-serve ID STORE --grant PRIVATE_JSON [--delivery PRIVATE_JSON]
 vhalla private agent-launch ID STORE --policy PRIVATE_JSON --session-dir PRIVATE_DIR [--delivery PRIVATE_JSON]
 vhalla private delivery-init ID STORE --config PRIVATE_JSON
@@ -417,10 +454,19 @@ pub fn run(raw: &[OsString]) -> Result<(), String> {
         return Ok(());
     }
     let args = Args::parse(raw)?;
+    #[cfg(unix)]
+    let addr = args
+        .flags
+        .get("addr")
+        .and_then(|value| value.to_str())
+        .map(str::to_owned);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .map_err(|_| "private runtime unavailable")?;
-    runtime.block_on(execute(args))?;
+    let result = runtime.block_on(execute(args));
+    #[cfg(unix)]
+    let result = result.map_err(|error| explain_unreachable(error, addr.as_deref()));
+    result?;
     println!("private operation completed; consult the retained result for delivery status");
     Ok(())
 }
@@ -1227,11 +1273,43 @@ fn relay_transport(
     }
 }
 
+const NET_CONNECT: &str = "relay listener unreachable or connection refused";
+const NET_TIMEOUT: &str = "relay connection exceeded its bounded deadline";
+const NET_UNAVAILABLE: &str = "relay storage or socket operation failed";
+
+/// When a relay on your network can't be reached and macOS Local Network
+/// access looks off, say so and point at the setting.
+#[cfg(unix)]
+fn explain_unreachable(error: String, addr: Option<&str>) -> String {
+    // Only people get the explanation; scripts keep the exact line.
+    if !matches!(error.as_str(), NET_CONNECT | NET_TIMEOUT | NET_UNAVAILABLE)
+        || crate::cli::audience() != crate::cli::Audience::Human
+    {
+        return error;
+    }
+    let Some(address) = addr
+        .and_then(|text| crate::endpoint::Endpoint::parse(text).ok())
+        .and_then(|endpoint| endpoint.resolve().ok())
+    else {
+        return error;
+    };
+    if !crate::local_network::looks_blocked(address) {
+        return error;
+    }
+    use std::io::IsTerminal;
+    let requester = if std::io::stderr().is_terminal() {
+        crate::local_network::terminal_app(&|name| std::env::var(name).ok())
+    } else {
+        "vhalla".to_owned()
+    };
+    crate::local_network::local_network_recovery(&requester, address)
+}
+
 fn net_error(error: vhalla_private_native::relay::net::NetError) -> String {
     use vhalla_private_native::relay::net::NetError;
     match error {
-        NetError::Connect => "relay listener unreachable or connection refused",
-        NetError::Timeout => "relay connection exceeded its bounded deadline",
+        NetError::Connect => NET_CONNECT,
+        NetError::Timeout => NET_TIMEOUT,
         NetError::Denied => "relay mailbox refused the presented token",
         NetError::Conflict => {
             "the same relay sequence or operation was presented with different bytes"
@@ -1240,7 +1318,7 @@ fn net_error(error: vhalla_private_native::relay::net::NetError) -> String {
         NetError::Bounds => "relay input is malformed, noncanonical or exceeds a fixed bound",
         NetError::Scope => "relay item or mailbox belongs to another explicit namespace",
         NetError::Malformed => "relay answered with a noncanonical frame or status",
-        NetError::Unavailable => "relay storage or socket operation failed",
+        NetError::Unavailable => NET_UNAVAILABLE,
     }
     .into()
 }
@@ -1377,4 +1455,39 @@ fn membership(snapshot: &MembershipSnapshot) -> Value {
         "anchor_record":hex(&snapshot.anchor().encode()),"anchor_owner_device":hex(anchor_owner.as_bytes()),
         "local":enrollment(snapshot.local()),"owner":enrollment(snapshot.owner()),"successions":successions,
         "recipients":snapshot.members().iter().map(enrollment).collect::<Vec<_>>()})
+}
+
+#[cfg(test)]
+mod plain_refusal_tests {
+    use super::*;
+    use crate::cli::{render_error, Audience, Style};
+
+    const PLAIN: Style = Style {
+        color: false,
+        ascii: false,
+    };
+
+    #[test]
+    fn every_fixed_refusal_reads_as_a_sentence_with_one_next_step_for_people() {
+        let mut refusals = vec![
+            REFUSED,
+            agent_delivery::REFUSED,
+            delivery_resume::REFUSED,
+            archive::REFUSED,
+        ];
+        #[cfg(unix)]
+        refusals.push(agent::REFUSED);
+        for refusal in refusals {
+            let human = render_error(refusal, Audience::Human, PLAIN);
+            assert!(human.starts_with("✗ "), "{human}");
+            assert!(!human.contains("refused;"), "{human}");
+            assert_eq!(human.matches("\n→ ").count(), 1, "{human}");
+            // Scripts and qualification tools keep the exact line.
+            assert_eq!(
+                render_error(refusal, Audience::Quiet, PLAIN),
+                format!("vhalla: {refusal}\n")
+            );
+        }
+        assert_eq!(plain_refusal("something else"), None);
+    }
 }
