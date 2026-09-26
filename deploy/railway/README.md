@@ -15,7 +15,12 @@ mechanics and the two operational findings (keep container stops graceful).
 
 ## One-click deploy
 
-<!-- TEMPLATE_URL -->
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/valhalla-private-host?utm_medium=integration&utm_source=button&utm_campaign=valhalla-private-host)
+
+The published template wires steps 1–3 below for you: it deploys this
+repository's Dockerfile, attaches a `/data` volume and creates a TCP proxy on
+port `19473`. The `APP_PORT` and `HOME_DIR` variables stay empty for the
+defaults. Continue at step 4 for first boot and client material.
 
 ## Deploy by hand
 
