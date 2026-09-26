@@ -1272,4 +1272,344 @@ proof fn completion_witness()
         .insert(1));
 }
 
+
+// ---------------------------------------------------------------------
+// Liveness: AllRequestsAnswered under the spec's declared weak fairness.
+//
+// `Fair` covers Request, Expire, Resolve, Prepare, Reply and Publish —
+// every action except Arrival. The proof is the WF1 shape: (1) at every
+// reachable non-goal state a covered action's guard holds, so a fair
+// behavior cannot stall below the goal; (2) every safe-config step —
+// including the uncovered Arrival — strictly decreases a bounded
+// well-founded measure; and (3) measure 0 implies replied = Requests.
+// The phase "lost" is unreachable under the safe configuration (only the
+// drop-empty mutant produces it), and is excluded by `linv`.
+// ---------------------------------------------------------------------
+
+/// The body of AllRequestsAnswered: every request has been replied to.
+pub open spec fn answered(s: State) -> bool {
+    s.replied =~= requests()
+}
+
+/// Phase rank for the progress measure: distance to the next idle.
+/// A held request is furthest — it may need Expire before Resolve, which
+/// is why held refines on (expired || arrived) and on !expired.
+pub open spec fn hphase(s: State) -> int {
+    if s.phase == ph_idle() {
+        0
+    } else if s.phase == ph_publishing() {
+        1
+    } else if s.phase == ph_prepared() {
+        2
+    } else if s.phase == ph_selected() {
+        3
+    } else if s.phase == ph_held() {
+        (if s.expired || s.arrived {
+            4int
+        } else {
+            5int
+        }) + (if !s.expired {
+            1int
+        } else {
+            0int
+        })
+    } else {
+        7
+    }
+}
+
+/// Well-founded measure: 7 per not-yet-issued request (worst case Request
+/// + Expire + Resolve + Prepare + Reply + Publish), plus the in-flight
+/// phase rank, plus one for a pending arrival.
+pub open spec fn measure(s: State) -> int {
+    7 * (request_count() - s.current) + hphase(s) + (if s.arrived {
+        0int
+    } else {
+        1int
+    })
+}
+
+/// The liveness invariant: the safety invariant plus `phase != "lost"`
+/// (only the drop-empty mutant produces lost; the safe Request goes to
+/// "held").
+pub open spec fn linv(s: State) -> bool {
+    &&& inv(s)
+    &&& s.phase != ph_lost()
+}
+
+/// Guard-level covered availability (the enabledness half of WF).
+pub open spec fn covered_enabled(s: State) -> bool {
+    ||| (s.phase == ph_idle() && s.current < request_count())
+    ||| (s.phase == ph_held() && !s.expired)
+    ||| (s.phase == ph_held() && (s.arrived || s.expired))
+    ||| s.phase == ph_selected()
+    ||| s.phase == ph_prepared()
+    ||| s.phase == ph_publishing()
+}
+
+/// A covered (WF-guarded) step under the safe configuration.
+pub open spec fn wf_step(pre: State, post: State) -> bool {
+    ||| request(false, pre, post)
+    ||| expire(pre, post)
+    ||| resolve(false, pre, post)
+    ||| prepare(false, pre, post)
+    ||| reply(false, false, pre, post)
+    ||| publish(pre, post)
+}
+
+proof fn measure_nonneg(s: State)
+    requires
+        linv(s),
+    ensures
+        measure(s) >= 0,
+{
+    assert(type_ok(s));
+    assert(0 <= s.current <= request_count());
+    assert(hphase(s) >= 0);
+}
+
+/// linv is inductive: init has phase "idle" and no safe action writes
+/// "lost".
+proof fn init_linv(s: State)
+    requires
+        init(s),
+    ensures
+        linv(s),
+{
+    init_inv(s);
+}
+
+proof fn step_linv(pre: State, post: State)
+    requires
+        linv(pre),
+        next(pre, post),
+    ensures
+        linv(post),
+{
+    step_inv(pre, post);
+    assert(post.phase != ph_lost()) by {
+        if request(false, pre, post) {
+            assert(post.phase == ph_held());
+        }
+    }
+}
+
+/// measure 0 forces current = RequestCount and phase = idle, and then
+/// ReplyCustody (issued = replied ∪ owned, disjointly; owned is empty at
+/// idle) with issued_frontier gives replied = Requests.
+proof fn measure_zero_is_answered(s: State)
+    requires
+        linv(s),
+        measure(s) == 0,
+    ensures
+        answered(s),
+{
+    assert(type_ok(s));
+    assert(0 <= s.current <= request_count());
+    assert(hphase(s) >= 0);
+    assert(s.current == request_count());
+    assert(s.phase == ph_idle());
+    assert(reply_custody(s));
+    assert(owned_reply(s) =~= Set::empty());
+    assert(s.issued =~= s.replied);
+    assert(issued_frontier(s));
+    assert forall|r: int| s.issued.contains(r) implies 1 <= r <= s.current by {
+    }
+    assert forall|r: int| 1 <= r <= s.current implies s.issued.contains(r) by {
+    }
+    assert forall|r: int| s.issued.contains(r) implies requests().contains(r) by {
+    }
+    assert forall|r: int| requests().contains(r) implies s.issued.contains(r) by {
+        assert(1 <= r <= s.current);
+    }
+    assert(s.issued =~= requests());
+}
+
+/// Every safe-config step strictly decreases the measure — Request spends
+/// part of the per-request budget, Expire/Resolve/Prepare/Reply/Publish
+/// walk the phase rank down, and Arrival (uncovered) still pays its bit.
+proof fn real_step_decreases(pre: State, post: State)
+    requires
+        linv(pre),
+        next(pre, post),
+    ensures
+        measure(post) < measure(pre),
+{
+    if request(false, pre, post) {
+        assert(post.current == pre.current + 1);
+        assert(post.phase == ph_held());
+        assert(!post.expired);
+        assert(post.arrived == pre.arrived);
+        assert(hphase(post) == if post.arrived { 5int } else { 6int });
+    } else if arrival(pre, post) {
+        assert(!pre.arrived && post.arrived);
+        assert(post.phase == pre.phase && post.current == pre.current);
+        assert(post.expired == pre.expired);
+        assert(hphase(post) <= hphase(pre)) by {
+            assert(pre.phase == ph_held() ==> !pre.expired ==> hphase(pre) >= 5);
+            assert(pre.phase == ph_held() ==> hphase(post) <= hphase(pre) - (if pre.expired { 0int } else { 1int }));
+        }
+        assert(measure(post) <= measure(pre) - 1);
+    } else if expire(pre, post) {
+        assert(pre.phase == ph_held() && !pre.expired && post.expired);
+        assert(post.phase == ph_held());
+        assert(hphase(pre) >= 5 && hphase(post) <= 4);
+    } else if resolve(false, pre, post) {
+        assert(pre.phase == ph_held());
+        assert(post.phase == ph_selected());
+        assert(hphase(pre) >= 4 && hphase(post) == 3);
+    } else if prepare(false, pre, post) {
+        assert(pre.phase == ph_selected() && post.phase == ph_prepared());
+    } else if reply(false, false, pre, post) {
+        assert(pre.phase == ph_prepared());
+        assert(post.phase == ph_publishing() || post.phase == ph_idle());
+    } else if publish(pre, post) {
+        assert(pre.phase == ph_publishing() && post.phase == ph_idle());
+    } else {
+        assert(false);
+    }
+}
+
+/// At every reachable non-goal state a covered guard holds: non-idle
+/// phases have a covered action, and idle with current = RequestCount is
+/// already the goal.
+proof fn covered_available(s: State)
+    requires
+        linv(s),
+        !answered(s),
+    ensures
+        covered_enabled(s),
+{
+    assert(type_ok(s));
+    if s.phase == ph_idle() {
+        if s.current < request_count() {
+        } else {
+            assert(s.current == request_count());
+            assert(reply_custody(s));
+            assert(owned_reply(s) =~= Set::empty());
+            assert(s.replied =~= s.issued);
+            assert(issued_frontier(s));
+            assert forall|r: int| requests().contains(r) implies s.replied.contains(r) by {
+                assert(s.issued.contains(r));
+            }
+            assert forall|r: int| s.replied.contains(r) implies requests().contains(r) by {
+                assert(s.replied.subset_of(s.issued));
+                assert(s.issued.subset_of(requests()));
+            }
+            assert(false);
+        }
+    }
+}
+
+/// Every state of a safe-config trace satisfies linv (the safety
+/// invariant plus phase != "lost").
+proof fn trace_satisfies_linv(t: Seq<State>)
+    requires
+        is_trace(t),
+    ensures
+        forall|i: int| 0 <= i < t.len() ==> #[trigger] linv(t[i]),
+    decreases t.len(),
+{
+    if t.len() > 1 {
+        let prefix = t.drop_last();
+        assert(is_trace(prefix)) by {
+            assert forall|i: int| 0 <= i < prefix.len() - 1 implies #[trigger] next(
+                prefix[i],
+                prefix[i + 1],
+            ) by {
+                assert(prefix[i] == t[i]);
+                assert(prefix[i + 1] == t[i + 1]);
+            }
+        }
+        trace_satisfies_linv(prefix);
+        let n = t.len() - 1;
+        let k = n - 1;
+        assert(is_trace(t));
+        assert(0 <= k && k + 1 < t.len());
+        assert(next(t[k], t[k + 1]));
+        assert(linv(prefix[k]));
+        assert(prefix[k] == t[k]);
+        assert(linv(t[k]));
+        step_linv(t[k], t[k + 1]);
+        assert forall|i: int| 0 <= i < t.len() implies #[trigger] linv(t[i]) by {
+            if i == n {
+            } else {
+                assert(prefix[i] == t[i]);
+                assert(linv(prefix[i]));
+            }
+        }
+    } else {
+        init_linv(t[0]);
+        assert forall|i: int| 0 <= i < t.len() implies #[trigger] linv(t[i]) by {
+            assert(i == 0);
+        }
+    }
+}
+
+/// Every trace step decreases the measure — under the safe configuration
+/// every action is progress: covered actions walk the phase rank down and
+/// Arrival pays its pending bit.
+proof fn measure_decreases_along(t: Seq<State>)
+    requires
+        is_trace(t),
+    ensures
+        forall|i: int| 0 <= i < t.len() ==> #[trigger] measure(t[i]) <= measure(t[0]) - i,
+    decreases t.len(),
+{
+    trace_satisfies_linv(t);
+    if t.len() > 1 {
+        let prefix = t.drop_last();
+        assert(is_trace(prefix)) by {
+            assert forall|i: int| 0 <= i < prefix.len() - 1 implies #[trigger] next(
+                prefix[i],
+                prefix[i + 1],
+            ) by {
+                assert(prefix[i] == t[i]);
+                assert(prefix[i + 1] == t[i + 1]);
+            }
+        }
+        measure_decreases_along(prefix);
+        let n = t.len() - 1;
+        let k = n - 1;
+        assert(is_trace(t));
+        assert(0 <= k && k + 1 < t.len());
+        assert(next(t[k], t[k + 1]));
+        assert(linv(t[k]));
+        real_step_decreases(t[k], t[k + 1]);
+        assert(measure(t[n]) <= measure(t[0]) - n) by {
+            assert(measure(prefix[n - 1]) <= measure(prefix[0]) - (n - 1));
+            assert(prefix[n - 1] == t[n - 1] && prefix[0] == t[0]);
+        }
+        assert forall|i: int| 0 <= i < t.len() implies #[trigger] measure(t[i]) <= measure(t[0]) - i by {
+            if i == n {
+            } else {
+                assert(prefix[i] == t[i]);
+                assert(measure(prefix[i]) <= measure(prefix[0]) - i);
+            }
+        }
+    } else {
+    }
+}
+
+/// AllRequestsAnswered: any trace reaches replied = Requests by index
+/// measure(t[0]). Under the spec's weak fairness every behavior reaches
+/// the goal — a non-goal state has a covered action enabled which weak
+/// fairness eventually fires, and every step strictly decreases the
+/// bounded measure.
+proof fn all_requests_answered(t: Seq<State>)
+    requires
+        is_trace(t),
+        t.len() > measure(t[0]),
+    ensures
+        answered(t[measure(t[0])]),
+{
+    measure_decreases_along(t);
+    trace_satisfies_linv(t);
+    let i = measure(t[0]);
+    assert(0 <= i < t.len());
+    assert(measure(t[i]) <= 0);
+    measure_nonneg(t[i]);
+    assert(measure(t[i]) == 0);
+    measure_zero_is_answered(t[i]);
+}
 }

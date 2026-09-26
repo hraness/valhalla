@@ -220,9 +220,14 @@ The deadline mutant's checked property is temporal and outside this safety
 proof; its proof reaches the recorded stuck state where deadline resolution
 and reply are both disabled. A completion witness answers one request live
 through publication and the second through the full-budget tombstone
-fallback. This strengthens the model claims from finite enumeration to
-induction; it changes nothing about the production-correspondence
-obligations above.
+fallback. `AllRequestsAnswered` is also covered by a progress-measure
+argument: every reachable non-goal state has a WF-covered action enabled
+(`covered_available`), every safe step — including the uncovered Arrival —
+strictly decreases a bounded measure (`real_step_decreases`), and measure
+zero implies `replied = Requests` — so under the spec's declared weak
+fairness every behavior answers all requests within 15 real steps. This
+strengthens the model claims from finite enumeration to induction; it
+changes nothing about the production-correspondence obligations above.
 
 `verify/host-recovery` checks sealed maintenance and repeated recovery with
 process interruption distinguished from power loss. The model found that a
