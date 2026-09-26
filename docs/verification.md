@@ -284,6 +284,25 @@ completion, reopens both stores, replaces the token under the same credential
 ID, exhausts/resumes the sender and recovers the original position with one
 charge. SQLite atomicity and successful durability barriers remain assumptions.
 
+The same transition system is proved in Verus in
+`verify/relay-quota/quota.rs`: all six checked invariants (`TypeOK`,
+`ItemsChargedTogether`, `RetryKeepsPositionAndCharge`, `StableIdentitySpend`,
+`QuotaBound`, `ReceiptAfterDurableRetention`) are inductive over
+`normal.cfg`'s `Next`, strengthened by nine auxiliaries (the in-flight
+`duplicate` flag records committed membership, a non-duplicate request keeps
+its Begin quota freshness and byte headroom, staged item/charge snapshots
+track the durable ledger per phase, the acted item is committed at
+barrier/reply, a reply-phase barrier snapshot equals the committed items,
+distinct committed items have distinct owners, `head` counts committed items,
+committed positions are positive, and every receipt refers to a committed
+item). Each mutant is proved to reach its recorded violation — early charge
+breaks `ItemsChargedTogether`, duplicate charge and moved duplicate position
+break `RetryKeepsPositionAndCharge`, token reset breaks `StableIdentitySpend`,
+early receipt breaks `ReceiptAfterDurableRetention` — and a completion
+witness commits both items with durable receipts. This strengthens the model
+claims from finite enumeration to induction; the correspondence to production
+is unchanged and still rests on the named TLS regression.
+
 `verify/private-control` checks sequence-bound owner attribution across two
 handoffs, grants pinned to their carrying sequence, observation-only authority,
 known-history fork evidence and quarantine across uncertain publication and
