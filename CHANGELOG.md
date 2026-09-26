@@ -5,13 +5,14 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
-## 0.2.6 - 2026-09-26
+## 0.2.7 - 2026-09-26
 
 `vhalla` now explains itself in plain words. Help is grouped by task, a bare
 `vhalla` prints a short overview, and errors name the cause and one next
 command. Before a private host listens beyond this computer, macOS network
 permissions are explained first. Rooms nodes can also dial peers by name or
-IPv6 address.
+IPv6 address. Tag v0.2.6 was not published, so this section covers every
+change since v0.2.5.
 
 - `vhalla` with no arguments prints a short overview. `vhalla --help` is
   grouped by task and lists only the commands this build has; `vhalla help
