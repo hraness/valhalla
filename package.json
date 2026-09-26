@@ -4,6 +4,8 @@
   "type": "module",
   "packageManager": "bun@1.3.14",
   "scripts": {
+    "kb:search": "bunx --bun --package https://github.com/hraness/wordcell/releases/download/v0.22.0/hraness-wordcell-0.22.0.tgz wordcell search --root kb --mode exact --rerank typesafe --rerank-limit 25",
+    "kb:search:local": "bunx --bun --package https://github.com/hraness/wordcell/releases/download/v0.22.0/hraness-wordcell-0.22.0.tgz wordcell search --root kb --mode exact",
     "check:site": "bun test site && bun run build:site",
     "build:site": "bun run site/build.ts",
     "generate:og": "bun site/generate-og.tsx"
