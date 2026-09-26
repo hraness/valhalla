@@ -213,6 +213,8 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+      # The page title is "Valhalla <tag>" and its notes are the tag's
+      # CHANGELOG.md section plus generated install/verify text and identity.
       - name: Verify gates, stage draft, and publish complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
