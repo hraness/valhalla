@@ -291,6 +291,7 @@ pub(crate) fn resolve(args: &[std::ffi::OsString]) -> Option<Help> {
     match args {
         [] => Some(Help::Page(overview())),
         [only] if is_help_flag(only) || only == "help" => Some(Help::Page(root())),
+        [help, flag] if help == "help" && is_help_flag(flag) => Some(Help::Page(root())),
         [help, name] if help == "help" => {
             let name = name.to_string_lossy();
             Some(topic(&name).map_or_else(|| Help::UnknownTopic(name.into_owned()), Help::Page))
@@ -393,6 +394,11 @@ mod tests {
             Some(Help::UnknownTopic("nope".into()))
         );
         assert_eq!(resolve(&args(&["nope", "--help"])), None);
+        assert_eq!(
+            resolve(&args(&["help", "--help"])),
+            Some(Help::Page(root()))
+        );
+        assert_eq!(resolve(&args(&["help", "-h"])), Some(Help::Page(root())));
         assert_eq!(resolve(&args(&["identity", "show", "/x"])), None);
         assert_eq!(resolve(&args(&["public", "activity", "--help"])), None);
     }
