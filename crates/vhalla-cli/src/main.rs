@@ -288,6 +288,19 @@ fn identity_error(
         IdentityError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists => format!(
             "{dir} already exists. Choose a new folder; an existing identity is never replaced\n→ vhalla identity {action} NEW_DIR"
         ),
+        IdentityError::Io(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && matches!(action, "init" | "restore") =>
+        {
+            let parent = directory
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(std::path::Path::new("."));
+            format!(
+                "The folder that should hold {dir} doesn't exist. Nothing was created\n→ mkdir -p {}",
+                parent.display()
+            )
+        }
         IdentityError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => format!(
             "There's no identity in {dir}\n→ vhalla identity init {dir}"
         ),
@@ -1071,6 +1084,14 @@ mod identity_copy_tests {
                 PLAIN
             ),
             "✗ There's no identity in /tmp/me.\n→ vhalla identity init /tmp/me\n"
+        );
+        assert_eq!(
+            identity_error(
+                "init",
+                std::path::Path::new("/tmp/missing/me"),
+                IdentityError::Io(std::io::ErrorKind::NotFound.into())
+            ),
+            "The folder that should hold /tmp/missing/me doesn't exist. Nothing was created\n→ mkdir -p /tmp/missing"
         );
     }
 
