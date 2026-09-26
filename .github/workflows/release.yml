@@ -88,11 +88,13 @@ jobs:
         run: |
           set -euo pipefail
           cli="./target/${{ matrix.target }}/release/vhalla"
-          run_prefix=()
+          # An empty unquoted prefix expands to nothing, so the native path is
+          # unchanged; quoting it would pass an empty argv[0] and break exec.
+          run_prefix=""
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            run_prefix=(qemu-aarch64-static)
+            run_prefix="qemu-aarch64-static"
           fi
-          help="$("${run_prefix[@]}" "$cli" --help)"
+          help="$($run_prefix "$cli" --help)"
           printf '%s\n' "$help"
           [[ "$help" == *"vhalla experimental "* ]]
           [[ "$help" == *"vhalla social "* ]]
@@ -102,7 +104,7 @@ jobs:
           [[ "$help" == *"vhalla private-host "* ]]
           [[ "$help" == *"vhalla private-gateway "* ]]
           [[ "$help" != *"vhalla game replay "* ]]
-          if "${run_prefix[@]}" "$cli" game --help > game-disabled.txt 2>&1; then
+          if $run_prefix "$cli" game --help > game-disabled.txt 2>&1; then
             cat game-disabled.txt
             exit 1
           fi
