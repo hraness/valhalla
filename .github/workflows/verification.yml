@@ -77,3 +77,4 @@ jobs:
           ./verus-x86-linux/verus --crate-type=lib verify/private-delivery/delivery.rs
           ./verus-x86-linux/verus --crate-type=lib verify/private-admission/admission.rs
           ./verus-x86-linux/verus --crate-type=lib verify/private-generation/generation.rs
+          ./verus-x86-linux/verus --crate-type=lib verify/rooms-held-reply/held.rs
