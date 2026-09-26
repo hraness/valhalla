@@ -21,7 +21,7 @@ use vhalla_private_native::client::{
     RoomSession,
 };
 
-const REFUSED: &str = "agent launch or transport refused; preserve the grant receipt and original room, reconcile uncertain operations, and obtain a new explicit host grant; never delete a receipt to restart";
+pub(super) const REFUSED: &str = "agent launch or transport refused; preserve the grant receipt and original room, reconcile uncertain operations, and obtain a new explicit host grant; never delete a receipt to restart";
 const HELP: &str = "vhalla private agent-serve ID STORE --grant PRIVATE_JSON [--delivery PRIVATE_JSON] (cooperating-host MCP over pipes; one-use host grant required)";
 
 pub(super) fn run(raw: &[OsString]) -> Result<(), String> {

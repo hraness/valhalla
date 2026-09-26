@@ -22,7 +22,7 @@ use vhalla_rooms::{
 use vhalla_rooms_store::Store as RoomStore;
 use vhalla_social::{control::ControlView, AgentId, OwnerId, RecordId};
 
-pub const HELP: &str = "Experimental local room directory (build: --features experimental-rooms):
+pub const HELP: &str = "A local room directory with posting budgets (experimental):
 vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECONDS]
   init DIRECTORY64 BASE_COST WINDOW_SEC MAX_IN_WINDOW EPOCH_SEC MAX_LIFETIME [ELIGIBLE_OWNER_CSV]
   grant OWNER_KEYDIR OWNER64 AGENT64 AGENT_KEY64 EXPIRY MAX_CHARGE

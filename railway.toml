@@ -1,4 +1,5 @@
 # Railway reads this when the service builds from this repository.
+# Each service carries its own dockerfilePath — private-host uses
+# deploy/railway/Dockerfile and room validators deploy/rooms-seed/Dockerfile.
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "deploy/railway/Dockerfile"

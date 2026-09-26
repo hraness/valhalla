@@ -41,7 +41,7 @@ use vhalla_private_native::{
     relay::net::ScanFailure,
 };
 
-const REFUSED: &str = "host delivery refused; preserve the exact room, queue, scan and applied evidence; reconcile before another explicitly granted launch";
+pub(super) const REFUSED: &str = "host delivery refused; preserve the exact room, queue, scan and applied evidence; reconcile before another explicitly granted launch";
 /// Fresh staged work per tick for scan and apply alike; a page that still has
 /// results repolls immediately instead of waiting out the idle interval.
 const PAGE: usize = MAX_RELAY_PAGE;

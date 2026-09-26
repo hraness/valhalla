@@ -2811,7 +2811,8 @@ async fn run(
 /// Without `key` the address alone is dialed and any peer there is
 /// accepted, as before.
 pub struct PeerSpec {
-    /// IPv4 host literal (the multiaddr is `/ip4/{host}/tcp/{port}`).
+    /// IPv4 literal, IPv6 literal or resolvable name — `/ip4`, `/ip6`
+    /// or `/dns4` respectively, each `/tcp/{port}`.
     pub host: String,
     /// TCP port.
     pub port: usize,
@@ -2881,12 +2882,22 @@ pub fn service_config(
                 persistent_peers: peers
                     .iter()
                     .map(|p| {
-                        let addr = transport.multiaddr(&p.host, p.port);
+                        // Malachite's multiaddr() only formats /ip4 — a
+                        // resolvable name (provider TCP endpoints are DNS
+                        // names) dials through libp2p's dns transport, and
+                        // an IPv6 literal needs its own component.
+                        let addr = match p.host.parse::<std::net::IpAddr>() {
+                            Ok(std::net::IpAddr::V6(_)) => {
+                                format!("/ip6/{}/tcp/{}", p.host, p.port)
+                            }
+                            Ok(_) => transport.multiaddr(&p.host, p.port).to_string(),
+                            Err(_) => format!("/dns4/{}/tcp/{}", p.host, p.port),
+                        };
                         match &p.key {
                             Some(key) => format!("{addr}/p2p/{}", net_peer_id(key))
                                 .parse()
                                 .expect("pinned multiaddr"),
-                            None => addr,
+                            None => addr.parse().expect("peer multiaddr"),
                         }
                     })
                     .collect(),

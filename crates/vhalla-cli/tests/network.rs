@@ -342,7 +342,7 @@ fn invited_send_redeems_once_and_cannot_replay_across_processes() {
     ])
     .finish(false);
     assert!(
-        replay.contains("already spent"),
+        replay.contains("already used"),
         "durable replay rejection: {replay}"
     );
 }

@@ -2625,6 +2625,44 @@ fn service_config_pins_peer_identity_and_closes_the_mesh() {
     assert!(config.consensus.p2p.persistent_peers_only);
 }
 
+/// A resolvable peer name produces a `/dns4/` multiaddr — provider TCP
+/// endpoints are names, not literals — while an IPv6 literal maps to
+/// `/ip6/`. Pinned forms keep the `/p2p/` component either way.
+#[test]
+fn service_config_dials_named_and_v6_peers() {
+    let key = PrivateKey::from([9; 32]).public_key();
+    let config = service_config(
+        "svc",
+        "127.0.0.1",
+        5000,
+        &[
+            PeerSpec {
+                host: "tokaido.proxy.rlwy.net".to_owned(),
+                port: 54453,
+                key: Some(key),
+            },
+            PeerSpec {
+                host: "::1".to_owned(),
+                port: 6001,
+                key: None,
+            },
+        ],
+        false,
+        false,
+    );
+    assert_eq!(
+        config.consensus.p2p.persistent_peers[0].to_string(),
+        format!(
+            "/dns4/tokaido.proxy.rlwy.net/tcp/54453/p2p/{}",
+            net_peer_id(&key)
+        )
+    );
+    assert_eq!(
+        config.consensus.p2p.persistent_peers[1].to_string(),
+        "/ip6/::1/tcp/6001"
+    );
+}
+
 /// An `App` wired to a fresh store dir for unit-level state tests.
 fn test_app(tag: &str, key: &PrivateKey, set: &RoomValidatorSet) -> App {
     test_app_at(&fixture(tag).join("home"), key, set)

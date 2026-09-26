@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #![allow(missing_docs)]
 
+mod cli;
+mod help;
 mod support;
 
 #[cfg(feature = "experimental-private")]
@@ -8,6 +10,9 @@ mod endpoint;
 
 #[cfg(all(unix, feature = "experimental-private"))]
 mod private_gateway;
+
+#[cfg(all(unix, feature = "experimental-private"))]
+mod local_network;
 
 #[cfg(all(unix, feature = "experimental-private"))]
 mod private_host;
@@ -43,8 +48,25 @@ mod rooms_tui;
 
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
-    if args.first().is_some_and(|arg| arg == "support") && args.len() <= 64 {
+    let help = help::resolve(&args);
+    if help.is_none() && args.first().is_some_and(|arg| arg == "support") && args.len() <= 64 {
         std::process::exit(support::execute(&args[1..]));
+    }
+    match help {
+        Some(help::Help::Page(page)) => write_help(&args, &page),
+        Some(help::Help::UnknownTopic(topic)) => {
+            cli::report_error(&format!(
+                "No help topic named \"{topic}\".\n→ vhalla --help"
+            ));
+            std::process::exit(2);
+        }
+        None => {}
+    }
+    if let Some(first) = args.first().and_then(|arg| arg.to_str()) {
+        if !first.starts_with('-') && !cli::COMMANDS.contains(&first) {
+            cli::report_error(&cli::unknown_command(first));
+            std::process::exit(2);
+        }
     }
     #[cfg(unix)]
     {
@@ -53,7 +75,7 @@ fn main() {
             Ok(()) if useful => support::completed(),
             Ok(()) => {}
             Err(error) => {
-                eprintln!("vhalla: {error}");
+                cli::report_error(&error);
                 std::process::exit(1);
             }
         }
@@ -65,11 +87,45 @@ fn main() {
         match run(args) {
             Ok(()) => {}
             Err(error) => {
-                eprintln!("vhalla: {error}");
+                cli::report_error(&error);
                 std::process::exit(1);
             }
         }
     }
+}
+
+/// Print a help page on stdout and exit 0. Root help on an interactive
+/// terminal keeps the small ASCII intro. A closed pipe (`vhalla --help |
+/// head -1`) ends quietly.
+fn write_help(args: &[std::ffi::OsString], page: &str) -> ! {
+    use std::io::{IsTerminal, Write};
+    let stdout = std::io::stdout();
+    #[cfg(unix)]
+    let intro = if args.len() == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help")
+    {
+        let term = std::env::var("TERM").ok();
+        let columns = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse().ok());
+        intro::terminal_intro(stdout.is_terminal(), term.as_deref(), columns)
+    } else {
+        ""
+    };
+    #[cfg(not(unix))]
+    let intro = {
+        let _ = (args, stdout.is_terminal());
+        ""
+    };
+    let mut writer = stdout.lock();
+    let written = writer
+        .write_all(intro.as_bytes())
+        .and_then(|()| writer.write_all(page.as_bytes()))
+        .and_then(|()| writer.flush());
+    std::process::exit(match written {
+        Ok(()) => 0,
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => 0,
+        Err(_) => 1,
+    });
 }
 
 #[cfg(unix)]
@@ -79,36 +135,6 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     }
     if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
         version();
-        return Ok(());
-    }
-    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        use std::io::IsTerminal;
-        let term = std::env::var("TERM").ok();
-        let columns = std::env::var("COLUMNS")
-            .ok()
-            .and_then(|value| value.parse().ok());
-        print!(
-            "{}",
-            intro::terminal_intro(std::io::stdout().is_terminal(), term.as_deref(), columns)
-        );
-        println!("vhalla: Peer-to-peer rooms where agents and their owners share signed work\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla identity backup <existing-directory>\nvhalla identity restore <new-directory>   # mnemonic on stdin\nvhalla menubar [run|install|uninstall|status|refresh]\nvhalla outputs");
-        println!("vhalla support [--json|dismiss|snooze|enable|status --json]\nvhalla support protocol --json  # optional support lifecycle for agents");
-        #[cfg(feature = "experimental-network")]
-        println!("\nvhalla experimental [--json] listen <identity-directory> <peer-app-key> [listen-host]\nvhalla experimental [--json] send <identity-directory> <peer-app-key> <route> <expiry> <message>\nvhalla experimental [--json] invite <identity-directory> <invitee-app-key> <realm-hex> <room-hex> <epoch> <expiry>\nvhalla experimental [--json] listen <identity-directory> invitation <invitation-hex> [listen-host]\nvhalla experimental [--json] send <identity-directory> invitation <invitation-hex> <expected-owner-app-key> <route> <expiry> <message>\n\nExperimental paired chat; fixed test room, 60-second listener lifetime. listen binds 127.0.0.1 unless a bare listen-host (an IPv4 or IPv6 literal, no port) names another interface - the printed route then carries it for a remote peer to dial. --json emits bounded versioned JSON lines. Invitations are owner-signed; a verified send consumes the invitation nonce in <identity-directory>.spent and cannot redeem it twice.");
-        #[cfg(feature = "experimental-social")]
-        println!("\n{}", demo::HELP);
-        #[cfg(feature = "experimental-social")]
-        println!("\n{}", social::help());
-        #[cfg(feature = "experimental-rooms")]
-        println!("\n{}", rooms::HELP);
-        #[cfg(feature = "experimental-private")]
-        println!("\n{}", private_rooms::HELP);
-        #[cfg(feature = "experimental-private")]
-        println!("\n{}", private_host::HELP);
-        #[cfg(feature = "experimental-private")]
-        println!("\n{}", private_gateway::help());
-        #[cfg(feature = "experimental-public")]
-        println!("\n{}", public_network::HELP);
         return Ok(());
     }
     if args.first().is_some_and(|s| s == "private-gateway") {
@@ -173,7 +199,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         return outputs(&args);
     }
     if args.len() != 3 || args[0] != "identity" {
-        return Err("usage: vhalla identity <init|show|backup|restore> <directory>".into());
+        return Err(identity_usage());
     }
     identity(&args)
 }
@@ -190,12 +216,6 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         version();
         return Ok(());
     }
-    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        println!("vhalla: Peer-to-peer rooms where agents and their owners share signed work\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla identity backup <existing-directory>\nvhalla identity restore <new-directory>   # mnemonic on stdin");
-        #[cfg(feature = "experimental-private")]
-        println!("\n{}", private_rooms::HELP);
-        return Ok(());
-    }
     if args.first().is_some_and(|s| s == "private") {
         #[cfg(feature = "experimental-private")]
         return private_rooms::run(&args);
@@ -203,7 +223,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         return Err("private room tools require --features experimental-private".into());
     }
     if args.len() != 3 || args[0] != "identity" {
-        return Err("usage: vhalla identity <init|show|backup|restore> <directory>".into());
+        return Err(identity_usage());
     }
     identity(&args)
 }
@@ -236,20 +256,134 @@ fn version() {
     );
 }
 
+fn identity_usage() -> String {
+    "Use: vhalla identity <init|show|backup|restore> DIR\n→ vhalla help identity".into()
+}
+
+/// One plain sentence and next step for each identity failure. The key is
+/// never regenerated, replaced or deleted to get past an error.
+fn identity_error(
+    action: &str,
+    directory: &std::path::Path,
+    error: vhalla_identity::IdentityError,
+) -> String {
+    use vhalla_identity::IdentityError;
+    let dir = directory.display();
+    match error {
+        IdentityError::UnsafePath => format!(
+            "{dir} isn't a private identity folder: it must be yours, not a link, and not shared with other users\n→ ls -ld {dir}"
+        ),
+        IdentityError::Corrupt => format!(
+            "The identity in {dir} is damaged or from a newer version. Nothing was changed\nKeep the folder. You can restore the identity into a new folder from its phrase.\n→ vhalla identity restore NEW_DIR"
+        ),
+        IdentityError::Busy => format!(
+            "Another vhalla command is using the identity in {dir}. Nothing was changed\n→ vhalla identity {action} {dir}"
+        ),
+        IdentityError::Entropy => {
+            "Your computer couldn't provide random bytes, so no identity was created\n→ vhalla identity init NEW_DIR".into()
+        }
+        IdentityError::Session(_) => format!(
+            "The identity in {dir} refused that request. Nothing was changed\n→ vhalla help identity"
+        ),
+        IdentityError::Phrase(reason) => format!(
+            "That recovery phrase isn't valid: {reason}\nCheck every word and its order. Nothing was created.\n→ vhalla identity restore {dir} < phrase.txt"
+        ),
+        IdentityError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists => format!(
+            "{dir} already exists. Choose a new folder; an existing identity is never replaced\n→ vhalla identity {action} NEW_DIR"
+        ),
+        IdentityError::Io(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && matches!(action, "init" | "restore") =>
+        {
+            let parent = directory
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(std::path::Path::new("."));
+            format!(
+                "The folder that should hold {dir} doesn't exist. Nothing was created\n→ mkdir -p {}",
+                parent.display()
+            )
+        }
+        IdentityError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => format!(
+            "There's no identity in {dir}\n→ vhalla identity init {dir}"
+        ),
+        IdentityError::Io(error) => format!(
+            "Couldn't read or write {dir}: {error}\nIf this was init, check the folder before trying again: it may already hold a new key.\n→ vhalla identity show {dir}"
+        ),
+    }
+}
+
+/// Plain words for an invitation the paired-chat commands can't use.
+#[cfg(feature = "experimental-network")]
+fn invitation_error(error: vhalla_session::InvitationError) -> String {
+    use vhalla_session::InvitationError;
+    match error {
+        InvitationError::Malformed => {
+            "That invitation is damaged or incomplete. Ask the owner to send it again\n→ vhalla help experimental"
+        }
+        InvitationError::Key => {
+            "That invitation names an invalid key, or invites its own owner\n→ vhalla help experimental"
+        }
+        InvitationError::Issuer => {
+            "That invitation was signed by a different owner than the one you named. Check the owner key\n→ vhalla help experimental"
+        }
+        InvitationError::Signature => {
+            "That invitation's signature doesn't check out. Don't use it; ask the owner for a new one\n→ vhalla help experimental"
+        }
+        InvitationError::Expired => {
+            "That invitation has expired. Ask the owner for a new one\n→ vhalla help experimental"
+        }
+    }
+    .into()
+}
+
+/// Plain words for the file that records invitations already used.
+#[cfg(feature = "experimental-network")]
+fn spent_error(error: vhalla_native::SpentError, path: &str) -> String {
+    use vhalla_native::SpentError;
+    match error {
+        SpentError::AlreadySpent => {
+            "That invitation was already used. Each one works once; ask the owner for a new one\n→ vhalla help experimental".into()
+        }
+        SpentError::Capacity => format!(
+            "{path} has recorded as many used invitations as it can hold. Use a new identity folder for more\n→ vhalla identity init NEW_DIR"
+        ),
+        SpentError::Malformed => format!(
+            "{path} is damaged, so vhalla can't tell which invitations were used. Nothing was sent. Keep the file\n→ vhalla help experimental"
+        ),
+        SpentError::Io => format!("Couldn't read or write {path}\n→ ls -l {path}"),
+    }
+}
+
+/// The warning printed before a recovery phrase, for people at a terminal.
+fn phrase_warning(audience: cli::Audience, style: cli::Style) -> Option<String> {
+    (audience == cli::Audience::Human).then(|| {
+        format!(
+            "{} This phrase restores your identity. Store it offline; anyone with it can sign as you.\n",
+            style.warn()
+        )
+    })
+}
+
 fn identity(args: &[std::ffi::OsString]) -> Result<(), String> {
+    let action = args[1].to_string_lossy().into_owned();
+    let directory = std::path::Path::new(&args[2]);
+    let failed = |error| identity_error(&action, directory, error);
     let identity = if args[1] == "init" {
         vhalla_identity::Identity::create_new(&args[2])
     } else if args[1] == "show" {
         vhalla_identity::Identity::open(&args[2])
     } else if args[1] == "backup" {
-        let identity = vhalla_identity::Identity::open(&args[2])
-            .map_err(|error| format!("identity operation failed: {error:?}"))?;
+        let identity = vhalla_identity::Identity::open(&args[2]).map_err(failed)?;
         let phrase = identity.backup();
         let public = identity
             .public_key()
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
+        if let Some(warning) = phrase_warning(cli::audience(), cli::Style::stderr()) {
+            eprint!("{warning}");
+        }
         println!("mnemonic {}", *phrase);
         println!("application-key {public}");
         return Ok(());
@@ -258,12 +392,12 @@ fn identity(args: &[std::ffi::OsString]) -> Result<(), String> {
         let mut phrase = String::new();
         std::io::stdin()
             .read_to_string(&mut phrase)
-            .map_err(|e| format!("failed to read mnemonic from stdin: {e}"))?;
+            .map_err(|e| format!("Couldn't read the recovery phrase from stdin: {e}\n→ vhalla identity restore {} < phrase.txt", directory.display()))?;
         vhalla_identity::Identity::restore(&phrase, &args[2])
     } else {
-        return Err("identity command must be init, show, backup or restore".into());
+        return Err(identity_usage());
     }
-    .map_err(|error| format!("identity operation failed: {error:?}"))?;
+    .map_err(failed)?;
     let public = identity
         .public_key()
         .iter()
@@ -752,7 +886,7 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         return Err("see vhalla --help for experimental command arguments".into());
     }
     let identity = vhalla_identity::Identity::open(&args[2 + offset])
-        .map_err(|e| format!("identity: {e:?}"))?;
+        .map_err(|e| identity_error("show", std::path::Path::new(&args[2 + offset]), e))?;
     if mode == "invite" {
         // invite <dir> <invitee64> <realm32> <room32> <epoch> <expiry>
         let invitee: [u8; 32] = hex_bytes(text(3 + offset)?, 32)?
@@ -780,7 +914,7 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         getrandom::fill(&mut nonce).map_err(|_| "entropy unavailable".to_string())?;
         let invitation = identity
             .issue_invitation(invitee, realm, room, epoch, expires_at, nonce)
-            .map_err(|e| format!("invitation: {e:?}"))?;
+            .map_err(invitation_error)?;
         let encoded = hex(&invitation.encode());
         return emit(
             json,
@@ -808,8 +942,8 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
                 .unwrap_or("127.0.0.1");
             let mut listener = if invited {
                 let raw = hex_bytes(text(4 + offset)?, vhalla_native::INVITATION_BYTES)?;
-                let invitation = vhalla_native::Invitation::decode(&raw)
-                    .map_err(|e| format!("invitation: {e:?}"))?;
+                let invitation =
+                    vhalla_native::Invitation::decode(&raw).map_err(invitation_error)?;
                 Listener::bind_with_invitation_on(identity, invitation, listen)
                     .await
                     .map_err(|e| e.to_string())?
@@ -875,25 +1009,23 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             let (invitation, owner, route, body) = if invited {
                 // send <dir> invitation <hex> <owner64> <route> <expiry> <msg>
                 let raw = hex_bytes(text(4 + offset)?, vhalla_native::INVITATION_BYTES)?;
-                let invitation = vhalla_native::Invitation::decode(&raw)
-                    .map_err(|e| format!("invitation: {e:?}"))?;
+                let invitation =
+                    vhalla_native::Invitation::decode(&raw).map_err(invitation_error)?;
                 let owner = peer_app(text(5 + offset)?)?;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_err(|_| "clock before Unix epoch".to_string())?
                     .as_secs();
-                invitation
-                    .verify_at(owner, now)
-                    .map_err(|e| format!("invitation: {e:?}"))?;
+                invitation.verify_at(owner, now).map_err(invitation_error)?;
                 // One local redemption per identity: the nonce is consumed
                 // durably before dialing, so a verified invitation can never
                 // be replayed from this identity after a restart.
                 let spent_path = format!("{}.spent", text(2 + offset)?);
                 let mut spent = vhalla_native::SpentFile::open(&spent_path)
-                    .map_err(|e| format!("spent file: {e:?}"))?;
+                    .map_err(|e| spent_error(e, &spent_path))?;
                 spent
                     .consume(invitation.claims().nonce)
-                    .map_err(|e| format!("invitation already spent: {e:?}"))?;
+                    .map_err(|e| spent_error(e, &spent_path))?;
                 let expires = text(7 + offset)?
                     .parse()
                     .map_err(|_| "invalid expiry".to_string())?;
@@ -936,4 +1068,114 @@ fn network(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             )
         }
     })
+}
+
+#[cfg(test)]
+mod identity_copy_tests {
+    use super::*;
+
+    const PLAIN: cli::Style = cli::Style {
+        color: false,
+        ascii: false,
+    };
+
+    #[test]
+    fn identity_errors_are_sentences_with_one_next_step() {
+        use vhalla_identity::IdentityError;
+        let dir = std::path::Path::new("/tmp/me");
+        let cases = [
+            identity_error("show", dir, IdentityError::UnsafePath),
+            identity_error("show", dir, IdentityError::Corrupt),
+            identity_error("show", dir, IdentityError::Busy),
+            identity_error("init", dir, IdentityError::Entropy),
+            identity_error("restore", dir, IdentityError::Phrase("bad checksum".into())),
+            identity_error(
+                "init",
+                dir,
+                IdentityError::Io(std::io::ErrorKind::AlreadyExists.into()),
+            ),
+            identity_error(
+                "show",
+                dir,
+                IdentityError::Io(std::io::ErrorKind::NotFound.into()),
+            ),
+        ];
+        for text in cases {
+            let rendered = cli::render_error(&text, cli::Audience::Human, PLAIN);
+            assert!(rendered.starts_with("✗ "), "{rendered}");
+            assert_eq!(
+                rendered
+                    .lines()
+                    .filter(|line| line.starts_with("→ "))
+                    .count(),
+                1,
+                "{rendered}"
+            );
+            assert!(
+                !rendered.contains("Io(") && !rendered.contains("Kind("),
+                "{rendered}"
+            );
+        }
+        assert_eq!(
+            cli::render_error(
+                &identity_error(
+                    "show",
+                    dir,
+                    IdentityError::Io(std::io::ErrorKind::NotFound.into())
+                ),
+                cli::Audience::Human,
+                PLAIN
+            ),
+            "✗ There's no identity in /tmp/me.\n→ vhalla identity init /tmp/me\n"
+        );
+        assert_eq!(
+            identity_error(
+                "init",
+                std::path::Path::new("/tmp/missing/me"),
+                IdentityError::Io(std::io::ErrorKind::NotFound.into())
+            ),
+            "The folder that should hold /tmp/missing/me doesn't exist. Nothing was created\n→ mkdir -p /tmp/missing"
+        );
+    }
+
+    #[cfg(feature = "experimental-network")]
+    #[test]
+    fn invitation_and_spent_errors_read_as_sentences() {
+        use vhalla_native::SpentError;
+        use vhalla_session::InvitationError;
+        let mut texts: Vec<String> = [
+            InvitationError::Malformed,
+            InvitationError::Key,
+            InvitationError::Issuer,
+            InvitationError::Signature,
+            InvitationError::Expired,
+        ]
+        .into_iter()
+        .map(invitation_error)
+        .collect();
+        for error in [
+            SpentError::AlreadySpent,
+            SpentError::Capacity,
+            SpentError::Malformed,
+            SpentError::Io,
+        ] {
+            texts.push(spent_error(error, "/tmp/me.spent"));
+        }
+        for text in texts {
+            let rendered = cli::render_error(&text, cli::Audience::Human, PLAIN);
+            assert!(rendered.starts_with("✗ "), "{rendered}");
+            assert_eq!(rendered.matches("\n→ ").count(), 1, "{rendered}");
+            assert!(!rendered.contains("Error"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn the_phrase_warning_is_for_people_only() {
+        assert_eq!(
+            phrase_warning(cli::Audience::Human, PLAIN).as_deref(),
+            Some("⚠ This phrase restores your identity. Store it offline; anyone with it can sign as you.\n")
+        );
+        assert_eq!(phrase_warning(cli::Audience::Quiet, PLAIN), None);
+        assert_eq!(phrase_warning(cli::Audience::Agent, PLAIN), None);
+    }
 }

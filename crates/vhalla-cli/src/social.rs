@@ -26,7 +26,7 @@ use vhalla_social::{
 };
 use vhalla_social_store::Store;
 
-pub const HELP: &str = "Experimental local social commands (build: --features experimental-social):
+pub const HELP: &str = "Local signed posts between stores (experimental):
 vhalla social COMMAND STORE REALM32HEX [arguments] [--now SECONDS]
   init NEW_OWNER_KEYDIR
   restore-new SNAPSHOT  (new store from exact signed archive; creates no identity)
