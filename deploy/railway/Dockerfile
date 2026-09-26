@@ -14,7 +14,7 @@ RUN apt-get update \
 COPY . .
 RUN cargo build --release --locked -p vhalla-cli \
       --no-default-features \
-      --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private
+      --features experimental-private
 
 FROM debian:bookworm-slim
 RUN apt-get update \
