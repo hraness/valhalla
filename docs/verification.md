@@ -200,6 +200,25 @@ local preparation must restore it before replying. A separate mutant omits
 that admission while preserving durable metadata. This is not a
 hard real-time guarantee or a proof of Malachite consensus.
 
+The same transition system is proved in Verus in
+`verify/rooms-held-reply/held.rs`: `TypeOK`, `ReplyCustody`,
+`DurableBeforeReply`, `TombstonesStayLocal`, `MetadataBound` and
+`AdmittedBeforeReply` are inductive over `normal.cfg`'s `Next`, strengthened
+by five auxiliaries (issued is exactly the request frontier, every non-idle
+phase carries a real request number, a live kind implies arrival, a live kind
+at preparation implies seen and admitted metadata, and publishing implies a
+recorded live reply). Each invariant mutant is proved to reach its recorded
+violation — a dropped empty reply breaks `ReplyCustody`, an early live reply
+breaks `DurableBeforeReply`, tombstone publication breaks
+`TombstonesStayLocal`, and forgotten admission breaks `AdmittedBeforeReply`.
+The deadline mutant's checked property is temporal and outside this safety
+proof; its proof reaches the recorded stuck state where deadline resolution
+and reply are both disabled. A completion witness answers one request live
+through publication and the second through the full-budget tombstone
+fallback. This strengthens the model claims from finite enumeration to
+induction; it changes nothing about the production-correspondence
+obligations above.
+
 `verify/host-recovery` checks sealed maintenance and repeated recovery with
 process interruption distinguished from power loss. The model found that a
 retry after an unsynced marker unlink could skip the pre-cleanup fence; the
