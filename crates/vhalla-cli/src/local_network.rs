@@ -68,18 +68,16 @@ pub(crate) fn local_network_recovery(requester: &str, address: SocketAddr) -> St
 
 /// Whether the macOS application firewall is on. Reads state only.
 pub(crate) fn firewall_enabled() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw")
-            .arg("--getglobalstate")
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .ok()
-            .is_some_and(|output| firewall_state_on(&String::from_utf8_lossy(&output.stdout)))
+    if !cfg!(target_os = "macos") {
+        return false;
     }
-    #[cfg(not(target_os = "macos"))]
-    false
+    std::process::Command::new("/usr/libexec/ApplicationFirewall/socketfilterfw")
+        .arg("--getglobalstate")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .is_some_and(|output| firewall_state_on(&String::from_utf8_lossy(&output.stdout)))
 }
 
 pub(crate) fn firewall_state_on(output: &str) -> bool {
