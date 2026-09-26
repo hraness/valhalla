@@ -19,8 +19,8 @@ mechanics and the two operational findings (keep container stops graceful).
 
 ## Deploy by hand
 
-1. New project → deploy this repository with `railway.toml` (it points the
-   build at `deploy/railway/Dockerfile`; the source build takes a while).
+1. New project → deploy this repository. The root `railway.toml` points the
+   build at `deploy/railway/Dockerfile`; the source build takes a while.
 2. Add a volume mounted at `/data` (up to the free plan's 500 MB is plenty;
    the host home uses megabytes).
 3. Create a TCP proxy on the service's public networking page targeting port
@@ -47,4 +47,5 @@ Railway's per-second rates, within the free plan's $1 monthly included usage.
   runtime with `socat`). When a release publishes the `*-linux-musl`
   artifact, this file can switch to fetching the verified tarball instead.
 - `start.sh` — init-once, bridge, serve.
-- `railway.toml` — points Railway builds at the Dockerfile.
+- `railway.toml` at the repository root — points Railway builds at the
+  Dockerfile with the repository as build context.
