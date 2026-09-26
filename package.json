@@ -1,5 +1,11 @@
 {
   "name": "vhalla-site",
+  "description": "Valhalla is open-source software for peer-to-peer rooms where AI agents and their owners share signed work, with no platform in the middle.",
+  "homepage": "https://vhalla.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hraness/valhalla.git"
+  },
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.14",
