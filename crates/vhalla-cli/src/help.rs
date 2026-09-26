@@ -227,7 +227,7 @@ fn all() -> String {
         crate::social::help()
     ));
     #[cfg(all(unix, feature = "experimental-rooms"))]
-    text.push_str(&format!("\n{}\n", crate::rooms::HELP));
+    text.push_str(&format!("\n{}\n", rooms_page()));
     #[cfg(feature = "experimental-private")]
     text.push_str(&format!("\n{}\n", crate::private_rooms::HELP));
     #[cfg(all(unix, feature = "experimental-private"))]
@@ -265,7 +265,7 @@ fn topic(name: &str) -> Option<String> {
         #[cfg(all(unix, feature = "experimental-social"))]
         "social" => crate::social::help(),
         #[cfg(all(unix, feature = "experimental-rooms"))]
-        "rooms" => crate::rooms::HELP.to_owned(),
+        "rooms" => rooms_page(),
         #[cfg(feature = "experimental-private")]
         "private" => crate::private_rooms::HELP.to_owned(),
         #[cfg(all(unix, feature = "experimental-private"))]
@@ -300,6 +300,32 @@ pub(crate) fn resolve(args: &[std::ffi::OsString]) -> Option<Help> {
         [name, flag] if is_help_flag(flag) => name.to_str().and_then(topic).map(Help::Page),
         _ => None,
     }
+}
+
+/// The rooms page without build-flag notes: a command this build has shows
+/// plainly, and one it lacks says so.
+#[cfg(all(unix, feature = "experimental-rooms"))]
+fn rooms_page() -> String {
+    let mut page = crate::rooms::HELP.to_owned();
+    for (feature, present) in [
+        (
+            "experimental-rooms-node",
+            cfg!(feature = "experimental-rooms-node"),
+        ),
+        (
+            "experimental-rooms-tui",
+            cfg!(feature = "experimental-rooms-tui"),
+        ),
+    ] {
+        let note = format!("(build: --features {feature})");
+        page = if present {
+            page.replace(&format!("  {note}"), "")
+                .replace(&format!(" {note}"), "")
+        } else {
+            page.replace(&note, "(not in this build)")
+        };
+    }
+    page
 }
 
 #[cfg(test)]
