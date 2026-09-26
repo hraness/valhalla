@@ -1,0 +1,57 @@
+{
+  "schema": "valhalla.private-railway-soak.v1",
+  "status": "pass-with-one-host-event",
+  "run_id": "railway-soak-20260926",
+  "scope": "Forty five-minute member pulls against a Railway-hosted private-room host; soak evidence only, no browser, sleep, reboot, Windows or production claim",
+  "started_utc": "2026-09-26T03:50:33Z",
+  "finished_utc": "2026-09-26T07:06:18Z",
+  "elapsed_minutes": 196,
+  "host": {
+    "provider": "railway",
+    "project": "valhalla-private-host",
+    "project_id": "cc161db9-2b76-49bd-851f-885178285255",
+    "environment": "production",
+    "service": "valhalla-private-host",
+    "home": "/data/host-b",
+    "volume": "valhalla-private-host-volume-8_5B",
+    "image": "source build from deploy/railway/Dockerfile on the recipe-test lane",
+    "access": "member pull over the Railway TCP proxy; one held page connection per pull"
+  },
+  "client": {
+    "kind": "member",
+    "machine": "macOS arm64, same LAN member store as the two-Mac lane",
+    "script": "/private/tmp/vhalla-two-mac-live/railway-lane/member/soak.sh",
+    "log": "/private/tmp/vhalla-two-mac-live/railway-lane/member/soak.log"
+  },
+  "iterations": {
+    "total": 40,
+    "ok": 37,
+    "failed": 3,
+    "interval_seconds": 300
+  },
+  "latency_ms": {
+    "min": 689,
+    "max": 1542,
+    "mean": 1081
+  },
+  "cursor": "head_scanned stable at 11/11/0 for every successful pull",
+  "events": [
+    {
+      "iterations": [16, 17],
+      "kind": "host-wedge",
+      "detail": "Host-b held maintenance.lock and stopped answering pulls between roughly 05:05Z and 05:15Z; no host logs surfaced. Recovered by triggering a fresh Railway deployment (APP_PORT=19473 environment bump); volume data preserved.",
+      "attribution": "host-side event; recovery procedure verified, wedge root cause not isolated"
+    },
+    {
+      "iterations": [24],
+      "kind": "operator-fault",
+      "detail": "member/ca.der briefly held the template-test CA from 05:45Z to 05:47Z during manual file management; the pull failed because the client could not verify the host.",
+      "attribution": "operator-caused; annotated in soak.log"
+    }
+  ],
+  "conclusion": "The Railway-hosted private host sustained a 3h16m five-minute-pull soak with one wedge event that a redeploy recovered and one operator-caused failure. Idle and pull latency stayed inside roughly one second end to end across the hosted path. The wedge class deserves a dedicated root-cause pass before any production claim; this record is qualification evidence for the hosted-container lane, not production readiness.",
+  "notes": [
+    "Both detached volumes listed under the project are retained for the recipe-test and private-host lanes.",
+    "The soak measures member pull health only; it does not exercise publish, rotation, discovery, browser gateway or member-side custody."
+  ]
+}
