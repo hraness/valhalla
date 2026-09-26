@@ -858,3 +858,40 @@ remain exactly as implemented.
   action-aware wait, probe replays pass, worth a separate look.
   Outstanding: the sleep/logout/reboot journey and the sparse soak; the
   public-Internet lane still wants a genuinely public host.
+- 26 September 2026, step 9 partial — the public-Internet lane ran on
+  Railway, on the smallest tier. A same-commit x86_64-unknown-linux-gnu
+  build (`cargo zigbuild`, sha256 9e81f728…) ships in a
+  debian:bookworm-slim image with `socat`; `private-host` keeps its
+  most-tested loopback-only posture on 127.0.0.1:9473 and socat bridges
+  the container-facing 0.0.0.0:19473 to it, fronted by a Railway TCP
+  proxy at hayabusa.proxy.rlwy.net:45737. Host state lives on a mounted
+  volume at /data/host-b (private modes intact in-container); a member
+  on Mac A pushed and pulled over real public egress with the pinned CA
+  and a scoped client credential — `relay-push` retained the room
+  outbox at mailbox positions 1-2 in 1.43 s wall-clock including TLS
+  setup, `relay-pull` scanned both positions back (self-authored items
+  refused on apply, as designed). A service restart re-opened the same
+  home with no re-init: events.log shows a clean `serve-stop
+  terminate`/`serve-start` pair, credentials and positions intact —
+  the volume preserves custody across redeploys. Measured footprint in
+  the container: `vhalla` 9.1 MB RSS + socat 4.7 MB, ~0.002 vCPU —
+  inside even the free tier's usage credit (roughly half a dollar a
+  month of metered use). Findings: (a) the TCP proxy issues
+  `domain:port` while `--addr` accepts numeric `IP:port` only — the
+  hostname was resolved once for qualification, but durable public use
+  wants hostname resolution with the pinned TLS server name carried
+  separately; that is now a concrete client-side gap rather than a
+  workaround; (b) Railway volumes appear to retain `flock` state across
+  an ungracefully killed container — the maintenance lock on the first
+  home's inode stayed held by a crash-looped instance with no running
+  container at all, reporting `maintenance busy` until a fresh home
+  path was initialised; graceful stops release it correctly, and on
+  ordinary filesystems the kernel releases locks at process death, so
+  this reads as a backend portability wart rather than a model change —
+  operators should know a hard-killed container can wedge the old home
+  inode; (c) one abandoned inited home (`/data/host`) remains on the
+  volume as inert custodial material from that incident, deliberately
+  not unlinked. Still outstanding for step 9: a *released* binary
+  carrying the current protocol (this lane used a source build, so it
+  proves reachability and footprint, not artifact deployability), a
+  second member over public Internet, and the soak.
