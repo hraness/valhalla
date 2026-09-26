@@ -10,16 +10,27 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
+import release_notes
 from publish_release import (
     CODEQL_ANALYSIS_KEY, CODEQL_CHECKS, CODEQL_CATEGORIES, MAX_ANALYSIS_PAGES,
     asset_names, publish,
 )
+from release_notes import render_body
 
 
 TAG = "v0.1.7"
 SHA = "a" * 40
 REPO = "hraness/valhalla"
+CHANGELOG_TEXT = """# Changelog
+
+## 0.1.7 - 2026-09-19
+
+Validators derive their transport key from the validator secret.
+
+- Upgrade every validator together; PeerIds change.
+"""
 
 
 class FakeGitHub:
@@ -30,6 +41,7 @@ class FakeGitHub:
         self.tag = {"type": "commit", "sha": SHA}
         self.annotated = None
         self.release = None
+        self.page = None
         self.upload_fails = False
         self.corrupt_download = False
         self.advance_main_after_upload = False
@@ -74,7 +86,12 @@ class FakeGitHub:
                 return json.dumps(self.alert_pages)
             if path == "releases?per_page=100":
                 return json.dumps([[self.release] if self.release else []])
+            if path == f"releases/tags/{TAG}":
+                return json.dumps(self.page or self.release)
             raise AssertionError(f"unexpected API request: {args}")
+        if args[:2] in {("release", "create"), ("release", "edit")} and "--notes-file" in args:
+            self.page = {"name": args[args.index("--title") + 1],
+                         "body": Path(args[args.index("--notes-file") + 1]).read_text()}
         if args[:2] == ("release", "upload"):
             if self.upload_fails:
                 raise subprocess.CalledProcessError(1, args)
@@ -109,6 +126,21 @@ class ReleaseTests(unittest.TestCase):
                 (self.assets / (name + ".sha256")).write_text(
                     f"{hashlib.sha256(content).hexdigest()}  {name}\n")
         self.gh = FakeGitHub(self.assets)
+        notes = tempfile.TemporaryDirectory()
+        self.addCleanup(notes.cleanup)
+        self.changelog = Path(notes.name) / "CHANGELOG.md"
+        self.changelog.write_text(CHANGELOG_TEXT)
+        patcher = mock.patch.object(release_notes, "CHANGELOG", self.changelog)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def published(self, **changes):
+        hashes = {name: hashlib.sha256((self.assets / name).read_bytes()).hexdigest()
+                  for name in asset_names(TAG)}
+        release = {"tag_name": TAG, "draft": False, "name": f"Valhalla {TAG}",
+                   "body": render_body(CHANGELOG_TEXT, REPO, TAG, SHA, hashes)}
+        release.update(changes)
+        return release
 
     def run_publish(self):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -571,16 +603,56 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.gh.mutations(), ["upload", "edit"])
 
     def test_published_release_retry_is_read_only(self):
-        self.gh.release = {"tag_name": TAG, "draft": False}
+        self.gh.release = self.published()
         self.run_publish()
         self.assertEqual(self.gh.mutations(), [])
 
     def test_published_release_with_different_bytes_is_never_overwritten(self):
-        self.gh.release = {"tag_name": TAG, "draft": False}
+        self.gh.release = self.published()
         self.gh.corrupt_download = True
         with self.assertRaises(ValueError):
             self.run_publish()
         self.assertEqual(self.gh.mutations(), [])
+
+    def test_page_carries_title_changelog_and_trailing_identity(self):
+        self.run_publish()
+        create = next(args for args in self.gh.calls if args[:2] == ("release", "create"))
+        self.assertNotIn("--generate-notes", create)
+        publish_edit = [args for args in self.gh.calls if args[:2] == ("release", "edit")][-1]
+        self.assertIn("--draft=false", publish_edit)
+        self.assertEqual(self.gh.page["name"], "Valhalla v0.1.7")
+        body = self.gh.page["body"]
+        self.assertTrue(body.startswith("Validators derive their transport key"))
+        self.assertTrue(body.endswith("-->"))
+        self.assertIn("\n## Changes\n\n- Upgrade every validator together", body)
+
+    def test_missing_empty_or_unreleased_section_blocks_all_network_access(self):
+        for text in ("# Changelog\n\n## 0.1.6\n\nOld.\n\n- Old change.\n",
+                     "# Changelog\n\n## 0.1.7\n\n## 0.1.6\n\nOld.\n\n- Old.\n",
+                     "# Changelog\n\n## 0.1.7 - Unreleased\n\nSoon.\n\n- Soon.\n"):
+            with self.subTest(text=text):
+                self.changelog.write_text(text)
+                gh = FakeGitHub(self.assets)
+                with self.assertRaises(ValueError):
+                    publish(self.assets, TAG, SHA, REPO, gh)
+                self.assertEqual(gh.calls, [])
+
+    def test_retried_draft_is_published_with_the_rendered_page(self):
+        self.gh.release = {"tag_name": TAG, "draft": True, "name": TAG,
+                           "body": "## What's Changed\n"}
+        self.run_publish()
+        self.assertEqual(self.gh.page["name"], "Valhalla v0.1.7")
+        self.assertTrue(self.gh.page["body"].endswith("-->"))
+
+    def test_hand_edited_published_page_is_detected_without_mutation(self):
+        for changes in ({"name": TAG},
+                        {"body": self.published()["body"].replace("Upgrade every", "Upgrade some")}):
+            with self.subTest(changes=changes):
+                gh = FakeGitHub(self.assets)
+                gh.release = self.published(**changes)
+                with self.assertRaises(ValueError):
+                    publish(self.assets, TAG, SHA, REPO, gh)
+                self.assertEqual(gh.mutations(), [])
 
 
 if __name__ == "__main__":
