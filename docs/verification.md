@@ -130,6 +130,25 @@ finite safety; actual storage fault tests and native/browser journeys are
 required to connect it to production behavior. It does not establish that an
 offline participant becomes available or that a physical inventory is complete.
 
+The same transition system is proved in Verus in
+`verify/private-generation/generation.rs`: `TypeOK`, `CompleteInventory`,
+`ConditionalHead`, `AutomaticOutputDrained`, `IntentBeforeSelection`,
+`PreservedSpend`, `PreservedArchive` and `FrozenPredecessor` are inductive
+over `normal.cfg`'s `Next`, strengthened by six auxiliaries (applied output
+stays inside the monotone incoming set; a created acceptance forces a
+nonempty applied set; every recorded observation stays inside the growing
+stored set; a paused controller owns no pending job; a paused controller
+whose recorded observation still equals the stored head has already applied
+its incoming work; and nothing is selected before the fence). Each mutant is
+proved to reach its recorded violation — a missing pause breaks
+`CompleteInventory`, the ignored head breaks `ConditionalHead`, skipped
+acceptance output breaks `AutomaticOutputDrained`, intentless selection
+breaks `IntentBeforeSelection`, the spend reset breaks `PreservedSpend` and
+the dropped archive breaks `PreservedArchive` — and a completion witness
+runs both controllers through fencing, intent and generation-1 selection.
+This strengthens the model claims from finite enumeration to induction; it
+changes nothing about the production-correspondence obligations above.
+
 `verify/private-publication` explores two competing sessions, a roster-bound
 draft, cancellation before/after commit, exact retained recovery, readback and
 local revocation. Release linearizes at the final successful authority check;
