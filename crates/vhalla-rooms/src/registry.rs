@@ -27,6 +27,13 @@ pub const MAX_ROOMS: usize = 4096;
 pub const MAX_OWNERS: usize = 256;
 /// Maximum retained support dedup entries.
 pub const MAX_SUPPORT: usize = 8192;
+/// Maximum committed validator activations retained in the rotation
+/// schedule. Each entry is governance history and stays immutable; the
+/// bound only fences snapshot size.
+pub const MAX_ROTATIONS: usize = 64;
+/// Maximum members one committed validator set may carry — kept in step
+/// with the certificate signature bound (`cert::MAX_CERT_SIGNATURES`).
+pub const MAX_VALIDATORS: usize = 64;
 // Every `evidence` entry derives from a record `assess_support` saw Committed
 // in a bounded archive, so live evidence can never exceed the archive's own
 // record bound; keep it strictly under the snapshot restore bound.
@@ -272,6 +279,19 @@ pub enum RegistryError {
     Corrupt,
 }
 
+/// One committed validator-set member: the Ed25519 consensus public key
+/// the engine authenticates and its voting power. Canonical order is by
+/// key; a node's validator-set view re-orders by power and address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ValidatorMember {
+    /// Ed25519 consensus public key — the same byte space as `OwnerId`, so
+    /// an owner-operated node can bind its consensus identity to the owner
+    /// key directly.
+    pub key: [u8; 32],
+    /// Voting power.
+    pub power: u64,
+}
+
 /// The deterministic directory state. Applying the same verified records in
 /// the same agreed order under the same borrowed view yields the same state.
 #[derive(Clone)]
@@ -287,6 +307,10 @@ pub struct Registry {
     windows: BTreeMap<OwnerId, VecDeque<u64>>,
     rooms: BTreeMap<Slug, Room>,
     by_genesis: BTreeMap<RoomGenesisId, Slug>,
+    /// Committed validator-set rotations: activation height -> complete
+    /// key-sorted replacement set. Entries are append-only and immutable —
+    /// decided history cannot be rescheduled.
+    validator_schedule: BTreeMap<u64, Vec<ValidatorMember>>,
     last_time: u64,
     revision: u64,
 }
@@ -317,6 +341,7 @@ impl Registry {
             windows: BTreeMap::new(),
             rooms: BTreeMap::new(),
             by_genesis: BTreeMap::new(),
+            validator_schedule: BTreeMap::new(),
             last_time: 0,
             revision: 0,
         })
@@ -345,6 +370,12 @@ impl Registry {
     #[must_use]
     pub fn account(&self, owner: OwnerId) -> Account {
         self.accounts.get(&owner).copied().unwrap_or_default()
+    }
+    /// Every owner's allowance ledger, in owner order. `earned` is
+    /// committed social credit — the input validator scoring ranks by.
+    #[must_use]
+    pub fn accounts(&self) -> &BTreeMap<OwnerId, Account> {
+        &self.accounts
     }
     /// A finalized room by canonical slug, including tombstones.
     #[must_use]
@@ -389,6 +420,10 @@ impl Registry {
             || self.revision < previous.revision
             || self.last_time < previous.last_time
             || !previous.support.is_subset(&self.support)
+            || !previous
+                .validator_schedule
+                .iter()
+                .all(|(from, set)| self.validator_schedule.get(from) == Some(set))
         {
             return false;
         }
@@ -597,6 +632,75 @@ impl Registry {
         Ok(())
     }
 
+    /// The committed validator rotation schedule: activation height ->
+    /// complete key-sorted replacement set. A node's own boot schedule is
+    /// separate; this map only ever reflects decided transitions.
+    #[must_use]
+    pub fn validator_schedule(&self) -> &BTreeMap<u64, Vec<ValidatorMember>> {
+        &self.validator_schedule
+    }
+
+    /// Schedule a complete validator-set replacement at `from` — a committed
+    /// configuration transition like `set_eligible`: the quorum certificate
+    /// on the carrying batch is its entire authorization. The set lives
+    /// inside `snapshot`/`digest`, so the activation replays identically on
+    /// every validator. `from` must be unclaimed — each activation is
+    /// decided exactly once.
+    pub fn apply_rotation(
+        &mut self,
+        from: u64,
+        validators: &[ValidatorMember],
+        now: u64,
+    ) -> Result<(), RegistryError> {
+        if now < self.last_time {
+            return Err(RegistryError::Clock);
+        }
+        // Append-only in activation height too: an entry at or below the
+        // latest committed `from` would re-map the set a decided height
+        // already ran under. Activations arrive in commit order, so
+        // insertions are strictly increasing.
+        if self
+            .validator_schedule
+            .keys()
+            .next_back()
+            .is_some_and(|latest| from <= *latest)
+        {
+            return Err(RegistryError::Bounds);
+        }
+        if validators.is_empty()
+            || validators.len() > MAX_VALIDATORS
+            || self.validator_schedule.len() >= MAX_ROTATIONS
+        {
+            return Err(RegistryError::Capacity);
+        }
+        let mut seen = BTreeSet::new();
+        let mut total = 0u64;
+        for member in validators {
+            // A member whose key is not a canonical Ed25519 point could
+            // never authenticate a consensus vote — reject it here so a
+            // committed set always converts to a working engine set.
+            if member.power == 0
+                || !seen.insert(member.key)
+                || ed25519_dalek::VerifyingKey::from_bytes(&member.key).is_err()
+            {
+                return Err(RegistryError::Bounds);
+            }
+            total = total
+                .checked_add(member.power)
+                .filter(|total| *total <= u64::MAX / 3)
+                .ok_or(RegistryError::Cost)?;
+        }
+        let mut set = validators.to_vec();
+        set.sort_unstable();
+        self.validator_schedule.insert(from, set);
+        self.last_time = now;
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(RegistryError::Capacity)?;
+        Ok(())
+    }
+
     fn create(
         &mut self,
         record: &VerifiedRecord,
@@ -780,7 +884,9 @@ impl Registry {
     }
 
     fn snapshot_magic(&self) -> &'static [u8; 8] {
-        if self
+        if !self.validator_schedule.is_empty() {
+            SNAPSHOT_MAGIC_SCHEDULE
+        } else if self
             .rooms
             .values()
             .any(|room| room.public_activity_policy().is_some())
@@ -851,6 +957,17 @@ impl Registry {
             out.u64(evidence.award.activity_epoch);
             out.bytes_len(&evidence.record.encode());
         }
+        if !self.validator_schedule.is_empty() {
+            out.u32(self.validator_schedule.len() as u32);
+            for (from, set) in &self.validator_schedule {
+                out.u64(*from);
+                out.u32(set.len() as u32);
+                for member in set {
+                    out.bytes(&member.key);
+                    out.u64(member.power);
+                }
+            }
+        }
         let mut framed = Vec::with_capacity(out.0.len() + 40);
         framed.extend_from_slice(self.snapshot_magic());
         framed.extend_from_slice(&out.0);
@@ -874,10 +991,13 @@ impl Registry {
         if raw.len() < SNAPSHOT_MAGIC.len() + 32
             || raw.len() > MAX_SNAPSHOT_BYTES
             || !matches!(raw.get(..SNAPSHOT_MAGIC.len()), Some(magic)
-                if magic == SNAPSHOT_MAGIC || magic == SNAPSHOT_MAGIC_PUBLIC_ACTIVITY)
+                if magic == SNAPSHOT_MAGIC
+                    || magic == SNAPSHOT_MAGIC_PUBLIC_ACTIVITY
+                    || magic == SNAPSHOT_MAGIC_SCHEDULE)
         {
             return Err(RegistryError::Corrupt);
         }
+        let schedule_layout = raw[..SNAPSHOT_MAGIC.len()] == SNAPSHOT_MAGIC_SCHEDULE[..];
         let body = &raw[SNAPSHOT_MAGIC.len()..raw.len() - 32];
         if checksum(body) != raw[raw.len() - 32..] {
             return Err(RegistryError::Corrupt);
@@ -1008,6 +1128,47 @@ impl Registry {
                 .evidence
                 .insert(record.id(), Evidence { award, record });
         }
+        if schedule_layout {
+            let mut previous_from = 0u64;
+            for _ in 0..in_.count(MAX_ROTATIONS)? {
+                let from = in_.u64()?;
+                let set: Vec<ValidatorMember> = (0..in_.count(MAX_VALIDATORS)?)
+                    .map(|_| {
+                        Ok(ValidatorMember {
+                            key: in_.array()?,
+                            power: in_.u64()?,
+                        })
+                    })
+                    .collect::<Result<_, RegistryError>>()?;
+                // The stored schedule must already satisfy the admission
+                // rules a committed rotation applied: nonempty sets,
+                // strictly increasing activations, valid members, sorted
+                // member keys.
+                if set.is_empty()
+                    || from <= previous_from
+                    || !set.windows(2).all(|pair| pair[0] < pair[1])
+                    || registry.validator_schedule.contains_key(&from)
+                {
+                    return Err(RegistryError::Corrupt);
+                }
+                let mut seen = BTreeSet::new();
+                let mut total = 0u64;
+                for member in &set {
+                    if member.power == 0
+                        || !seen.insert(member.key)
+                        || ed25519_dalek::VerifyingKey::from_bytes(&member.key).is_err()
+                    {
+                        return Err(RegistryError::Corrupt);
+                    }
+                    total = total
+                        .checked_add(member.power)
+                        .filter(|total| *total <= u64::MAX / 3)
+                        .ok_or(RegistryError::Corrupt)?;
+                }
+                registry.validator_schedule.insert(from, set);
+                previous_from = from;
+            }
+        }
         if !in_.done() || raw[..SNAPSHOT_MAGIC.len()] != registry.snapshot_magic()[..] {
             return Err(RegistryError::Corrupt);
         }
@@ -1017,6 +1178,7 @@ impl Registry {
 
 const SNAPSHOT_MAGIC: &[u8; 8] = b"VRSN\0\0\0\x01";
 const SNAPSHOT_MAGIC_PUBLIC_ACTIVITY: &[u8; 8] = b"VRSN\0\0\0\x02";
+const SNAPSHOT_MAGIC_SCHEDULE: &[u8; 8] = b"VRSN\0\0\0\x03";
 /// Snapshot byte ceiling: the private-store payload bound.
 pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 /// Bound on distinct owners holding room-control chains in one snapshot.

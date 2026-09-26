@@ -24,8 +24,8 @@ use arc_malachitebft_app_channel::{
     Reply, RequestContext, SyncContext, WalContext,
 };
 use arc_malachitebft_config::{
-    ConsensusConfig, DiscoveryConfig, P2pConfig, PubSubProtocol, TransportProtocol, ValuePayload,
-    ValueSyncConfig,
+    BootstrapProtocol, ConsensusConfig, DiscoveryConfig, P2pConfig, PubSubProtocol, Selector,
+    TransportProtocol, ValuePayload, ValueSyncConfig,
 };
 use arc_malachitebft_core_types::{HeightParams, LinearTimeouts, Round, VoteExtensionPolicy};
 use arc_malachitebft_engine::host::{Next, SyncedValueOutcome};
@@ -40,8 +40,8 @@ use arc_malachitebft_metrics::SharedRegistry;
 use arc_malachitebft_signing::Signer;
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use vhalla_rooms_consensus::{
-    decode_eligible_update, Adapter, Batch, BatchBody, CommitCertificate as RoomCertificate,
-    DecidedOutcome, EngineSink, Genesis,
+    decode_eligible_update, decode_rotation_update, Adapter, Batch, BatchBody,
+    CommitCertificate as RoomCertificate, DecidedOutcome, EngineSink, Genesis,
 };
 
 use crate::cert::{ext_certificate_from_canonical, verify_commit_certificate};
@@ -469,13 +469,40 @@ fn data_parts(data: &[u8]) -> impl Iterator<Item = RoomPart> + '_ {
 }
 
 impl App {
-    /// The validator set active at `height`: the entry at or before it.
-    fn set_for(&self, height: u64) -> &RoomValidatorSet {
+    /// The validator set active at `height`. Once the committed rotation
+    /// schedule the registry replays has an entry at or before `height`,
+    /// it wins outright: picking the later of boot vs committed `from`
+    /// would let an operator's file entries diverge the set replica by
+    /// replica, so the decided schedule owns every height at or past its
+    /// first activation. Below it — and on networks that never rotate —
+    /// the boot schedule from `node.json` governs exactly as before.
+    /// Committed members were key-checked at apply, so conversion to the
+    /// engine set cannot silently shrink.
+    fn set_for(&self, height: u64) -> RoomValidatorSet {
+        let adapter = self.adapter.lock().unwrap();
+        if let Some((_, members)) = adapter
+            .application()
+            .registry()
+            .validator_schedule()
+            .range(..=height)
+            .next_back()
+        {
+            return RoomValidatorSet::new(
+                members
+                    .iter()
+                    .filter_map(|member| {
+                        PublicKey::from_bytes(member.key)
+                            .ok()
+                            .map(|key| RoomValidator::new(key, member.power))
+                    })
+                    .collect(),
+            );
+        }
         self.validator_sets
             .range(..=height)
             .next_back()
-            .map(|(_, s)| s)
-            .unwrap_or_else(|| self.validator_sets.values().next().unwrap())
+            .map(|(_, set)| set.clone())
+            .unwrap_or_else(|| self.validator_sets.values().next().unwrap().clone())
     }
 
     /// Registers a batch received over the wire: durable store first
@@ -554,6 +581,7 @@ impl App {
                 .strip_suffix(".batch")
                 .or_else(|| name.strip_suffix(".body"))
                 .or_else(|| name.strip_suffix(".eligible"))
+                .or_else(|| name.strip_suffix(".rotation"))
             else {
                 continue;
             };
@@ -565,6 +593,7 @@ impl App {
                         records: b.records,
                         games: b.games,
                         eligible: b.eligible,
+                        rotation: b.rotation,
                     })
                 } else if name.ends_with(".eligible") {
                     // Operator-dropped eligible-set transition: a bare id list
@@ -576,7 +605,22 @@ impl App {
                         records: Vec::new(),
                         games: Vec::new(),
                         eligible: Some(set),
+                        rotation: None,
                     })
+                } else if name.ends_with(".rotation") {
+                    // Operator-dropped validator-set transition: an activation
+                    // height plus a bare replacement set, queued as a
+                    // config-only body.
+                    decode_rotation_update(&bytes)
+                        .ok()
+                        .map(|rotation| BatchBody {
+                            time: 0,
+                            evidence: Vec::new(),
+                            records: Vec::new(),
+                            games: Vec::new(),
+                            eligible: None,
+                            rotation: Some(rotation),
+                        })
                 } else {
                     BatchBody::decode(&bytes).ok()
                 }
@@ -646,7 +690,9 @@ impl App {
                             .lock()
                             .unwrap()
                             .application()
-                            .prepare_with_games(b.time, b.evidence, b.records, b.games, b.eligible)
+                            .prepare_with_games(
+                                b.time, b.evidence, b.records, b.games, b.eligible, b.rotation,
+                            )
                     });
                     match checked {
                         Some(Ok(checked)) => {
@@ -966,7 +1012,7 @@ impl App {
         }
         let set = self.set_for(height.as_u64());
         if set.validators.is_empty()
-            || self.ctx.select_proposer(set, height, round).address != address
+            || self.ctx.select_proposer(&set, height, round).address != address
         {
             return None;
         }
@@ -1215,7 +1261,7 @@ impl App {
         }
         let expected = self
             .ctx
-            .select_proposer(set, parts.init.height, parts.init.round)
+            .select_proposer(&set, parts.init.height, parts.init.round)
             .address;
         if parts.init.proposer != expected {
             return false;
@@ -1243,7 +1289,7 @@ impl App {
         certificate: &arc_malachitebft_app::types::core::CommitCertificate<RoomContext>,
     ) -> DecidedOutcome {
         let set = self.set_for(certificate.height.as_u64());
-        let Ok(accepted) = verify_commit_certificate(certificate, set) else {
+        let Ok(accepted) = verify_commit_certificate(certificate, &set) else {
             return DecidedOutcome::Rejected;
         };
         // The adapter lock stays held across marker retirement: the
@@ -2532,7 +2578,7 @@ async fn run(
                 // Resume from the DURABLE frontier — the journal is the
                 // authority on the next height, not memory.
                 let next = app.adapter.lock().unwrap().frontier().height + 1;
-                let _ = reply.send((Height::new(next), height_params(app.set_for(next))));
+                let _ = reply.send((Height::new(next), height_params(&app.set_for(next))));
             }
 
             AppMsg::StartedRound {
@@ -2673,7 +2719,7 @@ async fn run(
                     let height = certificate.height;
                     // The NEXT height's params may activate a different set —
                     // this is the finalized configuration transition.
-                    let params = height_params(app.set_for(height.as_u64() + 1));
+                    let params = height_params(&app.set_for(height.as_u64() + 1));
                     // The saved canonical VC2 quorum remains authoritative;
                     // vote extensions are disabled. Repeated sweeps are safe.
                     app.sweep_decided(certificate.height.as_u64());
@@ -2788,12 +2834,20 @@ pub struct PeerSpec {
 /// carries a key pin — an unpinned address cannot authenticate an
 /// inbound peer (ephemeral source ports never match), so the config
 /// layer rejects that combination before this is ever called.
+///
+/// `discovery` opens the mesh instead: persistent peers become bootstrap
+/// seeds answering peer-exchange requests, and learned peers are dialed
+/// at random up to the connection budget. A new member then joins with a
+/// single known peer rather than the whole mesh pinned in `node.json`.
+/// The two modes are exclusive — a closed mesh has nothing to discover —
+/// and the config layer rejects their combination before this is called.
 pub fn service_config(
     moniker: &str,
     listen: &str,
     listen_port: usize,
     peers: &[PeerSpec],
     peers_only: bool,
+    discovery: bool,
 ) -> Config {
     let transport = TransportProtocol::Tcp;
     let loopback = listen
@@ -2808,6 +2862,14 @@ pub fn service_config(
             p2p: P2pConfig {
                 protocol: PubSubProtocol::default(),
                 discovery: DiscoveryConfig {
+                    enabled: discovery,
+                    // Full peer exchange over the request/response
+                    // protocol, not the DHT: a bounded validator mesh
+                    // wants every learned peer, and `Selector::Random`
+                    // picks from that exchange map. With Kademlia off no
+                    // routing table is maintained.
+                    bootstrap_protocol: BootstrapProtocol::Full,
+                    selector: Selector::Random,
                     max_connections_per_ip: if loopback {
                         usize::MAX
                     } else {

@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use vhalla_rooms_consensus::{
-    encode_eligible_update, fixture, Batch, GameCommitment, GameCommitmentKind, OwnerId,
+    encode_eligible_update, fixture, Batch, CommittedRotation, GameCommitment, GameCommitmentKind,
+    OwnerId, ValidatorMember,
 };
 
 #[path = "formal_held_reply.rs"]
@@ -813,6 +814,7 @@ async fn sibling_slot_batch_voted_down_then_honest_batch_commits() {
         ],
         games: Vec::new(),
         eligible: None,
+        rotation: None,
         result_registry: [9; 32],
         result_social: [9; 32],
         result_control: [9; 32],
@@ -2409,6 +2411,7 @@ fn losing_body_reassembles_against_live_frontier() {
             records,
             games: Vec::new(),
             eligible: None,
+            rotation: None,
         };
         std::fs::write(intake.join(format!("{name}.body")), body.encode()).unwrap();
     }
@@ -2562,6 +2565,7 @@ fn service_config_binds_listen_and_bounds_per_ip() {
             key: None,
         }],
         false,
+        false,
     );
     assert_eq!(
         local.consensus.p2p.discovery.max_connections_per_ip,
@@ -2578,7 +2582,7 @@ fn service_config_binds_listen_and_bounds_per_ip() {
     assert!(!local.consensus.p2p.persistent_peers_only);
 
     for listen in ["192.0.2.10", "0.0.0.0", "100.64.1.7"] {
-        let config = service_config("svc", listen, 5000, &[], false);
+        let config = service_config("svc", listen, 5000, &[], false, false);
         assert_eq!(
             config.consensus.p2p.discovery.max_connections_per_ip,
             DiscoveryConfig::default().max_connections_per_ip,
@@ -2611,6 +2615,7 @@ fn service_config_pins_peer_identity_and_closes_the_mesh() {
             key: Some(key),
         }],
         true,
+        false,
     );
     let expected = format!("/ip4/100.64.1.2/tcp/5001/p2p/{}", net_peer_id(&key));
     assert_eq!(
@@ -2622,8 +2627,12 @@ fn service_config_pins_peer_identity_and_closes_the_mesh() {
 
 /// An `App` wired to a fresh store dir for unit-level state tests.
 fn test_app(tag: &str, key: &PrivateKey, set: &RoomValidatorSet) -> App {
-    let base = fixture(tag);
-    let home = base.join("home");
+    test_app_at(&fixture(tag).join("home"), key, set)
+}
+
+/// An `App` on an explicit home so a second construction re-opens the
+/// same durable state — the restart-replay case.
+fn test_app_at(home: &Path, key: &PrivateKey, set: &RoomValidatorSet) -> App {
     let store = home.join("store");
     std::fs::create_dir_all(store.join("batches")).unwrap();
     std::fs::create_dir_all(store.join("seen")).unwrap();
@@ -2672,6 +2681,7 @@ fn game_commitment_body_survives_intake_and_live_frontier_assembly() {
         records: Vec::new(),
         games: vec![commitment],
         eligible: None,
+        rotation: None,
     };
     std::fs::write(intake.join("game.body"), body.encode()).unwrap();
 
@@ -3192,6 +3202,304 @@ fn decided_history_survives_interleaved_restarts(tc: TestCase) {
         assert_eq!(raw.certificate.value_id.0, plan[h].value_id());
         assert_eq!(raw.certificate.commit_signatures.len(), 1);
         assert_eq!(raw.certificate.commit_signatures[0].address, address);
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A committed rotation takes over the live validator view: below its
+/// activation the boot schedule still governs; from it onward the
+/// decided set wins uniformly — including over a *later* file entry,
+/// which is what keeps two divergent `node.json` edits from forking the
+/// set after the protocol takes over.
+#[test]
+fn set_for_prefers_committed_schedule_past_its_activation() {
+    let (keys, set) = validators(2);
+    let mut app = test_app("set-for-merge", &keys[0], &set);
+    // A second file activation at height 10 — divergent operator config
+    // the committed schedule must shadow.
+    let (_, later_set) = validators(3);
+    app.validator_sets.insert(10, later_set);
+
+    // Boot schedule governs before any committed rotation.
+    assert_eq!(app.set_for(1).validators.len(), 2);
+    assert_eq!(app.set_for(10).validators.len(), 3);
+
+    // A rotation activating at height 6 commits at height 1.
+    let rotated_keys = [PrivateKey::from([61; 32]), PrivateKey::from([62; 32])];
+    let members: Vec<ValidatorMember> = rotated_keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| ValidatorMember {
+            key: *k.public_key().as_bytes(),
+            power: (i + 4) as u64,
+        })
+        .collect();
+    let rotation = CommittedRotation {
+        from: 6,
+        validators: members.clone(),
+    };
+    let batch = app
+        .adapter
+        .lock()
+        .unwrap()
+        .application()
+        .prepare_with_games(1, vec![], vec![], vec![], None, Some(rotation))
+        .unwrap()
+        .batch()
+        .clone();
+    app.adapter.lock().unwrap().hold(batch.clone());
+    let outcome = app.adapter.lock().unwrap().decide(&RoomCertificate {
+        bytes: b"cert".to_vec(),
+        value_commitment: batch.value_id(),
+        height: 1,
+    });
+    assert!(matches!(outcome, DecidedOutcome::Acked));
+
+    // Below the activation the boot set still answers; at and past it
+    // the committed set is authoritative — including at 10, where the
+    // file's divergent entry is now shadowed, and beyond it.
+    assert_eq!(app.set_for(5).validators.len(), 2);
+    // Engine order is power-descending then address-ascending; the
+    // addresses derive from the keys, so compare against the built set.
+    let expected = RoomValidatorSet::new(
+        members
+            .iter()
+            .map(|m| RoomValidator::new(PublicKey::from_bytes(m.key).unwrap(), m.power))
+            .collect(),
+    );
+    for height in [6u64, 10, 100] {
+        let active = app.set_for(height);
+        assert_eq!(active, expected, "height {height}");
+    }
+}
+
+/// A `*.rotation` intake file drains into a config-only pending body and
+/// commits through the same decide path as any other transition; a file
+/// whose activation is already decided history rejects instead of
+/// wedging the queue.
+#[test]
+fn rotation_intake_file_commits_through_the_queue() {
+    let (keys, set) = validators(1);
+    let mut app = test_app("rotation-intake", &keys[0], &set);
+    let intake = app.store.parent().unwrap().join("intake");
+    std::fs::create_dir_all(&intake).unwrap();
+    let rotation = CommittedRotation {
+        from: 4,
+        validators: vec![ValidatorMember {
+            key: *PrivateKey::from([71; 32]).public_key().as_bytes(),
+            power: 9,
+        }],
+    };
+    let bytes = vhalla_rooms_consensus::encode_rotation_update(&rotation);
+    std::fs::write(intake.join("r-1.rotation"), &bytes).unwrap();
+
+    app.drain_intake();
+    assert_eq!(
+        app.pending_proposals,
+        VecDeque::from([PendingEntry::Body("r-1".to_owned())])
+    );
+    let id = app.next_pending().unwrap();
+    let batch = app.held_by_id.get(&id).unwrap().clone();
+    assert_eq!(&batch.encode()[..4], b"VRB4");
+    assert_eq!(batch.rotation.as_ref().unwrap().from, 4);
+    app.adapter.lock().unwrap().hold(batch.clone());
+    let outcome = app.adapter.lock().unwrap().decide(&RoomCertificate {
+        bytes: b"cert".to_vec(),
+        value_commitment: batch.value_id(),
+        height: 1,
+    });
+    assert!(matches!(outcome, DecidedOutcome::Acked));
+    assert_eq!(app.set_for(4).validators[0].power, 9);
+    assert_eq!(app.set_for(3).validators.len(), 1);
+    assert_eq!(
+        app.set_for(4).validators[0].public_key.as_bytes(),
+        PrivateKey::from([71; 32]).public_key().as_bytes()
+    );
+
+    // A file whose activation can never clear the notice bound any more
+    // is rejected at assembly, marked for the producer and never queued.
+    let stale = CommittedRotation {
+        from: 2,
+        validators: vec![ValidatorMember {
+            key: *PrivateKey::from([72; 32]).public_key().as_bytes(),
+            power: 1,
+        }],
+    };
+    std::fs::write(
+        intake.join("r-2.rotation"),
+        vhalla_rooms_consensus::encode_rotation_update(&stale),
+    )
+    .unwrap();
+    app.drain_intake();
+    assert!(app.next_pending().is_none());
+    assert!(intake.join("r-2.rejected").exists());
+}
+
+/// Restart replay: a committed rotation survives in the `VRSN3` rooms
+/// snapshot, so a node that re-opens the same home answers `set_for`
+/// from the decided schedule without re-reading `node.json`.
+#[test]
+fn set_for_after_restart_answers_from_the_committed_schedule() {
+    let (keys, set) = validators(2);
+    let base = fixture("set-for-restart");
+    let home = base.join("home");
+    let rotated_key = PrivateKey::from([88; 32]);
+    {
+        let app = test_app_at(&home, &keys[0], &set);
+        let rotation = CommittedRotation {
+            from: 5,
+            validators: vec![ValidatorMember {
+                key: *rotated_key.public_key().as_bytes(),
+                power: 4,
+            }],
+        };
+        let batch = app
+            .adapter
+            .lock()
+            .unwrap()
+            .application()
+            .prepare_with_games(1, vec![], vec![], vec![], None, Some(rotation))
+            .unwrap()
+            .batch()
+            .clone();
+        app.adapter.lock().unwrap().hold(batch.clone());
+        let outcome = app.adapter.lock().unwrap().decide(&RoomCertificate {
+            bytes: b"cert".to_vec(),
+            value_commitment: batch.value_id(),
+            height: 1,
+        });
+        assert!(matches!(outcome, DecidedOutcome::Acked));
+    }
+    // The re-opened node replays the committed schedule from durable
+    // state: `set_for` sees it even though `validator_sets` never left
+    // the boot file.
+    let app = test_app_at(&home, &keys[0], &set);
+    assert_eq!(app.set_for(4).validators.len(), 2);
+    let active = app.set_for(5);
+    assert_eq!(active.validators.len(), 1);
+    assert_eq!(active.validators[0].power, 4);
+    assert_eq!(
+        active.validators[0].public_key.as_bytes(),
+        rotated_key.public_key().as_bytes()
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// End to end: a batch carrying a `CommittedRotation` decides on four
+/// live validators, the schedule lands in every replica's committed
+/// registry, and heights past the activation commit under the rotated
+/// weights — the current committee deciding the next committee with no
+/// `node.json` change anywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn committed_rotation_activates_on_every_node() {
+    const HEIGHTS: u64 = 8;
+    const CARRIER: u64 = 2;
+    const ACTIVATION: u64 = 6;
+    let (keys, set) = validators(4);
+    let base = fixture("rotate-live");
+    let base_port = 28600usize;
+
+    // The same four members re-weighted: validator 1 triples, so the
+    // post-activation quorum arithmetic genuinely needs the new powers
+    // (total 6, quorum >4 — no quorum without the tripled member).
+    let mut members: Vec<ValidatorMember> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| ValidatorMember {
+            key: *k.public_key().as_bytes(),
+            power: if i == 0 { 3 } else { 1 },
+        })
+        .collect();
+    members.sort_by_key(|m| m.key);
+
+    // A plan whose CARRIER batch carries the rotation: `prepare` runs
+    // the rotation through the fixture application so the claimed
+    // digests replay identically on every replica.
+    let mut scenario = fixture::scenario(8, 16);
+    let mut grants: BTreeMap<OwnerId, _> = BTreeMap::new();
+    let mut cursors: BTreeMap<OwnerId, usize> = BTreeMap::new();
+    let mut plan = BTreeMap::new();
+    for h in 1..=HEIGHTS {
+        let owner_index = (h as usize - 1) % 8;
+        let owner_id = scenario.owners[owner_index].id;
+        let cursor = cursors.entry(owner_id).or_insert(0);
+        let (evidence, records) = match grants.get(&owner_id) {
+            Some(grant) => fixture::next_create(
+                &scenario.app,
+                &scenario.owners[owner_index],
+                *grant,
+                &mut scenario.sources,
+                cursor,
+                &format!("room-{h}"),
+                h as u8,
+            ),
+            None => {
+                let (evidence, records, grant_id) = fixture::first_create(
+                    &scenario.app,
+                    &scenario.owners[owner_index],
+                    &mut scenario.sources,
+                    cursor,
+                    &format!("room-{h}"),
+                    h as u8,
+                );
+                grants.insert(owner_id, grant_id);
+                (evidence, records)
+            }
+        };
+        let rotation = (h == CARRIER).then(|| CommittedRotation {
+            from: ACTIVATION,
+            validators: members.clone(),
+        });
+        let checked = scenario
+            .app
+            .prepare_with_games(h, evidence, records, vec![], None, rotation)
+            .unwrap();
+        let batch = checked.batch().clone();
+        scenario.app.apply_locally(checked);
+        plan.insert(h, batch);
+    }
+
+    let mut nodes = Vec::new();
+    for (i, key) in keys.iter().enumerate().take(4) {
+        nodes.push(
+            RoomNode::start(NodeSpec {
+                home: base.join(format!("n{}", i + 1)),
+                config: node_config(i + 1, 4, base_port),
+                node_key: key.clone(),
+                validator_sets: sched(set.clone()),
+                held: plan.clone(),
+                genesis: genesis(),
+                wal_faults: None,
+                net_gate: None,
+            })
+            .await,
+        );
+    }
+
+    wait_for(
+        "all four nodes to commit height 8 under the rotated set",
+        || nodes.iter().all(|n| n.committed_height() >= HEIGHTS),
+        Duration::from_secs(120),
+    )
+    .await;
+
+    for node in &nodes {
+        // Heights past the activation committed under the re-weighted
+        // set: every certificate the engine verified consulted `set_for`
+        // on the committed schedule. The schedule itself replays in the
+        // registry on every replica — decided state, not file state.
+        let adapter = node.adapter.lock().unwrap();
+        let schedule = adapter.application().registry().validator_schedule();
+        assert_eq!(schedule.len(), 1);
+        let committed = &schedule[&ACTIVATION];
+        assert_eq!(committed.len(), 4);
+        assert_eq!(committed.iter().map(|m| m.power).sum::<u64>(), 6);
+        assert_eq!(adapter.frontier().height, HEIGHTS);
+        drop(adapter);
+    }
+
+    for node in nodes {
+        node.crash().await;
     }
     let _ = std::fs::remove_dir_all(&base);
 }

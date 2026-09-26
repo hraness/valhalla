@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 pub use vhalla_core::{RealmId, RoomId};
 #[cfg(unix)]
 use vhalla_journal::{Bundle, BundleParts, FsStore, Journal, JournalError, Outcome, Store};
+pub use vhalla_rooms::registry::ValidatorMember;
 use vhalla_rooms::registry::{DirectoryPolicy, Registry, RegistryError};
 use vhalla_rooms::DirectoryId;
 use vhalla_social::archive::{Archive, Budget, Limits};
@@ -64,6 +65,13 @@ pub const MAX_GAME_COMMITMENTS: usize = 32;
 /// may not jump more than a day ahead — a stalled clock ratchets back toward
 /// real time at one day per committed height, never freezing.
 pub const MAX_TIME_DRIFT: u64 = 86_400;
+/// Minimum distance between the frontier a rotation batch validates
+/// against and the rotation's activation height: the replacement set must
+/// activate only after every replica has had at least one full height to
+/// observe the deciding commit. `from` must exceed
+/// `frontier.height + MIN_ROTATION_NOTICE`, so activation lands at least
+/// one height after the batch that decided it commits.
+pub const MIN_ROTATION_NOTICE: u64 = 2;
 
 const FRONTIER_BYTES: usize = 8 + 32 + 32 + 32 + 32 + 8;
 /// Fixed encoded bytes of one game commitment inside a V3 batch or body.
@@ -71,6 +79,111 @@ pub const GAME_COMMITMENT_BYTES: usize = 16 + 16 + 32 + 8 + 1 + 32;
 const BATCH_MAGIC: &[u8; 4] = b"VRB1";
 const BATCH_MAGIC_V2: &[u8; 4] = b"VRB2";
 const BATCH_MAGIC_V3: &[u8; 4] = b"VRB3";
+const BATCH_MAGIC_V4: &[u8; 4] = b"VRB4";
+
+/// A committed validator-set transition: the complete replacement set and
+/// the height it activates at. Like the eligible transition, its
+/// authorization is the quorum certificate deciding the carrying batch —
+/// admission is committee vote discipline, so no node self-admits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommittedRotation {
+    /// Activation height: the first consensus height the replacement set
+    /// governs. Must clear `frontier.height + MIN_ROTATION_NOTICE` at
+    /// validation so the deciding set and the committed set never disagree
+    /// about who signs a height's votes.
+    pub from: u64,
+    /// The complete key-sorted replacement set.
+    pub validators: Vec<ValidatorMember>,
+}
+
+/// Bounded decode of an optional rotation option: tag byte, then for `1`
+/// the activation height and member payload.
+fn rotation_option(rest: &mut &[u8]) -> Result<Option<CommittedRotation>, ApplyError> {
+    match take(rest, 1)?[0] {
+        0 => Ok(None),
+        1 => rotation_payload(rest).map(Some),
+        _ => Err(ApplyError::Decode),
+    }
+}
+
+/// Canonical encoding of an optional rotation: tag byte, then for `Some`
+/// the activation and the key-sorted member list.
+fn encode_rotation(raw: &mut Vec<u8>, rotation: &Option<CommittedRotation>) {
+    match rotation {
+        None => raw.push(0),
+        Some(rotation) => {
+            let mut set = rotation.validators.clone();
+            set.sort_unstable();
+            raw.push(1);
+            raw.extend_from_slice(&rotation.from.to_be_bytes());
+            raw.extend_from_slice(&(set.len() as u32).to_be_bytes());
+            for member in set {
+                raw.extend_from_slice(&member.key);
+                raw.extend_from_slice(&member.power.to_be_bytes());
+            }
+        }
+    }
+}
+
+const ROTATION_MAGIC: &[u8; 4] = b"VRT1";
+
+/// Canonical bytes for an operator-dropped `*.rotation` intake file: an
+/// activation height plus a bare replacement validator set the node queues
+/// as a config-only body.
+#[must_use]
+pub fn encode_rotation_update(rotation: &CommittedRotation) -> Vec<u8> {
+    let mut set = rotation.validators.clone();
+    set.sort_unstable();
+    let mut raw = Vec::with_capacity(16 + set.len() * 40);
+    raw.extend_from_slice(ROTATION_MAGIC);
+    raw.extend_from_slice(&rotation.from.to_be_bytes());
+    raw.extend_from_slice(&(set.len() as u32).to_be_bytes());
+    for member in set {
+        raw.extend_from_slice(&member.key);
+        raw.extend_from_slice(&member.power.to_be_bytes());
+    }
+    raw
+}
+
+/// Strict bounded decode of a `*.rotation` intake file.
+pub fn decode_rotation_update(raw: &[u8]) -> Result<CommittedRotation, ApplyError> {
+    if raw.len() < 16
+        || raw.len() > 16 + vhalla_rooms::registry::MAX_VALIDATORS * 40
+        || raw.get(..4) != Some(ROTATION_MAGIC.as_slice())
+    {
+        return Err(ApplyError::Decode);
+    }
+    let mut rest = &raw[4..];
+    let rotation = rotation_payload(&mut rest)?;
+    if !rest.is_empty() {
+        return Err(ApplyError::Decode);
+    }
+    Ok(rotation)
+}
+
+/// The shared member-list decode for the rotation option and the intake
+/// file: `from` plus a strictly key-ascending member list.
+fn rotation_payload(rest: &mut &[u8]) -> Result<CommittedRotation, ApplyError> {
+    let from = u64::from_be_bytes(take(rest, 8)?.try_into().unwrap());
+    let count = u32::from_be_bytes(take(rest, 4)?.try_into().unwrap()) as usize;
+    if count == 0 || count > vhalla_rooms::registry::MAX_VALIDATORS {
+        return Err(ApplyError::Decode);
+    }
+    let mut validators = Vec::with_capacity(count);
+    for _ in 0..count {
+        let key = take(rest, 32)?.try_into().unwrap();
+        let power = u64::from_be_bytes(take(rest, 8)?.try_into().unwrap());
+        if power == 0
+            || validators
+                .last()
+                .is_some_and(|m: &ValidatorMember| m.key >= key)
+        {
+            return Err(ApplyError::Decode);
+        }
+        validators.push(ValidatorMember { key, power });
+    }
+    Ok(CommittedRotation { from, validators })
+}
 
 /// Bounded decode of a canonical eligible-source set: strictly ascending,
 /// duplicate-free owner ids bounded by `MAX_OWNERS`.
@@ -311,6 +424,13 @@ pub struct Batch {
     /// heights. Its authorization is the quorum certificate that decides the
     /// batch's value id — curation is committee vote discipline.
     pub eligible: Option<Vec<OwnerId>>,
+    /// Committed configuration transition: a validator-set replacement
+    /// activating at `rotation.from`, applied after this batch's records so
+    /// every replica schedules the same set at the same height. Like the
+    /// eligible transition it is authorized solely by the deciding quorum
+    /// certificate — the committed registry digests it, so the activation
+    /// replays identically on every node.
+    pub rotation: Option<CommittedRotation>,
     /// Claimed post-apply `Registry::digest()`.
     pub result_registry: [u8; 32],
     /// Claimed post-merge `Archive::root()`.
@@ -321,12 +441,16 @@ pub struct Batch {
 
 impl Batch {
     /// Canonical encoding bound by `MAX_BATCH_BYTES`. Existing batches keep
-    /// their exact `VRB1`/`VRB2` form; `VRB3` is emitted only when at least one
-    /// game commitment is present and carries an explicit eligible-set option.
+    /// their exact `VRB1`/`VRB2`/`VRB3` forms; `VRB4` is emitted only when a
+    /// rotation is present and carries the eligible-set option, the game
+    /// commitment list and the required rotation payload.
     pub fn encode(&self) -> Vec<u8> {
-        let v3 = !self.games.is_empty();
+        let v4 = self.rotation.is_some();
+        let v3 = !v4 && !self.games.is_empty();
         let mut raw = Vec::with_capacity(256 + self.games.len() * GAME_COMMITMENT_BYTES);
-        raw.extend_from_slice(if v3 {
+        raw.extend_from_slice(if v4 {
+            BATCH_MAGIC_V4
+        } else if v3 {
             BATCH_MAGIC_V3
         } else if self.eligible.is_none() {
             BATCH_MAGIC
@@ -345,11 +469,14 @@ impl Batch {
             raw.extend_from_slice(&(item.len() as u32).to_be_bytes());
             raw.extend_from_slice(item);
         }
-        if v3 {
+        if v4 || v3 {
             encode_eligible(&mut raw, &self.eligible);
             raw.extend_from_slice(&(self.games.len() as u32).to_be_bytes());
             for commitment in &self.games {
                 commitment.encode_into(&mut raw);
+            }
+            if v4 {
+                encode_rotation(&mut raw, &self.rotation);
             }
         } else if self.eligible.is_some() {
             encode_eligible(&mut raw, &self.eligible);
@@ -359,15 +486,17 @@ impl Batch {
         raw.extend_from_slice(&self.result_control);
         raw
     }
-    /// Strict bounded decode of `encode` output. Retained `VRB1` and `VRB2`
-    /// batches remain byte-identical. `VRB2` requires an eligible transition;
-    /// `VRB3` requires at least one bounded game commitment.
+    /// Strict bounded decode of `encode` output. Retained `VRB1`, `VRB2` and
+    /// `VRB3` batches remain byte-identical. `VRB2` requires an eligible
+    /// transition; `VRB3` requires at least one bounded game commitment;
+    /// `VRB4` requires a rotation.
     pub fn decode(raw: &[u8]) -> Result<Self, ApplyError> {
         let v2 = raw.get(..4) == Some(BATCH_MAGIC_V2.as_slice());
         let v3 = raw.get(..4) == Some(BATCH_MAGIC_V3.as_slice());
+        let v4 = raw.get(..4) == Some(BATCH_MAGIC_V4.as_slice());
         if raw.len() < 4 + FRONTIER_BYTES + 8 + 4 + 4 + 96
             || raw.len() > MAX_BATCH_BYTES
-            || !(v2 || v3 || raw.get(..4) == Some(BATCH_MAGIC.as_slice()))
+            || !(v2 || v3 || v4 || raw.get(..4) == Some(BATCH_MAGIC.as_slice()))
         {
             return Err(ApplyError::Decode);
         }
@@ -391,16 +520,16 @@ impl Batch {
         };
         let evidence = items(&mut rest)?;
         let records = items(&mut rest)?;
-        let eligible = if v3 {
+        let eligible = if v4 || v3 {
             eligible_set(&mut rest)?
         } else if v2 {
             Some(eligible_set(&mut rest)?.ok_or(ApplyError::Decode)?)
         } else {
             None
         };
-        let games = if v3 {
+        let games = if v4 || v3 {
             let count = u32::from_be_bytes(take(&mut rest, 4)?.try_into().unwrap()) as usize;
-            if count == 0 || count > MAX_GAME_COMMITMENTS {
+            if count > MAX_GAME_COMMITMENTS || (v3 && count == 0) {
                 return Err(ApplyError::Decode);
             }
             let mut games = Vec::with_capacity(count);
@@ -410,6 +539,11 @@ impl Batch {
             games
         } else {
             Vec::new()
+        };
+        let rotation = if v4 {
+            Some(rotation_option(&mut rest)?.ok_or(ApplyError::Decode)?)
+        } else {
+            None
         };
         let result_registry = take(&mut rest, 32)?.try_into().unwrap();
         let result_social = take(&mut rest, 32)?.try_into().unwrap();
@@ -424,6 +558,7 @@ impl Batch {
             records,
             games,
             eligible,
+            rotation,
             result_registry,
             result_social,
             result_control,
@@ -456,20 +591,28 @@ pub struct BatchBody {
     /// award-source set. Carried on the operator-dropped `*.eligible` intake
     /// path; ordinary producer submissions leave it `None`.
     pub eligible: Option<Vec<OwnerId>>,
+    /// Optional committed configuration transition — a validator-set
+    /// replacement activating at `rotation.from`. Carried on the
+    /// operator-dropped `*.rotation` intake path.
+    pub rotation: Option<CommittedRotation>,
 }
 
 const BODY_MAGIC: &[u8; 4] = b"VBB1";
 const BODY_MAGIC_V2: &[u8; 4] = b"VBB2";
 const BODY_MAGIC_V3: &[u8; 4] = b"VBB3";
+const BODY_MAGIC_V4: &[u8; 4] = b"VBB4";
 
 impl BatchBody {
-    /// Canonical bounded encoding. Existing transition-free and transition
-    /// bodies remain `VBB1` and `VBB2`; `VBB3` is emitted only for a nonempty
-    /// game commitment lane.
+    /// Canonical bounded encoding. Existing transition-free, transition and
+    /// game bodies remain `VBB1`, `VBB2` and `VBB3`; `VBB4` is emitted only
+    /// when a rotation is present.
     pub fn encode(&self) -> Vec<u8> {
-        let v3 = !self.games.is_empty();
+        let v4 = self.rotation.is_some();
+        let v3 = !v4 && !self.games.is_empty();
         let mut raw = Vec::with_capacity(64 + self.games.len() * GAME_COMMITMENT_BYTES);
-        raw.extend_from_slice(if v3 {
+        raw.extend_from_slice(if v4 {
+            BODY_MAGIC_V4
+        } else if v3 {
             BODY_MAGIC_V3
         } else if self.eligible.is_none() {
             BODY_MAGIC
@@ -484,26 +627,30 @@ impl BatchBody {
                 raw.extend_from_slice(item);
             }
         }
-        if v3 {
+        if v4 || v3 {
             encode_eligible(&mut raw, &self.eligible);
             raw.extend_from_slice(&(self.games.len() as u32).to_be_bytes());
             for commitment in &self.games {
                 commitment.encode_into(&mut raw);
+            }
+            if v4 {
+                encode_rotation(&mut raw, &self.rotation);
             }
         } else if self.eligible.is_some() {
             encode_eligible(&mut raw, &self.eligible);
         }
         raw
     }
-    /// Strict bounded decode of `encode` output. Retained `VBB1` and `VBB2`
-    /// bodies remain byte-identical; `VBB3` requires at least one bounded game
-    /// commitment.
+    /// Strict bounded decode of `encode` output. Retained `VBB1`, `VBB2` and
+    /// `VBB3` bodies remain byte-identical; `VBB3` requires at least one
+    /// bounded game commitment; `VBB4` requires a rotation.
     pub fn decode(raw: &[u8]) -> Result<Self, ApplyError> {
         let v2 = raw.get(..4) == Some(BODY_MAGIC_V2.as_slice());
         let v3 = raw.get(..4) == Some(BODY_MAGIC_V3.as_slice());
+        let v4 = raw.get(..4) == Some(BODY_MAGIC_V4.as_slice());
         if raw.len() < 4 + 8 + 4 + 4
             || raw.len() > MAX_BATCH_BYTES
-            || !(v2 || v3 || raw.get(..4) == Some(BODY_MAGIC.as_slice()))
+            || !(v2 || v3 || v4 || raw.get(..4) == Some(BODY_MAGIC.as_slice()))
         {
             return Err(ApplyError::Decode);
         }
@@ -526,16 +673,16 @@ impl BatchBody {
         };
         let evidence = items(&mut rest)?;
         let records = items(&mut rest)?;
-        let eligible = if v3 {
+        let eligible = if v4 || v3 {
             eligible_set(&mut rest)?
         } else if v2 {
             Some(eligible_set(&mut rest)?.ok_or(ApplyError::Decode)?)
         } else {
             None
         };
-        let games = if v3 {
+        let games = if v4 || v3 {
             let count = u32::from_be_bytes(take(&mut rest, 4)?.try_into().unwrap()) as usize;
-            if count == 0 || count > MAX_GAME_COMMITMENTS {
+            if count > MAX_GAME_COMMITMENTS || (v3 && count == 0) {
                 return Err(ApplyError::Decode);
             }
             let mut games = Vec::with_capacity(count);
@@ -546,6 +693,11 @@ impl BatchBody {
         } else {
             Vec::new()
         };
+        let rotation = if v4 {
+            Some(rotation_option(&mut rest)?.ok_or(ApplyError::Decode)?)
+        } else {
+            None
+        };
         if !rest.is_empty() {
             return Err(ApplyError::Decode);
         }
@@ -555,6 +707,7 @@ impl BatchBody {
             records,
             games,
             eligible,
+            rotation,
         })
     }
 }
@@ -678,14 +831,15 @@ impl Application {
 
     /// Replays `evidence` + `records` against clones at the agreed clock:
     /// archive merge, deterministic award harvest, ordered room applies, then
-    /// the optional committed configuration transition — applied last so it
-    /// governs subsequent heights, never the batch carrying it.
+    /// the optional committed configuration transitions — applied last so
+    /// they govern subsequent heights, never the batch carrying them.
     fn replay(
         &self,
         time: u64,
         evidence: &[Vec<u8>],
         records: &[Vec<u8>],
         eligible: Option<&[OwnerId]>,
+        rotation: Option<&CommittedRotation>,
     ) -> Result<(Archive, Registry), ApplyError> {
         let mut social = self.social.clone();
         let mut budget = Budget::new(evidence.len() * 2, evidence.iter().map(Vec::len).sum())
@@ -720,6 +874,18 @@ impl Application {
                 .set_eligible(eligible, time)
                 .map_err(ApplyError::Registry)?;
         }
+        if let Some(rotation) = rotation {
+            // The activation must land strictly after the height this batch
+            // commits at — otherwise the certificate that decided the
+            // carrying batch would be verified against a set that disagrees
+            // with the set that signed it.
+            if rotation.from <= self.frontier.height.saturating_add(MIN_ROTATION_NOTICE) {
+                return Err(ApplyError::Rotation);
+            }
+            registry
+                .apply_rotation(rotation.from, &rotation.validators, time)
+                .map_err(ApplyError::Registry)?;
+        }
         Ok((social, registry))
     }
 
@@ -732,7 +898,7 @@ impl Application {
         records: Vec<Vec<u8>>,
         eligible: Option<Vec<OwnerId>>,
     ) -> Result<Checked, ApplyError> {
-        self.prepare_with_games(time, evidence, records, Vec::new(), eligible)
+        self.prepare_with_games(time, evidence, records, Vec::new(), eligible, None)
     }
 
     /// Builds a decided-candidate batch with inert game commitments against
@@ -746,6 +912,7 @@ impl Application {
         records: Vec<Vec<u8>>,
         games: Vec<GameCommitment>,
         eligible: Option<Vec<OwnerId>>,
+        rotation: Option<CommittedRotation>,
     ) -> Result<Checked, ApplyError> {
         if evidence.len() > MAX_BATCH_ITEMS
             || records.len() > MAX_BATCH_ITEMS
@@ -754,7 +921,13 @@ impl Application {
             return Err(ApplyError::Bounds);
         }
         let time = self.bound_time(time);
-        let (social, registry) = self.replay(time, &evidence, &records, eligible.as_deref())?;
+        let (social, registry) = self.replay(
+            time,
+            &evidence,
+            &records,
+            eligible.as_deref(),
+            rotation.as_ref(),
+        )?;
         let batch = Batch {
             parent: self.frontier,
             time,
@@ -762,6 +935,7 @@ impl Application {
             records,
             games,
             eligible,
+            rotation,
             result_registry: registry.digest(),
             result_social: *social.root().as_bytes(),
             result_control: control_of(&social, &registry, time),
@@ -805,6 +979,7 @@ impl Application {
             &batch.evidence,
             &batch.records,
             batch.eligible.as_deref(),
+            batch.rotation.as_ref(),
         )?;
         if registry.digest() != batch.result_registry
             || *social.root().as_bytes() != batch.result_social
@@ -1361,6 +1536,9 @@ pub enum ApplyError {
     /// The batch's clock regressed the committed frontier or advanced more
     /// than `MAX_TIME_DRIFT`.
     Clock,
+    /// The carried rotation's activation height does not clear the decided
+    /// height by `MIN_ROTATION_NOTICE`.
+    Rotation,
 }
 
 /// Errors opening, publishing or rebuilding the adapter.

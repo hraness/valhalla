@@ -210,6 +210,7 @@ fn formal_recovery_game_batch_redelivery_preserves_order_and_identity() {
                     object: [5; 32],
                 }],
                 None,
+                None,
             )
             .unwrap();
         redeliver(&mut adapter, &checked, cut);

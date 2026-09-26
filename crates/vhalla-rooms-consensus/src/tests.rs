@@ -126,6 +126,7 @@ fn committed_game_only_batch_reconciles_an_unadvanced_frontier() {
                 object: [5; 32],
             }],
             None,
+            None,
         )
         .unwrap();
     let batch = checked.batch().clone();
@@ -984,6 +985,7 @@ fn vrb1_batches_and_bodies_decode_without_transitions() {
         records: vec![],
         games: vec![],
         eligible: Some(vec![OwnerId::from_bytes([7; 32])]),
+        rotation: None,
     };
     let raw = body.encode();
     assert_eq!(&raw[..4], b"VBB2");
@@ -997,6 +999,7 @@ fn vrb1_batches_and_bodies_decode_without_transitions() {
         records: vec![],
         games: vec![],
         eligible: None,
+        rotation: None,
     };
     let raw = plain.encode();
     assert_eq!(&raw[..4], b"VBB1");
@@ -1023,7 +1026,7 @@ fn vrb3_orders_bounded_game_commitments_without_mutating_application_state() {
     };
     let checked = scenario
         .app
-        .prepare_with_games(1, vec![], vec![], vec![commitment], None)
+        .prepare_with_games(1, vec![], vec![], vec![commitment], None, None)
         .unwrap();
     let batch = checked.batch();
     let raw = batch.encode();
@@ -1059,11 +1062,11 @@ fn vrb3_orders_bounded_game_commitments_without_mutating_application_state() {
     };
     let forward = scenario
         .app
-        .prepare_with_games(1, vec![], vec![], vec![commitment, another], None)
+        .prepare_with_games(1, vec![], vec![], vec![commitment, another], None, None)
         .unwrap();
     let reverse = scenario
         .app
-        .prepare_with_games(1, vec![], vec![], vec![another, commitment], None)
+        .prepare_with_games(1, vec![], vec![], vec![another, commitment], None, None)
         .unwrap();
     assert_ne!(forward.batch().value_id(), reverse.batch().value_id());
 
@@ -1073,6 +1076,7 @@ fn vrb3_orders_bounded_game_commitments_without_mutating_application_state() {
         records: vec![],
         games: vec![commitment],
         eligible: Some(vec![OwnerId::from_bytes([7; 32])]),
+        rotation: None,
     };
     let raw = body.encode();
     assert_eq!(&raw[..4], b"VBB3");
@@ -1087,6 +1091,7 @@ fn vrb3_orders_bounded_game_commitments_without_mutating_application_state() {
             vec![],
             vec![],
             vec![commitment; MAX_GAME_COMMITMENTS + 1],
+            None,
             None,
         ),
         Err(ApplyError::Bounds)
@@ -1159,6 +1164,7 @@ fn decoders_accept_only_canonical_bytes() {
                 object: [5; 32],
             }],
             None,
+            None,
         )
         .unwrap();
     check(
@@ -1176,6 +1182,7 @@ fn decoders_accept_only_canonical_bytes() {
         records: vec![],
         games: vec![],
         eligible: Some(vec![OwnerId::from_bytes([7; 32])]),
+        rotation: None,
     };
     let game_body = BatchBody {
         time: 9,
@@ -1190,6 +1197,7 @@ fn decoders_accept_only_canonical_bytes() {
             object: [5; 32],
         }],
         eligible: None,
+        rotation: None,
     };
     check(
         vec![
@@ -1201,6 +1209,7 @@ fn decoders_accept_only_canonical_bytes() {
                 records: vec![],
                 games: vec![],
                 eligible: None,
+                rotation: None,
             }
             .encode(),
         ],
@@ -1379,4 +1388,200 @@ fn restart_replays_published_journal_after_unpublished_snapshot_preparation() {
         );
         let _ = std::fs::remove_dir_all(home);
     }
+}
+
+/// A deterministic Ed25519 public key for validator members — committed
+/// sets require canonical points, not raw digest bytes.
+fn member_key(seed: u8) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    bytes[0] = seed;
+    ed25519_dalek::SigningKey::from_bytes(&bytes)
+        .verifying_key()
+        .to_bytes()
+}
+
+fn member(seed: u8, power: u64) -> ValidatorMember {
+    ValidatorMember {
+        key: member_key(seed),
+        power,
+    }
+}
+
+#[test]
+fn rotation_intake_file_round_trips_and_rejects_malformed() {
+    let rotation = CommittedRotation {
+        from: 30,
+        validators: vec![member(2, 7), member(1, 3)],
+    };
+    let raw = encode_rotation_update(&rotation);
+    assert_eq!(&raw[..4], b"VRT1");
+    let decoded = decode_rotation_update(&raw).unwrap();
+    // Decode returns the canonical key-sorted set.
+    assert_eq!(decoded.from, 30);
+    assert!(decoded
+        .validators
+        .windows(2)
+        .all(|pair| pair[0].key < pair[1].key));
+    assert_eq!(decoded.validators.len(), 2);
+    // Re-encoding the canonical decode is byte-stable.
+    assert_eq!(encode_rotation_update(&decoded), raw);
+
+    // Bad magic, trailing bytes, zero count, unsorted keys, zero power.
+    let mut bad_magic = raw.clone();
+    bad_magic[3] = b'2';
+    assert!(decode_rotation_update(&bad_magic).is_err());
+    let mut trailing = raw.clone();
+    trailing.push(0);
+    assert!(decode_rotation_update(&trailing).is_err());
+    let mut zero_count = raw.clone();
+    zero_count[8..12].copy_from_slice(&0u32.to_be_bytes());
+    zero_count.truncate(16);
+    assert!(decode_rotation_update(&zero_count).is_err());
+    // Swap the two members — the wire is strictly key-ascending.
+    let mut unsorted = raw.clone();
+    let (a, b) = (16usize, 56usize);
+    for i in 0..40 {
+        unsorted.swap(a + i, b + i);
+    }
+    assert!(decode_rotation_update(&unsorted).is_err());
+    // Zero the first member's power.
+    let mut zeroed = raw.clone();
+    zeroed[16 + 32..16 + 40].copy_from_slice(&0u64.to_be_bytes());
+    assert!(decode_rotation_update(&zeroed).is_err());
+}
+
+#[test]
+fn vrb4_batches_and_bodies_carry_the_rotation() {
+    let scenario = fixture::scenario(2, 4);
+    let plain = scenario.app.prepare(1, vec![], vec![], None).unwrap().batch;
+    // A rotation-bearing batch encodes `VRB4` and carries the set.
+    let mut rotated = plain.clone();
+    rotated.rotation = Some(CommittedRotation {
+        from: 30,
+        validators: vec![member(2, 7), member(1, 3)],
+    });
+    let raw = rotated.encode();
+    assert_eq!(&raw[..4], b"VRB4");
+    let decoded = Batch::decode(&raw).unwrap();
+    assert_eq!(decoded.rotation.as_ref().unwrap().validators.len(), 2);
+    assert_eq!(decoded.encode(), raw);
+    assert_eq!(decoded.value_id(), rotated.value_id());
+    // The rotation binds the value id: same batch sans rotation differs.
+    assert_ne!(rotated.value_id(), plain.value_id());
+    // `VRB4` requires the rotation — a tag-0 tail is noncanonical.
+    let mut flag0 = raw.clone();
+    let tag_at = flag0.len() - (8 + 4 + 2 * 40) - 1;
+    flag0[tag_at] = 0;
+    flag0.truncate(tag_at + 1);
+    assert!(matches!(Batch::decode(&flag0), Err(ApplyError::Decode)));
+    // Trailing garbage past the rotation tail is rejected.
+    let mut trailing = raw.clone();
+    trailing.push(0);
+    assert!(matches!(Batch::decode(&trailing), Err(ApplyError::Decode)));
+
+    let body = BatchBody {
+        time: 9,
+        evidence: vec![],
+        records: vec![],
+        games: vec![],
+        eligible: None,
+        rotation: Some(CommittedRotation {
+            from: 12,
+            validators: vec![member(3, 1)],
+        }),
+    };
+    let raw = body.encode();
+    assert_eq!(&raw[..4], b"VBB4");
+    let decoded = BatchBody::decode(&raw).unwrap();
+    assert_eq!(decoded.rotation, body.rotation);
+    assert_eq!(decoded.encode(), raw);
+}
+
+#[test]
+fn replay_commits_rotation_into_registry_schedule() {
+    let scenario = fixture::scenario(2, 4);
+    // The notice bound on a fresh frontier: `from` must clear
+    // `frontier.height + MIN_ROTATION_NOTICE`, so at genesis `from` 2 is
+    // refused and 3 is the earliest valid activation.
+    let near = CommittedRotation {
+        from: 2,
+        validators: vec![member(3, 1)],
+    };
+    assert!(matches!(
+        scenario
+            .app
+            .prepare_with_games(1, vec![], vec![], vec![], None, Some(near)),
+        Err(ApplyError::Rotation)
+    ));
+    let rotation = CommittedRotation {
+        from: 30,
+        validators: vec![member(1, 5), member(2, 3)],
+    };
+    let checked = scenario
+        .app
+        .prepare_with_games(1, vec![], vec![], vec![], None, Some(rotation.clone()))
+        .unwrap();
+    let batch = checked.batch().clone();
+    // The scheduled set is inside the claimed registry digest.
+    let mut app = Application::genesis(
+        scenario.app.social().clone(),
+        scenario.app.registry().clone(),
+    );
+    let checked = app.validate(&batch).unwrap();
+    app.apply_locally(checked);
+    let schedule = app.registry().validator_schedule();
+    assert_eq!(schedule.len(), 1);
+    assert_eq!(schedule[&30].len(), 2);
+    // A next activation past the committed one commits in order.
+    let ok = CommittedRotation {
+        from: 31,
+        validators: vec![member(3, 1)],
+    };
+    assert!(app
+        .prepare_with_games(2, vec![], vec![], vec![], None, Some(ok))
+        .is_ok());
+    // An activation at or below the committed schedule's latest entry is
+    // append-only-closed through the registry bound — 25 clears the
+    // notice bound (frontier 1 + 2) so the rejection is the order rule.
+    let backfill = CommittedRotation {
+        from: 25,
+        validators: vec![member(4, 1)],
+    };
+    assert!(matches!(
+        app.prepare_with_games(2, vec![], vec![], vec![], None, Some(backfill)),
+        Err(ApplyError::Registry(RegistryError::Bounds))
+    ));
+}
+
+#[test]
+fn replay_rejects_invalid_rotation_members() {
+    let scenario = fixture::scenario(2, 4);
+    // Zero-power member passes struct construction (decode would reject
+    // it) and fails at the registry bound during replay.
+    let zero = CommittedRotation {
+        from: 30,
+        validators: vec![ValidatorMember {
+            key: member_key(1),
+            power: 0,
+        }],
+    };
+    assert!(matches!(
+        scenario
+            .app
+            .prepare_with_games(1, vec![], vec![], vec![], None, Some(zero)),
+        Err(ApplyError::Registry(RegistryError::Bounds))
+    ));
+    // A key that is not a canonical Ed25519 point.
+    let mut bad_member = member(2, 1);
+    bad_member.key = [0x02; 32];
+    let bad = CommittedRotation {
+        from: 30,
+        validators: vec![bad_member],
+    };
+    assert!(matches!(
+        scenario
+            .app
+            .prepare_with_games(1, vec![], vec![], vec![], None, Some(bad)),
+        Err(ApplyError::Registry(RegistryError::Bounds))
+    ));
 }

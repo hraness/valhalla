@@ -439,6 +439,35 @@ id — and applies after that batch's awards and records, so it governs
 subsequent heights. The wire format is bounded at 256 owner ids and
 canonical (sorted, duplicate-free).
 
+Validator membership rotates in-band the same way:
+`vhalla rooms rotate SOCIAL_STORE NODE_HOME REALM HEIGHT KEY64:POWER,...`
+writes a canonical `*.rotation` intake file carrying one complete
+replacement validator set and its activation height. The node queues it
+as a configuration-only body, and the current committee's certificate on
+the carrying batch is its whole authorisation: a validator is admitted by
+the protocol, never self-declared. The activation must clear the
+committed journal height by the protocol notice bound so the carrying
+batch's certificate is still checked under the old set and every replica
+observes the transition before it activates. Once committed, the decided
+schedule lives in the registry (and therefore in snapshots and the
+registry digest) and governs every height from `from` onward regardless
+of file entries. `node-check` reports committed rotations and warns when
+a config activation is shadowed. Each committed set is validated before
+it lands: canonical Ed25519 keys, non-zero powers, distinct keys, total
+power bounded for strict `> 2/3` quorum arithmetic, at most 64 members
+and 64 committed rotations, and strictly increasing activation heights.
+
+`vhalla rooms score SOCIAL_STORE NODE_HOME REALM HEIGHT [MAX]` builds the
+same candidate file from committed social credit instead of a member
+list: it ranks the registry's accounts by `earned`, which is credit the
+directory committed through mature awards rather than a self-reported
+claim, takes the top `MAX` owners (default 64), and emits each as a
+`ValidatorMember` whose key is the owner id and whose power is the
+earned score. Ranking is a pure function of committed state ((earned
+descending, owner id ascending) breaks ties), so every operator scoring
+the same ledger emits a byte-identical candidate. `score` proposes;
+the committee still disposes.
+
 ### A private validator set over a real network
 
 The default config binds `127.0.0.1` only. The optional `listen` field —
@@ -479,7 +508,14 @@ complete command sequence is in the runbook below):
    `NODE_HOME/intake/`, and prints the same `genesis` fingerprint plus
    `node_key_votes_from` — the height their key starts voting, or
    `null` with a warning if the operator has not listed their
-   `public_key` yet. A `KEY64@` prefix pins the peer's consensus
+   `public_key` yet. `--discovery true` turns on Malachite's managed
+   peer discovery: the configured `peers` double as bootstrap nodes and
+   the node learns further peers over the wire instead of needing every
+   member listed in every file. It requires at least one peer to
+   bootstrap from, is mutually exclusive with `peers_only` (a closed
+   mesh has nothing to discover), and unpinned bootstrap entries get a
+   `node-check` warning because any peer at an unpinned address can seed
+   the learned set. A `KEY64@` prefix pins the peer's consensus
    public key (the `keygen` output members already exchange for the
    validator list): the node derives the peer's deterministic libp2p
    identity and the Noise handshake verifies it, so a hijacked or
@@ -521,7 +557,7 @@ power, so an equal-power set of three tolerates **zero** offline members —
 four members tolerate exactly one. `network-init` and `node-check` print
 `quorum_power` and `absent_power_tolerated` for the configured set.
 
-Validator-set rotation is a two-command operator/member flow — a friend
+File-level rotation is a two-command operator/member flow — a friend
 joining with voting power, or a member leaving, never touches decided
 history. The operator runs `vhalla rooms network-extend network.json
 network-v2.json --from HEIGHT --validators KEY64:POWER,...`, which copies
@@ -535,7 +571,10 @@ for the award-source set), reads the committed height from the journal,
 and rejects edits to activations at or below it. A restarted node votes
 under the new set from `HEIGHT` on; a joiner scaffolds straight onto
 `network-v2.json` with `node-init`, whose `node_key_votes_from` then
-reports the activation height.
+reports the activation height. File activations govern only until the
+first committed `*.rotation` passes: from that activation on, the decided
+schedule in the registry owns every later height on every replica, and
+`node-check` warns about file entries it shadows.
 
 A non-loopback `listen` keeps malachite's default per-IP connection
 bound rather than the single-host ceiling lift used for local test
