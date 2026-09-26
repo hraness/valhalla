@@ -255,33 +255,32 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                         Fault::PendingAfter => {
                             assert!(!ran(pair.member.receive(&wire, now)));
                             reopen_member(
-            &mut pair.member,
-            &pair.member_disk,
-            &pair.member_home,
-            &pair.member_key,
-            pair.member_context,
-            &mut shadow,
-        )
-        .await;
+                                &mut pair.member,
+                                &pair.member_disk,
+                                &pair.member_home,
+                                &pair.member_key,
+                                pair.member_context,
+                                &mut shadow,
+                            )
+                            .await;
                         }
                         Fault::None => {
                             let message = pair.member.receive(&wire, now).await.unwrap();
                             assert_eq!(message.body(), body.as_slice());
-                            let prior =
-                                shadow.delivered[1].insert(wire, message.sequence());
+                            let prior = shadow.delivered[1].insert(wire, message.sequence());
                             assert!(prior.is_none());
                         }
                         _ => {
                             assert!(pair.member.receive(&wire, now).await.is_err());
                             reopen_member(
-            &mut pair.member,
-            &pair.member_disk,
-            &pair.member_home,
-            &pair.member_key,
-            pair.member_context,
-            &mut shadow,
-        )
-        .await;
+                                &mut pair.member,
+                                &pair.member_disk,
+                                &pair.member_home,
+                                &pair.member_key,
+                                pair.member_context,
+                                &mut shadow,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -297,18 +296,17 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                         Fault::PendingAfter => {
                             assert!(!ran(pair.member.send(operation, &draft, now)));
                             reopen_member(
-            &mut pair.member,
-            &pair.member_disk,
-            &pair.member_home,
-            &pair.member_key,
-            pair.member_context,
-            &mut shadow,
-        )
-        .await;
+                                &mut pair.member,
+                                &pair.member_disk,
+                                &pair.member_home,
+                                &pair.member_key,
+                                pair.member_context,
+                                &mut shadow,
+                            )
+                            .await;
                         }
                         Fault::None => {
-                            let outbox =
-                                pair.member.send(operation, &draft, now).await.unwrap();
+                            let outbox = pair.member.send(operation, &draft, now).await.unwrap();
                             assert_eq!(outbox.sequence(), shadow.outbox_head[1] + 1);
                             shadow.outbox_head[1] = outbox.sequence();
                             shadow.sent[1].push((outbox.bytes().to_vec(), body));
@@ -316,14 +314,14 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                         _ => {
                             assert!(pair.member.send(operation, &draft, now).await.is_err());
                             reopen_member(
-            &mut pair.member,
-            &pair.member_disk,
-            &pair.member_home,
-            &pair.member_key,
-            pair.member_context,
-            &mut shadow,
-        )
-        .await;
+                                &mut pair.member,
+                                &pair.member_disk,
+                                &pair.member_home,
+                                &pair.member_key,
+                                pair.member_context,
+                                &mut shadow,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -384,10 +382,7 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
 /// Read back the committed artifact bytes at an exact outbox position —
 /// the queue status deliberately does not expose wire bytes.
 async fn committed_wire(kernel: &mut Kernel<Disk>, sequence: u64) -> Vec<u8> {
-    let page = kernel
-        .outbox(sequence - 1, MAX_PAGE_RECORDS)
-        .await
-        .unwrap();
+    let page = kernel.outbox(sequence - 1, MAX_PAGE_RECORDS).await.unwrap();
     page.records
         .into_iter()
         .find_map(|entry| {
