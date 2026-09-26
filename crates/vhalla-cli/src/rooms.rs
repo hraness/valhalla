@@ -36,6 +36,8 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   node-check NODE_HOME --config FILE  (build: --features experimental-rooms-node)
   keygen  (build: --features experimental-rooms-node)
   eligible NODE_HOME OWNER64,... (build: --features experimental-rooms-node)
+  rotate NODE_HOME HEIGHT KEY64:POWER,... (build: --features experimental-rooms-node)
+  score NODE_HOME HEIGHT [MAX] (build: --features experimental-rooms-node)
   network-init OUT --realm R32 --directory D64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]  (build: --features experimental-rooms-node)
   node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers [KEY64@]HOST:PORT,...] [--peers-only true]  (build: --features experimental-rooms-node)
   network-extend IN OUT --from HEIGHT --validators KEY:POWER,...  (build: --features experimental-rooms-node)
@@ -79,6 +81,13 @@ replacement validator set activating at a future height; `node-update`
 merges that file into a member's existing node.json - keeping its key,
 port and peers - and refuses any change to activations at or below the
 committed height. A restarted node picks the new schedule up.
+`rotate` drops a validator-set replacement as a *.rotation intake file
+instead: the current committee's certificate on the carrying batch
+decides it, the activation must clear the committed height by the
+protocol notice bound, and once it commits the decided schedule governs
+every height from `from` onward regardless of file entries. `score`
+builds the same candidate from committed social credit - the top owners
+by `earned` at HEIGHT [MAX].
 Producers submit canonical batches by dropping *.batch files into
 NODE_HOME/intake/; operators evolve the eligible set by dropping *.eligible
 files there - `rooms eligible NODE_HOME OWNER64,...` writes one. Committed
@@ -414,6 +423,23 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         #[cfg(not(feature = "experimental-rooms-node"))]
         {
             return Err("rooms eligible needs --features experimental-rooms-node".into());
+        }
+    }
+    if matches!(args.command.as_str(), "rotate" | "score") {
+        #[cfg(feature = "experimental-rooms-node")]
+        {
+            return if args.command == "rotate" {
+                crate::rooms_node::rotate(&args)
+            } else {
+                crate::rooms_node::score(&args)
+            };
+        }
+        #[cfg(not(feature = "experimental-rooms-node"))]
+        {
+            return Err(format!(
+                "rooms {} needs --features experimental-rooms-node",
+                args.command
+            ));
         }
     }
     if args.command == "submit" {

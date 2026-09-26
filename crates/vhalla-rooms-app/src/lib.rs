@@ -646,6 +646,7 @@ impl Service {
             records,
             games: Vec::new(),
             eligible: None,
+            rotation: None,
         };
         let tmp = path.with_extension("body.tmp");
         std::fs::write(&tmp, body.encode()).map_err(|e| Error::Io(e.to_string()))?;

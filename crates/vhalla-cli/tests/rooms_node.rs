@@ -2972,4 +2972,319 @@ mod enabled {
             .expect("status must resolve the same marker");
         assert_eq!(status_marker["state"].as_str(), Some("committed"));
     }
+    /// `rotate` drops a canonical `*.rotation` intake file the node's drain
+    /// decodes; retroactive heights and malformed member lists fail at
+    /// emission rather than as silent `.rejected` drops.
+    #[test]
+    fn rotate_command_writes_a_canonical_rotation_file() {
+        let temp = Temp::new();
+        let home = temp.path("node-home");
+        fs::create_dir_all(&home).unwrap();
+        let key = |seed: u8| hex(PrivateKey::from([seed; 32]).public_key().as_bytes());
+        let run = |height: &str, members: &str| {
+            Command::new(env!("CARGO_BIN_EXE_vhalla"))
+                .env("HRANESS_SUPPORT", "off")
+                .args([
+                    "rooms",
+                    "rotate",
+                    "unused-social",
+                    home.to_str().unwrap(),
+                    REALM_HEX,
+                    height,
+                    members,
+                ])
+                .output()
+                .unwrap()
+        };
+        // No committed journal yet: the earliest activation is the notice
+        // bound alone, so height 2 must refuse.
+        assert!(!run("2", &format!("{}:1", key(7))).status.success());
+        // Emission-side validation: zero power, duplicate keys and a key
+        // that is not a canonical Ed25519 point all fail before any file.
+        assert!(!run("8", &format!("{}:0", key(7))).status.success());
+        assert!(!run("8", &format!("{}:1,{}:2", key(7), key(7))).status.success());
+        assert!(!run("8", &format!("{}:1", hex(&[2u8; 32]))).status.success());
+        let members = format!("{}:3,{}:1", key(9), key(7));
+        let output = run("8", &members);
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let files: Vec<_> = fs::read_dir(home.join("intake"))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(files.len(), 1, "one canonical rotation file");
+        let path = files[0].path();
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("rotation"));
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        assert!(
+            stem.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
+            "intake-safe stem: {stem}"
+        );
+        let rotation =
+            vhalla_rooms_consensus::decode_rotation_update(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(rotation.from, 8);
+        assert_eq!(rotation.validators.len(), 2);
+        assert_eq!(rotation.validators.iter().map(|m| m.power).sum::<u64>(), 4);
+        assert!(
+            rotation.validators.windows(2).all(|w| w[0].key < w[1].key),
+            "canonical key order, not argument order"
+        );
+
+        // A repeat converges on the same deterministic name.
+        assert!(run("8", &members).status.success());
+        assert_eq!(fs::read_dir(home.join("intake")).unwrap().count(), 1);
+    }
+
+    /// `score` ranks committed social credit into a rotation candidate:
+    /// a running validator commits room-creation batches, the registry's
+    /// `earned` ledger fills, and the command emits the top owners as
+    /// `ValidatorMember`s whose power IS their earned credit.
+    #[test]
+    fn score_command_derives_members_from_committed_credit() {
+        let _mesh = mesh();
+        let temp = Temp::new();
+        let plan = fixture::plan(4, 8, 16);
+        let base = port_base();
+        let member = Member {
+            seed: [70; 32],
+            port: base,
+        };
+        let net = temp.path("network.json");
+        let eligible: String = plan
+            .genesis
+            .eligible
+            .iter()
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>()
+            .join(",");
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            &format!(
+                "{},{},{},{},{}",
+                plan.genesis.policy.base_cost,
+                plan.genesis.policy.window_seconds,
+                plan.genesis.policy.max_in_window,
+                plan.genesis.policy.support_epoch_seconds,
+                plan.genesis.policy.max_lifetime_rooms,
+            ),
+            "--validators",
+            &format!("1:{}:1", hex(
+                PrivateKey::from(member.seed).public_key().as_bytes()
+            )),
+            "--eligible",
+            &eligible,
+        ]);
+        let home = temp.path("node-home");
+        rooms_ok(&[
+            "node-init",
+            home.to_str().unwrap(),
+            "--network",
+            net.to_str().unwrap(),
+            "--port",
+            &member.port.to_string(),
+            "--node-key",
+            &hex(&member.seed),
+        ]);
+        let social_dir = temp.path("social-store");
+        {
+            let mut social =
+                SocialStore::create(&social_dir, plan.genesis.realm, plan.genesis.limits).unwrap();
+            social
+                .commit(plan.genesis.archive.clone(), social.pin())
+                .unwrap();
+        }
+        let node = spawn_node(
+            &temp,
+            "score-host",
+            &social_dir,
+            &home,
+            &home.join("node.json"),
+        );
+        // Dependent bodies must drain in order: publish each batch only
+        // after the previous commits, or the queue front replays against
+        // a frontier its content does not extend and rejects.
+        for h in 1..=4u64 {
+            publish_intake(
+                home.join(format!("intake/{h}.batch")),
+                plan.batches[&h].encode(),
+            )
+            .unwrap();
+            wait_for(Duration::from_secs(60), "batch commit", || {
+                committed(&home, h)
+            });
+        }
+        drop(node);
+
+        // The committed registry now has accounts; score emits the same
+        // candidate file shape `rotate` does, ranked by earned credit.
+        let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "score",
+                "unused-social",
+                home.to_str().unwrap(),
+                REALM_HEX,
+                "9",
+                "4",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let files: Vec<_> = fs::read_dir(home.join("intake"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("rotation"))
+            .collect();
+        assert_eq!(files.len(), 1, "one scored rotation file");
+        let rotation =
+            vhalla_rooms_consensus::decode_rotation_update(&fs::read(files[0].path()).unwrap())
+                .unwrap();
+        assert_eq!(rotation.from, 9);
+        assert!(!rotation.validators.is_empty());
+        assert!(rotation.validators.len() <= 4);
+        assert!(
+            rotation
+                .validators
+                .windows(2)
+                .all(|w| w[0].key < w[1].key),
+            "canonical member order"
+        );
+        assert!(rotation.validators.iter().all(|m| m.power > 0));
+    }
+
+    /// `node-init --discovery` persists the flag into `node.json` and
+    /// `node-check` surfaces it, while a closed `peers_only` mesh refuses
+    /// the combination outright.
+    #[test]
+    fn node_init_and_check_report_discovery() {
+        let temp = Temp::new();
+        let plan = fixture::plan(0, 8, 16);
+        let base = port_base();
+        let members: Vec<Member> = (0..2u8)
+            .map(|i| Member {
+                seed: [80 + i; 32],
+                port: base + i as usize,
+            })
+            .collect();
+        let key = |m: &Member| hex(PrivateKey::from(m.seed).public_key().as_bytes());
+        let net = temp.path("network.json");
+        let eligible: String = plan
+            .genesis
+            .eligible
+            .iter()
+            .map(|id| hex(id.as_bytes()))
+            .collect::<Vec<_>>()
+            .join(",");
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            &format!(
+                "{},{},{},{},{}",
+                plan.genesis.policy.base_cost,
+                plan.genesis.policy.window_seconds,
+                plan.genesis.policy.max_in_window,
+                plan.genesis.policy.support_epoch_seconds,
+                plan.genesis.policy.max_lifetime_rooms,
+            ),
+            "--validators",
+            &members
+                .iter()
+                .map(|m| format!("1:{}:1", key(m)))
+                .collect::<Vec<_>>()
+                .join(","),
+            "--eligible",
+            &eligible,
+        ]);
+
+        // Discovery with a bootstrap peer writes the flag through.
+        let home = temp.path("node-home");
+        rooms_ok(&[
+            "node-init",
+            home.to_str().unwrap(),
+            "--network",
+            net.to_str().unwrap(),
+            "--port",
+            &members[0].port.to_string(),
+            "--node-key",
+            &hex(&members[0].seed),
+            "--peers",
+            &format!("{}@127.0.0.1:{}", key(&members[1]), members[1].port),
+            "--discovery",
+            "true",
+        ]);
+        let file: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.join("node.json")).unwrap()).unwrap();
+        assert_eq!(file["discovery"].as_bool(), Some(true));
+
+        // node-check runs the full decode path, which reads the shared
+        // genesis archive from a real social store.
+        let social_dir = temp.path("social-store");
+        {
+            let mut social =
+                SocialStore::create(&social_dir, plan.genesis.realm, plan.genesis.limits).unwrap();
+            social
+                .commit(plan.genesis.archive.clone(), social.pin())
+                .unwrap();
+        }
+        let check = rooms_ok(&[
+            "node-check",
+            social_dir.to_str().unwrap(),
+            home.to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            home.join("node.json").to_str().unwrap(),
+        ]);
+        assert_eq!(check["discovery"].as_bool(), Some(true));
+
+        // peers_only + discovery is a contradiction: a closed mesh has
+        // nothing to discover.
+        let closed = temp.path("closed-home");
+        let refused = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "node-init",
+                closed.to_str().unwrap(),
+                "--network",
+                net.to_str().unwrap(),
+                "--port",
+                &members[0].port.to_string(),
+                "--node-key",
+                &hex(&members[0].seed),
+                "--peers",
+                &format!("{}@127.0.0.1:{}", key(&members[1]), members[1].port),
+                "--peers-only",
+                "true",
+                "--discovery",
+                "true",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !refused.status.success(),
+            "peers_only + discovery must refuse"
+        );
+    }
+
 }

@@ -53,6 +53,13 @@ struct NodeFile {
     /// the decode fails rather than silently never admitting it.
     #[serde(default)]
     peers_only: bool,
+    /// Open the mesh: `peers` entries become bootstrap seeds answering
+    /// peer exchange and learned peers join the dial set, so a member
+    /// reaches the mesh through one known peer instead of a pinned list
+    /// of them all. Mutually exclusive with `peers_only` — a closed mesh
+    /// has nothing to discover.
+    #[serde(default)]
+    discovery: bool,
     /// Optional shared realm, 32 hex characters. When present it must
     /// equal the REALM positional — `node-init` writes it so a member
     /// cannot boot against the wrong realm by argument.
@@ -429,6 +436,11 @@ fn decode_node(file: &NodeFile) -> Result<DecodedNode, String> {
             "peers_only requires every peer to carry a KEY@host:port pin - an unpinned address cannot authenticate an inbound peer".into(),
         );
     }
+    if file.peers_only && file.discovery {
+        return Err(
+            "peers_only and discovery are mutually exclusive - a closed mesh has nothing to discover".into(),
+        );
+    }
     Ok(DecodedNode {
         node_key,
         validator_sets,
@@ -502,6 +514,7 @@ pub fn run(args: &Args) -> Result<(), String> {
             loaded.file.port,
             &loaded.peers,
             loaded.file.peers_only,
+            loaded.file.discovery,
         ),
         node_key: loaded.node_key,
         validator_sets: loaded.validator_sets,
@@ -578,6 +591,188 @@ pub fn eligible(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
+/// Shared intake-drop tail for `rotate` and `score`: encode the rotation
+/// canonically, name the file deterministically from the canonical bytes
+/// so a repeated command converges on one pending marker, and land it in
+/// `NODE_HOME/intake/` via the temp-then-rename path the node drains.
+fn drop_rotation(
+    home: &str,
+    rotation: &vhalla_rooms_consensus::CommittedRotation,
+) -> Result<(), String> {
+    let bytes = vhalla_rooms_consensus::encode_rotation_update(rotation);
+    let intake = std::path::Path::new(home).join("intake");
+    std::fs::create_dir_all(&intake).map_err(|e| format!("intake: {e}"))?;
+    // Plain hex, never `json::id` — same stem rule as `eligible`.
+    let stem = format!("rotation-{}", crate::json::hex(&bytes[8..24]));
+    let target = intake.join(format!("{stem}.rotation"));
+    let tmp = intake.join(format!("{stem}.tmp"));
+    std::fs::write(&tmp, &bytes).map_err(|e| format!("write: {e}"))?;
+    std::fs::rename(&tmp, &target).map_err(|e| format!("rename: {e}"))?;
+    println!(
+        "{}",
+        json::object(vec![
+            ("intake", json::string(&target.display().to_string())),
+            ("from", rotation.from.to_string()),
+            (
+                "validators",
+                rotation.validators.len().to_string(),
+            ),
+        ])
+    );
+    Ok(())
+}
+
+/// Parse a `KEY64:POWER,...` member list into `ValidatorMember`s with the
+/// same admission rules the registry applies: strictly distinct keys,
+/// positive power, bounded total. Emission-side validation means a bad
+/// entry fails here rather than as a `.rejected` drop.
+fn validator_members(raw: &str) -> Result<Vec<vhalla_rooms_consensus::ValidatorMember>, String> {
+    let members: Vec<vhalla_rooms_consensus::ValidatorMember> = raw
+        .split(',')
+        .map(|entry| {
+            let (key, power) = entry
+                .rsplit_once(':')
+                .ok_or("validator takes KEY64:POWER")?;
+            Ok(vhalla_rooms_consensus::ValidatorMember {
+                key: hex32(key)?,
+                power: power.parse().map_err(|_| "invalid power")?,
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    if members.is_empty()
+        || members.len() > vhalla_rooms::registry::MAX_VALIDATORS
+    {
+        return Err("validators takes 1..=64 KEY64:POWER entries".into());
+    }
+    let mut sorted = members.clone();
+    sorted.sort_unstable();
+    let mut total = 0u64;
+    for member in &sorted {
+        if member.power == 0 {
+            return Err("validator power must be positive".into());
+        }
+        total = total
+            .checked_add(member.power)
+            .filter(|total| *total <= u64::MAX / 3)
+            .ok_or("validator powers exceed the total bound")?;
+    }
+    if sorted.windows(2).any(|pair| pair[0].key == pair[1].key) {
+        return Err("validator keys must be distinct".into());
+    }
+    for member in &sorted {
+        if PublicKey::from_bytes(member.key).is_err() {
+            return Err(format!(
+                "validator key {} is not a valid Ed25519 public key",
+                json::hex(&member.key)
+            ));
+        }
+    }
+    Ok(members)
+}
+
+/// The earliest activation a rotation dropped now could take: past the
+/// committed journal height plus the protocol notice bound. Below it the
+/// batch can never validate, so the command refuses rather than emit a
+/// file that commits as a silent no-op at best.
+fn earliest_activation(home: &str) -> Result<u64, String> {
+    let committed = committed_height(&std::path::Path::new(home).join("app").join("journal"))?;
+    Ok(committed + vhalla_rooms_consensus::MIN_ROTATION_NOTICE + 1)
+}
+
+/// The `rotate` subcommand: emit an intake file carrying a committed
+/// validator-set replacement activating at HEIGHT into `NODE_HOME/intake/`.
+/// The node drains it as a config-only body and the current committee's
+/// certificate on the carrying batch is its whole authorization — a node
+/// is admitted by the protocol, never self-declared. `rooms score`
+/// derives the member list from committed social credit instead.
+pub fn rotate(args: &Args) -> Result<(), String> {
+    if args.value(2).is_some() || args.value(1).is_none() {
+        return Err("rotate takes HEIGHT KEY64:POWER,...".into());
+    }
+    let from: u64 = args
+        .value(0)
+        .unwrap()
+        .parse()
+        .map_err(|_| "invalid activation height")?;
+    let validators = validator_members(args.value(1).unwrap())?;
+    let earliest = earliest_activation(&args.rooms_store)?;
+    if from < earliest {
+        return Err(format!(
+            "activation height must be at least {earliest} (committed height plus the protocol notice bound)"
+        ));
+    }
+    drop_rotation(
+        &args.rooms_store,
+        &vhalla_rooms_consensus::CommittedRotation { from, validators },
+    )
+}
+
+/// The `score` subcommand: rank the committed room registry's accounts by
+/// `earned` — social credit the directory committed through mature
+/// awards, never a self-reported claim — and emit the top owners as a
+/// rotation candidate activating at HEIGHT. Voting power is the earned
+/// score itself: weight in the consensus core mirrors weight already
+/// decided in the social layer, so a candidate's strength is auditable
+/// from committed state alone. The committee still decides whether the
+/// candidate commits; `score` proposes, consensus disposes.
+pub fn score(args: &Args) -> Result<(), String> {
+    if args.value(2).is_some() {
+        return Err("score takes HEIGHT [MAX]".into());
+    }
+    let from: u64 = args
+        .value(0)
+        .ok_or("score takes HEIGHT [MAX]")?
+        .parse()
+        .map_err(|_| "invalid activation height")?;
+    let max: usize = match args.value(1) {
+        None => vhalla_rooms::registry::MAX_VALIDATORS,
+        Some(raw) => raw.parse().map_err(|_| "invalid MAX")?,
+    };
+    if max == 0 || max > vhalla_rooms::registry::MAX_VALIDATORS {
+        return Err("MAX must be 1..=64".into());
+    }
+    let earliest = earliest_activation(&args.rooms_store)?;
+    if from < earliest {
+        return Err(format!(
+            "activation height must be at least {earliest} (committed height plus the protocol notice bound)"
+        ));
+    }
+    let registry =
+        vhalla_rooms_store::read_registry(
+            std::path::Path::new(&args.rooms_store).join("app").join("rooms"),
+        )
+        .map_err(|e| format!("committed registry: {e}"))?;
+    // Ranking is a pure function of committed state: (earned desc,
+    // owner id asc) breaks ties, so every node scoring the same ledger
+    // emits byte-identical candidates.
+    let mut scored: Vec<(OwnerId, u64)> = registry
+        .accounts()
+        .iter()
+        .map(|(owner, account)| (*owner, account.earned))
+        .filter(|(_, earned)| *earned > 0)
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    scored.truncate(max);
+    if scored.is_empty() {
+        return Err("no owner has earned credit - nothing to score".into());
+    }
+    let validators: Vec<vhalla_rooms_consensus::ValidatorMember> = scored
+        .iter()
+        .map(|(owner, earned)| vhalla_rooms_consensus::ValidatorMember {
+            key: *owner.as_bytes(),
+            power: *earned,
+        })
+        .collect();
+    let total: u64 = validators.iter().map(|m| m.power).sum();
+    if total > u64::MAX / 3 {
+        return Err("scored powers exceed the total bound".into());
+    }
+    drop_rotation(
+        &args.rooms_store,
+        &vhalla_rooms_consensus::CommittedRotation { from, validators },
+    )
+}
+
 /// The `node-check` subcommand: run the full `node` decode path — config
 /// parse, genesis-parameter build, shared archive read — then report the
 /// genesis fingerprint, archive root, quorum arithmetic and this key's
@@ -643,12 +838,47 @@ pub fn check(args: &Args) -> Result<(), String> {
             p.host, p.port
         ));
     }
+    if loaded.file.discovery && pinned == 0 && !loaded.peers.is_empty() {
+        warnings.push(
+            "discovery bootstrap peers carry no key pin - any peer at those addresses can seed the learned set".to_string(),
+        );
+    }
+    // The committed rotation schedule is decided state the file cannot
+    // see: once its first activation passes, file entries at those
+    // heights are shadowed uniformly on every replica.
+    let committed_schedule = match read_committed_schedule(&args.rooms_store) {
+        Ok(schedule) => schedule,
+        Err(error) => {
+            warnings.push(format!("committed rotation schedule unreadable: {error}"));
+            BTreeMap::new()
+        }
+    };
+    let mut rotations_json = Vec::new();
+    for (from, members) in &committed_schedule {
+        let total: u64 = members.iter().map(|m| m.power).sum();
+        let (needed, tolerated) = quorum(total);
+        rotations_json.push(json::object(vec![
+            ("from", from.to_string()),
+            ("validators", members.len().to_string()),
+            ("total_power", total.to_string()),
+            ("quorum_power", needed.to_string()),
+            ("absent_power_tolerated", tolerated.to_string()),
+        ]));
+    }
+    if let Some(first) = committed_schedule.keys().next() {
+        for from in loaded.validator_sets.keys().filter(|from| *from >= first) {
+            warnings.push(format!(
+                "config validator activation at height {from} is shadowed - the committed rotation schedule now governs"
+            ));
+        }
+    }
     println!(
         "{}",
         json::object(vec![
             ("genesis", json::id(&genesis)),
             ("archive", json::id(loaded.archive.root().as_bytes())),
             ("validator_sets", json::array(sets_json)),
+            ("committed_rotations", json::array(rotations_json)),
             ("public_key", json::string(&json::hex(public.as_bytes()))),
             ("node_peer_id", json::string(&net_peer_id(&public))),
             (
@@ -664,6 +894,7 @@ pub fn check(args: &Args) -> Result<(), String> {
             ("peers", loaded.peers.len().to_string()),
             ("pinned_peers", pinned.to_string()),
             ("peers_only", loaded.file.peers_only.to_string()),
+            ("discovery", loaded.file.discovery.to_string()),
             (
                 "warnings",
                 json::array(warnings.iter().map(|w| json::string(w)))
@@ -671,6 +902,23 @@ pub fn check(args: &Args) -> Result<(), String> {
         ])
     );
     Ok(())
+}
+
+/// The committed validator-rotation schedule inside a node home's rooms
+/// store — empty when the node has never published committed state (or
+/// never rotated). Read-only under the shared hold, so a running node is
+/// never disturbed; a store that exists but fails the read surfaces as a
+/// warning rather than a silent empty schedule.
+fn read_committed_schedule(
+    home: &str,
+) -> Result<BTreeMap<u64, Vec<vhalla_rooms_consensus::ValidatorMember>>, String> {
+    let store = std::path::Path::new(home).join("app").join("rooms");
+    if !store.is_dir() {
+        return Ok(BTreeMap::new());
+    }
+    vhalla_rooms_store::read_registry(&store)
+        .map(|registry| registry.validator_schedule().clone())
+        .map_err(|e| e.to_string())
 }
 
 /// Minimal flag parser for the scaffolding commands, which don't fit the
@@ -970,6 +1218,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
             "listen",
             "peers",
             "peers-only",
+            "discovery",
         ],
     )?;
     if positional.len() != 1 {
@@ -1030,6 +1279,18 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     if peers_only && parsed_peers.iter().any(|p| p.key.is_none()) {
         return Err("--peers-only requires every peer to carry a KEY@host:port pin".into());
     }
+    let discovery = match flags.get("discovery").map(String::as_str) {
+        None => false,
+        Some("true") => true,
+        Some("false") => false,
+        Some(_) => return Err("--discovery must be true or false".into()),
+    };
+    if discovery && peers_only {
+        return Err("--peers-only and --discovery are mutually exclusive".into());
+    }
+    if discovery && parsed_peers.is_empty() {
+        return Err("--discovery needs at least one bootstrap peer".into());
+    }
     let genesis = genesis_fingerprint(
         network.realm,
         &network.directory,
@@ -1047,6 +1308,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
         listen.as_deref(),
         &peer_list,
         peers_only,
+        discovery,
         &network,
     );
     // node.json carries the validator seed and intake/ is the producer
@@ -1142,6 +1404,7 @@ fn node_json(
     listen: Option<&str>,
     peers: &[String],
     peers_only: bool,
+    discovery: bool,
     network: &Network,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -1150,6 +1413,7 @@ fn node_json(
         "listen": listen.unwrap_or("127.0.0.1"),
         "peers": peers,
         "peers_only": peers_only,
+        "discovery": discovery,
         "realm": json::hex(&network.realm.0.to_be_bytes()),
         "validators": network
             .validator_sets
@@ -1356,6 +1620,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
         file.listen.as_deref(),
         &file.peers,
         file.peers_only,
+        file.discovery,
         &network,
     );
     write_node_json(&target, &node)?;
