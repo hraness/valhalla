@@ -81,3 +81,4 @@ jobs:
           ./verus-x86-linux/verus --crate-type=lib verify/private-control/control.rs
           ./verus-x86-linux/verus --crate-type=lib verify/relay-quota/quota.rs
           ./verus-x86-linux/verus --crate-type=lib verify/native-delivery/delivery.rs
+          ./verus-x86-linux/verus --crate-type=lib verify/rooms-frontier/frontier.rs
