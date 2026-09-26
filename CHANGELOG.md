@@ -5,6 +5,38 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
+## 0.2.6 - 2026-09-26
+
+`vhalla` now explains itself in plain words. Help is grouped by task, a bare
+`vhalla` prints a short overview, and errors name the cause and one next
+command. Before a private host listens beyond this computer, macOS network
+permissions are explained first. Rooms nodes can also dial peers by name or
+IPv6 address.
+
+- `vhalla` with no arguments prints a short overview. `vhalla --help` is
+  grouped by task and lists only the commands this build has; `vhalla help
+  <topic>` and `vhalla <command> --help` print one topic, and `vhalla help all`
+  prints the complete command reference. An unknown command suggests the
+  closest one and exits 2.
+- Errors at a terminal read as one sentence and one next command. Identity,
+  private room, private host, gateway and paired-chat errors no longer print
+  Rust debug output. Scripts and agents keep the exact `vhalla: ...` line.
+  `NO_COLOR`, `TERM=dumb` and non-UTF-8 locales get ASCII symbols.
+- A listener that can't start names the cause: another program on the port
+  (with the `lsof` command that finds it), a port that needs extra rights, or
+  the system error.
+- `vhalla identity backup` warns before printing the recovery phrase that
+  anyone with it can sign as you. Its output is unchanged.
+- When the macOS firewall is on, `private-host serve` explains the incoming
+  connections notice before listening beyond this computer (Enter continues,
+  `s` skips and prints the firewall settings link). When a relay on your local
+  network is up but can't be reached, the error says Local Network access may
+  be off for your terminal app and links to that setting.
+- Rooms nodes dial persistent peers given as DNS names (`/dns4`) or IPv6
+  literals (`/ip6`), which previously stopped the node at startup.
+- `deploy/rooms-seed` runs a rooms seed validator on Railway-class hosts, and
+  each Railway service now builds its own Dockerfile.
+
 ## 0.2.5 - 2026-09-26
 
 Rooms consensus can replace its validator set from inside the protocol, and

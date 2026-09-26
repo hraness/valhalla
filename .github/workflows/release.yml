@@ -94,7 +94,13 @@ jobs:
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             run_prefix="qemu-aarch64-static"
           fi
-          help="$($run_prefix "$cli" --help)"
+          # --help is the short grouped page; `help all` is the complete
+          # command reference, so the feature checks read that.
+          short_help="$($run_prefix "$cli" --help)"
+          printf '%s\n' "$short_help"
+          [[ "$short_help" == *"Usage: vhalla <command>"* ]]
+          [[ "$short_help" == *"private-host "* ]]
+          help="$($run_prefix "$cli" help all)"
           printf '%s\n' "$help"
           [[ "$help" == *"vhalla experimental "* ]]
           [[ "$help" == *"vhalla social "* ]]
@@ -108,7 +114,7 @@ jobs:
             cat game-disabled.txt
             exit 1
           fi
-          [[ "$(cat game-disabled.txt)" == *"usage: vhalla identity"* ]]
+          [[ "$(cat game-disabled.txt)" == *'Unknown command "game"'* ]]
       - name: Package
         shell: bash
         run: |
