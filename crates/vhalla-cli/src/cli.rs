@@ -127,6 +127,7 @@ pub(crate) fn render_error(error: &str, audience: Audience, style: Style) -> Str
     if audience != Audience::Human {
         return format!("vhalla: {error}\n");
     }
+    let error = plain_refusal(error).unwrap_or(error);
     let mut lines = error.lines();
     let mut text = format!(
         "{} {}\n",
@@ -143,6 +144,23 @@ pub(crate) fn render_error(error: &str, audience: Audience, style: Style) -> Str
         }
     }
     text
+}
+
+/// Plain words for the fixed refusal lines private rooms print. Scripts and
+/// agents keep the exact line; only people see the translation.
+fn plain_refusal(error: &str) -> Option<&'static str> {
+    #[cfg(all(unix, feature = "experimental-private"))]
+    if let Some(text) = crate::private_host::plain_refusal(error)
+        .or_else(|| crate::private_gateway::plain_refusal(error))
+    {
+        return Some(text);
+    }
+    #[cfg(feature = "experimental-private")]
+    if let Some(text) = crate::private_rooms::plain_refusal(error) {
+        return Some(text);
+    }
+    let _ = error;
+    None
 }
 
 pub(crate) fn report_error(error: &str) {

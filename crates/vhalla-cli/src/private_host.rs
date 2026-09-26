@@ -28,6 +28,45 @@ const REFUSED: &str = "local host refused; preserve the exact home, configuratio
 /// Status marks the leaf for explicit operator renewal inside this window.
 const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
 
+/// Plain words for a person at a terminal; scripts keep the exact text.
+pub(crate) fn plain_refusal(error: &str) -> Option<&'static str> {
+    Some(match error {
+        REFUSED => {
+            "The private host couldn't finish that step\n\
+             Keep the host folder, its settings, certificates and mailbox exactly as they are. Never reset them to get past this.\n\
+             → vhalla private-host status HOME"
+        }
+        events::REFUSED => {
+            "Couldn't write the private host's event log\n\
+             Keep the host folder as it is and check that only your user can open it.\n\
+             → vhalla private-host status HOME"
+        }
+        HELP => "That private-host command is incomplete or has an option it doesn't take\n→ vhalla help private-host",
+        _ => return None,
+    })
+}
+
+/// The error for a listener that couldn't bind, with its cause and one next step.
+pub(crate) fn bind_error(
+    address: SocketAddr,
+    error: Option<&std::io::Error>,
+    command: &str,
+) -> String {
+    match error.map(std::io::Error::kind) {
+        None | Some(std::io::ErrorKind::AddrInUse) => format!(
+            "Another program is already using {address}. Stop it or choose another address\n→ lsof -nP -iTCP:{} -sTCP:LISTEN",
+            address.port()
+        ),
+        Some(std::io::ErrorKind::PermissionDenied) => format!(
+            "This computer doesn't allow vhalla to listen on {address}. Ports below 1024 need extra rights\n→ {command}"
+        ),
+        Some(_) => format!(
+            "Couldn't listen on {address}: {}\n→ {command}",
+            error.map(ToString::to_string).unwrap_or_default()
+        ),
+    }
+}
+
 pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
     if args.len() < 3 || args[0] != "private-host" {
         return Err(HELP.into());
@@ -99,6 +138,8 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                 "{}",
                 serde_json::json!({"status":"initialized","home":loaded.home,"connection":loaded.home.join("connection.json"),"addresses":config::addresses(&loaded.config),"launch_agent":loaded.home.join("launch-agent.plist"),"label":loaded.config.label})
             );
+            // The host prompts when it first listens; say so now, once.
+            crate::local_network::before_listening(listen, false);
             Ok(())
         }
         Some("tailcat-plist") if args.len() == 9 => {
@@ -186,7 +227,17 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
         Some("serve") if args.len() == 3 => {
             let maintenance = config::maintenance_lock(home)?;
             generation::require_idle(home)?;
-            serve(config::load(home)?, maintenance)
+            let loaded = config::load(home)?;
+            if crate::local_network::before_listening(loaded.config.listen, true)
+                == crate::local_network::Choice::Skip
+            {
+                return Err(format!(
+                    "Skipped. The private host didn't start\nTo review the firewall first: open \"{}\"\n→ vhalla private-host serve {}",
+                    crate::local_network::FIREWALL_URL,
+                    loaded.home.display()
+                ));
+            }
+            serve(loaded, maintenance)
         }
         Some(action @ ("status" | "install" | "uninstall"))
             if args.len() == 3 || (action == "status" && args.len() == 4) =>
@@ -452,10 +503,20 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
                 Err(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable => {
                     return Err(format!("relay listener {address} is not an address of this machine; clients dial it, so restore that address (for example with a DHCP reservation) rather than changing the listener"));
                 }
-                Err(_) => return Err("local relay bind refused".into()),
+                Err(error) => {
+                    return Err(bind_error(
+                        address,
+                        Some(&error),
+                        &format!("vhalla private-host status {}", loaded.home.display()),
+                    ))
+                }
             }
         }
-        bound.push((service, listener.ok_or("local relay bind refused")?));
+        let status = format!("vhalla private-host status {}", loaded.home.display());
+        bound.push((
+            service,
+            listener.ok_or_else(|| bind_error(address, None, &status))?,
+        ));
     }
     drop(maintenance);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -539,6 +600,38 @@ fn listener_selection(listen: SocketAddr, advertise: &[SocketAddr]) -> bool {
 #[cfg(test)]
 mod listener_tests {
     use super::*;
+
+    #[test]
+    fn host_refusals_and_bind_failures_explain_the_cause_and_next_step() {
+        use crate::cli::{render_error, Audience, Style};
+        let plain = Style {
+            color: false,
+            ascii: false,
+        };
+        for refusal in [REFUSED, events::REFUSED, HELP] {
+            let human = render_error(refusal, Audience::Human, plain);
+            assert!(human.starts_with("✗ "), "{human}");
+            assert_eq!(human.matches("\n→ ").count(), 1, "{human}");
+            assert!(
+                human.lines().all(|line| line.chars().count() < 200),
+                "{human}"
+            );
+            assert_eq!(
+                render_error(refusal, Audience::Quiet, plain),
+                format!("vhalla: {refusal}\n")
+            );
+        }
+        let address: SocketAddr = "192.168.1.20:9473".parse().unwrap();
+        assert_eq!(
+            bind_error(address, None, "vhalla private-host status /h"),
+            "Another program is already using 192.168.1.20:9473. Stop it or choose another address\n→ lsof -nP -iTCP:9473 -sTCP:LISTEN"
+        );
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(
+            bind_error(address, Some(&denied), "vhalla private-host status /h")
+                .ends_with("\n→ vhalla private-host status /h")
+        );
+    }
     fn at(text: &str) -> SocketAddr {
         text.parse().unwrap()
     }

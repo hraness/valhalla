@@ -6,7 +6,7 @@ use serde_json::json;
 use vhalla_private_kernel::Context;
 use vhalla_private_native::relay::delivery::JobState;
 
-const REFUSED: &str = "delivery resume refused; preserve the exact queue, scan and applied evidence; stop any live agent-serve driver and retry with the same profile";
+pub(super) const REFUSED: &str = "delivery resume refused; preserve the exact queue, scan and applied evidence; stop any live agent-serve driver and retry with the same profile";
 
 pub(super) fn execute(args: &Args, context: Context) -> Result<(), String> {
     let only = match args.flags.get("job") {

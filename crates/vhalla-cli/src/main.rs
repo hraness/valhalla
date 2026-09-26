@@ -12,6 +12,9 @@ mod endpoint;
 mod private_gateway;
 
 #[cfg(all(unix, feature = "experimental-private"))]
+mod local_network;
+
+#[cfg(all(unix, feature = "experimental-private"))]
 mod private_host;
 
 #[cfg(feature = "experimental-private")]

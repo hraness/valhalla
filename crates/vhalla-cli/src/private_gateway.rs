@@ -309,14 +309,33 @@ fn bind(address: SocketAddr, log_dir: &Path) -> Result<TcpListener, String> {
                 events::append(log_dir, "bind-retry", &[("attempt", &attempt.to_string())])?;
                 std::thread::sleep(Duration::from_millis(500));
             }
-            Err(_) => return Err("gateway loopback listener bind failed".into()),
+            Err(error) => {
+                return Err(crate::private_host::bind_error(
+                    address,
+                    Some(&error),
+                    "vhalla private-gateway status CONFIG",
+                ))
+            }
         }
     }
-    Err("gateway loopback listener bind failed".into())
+    Err(crate::private_host::bind_error(
+        address,
+        None,
+        "vhalla private-gateway status CONFIG",
+    ))
 }
 pub(crate) fn help() -> &'static str {
     "vhalla private-gateway serve|status|install|uninstall <absolute-private-config.json> [--probe for status]"
 }
+/// Plain words for a person at a terminal; scripts keep the exact text.
+pub(crate) fn plain_refusal(error: &str) -> Option<&'static str> {
+    (error == REFUSED).then_some(
+        "The private gateway couldn't finish that step\n\
+         Keep its settings, files and event log as they are.\n\
+         → vhalla private-gateway status CONFIG",
+    )
+}
+
 pub(crate) fn execute(args: &[OsString]) -> Result<(), String> {
     if args.is_empty() {
         return Err(help().into());
