@@ -1,0 +1,4 @@
+# Railway reads this when the service builds from this repository.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "deploy/railway/Dockerfile"
