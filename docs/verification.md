@@ -308,7 +308,6 @@ that a valid admission can still publish. Production Admission/Kernel
 regressions over a strict in-memory CAS supply the correspondence; atomic
 storage and authenticated decoding remain assumptions, and validity is judged
 at the captured confirmation time rather than a wall-clock deadline.
-
 The same transition system is proved in Verus in
 `verify/private-admission/admission.rs`: all seven checked invariants
 (`TypeOK`, `ConsentLifetime`, `ConsumedBeforeCheck`, `ExactReview`,
@@ -327,6 +326,27 @@ reaches `done` with a recorded publication effect, matching the
 `witness-admitted` reachability probe. This strengthens the model claims from
 finite enumeration to induction; it changes nothing about the
 production-correspondence obligations above.
+`verify/private-control/control.rs`: `TypeOK`, `HistoricalSigners`,
+`HistoricalAuthority`, `PinnedHandoff`, `ObservationOnly`,
+`KnownHistoryFault`, `UncertainCustody` and `PersistentQuarantine` are
+inductive over `normal.cfg`'s `Next`, strengthened by seven auxiliaries
+(non-`none` handoff entries lie at or below the floor; a non-`none` kind
+always carries the reopen latch; a fork kind carries a nonzero pending
+sequence; a committed quarantine keeps a nonzero durable fault; an in-flight
+handoff grant stays pinned to its carrying sequence and the current owner; a
+present grant keeps a device predecessor and its other successor; and
+"publishing" never carries kind `none`). The same invariant is also proved
+inductive over `late-join.cfg`'s retained checkpoint chain, matching that
+configuration's positive TLC result. Each of the six mutants is proved to
+reach its recorded violation — the current-owner shortcut breaks
+`HistoricalAuthority`, rebinding a stale grant breaks `PinnedHandoff`,
+admitting a future observation breaks `ObservationOnly`, a precheckpoint
+fork breaks `KnownHistoryFault`, unlatching uncertainty breaks
+`UncertainCustody`, and clearing quarantine breaks `PersistentQuarantine` —
+and a completion witness carries an A→B handoff plus a conflicting-claim
+quarantine through a lost completion and a process reopen. This strengthens
+the model claims from finite enumeration to induction; it changes nothing
+about the production-correspondence obligations above.
 
 All use checksum-pinned TLC 1.7.4. The complete case inventory is required by the
 runner: new configs cannot silently miss the gate. It requires complete positive
