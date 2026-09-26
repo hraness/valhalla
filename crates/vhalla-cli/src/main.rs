@@ -4,6 +4,9 @@
 mod support;
 
 #[cfg(all(unix, feature = "experimental-private"))]
+mod endpoint;
+
+#[cfg(all(unix, feature = "experimental-private"))]
 mod private_gateway;
 
 #[cfg(all(unix, feature = "experimental-private"))]
