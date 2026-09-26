@@ -78,3 +78,4 @@ jobs:
           ./verus-x86-linux/verus --crate-type=lib verify/private-publication/publication.rs
           ./verus-x86-linux/verus --crate-type=lib verify/host-recovery/recovery.rs
           ./verus-x86-linux/verus --crate-type=lib verify/private-delivery/delivery.rs
+          ./verus-x86-linux/verus --crate-type=lib verify/private-admission/admission.rs
