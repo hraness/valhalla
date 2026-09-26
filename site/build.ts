@@ -10,6 +10,7 @@ import { articles } from "./articles.ts";
 import { renderAtomFeed, renderLlms, renderSitemap } from "./discovery.ts";
 import { writing } from "./writing.ts";
 import { renderHome } from "./home.ts";
+import { renderNotFound } from "./not-found.ts";
 const root = import.meta.dir;
 const output = resolve(root, "dist");
 const kit = dirname(fileURLToPath(import.meta.resolve("@hraness/design-kit/paper-theme.css")));
@@ -55,8 +56,11 @@ await mkdir(resolve(output, "use-cases"), { recursive: true });
 const useCasesHtml = renderUseCases(html);
 if (useCasesHtml.split(footerMarker).length !== 2) throw new Error("Expected one footer slot: use-cases");
 await writeFile(resolve(output, "use-cases", "index.html"), useCasesHtml.replace(footerMarker, supportFooter()));
+const notFoundHtml = renderNotFound(html);
+if (notFoundHtml.split(footerMarker).length !== 2) throw new Error("Expected one footer slot: 404");
+await writeFile(resolve(output, "404.html"), notFoundHtml.replace(footerMarker, supportFooter()));
 await cp(fileURLToPath(import.meta.resolve("@hraness/site-footer/stylex.css")), resolve(output, "footer.css"));
-const files = ["typography.css", "reading.css", "paper-theme.css", "palette-bridge.css", "palette-system.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css", "plain-site.css", "plain-publication.css"];
+const files = ["typography.css", "reading.css", "paper-theme.css", "palette-bridge.css", "palette-system.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css", "plain-site.css", "plain-publication.css", "status-page.css"];
 for (const name of files) await cp(resolve(kit, name), resolve(output, "design", name));
 // Keep the exact web fonts and license/provenance files, not native OTF copies
 // or the embedded TypeScript font data used only by social-card generators.
@@ -73,8 +77,8 @@ for (const match of fontCSS.matchAll(/url\(["']?(\.\/fonts\/[^"')]+)["']?\)/g)) 
 }
 await cp(resolve(kit, "marketing-assets"), resolve(output, "design/marketing-assets"), { recursive: true });
 await cp(resolve(kit, "../LICENSE"), resolve(output, "design/LICENSE"));
-const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts"), resolve(root, "fairy-field.ts")], outdir: output, naming: "[name].js", target: "browser", format: "iife", minify: true });
+const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts"), resolve(root, "fairy-field.ts"), resolve(root, "status-page.ts")], outdir: output, naming: "[name].js", target: "browser", format: "iife", minify: true });
 if (!result.success) throw new AggregateError(result.logs, "Script bundle failed");
 const pkg = JSON.parse(await readFile(resolve(kit, "../package.json"), "utf8"));
 await writeFile(resolve(output, "design/source.json"), JSON.stringify({ package: pkg.name, version: pkg.version, files: Object.fromEntries(await Promise.all(files.map(async name => [name, createHash("sha256").update(await readFile(resolve(output, "design", name))).digest("hex")]))) }, null, 2));
-console.log(`Built Vhalla home, ${docs.length} documentation pages, ${compare.length} comparisons, ${writing.length} writing pages, ${articles.length} articles and use cases with ${pkg.name}@${pkg.version}.`);
+console.log(`Built Vhalla home, ${docs.length} documentation pages, ${compare.length} comparisons, ${writing.length} writing pages, ${articles.length} articles, use cases and the 404 page with ${pkg.name}@${pkg.version}.`);

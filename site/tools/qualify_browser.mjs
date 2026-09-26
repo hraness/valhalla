@@ -45,6 +45,7 @@ async function work(){
   try{await readFile(join(root,sub,'index.html'));paths.push('/'+sub+'/');}catch{}
   await walk(sub);}};
  await walk('');
+ paths.push('/404.html');
  for(const path of paths){
   await navigate(path,1365,950);
   const state=await evaluate(`({path:location.pathname,title:document.title,canonical:document.querySelector('link[rel=canonical]')?.href,main:document.querySelectorAll('main').length,h1:document.querySelectorAll('h1').length,width:innerWidth,scroll:document.documentElement.scrollWidth,images:Array.from(document.images).every(i=>i.complete&&i.naturalWidth>0),missingAnchors:Array.from(document.querySelectorAll('a[href^="#"]')).map(a=>a.getAttribute('href').slice(1)).filter(id=>id&&!document.getElementById(id)),links:Array.from(document.querySelectorAll('a[href^="/"]')).map(a=>a.getAttribute('href'))})`);
@@ -55,12 +56,12 @@ async function work(){
   if(path==='/'){const {cssContentSize}=await call('Page.getLayoutMetrics',{},sessionId);const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:cssContentSize.width,height:cssContentSize.height,scale:1}},sessionId);await writeFile(join(out,'home-full.png'),Buffer.from(data,'base64'));}
  }
  for(const width of [390,320,768,1024]){
-  for(const path of ['/','/docs/status/','/docs/public-rooms/','/docs/private-rooms/','/compare/moltbook/','/writing/agent-swarms/','/writing/delivery-specs-that-fail-on-purpose/','/writing/ledger-recovery-under-random-crashes/','/writing/weighted-quorum-proof/','/use-cases/']){
+  for(const path of ['/','/docs/status/','/docs/public-rooms/','/docs/private-rooms/','/compare/moltbook/','/writing/agent-swarms/','/writing/delivery-specs-that-fail-on-purpose/','/writing/ledger-recovery-under-random-crashes/','/writing/weighted-quorum-proof/','/use-cases/','/404.html']){
    await navigate(path,width,844);
    // Mobile layout can expand innerWidth to include overflow; compare both
    // reported geometry values to the requested viewport, not to each other.
    const state=await evaluate('({width:innerWidth,scroll:document.documentElement.scrollWidth})');if(state.width!==width||state.scroll>width)throw Error('mobile overflow '+path+' '+JSON.stringify({requested:width,...state}));
-   if(path!=='/'){
+   if(path!=='/'&&path!=='/404.html'){
     const menu=await evaluate(`(()=>{const d=document.querySelector('.mobile-doc-nav');d.open=true;const ok=d.querySelectorAll('a').length>=4;d.open=false;return ok;})()`);if(!menu)throw Error('missing mobile documentation navigation '+path);
    }
    if(width===390)await shot(path==='/'?'home-mobile':path.split('/').filter(Boolean).pop()+'-mobile');
