@@ -37,9 +37,9 @@ pub(crate) fn plain_refusal(error: &str) -> Option<&'static str> {
              → vhalla private-host status HOME"
         }
         events::REFUSED => {
-            "Couldn't write the private host's event log\n\
-             Keep the host folder as it is and check that only your user can open it.\n\
-             → vhalla private-host status HOME"
+            "Couldn't write the event log\n\
+             Keep the host or gateway folder as it is, and check that it belongs to you and only you can open it.\n\
+             → ls -ld FOLDER"
         }
         HELP => "That private-host command is incomplete or has an option it doesn't take\n→ vhalla help private-host",
         _ => return None,
@@ -225,19 +225,21 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         Some("serve") if args.len() == 3 => {
-            let maintenance = config::maintenance_lock(home)?;
-            generation::require_idle(home)?;
-            let loaded = config::load(home)?;
-            if crate::local_network::before_listening(loaded.config.listen, true)
+            // Ask before taking the maintenance lock so an unanswered notice
+            // never blocks maintenance on this host.
+            let listen = config::load(home)?.config.listen;
+            if crate::local_network::before_listening(listen, true)
                 == crate::local_network::Choice::Skip
             {
                 return Err(format!(
                     "Skipped. The private host didn't start\nTo review the firewall first: open \"{}\"\n→ vhalla private-host serve {}",
                     crate::local_network::FIREWALL_URL,
-                    loaded.home.display()
+                    home.display()
                 ));
             }
-            serve(loaded, maintenance)
+            let maintenance = config::maintenance_lock(home)?;
+            generation::require_idle(home)?;
+            serve(config::load(home)?, maintenance)
         }
         Some(action @ ("status" | "install" | "uninstall"))
             if args.len() == 3 || (action == "status" && args.len() == 4) =>

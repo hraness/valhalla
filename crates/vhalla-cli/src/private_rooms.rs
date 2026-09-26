@@ -1281,7 +1281,10 @@ const NET_UNAVAILABLE: &str = "relay storage or socket operation failed";
 /// access looks off, say so and point at the setting.
 #[cfg(unix)]
 fn explain_unreachable(error: String, addr: Option<&str>) -> String {
-    if !matches!(error.as_str(), NET_CONNECT | NET_TIMEOUT | NET_UNAVAILABLE) {
+    // Only people get the explanation; scripts keep the exact line.
+    if !matches!(error.as_str(), NET_CONNECT | NET_TIMEOUT | NET_UNAVAILABLE)
+        || crate::cli::audience() != crate::cli::Audience::Human
+    {
         return error;
     }
     let Some(address) = addr

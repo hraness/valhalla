@@ -87,16 +87,58 @@ pub(crate) fn firewall_state_on(output: &str) -> bool {
 }
 
 /// Whether a failed connection to a private-network address looks like macOS
-/// Local Network access being off: the connect fails with "no route to host"
-/// immediately. Other failures keep their own message.
+/// Local Network access being off: vhalla gets "no route to host" while the
+/// machine is known to be up (this Mac's address table has its hardware
+/// address, or the system `ping` reaches it). A machine that is asleep or off
+/// fails both, so it keeps the original error.
 pub(crate) fn looks_blocked(address: SocketAddr) -> bool {
     if !cfg!(target_os = "macos") || !on_local_network(address.ip()) {
         return false;
     }
-    matches!(
+    let unreachable = matches!(
         std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(2)),
         Err(error) if error.kind() == std::io::ErrorKind::HostUnreachable
-    )
+    );
+    unreachable && (neighbor_known(address.ip()) || system_reaches(address.ip()))
+}
+
+/// Reads this Mac's address table without sending anything.
+fn neighbor_known(ip: IpAddr) -> bool {
+    if !ip.is_ipv4() {
+        return false;
+    }
+    std::process::Command::new("/usr/sbin/arp")
+        .arg("-n")
+        .arg(ip.to_string())
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| arp_entry_complete(&String::from_utf8_lossy(&output.stdout)))
+}
+
+pub(crate) fn arp_entry_complete(output: &str) -> bool {
+    output.contains(" at ") && !output.contains("(incomplete)") && !output.contains("no entry")
+}
+
+fn system_reaches(ip: IpAddr) -> bool {
+    let program = if ip.is_ipv4() {
+        "/sbin/ping"
+    } else {
+        "/sbin/ping6"
+    };
+    let mut command = std::process::Command::new(program);
+    command.arg("-c").arg("1");
+    if ip.is_ipv4() {
+        // One probe, one second.
+        command.arg("-t").arg("1");
+    }
+    command
+        .arg(ip.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// What the person chose at a notice.
@@ -180,6 +222,19 @@ mod tests {
         assert_eq!(terminal_app(&env("Apple_Terminal")), "Terminal");
         assert_eq!(terminal_app(&env("ghostty")), "Ghostty");
         assert_eq!(terminal_app(&|_| None), "your terminal app");
+    }
+
+    #[test]
+    fn address_table_parsing() {
+        assert!(arp_entry_complete(
+            "? (192.168.1.20) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]\n"
+        ));
+        assert!(!arp_entry_complete(
+            "? (192.168.1.20) at (incomplete) on en0 ifscope [ethernet]\n"
+        ));
+        assert!(!arp_entry_complete(
+            "192.168.1.20 (192.168.1.20) -- no entry\n"
+        ));
     }
 
     #[test]
