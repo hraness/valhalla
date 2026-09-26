@@ -178,7 +178,11 @@ struct Pair {
     owner_disk: Disk,
     member_disk: Disk,
     owner_home: PathBuf,
+    member_home: PathBuf,
     owner_key: StorageKey,
+    member_key: StorageKey,
+    owner_context: Context,
+    member_context: Context,
     now: u64,
 }
 impl Pair {
@@ -229,7 +233,11 @@ impl Pair {
             owner_disk,
             member_disk,
             owner_home,
+            member_home,
             owner_key,
+            member_key,
+            owner_context,
+            member_context,
             now,
         }
     }
@@ -742,3 +750,5 @@ fn secret_offer_issuance_has_only_metadata_in_agent_outbox() {
         assert_eq!(page.records[0].artifact_bytes, None);
     });
 }
+
+mod fault_hegel;
