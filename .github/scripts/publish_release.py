@@ -9,6 +9,9 @@ import subprocess
 import sys
 import tempfile
 
+import release_notes
+from release_notes import render_body, title as release_title, verify_body
+
 
 CODEQL_CHECKS = {
     "Analyze (actions)": "github-actions",
@@ -178,26 +181,55 @@ def require_clean_main_analysis(gh, repo, sha):
         raise ValueError("release requires no open CodeQL alerts on the analyzed main branch")
 
 
-def publish(directory, tag, sha, repo, gh=run_gh):
+def published_page(gh, repo, tag):
+    release = json.loads(gh("api", f"repos/{repo}/releases/tags/{tag}"))
+    return release.get("name"), release.get("body") or ""
+
+
+def require_page(name, body, changelog_text, repo, tag, sha, expected):
+    if name != release_title(tag):
+        raise ValueError(f"release title must be {release_title(tag)!r}")
+    verify_body(body, changelog_text, repo, tag, sha, expected)
+
+
+def publish(directory, tag, sha, repo, gh=run_gh, changelog=None):
     expected = validate_assets(directory, tag)
+    # The page comes from CHANGELOG.md at the tagged commit. A missing, empty or
+    # Unreleased section stops here, before any network access.
+    changelog_text = Path(changelog or release_notes.CHANGELOG).read_text(encoding="utf-8")
+    body = render_body(changelog_text, repo, tag, sha, expected)
     require_release_gates(gh, repo, tag, sha)
     pages = json.loads(gh("api", f"repos/{repo}/releases?per_page=100", "--paginate", "--slurp"))
     release = next((item for page in pages for item in page if item["tag_name"] == tag), None)
-    if release is None:
-        gh("release", "create", tag, "--repo", repo, "--draft", "--verify-tag", "--generate-notes")
-    if release is None or release["draft"]:
-        gh("release", "upload", tag, "--repo", repo,
-           *(str(directory / name) for name in expected), "--clobber")
+    if release is not None and not release["draft"]:
+        # A retry of a published release is read-only: its page must already
+        # match exactly, so a hand edit is detected like changed assets.
+        require_page(release.get("name"), release.get("body") or "",
+                     changelog_text, repo, tag, sha, expected)
 
-    # Verify downloaded bytes before a draft becomes public. A retry of an
-    # already published release is read-only and succeeds only for identical assets.
     with tempfile.TemporaryDirectory(prefix="valhalla-release-") as temporary:
-        gh("release", "download", tag, "--repo", repo, "--dir", temporary)
-        if validate_assets(Path(temporary), tag) != expected:
+        notes = Path(temporary) / "notes.md"
+        notes.write_text(body, encoding="utf-8")
+        page = ("--title", release_title(tag), "--notes-file", str(notes))
+        if release is None:
+            gh("release", "create", tag, "--repo", repo, "--draft", "--verify-tag", *page)
+        if release is None or release["draft"]:
+            gh("release", "upload", tag, "--repo", repo,
+               *(str(directory / name) for name in expected), "--clobber")
+
+        # Verify downloaded bytes before a draft becomes public. A retry of an
+        # already published release is read-only and succeeds only for identical assets.
+        downloads = Path(temporary) / "download"
+        downloads.mkdir()
+        gh("release", "download", tag, "--repo", repo, "--dir", str(downloads))
+        if validate_assets(downloads, tag) != expected:
             raise ValueError("uploaded release bytes differ from the validated artifacts")
-    if release is None or release["draft"]:
-        require_release_gates(gh, repo, tag, sha)
-        gh("release", "edit", tag, "--repo", repo, "--draft=false")
+        if release is None or release["draft"]:
+            require_release_gates(gh, repo, tag, sha)
+            # Publishing rewrites the title and notes, so a retried draft
+            # carries the rendered page rather than whatever it held before.
+            gh("release", "edit", tag, "--repo", repo, *page, "--draft=false")
+    require_page(*published_page(gh, repo, tag), changelog_text, repo, tag, sha, expected)
     print(f"Verified complete release {tag}: {len(expected)} assets at {sha}")
 
 

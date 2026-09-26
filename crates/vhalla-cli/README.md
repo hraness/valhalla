@@ -75,6 +75,15 @@ leave a draft; retries never overwrite an already published release.
 The workflow uses only the repository `GITHUB_TOKEN`. These are developer
 binaries without application signing or notarization.
 
+The release page is titled `Valhalla <tag>`. Its summary and changes are the
+tag's section of [`CHANGELOG.md`](../../CHANGELOG.md) at the tagged commit,
+followed by generated install and verify sections and a hidden identity record
+(tag, commit, repository and every asset's SHA-256). The publisher refuses to
+create a release when that section is missing, empty or marked Unreleased, and
+a retry fails if the published page no longer matches. To render a page by
+hand, run `python3 .github/scripts/release_notes.py TAG --repo hraness/valhalla
+--commit SHA --assets DIR` over the downloaded release assets.
+
 The CLI and menubar archives have shipped in every published release since
 v0.1.0, the first tag, and the browser archive joined at v0.2.1. There is no
 Windows or Intel-Mac artifact.
