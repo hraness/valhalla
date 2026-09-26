@@ -169,11 +169,16 @@ main {
   margin-bottom:28px;
 }
 
+/* Heading face, weight, and size come from the shared typography foundation
+ * (@hraness/design-kit/typography.css), by level: h1 and h2 in the display
+ * serif at 1.75rem or larger, h3 and h4 in the text face. The home page's
+ * opening h1 and section h2s keep the marketing preset's larger display
+ * scale. Components set spacing, never size. */
 h1 {
-  font-family:"Instrument Serif",Georgia,serif;
-  font-size:clamp(68px,6.5vw,96px);
+  font-family:var(--hraness-type-h1-font);
+  font-size:var(--hraness-type-h1-size);
+  font-weight:var(--hraness-type-h1-weight);
   line-height:1;
-  font-weight:400;
   letter-spacing:-.028em;
 }
 
@@ -529,8 +534,11 @@ h1 {
   max-width:650px;
 }
 
-.section-heading h2,.build-section h2 {
-  font:400 clamp(38px,4vw,54px)/1.08 "Instrument Serif",Georgia,serif;
+.section-heading h2,.build-section h2,.hraness-marketing-questions__heading {
+  font-family:var(--hraness-type-h2-font);
+  font-size:var(--hraness-marketing-h2-size);
+  font-weight:var(--hraness-type-h2-weight);
+  line-height:var(--hraness-marketing-h2-leading);
   letter-spacing:-.018em;
   margin-top:18px;
 }
@@ -560,9 +568,13 @@ h1 {
   color:var(--muted);
 }
 
+.usecase-grid h3,.trust-flow h3,.start-flow h3,.scope-card h3 {
+  font-family:var(--hraness-type-h3-font);
+  font-size:var(--hraness-type-h3-size);
+  font-weight:var(--hraness-type-h3-weight);
+}
+
 .usecase-grid h3 {
-  font-size:19px;
-  font-weight:550;
   margin-top:20px;
   letter-spacing:-.02em;
 }
@@ -617,11 +629,6 @@ h1 {
   color:var(--muted);
 }
 
-.trust-flow h3 {
-  font-size:17px;
-  font-weight:550;
-}
-
 .trust-flow p {
   font-size:14px;
   line-height:1.7;
@@ -651,10 +658,6 @@ h1 {
   justify-content:space-between;
   gap:12px;
   align-items:center;
-}
-
-.scope-card h3 {
-  font:400 29px "Instrument Serif",Georgia,serif;
 }
 
 .scope-card>p {
@@ -832,7 +835,6 @@ h1 {
 }
 
 .doc-header h1 {
-  font-size:clamp(42px,4.2vw,61px);
   line-height:1.08;
   margin-top:16px;
   max-width:18ch;
@@ -854,10 +856,8 @@ h1 {
 }
 
 .doc-content h2 {
-  font-size:22px;
   letter-spacing:-.025em;
   line-height:1.4;
-  font-weight:550;
   margin:45px 0 18px;
 }
 
@@ -865,9 +865,19 @@ h1 {
   margin-top:0;
 }
 
-.doc-content h3 {
-  font-size:17px;
-  font-weight:550;
+/* Page section headings. Nested shared components (article index, cards)
+ * keep their own recipes. */
+.doc-content>h2 {
+  font-family:var(--hraness-type-h2-font);
+  font-size:var(--hraness-type-h2-size);
+  font-weight:var(--hraness-type-h2-weight);
+  line-height:1.2;
+}
+
+.doc-content>h3 {
+  font-family:var(--hraness-type-h3-font);
+  font-size:var(--hraness-type-h3-size);
+  font-weight:var(--hraness-type-h3-weight);
 }
 
 .doc-content p {
@@ -993,9 +1003,11 @@ pre code {
   color:var(--muted);
 }
 
+/* Card titles keep their h2 outline position and read the h3 text level. */
 .doc-content .doc-card h2 {
-  font-size:18px;
-  font-weight:550;
+  font-family:var(--hraness-type-h3-font);
+  font-size:var(--hraness-type-h3-size);
+  font-weight:var(--hraness-type-h3-weight);
   letter-spacing:-.02em;
   margin:15px 0 12px;
   line-height:1.4;
@@ -1145,9 +1157,6 @@ table a {
     gap:34px;
     padding-inline:22px;
   }
-  h1 {
-    font-size:76px;
-  }
   .docs-layout {
     grid-template-columns:165px minmax(0,1fr);
     gap:35px;
@@ -1171,9 +1180,6 @@ table a {
     grid-template-columns:1fr 1fr;
     gap:28px;
     padding-block:55px;
-  }
-  h1 {
-    font-size:62px;
   }
   .description {
     font-size:18px;
@@ -1202,9 +1208,6 @@ table a {
   .room-evidence {
     padding-inline:16px;
   }
-  .section-heading h2,.build-section h2 {
-    font-size:44px;
-  }
   .scope-card {
     padding:23px;
   }
@@ -1227,9 +1230,6 @@ table a {
   }
   .build-command pre {
     font-size:11px;
-  }
-  .doc-header h1 {
-    font-size:46px;
   }
 }
 
@@ -1276,9 +1276,6 @@ table a {
     padding:43px 18px 33px;
     gap:37px;
     border-radius:12px;
-  }
-  h1 {
-    font-size:clamp(58px,14vw,80px);
   }
   .opening>.eyebrow {
     font-size:9px;
@@ -1331,9 +1328,6 @@ table a {
   .feature-section,.scope-section {
     padding:57px 0;
   }
-  .section-heading h2,.build-section h2 {
-    font-size:41px;
-  }
   .section-heading>p:not(.eyebrow) {
     font-size:15px;
   }
@@ -1368,9 +1362,6 @@ table a {
   .scope-card-top {
     flex-direction:row;
     align-items:center;
-  }
-  .scope-card h3 {
-    font-size:28px;
   }
   .state {
     font-size:9px;
@@ -1432,7 +1423,6 @@ table a {
     margin-bottom:28px;
   }
   .doc-header h1 {
-    font-size:45px;
     max-width:18ch;
   }
   .doc-lede {
@@ -1444,7 +1434,6 @@ table a {
     font-size:14px;
   }
   .doc-content h2 {
-    font-size:21px;
     margin-top:35px;
   }
   .doc-card-grid {
@@ -1452,9 +1441,6 @@ table a {
   }
   .doc-card {
     padding:21px;
-  }
-  .doc-content .doc-card h2 {
-    font-size:19px;
   }
   .doc-note {
     padding:17px;
@@ -1735,7 +1721,6 @@ table a {
 }
 
 .hraness-marketing-questions__heading {
-  font:400 clamp(38px,4vw,54px)/1.08 "Instrument Serif",Georgia,serif;
   letter-spacing:-.018em;
   margin:0;
 }
@@ -1826,8 +1811,6 @@ table a {
 }
 
 .start-flow h3 {
-  font-size:19px;
-  font-weight:550;
   letter-spacing:-.02em;
 }
 
@@ -1963,7 +1946,7 @@ table a {
 .opening h1 { font-size: var(--hraness-marketing-h1-size); line-height: var(--hraness-marketing-h1-leading); letter-spacing: var(--hraness-marketing-h1-tracking); }
 .eyebrow, .opening > .eyebrow { font-size: .875rem; }
 .hero-footnote, .doc-updated, .doc-pagination small { font-size: .9375rem; }
-.doc-header h1 { font-family: var(--font-text); font-size: clamp(2rem, 4vw, 3rem); font-weight: 600; line-height: 1.15; }
+.doc-header h1 { line-height: 1.15; }
 .doc-content { font-size: 1rem; line-height: var(--hraness-reading-leading, 1.7); }
 .doc-content pre { max-width: 100%; overflow-x: auto; tab-size: 2; }
 .scope-card, .room, .build-command { border-color: var(--hraness-material-outline); box-shadow: var(--hraness-material-rest); }
