@@ -205,7 +205,7 @@ export function renderWriting(page: DocPage, template: string, list: readonly Ar
 
 /** Related reading for an article: registered sibling products first, then the post's own links. */
 const articleFooterHtml = (article: Article) => {
-  const products: ArticleRelatedLink[] = relatedFor('valhalla').slice(0, 3).map(({ href, name, relationship }) => ({ href, name, relationship }));
+  const products: ArticleRelatedLink[] = relatedFor('valhalla').slice(0, 3).map(({ href, mark, name, role }) => ({ href, mark, name, role }));
   return [
     renderArticleSourcesHtml({ sources: articleSources(article) }),
     renderArticleRelatedHtml({ heading: 'Related products', headingId: 'related-products', items: products }),
