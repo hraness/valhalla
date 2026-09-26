@@ -31,7 +31,7 @@ const REFUSED: &str =
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Upstream {
-    addr: SocketAddr,
+    addr: crate::endpoint::Endpoint,
     tls_name: String,
     tls_ca_file: PathBuf,
     token_file: PathBuf,
@@ -231,7 +231,10 @@ fn route(
         return Err("browser capability must differ from upstream TLS credential".into());
     }
     let client = TlsRelay::new(
-        upstream.addr,
+        upstream
+            .addr
+            .resolve()
+            .map_err(|_| "gateway upstream endpoint refused")?,
         &upstream.tls_name,
         private(&upstream.tls_ca_file, 65536)?.to_vec(),
         RelayToken::from_bytes(*upstream_token)

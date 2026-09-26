@@ -509,8 +509,8 @@ struct Fence {
     head: String,
     items_commitment: String,
     fence_commitment: String,
-    predecessor_address: SocketAddr,
-    successor_address: SocketAddr,
+    predecessor_address: Endpoint,
+    successor_address: Endpoint,
     tls_name: String,
     ca_sha256: String,
     receipt_commitments: Vec<String>,
@@ -641,7 +641,7 @@ fn retained_transport(
         .map_err(|_| REFUSED)?
         .trim_end_matches('\n');
     let relay = TlsRelay::new(
-        config.addr,
+        config.addr.resolve().map_err(|_| REFUSED)?,
         &config.tls_name,
         files::read(&config.ca, 65536, false)?.to_vec(),
         RelayToken::from_bytes(unhex(token)?).map_err(|_| REFUSED)?,

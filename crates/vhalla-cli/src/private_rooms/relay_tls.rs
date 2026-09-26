@@ -1,5 +1,5 @@
 //! Explicit TLS endpoint and operator admission configuration, never room custody.
-use super::{files, relay_addr, relay_error, relay_token, Args};
+use super::{files, relay_addr, relay_error, relay_peer, relay_token, Args};
 use serde_json::Value;
 use std::{net::TcpListener, path::Path, time::Duration};
 use vhalla_private_native::relay::{
@@ -10,7 +10,7 @@ use vhalla_private_native::relay::{
 pub(super) fn client(args: &Args, namespace: RelayNamespace) -> Result<TlsRelay, String> {
     let ca = args.input("tls-ca", 65536, false)?;
     TlsRelay::new(
-        relay_addr(args, "addr")?,
+        relay_peer(args, "addr")?,
         args.text("tls-name")?,
         ca.to_vec(),
         relay_token(args)?,

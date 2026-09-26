@@ -1,5 +1,6 @@
 //! Independently configured trusted host delivery; never an agent tool.
 use super::{files, hex, now, unhex};
+use crate::endpoint::Endpoint;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -7,7 +8,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::ErrorKind,
-    net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
@@ -157,7 +157,7 @@ struct Config {
     version: u32,
     context: ContextConfig,
     namespace: String,
-    addr: SocketAddr,
+    addr: Endpoint,
     tls_name: String,
     ca: PathBuf,
     token: PathBuf,
@@ -228,7 +228,7 @@ impl Config {
         let token = RelayToken::from_bytes(unhex(token.strip_suffix('\n').unwrap_or(token))?)
             .map_err(|_| REFUSED)?;
         let relay = TlsRelay::new(
-            c.addr,
+            c.addr.resolve().map_err(|_| REFUSED)?,
             &c.tls_name,
             files::read(&c.ca, 65536, false)?.to_vec(),
             token,
