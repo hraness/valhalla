@@ -267,6 +267,29 @@ WAL by withholding failure responses instead of requesting an engine reset.
 The model assumes atomic publication and verified replay, and source-binds the
 external engine behavior to its pinned revision. It is not a consensus proof.
 
+The transition system is proved in Verus in
+`verify/rooms-frontier/frontier.rs`: `TypeOK`, `CommittedIdentity`,
+`PublicationOrder`, `AckAfterDurability`, `AckHasFullFrontier`,
+`FailedFinalizationKeepsWal`, `NextRoster`, `RecoveredFrontier` and
+`HonestRecovery` are inductive over the safe `Next`, strengthened by
+auxiliaries that capture the durable journal/original shape, the
+phase-dependent frontier and roots windows (the two-height basis of both
+publication order and honest recovery), the recovering replay rounds, the
+acknowledgment boundary obligations, and the unreachable engine-restart and
+social-after-rooms phases under the safe switches. The proof is generic in
+the two root schedules, so it covers `normal.cfg`, `root-preserving.cfg`,
+`social-only.cfg` and `two-changing.cfg` at once, matching the four positive
+TLC results. Each mutant is proved to reach its recorded violation — an
+early ack precedes its own journal head, a failed finalization plus
+destructive restart loses the height-1 WAL, a relabeled journal diverges
+from `original`, a wrong-roster start is recorded, a rooms-before-social
+publish leaves no compatible prefix, a roots-only ack omits the full
+frontier, and independent latest-match inference blocks the honest cut —
+and a completion witness runs a height-1 decision through finalization and
+one interrupted recovery to a reopened frontier. This strengthens the model
+claims from finite enumeration to induction; it changes nothing about the
+production-correspondence obligations above.
+
 `verify/native-delivery` separates durable attempt intent, transport results,
 outcome publication, uncertainty, budget exhaustion and explicit resume. It
 checks exact destination/ciphertext binding, checked retention receipts and
