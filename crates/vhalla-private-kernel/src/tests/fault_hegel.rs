@@ -189,8 +189,7 @@ fn crashes_and_uncertain_commits_preserve_message_custody(tc: TestCase) {
                             resync(kernel, disk, key, &mut shadow, dir).await;
                         }
                         Fault::None => {
-                            let outbox =
-                                kernel.test_send(operation, &body, now).await.unwrap();
+                            let outbox = kernel.test_send(operation, &body, now).await.unwrap();
                             assert_eq!(outbox.kind(), OutboxKind::Application);
                             assert_eq!(outbox.operation(), operation);
                             assert_eq!(outbox.sequence(), shadow.outbox_head[dir] + 1);
