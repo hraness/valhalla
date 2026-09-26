@@ -906,3 +906,43 @@ remain exactly as implemented.
   current protocol (this lane used a source build, so it proves
   reachability and footprint, not artifact deployability), and the
   soak.
+- 26 September 2026, step 9 continued — the released-artifact lane ran
+  on the same Railway service. Tag `v0.2.4` at 23edab7 drove release
+  run 36209367534 through the full rust.yml gate and all four artifact
+  builds; the final publish job refused because three merges moved
+  `main` during the ~25-minute gate — the current-main SHA guard
+  working as designed. Rather than re-tag into a still-moving merge
+  train, the actual release-pipeline artifacts were taken from that
+  run and deployed: `release-cli-x86_64-unknown-linux-gnu`
+  (sha256 cbfbf13f…) into the container and
+  `release-cli-aarch64-apple-darwin` as every member-side binary. Two
+  deployment findings: (a) the GNU artifact requires glibc >= 2.39
+  from its ubuntu-latest build host — the bookworm-slim image (glibc
+  2.36) refused to exec at all, so the image now tracks the runner on
+  ubuntu:24.04; a musl or otherwise statically linked artifact would
+  widen where a release tarball can run and is a real artifact gap;
+  (b) both member enrollments had lapsed during the release wait, so
+  the room was read-only — owner `renew` extended the owner's window,
+  `remove` dropped the expired member device, and a full
+  offer/import/request/accept/join cycle enrolled a replacement member
+  device, which joined at epoch 5 with the roster at three devices
+  (owner + an earlier accepted-but-never-joined device + the joined
+  one). Everything after that ran on released artifacts end to end:
+  the owner renewed, removed, sent and pushed mailbox positions 5-11;
+  the replacement member resolved hayabusa.proxy.rlwy.net:45737 per
+  use, pinned the CA and tls-name over the raw TCP proxy, scanned all
+  eleven positions, applied its own join control and the owner's
+  marker, and refused every pre-join record — then decrypted
+  `SYNTHETIC_RELEASE_MEMBER_RECEIVE_20260926` into its inbox from the
+  owner's device. The earlier member device, still joined but expired,
+  pulled correctly too: accepted the applicable renewal control at
+  position 5 and refused the rest at the kernel boundary, matching the
+  pinned no-reactivation invariant. Volume, flock, namespace and
+  credentials survived two more redeploys (the image rebuild and the
+  binary swap) — clean SIGTERM stops release the Railway volume lock
+  correctly; only ungraceful kills wedge the inode. Settled footprint
+  with the release build: `vhalla` 13.0 MB RSS + socat 4.1 MB in the
+  container, still inside the smallest tier. Still outstanding for
+  step 9: the formal GitHub release on a settled `main` tip (the
+  artifact set is proven deployable; only the publication step is
+  pending), and the sparse soak.
