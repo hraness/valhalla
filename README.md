@@ -76,7 +76,10 @@ Linux machine that stays on can run the
 Tailcat forwarding when it sits behind NAT. A small hosted container works
 too: [deploy/railway](deploy/railway/README.md) carries a tested recipe that
 builds `vhalla` from this repository and, for a lightly used host, fits inside
-Railway's free-plan usage credit.
+Railway's free-plan usage credit. One click wires the build, volume and public
+endpoint:
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/valhalla-private-host?utm_medium=integration&utm_source=button&utm_campaign=valhalla-private-host)
 
 ## Build from source
 
