@@ -891,7 +891,18 @@ remain exactly as implemented.
   operators should know a hard-killed container can wedge the old home
   inode; (c) one abandoned inited home (`/data/host`) remains on the
   volume as inert custodial material from that incident, deliberately
-  not unlinked. Still outstanding for step 9: a *released* binary
-  carrying the current protocol (this lane used a source build, so it
-  proves reachability and footprint, not artifact deployability), a
-  second member over public Internet, and the soak.
+  not unlinked. The lane then carried a full second member: a fresh
+  identity on Mac A took a confidential offer bound to the owner's
+  enrolment window, requested, was accepted, joined at epoch 1, and its
+  admission plus one message crossed the mailbox at positions 3-4 under
+  a separate scoped credential; the owner's pull accepted the message
+  into its inbox and the member's own pull correctly refused the two
+  pre-join epoch-0 records alongside its own echo. Every relay op in
+  that exchange dialled the proxy by its DNS *name* — landed in this
+  session as #158 (`--addr` now accepts name:port, resolved per use,
+  with TLS identity still pinned by CA + tls-name; delivery profiles,
+  gateway upstreams and generation fences take the same strings).
+  Still outstanding for step 9: a *released* binary carrying the
+  current protocol (this lane used a source build, so it proves
+  reachability and footprint, not artifact deployability), and the
+  soak.
