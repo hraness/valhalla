@@ -21,6 +21,7 @@ use vhalla_private_native::{
     relay::RelayKind,
 };
 
+#[cfg(unix)]
 mod agent;
 mod agent_delivery;
 mod agent_setup;
@@ -400,10 +401,16 @@ impl Args {
 
 pub fn run(raw: &[OsString]) -> Result<(), String> {
     if raw.get(1).is_some_and(|value| value == "agent-serve") {
+        #[cfg(unix)]
         return agent::run(raw);
+        #[cfg(not(unix))]
+        return Err("agent serving requires the Unix socket lane".into());
     }
     if raw.get(1).is_some_and(|value| value == "agent-launch") {
+        #[cfg(unix)]
         return agent_setup::launch(raw);
+        #[cfg(not(unix))]
+        return Err("agent launch requires the Unix socket lane".into());
     }
     if raw.len() == 2 && matches!(raw[1].to_str(), Some("--help" | "-h")) {
         println!("{HELP}");
@@ -524,7 +531,12 @@ async fn execute(args: Args) -> Result<(), String> {
                 .map_err(|_| REFUSED)?;
             args.output(secret.confidential_bytes())?;
         }
-        "invite" => invite::invite(&args, &mut room).await?,
+        "invite" => {
+            #[cfg(unix)]
+            invite::invite(&args, &mut room).await?;
+            #[cfg(not(unix))]
+            return Err("invite bundles host material; run it on the Unix host".into());
+        }
         "request" => {
             let raw = args.input("offer", OFFER_LIMIT, true)?;
             let result = room

@@ -1,14 +1,22 @@
 //! Monotonic mailbox scheduling, separate from durable outbound retry policy.
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(unix)]
 const ADAPTIVE_BASE: Duration = Duration::from_secs(5);
+#[cfg(unix)]
 const ADAPTIVE_MAX: Duration = Duration::from_secs(30);
+#[cfg(unix)]
 const INTERACTIVE_IDLE: Duration = Duration::from_secs(5);
+#[cfg(unix)]
 const INTERACTIVE_ACTIVE: Duration = Duration::from_secs(1);
+#[cfg(unix)]
 const ACTIVITY_WINDOW: Duration = Duration::from_secs(30);
+#[cfg(unix)]
 const ERROR_BASE: Duration = Duration::from_secs(1);
+#[cfg(unix)]
 const ERROR_MAX: Duration = Duration::from_secs(30);
 
 /// An explicit selection for a new delivery profile. Adaptive retains the
@@ -22,6 +30,7 @@ pub(super) enum Policy {
     Interactive,
 }
 
+#[cfg(unix)]
 pub(super) struct Schedule {
     policy: Policy,
     next_poll: Instant,
@@ -31,6 +40,7 @@ pub(super) struct Schedule {
     active_until: Option<Instant>,
 }
 
+#[cfg(unix)]
 impl Schedule {
     pub(super) fn new(policy: Policy, now: Instant) -> Self {
         Self {

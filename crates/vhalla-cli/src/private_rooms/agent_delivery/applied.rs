@@ -1,13 +1,18 @@
 //! Closed host evidence and recoverable, no-clobber publication. No plaintext.
-use super::{files, hex, unhex, OutboxKind, RelayItem, RelayKind, REFUSED};
+#[cfg(unix)]
+use super::files;
+use super::{hex, unhex, OutboxKind, RelayItem, RelayKind, REFUSED};
 use serde_json::Value;
+#[cfg(unix)]
 use std::{
     io::{Read, Write},
     path::Path,
 };
+#[cfg(unix)]
 use vhalla_custody as custody;
 use vhalla_private_kernel::Status;
 
+#[cfg(unix)]
 const MAX_BYTES: usize = 2048;
 
 /// Closed kernel-refusal classes a driver may durably record on a skipped
@@ -139,6 +144,7 @@ pub(super) fn validate(
 
 /// Caller holds the driver root lock and has recomputed `expected` from exact
 /// durable kernel evidence. Preserve every foreign or conflicting prefix.
+#[cfg(unix)]
 pub(super) fn publish(path: &Path, expected: &[u8]) -> Result<(), String> {
     if expected.is_empty() || expected.len() > MAX_BYTES {
         return Err(REFUSED.into());
@@ -187,6 +193,7 @@ pub(super) fn publish(path: &Path, expected: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn rename_new(
     directory: &std::fs::File,
     pending: &std::ffi::OsStr,

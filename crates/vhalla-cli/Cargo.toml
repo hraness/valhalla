@@ -36,15 +36,18 @@ getrandom = { version = "0.3", optional = true }
 sha2 = { version = "0.10", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-
-[target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.4", features = ["event", "fs", "stdio", "process"], optional = true }
-rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"], optional = true }
-time = { version = "=0.3.55", default-features = false, features = ["std"], optional = true }
+# Private-room client crates are portable: the Windows build keeps member-side
+# `private` commands while host, gateway and agent serving stay Unix-gated.
 vhalla-private-native = { path = "../vhalla-private-native", features = ["client"], optional = true }
 vhalla-private-kernel = { path = "../vhalla-private-kernel", optional = true }
 vhalla-custody = { path = "../vhalla-custody", optional = true }
 zeroize = { version = "1", optional = true }
+tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "time", "signal", "macros"], optional = true }
+time = { version = "=0.3.55", default-features = false, features = ["std"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.4", features = ["event", "fs", "stdio", "process"], optional = true }
+rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"], optional = true }
 vhalla-public-peer = { path = "../vhalla-public-peer", optional = true }
 libc = { version = "0.2", optional = true }
 vhalla-social-store = { path = "../vhalla-social-store", optional = true }
@@ -57,7 +60,6 @@ vhalla-rooms-node = { path = "../vhalla-rooms-node", optional = true }
 vhalla-rooms-app = { path = "../vhalla-rooms-app", optional = true }
 vhalla-rooms-tui = { path = "../vhalla-rooms-tui", optional = true }
 vhalla-retrieval = { path = "../vhalla-retrieval", optional = true }
-tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "time", "signal", "macros"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]

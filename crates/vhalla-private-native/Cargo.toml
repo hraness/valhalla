@@ -12,7 +12,7 @@ client = ["dep:vhalla-identity"]
 agent-rpc = ["client", "dep:serde_json"]
 relay-tls = ["dep:rustls"]
 
-[target.'cfg(unix)'.dependencies]
+[dependencies]
 vhalla-private-relay = { path = "../vhalla-private-relay" }
 vhalla-identity = { path = "../vhalla-identity", features = ["private-storage"], optional = true }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "limits"] }
@@ -20,7 +20,6 @@ sha2 = { version = "=0.10.9", default-features = false }
 vhalla-custody = { path = "../vhalla-custody" }
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring"], optional = true }
 serde_json = { version = "1", optional = true }
-
 vhalla-private-kernel = { path = "../vhalla-private-kernel" }
 
 [dev-dependencies]

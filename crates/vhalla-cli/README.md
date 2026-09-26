@@ -1475,10 +1475,13 @@ publisher does not implicitly register itself or change discovery policy.
 
 ## Local encrypted private-room files (experimental-private)
 
-Build with `cargo build --locked -p vhalla-cli --features experimental-private --bin vhalla`. This optional Unix feature uses the maintained private-room
-controller, MLS kernel and encrypted SQLite store. Enabling the feature installs
-commands only: nothing listens, dials or runs in the background until explicitly
-invoked. The default CLI dependency graph does not enable these tools.
+Build with `cargo build --locked -p vhalla-cli --features experimental-private --bin vhalla`. This optional feature uses the maintained private-room
+controller, MLS kernel and encrypted SQLite store. Member-side `private` and
+`identity` commands also compile and link on Windows; `private-host`,
+`private-gateway`, `private invite`, `agent-serve` and `agent-launch` remain
+Unix lanes. Enabling the feature installs commands only: nothing listens, dials
+or runs in the background until explicitly invoked. The default CLI dependency
+graph does not enable these tools.
 Use `vhalla private --help` for the complete command list.
 
 Private rooms run only on machines the participants control; nothing is hosted
