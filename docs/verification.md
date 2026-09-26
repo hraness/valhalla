@@ -246,6 +246,40 @@ fork evidence when the process is lost; committed quarantine must survive.
 The model assumes valid signatures and atomic publication and does not verify
 MLS or agreement between disconnected replicas.
 
+`verify/private-admission` checks the browser owner's two-phase admission
+boundary: review authenticates one retained encrypted contact request, then
+confirmation consumes the same worker-local permission, rechecks the exact
+request and current membership, and joins the kernel admission operation.
+Bounds cover two worker lifetimes, two reviews, two item identities, one
+intervening request, one membership-field change, one rival publication and
+three clock values. Eight mutations retain permission across an intervening
+request or worker reload, keep it reusable during confirmation, skip the
+exact-consent or ciphertext binding, omit the membership or validity recheck
+and accept a stale storage image; a deliberately false invariant witnesses
+that a valid admission can still publish. Production Admission/Kernel
+regressions over a strict in-memory CAS supply the correspondence; atomic
+storage and authenticated decoding remain assumptions, and validity is judged
+at the captured confirmation time rather than a wall-clock deadline.
+
+The same transition system is proved in Verus in
+`verify/private-admission/admission.rs`: all seven checked invariants
+(`TypeOK`, `ConsentLifetime`, `ConsumedBeforeCheck`, `ExactReview`,
+`CurrentMembership`, `LiveAtConfirmation`, `ExclusivePublication`) are
+inductive over `normal.cfg`'s `Next`, strengthened by four auxiliaries
+(serial never exceeds reviews, revision equals the two one-shot flags, the
+exact-request binding holds once the membership phase is reached, and the
+publish phase retains the membership snapshot and captured validity window).
+Each of the eight mutant configurations is proved to reach a violation of its
+named invariant — retained permission breaks `ConsentLifetime`, un-consumed
+permission breaks `ConsumedBeforeCheck`, skipped consent equality or item
+binding breaks `ExactReview`, the skipped membership recheck breaks
+`CurrentMembership`, a stale captured time breaks `LiveAtConfirmation`, and a
+stale custody image breaks `ExclusivePublication` — and a completion witness
+reaches `done` with a recorded publication effect, matching the
+`witness-admitted` reachability probe. This strengthens the model claims from
+finite enumeration to induction; it changes nothing about the
+production-correspondence obligations above.
+
 All use checksum-pinned TLC 1.7.4. The complete case inventory is required by the
 runner: new configs cannot silently miss the gate. It requires complete positive
 runs, named invariant failures or an unambiguously attributed temporal witness
