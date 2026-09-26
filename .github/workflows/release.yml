@@ -25,8 +25,19 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
+            tool: build
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            tool: build
+          # musl produces a fully static binary that runs on any distro and
+          # inside scratch/distroless images; the gnu artifact stays glibc-bound
+          # to the ubuntu-latest runner's version.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            tool: zigbuild
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            tool: zigbuild
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -36,10 +47,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        if: matrix.tool == 'zigbuild'
+        with:
+          tool: cargo-zigbuild
+      - name: Install zig (checksum-verified)
+        if: matrix.tool == 'zigbuild'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+          echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  /tmp/zig.tar.xz" | sha256sum -c -
+          sudo tar -xJf /tmp/zig.tar.xz -C /opt
+          echo "/opt/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
       - name: Build vhalla
         # Include the maintained public/private commands. The complete
         # all-features verification gate still runs above.
-        run: cargo build --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "${{ matrix.target }}"
+        run: cargo ${{ matrix.tool }} --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "${{ matrix.target }}"
       - name: macOS host custody and lifecycle regressions
         if: runner.os == 'macOS'
         # Tests inject launchctl replies and use temporary custody only. They

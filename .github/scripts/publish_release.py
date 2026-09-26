@@ -43,6 +43,8 @@ def asset_names(tag):
     archives = [
         f"valhalla-{tag}-aarch64-apple-darwin.tar.gz",
         f"valhalla-{tag}-x86_64-unknown-linux-gnu.tar.gz",
+        f"valhalla-{tag}-x86_64-unknown-linux-musl.tar.gz",
+        f"valhalla-{tag}-aarch64-unknown-linux-musl.tar.gz",
         f"valhalla-menubar-{tag}-aarch64-apple-darwin.tar.gz",
         f"valhalla-browser-{tag}.tar.gz",
     ]
@@ -57,7 +59,7 @@ def file_hash(path):
 def validate_assets(directory, tag):
     expected = asset_names(tag)
     if sorted(path.name for path in directory.iterdir()) != expected:
-        raise ValueError("release requires exactly all four archives and checksum sidecars")
+        raise ValueError("release requires exactly all six archives and checksum sidecars")
     hashes = {}
     for name in expected:
         path = directory / name
