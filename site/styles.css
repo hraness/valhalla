@@ -1970,3 +1970,10 @@ table a {
 .header-actions .hraness-design-theme-toggle__trigger { border-color: var(--hraness-material-outline); }
 @media (forced-colors: active) { .scope-card, .room, .build-command, .header-actions .hraness-design-theme-toggle__trigger { border-color: CanvasText; box-shadow: none; } }
 @media (forced-colors: active), (prefers-reduced-transparency: reduce) { .fairy-field { display: none; } }
+
+/* The shared 404 page styles live in a Design Kit cascade layer, so this
+ * file's unlayered h1, p, h2 and link rules would win. Hand those elements
+ * back to the status page's own rules. */
+.hraness-status-page :is(h1, h2, p, a) {
+  all:revert-layer;
+}
