@@ -268,6 +268,7 @@ own token. Only the host's listener changes with where the clients are:
 | On the Internet, and the host has a public address | `--listen 203.0.113.7:9473` | `203.0.113.7:9473` |
 | On the Internet, and the host is a cloud server whose interface holds a private address | `--listen 10.0.0.5:9473 --advertise 203.0.113.7:9473` | `203.0.113.7:9473` |
 | On the Internet, and the host sits behind a home router | the default loopback listener plus [Tailcat](#explicit-tailcat-wiring) | each client's own Tailcat forward |
+| On the Internet, and the host runs inside a hosted container | the loopback listener plus a TCP bridge to the platform's proxy port, see [a hosted container](#a-hosted-container) | the proxy's `name:port` |
 
 For example, a laptop that hosts agents on the same Wi-Fi network:
 
@@ -302,6 +303,76 @@ the host directly need nothing else installed.
   hold keeps its admitted connection and request slots the whole time, and a
   stopping host answers held requests immediately. Connections from many
   machines at once can still delay service.
+
+## A hosted container
+
+A container platform can host the relay the same way a server does: the
+platform gives the container a public TCP endpoint, a small TCP forwarder
+inside the container bridges it to the relay's unchanged loopback listener,
+and a mounted volume keeps the host home across redeploys. Use a release that
+publishes a `*-linux-musl` artifact, which is fully static and runs on any
+image, or a `gnu` build whose glibc the image carries. This shape
+was qualified on Railway's smallest tier with members joining and exchanging
+messages over real public egress.
+
+Keep the listener on `127.0.0.1:9473`. Wildcard binds are refused by design,
+and inside a container they would also collide with the bridge: the forwarder
+listens on the platform's assigned port (`APP_PORT` below) and forwards to the
+loopback port, so the container-facing wildcard bind and the relay bind never
+share a port.
+
+```sh
+# start.sh inside the container: init once, bridge, serve
+set -e
+HOME_DIR=/data/host
+APP_PORT="${APP_PORT:-19473}"
+chmod 700 /data 2>/dev/null || true
+if [ ! -f "$HOME_DIR/config.json" ]; then
+  vhalla private-host init "$HOME_DIR" \
+    --listen 127.0.0.1:9473 \
+    --tls-name relay.valhalla.invalid \
+    --executable /usr/local/bin/vhalla
+fi
+socat "TCP-LISTEN:${APP_PORT},fork,reuseaddr" TCP:127.0.0.1:9473 &
+exec vhalla private-host serve "$HOME_DIR"
+```
+
+```Dockerfile
+FROM ubuntu:24.04
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends socat ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY vhalla /usr/local/bin/vhalla
+COPY start.sh /usr/local/bin/start.sh
+RUN chmod 755 /usr/local/bin/vhalla /usr/local/bin/start.sh
+CMD ["/usr/local/bin/start.sh"]
+```
+
+Then attach a persistent volume at `/data` and map the platform's public TCP
+endpoint to the bridge port (`APP_PORT`). Clients dial the endpoint's
+`name:port`; `--addr` and delivery profiles accept DNS names resolved per use,
+while TLS still verifies the pinned CA, the chosen `--tls-name` and the opaque
+namespace — the proxy and the forwarder only ever see ciphertext, and the
+container layer holds the host's keys only while it runs.
+
+Measured on the qualified deployment: `vhalla` 13 MB resident and near-zero
+CPU at idle, well inside the smallest paid or trial tier.
+
+Two things to know before choosing a platform:
+
+- Pick the binary whose libc the image has. The `gnu` release artifact needs
+  glibc >= the version on the `ubuntu-latest` build runner (currently 2.39),
+  so base images at least as new as Ubuntu 24.04 work; Debian bookworm does
+  not. The `musl` artifact is fully static and runs on any Linux image,
+  including scratch and Alpine.
+- Keep container stops graceful. The host takes a filesystem lock on its home
+  for its whole lifetime; the kernel releases it on a clean SIGTERM, and
+  qualified redeploys re-opened the same home with credentials and mailbox
+  intact. On at least one provider's volume a hard-killed container left the
+  lock held with no process running — the host then reports `maintenance
+  busy` and refuses to start on that path. If that happens, initialise a
+  fresh home path on the volume and re-issue member access; do not delete or
+  force the lock file.
 
 ## Explicit Tailcat wiring
 
