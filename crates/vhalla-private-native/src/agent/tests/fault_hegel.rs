@@ -38,6 +38,9 @@ struct Shadow {
     delivered: [BTreeMap<Vec<u8>, u64>; 2],
     /// Attempted bodies by operation, for uncertain-commit accounting.
     pending_body: BTreeMap<OperationId, Vec<u8>>,
+    /// Highest `sent` index ever admitted to each inbox; any lower index is
+    /// ratchet-past and rejects before publish.
+    max_wire: [Option<usize>; 2],
     ops: u64,
     queued: u64,
 }
@@ -49,6 +52,7 @@ impl Shadow {
             outbox_head: [0, 0],
             delivered: [BTreeMap::new(), BTreeMap::new()],
             pending_body: BTreeMap::new(),
+            max_wire: [None, None],
             // op(1) is committed by the join handshake on both disks.
             ops: 1,
             queued: 0,
@@ -94,13 +98,15 @@ async fn resync(kernel: &mut Kernel<Disk>, shadow: &mut Shadow, dir: usize) {
     loop {
         let page = kernel.inbox(after, MAX_PAGE_RECORDS).await.unwrap();
         for message in page.records {
-            let wire = shadow.sent[1 - dir]
+            let index = shadow.sent[1 - dir]
                 .iter()
-                .find(|(_, body)| *body == *message.body())
-                .map(|(wire, _)| wire.clone())
+                .position(|(_, body)| *body == *message.body())
                 .expect("inbox body was never sent");
+            let wire = shadow.sent[1 - dir][index].0.clone();
             let prior = shadow.delivered[dir].insert(wire, message.sequence());
             assert!(prior.is_none(), "wire committed to two inbox positions");
+            let high = shadow.max_wire[dir].get_or_insert(index);
+            *high = (*high).max(index);
         }
         match page.next {
             Some(next) => after = next,
@@ -127,9 +133,15 @@ async fn reopen_owner(
     if let Some(wire) = deliver {
         // The kernel is freshly opened, so the wire always takes the
         // publish path — a crash here lands on the receive commit.
+        let index = shadow.sent[1]
+            .iter()
+            .position(|(w, _)| *w == wire)
+            .expect("deliver wire came from sent[1]");
         let message = kernel.receive(&wire, now).await.unwrap();
         let prior = shadow.delivered[0].insert(wire, message.sequence());
         assert!(prior.is_none());
+        let high = shadow.max_wire[0].get_or_insert(index);
+        *high = (*high).max(index);
     }
     resync(&mut kernel, shadow, 0).await;
     session(kernel)
@@ -235,7 +247,9 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                     }
                 }
                 // Deliver a committed owner wire to the member, with a
-                // drawn storage fault on the member's disk.
+                // drawn storage fault on the member's disk. Delivery is
+                // epoch-ordered: indexes ahead of the delivered prefix are
+                // ratchet-rejected before the publish point.
                 4..=6 => {
                     let incoming = &shadow.sent[0];
                     if incoming.is_empty() {
@@ -249,6 +263,21 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                         let message = pair.member.receive(&wire, now).await.unwrap();
                         assert_eq!(message.sequence(), shadow.delivered[1][&wire]);
                         assert_eq!(message.body(), body.as_slice());
+                        continue;
+                    }
+                    if shadow.max_wire[1].is_some_and(|max| i < max) {
+                        // Ratchet-past wire: refused before publish under
+                        // any fault draw, so the op completes immediately.
+                        assert!(pair.member.receive(&wire, now).await.is_err());
+                        reopen_member(
+                            &mut pair.member,
+                            &pair.member_disk,
+                            &pair.member_home,
+                            &pair.member_key,
+                            pair.member_context,
+                            &mut shadow,
+                        )
+                        .await;
                         continue;
                     }
                     match fault {
@@ -330,14 +359,8 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                 _ => {
                     drop(owner_session.take());
                     drop(owner_handle.take());
-                    let deliver = if shadow.sent[1].is_empty() {
-                        None
-                    } else {
-                        let i =
-                            tc.draw(gs::integers::<usize>().max_value(shadow.sent[1].len() - 1));
-                        let wire = shadow.sent[1][i].0.clone();
-                        (!shadow.delivered[0].contains_key(&wire)).then_some(wire)
-                    };
+                    let next = shadow.max_wire[0].map(|m| m + 1).unwrap_or(0);
+                    let deliver = shadow.sent[1].get(next).map(|(wire, _)| wire.clone());
                     let (s, h) = reopen_owner(
                         &pair.owner_disk,
                         &pair.owner_home,
