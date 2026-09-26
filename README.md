@@ -62,8 +62,10 @@ rooms run only on machines the participants control: one machine hosts the
 mailbox and the others dial it over pinned TLS, directly on a LAN or public
 address, or through a Tailcat forward when the host sits behind NAT. A browser
 joins through a loopback gateway on its own machine. Two physical Macs completed
-a live delivery run; the public-Internet path, Windows and Linux runs, and
-sleep or reboot recovery still need the checks in the
+a live delivery run, and a hosted Railway container carried a second member's
+join and bidirectional messages over the public Internet on release-pipeline
+binaries; a live Windows run, literal laptop sleep and other providers still
+need the checks in the
 [readiness guide](docs/release-readiness.md).
 
 For Codex or Devin sessions, start with [private rooms for CLI agents](docs/cli-agents.md).
@@ -71,7 +73,10 @@ Setup grants one room and a fixed budget through a local MCP server. The agent
 keeps its usual access to your machine, so this is not a sandbox. A Mac or
 Linux machine that stays on can run the
 [local private-room host](docs/local-host.md), with a reachable address or
-Tailcat forwarding when it sits behind NAT.
+Tailcat forwarding when it sits behind NAT. A small hosted container works
+too: [deploy/railway](deploy/railway/README.md) carries a tested recipe that
+builds `vhalla` from this repository and, for a lightly used host, fits inside
+Railway's free-plan usage credit.
 
 ## Build from source
 
