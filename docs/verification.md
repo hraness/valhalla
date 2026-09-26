@@ -101,9 +101,14 @@ was applied). Each mutant configuration is proved to reach the violation TLC
 recorded — a dropped future item and crash-lost pending each break
 `NoLostWork`, and double-applied replay breaks `ExactlyOnce` — and a
 completion witness applies all three items in dependency order across a crash
-and recovery. The `EventuallyResolved` liveness property is not covered. This
-strengthens the model claims from finite enumeration to induction; it changes
-nothing about the production-correspondence obligations above.
+and recovery. `EventuallyResolved` is also covered by a progress-measure
+argument: every reachable non-goal state has a WF-covered action enabled
+(`covered_available`), every non-stuttering step strictly decreases a bounded
+per-client measure (`real_step_decreases`), and measure zero implies full
+application — so under the spec's declared weak fairness every behavior
+reaches `applied = Items` within 28 real steps. This strengthens the model
+claims from finite enumeration to induction; it changes nothing about the
+production-correspondence obligations above.
 
 `verify/private-rotation` checks a proposed drained cutover contract. This is
 design evidence; it does not claim the current host/client implementation

@@ -1446,4 +1446,520 @@ proof fn completion_witness()
     assert(is_trace(t) && set_at(t.last().applied, 1) =~= items() && t.last().online =~= clients());
 }
 
+
+// ---------------------------------------------------------------------
+// Liveness: EventuallyResolved under the spec's declared weak fairness.
+//
+// `Fair == WF(Fetch) /\ WF(PublishFetch) /\ WF(Recover) /\ WF(Apply)`.
+// Verus proves the WF1-style content: (1) at every reachable non-goal
+// state a covered action is enabled, so a fair behavior cannot stutter
+// forever below the goal; (2) every covered step strictly decreases a
+// bounded well-founded measure; and (3) measure 0 implies the goal.
+// Together every fair execution reaches the goal within measure(init)
+// covered steps. The only non-covered steps are Crash (which itself
+// decreases the measure by consuming the crash budget) and Replay
+// (which is a no-op: post =~= pre).
+// ---------------------------------------------------------------------
+
+/// Non-stuttering: at least one field changed (safe-Replay is a no-op,
+/// so it is the only covered-by-Next step that is not real).
+pub open spec fn real_step(a: State, b: State) -> bool {
+    !(b.cursor =~= a.cursor && b.pending =~= a.pending && b.applied =~= a.applied
+        && b.staged =~= a.staged && b.online =~= a.online && b.crashes =~= a.crashes
+        && b.effects =~= a.effects)
+}
+
+/// The body of EventuallyResolved: every client has applied all items.
+pub open spec fn goal(s: State) -> bool {
+    &&& set_at(s.applied, 1) =~= items()
+    &&& set_at(s.applied, 2) =~= items()
+}
+
+/// A covered (WF-guarded) step under the safe configuration.
+pub open spec fn wf_step(pre: State, post: State) -> bool {
+    ||| exists|c: int| is_client(c) && #[trigger] fetch(pre, post, c)
+    ||| exists|c: int| is_client(c) && #[trigger] publish_fetch(pre, post, false, c)
+    ||| exists|c: int| is_client(c) && #[trigger] recover(pre, post, c)
+    ||| exists|c: int, m: int| is_client(c) && is_item(m) && #[trigger] apply(pre, post, c, m)
+}
+
+/// Guard-level covered availability body: a Fetch / PublishFetch /
+/// Recover / Apply guard holds for (c, m).
+pub open spec fn covered_guard(s: State, c: int, m: int) -> bool {
+    ||| (is_client(c) && s.online.contains(c) && map_at(s.staged, c) == 0
+        && map_at(s.cursor, c) < 3 && set_at(s.pending, c).len() < capacity())
+    ||| (is_client(c) && s.online.contains(c) && map_at(s.staged, c) != 0)
+    ||| (is_client(c) && !s.online.contains(c))
+    ||| (is_client(c) && is_item(m) && s.online.contains(c)
+        && set_at(s.pending, c).contains(m) && ready(s, c, m))
+}
+
+/// Guard-level covered availability (the enabledness half of WF).
+pub open spec fn covered_enabled(s: State) -> bool {
+    exists|c: int, m: int| #[trigger] covered_guard(s, c, m)
+}
+
+/// Pipeline distance of one item for one client: applied = 0,
+/// pending = 1, staged = 2, unseen = 3.
+pub open spec fn idist(s: State, c: int, i: int) -> int {
+    if set_at(s.applied, c).contains(i) {
+        0
+    } else if set_at(s.pending, c).contains(i) {
+        1
+    } else if map_at(s.staged, c) == i {
+        2
+    } else {
+        3
+    }
+}
+
+/// Per-client progress measure: crash budget dominates (a crash costs
+/// 4 but can add back at most 2), then the offline bit, then the sum of
+/// per-item pipeline distances.
+pub open spec fn measure_c(s: State, c: int) -> int {
+    4 * (max_crashes() - map_at(s.crashes, c))
+        + (if s.online.contains(c) { 0int } else { 1int })
+        + idist(s, c, 1) + idist(s, c, 2) + idist(s, c, 3)
+}
+
+pub open spec fn measure(s: State) -> int {
+    measure_c(s, 1) + measure_c(s, 2)
+}
+
+proof fn measure_nonneg(s: State)
+    requires
+        inv(s),
+    ensures
+        measure(s) >= 0,
+{
+    assert(type_ok(s));
+    assert(is_client(1) && is_client(2));
+    assert(0 <= map_at(s.crashes, 1) <= max_crashes());
+    assert(0 <= map_at(s.crashes, 2) <= max_crashes());
+}
+
+proof fn measure_zero_is_goal(s: State)
+    requires
+        inv(s),
+        measure(s) == 0,
+    ensures
+        goal(s),
+{
+    assert(type_ok(s));
+    assert(is_client(1) && is_client(2));
+    assert(0 <= map_at(s.crashes, 1) <= max_crashes());
+    assert(0 <= map_at(s.crashes, 2) <= max_crashes());
+    assert(measure_c(s, 1) >= 0 && measure_c(s, 2) >= 0);
+    assert(measure_c(s, 1) == 0 && measure_c(s, 2) == 0);
+    assert(idist(s, 1, 1) >= 0 && idist(s, 1, 2) >= 0 && idist(s, 1, 3) >= 0);
+    assert(idist(s, 2, 1) >= 0 && idist(s, 2, 2) >= 0 && idist(s, 2, 3) >= 0);
+    assert(idist(s, 1, 1) == 0 && idist(s, 1, 2) == 0 && idist(s, 1, 3) == 0);
+    assert(idist(s, 2, 1) == 0 && idist(s, 2, 2) == 0 && idist(s, 2, 3) == 0);
+    assert forall|c: int| c == 1 || c == 2 implies set_at(s.applied, c).contains(1)
+        && set_at(s.applied, c).contains(2) && set_at(s.applied, c).contains(3) by {
+        assert(idist(s, c, 1) == 0);
+        assert(idist(s, c, 2) == 0);
+        assert(idist(s, c, 3) == 0);
+    }
+    assert(set_at(s.applied, 1).contains(1) && set_at(s.applied, 1).contains(2)
+        && set_at(s.applied, 1).contains(3));
+    assert(set_at(s.applied, 2).contains(1) && set_at(s.applied, 2).contains(2)
+        && set_at(s.applied, 2).contains(3));
+    assert(set_at(s.applied, 1).subset_of(items()));
+    assert(set_at(s.applied, 2).subset_of(items()));
+    assert(set_at(s.applied, 1) =~= items()) by {
+        assert forall|i: int| set_at(s.applied, 1).contains(i) implies items().contains(i) by {
+        }
+        assert forall|i: int| items().contains(i) implies set_at(s.applied, 1).contains(i) by {
+        }
+    }
+    assert(set_at(s.applied, 2) =~= items()) by {
+        assert forall|i: int| set_at(s.applied, 2).contains(i) implies items().contains(i) by {
+        }
+        assert forall|i: int| items().contains(i) implies set_at(s.applied, 2).contains(i) by {
+        }
+    }
+}
+
+/// A covered step strictly decreases the measure.
+proof fn covered_decreases(pre: State, post: State)
+    requires
+        inv(pre),
+        wf_step(pre, post),
+    ensures
+        measure(post) < measure(pre),
+{
+    if exists|c: int| is_client(c) && #[trigger] fetch(pre, post, c) {
+        let c = choose|c: int| is_client(c) && fetch(pre, post, c);
+        let j = map_at(pre.cursor, c) + 1;
+        assert(1 <= j <= 3);
+        assert(j > map_at(pre.cursor, c));
+        assert(!set_at(pre.pending, c).contains(j)) by {
+            assert(pending_le_cursor(pre));
+        }
+        assert(!set_at(pre.applied, c).contains(j)) by {
+            assert(applied_le_cursor(pre));
+        }
+        assert(idist(pre, c, j) == 3);
+        assert(map_at(post.staged, c) == j);
+        assert(post.pending =~= pre.pending);
+        assert(post.applied =~= pre.applied);
+        assert(set_at(post.pending, c) =~= set_at(pre.pending, c));
+        assert(idist(post, c, j) == 2);
+        assert forall|i: int| is_item(i) && i != j implies idist(post, c, i) == idist(pre, c, i) by {
+            assert(map_at(post.staged, c) == j); assert(j != i);
+        }
+        assert(post.online =~= pre.online && post.crashes =~= pre.crashes);
+        let d = if c == 1 { 2int } else { 1int };
+        assert(post.staged =~= pre.staged.insert(c, j));
+        assert forall|i: int| is_item(i) implies idist(post, d, i) == idist(pre, d, i) by {
+            assert(map_at(post.staged, d) == map_at(pre.staged, d)) by {
+                map_insert_at(pre.staged, c, j, d);
+            }
+            assert(set_at(post.pending, d) =~= set_at(pre.pending, d)) by {
+                assert(post.pending =~= pre.pending);
+            }
+            assert(set_at(post.applied, d) =~= set_at(pre.applied, d));
+        }
+        assert(measure_c(post, d) == measure_c(pre, d)) by {
+            assert(map_at(post.crashes, d) == map_at(pre.crashes, d)) by {
+                map_insert_at(pre.crashes, c, map_at(pre.crashes, c), d);
+            }
+            assert(post.online.contains(d) == pre.online.contains(d));
+        }
+    } else if exists|c: int| is_client(c) && #[trigger] publish_fetch(pre, post, false, c) {
+        let c = choose|c: int| is_client(c) && publish_fetch(pre, post, false, c);
+        let i = map_at(pre.staged, c);
+        assert(i != 0);
+        assert(type_ok(pre));
+        assert(1 <= i <= 3);
+        assert(staged_is_next(pre));
+        assert(i == map_at(pre.cursor, c) + 1);
+        assert(!set_at(pre.pending, c).contains(i)) by {
+            assert(pending_le_cursor(pre));
+        }
+        assert(!set_at(pre.applied, c).contains(i)) by {
+            assert(applied_le_cursor(pre));
+        }
+        assert(idist(pre, c, i) == 2);
+        assert(post.pending =~= pre.pending.insert(c, set_at(pre.pending, c).insert(i)));
+        set_map_insert_at(pre.pending, c, set_at(pre.pending, c).insert(i), c);
+        assert(set_at(post.pending, c) =~= set_at(pre.pending, c).insert(i));
+        assert(idist(post, c, i) == 1);
+        assert forall|j: int| is_item(j) && j != i implies idist(post, c, j) == idist(pre, c, j) by {
+            assert(set_at(post.pending, c).contains(j) == set_at(pre.pending, c).contains(j));
+            assert(set_at(post.applied, c).contains(j) == set_at(pre.applied, c).contains(j));
+            assert(map_at(post.staged, c) == 0) by {
+                map_insert_at(pre.staged, c, 0, c);
+            }
+        }
+        let d = if c == 1 { 2int } else { 1int };
+        assert forall|j: int| is_item(j) implies idist(post, d, j) == idist(pre, d, j) by {
+            set_map_insert_at(pre.pending, c, set_at(pre.pending, c).insert(i), d);
+            map_insert_at(pre.staged, c, 0, d);
+        }
+        assert(measure_c(post, d) == measure_c(pre, d)) by {
+            map_insert_at(pre.crashes, c, map_at(pre.crashes, c), d);
+            assert(post.online =~= pre.online);
+        }
+    } else if exists|c: int, m: int| is_client(c) && is_item(m) && #[trigger] apply(pre, post, c, m) {
+        let cm = choose|c: int, m: int| is_client(c) && is_item(m) && apply(pre, post, c, m);
+        let c = cm.0;
+        let m = cm.1;
+        assert(set_at(pre.pending, c).contains(m));
+        assert(disjoint(pre));
+        assert(!set_at(pre.applied, c).contains(m));
+        assert(idist(pre, c, m) == 1);
+        set_map_insert_at(pre.applied, c, set_at(pre.applied, c).insert(m), c);
+        set_map_insert_at(pre.pending, c, set_at(pre.pending, c).remove(m), c);
+        assert(set_at(post.applied, c) =~= set_at(pre.applied, c).insert(m));
+        assert(idist(post, c, m) == 0);
+        assert forall|j: int| is_item(j) && j != m implies idist(post, c, j) == idist(pre, c, j) by {
+            assert(set_at(post.pending, c).contains(j) == set_at(pre.pending, c).contains(j));
+            assert(set_at(post.applied, c).contains(j) == set_at(pre.applied, c).contains(j));
+            assert(post.staged =~= pre.staged);
+        }
+        let d = if c == 1 { 2int } else { 1int };
+        assert(measure_c(post, d) == measure_c(pre, d)) by {
+            set_map_insert_at(pre.applied, c, set_at(pre.applied, c).insert(m), d);
+            set_map_insert_at(pre.pending, c, set_at(pre.pending, c).remove(m), d);
+            map_insert_at(pre.crashes, c, map_at(pre.crashes, c), d);
+            assert(post.online =~= pre.online);
+        }
+    } else {
+        let c = choose|c: int| is_client(c) && recover(pre, post, c);
+        assert(!pre.online.contains(c));
+        assert(post.online =~= pre.online.insert(c));
+        assert forall|i: int| is_item(i) implies idist(post, c, i) == idist(pre, c, i) by {
+            assert(post.staged =~= pre.staged && post.pending =~= pre.pending && post.applied =~= pre.applied);
+            assert(set_at(post.pending, c) =~= set_at(pre.pending, c));
+            assert(set_at(post.applied, c) =~= set_at(pre.applied, c));
+            assert(map_at(post.staged, c) == map_at(pre.staged, c));
+        }
+        let d = if c == 1 { 2int } else { 1int };
+        assert(measure_c(post, d) == measure_c(pre, d)) by {
+            assert(post.online.contains(d) == pre.online.contains(d));
+            assert(post.crashes =~= pre.crashes && post.staged =~= pre.staged
+                && post.pending =~= pre.pending && post.applied =~= pre.applied);
+        }
+        assert(measure_c(post, c) == measure_c(pre, c) - 1);
+    }
+}
+
+/// Every non-stuttering step of the safe configuration decreases the
+/// measure — even Crash, which spends the crash budget (4) while adding
+/// at most 2 back (offline bit plus un-staging one item).
+proof fn real_step_decreases(pre: State, post: State)
+    requires
+        inv(pre),
+        next(pre, post),
+        real_step(pre, post),
+    ensures
+        measure(post) < measure(pre),
+{
+    if exists|c: int| is_client(c) && #[trigger] crash(pre, post, false, c) {
+        let c = choose|c: int| is_client(c) && crash(pre, post, false, c);
+        assert(map_at(pre.crashes, c) < max_crashes());
+        assert(map_at(post.crashes, c) == map_at(pre.crashes, c) + 1) by {
+            map_insert_at(pre.crashes, c, map_at(pre.crashes, c) + 1, c);
+        }
+        assert(post.online =~= pre.online.remove(c));
+        let i = map_at(pre.staged, c);
+        assert(map_at(post.staged, c) == 0) by {
+            map_insert_at(pre.staged, c, 0, c);
+        }
+        if i != 0 {
+            assert(staged_is_next(pre));
+            assert(i == map_at(pre.cursor, c) + 1);
+            assert(!set_at(pre.pending, c).contains(i)) by {
+                assert(pending_le_cursor(pre));
+            }
+            assert(!set_at(pre.applied, c).contains(i)) by {
+                assert(applied_le_cursor(pre));
+            }
+            assert(idist(pre, c, i) == 2);
+            assert(post.pending =~= pre.pending);
+            assert(set_at(post.pending, c) =~= set_at(pre.pending, c));
+            assert(idist(post, c, i) == 3);
+        }
+        assert forall|j: int| is_item(j) && j != i implies idist(post, c, j) == idist(pre, c, j) by {
+            assert(set_at(post.pending, c).contains(j) == set_at(pre.pending, c).contains(j));
+            assert(set_at(post.applied, c).contains(j) == set_at(pre.applied, c).contains(j));
+        }
+        let d = if c == 1 { 2int } else { 1int };
+        assert(measure_c(post, d) == measure_c(pre, d)) by {
+            map_insert_at(pre.crashes, c, map_at(pre.crashes, c) + 1, d);
+            map_insert_at(pre.staged, c, 0, d);
+            assert(post.online.contains(d) == pre.online.contains(d));
+            assert(post.pending =~= pre.pending && post.applied =~= pre.applied);
+        }
+        assert(measure_c(post, c) <= measure_c(pre, c) - 2);
+    } else if exists|c: int, m: int| is_client(c) && is_item(m) && #[trigger] replay(pre, post, false, c, m) {
+        let cm = choose|c: int, m: int| is_client(c) && is_item(m) && replay(pre, post, false, c, m);
+        assert(post.cursor =~= pre.cursor && post.pending =~= pre.pending
+            && post.applied =~= pre.applied && post.staged =~= pre.staged
+            && post.online =~= pre.online && post.crashes =~= pre.crashes
+            && post.effects =~= pre.effects);
+        assert(false);
+    } else {
+        assert(wf_step(pre, post)) by {
+            assert(next_cfg(false, false, false, pre, post));
+        }
+        covered_decreases(pre, post);
+    }
+}
+
+/// At every reachable non-goal state some covered action's guard holds.
+/// Under weak fairness a fair behavior therefore cannot stall below the
+/// goal: the covered action stays enabled until it fires.
+proof fn covered_available(s: State)
+    requires
+        inv(s),
+        !goal(s),
+    ensures
+        covered_enabled(s),
+{
+    if !s.online.contains(1) {
+        assert(covered_guard(s, 1, 1));
+        return;
+    }
+    if !s.online.contains(2) {
+        assert(covered_guard(s, 2, 1));
+        return;
+    }
+    // Both online. !goal gives a client whose applied set is short.
+    let c = if set_at(s.applied, 1) =~= items() { 2int } else { 1int };
+    if c == 2 {
+        assert(set_at(s.applied, 1) =~= items());
+        if set_at(s.applied, 2) =~= items() {
+            assert(goal(s));
+        }
+    }
+    assert(!(set_at(s.applied, c) =~= items()));
+    assert(c == 1 || c == 2);
+    assert(is_client(c));
+    assert(set_at(s.applied, c).subset_of(items()));
+    // some item is missing from applied[c]
+    let i0 = if !set_at(s.applied, c).contains(1) {
+        1int
+    } else if !set_at(s.applied, c).contains(2) {
+        2int
+    } else {
+        3int
+    };
+    assert(is_item(i0) && !set_at(s.applied, c).contains(i0)) by {
+        if set_at(s.applied, c).contains(1) && set_at(s.applied, c).contains(2)
+            && set_at(s.applied, c).contains(3) {
+            assert forall|i: int| items().contains(i) implies set_at(s.applied, c).contains(i) by {
+            }
+            assert(set_at(s.applied, c) =~= items());
+            assert(false);
+        }
+        assert(i0 == 1 || i0 == 2 || i0 == 3);
+    }
+    let p = set_at(s.pending, c);
+    assert(is_client(c) && s.online.contains(c));
+    if p.contains(2) {
+        assert(ready(s, c, 2));
+        assert(covered_guard(s, c, 2));
+        return;
+    }
+    if p.contains(3) {
+        assert(ready(s, c, 3));
+        assert(covered_guard(s, c, 3));
+        return;
+    }
+    if map_at(s.staged, c) != 0 {
+        assert(covered_guard(s, c, 1));
+        return;
+    }
+    if map_at(s.cursor, c) < 3 && p.len() < capacity() {
+        assert(covered_guard(s, c, 1));
+        return;
+    }
+    // Remaining: staged == 0, and (cursor == 3 or pending is full).
+    assert(p.len() <= capacity());
+    if p.len() >= 3 {
+        // pending subset items with 3 members contains 2 (else it is a
+        // subset of {1,3} with len <= 2), so Apply was enabled.
+        let small = Set::empty().insert(1int).insert(3int);
+        assert(p.subset_of(small)) by {
+            assert(p.subset_of(items()));
+            assert forall|x: int| p.contains(x) implies small.contains(x) by {
+                assert(!p.contains(2));
+            }
+        }
+        vstd::set_lib::lemma_len_subset(p, small);
+        assert(small.len() == 2);
+        assert(false);
+    }
+    // cursor must be 3 (cursor < 3 would have enabled Fetch since pending
+    // is now known below capacity).
+    assert(map_at(s.cursor, c) == 3) by {
+        assert(0 <= map_at(s.cursor, c) <= 3);
+        if map_at(s.cursor, c) < 3 {
+            assert(p.len() < capacity());
+            assert(false);
+        }
+    }
+    assert(no_lost_work(s));
+    // 1..3 subset pending union applied; the missing item is in pending.
+    let i = i0;
+    assert(p.contains(i)) by {
+        assert(1 <= i <= 3);
+    }
+    if i == 1 {
+        // 2 and 3 are applied (not in pending, which is a subset of {1});
+        // so 1 is ready and Apply fires.
+        assert(set_at(s.applied, c).contains(3)) by {
+            if !set_at(s.applied, c).contains(3) {
+                assert(p.contains(3));
+                assert(false);
+            }
+        }
+        assert(ready(s, c, 1));
+    } else {
+        assert(ready(s, c, i)) by {
+            assert(i != 1);
+        }
+    }
+    assert(is_client(c) && is_item(i) && s.online.contains(c) && set_at(s.pending, c).contains(i)
+        && ready(s, c, i));
+    assert(covered_guard(s, c, i));
+}
+
+/// Along any trace of distinct consecutive states the measure strictly
+/// decreases — so a fair execution reaches the goal within
+/// measure(init) = 28 real steps.
+proof fn measure_decreases_along(t: Seq<State>)
+    requires
+        is_trace(t),
+        forall|j: int| 0 <= j && j + 1 < t.len() ==> #[trigger] real_step(t[j], t[j + 1]),
+    ensures
+        forall|i: int| 0 <= i < t.len() ==> #[trigger] measure(t[i]) <= measure(t[0]) - i,
+    decreases t.len(),
+{
+    trace_satisfies_inv(t);
+    if t.len() > 1 {
+        let prefix = t.drop_last();
+        assert(is_trace(prefix)) by {
+            assert forall|i: int| 0 <= i < prefix.len() - 1 implies #[trigger] next(
+                prefix[i],
+                prefix[i + 1],
+            ) by {
+                assert(prefix[i] == t[i]);
+                assert(prefix[i + 1] == t[i + 1]);
+            }
+        }
+        assert(forall|j: int| 0 <= j && j + 1 < prefix.len() ==> #[trigger] real_step(prefix[j], prefix[j + 1])) by {
+            assert forall|j: int| 0 <= j && j + 1 < prefix.len() implies #[trigger] real_step(prefix[j], prefix[j + 1]) by {
+                assert(prefix[j] == t[j]);
+                assert(prefix[j + 1] == t[j + 1]);
+            }
+        }
+        measure_decreases_along(prefix);
+        let n = t.len() - 1;
+        assert(is_trace(t));
+        assert(0 <= n - 1 && n - 1 + 1 < t.len());
+        assert(next(t[n - 1], t[n]));
+        assert(real_step(t[n - 1], t[n]));
+        assert(inv(t[n - 1]));
+        assert(measure(prefix[n - 1]) <= measure(prefix[0]) - (n - 1));
+        assert(prefix[n - 1] == t[n - 1] && prefix[0] == t[0]);
+        real_step_decreases(t[n - 1], t[n]);
+        assert(measure(t[n]) <= measure(t[0]) - n);
+        assert forall|i: int| 0 <= i < t.len() implies #[trigger] measure(t[i]) <= measure(t[0]) - i by {
+            if i == n {
+            } else {
+                assert(prefix[i] == t[i]);
+                assert(measure(prefix[i]) <= measure(prefix[0]) - i);
+            }
+        }
+    } else {
+    }
+}
+
+/// Termination: an all-real trace (no stuttering steps) reaches the goal
+/// by index measure(t[0]). In TLA+ terms the same holds for every fair
+/// behavior: a non-goal state has a covered action enabled, which weak
+/// fairness eventually fires, and covered steps strictly decrease the
+/// bounded measure.
+proof fn eventually_resolved(t: Seq<State>)
+    requires
+        is_trace(t),
+        t.len() > measure(t[0]),
+        forall|j: int| 0 <= j && j + 1 < t.len() ==> #[trigger] real_step(t[j], t[j + 1]),
+    ensures
+        goal(t[measure(t[0])]),
+{
+    measure_decreases_along(t);
+    let i = measure(t[0]);
+    trace_satisfies_inv(t);
+    assert(measure(t[i]) <= 0);
+    assert(inv(t[i]));
+    measure_nonneg(t[i]);
+    assert(measure(t[i]) == 0);
+    measure_zero_is_goal(t[i]);
+}
+
 }
