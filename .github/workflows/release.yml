@@ -76,6 +76,11 @@ jobs:
         # real server acceptance and complete large-asset writes on this platform.
         run: |
           cargo test --release --locked -p vhalla-private-native --features agent-rpc,relay-tls --target "${{ matrix.target }}" --lib relay::http::tests::
+      - name: Install qemu for the cross-arch smoke check
+        # The aarch64-musl artifact cannot exec on the x86_64 runner; run it
+        # under qemu-user so the smoke assertions still cover the real binary.
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: sudo apt-get install -y --no-install-recommends qemu-user-static
       - name: Smoke check
         shell: bash
         env:
@@ -83,7 +88,11 @@ jobs:
         run: |
           set -euo pipefail
           cli="./target/${{ matrix.target }}/release/vhalla"
-          help="$("$cli" --help)"
+          run_prefix=()
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            run_prefix=(qemu-aarch64-static)
+          fi
+          help="$("${run_prefix[@]}" "$cli" --help)"
           printf '%s\n' "$help"
           [[ "$help" == *"vhalla experimental "* ]]
           [[ "$help" == *"vhalla social "* ]]
@@ -93,7 +102,7 @@ jobs:
           [[ "$help" == *"vhalla private-host "* ]]
           [[ "$help" == *"vhalla private-gateway "* ]]
           [[ "$help" != *"vhalla game replay "* ]]
-          if "$cli" game --help > game-disabled.txt 2>&1; then
+          if "${run_prefix[@]}" "$cli" game --help > game-disabled.txt 2>&1; then
             cat game-disabled.txt
             exit 1
           fi
