@@ -1,14 +1,11 @@
 name: Verification
-
 # Called by the complete Rust gate, including releases. Production changes
 # cannot silently bypass reference-model and finite-protocol checks.
 on:
   workflow_call:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   lean-quorum:
     runs-on: ubuntu-latest
@@ -79,3 +76,4 @@ jobs:
           ./verus-x86-linux/verus --crate-type=lib verify/host-recovery/recovery.rs
           ./verus-x86-linux/verus --crate-type=lib verify/private-delivery/delivery.rs
           ./verus-x86-linux/verus --crate-type=lib verify/private-admission/admission.rs
+          ./verus-x86-linux/verus --crate-type=lib verify/private-generation/generation.rs
