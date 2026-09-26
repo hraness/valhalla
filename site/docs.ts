@@ -60,7 +60,7 @@ const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }
 
 type HeadOptions = { url: string; title: string; description: string; shareTitle: string; ogImage: string; jsonLd: string; ogType?: string; robots?: string; extraHead?: string };
 
-function renderHead(template: string, opts: HeadOptions): string {
+export function renderHead(template: string, opts: HeadOptions): string {
   let head = template.slice(0, template.indexOf('  <body>'))
     .replace('data-hraness-pattern="cells"', 'data-hraness-pattern="none"')
     .replace(/<title>.*?<\/title>/, `<title>${escape(opts.title)}</title>`)
@@ -82,7 +82,7 @@ function renderHead(template: string, opts: HeadOptions): string {
   return head;
 }
 
-const masthead = (template: string) => {
+export const masthead = (template: string) => {
   const header = template.match(/<header class="masthead[\s\S]*?<\/header>\n/)?.[0];
   if (!header) throw new Error('Missing shared masthead');
   return header;
