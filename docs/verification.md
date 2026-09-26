@@ -91,6 +91,20 @@ conditional liveness assumes available storage/transport, sufficient deferral
 capacity, valid authority and fair scheduling. The capacity-one configuration
 checks safety only: bounded storage can prevent reaching a missing dependency.
 
+The same transition system is proved in Verus in
+`verify/private-delivery/delivery.rs`: all six checked invariants (`TypeOK`,
+`NoLostWork`, `Bounded`, `ExactlyOnce`, `ControlBeforeFuture`, `Disjoint`) are
+inductive over `normal.cfg`'s `Next`, strengthened by four auxiliaries (a
+nonzero staged value is exactly the next cursor, pending and applied members
+never exceed the durable cursor, and a nonzero effect count implies the item
+was applied). Each mutant configuration is proved to reach the violation TLC
+recorded — a dropped future item and crash-lost pending each break
+`NoLostWork`, and double-applied replay breaks `ExactlyOnce` — and a
+completion witness applies all three items in dependency order across a crash
+and recovery. The `EventuallyResolved` liveness property is not covered. This
+strengthens the model claims from finite enumeration to induction; it changes
+nothing about the production-correspondence obligations above.
+
 `verify/private-rotation` checks a proposed drained cutover contract. This is
 design evidence; it does not claim the current host/client implementation
 already supports that transition. Its mutations expose orphaned pending jobs,
