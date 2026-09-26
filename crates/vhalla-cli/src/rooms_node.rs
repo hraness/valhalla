@@ -613,10 +613,7 @@ fn drop_rotation(
         json::object(vec![
             ("intake", json::string(&target.display().to_string())),
             ("from", rotation.from.to_string()),
-            (
-                "validators",
-                rotation.validators.len().to_string(),
-            ),
+            ("validators", rotation.validators.len().to_string(),),
         ])
     );
     Ok(())
@@ -639,9 +636,7 @@ fn validator_members(raw: &str) -> Result<Vec<vhalla_rooms_consensus::ValidatorM
             })
         })
         .collect::<Result<_, String>>()?;
-    if members.is_empty()
-        || members.len() > vhalla_rooms::registry::MAX_VALIDATORS
-    {
+    if members.is_empty() || members.len() > vhalla_rooms::registry::MAX_VALIDATORS {
         return Err("validators takes 1..=64 KEY64:POWER entries".into());
     }
     let mut sorted = members.clone();
@@ -737,11 +732,12 @@ pub fn score(args: &Args) -> Result<(), String> {
             "activation height must be at least {earliest} (committed height plus the protocol notice bound)"
         ));
     }
-    let registry =
-        vhalla_rooms_store::read_registry(
-            std::path::Path::new(&args.rooms_store).join("app").join("rooms"),
-        )
-        .map_err(|e| format!("committed registry: {e}"))?;
+    let registry = vhalla_rooms_store::read_registry(
+        std::path::Path::new(&args.rooms_store)
+            .join("app")
+            .join("rooms"),
+    )
+    .map_err(|e| format!("committed registry: {e}"))?;
     // Ranking is a pure function of committed state: (earned desc,
     // owner id asc) breaks ties, so every node scoring the same ledger
     // emits byte-identical candidates.

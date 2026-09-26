@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use vhalla_rooms_consensus::{
-    encode_eligible_update, fixture, Batch, CommittedRotation, GameCommitment,
-    GameCommitmentKind, OwnerId, ValidatorMember,
+    encode_eligible_update, fixture, Batch, CommittedRotation, GameCommitment, GameCommitmentKind,
+    OwnerId, ValidatorMember,
 };
 
 #[path = "formal_held_reply.rs"]
@@ -3264,12 +3264,7 @@ fn set_for_prefers_committed_schedule_past_its_activation() {
     let expected = RoomValidatorSet::new(
         members
             .iter()
-            .map(|m| {
-                RoomValidator::new(
-                    PublicKey::from_bytes(m.key).unwrap(),
-                    m.power,
-                )
-            })
+            .map(|m| RoomValidator::new(PublicKey::from_bytes(m.key).unwrap(), m.power))
             .collect(),
     );
     for height in [6u64, 10, 100] {

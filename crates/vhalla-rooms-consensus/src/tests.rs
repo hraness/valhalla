@@ -1424,10 +1424,7 @@ fn rotation_intake_file_round_trips_and_rejects_malformed() {
         .all(|pair| pair[0].key < pair[1].key));
     assert_eq!(decoded.validators.len(), 2);
     // Re-encoding the canonical decode is byte-stable.
-    assert_eq!(
-        encode_rotation_update(&decoded),
-        raw
-    );
+    assert_eq!(encode_rotation_update(&decoded), raw);
 
     // Bad magic, trailing bytes, zero count, unsorted keys, zero power.
     let mut bad_magic = raw.clone();
@@ -1466,10 +1463,7 @@ fn vrb4_batches_and_bodies_carry_the_rotation() {
     let raw = rotated.encode();
     assert_eq!(&raw[..4], b"VRB4");
     let decoded = Batch::decode(&raw).unwrap();
-    assert_eq!(
-        decoded.rotation.as_ref().unwrap().validators.len(),
-        2
-    );
+    assert_eq!(decoded.rotation.as_ref().unwrap().validators.len(), 2);
     assert_eq!(decoded.encode(), raw);
     assert_eq!(decoded.value_id(), rotated.value_id());
     // The rotation binds the value id: same batch sans rotation differs.
@@ -1554,14 +1548,7 @@ fn replay_commits_rotation_into_registry_schedule() {
         validators: vec![member(4, 1)],
     };
     assert!(matches!(
-        app.prepare_with_games(
-            2,
-            vec![],
-            vec![],
-            vec![],
-            None,
-            Some(backfill)
-        ),
+        app.prepare_with_games(2, vec![], vec![], vec![], None, Some(backfill)),
         Err(ApplyError::Registry(RegistryError::Bounds))
     ));
 }

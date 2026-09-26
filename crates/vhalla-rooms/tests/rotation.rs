@@ -43,9 +43,7 @@ fn apply_rotation_commits_digest_bound_schedule() {
     assert!(!before.is_extension_of(&registry));
     // A second rotation at a higher activation appends; earlier entries
     // are immutable.
-    registry
-        .apply_rotation(60, &[member(3, 7)], 200)
-        .unwrap();
+    registry.apply_rotation(60, &[member(3, 7)], 200).unwrap();
     assert_eq!(registry.validator_schedule().len(), 2);
     assert!(registry.is_extension_of(&before));
 }
@@ -59,9 +57,8 @@ fn apply_rotation_rejects_each_bound() {
         registry.apply_rotation(10, &[], 1),
         Err(RegistryError::Capacity)
     );
-    let oversized: Vec<ValidatorMember> = (0..=MAX_VALIDATORS as u8)
-        .map(|s| member(s, 1))
-        .collect();
+    let oversized: Vec<ValidatorMember> =
+        (0..=MAX_VALIDATORS as u8).map(|s| member(s, 1)).collect();
     assert_eq!(
         registry.apply_rotation(10, &oversized, 1),
         Err(RegistryError::Capacity)
@@ -85,10 +82,7 @@ fn apply_rotation_rejects_each_bound() {
         Err(RegistryError::Bounds)
     );
     // Total power overflow and the quorum-safety bound.
-    let heavy: Vec<ValidatorMember> = vec![
-        member(1, u64::MAX / 3),
-        member(2, u64::MAX / 3),
-    ];
+    let heavy: Vec<ValidatorMember> = vec![member(1, u64::MAX / 3), member(2, u64::MAX / 3)];
     assert_eq!(
         registry.apply_rotation(10, &heavy, 1),
         Err(RegistryError::Cost)
@@ -96,9 +90,7 @@ fn apply_rotation_rejects_each_bound() {
     // Nothing committed through the rejections.
     assert!(registry.validator_schedule().is_empty());
 
-    registry
-        .apply_rotation(50, &[member(1, 1)], 10)
-        .unwrap();
+    registry.apply_rotation(50, &[member(1, 1)], 10).unwrap();
     // Reused activation and non-increasing activations are both closed.
     assert_eq!(
         registry.apply_rotation(50, &[member(2, 1)], 20),
@@ -138,15 +130,10 @@ fn snapshot_v3_round_trip_preserves_schedule() {
     let restored = vhalla_rooms::Registry::restore(&snapshot).unwrap();
     assert_eq!(restored.digest(), registry.digest());
     assert_eq!(restored.snapshot(), snapshot);
-    assert_eq!(
-        restored.validator_schedule(),
-        registry.validator_schedule()
-    );
+    assert_eq!(restored.validator_schedule(), registry.validator_schedule());
     // And the restored schedule still applies in commit order.
     let mut restored = restored;
-    restored
-        .apply_rotation(50, &[member(4, 2)], 200)
-        .unwrap();
+    restored.apply_rotation(50, &[member(4, 2)], 200).unwrap();
     assert_eq!(restored.validator_schedule().len(), 2);
 }
 

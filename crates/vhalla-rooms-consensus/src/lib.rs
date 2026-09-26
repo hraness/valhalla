@@ -34,8 +34,8 @@ use std::path::{Path, PathBuf};
 pub use vhalla_core::{RealmId, RoomId};
 #[cfg(unix)]
 use vhalla_journal::{Bundle, BundleParts, FsStore, Journal, JournalError, Outcome, Store};
-use vhalla_rooms::registry::{DirectoryPolicy, Registry, RegistryError};
 pub use vhalla_rooms::registry::ValidatorMember;
+use vhalla_rooms::registry::{DirectoryPolicy, Registry, RegistryError};
 use vhalla_rooms::DirectoryId;
 use vhalla_social::archive::{Archive, Budget, Limits};
 use vhalla_social::control::ControlView;

@@ -3002,7 +3002,9 @@ mod enabled {
         // Emission-side validation: zero power, duplicate keys and a key
         // that is not a canonical Ed25519 point all fail before any file.
         assert!(!run("8", &format!("{}:0", key(7))).status.success());
-        assert!(!run("8", &format!("{}:1,{}:2", key(7), key(7))).status.success());
+        assert!(!run("8", &format!("{}:1,{}:2", key(7), key(7)))
+            .status
+            .success());
         assert!(!run("8", &format!("{}:1", hex(&[2u8; 32]))).status.success());
         let members = format!("{}:3,{}:1", key(9), key(7));
         let output = run("8", &members);
@@ -3079,9 +3081,10 @@ mod enabled {
                 plan.genesis.policy.max_lifetime_rooms,
             ),
             "--validators",
-            &format!("1:{}:1", hex(
-                PrivateKey::from(member.seed).public_key().as_bytes()
-            )),
+            &format!(
+                "1:{}:1",
+                hex(PrivateKey::from(member.seed).public_key().as_bytes())
+            ),
             "--eligible",
             &eligible,
         ]);
@@ -3159,10 +3162,7 @@ mod enabled {
         assert!(!rotation.validators.is_empty());
         assert!(rotation.validators.len() <= 4);
         assert!(
-            rotation
-                .validators
-                .windows(2)
-                .all(|w| w[0].key < w[1].key),
+            rotation.validators.windows(2).all(|w| w[0].key < w[1].key),
             "canonical member order"
         );
         assert!(rotation.validators.iter().all(|m| m.power > 0));
@@ -3286,5 +3286,4 @@ mod enabled {
             "peers_only + discovery must refuse"
         );
     }
-
 }

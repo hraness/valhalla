@@ -611,14 +611,16 @@ impl App {
                     // Operator-dropped validator-set transition: an activation
                     // height plus a bare replacement set, queued as a
                     // config-only body.
-                    decode_rotation_update(&bytes).ok().map(|rotation| BatchBody {
-                        time: 0,
-                        evidence: Vec::new(),
-                        records: Vec::new(),
-                        games: Vec::new(),
-                        eligible: None,
-                        rotation: Some(rotation),
-                    })
+                    decode_rotation_update(&bytes)
+                        .ok()
+                        .map(|rotation| BatchBody {
+                            time: 0,
+                            evidence: Vec::new(),
+                            records: Vec::new(),
+                            games: Vec::new(),
+                            eligible: None,
+                            rotation: Some(rotation),
+                        })
                 } else {
                     BatchBody::decode(&bytes).ok()
                 }
@@ -689,12 +691,7 @@ impl App {
                             .unwrap()
                             .application()
                             .prepare_with_games(
-                                b.time,
-                                b.evidence,
-                                b.records,
-                                b.games,
-                                b.eligible,
-                                b.rotation,
+                                b.time, b.evidence, b.records, b.games, b.eligible, b.rotation,
                             )
                     });
                     match checked {
