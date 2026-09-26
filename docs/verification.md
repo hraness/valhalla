@@ -276,6 +276,30 @@ the split outcome-refusal action is limited to precommit failures. Failure
 after SQL commit during barrier/readback and delivery liveness are outside this
 model.
 
+The same transition system is proved in Verus in
+`verify/native-delivery/delivery.rs`: `TypeOK`, `IntentBeforeTransport`,
+`ExactRetryBinding`, `UncertaintyPreserved`, `AttemptEvidenceConserved`,
+`OutageEvidence` and `CheckedRetention` are inductive over `normal.cfg`'s
+`Next`, strengthened by thirteen auxiliaries (the job is present in every
+working phase; the intent phase pins the serial one above committed intents
+with the select-time attempt snapshot intact; transport/outcome phases carry
+`current = intents`, attempts one above that snapshot, `Uncertain` state and
+flag, and the original binding; older unresolved serials or remote retention
+predating this outcome imply prior uncertainty; a receipt outcome comes with
+observed retention and an outage outcome comes with budget headroom; the
+select-time snapshot stays bounded and no spend precedes the single resume).
+The same invariant is also proved inductive over `uncertain-write.cfg`'s
+precommit-refusal and second-crash allowance, matching that configuration's
+positive TLC result. Each mutant is proved to reach its recorded violation —
+early transport breaks `IntentBeforeTransport`, retargeting breaks
+`ExactRetryBinding`, forgetting uncertainty breaks `UncertaintyPreserved`,
+resetting spend and charging a classified outage both break
+`AttemptEvidenceConserved`, and unchecked receipts break
+`CheckedRetention` — and a completion witness runs an outage-restored
+attempt through interruption and reopen to checked `Retained`. This
+strengthens the model claims from finite enumeration to induction; it
+changes nothing about the production-correspondence obligations above.
+
 `verify/relay-quota` checks atomic item/charge publication, exact duplicate
 position, stable credential ownership and durable retention before receipt.
 Two items, two credential IDs, four requests and two interruptions cover item
