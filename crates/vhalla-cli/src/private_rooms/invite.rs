@@ -124,7 +124,9 @@ fn decode(raw: &[u8]) -> Result<Parsed, String> {
 
 /// `private invite`: validate the host material first, then mint the offer and
 /// emit one bundle. A failure after minting is the same consumed operation the
-/// standalone `offer` leaves.
+/// standalone `offer` leaves. Host-side: the bundled material lives in the
+/// host home, which remains a Unix surface.
+#[cfg(unix)]
 pub(super) async fn invite(args: &Args, room: &mut RoomSession) -> Result<(), String> {
     let material = crate::private_host::invite_material(
         Path::new(args.value("host")?),

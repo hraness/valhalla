@@ -3,7 +3,7 @@
 
 mod support;
 
-#[cfg(all(unix, feature = "experimental-private"))]
+#[cfg(feature = "experimental-private")]
 mod endpoint;
 
 #[cfg(all(unix, feature = "experimental-private"))]
@@ -12,7 +12,7 @@ mod private_gateway;
 #[cfg(all(unix, feature = "experimental-private"))]
 mod private_host;
 
-#[cfg(all(unix, feature = "experimental-private"))]
+#[cfg(feature = "experimental-private")]
 mod private_rooms;
 
 #[cfg(all(unix, feature = "experimental-public"))]
@@ -58,10 +58,17 @@ fn main() {
             }
         }
     }
+    // Member-side private-room custody is portable; host, gateway and agent
+    // serving lanes remain Unix-qualified for now.
     #[cfg(not(unix))]
     {
-        eprintln!("vhalla: native identity custody is currently qualified only on Unix");
-        std::process::exit(1);
+        match run(args) {
+            Ok(()) => {}
+            Err(error) => {
+                eprintln!("vhalla: {error}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -71,31 +78,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         return Err("too many arguments (maximum 64)".into());
     }
     if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
-        // Release identity is the git tag, not the workspace crate version;
-        // the feature set is what actually distinguishes one binary.
-        let features: &[&str] = &[
-            #[cfg(feature = "experimental-network")]
-            "experimental-network",
-            #[cfg(feature = "experimental-social")]
-            "experimental-social",
-            #[cfg(feature = "experimental-rooms")]
-            "experimental-rooms",
-            #[cfg(feature = "experimental-rooms-node")]
-            "experimental-rooms-node",
-            #[cfg(feature = "experimental-rooms-tui")]
-            "experimental-rooms-tui",
-            #[cfg(feature = "experimental-sync")]
-            "experimental-sync",
-            #[cfg(feature = "experimental-private")]
-            "experimental-private",
-            #[cfg(feature = "experimental-public")]
-            "experimental-public",
-        ];
-        println!(
-            "vhalla {} features=[{}]",
-            env!("CARGO_PKG_VERSION"),
-            features.join(",")
-        );
+        version();
         return Ok(());
     }
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
@@ -192,6 +175,68 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args.len() != 3 || args[0] != "identity" {
         return Err("usage: vhalla identity <init|show|backup|restore> <directory>".into());
     }
+    identity(&args)
+}
+
+/// Windows and other non-Unix builds carry the member-side private-room
+/// client and identity custody only. Host, gateway, agent serving and the
+/// experimental public/social/rooms surfaces remain Unix-qualified.
+#[cfg(not(unix))]
+fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
+    if args.len() > 64 {
+        return Err("too many arguments (maximum 64)".into());
+    }
+    if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
+        version();
+        return Ok(());
+    }
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        println!("vhalla: Peer-to-peer rooms where agents and their owners share signed work\n\nvhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla identity backup <existing-directory>\nvhalla identity restore <new-directory>   # mnemonic on stdin");
+        #[cfg(feature = "experimental-private")]
+        println!("\n{}", private_rooms::HELP);
+        return Ok(());
+    }
+    if args.first().is_some_and(|s| s == "private") {
+        #[cfg(feature = "experimental-private")]
+        return private_rooms::run(&args);
+        #[cfg(not(feature = "experimental-private"))]
+        return Err("private room tools require --features experimental-private".into());
+    }
+    if args.len() != 3 || args[0] != "identity" {
+        return Err("usage: vhalla identity <init|show|backup|restore> <directory>".into());
+    }
+    identity(&args)
+}
+
+fn version() {
+    // Release identity is the git tag, not the workspace crate version;
+    // the feature set is what actually distinguishes one binary.
+    let features: &[&str] = &[
+        #[cfg(feature = "experimental-network")]
+        "experimental-network",
+        #[cfg(feature = "experimental-social")]
+        "experimental-social",
+        #[cfg(feature = "experimental-rooms")]
+        "experimental-rooms",
+        #[cfg(feature = "experimental-rooms-node")]
+        "experimental-rooms-node",
+        #[cfg(feature = "experimental-rooms-tui")]
+        "experimental-rooms-tui",
+        #[cfg(feature = "experimental-sync")]
+        "experimental-sync",
+        #[cfg(feature = "experimental-private")]
+        "experimental-private",
+        #[cfg(feature = "experimental-public")]
+        "experimental-public",
+    ];
+    println!(
+        "vhalla {} features=[{}]",
+        env!("CARGO_PKG_VERSION"),
+        features.join(",")
+    );
+}
+
+fn identity(args: &[std::ffi::OsString]) -> Result<(), String> {
     let identity = if args[1] == "init" {
         vhalla_identity::Identity::create_new(&args[2])
     } else if args[1] == "show" {

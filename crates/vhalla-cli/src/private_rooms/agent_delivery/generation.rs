@@ -38,6 +38,7 @@ pub(super) fn check_selection(path: &Path, config: &Config) -> Result<(), String
     Ok(())
 }
 
+#[cfg(unix)]
 pub(super) fn check_active(config: &Config) -> Result<(), String> {
     for name in ["generation.pause", "generation.intent"] {
         match config.state.join(name).symlink_metadata() {
@@ -58,6 +59,7 @@ pub(super) fn check_active(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub(super) fn verify_baselines(
     config: &Config,
     context: Context,

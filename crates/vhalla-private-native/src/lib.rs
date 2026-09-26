@@ -1,6 +1,5 @@
 //! Native encrypted private-room persistence and fixed-room agent capabilities.
 #![forbid(unsafe_code)]
-#![cfg(unix)]
 pub mod agent;
 #[cfg(feature = "client")]
 pub mod archive;

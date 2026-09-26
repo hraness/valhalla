@@ -114,13 +114,14 @@ jobs:
 
   # Whole-workspace `cargo check` coverage: every crate compile-checks for
   # x86_64-pc-windows-msvc today (Unix-specific internals are `cfg(unix)`
-  # modules inside portable crates, not Unix-only crates). `cargo check` is
-  # compile coverage only — it does not prove the CLI links, and no Windows
-  # release packaging is claimed. Test targets compile only for the crates
-  # whose dev-dependencies are pure Rust; the rest pull C-backed dev-deps
-  # (hegeltest) that this lane does not yet qualify. vhalla-custody runs its
-  # full lint and test suite on the Windows backend. Do not widen silently:
-  # only what this lane verifies belongs in it.
+  # modules inside portable crates, not Unix-only crates). The private client
+  # build below also proves the member-side `identity` + `private` surface
+  # links on MSVC — host, gateway and agent serving remain Unix-gated and no
+  # Windows release packaging is claimed. Test targets compile only for the
+  # crates whose dev-dependencies are pure Rust; the rest pull C-backed
+  # dev-deps (hegeltest) that this lane does not yet qualify. vhalla-custody
+  # runs its full lint and test suite on the Windows backend. Do not widen
+  # silently: only what this lane verifies belongs in it.
   windows-portable:
     name: Windows portable checks
     needs: quality
@@ -140,6 +141,8 @@ jobs:
           cargo test -p vhalla-custody --all-targets --locked
       - name: Workspace compile coverage
         run: cargo check --workspace --locked
+      - name: Private client link coverage
+        run: cargo build --locked -p vhalla-cli --no-default-features --features experimental-private --bin vhalla
       - name: Portable core test-code compile coverage
         run: cargo check -p vhalla-wire -p vhalla-policy -p vhalla-witness -p vhalla-botcaptcha -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-private-relay -p vhalla-rooms-app --all-targets --locked
 

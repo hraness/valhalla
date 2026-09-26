@@ -4,32 +4,41 @@ use crate::endpoint::Endpoint;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs::File,
-    io::ErrorKind,
-    path::{Path, PathBuf},
+    collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc,
     },
     thread,
+};
+use std::{
+    collections::BTreeSet,
+    fs::File,
+    io::ErrorKind,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use vhalla_custody as custody;
+#[cfg(unix)]
+use vhalla_private_kernel::Error as KernelError;
 use vhalla_private_kernel::{
     protocol::{AnchorId, Key, PrivateRoomScope, RoomId},
-    Context, Error as KernelError, MemberAcceptance, OperationId, OutboxKind,
+    Context, MemberAcceptance, OperationId, OutboxKind,
 };
+use vhalla_private_native::relay::{
+    delivery::{DeliveryStore, JobState, Limits, RetryPolicy},
+    net::{NetError, RelayToken, ScanDirectory},
+    tls::TlsRelay,
+    RelayItem, RelayKind, RelayNamespace, MAX_RELAY_ITEMS, MAX_RELAY_PAGE,
+};
+#[cfg(unix)]
 use vhalla_private_native::{
     agent::Error as AgentError,
     client::{agent_rpc::RpcSession, Error as ClientError},
-    relay::{
-        delivery::{DeliveryStore, JobState, Limits, RetryPolicy, TickBudget},
-        net::{NetError, RelayToken, ScanDirectory, ScanFailure},
-        tls::TlsRelay,
-        RelayItem, RelayKind, RelayNamespace, MAX_RELAY_ITEMS, MAX_RELAY_PAGE,
-    },
+    relay::delivery::TickBudget,
+    relay::net::ScanFailure,
 };
 
 const REFUSED: &str = "host delivery refused; preserve the exact room, queue, scan and applied evidence; reconcile before another explicitly granted launch";
@@ -39,32 +48,42 @@ const PAGE: usize = MAX_RELAY_PAGE;
 /// The kernel's own record bound is smaller than a relay page: outbox drains
 /// loop until an empty page, so catch-up still converges in one tick budget.
 const OUTBOX_PAGE: usize = vhalla_private_kernel::MAX_PAGE_RECORDS;
+#[cfg(unix)]
 const TICK: Duration = Duration::from_secs(2);
 /// Relay job attempts per tick, within the store's byte and deadline budget.
+#[cfg(unix)]
 const TICK_JOBS: usize = 8;
+#[cfg(unix)]
 const TICK_BYTES: usize = 4 * 1024 * 1024;
 /// A staged position whose kernel outcome stays transient this long is not
 /// healing; the launch ends for reconciliation instead of stalling the
 /// contiguous applied watermark silently.
+#[cfg(unix)]
 const PENDING_MAX: Duration = Duration::from_secs(300);
 /// How long one held page request may stay open on the host's relay. The
 /// server clamps to its own maximum; a quiet client therefore emits at most
 /// one relay exchange per minute while nothing arrives.
+#[cfg(unix)]
 const WATCH_WAIT: Duration = Duration::from_secs(60);
 /// One wait round trip's outer bound: the hold plus connect, handshake and
 /// response time for a single exchange.
+#[cfg(unix)]
 const WATCH_EXCHANGE: Duration = Duration::from_secs(30);
 /// Watch worker states observed by `poll`: still holding requests, closed on
 /// a transient failure (re-armed by the next proven scan), or refused the
 /// waited request shape — a host that predates it stays on plain polling.
+#[cfg(unix)]
 const WATCH_LIVE: u8 = 0;
+#[cfg(unix)]
 const WATCH_TRANSIENT: u8 = 1;
+#[cfg(unix)]
 const WATCH_UNSUPPORTED: u8 = 2;
 
 /// One held-page mailbox watch on its own relay connection, so a tick never
 /// blocks on a minute-scale wait. The worker only publishes the largest head
 /// it observed; the driver re-validates through `scan_page_until`, so the
 /// hint accelerates a scan but can never fabricate staged evidence.
+#[cfg(unix)]
 struct Watch {
     /// Largest mailbox head the worker has observed from the relay.
     head: Arc<AtomicU64>,
@@ -77,6 +96,7 @@ struct Watch {
     stop: Arc<AtomicBool>,
     join: thread::JoinHandle<()>,
 }
+#[cfg(unix)]
 impl Watch {
     fn spawn(relay: TlsRelay, staged_head: u64) -> Self {
         let head = Arc::new(AtomicU64::new(staged_head));
@@ -141,6 +161,7 @@ impl Watch {
         self.state.load(Ordering::Acquire) != WATCH_UNSUPPORTED
     }
 }
+#[cfg(unix)]
 impl Drop for Watch {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -616,6 +637,8 @@ fn enable_controls(
 }
 
 /// Lifetime queue custody is separate from a finite, one-use agent grant.
+/// The driving loop runs inside agent serving, a Unix-only lane today.
+#[cfg(unix)]
 pub(super) struct Driver {
     config: Config,
     context: Context,
@@ -659,6 +682,7 @@ pub(super) struct Driver {
     /// A dead watch's termination already charged the cadence once.
     watch_dead: bool,
 }
+#[cfg(unix)]
 impl Driver {
     pub(super) fn open(path: &Path, context: Context) -> Result<Self, String> {
         let (config, namespace, relay) = Config::load(path, context)?;
@@ -1483,6 +1507,7 @@ impl Driver {
 /// Per-item outcome the driver records: a durable terminal skip marker, a
 /// bounded transient deferral, or a launch-ending condition that needs
 /// operator reconciliation.
+#[cfg(unix)]
 enum Outcome {
     Skip(&'static str),
     Retry,
@@ -1501,6 +1526,7 @@ fn acceptance_operation(context: Context, ciphertext: &[u8]) -> Result<Operation
 
 /// One finite circular window; reset after reopen only repeats retained work.
 /// Every staged position is visited even when the earliest PAGE items defer.
+#[cfg(unix)]
 fn round_robin(applied: u64, head: u64, next: u64, limit: usize) -> Vec<u64> {
     if applied >= head || limit == 0 {
         return Vec::new();
@@ -1518,6 +1544,7 @@ fn round_robin(applied: u64, head: u64, next: u64, limit: usize) -> Vec<u64> {
 /// `ClientError::Agent(AgentError::Kernel)` carries the kernel refusal;
 /// agent-local clock failure defers; every other session or storage
 /// condition needs reconciliation rather than a marker.
+#[cfg(unix)]
 fn host_outcome(e: ClientError, classify: fn(KernelError) -> Outcome) -> Outcome {
     match e {
         ClientError::Agent(AgentError::Kernel(ke)) => classify(ke),
@@ -1529,6 +1556,7 @@ fn host_outcome(e: ClientError, classify: fn(KernelError) -> Outcome) -> Outcome
 /// Typed kernel refusals for inbound application items. Terminal classes name
 /// conditions under which these exact bytes can never apply to this room;
 /// transient gap classes defer; everything else needs reconciliation.
+#[cfg(unix)]
 fn application_outcome(e: KernelError) -> Outcome {
     match e {
         KernelError::StaleEpoch => Outcome::Skip("stale_epoch"),
@@ -1550,6 +1578,7 @@ fn application_outcome(e: KernelError) -> Outcome {
 
 /// Inbound control additionally treats a missing prior floor as terminal: the
 /// retained item predates everything this custody can verify.
+#[cfg(unix)]
 fn control_outcome(e: KernelError) -> Outcome {
     if e == KernelError::Policy {
         return Outcome::Fatal;

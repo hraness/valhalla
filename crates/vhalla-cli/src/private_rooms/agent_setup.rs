@@ -3,20 +3,29 @@
 //! `agent-grant` mints one grant from command-line options; `agent-launch`
 //! mints one grant per spawn from an operator-reviewed policy file and then
 //! serves it, so an MCP registration can point at one stable command line.
-use super::{agent, files, hex, now, Args, RoomSession};
+#[cfg(unix)]
+use super::agent;
+#[cfg(unix)]
+use super::files;
+use super::{hex, now, Args, RoomSession};
+#[cfg(unix)]
 use serde::Deserialize;
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::ffi::OsString;
 use std::{
-    ffi::OsString,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
 use vhalla_custody as custody;
+#[cfg(unix)]
 use vhalla_identity::Identity;
 use vhalla_private_kernel::Status;
 use vhalla_private_native::client::agent_rpc::LaunchGrant;
 
+#[cfg(unix)]
 const LAUNCH_HELP: &str = "vhalla private agent-launch ID STORE --policy PRIVATE_JSON --session-dir PRIVATE_DIR [--delivery PRIVATE_JSON] (mints one fresh grant and claim per spawn from a reviewed policy, then serves it over pipes)";
+#[cfg(unix)]
 const MAX_LAUNCHES: u64 = 9999;
 
 /// Everything `agent-grant` needs, from either command options or a policy file.
@@ -36,6 +45,7 @@ pub(super) struct GrantSpec {
 
 /// Reviewed launch policy: the same fields as `agent-grant`, kept in one 0600
 /// file. `max_launches` bounds how many grants one session directory may hold.
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Policy {
@@ -102,6 +112,7 @@ impl GrantSpec {
         })
     }
 
+    #[cfg(unix)]
     fn from_policy(bytes: &[u8]) -> Result<(Self, Option<u64>), String> {
         let policy: Policy = serde_json::from_slice(bytes).map_err(|_| {
             "launch policy must be a bounded private JSON file with only the documented fields"
@@ -228,6 +239,7 @@ pub(super) fn execute(args: &Args, room: &RoomSession) -> Result<(), String> {
 /// `agent-launch`: mint the next numbered grant/claim pair under the session
 /// directory from the reviewed policy, then serve it. Every spawn is a fresh
 /// finite grant; a consumed or expired one is never reused or renewed.
+#[cfg(unix)]
 pub(super) fn launch(raw: &[OsString]) -> Result<(), String> {
     if !matches!(raw.len(), 8 | 10)
         || raw[0] != "private"
