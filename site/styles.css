@@ -5,7 +5,7 @@
   --paper:var(--background);
   --ink:var(--foreground);
   --selected:var(--hraness-material-warm-plane);
-  --accent:var(--foreground);
+  --vhalla-accent:var(--foreground);
   --code-surface:color-mix(in srgb,var(--selected) 35%,var(--paper));
   --mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
   --page-measure:1248px;
@@ -41,7 +41,7 @@ a {
 }
 
 a:hover {
-  color:var(--accent);
+  color:var(--vhalla-accent);
 }
 
 :focus-visible {
@@ -166,8 +166,8 @@ main {
 
 .header-cta:hover {
   color:var(--paper);
-  background:var(--accent);
-  border-color:var(--accent);
+  background:var(--vhalla-accent);
+  border-color:var(--vhalla-accent);
 }
 
 .header-actions .hraness-design-theme-toggle__trigger {
@@ -219,8 +219,8 @@ h1 {
 
 .button-link:hover {
   color:var(--paper);
-  background:var(--accent);
-  border-color:var(--accent);
+  background:var(--vhalla-accent);
+  border-color:var(--vhalla-accent);
 }
 
 .text-link {
@@ -239,7 +239,7 @@ h1 {
   font-size:12px;
   line-height:1.35;
   font-weight:500;
-  color:var(--accent);
+  color:var(--vhalla-accent);
   background:var(--paper);
   white-space:nowrap;
 }
@@ -270,7 +270,7 @@ h1 {
 .hero-accent {
   display:block;
   font-weight:400;
-  color:var(--accent);
+  color:var(--vhalla-accent);
 }
 
 .hero-lede {
@@ -332,7 +332,7 @@ h1 {
 }
 
 .t-prompt {
-  color:var(--accent);
+  color:var(--vhalla-accent);
   user-select:none;
 }
 
@@ -499,7 +499,7 @@ h1 {
 
 .link-rows a:hover strong,
 .link-rows a:hover::after {
-  color:var(--accent);
+  color:var(--vhalla-accent);
 }
 
 .link-rows strong {
@@ -556,7 +556,7 @@ h1 {
 .hraness-marketing-questions {
   --hraness-marketing-gutter:0px;
   --hraness-marketing-section-space:0px;
-  --hraness-marketing-accent:var(--accent);
+  --hraness-marketing-accent:var(--vhalla-accent);
   --hraness-marketing-rule:1px solid var(--line);
   display:grid;
   grid-template-columns:minmax(0,21rem) minmax(0,1fr);
