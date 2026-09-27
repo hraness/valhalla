@@ -72,6 +72,15 @@ Existing tests
 for those boundaries remain required. No BFT safety claim follows from this
 host-boundary model.
 
+WAL replay sits outside the model. The engine raises a real `GetValue` for
+each replayed proposer round. While the engine's event broadcast reports
+replay, the host answers that request at once with a reply-only tombstone:
+nothing is held, prepared or published. This is the same shape as the model's
+tombstone fallback, so `ReplyCustody` and `TombstonesStayLocal` describe it.
+`formal_held_reply::replay_answers_at_once_then_live_holding_resumes`
+exercises it in the real loop. `replay_flag_survives_a_lagged_event_ring`
+checks the fallback when the lossy event ring overflows.
+
 ## Mutations and checked examples
 
 | Config | Expected failure | Counterexample prefix |

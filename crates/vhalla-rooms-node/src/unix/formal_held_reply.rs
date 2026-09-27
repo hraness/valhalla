@@ -172,3 +172,113 @@ async fn late_submit_is_durable_before_reply_and_network_drain() {
 async fn full_metadata_answers_locally_without_publishing() {
     exercise(Schedule::FullMetadata).await;
 }
+
+/// WAL replay re-drives rounds the engine already finished, and the engine
+/// raises a real `GetValue` for each replayed proposer round. Holding it to
+/// its live deadline parked the sequential connector for the full propose
+/// timeout per replayed round. While the engine broadcasts replay, the host
+/// answers at once with a reply-only tombstone and publishes nothing; after
+/// `WalReplayDone`, a valueless live request is held again until a batch
+/// arrives and is answered with it.
+#[tokio::test]
+async fn replay_answers_at_once_then_live_holding_resumes() {
+    let (keys, set) = validators(1);
+    let mut app = test_app("formal-held-replay", &keys[0], &set);
+    let home = app.store.parent().unwrap().to_path_buf();
+    let cleanup = Cleanup(home.parent().unwrap().to_path_buf());
+    let batch = batch_plan(1).remove(&1).unwrap();
+    let id = RoomValueId(batch.value_id());
+    let replayed = Round::new(4);
+    let live = Round::new(5);
+    let replay_tombstone = app.tombstone(1, replayed);
+    let (messages, consensus) = mpsc::channel(2);
+    let (network, mut network_rx) = mpsc::channel(1);
+    let (requests, _requests_rx) = mpsc::channel(1);
+    let (net_requests, _net_requests_rx) = mpsc::channel(1);
+    let mut channels: Channels<RoomContext> = Channels {
+        consensus,
+        network,
+        requests,
+        net_requests,
+        events: Default::default(),
+    };
+    let events = channels.events.clone();
+    let (submissions, mut submission_rx) = mpsc::channel(1);
+    let driver = async move {
+        // The engine only replays after `ConsensusReady` is answered, and
+        // `run` subscribes first; this barrier gives the same ordering.
+        let (reply, ready) = oneshot::channel();
+        messages
+            .send(AppMsg::ConsensusReady { reply })
+            .await
+            .unwrap();
+        ready.await.unwrap();
+
+        events.send(|| Event::WalReplayBegin(Height::new(1), 3));
+        let (reply, answer) = oneshot::channel::<LocallyProposedValue<RoomContext>>();
+        messages
+            .send(AppMsg::GetValue {
+                height: Height::new(1),
+                round: replayed,
+                timeout: Duration::from_secs(60),
+                reply,
+            })
+            .await
+            .unwrap();
+        let answered = answer
+            .await
+            .expect("a replayed request is answered, never dropped");
+        assert_eq!(answered.round, replayed);
+        assert_eq!(answered.value.id, replay_tombstone.id);
+        assert!(answered.value.bytes.is_empty());
+
+        events.send(|| Event::WalReplayDone(Height::new(1)));
+        let (reply, mut answer) = oneshot::channel::<LocallyProposedValue<RoomContext>>();
+        messages
+            .send(AppMsg::GetValue {
+                height: Height::new(1),
+                round: live,
+                timeout: Duration::from_secs(60),
+                reply,
+            })
+            .await
+            .unwrap();
+        let (reply, barrier) = oneshot::channel();
+        messages
+            .send(AppMsg::ConsensusReady { reply })
+            .await
+            .unwrap();
+        barrier.await.unwrap();
+        assert!(
+            matches!(answer.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "after replay a valueless live request is held"
+        );
+        assert!(
+            matches!(network_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "the replay tombstone published nothing"
+        );
+
+        submissions.send(batch).await.unwrap();
+        let answered = (&mut answer)
+            .await
+            .expect("held oneshot must not be dropped");
+        assert_eq!(answered.round, live);
+        assert_eq!(answered.value.id, id);
+        loop {
+            let NetworkMsg::PublishProposalPart(message) = network_rx.recv().await.unwrap();
+            if matches!(message.content, StreamContent::Fin) {
+                break;
+            }
+        }
+        drop(messages);
+        drop(submissions);
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(run(&mut app, &mut channels, &mut submission_rx), driver);
+    })
+    .await
+    .expect("replay must not hold the connector to its live deadline");
+    assert!(app.held_replies.is_empty());
+    drop(app);
+    drop(cleanup);
+}
