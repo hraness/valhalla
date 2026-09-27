@@ -2924,6 +2924,171 @@ fn test_app_at(home: &Path, key: &PrivateKey, set: &RoomValidatorSet) -> App {
     }
 }
 
+fn intake_retry_body() -> BatchBody {
+    let batch = batch_plan(1).remove(&1).unwrap();
+    BatchBody {
+        time: batch.time,
+        evidence: batch.evidence,
+        records: batch.records,
+        games: batch.games,
+        eligible: batch.eligible,
+        rotation: batch.rotation,
+    }
+}
+
+fn retry_intake(app: &mut App, body: &BatchBody) {
+    let intake = app.store.parent().unwrap().join("intake");
+    std::fs::create_dir_all(&intake).unwrap();
+    std::fs::write(intake.join("retry.body"), body.encode()).unwrap();
+    app.drain_intake();
+    assert!(!intake.join("retry.body").exists());
+    assert_eq!(
+        std::fs::read(app.store.join("pending/retry")).unwrap(),
+        body.encode(),
+        "an exact retry preserves the durable body"
+    );
+}
+
+fn decide_intake(app: &mut App, id: RoomValueId) {
+    use arc_malachitebft_core_types::{CommitCertificate, CommitSignature, NilOrVal, VoteType};
+
+    let height = Height::new(app.held_by_id[&id].parent.height + 1);
+    let round = Round::new(0);
+    let vote = RoomVote::new(
+        VoteType::Precommit,
+        height,
+        round,
+        NilOrVal::Val(id),
+        app.address,
+    );
+    let certificate = CommitCertificate {
+        height,
+        round,
+        value_id: id,
+        commit_signatures: vec![CommitSignature::new(
+            app.address,
+            RoomSigner::new(app.private_key.clone()).sign(&crate::vote_sign_bytes(&vote)),
+        )],
+    };
+    assert_eq!(app.decide(&certificate), DecidedOutcome::Acked);
+}
+
+fn assert_intake_retry_committed(app: &mut App) {
+    assert!(app.assigned_bodies.is_empty());
+    assert!(!app.store.join("pending/retry").exists());
+    assert!(app.next_pending().is_none());
+    assert!(!app
+        .store
+        .parent()
+        .unwrap()
+        .join("intake/retry.rejected")
+        .exists());
+    assert!(app.pending_proposals.is_empty());
+}
+
+/// Assignment changes the queue's value identity, but an exact producer
+/// retry still names the same pending body. Its commit must retire that
+/// body once, without leaving a duplicate that reports a false rejection.
+#[test]
+fn intake_retry_after_assignment_commits_once() {
+    let (keys, set) = validators(1);
+    let base = fixture("intake-retry");
+    let mut app = test_app_at(&base, &keys[0], &set);
+    let body = intake_retry_body();
+    retry_intake(&mut app, &body);
+    retry_intake(&mut app, &body);
+    assert_eq!(app.pending_proposals.len(), 1);
+    let id = app.next_pending().unwrap();
+
+    retry_intake(&mut app, &body);
+    retry_intake(&mut app, &body);
+    assert_eq!(app.next_pending(), Some(id));
+    decide_intake(&mut app, id);
+    assert_intake_retry_committed(&mut app);
+    drop(app);
+
+    let app = test_app_at(&base, &keys[0], &set);
+    assert_eq!(app.adapter.lock().unwrap().frontier().height, 1);
+    assert!(reload_pending(&app.store, &app.held_by_id, &app.adapter).is_empty());
+    drop(app);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// A competing value may win while the retried body is assigned. Keep
+/// exactly one durable body and reassemble it against the new frontier.
+#[test]
+fn intake_retry_survives_losing_assignment() {
+    let (keys, set) = validators(1);
+    let base = fixture("intake-retry-losing");
+    let mut app = test_app_at(&base, &keys[0], &set);
+    let body = intake_retry_body();
+    retry_intake(&mut app, &body);
+    let first = app.next_pending().unwrap();
+    retry_intake(&mut app, &body);
+
+    let competing = app
+        .adapter
+        .lock()
+        .unwrap()
+        .application()
+        .prepare_with_games(0, vec![], vec![], vec![], None, None)
+        .unwrap()
+        .batch()
+        .clone();
+    let competing = app.register_batch(competing);
+    decide_intake(&mut app, competing);
+    assert!(app.store.join("pending/retry").exists());
+    let second = app.next_pending().unwrap();
+    assert_ne!(first, second);
+    assert_eq!(app.held_by_id[&second].parent.height, 1);
+    retry_intake(&mut app, &body);
+    assert_eq!(
+        app.pending_proposals,
+        VecDeque::from([PendingEntry::Value(second)])
+    );
+    decide_intake(&mut app, second);
+    assert_intake_retry_committed(&mut app);
+    assert_eq!(app.adapter.lock().unwrap().frontier().height, 2);
+    drop(app);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// Restart reloads an assigned submission from its original body marker;
+/// retries before and after reassembly must remain a single submission.
+#[test]
+fn intake_retry_survives_restart_after_assignment() {
+    let (keys, set) = validators(1);
+    let base = fixture("intake-retry-restart");
+    let mut app = test_app_at(&base, &keys[0], &set);
+    let body = intake_retry_body();
+    retry_intake(&mut app, &body);
+    let id = app.next_pending().unwrap();
+    drop(app);
+
+    let mut app = test_app_at(&base, &keys[0], &set);
+    let frontier = app.adapter.lock().unwrap().frontier();
+    app.held_by_id = load_store_at(&app.store, Some(frontier)).held;
+    for batch in app.held_by_id.values() {
+        app.adapter.lock().unwrap().hold(batch.clone());
+    }
+    app.pending_proposals = reload_pending(&app.store, &app.held_by_id, &app.adapter);
+    retry_intake(&mut app, &body);
+    assert_eq!(
+        app.pending_proposals,
+        VecDeque::from([PendingEntry::Body("retry".into())])
+    );
+    assert_eq!(app.next_pending(), Some(id));
+    retry_intake(&mut app, &body);
+    assert_eq!(
+        app.pending_proposals,
+        VecDeque::from([PendingEntry::Value(id)])
+    );
+    decide_intake(&mut app, id);
+    assert_intake_retry_committed(&mut app);
+    drop(app);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 #[test]
 fn game_commitment_body_survives_intake_and_live_frontier_assembly() {
     let (keys, set) = validators(1);

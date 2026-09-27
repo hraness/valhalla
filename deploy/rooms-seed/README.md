@@ -48,8 +48,13 @@ joining and leaving the voting set, and matching committed state.
    shared params file, then set each service's `NODE_KEY`, `REALM`,
    `PEERS` (the other validators' public endpoints) and
    `NETWORK_FILE_B64`.
-5. Deploy; `rooms status`/`node-check` against any scaffolded home
-   confirms the mesh, and the service logs print the committed height.
+5. Deploy and run `node-check` to verify the local configuration and
+   genesis store. Submit a batch and verify its commit in every validator's
+   journal to confirm live consensus. To inspect that history through
+   `rooms status`, use a CLI built with `experimental-rooms-tui` and a local
+   read replica; the seed image includes only `experimental-rooms-node`.
+   A local status check alone cannot establish peer connectivity or quorum
+   availability.
 
 ## Notes
 
@@ -58,6 +63,12 @@ joining and leaving the voting set, and matching committed state.
   dialling any single member.
 - `NODE_KEY` is the validator's signing seed — keep it a platform
   secret; `NETWORK_FILE_B64` is public material by design.
+- First setup can resume after the genesis social store is created but
+  before `node.json` is published. The script uses `--resume-social` with
+  the supplied `NODE_KEY`, verifies an empty genesis store, and refuses
+  any application state, WAL, pending intake, or unknown node files.
+  Missing artifacts after a node has run require restoring the saved
+  config or store. Startup preserves retained files and reports failures.
 - `ADVERTISE` is validated and saved during first setup. On later starts it
   overrides the advertised endpoints without changing the persisted node
   config, identity or consensus history. Leave it unset to use the saved

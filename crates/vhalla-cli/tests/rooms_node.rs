@@ -381,6 +381,18 @@ mod enabled {
             !err.contains("panic"),
             "node stderr must not contain a panic: {err}"
         );
+
+        // Losing a config after voting must never turn the retained journal
+        // and anti-equivocation WAL into a fresh scaffold with another key.
+        fs::remove_file(&config_path).unwrap();
+        let network = init_recovery_network(&temp);
+        let before = retained_tree(&home);
+        let missing_social = temp.path("replacement-social");
+        let refused = init_recovery_command(&home, &network, &missing_social, "--social", true);
+        assert!(!refused.status.success());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("retained state"));
+        assert_eq!(retained_tree(&home), before);
+        assert!(!missing_social.exists());
     }
 
     /// `rooms eligible` emits a canonical `*.eligible` intake file whose
@@ -3780,5 +3792,314 @@ mod enabled {
             .output()
             .unwrap();
         assert!(!refused.status.success(), "--social never reuses a store");
+    }
+
+    fn init_recovery_network(temp: &Temp) -> PathBuf {
+        let network = temp.path("recovery-network.json");
+        rooms_ok(&[
+            "network-init",
+            network.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(&[1; 32]),
+            "--policy",
+            "1,86400,8,86400,16",
+            "--validators",
+            &format!(
+                "1:{}:1",
+                hex(PrivateKey::from([90; 32]).public_key().as_bytes())
+            ),
+        ]);
+        network
+    }
+
+    fn init_recovery_command(
+        home: &Path,
+        network: &Path,
+        social: &Path,
+        flag: &str,
+        supplied_key: bool,
+    ) -> std::process::Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vhalla"));
+        command.env("HRANESS_SUPPORT", "off").args([
+            "rooms",
+            "node-init",
+            home.to_str().unwrap(),
+            "--network",
+            network.to_str().unwrap(),
+            "--port",
+            "9473",
+            flag,
+            social.to_str().unwrap(),
+        ]);
+        if supplied_key {
+            command.args(["--node-key", &hex(&[90; 32])]);
+        }
+        command.output().unwrap()
+    }
+
+    fn retained_tree(path: &Path) -> std::collections::BTreeMap<PathBuf, (u32, Vec<u8>)> {
+        fn visit(
+            root: &Path,
+            path: &Path,
+            out: &mut std::collections::BTreeMap<PathBuf, (u32, Vec<u8>)>,
+        ) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            let bytes = if metadata.is_file() {
+                fs::read(path).unwrap()
+            } else {
+                Vec::new()
+            };
+            out.insert(
+                path.strip_prefix(root).unwrap().to_owned(),
+                (metadata.permissions().mode(), bytes),
+            );
+            if metadata.is_dir() {
+                for entry in fs::read_dir(path).unwrap() {
+                    visit(root, &entry.unwrap().path(), out);
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        if path.exists() {
+            visit(path, path, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn node_init_resume_social_completes_interrupted_first_setup() {
+        let temp = Temp::new();
+        let network = init_recovery_network(&temp);
+        let home = temp.path("home");
+        let social = temp.path("social");
+        // These are the artifacts retained if publishing node.json fails.
+        drop(SocialStore::create(&social, vhalla_core::RealmId(77), Default::default()).unwrap());
+        fs::create_dir_all(home.join("intake")).unwrap();
+        let original = retained_tree(&social);
+
+        let strict = init_recovery_command(&home, &network, &social, "--social", true);
+        assert!(!strict.status.success());
+        assert!(String::from_utf8_lossy(&strict.stderr).contains("never reuses"));
+        let missing_key = init_recovery_command(&home, &network, &social, "--resume-social", false);
+        assert!(!missing_key.status.success());
+        assert!(String::from_utf8_lossy(&missing_key.stderr).contains("--node-key"));
+        assert!(!home.join("node.json").exists());
+
+        let resumed = init_recovery_command(&home, &network, &social, "--resume-social", true);
+        assert!(
+            resumed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&resumed.stderr)
+        );
+        assert_eq!(retained_tree(&social), original);
+        let config = home.join("node.json");
+        let published = fs::read(&config).unwrap();
+        // A complete unpublished config from a crashed writer is preserved.
+        let scratch = home.join(".node.json.tmp-999999999");
+        fs::rename(&config, &scratch).unwrap();
+        let resumed = init_recovery_command(&home, &network, &social, "--resume-social", true);
+        assert!(
+            resumed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&resumed.stderr)
+        );
+        assert_eq!(fs::read(&scratch).unwrap(), published);
+        assert_eq!(fs::read(&config).unwrap(), published);
+        rooms_ok(&[
+            "node-check",
+            social.to_str().unwrap(),
+            home.to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            config.to_str().unwrap(),
+        ]);
+
+        // An existing config blocks all initialization before creating a store.
+        let another_social = temp.path("another-social");
+        let refused = init_recovery_command(&home, &network, &another_social, "--social", true);
+        assert!(!refused.status.success());
+        assert!(!another_social.exists());
+
+        fs::remove_file(&config).unwrap();
+        for field in ["node_key", "directory"] {
+            let mut mismatched: serde_json::Value = serde_json::from_slice(&published).unwrap();
+            mismatched[field] = serde_json::json!(hex(&[91; 32]));
+            fs::write(&scratch, serde_json::to_vec(&mismatched).unwrap()).unwrap();
+            let before = retained_tree(&home);
+            let refused = init_recovery_command(&home, &network, &social, "--resume-social", true);
+            assert!(!refused.status.success(), "mismatched {field}");
+            assert_eq!(retained_tree(&home), before);
+            assert_eq!(retained_tree(&social), original);
+        }
+    }
+
+    #[test]
+    fn node_init_resume_social_rejects_invalid_retained_archives_without_mutation() {
+        for kind in ["missing", "partial", "wrong-realm", "nonempty", "recovery"] {
+            let temp = Temp::new();
+            let network = init_recovery_network(&temp);
+            let home = temp.path("home");
+            let social = temp.path("social");
+            if kind == "partial" {
+                fs::DirBuilder::new().mode(0o700).create(&social).unwrap();
+            } else if kind != "missing" {
+                let realm = vhalla_core::RealmId(if kind == "wrong-realm" { 78 } else { 77 });
+                let mut store = SocialStore::create(&social, realm, Default::default()).unwrap();
+                if kind == "nonempty" {
+                    let plan = fixture::plan_with_limits(1, 8, 16, Default::default());
+                    store.commit(plan.genesis.archive, store.pin()).unwrap();
+                }
+                drop(store);
+                if kind == "recovery" {
+                    fs::write(social.join("pin.tmp"), b"retained interrupted publication").unwrap();
+                    fs::set_permissions(social.join("pin.tmp"), fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                }
+            }
+            let before = retained_tree(&social);
+            let refused = init_recovery_command(&home, &network, &social, "--resume-social", true);
+            assert!(!refused.status.success(), "{kind}");
+            assert_eq!(retained_tree(&social), before, "{kind}");
+            assert!(!home.exists(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn node_init_rejects_retained_node_history_without_mutation() {
+        for retained in [
+            "app/journal/HEAD",
+            "wal/FORMAT",
+            "intake/pending.batch",
+            "unknown",
+            ".node.json.tmp-123",
+        ] {
+            let temp = Temp::new();
+            let network = init_recovery_network(&temp);
+            let home = temp.path("home");
+            let path = home.join(retained);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"retained state").unwrap();
+            let social = temp.path("social");
+            drop(
+                SocialStore::create(&social, vhalla_core::RealmId(77), Default::default()).unwrap(),
+            );
+            let before = retained_tree(&home);
+            let archive = retained_tree(&social);
+            let refused = init_recovery_command(&home, &network, &social, "--resume-social", true);
+            assert!(!refused.status.success(), "{retained}");
+            assert_eq!(retained_tree(&home), before, "{retained}");
+            assert_eq!(retained_tree(&social), archive, "{retained}");
+        }
+        let temp = Temp::new();
+        let network = init_recovery_network(&temp);
+        let home = temp.path("nested-home");
+        fs::create_dir(&home).unwrap();
+        let social = home.join("social");
+        drop(SocialStore::create(&social, vhalla_core::RealmId(77), Default::default()).unwrap());
+        let before = retained_tree(&home);
+        let refused = init_recovery_command(&home, &network, &social, "--resume-social", true);
+        assert!(!refused.status.success());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("outside NODE_HOME"));
+        assert_eq!(retained_tree(&home), before);
+    }
+
+    #[test]
+    fn seed_start_script_handles_first_setup_resume_and_missing_artifacts() {
+        for state in [
+            "fresh",
+            "resume",
+            "complete",
+            "missing-social",
+            "failed-init",
+        ] {
+            let temp = Temp::new();
+            let home = temp.path("home");
+            let social = temp.path("social");
+            let bin = temp.path("bin");
+            fs::create_dir(&bin).unwrap();
+            let shim = bin.join("vhalla");
+            fs::write(
+                &shim,
+                br##"#!/bin/sh
+printf '%s\n' "$@" >> "$CALL_LOG"
+if [ "$2" = node-init ]; then
+  mkdir -p "$NODE_HOME" "$SOCIAL_HOME"
+  printf '{}' > "$NODE_HOME/node.json"
+  if [ "$FAIL_INIT" = true ]; then exit 42; fi
+fi
+"##,
+            )
+            .unwrap();
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o700)).unwrap();
+            if matches!(state, "resume" | "complete") {
+                fs::create_dir(&social).unwrap();
+            }
+            if matches!(state, "complete" | "missing-social") {
+                fs::create_dir(&home).unwrap();
+                fs::write(home.join("node.json"), b"saved config").unwrap();
+            }
+            let log = temp.path("calls");
+            let result = Command::new("sh")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../deploy/rooms-seed/start.sh"
+                ))
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                )
+                .env("CALL_LOG", &log)
+                .env("NODE_HOME", &home)
+                .env("SOCIAL_HOME", &social)
+                .env("REALM", REALM_HEX)
+                .env("NETWORK_FILE_B64", "e30=")
+                .env("NODE_KEY", hex(&[90; 32]))
+                .env("PEERS", "127.0.0.1:9474")
+                .env(
+                    "FAIL_INIT",
+                    if state == "failed-init" {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                )
+                .output()
+                .unwrap();
+            let calls = fs::read_to_string(log).unwrap_or_default();
+            match state {
+                "missing-social" => {
+                    assert!(!result.status.success());
+                    assert!(calls.is_empty());
+                    assert!(!social.exists());
+                    assert_eq!(fs::read(home.join("node.json")).unwrap(), b"saved config");
+                }
+                "failed-init" => {
+                    assert_eq!(result.status.code(), Some(42));
+                    assert!(!calls.lines().any(|line| line == "node"));
+                }
+                _ => {
+                    assert!(
+                        result.status.success(),
+                        "{state}: {}",
+                        String::from_utf8_lossy(&result.stderr)
+                    );
+                    assert!(calls.lines().any(|line| line == "node"));
+                    assert_eq!(
+                        calls.lines().any(|line| line == "node-init"),
+                        state != "complete"
+                    );
+                    assert_eq!(
+                        calls.lines().any(|line| line == "--resume-social"),
+                        state == "resume"
+                    );
+                    assert_eq!(
+                        calls.lines().any(|line| line == "--social"),
+                        state == "fresh"
+                    );
+                }
+            }
+        }
     }
 }

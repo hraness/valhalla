@@ -1256,7 +1256,7 @@ pub fn network_init(raw: &[OsString]) -> Result<(), String> {
 ///
 /// `vhalla rooms node-init NODE_HOME --network FILE --port N
 ///  [--node-key HEX64] [--listen IP|localhost] [--peers [KEY64@]HOST:PORT,...]
-///  [--peers-only true] [--discovery true] [--social DIR]`
+///  [--peers-only true] [--discovery true] [--social DIR | --resume-social DIR]`
 pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     let (positional, flags) = flags(
         raw,
@@ -1269,6 +1269,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
             "peers-only",
             "discovery",
             "social",
+            "resume-social",
             "advertise",
         ],
     )?;
@@ -1277,6 +1278,14 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     }
     let home = std::path::Path::new(&positional[0]);
     let target = home.join("node.json");
+    if flags.contains_key("social") && flags.contains_key("resume-social") {
+        return Err("--social and --resume-social are mutually exclusive".into());
+    }
+    if flags.contains_key("resume-social") && !flags.contains_key("node-key") {
+        return Err(
+            "--resume-social requires --node-key to select the identity before first boot".into(),
+        );
+    }
     let network_path = flags
         .get("network")
         .ok_or("node-init needs --network FILE")?;
@@ -1351,23 +1360,6 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
         discovery,
     )?;
     advertise_endpoints(&mut config, &advertised)?;
-    // `--social DIR` materializes the genesis social store — the empty
-    // committed archive under the network's realm and limits, identical
-    // on every member. It runs after every fallible flag validates so a
-    // rejected init leaves nothing behind, and before the node.json
-    // never-overwrite check so a re-run completes a home whose earlier
-    // init stopped after writing the file.
-    if let Some(dir) = flags.get("social") {
-        let path = std::path::Path::new(dir.as_str());
-        if path.exists() {
-            return Err("--social never reuses or resets an existing store".into());
-        }
-        vhalla_social_store::Store::create(path, network.realm, network.limits)
-            .map_err(|e| format!("social store: {e}"))?;
-    }
-    if target.exists() {
-        return Err("node-init never overwrites an existing node.json".into());
-    }
     let genesis = genesis_fingerprint(
         network.realm,
         &network.directory,
@@ -1376,6 +1368,36 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
         &network.limits,
         &network.validator_sets,
     );
+    // Missing config is not evidence that a validator never voted. Refuse
+    // retained application, WAL, pending intake, and unknown state before
+    // creating either artifact, even when the social store is missing too.
+    if let Some(dir) = flags.get("resume-social") {
+        if let (Ok(home), Ok(social)) = (std::fs::canonicalize(home), std::fs::canonicalize(dir)) {
+            if social.starts_with(home) {
+                return Err("--resume-social requires a store outside NODE_HOME; recover this layout explicitly".into());
+            }
+        }
+    }
+    check_unstarted_home(home, &seed, &genesis)?;
+    if let Some(dir) = flags.get("resume-social") {
+        let retained = read_archive(dir, network.realm, network.limits)
+            .map_err(|e| format!("--resume-social: {e}"))?;
+        let empty = vhalla_social::archive::Archive::new(network.realm, network.limits)
+            .map_err(|e| format!("genesis archive: {e:?}"))?;
+        if retained.snapshot() != empty.snapshot() {
+            return Err(
+                "--resume-social requires an empty genesis archive; retained records are unchanged"
+                    .into(),
+            );
+        }
+    } else if let Some(dir) = flags.get("social") {
+        let path = std::path::Path::new(dir.as_str());
+        if path.symlink_metadata().is_ok() {
+            return Err("--social never reuses or resets an existing store".into());
+        }
+        vhalla_social_store::Store::create(path, network.realm, network.limits)
+            .map_err(|e| format!("social store: {e}"))?;
+    }
     // The node file carries realm so `node`/`node-check` reject a REALM
     // argument that disagrees with the shared params it was scaffolded
     // from.
@@ -1427,6 +1449,79 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
             ),
         ])
     );
+    Ok(())
+}
+
+/// First setup may leave an empty intake directory or a complete unpublished
+/// config. Preserve those files; any other state needs explicit recovery.
+fn check_unstarted_home(
+    home: &std::path::Path,
+    seed: &[u8; 32],
+    genesis: &[u8; 32],
+) -> Result<(), String> {
+    let metadata = match home.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("node home: {e}")),
+    };
+    if !metadata.is_dir() {
+        return Err("node home must be a directory, not a symlink or file".into());
+    }
+    for entry in std::fs::read_dir(home).map_err(|e| format!("node home: {e}"))? {
+        let entry = entry.map_err(|e| format!("node home: {e}"))?;
+        let name = entry.file_name();
+        if name == "node.json" {
+            return Err("node-init never overwrites an existing node.json".into());
+        }
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|e| format!("node home: {e}"))?;
+        if name == "intake" && kind.is_dir() {
+            if std::fs::read_dir(&path)
+                .map_err(|e| format!("node intake: {e}"))?
+                .next()
+                .is_none()
+            {
+                continue;
+            }
+        } else if name.to_str().is_some_and(|name| {
+            name.strip_prefix(".node.json.tmp-").is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+            })
+        }) && kind.is_file()
+            && entry
+                .metadata()
+                .map_err(|e| format!("node home: {e}"))?
+                .len()
+                <= 64 * 1024
+        {
+            let raw = std::fs::read(&path).map_err(|e| format!("unpublished config: {e}"))?;
+            let file: NodeFile = serde_json::from_slice(&raw)
+                .map_err(|e| format!("unpublished config requires explicit recovery: {e}"))?;
+            let decoded = decode_node(&file)?;
+            let realm = decoded
+                .realm
+                .ok_or("unpublished config is missing its realm")?;
+            let previous = genesis_fingerprint(
+                RealmId(realm),
+                &decoded.directory,
+                &decoded.policy,
+                &decoded.eligible,
+                &decoded.limits,
+                &decoded.validator_sets,
+            );
+            if hex32(&file.node_key)? == *seed && previous == *genesis {
+                // Do not let a recycled PID make write_node_json truncate
+                // the retained file it normally uses as its scratch path.
+                if name != format!(".node.json.tmp-{}", std::process::id()).as_str() {
+                    continue;
+                }
+            }
+        }
+        return Err(format!(
+            "node home contains retained state at {}; restore its config or recover it explicitly before initializing",
+            path.display()
+        ));
+    }
     Ok(())
 }
 
