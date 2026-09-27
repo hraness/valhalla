@@ -260,7 +260,8 @@
             "GetValue",
             "drain_answerable_held",
             "prepare_local_parts",
-            "flush_held"
+            "flush_held",
+            "fold_replay_events"
           ],
           "role": "production"
         },
@@ -269,7 +270,8 @@
           "symbols": [
             "deadline_unparks_connector_without_another_message",
             "late_submit_is_durable_before_reply_and_network_drain",
-            "full_metadata_answers_locally_without_publishing"
+            "full_metadata_answers_locally_without_publishing",
+            "replay_answers_at_once_then_live_holding_resumes"
           ],
           "role": "regression"
         },

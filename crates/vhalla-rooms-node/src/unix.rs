@@ -33,6 +33,7 @@ use arc_malachitebft_engine::network::{
     Msg as NetActorMsg, NetworkEvent, NetworkIdentity, NetworkRef, Subscriber,
 };
 use arc_malachitebft_engine::node::NodeMsg;
+use arc_malachitebft_engine::util::events::Event;
 use arc_malachitebft_engine::util::output_port::{OutputPort, OutputPortSubscriberTrait};
 use arc_malachitebft_engine::util::streaming::{StreamContent, StreamId, StreamMessage};
 use arc_malachitebft_engine::wal::{Msg as WalMsg, WalRef};
@@ -387,11 +388,6 @@ struct App {
     /// the connector's sequential message loop un-parks and its queued
     /// backlog (parts, decisions) can drain.
     held_replies: Vec<HeldReply>,
-    /// Newest `StartedRound` round observed per height, live or replayed.
-    /// A held `GetValue` for a lower round is already dead — the engine
-    /// drops the reply on its round check — so it resolves as a tombstone
-    /// at once instead of holding the sequential connector to deadline.
-    latest_round: BTreeMap<u64, Round>,
 }
 
 /// A `GetValue` request held open while no value is available, with the
@@ -767,18 +763,6 @@ impl App {
                         None
                     }
                 }
-            } else if self
-                .latest_round
-                .get(&req.height)
-                .is_some_and(|&seen| req.round < seen)
-            {
-                // The engine already entered a later round at this
-                // height, so this request's reply would be discarded on
-                // arrival: tombstone it now rather than parking the
-                // connector until the request's own deadline. This is
-                // what bounds WAL replay — replayed proposer rounds hold
-                // a `GetValue` whose deadline is the live timeout.
-                Some((self.tombstone(req.height, req.round), false))
             } else {
                 if !self.proposals.contains_key(&req.height) {
                     if let Some(id) = self.next_pending() {
@@ -1368,7 +1352,6 @@ impl App {
     /// the complete durable journal, read on demand in bounded sync pages.
     fn sweep_decided(&mut self, height: u64) {
         self.seen.retain(|h, _| *h > height);
-        self.latest_round.retain(|h, _| *h > height);
         self.streams
             .retain(|_, s| s.init.as_ref().is_none_or(|i| i.height.as_u64() > height));
         self.parts_cache.retain(|_, parts| {
@@ -2099,7 +2082,6 @@ impl RoomNode {
             seen,
             resupplied: Arc::clone(&resupplied),
             held_replies: Vec::new(),
-            latest_round: BTreeMap::new(),
         };
 
         let (submission_tx, mut submission_rx) = tokio::sync::mpsc::channel::<Batch>(64);
@@ -2542,6 +2524,32 @@ async fn flush_held(app: &mut App, channels: &mut Channels<RoomContext>) -> bool
     true
 }
 
+/// Fold the engine's broadcast events into the WAL-replay flag without
+/// blocking. Events travel outside the sequential connector, so they
+/// arrive even while it is parked on a held reply. `WalReplayBegin` is
+/// broadcast before the first replayed entry, so it is already buffered
+/// when a replayed round's `GetValue` reaches the host. The ring holds
+/// 128 events and replay floods it: a lagged receiver may have lost
+/// `WalReplayDone`, so a lag falls back to live holding and any retained
+/// `WalReplayEntry` marks replay again. Misreading live as replay costs
+/// one proposer round (a tombstone); misreading replay as live costs
+/// replay speed (a held reply). Neither affects safety.
+fn fold_replay_events(
+    events: &mut tokio::sync::broadcast::Receiver<Event<RoomContext>>,
+    replaying: &mut bool,
+) {
+    use tokio::sync::broadcast::error::TryRecvError;
+    loop {
+        match events.try_recv() {
+            Ok(Event::WalReplayBegin(..) | Event::WalReplayEntry(..)) => *replaying = true,
+            Ok(Event::WalReplayDone(..) | Event::WalReplayError(..))
+            | Err(TryRecvError::Lagged(_)) => *replaying = false,
+            Ok(_) => {}
+            Err(TryRecvError::Empty | TryRecvError::Closed) => return,
+        }
+    }
+}
+
 /// The application boundary loop: every reply that authorizes engine
 /// progress is sent only after the durable layer permits it. Local batch
 /// submissions interleave with engine messages on the same loop so the
@@ -2559,6 +2567,10 @@ async fn run(
         Tick,
     }
     let mut submissions_open = true;
+    // Subscribed before `ConsensusReady` is answered, so the engine cannot
+    // start WAL replay ahead of this receiver.
+    let mut events = channels.events.subscribe();
+    let mut replaying = false;
     let mut held_tick = tokio::time::interval(std::time::Duration::from_millis(HELD_REPLY_POLL_MS));
     held_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -2616,20 +2628,9 @@ async fn run(
 
             AppMsg::StartedRound {
                 height,
-                round,
                 reply_value,
                 ..
             } => {
-                // Track the newest round the engine has entered so held
-                // `GetValue`s for earlier rounds resolve as tombstones
-                // instead of holding the connector to their deadlines.
-                let newest = app
-                    .latest_round
-                    .entry(height.as_u64())
-                    .or_insert(Round::Nil);
-                if *newest < round {
-                    *newest = round;
-                }
                 // Resupply undecided values from the application-owned
                 // store: every proposal this node observed at the height
                 // — locally proposed or received and verified — survives
@@ -2648,6 +2649,23 @@ async fn run(
                 timeout,
                 reply,
             } => {
+                fold_replay_events(&mut events, &mut replaying);
+                if replaying {
+                    // WAL replay re-drives rounds the engine already
+                    // finished: their outcome is in the WAL, and the engine
+                    // discards this reply on its round check unless replay
+                    // ends inside this very Propose step. Holding it would
+                    // park the connector for the live propose timeout on
+                    // every replayed proposer round; a real value would
+                    // publish parts and record `seen` for history. A
+                    // reply-only tombstone answers at once, with no parts.
+                    let _ = reply.send(LocallyProposedValue::new(
+                        height,
+                        round,
+                        app.tombstone(height.as_u64(), round),
+                    ));
+                    continue;
+                }
                 // Cross-process submissions land here: drain the intake
                 // dir before assigning this height's proposal.
                 app.drain_intake();
