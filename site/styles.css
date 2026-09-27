@@ -5,7 +5,7 @@
   --paper:var(--background);
   --ink:var(--foreground);
   --selected:var(--hraness-material-warm-plane);
-  --accent:var(--focus);
+  --accent:var(--foreground);
   --code-surface:color-mix(in srgb,var(--selected) 35%,var(--paper));
   --mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
   --page-measure:1248px;
