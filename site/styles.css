@@ -1115,6 +1115,9 @@ table a {
   .header-cta {
     min-height:44px;
   }
+  .primary-nav a {
+    min-width:44px;
+  }
   .hero {
     padding:48px 0 36px;
   }
