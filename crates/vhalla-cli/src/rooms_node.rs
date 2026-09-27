@@ -1203,7 +1203,7 @@ pub fn network_init(raw: &[OsString]) -> Result<(), String> {
 ///
 /// `vhalla rooms node-init NODE_HOME --network FILE --port N
 ///  [--node-key HEX64] [--listen HOST] [--peers [KEY64@]HOST:PORT,...]
-///  [--peers-only true]`
+///  [--peers-only true] [--discovery true] [--social DIR]`
 pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     let (positional, flags) = flags(
         raw,
@@ -1215,6 +1215,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
             "peers",
             "peers-only",
             "discovery",
+            "social",
         ],
     )?;
     if positional.len() != 1 {
@@ -1222,9 +1223,6 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     }
     let home = std::path::Path::new(&positional[0]);
     let target = home.join("node.json");
-    if target.exists() {
-        return Err("node-init never overwrites an existing node.json".into());
-    }
     let network_path = flags
         .get("network")
         .ok_or("node-init needs --network FILE")?;
@@ -1286,6 +1284,23 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     }
     if discovery && parsed_peers.is_empty() {
         return Err("--discovery needs at least one bootstrap peer".into());
+    }
+    // `--social DIR` materializes the genesis social store — the empty
+    // committed archive under the network's realm and limits, identical
+    // on every member. It runs after every fallible flag validates so a
+    // rejected init leaves nothing behind, and before the node.json
+    // never-overwrite check so a re-run completes a home whose earlier
+    // init stopped after writing the file.
+    if let Some(dir) = flags.get("social") {
+        let path = std::path::Path::new(dir.as_str());
+        if path.exists() {
+            return Err("--social never reuses or resets an existing store".into());
+        }
+        vhalla_social_store::Store::create(path, network.realm, network.limits)
+            .map_err(|e| format!("social store: {e}"))?;
+    }
+    if target.exists() {
+        return Err("node-init never overwrites an existing node.json".into());
     }
     let genesis = genesis_fingerprint(
         network.realm,

@@ -39,7 +39,7 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   rotate NODE_HOME HEIGHT KEY64:POWER,... (build: --features experimental-rooms-node)
   score NODE_HOME HEIGHT [MAX] (build: --features experimental-rooms-node)
   network-init OUT --realm R32 --directory D64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]  (build: --features experimental-rooms-node)
-  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers [KEY64@]HOST:PORT,...] [--peers-only true]  (build: --features experimental-rooms-node)
+  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers [KEY64@]HOST:PORT,...] [--peers-only true] [--discovery true] [--social DIR]  (build: --features experimental-rooms-node)
   network-extend IN OUT --from HEIGHT --validators KEY:POWER,...  (build: --features experimental-rooms-node)
   node-update NODE_HOME --network FILE  (build: --features experimental-rooms-node)
   tailcat {plan|status|up} --nodes A/node.json B/node.json ... [--base-port N]  (build: --features experimental-rooms-node)
