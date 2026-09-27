@@ -73,7 +73,7 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
   const token = await evaluate(`(() => {
     window.__appearanceQualification = {token: crypto.randomUUID(), events: []};
     for (const name of ['pagehide','pageshow']) addEventListener(name, event => {
-      const hero = document.querySelector('.introduction');
+      const hero = document.querySelector('.hero');
       window.__appearanceQualification.events.push({name,persisted:event.persisted,
         light:hero.style.getPropertyValue('--hraness-hero-light-x')});
     });
@@ -85,24 +85,14 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
     // Native media-query change events and their cleanup run asynchronously.
     // Settle them before sending the new input whose response is being tested.
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
-    const point = await evaluate(`(() => {const b=document.querySelector('.introduction').getBoundingClientRect();
+    const point = await evaluate(`(() => {const b=document.querySelector('.hero').getBoundingClientRect();
       return {x:b.left+b.width*${fraction},y:Math.max(1,b.top)+Math.min(b.height,innerHeight-Math.max(1,b.top))*0.3};})()`);
     await call('Input.dispatchMouseEvent',{type:'mouseMoved',...point},sessionId);
-    try {
-      await waitFor(() => evaluate("!!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')"),'trusted hero pointer input');
-    } catch (cause) {
-      const diagnostic = await evaluate(`({visibility:document.visibilityState,focused:document.hasFocus(),
-        media:matchMedia('(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) and (forced-colors: none)').matches,
-        features:Object.fromEntries(['(hover: hover)','(hover: none)','(pointer: fine)','(pointer: coarse)',
-          '(pointer: none)','(prefers-reduced-motion: no-preference)','(prefers-reduced-motion: reduce)',
-          '(forced-colors: none)','(forced-colors: active)','(prefers-reduced-transparency: reduce)']
-          .map(query=>[query,matchMedia(query).matches])),
-        hit:document.elementFromPoint(${point.x},${point.y})?.tagName,
-        inside:!!document.elementFromPoint(${point.x},${point.y})?.closest('.introduction')})`);
-      throw Error('trusted hero pointer input: '+JSON.stringify(diagnostic),{cause});
-    }
-    return evaluate(`(() => {const s=document.querySelector('.introduction').style;
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    const properties = await evaluate(`(() => {const s=document.querySelector('.hero').style;
       return ['--hraness-hero-light-x','--hraness-hero-light-y','--hraness-hero-drift-x','--hraness-hero-drift-y'].map(n=>s.getPropertyValue(n));})()`);
+    if (properties.some(Boolean)) throw Error('The static hero acquired pointer-driven decoration');
+    return properties;
   };
   const before = await move(0.3);
   const history = await call('Page.getNavigationHistory',{},sessionId);
@@ -112,10 +102,10 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
   await waitFor(() => evaluate(`location.pathname === '/' && window.__appearanceQualification?.token === ${JSON.stringify(token)} && window.__appearanceQualification.events.some(e=>e.name==='pageshow'&&e.persisted)`),'actual BFcache restore');
   const lifecycle = await evaluate('window.__appearanceQualification.events');
   if (!lifecycle.some(e=>e.name==='pagehide'&&e.persisted&&e.light==='')) {
-    throw Error('hero pagehide did not restore owned CSS properties: '+JSON.stringify(lifecycle));
+    throw Error('static hero changed during actual pagehide: '+JSON.stringify(lifecycle));
   }
   const after = await move(0.7);
-  if (after.some(v=>!v) || before[0] === after[0]) throw Error('hero input did not resume after BFcache');
+  if (after.some(Boolean) || before.some(Boolean)) throw Error('Static hero changed after BFcache');
   await media('light');
   const afterBack = await assertState('light','system','system');
   const suppression = [];
@@ -125,14 +115,14 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
     const query = condition === 'reduced'
       ? '(prefers-reduced-motion: reduce)' : '(forced-colors: active)';
     if (!await evaluate(`matchMedia(${JSON.stringify(query)}).matches`)) throw Error('Native negative condition missing: '+condition);
-    await waitFor(() => evaluate("!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')"),condition+' resets hero input');
+    await waitFor(() => evaluate("!document.querySelector('.hero').style.getPropertyValue('--hraness-hero-light-x')"),condition+' keeps the hero static');
     await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:240,y:240},sessionId);
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
-    if (await evaluate("!!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')")) throw Error('Hero input ignored '+condition+' guard');
+    if (await evaluate("!!document.querySelector('.hero').style.getPropertyValue('--hraness-hero-light-x')")) throw Error('Static hero changed under '+condition);
     suppression.push(condition);
     await media('light');
     try { await move(0.7); }
-    catch (cause) { throw Error('Hero did not resume after '+condition,{cause}); }
+    catch (cause) { throw Error('Static hero changed after '+condition,{cause}); }
   }
   // CDP ending touch emulation restores the host's physical capabilities, which
   // can be pointer:none on Linux. Keep the coarse device in its own native target
@@ -153,13 +143,13 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
     await call('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1},coarseSession);
     await call('Page.navigate',{url:origin+'/'},coarseSession);
     await call('Page.bringToFront',{},coarseSession);
-    await waitFor(() => coarseEvaluate("document.readyState==='complete' && !!document.querySelector('.introduction')"),'coarse target ready');
+    await waitFor(() => coarseEvaluate("document.readyState==='complete' && !!document.querySelector('.hero')"),'coarse target ready');
     if (!await coarseEvaluate("matchMedia('(pointer: coarse)').matches && matchMedia('(hover: none)').matches")) throw Error('Native coarse target capability missing');
     await call('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:100,y:240}]},coarseSession);
     await call('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:160,y:245}]},coarseSession);
     await call('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]},coarseSession);
     await coarseEvaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
-    if (await coarseEvaluate("!!document.querySelector('.introduction').style.getPropertyValue('--hraness-hero-light-x')")) throw Error('Hero input ignored coarse guard');
+    if (await coarseEvaluate("!!document.querySelector('.hero').style.getPropertyValue('--hraness-hero-light-x')")) throw Error('Static hero changed under coarse input');
     suppression.push('coarse');
   } finally {
     await closeTargetChecked(call,targetId);
