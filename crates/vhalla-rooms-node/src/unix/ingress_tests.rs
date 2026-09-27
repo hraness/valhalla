@@ -45,6 +45,7 @@ impl Harness {
             seen: BTreeMap::new(),
             resupplied: Arc::new(Mutex::new(0)),
             held_replies: Vec::new(),
+            latest_round: BTreeMap::new(),
         };
         Self { app, base }
     }

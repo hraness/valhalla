@@ -387,6 +387,11 @@ struct App {
     /// the connector's sequential message loop un-parks and its queued
     /// backlog (parts, decisions) can drain.
     held_replies: Vec<HeldReply>,
+    /// Newest `StartedRound` round observed per height, live or replayed.
+    /// A held `GetValue` for a lower round is already dead — the engine
+    /// drops the reply on its round check — so it resolves as a tombstone
+    /// at once instead of holding the sequential connector to deadline.
+    latest_round: BTreeMap<u64, Round>,
 }
 
 /// A `GetValue` request held open while no value is available, with the
@@ -762,6 +767,18 @@ impl App {
                         None
                     }
                 }
+            } else if self
+                .latest_round
+                .get(&req.height)
+                .is_some_and(|&seen| req.round < seen)
+            {
+                // The engine already entered a later round at this
+                // height, so this request's reply would be discarded on
+                // arrival: tombstone it now rather than parking the
+                // connector until the request's own deadline. This is
+                // what bounds WAL replay — replayed proposer rounds hold
+                // a `GetValue` whose deadline is the live timeout.
+                Some((self.tombstone(req.height, req.round), false))
             } else {
                 if !self.proposals.contains_key(&req.height) {
                     if let Some(id) = self.next_pending() {
@@ -874,12 +891,26 @@ impl App {
     /// `height` and still retains, re-validated against the pinned
     /// frontier. Values whose batch bytes are gone or no longer
     /// validate are dropped rather than resupplied as valid.
+    ///
+    /// Resupply is one `ProposedValue` per distinct value id, carrying the
+    /// newest observed (round, polka-round) record for that id. The engine
+    /// restores stored values and re-drives matching proposals by value id
+    /// alone, so re-reporting the same id once per observed round would add
+    /// nothing but a fresh WAL append — on an undecided height where a value
+    /// is re-proposed many times the per-round resupply grows without bound
+    /// and stalls round entry on durable writes.
     fn resupply_for(&mut self, height: Height) -> Vec<ProposedValue<RoomContext>> {
         let Some(seen) = self.seen.get(&height.as_u64()).cloned() else {
             return Vec::new();
         };
+        // Records are appended in observe order, so scanning forward and
+        // overwriting keeps the newest record per value id.
+        let mut latest: BTreeMap<RoomValueId, &SeenProposal> = BTreeMap::new();
+        for record in seen.iter() {
+            latest.insert(record.value_id, record);
+        }
         let mut out = Vec::new();
-        for record in seen {
+        for record in latest.into_values() {
             let Some(batch) = self.held_by_id.get(&record.value_id).cloned() else {
                 continue;
             };
@@ -1337,6 +1368,7 @@ impl App {
     /// the complete durable journal, read on demand in bounded sync pages.
     fn sweep_decided(&mut self, height: u64) {
         self.seen.retain(|h, _| *h > height);
+        self.latest_round.retain(|h, _| *h > height);
         self.streams
             .retain(|_, s| s.init.as_ref().is_none_or(|i| i.height.as_u64() > height));
         self.parts_cache.retain(|_, parts| {
@@ -2067,6 +2099,7 @@ impl RoomNode {
             seen,
             resupplied: Arc::clone(&resupplied),
             held_replies: Vec::new(),
+            latest_round: BTreeMap::new(),
         };
 
         let (submission_tx, mut submission_rx) = tokio::sync::mpsc::channel::<Batch>(64);
@@ -2583,9 +2616,20 @@ async fn run(
 
             AppMsg::StartedRound {
                 height,
+                round,
                 reply_value,
                 ..
             } => {
+                // Track the newest round the engine has entered so held
+                // `GetValue`s for earlier rounds resolve as tombstones
+                // instead of holding the connector to their deadlines.
+                let newest = app
+                    .latest_round
+                    .entry(height.as_u64())
+                    .or_insert(Round::Nil);
+                if *newest < round {
+                    *newest = round;
+                }
                 // Resupply undecided values from the application-owned
                 // store: every proposal this node observed at the height
                 // — locally proposed or received and verified — survives

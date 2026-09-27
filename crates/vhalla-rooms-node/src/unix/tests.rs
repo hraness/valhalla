@@ -1742,6 +1742,7 @@ fn reordered_proposal_parts_still_assemble_and_verify() {
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
         held_replies: Vec::new(),
+        latest_round: BTreeMap::new(),
     };
 
     let mut s = fixture::scenario(8, 16);
@@ -1850,6 +1851,7 @@ fn large_values_chunk_into_bounded_data_parts() {
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
         held_replies: Vec::new(),
+        latest_round: BTreeMap::new(),
     };
 
     // Three full chunks plus a tail — comfortably over the transport
@@ -1934,6 +1936,7 @@ async fn held_get_value_reply_resolves_on_late_submit() {
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
         held_replies: Vec::new(),
+        latest_round: BTreeMap::new(),
     };
 
     // The engine asks for (h=1, r=0), the same height again at r=1, and
@@ -2020,6 +2023,101 @@ async fn held_get_value_reply_resolves_on_late_submit() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// A held `GetValue` whose round the engine has already left is dead:
+/// the driver drops the reply on its round check, so holding it to the
+/// engine-given deadline only parks the sequential connector — the stall
+/// that made WAL replay grind at one proposer round per timeout. Once
+/// `latest_round` records a newer `StartedRound`, the stale request must
+/// resolve as a tombstone on the next drain.
+#[test]
+fn stale_round_held_reply_tombstones_on_round_advance() {
+    let (keys, set) = validators(1);
+    let base = fixture("stale-held");
+    let key = keys[0].clone();
+    let address = Address::from_public_key(&key.public_key());
+
+    let home = base.join("home");
+    let store = home.join("store");
+    std::fs::create_dir_all(store.join("batches")).unwrap();
+    std::fs::create_dir_all(store.join("seen")).unwrap();
+    std::fs::create_dir_all(store.join("pending")).unwrap();
+
+    let mut app = App {
+        ctx: RoomContext,
+        adapter: Arc::new(Mutex::new(
+            Adapter::open(home.join("app"), &genesis()).unwrap(),
+        )),
+        sink: Arc::new(Mutex::new(EngineSink::default())),
+        validator_sets: sched(set),
+        address,
+        private_key: key,
+        proposals: BTreeMap::new(),
+        pending_proposals: VecDeque::new(),
+        assigned_bodies: BTreeMap::new(),
+        held_by_id: BTreeMap::new(),
+        streams: BTreeMap::new(),
+        parts_cache: BTreeMap::new(),
+        stream_seq: 0,
+        boundary_latency: Arc::new(Mutex::new(Vec::new())),
+        store,
+        seen: BTreeMap::new(),
+        resupplied: Arc::new(Mutex::new(0)),
+        held_replies: Vec::new(),
+        latest_round: BTreeMap::new(),
+    };
+
+    // The engine holds (h=1, r=3) open with a far deadline — the live
+    // timeout a replayed proposer round would carry — while nothing is
+    // pending.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.held_replies.push(HeldReply {
+        height: 1,
+        round: Round::new(3),
+        deadline: Instant::now() + Duration::from_secs(60),
+        reply: tx,
+    });
+    assert!(
+        app.drain_answerable_held().is_empty(),
+        "a live request with no value stays held"
+    );
+
+    // The engine enters a later round — exactly what replay emits as it
+    // walks past — so the r=3 request is dead and must un-park now.
+    app.latest_round.insert(1, Round::new(4));
+    let answered = app.drain_answerable_held();
+    assert_eq!(answered.len(), 1, "the stale request resolves at once");
+    let stale = answered.into_iter().next().unwrap();
+    assert_eq!(stale.round, Round::new(3));
+    assert!(!stale.live, "a stale-round tombstone never streams parts");
+    assert!(stale.value.bytes.is_empty());
+    stale
+        .reply
+        .send(LocallyProposedValue::new(
+            Height::new(1),
+            Round::new(3),
+            stale.value,
+        ))
+        .expect("the connector still awaits its reply");
+    rx.blocking_recv()
+        .expect("the tombstone reply lands, never dropped");
+
+    // A request for the CURRENT round is untouched by the floor.
+    let (tx2, rx2) = tokio::sync::oneshot::channel();
+    app.held_replies.push(HeldReply {
+        height: 1,
+        round: Round::new(4),
+        deadline: Instant::now() + Duration::from_secs(60),
+        reply: tx2,
+    });
+    assert!(
+        app.drain_answerable_held().is_empty(),
+        "a request at the engine's own round stays held"
+    );
+    drop(rx2);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// Undecided-proposal replay: a value the node observed must be
 /// resupplied to the engine at `StartedRound` — and must survive a
 /// restart, because the store is the application-owned half of proposal
@@ -2057,6 +2155,7 @@ fn undecided_values_resupply_from_durable_store() {
             seen,
             resupplied: Arc::new(Mutex::new(0)),
             held_replies: Vec::new(),
+            latest_round: BTreeMap::new(),
         };
 
     let mut s = fixture::scenario(8, 16);
@@ -2106,11 +2205,32 @@ fn undecided_values_resupply_from_durable_store() {
     let (held, seen) = load_store(&store);
     assert_eq!(held.len(), 1, "the observed batch body was retained");
     assert_eq!(seen.get(&5).map(Vec::len), Some(1));
-    let mut restarted = make_app(held, seen);
+    let mut restarted = make_app(held.clone(), seen.clone());
     let resupplied = restarted.resupply_for(Height::new(5));
     assert_eq!(resupplied.len(), 1);
     assert_eq!(resupplied[0].value.id.0, batch.value_id());
     assert_eq!(resupplied[0].round, Round::new(2));
+    drop(restarted);
+
+    // The same value re-proposed at later rounds collapses to one
+    // resupply — the engine restores values by id, so per-round
+    // duplicates would only grow the per-round WAL-append storm.
+    let mut app = make_app(held, seen);
+    for round in [4u32, 7, 12] {
+        app.seen.entry(5).or_default().push(SeenProposal {
+            round: Round::new(round),
+            pol_round: Round::Nil,
+            proposer: address,
+            value_id: id,
+        });
+    }
+    let resupplied = app.resupply_for(Height::new(5));
+    assert_eq!(
+        resupplied.len(),
+        1,
+        "duplicate records for one value id resupply once"
+    );
+    assert_eq!(resupplied[0].round, Round::new(12));
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -2286,6 +2406,7 @@ fn intake_files_submit_or_reject_deterministically() {
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
         held_replies: Vec::new(),
+        latest_round: BTreeMap::new(),
     };
 
     let mut s = fixture::scenario(8, 16);
@@ -2375,6 +2496,7 @@ fn losing_body_reassembles_against_live_frontier() {
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
         held_replies: Vec::new(),
+        latest_round: BTreeMap::new(),
     };
 
     let mut s = fixture::scenario(8, 16);
@@ -2520,6 +2642,7 @@ fn eligible_intake_file_queues_a_config_transition() {
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
         held_replies: Vec::new(),
+        latest_round: BTreeMap::new(),
     };
 
     let admitted = vec![OwnerId::from_bytes([7; 32]), OwnerId::from_bytes([9; 32])];
@@ -2696,6 +2819,7 @@ fn test_app_at(home: &Path, key: &PrivateKey, set: &RoomValidatorSet) -> App {
         seen: BTreeMap::new(),
         resupplied: Arc::new(Mutex::new(0)),
         held_replies: Vec::new(),
+        latest_round: BTreeMap::new(),
     }
 }
 
