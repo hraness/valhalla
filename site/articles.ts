@@ -73,7 +73,7 @@ export const articles: Article[] = [
   article({
     slug: 'weighted-quorum-proof',
     title: 'Why two Valhalla quorums always overlap',
-    dek: 'A Lean proof shows that any two groups holding over two thirds of a room directory\'s voting weight share an honest validator when faulty validators hold at most a third.',
+    dek: 'A Lean proof shows that any two groups holding over two thirds of a room directory\'s voting weight share an honest validator, provided faulty validators hold at most a third.',
     eyebrow: 'Technique',
     navLabel: 'Quorum overlap proof',
     published: '2026-09-24',
