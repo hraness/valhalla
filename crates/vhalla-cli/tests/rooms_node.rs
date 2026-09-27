@@ -136,6 +136,24 @@ mod enabled {
         }
     }
 
+    fn wait_for_node(deadline: Duration, what: &str, node: &mut Node, ready: impl Fn() -> bool) {
+        let started = Instant::now();
+        while !ready() {
+            let exited = node.child.try_wait().unwrap();
+            if exited.is_some() || started.elapsed() >= deadline {
+                let mut stderr = String::new();
+                if let Ok(file) = fs::File::open(&node.stderr) {
+                    let _ = file.take(8192).read_to_string(&mut stderr);
+                }
+                panic!(
+                    "waiting for {what}: node exit={exited:?}, elapsed={:?}, stderr={stderr}",
+                    started.elapsed()
+                );
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     /// Match Service::submit's intake producer contract: complete bytes in
     /// an ignored sibling first, then atomically publish the watched suffix.
     /// Direct fs::write to *.batch/*.body lets the poller reject a partial file.
@@ -313,12 +331,18 @@ mod enabled {
         // Valid canonical batch: commits at the next height this node wins.
         publish_intake(home.join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
 
-        wait_for(Duration::from_secs(90), "height 1 commit", || {
-            committed(&home, 1)
-        });
-        wait_for(Duration::from_secs(30), "garbage rejection", || {
-            home.join("intake/garbage.rejected").exists()
-        });
+        wait_for_node(
+            Duration::from_secs(90),
+            "height 1 commit",
+            &mut node,
+            || committed(&home, 1),
+        );
+        wait_for_node(
+            Duration::from_secs(30),
+            "garbage rejection",
+            &mut node,
+            || home.join("intake/garbage.rejected").exists(),
+        );
         assert!(
             !home.join("intake/one.batch").exists(),
             "accepted intake file is consumed"
@@ -326,9 +350,12 @@ mod enabled {
 
         // A second submission after the first commit retires cleanly.
         publish_intake(home.join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
-        wait_for(Duration::from_secs(60), "height 2 commit", || {
-            committed(&home, 2)
-        });
+        wait_for_node(
+            Duration::from_secs(60),
+            "height 2 commit",
+            &mut node,
+            || committed(&home, 2),
+        );
 
         // The committed state is a real rooms store under the node home.
         assert!(
@@ -3025,7 +3052,7 @@ mod enabled {
         fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
         let home = temp.path("node-home");
         fs::create_dir_all(home.join("intake")).unwrap();
-        let _node = spawn_member(&temp, 0, &net, &home);
+        let mut node = spawn_member(&temp, 0, &net, &home);
 
         // The real submission: Alice creates her room, Bob's sealed
         // reaction rides along as award evidence.
@@ -3058,9 +3085,12 @@ mod enabled {
         let marker = field(&submitted, "marker");
 
         // The intake drop must decide and the marker resolve committed.
-        wait_for(Duration::from_secs(120), "submission commits", || {
-            committed(&home, 1)
-        });
+        wait_for_node(
+            Duration::from_secs(120),
+            "submission commits",
+            &mut node,
+            || committed(&home, 1),
+        );
         let pending = rooms_ok(&[
             "pending",
             net.to_str().unwrap(),
@@ -3574,7 +3604,6 @@ mod enabled {
         for (field, value) in [
             ("listen", serde_json::json!("bad/host")),
             ("listen", serde_json::json!("seed.example.test")),
-            ("port", serde_json::json!(0)),
             ("port", serde_json::json!(65536)),
             ("peers", serde_json::json!(["bad/host:9473"])),
             ("peers", serde_json::json!(["127.0.0.1:65536"])),
@@ -3638,6 +3667,29 @@ mod enabled {
             assert_eq!(checked["listen"].as_str(), Some(listen));
             assert_eq!(checked["advertise"], serde_json::json!([]));
         }
+
+        // Existing runtime configs can bind an ephemeral listener. Both
+        // read-only checking and schedule updates must preserve that choice.
+        let mut ephemeral = valid;
+        ephemeral["port"] = serde_json::json!(0);
+        fs::write(&path, serde_json::to_vec(&ephemeral).unwrap()).unwrap();
+        let checked = rooms_ok(&[
+            "node-check",
+            social.to_str().unwrap(),
+            home.to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            path.to_str().unwrap(),
+        ]);
+        assert_eq!(checked["port"].as_u64(), Some(0));
+        rooms_ok(&[
+            "node-update",
+            home.to_str().unwrap(),
+            "--network",
+            net.to_str().unwrap(),
+        ]);
+        let updated: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(updated["port"].as_u64(), Some(0));
     }
 
     /// `node-init --social` materializes the genesis social store — the

@@ -514,8 +514,10 @@ fn node_service_config(
     file: &NodeFile,
     peers: &[PeerSpec],
 ) -> Result<vhalla_rooms_node::Config, String> {
-    if file.port == 0 || file.port > u16::MAX as usize {
-        return Err("listen TCP port must be 1..65535".into());
+    // Existing runtime configs use zero to request an ephemeral listener.
+    // Scaffolded network members still require an explicit nonzero port.
+    if file.port > u16::MAX as usize {
+        return Err("listen TCP port must be 0..65535".into());
     }
     let mut config = try_service_config(
         "vhalla-rooms-node",
