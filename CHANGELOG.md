@@ -5,6 +5,15 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
+## 0.2.8 - 2026-09-27
+
+The menu bar now opens with how your rooms are doing — rooms in sync, sends waiting, sends that didn't go through — instead of a bare outputs list, and it installs through `install.sh --with-menubar` with plain macOS guidance when a browser download is stopped at launch.
+
+- The menu reads the counts `vhalla menubar refresh` saves and shows room status, the three newest outputs, Open at login, "Updates & support…" and Quit. Diagnostics sit behind the Option alternate and a failed action shows as a warning row.
+- `vhalla menubar install|uninstall|status|start` manage the menu bar's login item through the shared desktop-foundation LaunchAgent helper. Install retires the old `com.hraness.valhalla.menubar` plist only when it is exactly the file earlier releases wrote.
+- `install.sh --with-menubar` fetches and verifies the menu bar archive next to `vhalla`. When Gatekeeper stops a quarantined download, `vhalla menubar` names the Open Anyway steps instead of printing a signal.
+- `vhalla --version` now reports the release version instead of 0.0.0.
+
 ## 0.2.7 - 2026-09-26
 
 `vhalla` now explains itself in plain words. Help is grouped by task, a bare
