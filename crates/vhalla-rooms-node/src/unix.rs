@@ -548,7 +548,16 @@ impl App {
     fn submit_body(&mut self, name: String, body: BatchBody) {
         store_write(&self.store.join("pending"), &name, &body.encode())
             .expect("pending body write");
-        if !self.pending_proposals.iter().any(|e| e.name() == name) {
+        // Assignment replaces Body(name) with Value(id) in the queue,
+        // while its original marker remains owned by assigned_bodies.
+        // A retry still belongs to that submission until it commits or
+        // returns to Body after losing a height.
+        if !self.pending_proposals.iter().any(|e| e.name() == name)
+            && !self
+                .assigned_bodies
+                .values()
+                .any(|assigned| assigned == &name)
+        {
             self.pending_proposals.push_back(PendingEntry::Body(name));
         }
     }

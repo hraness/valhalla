@@ -49,7 +49,7 @@ vhalla rooms COMMAND SOCIAL_STORE REPLICA_HOME REALM32HEX [arguments]
 vhalla rooms COMMAND [arguments]
   keygen  (build: --features experimental-rooms-node)
   network-init OUT --realm R32 --directory D64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]  (build: --features experimental-rooms-node)
-  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen IP|localhost] [--advertise HOST:PORT,...] [--peers [KEY64@]HOST:PORT,...] [--peers-only true] [--discovery true] [--social DIR]  (build: --features experimental-rooms-node)
+  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen IP|localhost] [--advertise HOST:PORT,...] [--peers [KEY64@]HOST:PORT,...] [--peers-only true] [--discovery true] [--social DIR | --resume-social DIR]  (build: --features experimental-rooms-node)
   network-extend IN OUT --from HEIGHT --validators KEY:POWER,...  (build: --features experimental-rooms-node)
   node-update NODE_HOME --network FILE  (build: --features experimental-rooms-node)
   tailcat {plan|status|up} --nodes A/node.json B/node.json ... [--base-port N]  (build: --features experimental-rooms-node)

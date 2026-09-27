@@ -559,6 +559,17 @@ complete command sequence is in the runbook below):
    carries the seed — is mode 0600 (a pre-existing home keeps the
    operator's own mode, and `node-update` restates 0600 on every
    rewrite).
+
+   For an empty genesis, `--social DIR` creates a new social store and
+   refuses to reuse any existing path. If first setup stops after creating
+   that store but before publishing `node.json`, retry with
+   `--resume-social DIR --node-key SEED`; the social store must be outside
+   `NODE_HOME`. This verifies the retained archive is empty under the
+   network's realm and limits and selects the supplied
+   identity before first boot. It refuses partial stores, pending recovery,
+   retained records, or a node home containing application state, a WAL,
+   pending intake, or unknown files. Restore the saved config for a node
+   that has already run; initialization never reconstructs it over history.
 4. Before booting, each member runs `vhalla rooms node-check
    SOCIAL_STORE NODE_HOME REALM --config NODE_HOME/node.json`, which
    runs the identical decode path as `node` — config parse, genesis
