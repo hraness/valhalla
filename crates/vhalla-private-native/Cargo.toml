@@ -26,6 +26,7 @@ vhalla-private-kernel = { path = "../vhalla-private-kernel" }
 futures = "=0.3.34"
 ed25519-dalek = "=2.2.0"
 rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"] }
+hegeltest = "0.46.0"
 
 [lints]
 workspace = true
