@@ -184,21 +184,26 @@ Example
 const MENUBAR: &str = "Usage: vhalla menubar [run|install|uninstall|status]
        vhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE
 
-Show Valhalla in the macOS menu bar. It lists the files in your outputs folder
-(vhalla outputs).
+Show Valhalla in the macOS menu bar: whether your rooms are in sync, sends
+still waiting or that didn't go through, and the newest files in your outputs
+folder (vhalla outputs).
 
 Commands
-  run         Start the menu bar now (the default)
-  install     Start the menu bar now and every time you log in
-  uninstall   Remove it from login and delete the installed copy
-  status      Show whether it is installed and starts at login
-  refresh     Save a rooms status snapshot to the outputs folder
+  run         Open the menu bar now (the default)
+  install     Open it now and every time you log in
+  uninstall   Stop opening it at login and delete the installed copy
+  status      Show whether it opens at login and is running
+  refresh     Read room status and save the counts the menu shows
 
-The menu bar is a separate download. Set VHALLA_MENUBAR_PATH to use a build of
-your own.
+The menu bar is a separate download. The installer adds it next to vhalla:
+  curl -fsSL https://vhalla.com/install.sh | sh -s -- --with-menubar
+macOS shows a notice that vhalla-menubar can open at login. If macOS stops a
+copy you downloaded in a browser, open System Settings › Privacy & Security
+and choose Open Anyway. Set VHALLA_MENUBAR_PATH to use a build of your own.
 
-Example
+Examples
   vhalla menubar install
+  vhalla menubar refresh ~/valhalla/social ~/valhalla/replica REALM ~/valhalla/node --config node.toml
 ";
 
 #[cfg(unix)]

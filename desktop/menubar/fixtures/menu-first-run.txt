@@ -1,0 +1,12 @@
+[mark.people Vh] Valhalla · No room status yet
+Valhalla
+○ No room status yet · Run vhalla menubar refresh to see your rooms
+─────────
+No outputs yet · Agents save finished files here (label)
+Open outputs folder (primary)  ⌘O
+─────────
+Open at login · macOS shows a notice when you turn this on
+─────────
+♡ Updates & support ↗
+  ⌥ Copy diagnostics
+Quit Valhalla
