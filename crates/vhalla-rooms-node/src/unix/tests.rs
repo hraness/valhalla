@@ -2062,6 +2062,168 @@ fn replay_flag_survives_a_lagged_event_ring() {
     );
 }
 
+/// Engine startup raises GetValue before WalReplayBegin. Once replay
+/// starts, its next StartedRound waits behind that reply in the real
+/// sequential connector. Only the host's out-of-band event poll can
+/// release it before the live propose deadline.
+#[tokio::test]
+async fn replay_begin_releases_a_previously_held_connector_reply() {
+    use arc_malachitebft_core_consensus::Role;
+    use arc_malachitebft_engine::host::HostMsg;
+    use tokio::sync::{mpsc, oneshot};
+
+    let (keys, set) = validators(3);
+    let mut app = test_app("replay-startup-held", &keys[0], &set);
+    let base = app.store.parent().unwrap().parent().unwrap().to_path_buf();
+    let address = app.address;
+    let tombstone = app.tombstone(1, Round::new(0));
+    let (host, mut connector_messages) = arc_malachitebft_app_channel::spawn::spawn_host_actor::<
+        RoomContext,
+    >(arc_malachitebft_metrics::Metrics::new())
+    .await
+    .unwrap();
+    let (messages, consensus) = mpsc::channel(2);
+    let (network, mut network_rx) = mpsc::channel(1);
+    let (requests, _requests_rx) = mpsc::channel(1);
+    let (net_requests, _net_requests_rx) = mpsc::channel(1);
+    let mut channels = Channels {
+        consensus,
+        network,
+        requests,
+        net_requests,
+        events: Default::default(),
+    };
+    let events = channels.events.clone();
+    let (submissions, mut submission_rx) = mpsc::channel(1);
+    let (held, is_held) = oneshot::channel();
+    let forwarder = async move {
+        let first = connector_messages.recv().await.unwrap();
+        assert!(matches!(first, AppMsg::GetValue { .. }));
+        messages.send(first).await.unwrap();
+        // This diagnostic bypasses the parked connector solely to confirm
+        // that run consumed GetValue before replay's Begin is broadcast.
+        let (reply, barrier) = oneshot::channel();
+        messages
+            .send(AppMsg::ConsensusReady { reply })
+            .await
+            .unwrap();
+        barrier.await.unwrap();
+        held.send(()).unwrap();
+        while let Some(message) = connector_messages.recv().await {
+            messages.send(message).await.unwrap();
+        }
+    };
+    let driver = async move {
+        let (reply, mut answer) = oneshot::channel();
+        host.cast(HostMsg::GetValue {
+            height: Height::new(1),
+            round: Round::new(0),
+            timeout: Duration::from_secs(60),
+            reply_to: reply.into(),
+        })
+        .unwrap();
+        is_held.await.unwrap();
+        assert!(matches!(
+            answer.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+
+        events.send(|| Event::WalReplayBegin(Height::new(1), 1));
+        let (reply, started) = oneshot::channel();
+        host.cast(HostMsg::StartedRound {
+            height: Height::new(1),
+            round: Round::new(1),
+            proposer: address,
+            role: Role::Validator,
+            reply_to: reply.into(),
+        })
+        .unwrap();
+        let answered = answer
+            .await
+            .expect("the parked connector retains its reply");
+        assert_eq!(answered.height, Height::new(1));
+        assert_eq!(answered.round, Round::new(0));
+        assert_eq!(answered.value, tombstone);
+        assert!(answered.value.bytes.is_empty());
+        assert!(
+            started.await.unwrap().is_empty(),
+            "the connector resumes replay"
+        );
+        assert!(matches!(
+            network_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        events.send(|| Event::WalReplayDone(Height::new(1)));
+        host.stop(None);
+        drop(submissions);
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            run(&mut app, &mut channels, &mut submission_rx),
+            forwarder,
+            driver
+        );
+    })
+    .await
+    .expect("replay must release a startup reply before its 60-second deadline");
+    assert!(app.held_replies.is_empty());
+    assert!(app.proposals.is_empty());
+    assert!(app.seen.is_empty());
+    drop(app);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn resupply_metadata_is_deterministic_after_reordering_and_reload() {
+    let (keys, set) = validators(3);
+    let mut app = test_app("resupply-order", &keys[0], &set);
+    let base = app.store.parent().unwrap().parent().unwrap().to_path_buf();
+    let batch = batch_plan(1).remove(&1).unwrap();
+    let id = app.register_batch(batch);
+    let mut proposers: Vec<_> = keys
+        .iter()
+        .map(|key| Address::from_public_key(&key.public_key()))
+        .collect();
+    proposers.sort();
+    // Highest round, highest polka round, then highest proposer wins;
+    // neither wire arrival nor a directory iterator is a round ordering.
+    for (round, pol_round, proposer) in [
+        (12, Round::new(7), proposers[2]),
+        (4, Round::Nil, proposers[0]),
+        (12, Round::new(0), proposers[0]),
+        (12, Round::new(7), proposers[1]),
+        (7, Round::Nil, proposers[0]),
+    ] {
+        assert!(app.record_seen(
+            &ProposalInit {
+                height: Height::new(1),
+                round: Round::new(round),
+                pol_round,
+                proposer,
+            },
+            id,
+        ));
+    }
+    for reload in [false, true] {
+        if reload {
+            let (held, seen) = load_store(&app.store);
+            assert_eq!(seen[&1].len(), 5, "all metadata survives disk reload");
+            app.held_by_id = held;
+            app.seen = seen;
+        }
+        for _ in 0..5 {
+            let values = app.resupply_for(Height::new(1));
+            assert_eq!(values.len(), 1, "one resupply per value id");
+            assert_eq!(values[0].round, Round::new(12));
+            assert_eq!(values[0].valid_round, Round::new(7));
+            assert_eq!(values[0].proposer, proposers[2]);
+            app.seen.get_mut(&1).unwrap().rotate_left(1);
+        }
+    }
+    drop(app);
+    let _ = std::fs::remove_dir_all(base);
+}
+
 /// Undecided-proposal replay: a value the node observed must be
 /// resupplied to the engine at `StartedRound` — and must survive a
 /// restart, because the store is the application-owned half of proposal

@@ -1,0 +1,55 @@
+# Vendored from circlefin/malachite 72143f6c99a98452b587e1c392bdb80944eb2232.
+# Workspace inheritance expanded; unpublished local discovery fix.
+
+[package]
+name = "arc-malachitebft-network"
+description = "Networking layer for the Malachite BFT consensus engine"
+version = "0.8.0"
+edition = "2021"
+repository = "https://github.com/circlefin/malachite"
+license = "Apache-2.0"
+publish = false
+readme = "../malachite-network/README.md"
+
+[package.metadata]
+
+[package.metadata.docs]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
+[lints.clippy]
+disallowed_types = "deny"
+doc_overindented_list_items = "allow"
+
+[dependencies]
+malachitebft-discovery = { version = "0.8.0", package = "arc-malachitebft-discovery", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-metrics = { version = "0.8.0", package = "arc-malachitebft-metrics", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-peer = { version = "0.8.0", package = "arc-malachitebft-peer", default-features = false, git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-sync = { version = "0.8.0", package = "arc-malachitebft-sync", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+bytes = { version = "1", default-features = false }
+either = { version = "1" }
+eyre = { version = "0.6" }
+futures = { version = "0.3" }
+hex = { version = "0.4.3", features = ["serde"] }
+itertools = { version = "0.14" }
+libp2p = { version = "0.56.0", features = ["macros", "identify", "tokio", "ed25519", "ecdsa", "tcp", "quic", "noise", "yamux", "gossipsub", "dns", "ping", "metrics", "request-response", "cbor", "serde", "kad"] }
+libp2p-broadcast = { version = "0.3.0", package = "libp2p-scatter" }
+libp2p-gossipsub = { version = "0.49.4", features = ["metrics"] }
+async-trait = { version = "0.1.89" }
+asynchronous-codec = { version = "0.7.0" }
+seahash = { version = "4.1" }
+serde = { version = "1.0", default-features = false }
+thiserror = { version = "2.0", default-features = false }
+tokio = { version = "1.47.1", features = ["macros"] }
+tracing = { version = "0.1.41", default-features = false }
+unsigned-varint = { version = "0.8", features = ["codec", "asynchronous_codec"] }
+
+[dev-dependencies]
+malachitebft-discovery = { version = "0.8.0", package = "arc-malachitebft-discovery", features = ["test-utils"], git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+tokio = { version = "1.47.1", features = ["macros", "rt", "rt-multi-thread", "time", "test-util"] }

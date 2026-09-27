@@ -459,6 +459,11 @@ id — and applies after that batch's awards and records, so it governs
 subsequent heights. The wire format is bounded at 256 owner ids and
 canonical (sorted, duplicate-free).
 
+Eligible and rotation filenames include a SHA-256 hash of the complete
+encoded replacement. Different replacements can coexist in the intake;
+repeating an equivalent replacement uses the same pending file, including
+when commands run concurrently.
+
 Validator membership rotates in-band the same way:
 `vhalla rooms rotate SOCIAL_STORE NODE_HOME REALM HEIGHT KEY64:POWER,...`
 writes a canonical `*.rotation` intake file carrying one complete
@@ -490,9 +495,9 @@ the committee still disposes.
 
 ### A private validator set over a real network
 
-The default config binds `127.0.0.1` only. The optional `listen` field —
-a bare host, never `host:port` — binds another interface address, and
-`peers` entries already dial any `host:port`. This is enough for a small
+The default config binds `127.0.0.1` only. Set `listen` to an IP literal
+or `localhost` to choose a local interface; set its port with `port`.
+`peers` entries dial `host:port`. This is enough for a small
 pre-shared set of validators over a private network such as Tailscale or
 a LAN; it is not open-internet qualification, which remains a
 promotion-gates item.
@@ -526,16 +531,23 @@ complete command sequence is in the runbook below):
    [KEY64@]HOST:PORT,... [--peers-only true]`, which writes
    `NODE_HOME/node.json` (never overwriting), creates
    `NODE_HOME/intake/`, and prints the same `genesis` fingerprint plus
-   `node_key_votes_from` — the height their key starts voting, or
-   `null` with a warning if the operator has not listed their
-   `public_key` yet. `--discovery true` turns on Malachite's managed
+   `node_key_votes_from`, the first height at which the file's schedule
+   includes their key, or `null` if it never does. Committed rotations
+   may admit the key later; use `rooms status` to inspect the committed
+   schedule. `--discovery true` turns on Malachite's managed
    peer discovery: the configured `peers` double as bootstrap nodes and
    the node learns further peers over the wire instead of needing every
    member listed in every file. It requires at least one peer to
    bootstrap from, is mutually exclusive with `peers_only` (a closed
    mesh has nothing to discover), and unpinned bootstrap entries get a
    `node-check` warning because any peer at an unpinned address can seed
-   the learned set. A `KEY64@` prefix pins the peer's consensus
+   the learned set. If members reach the node through a TCP proxy or
+   another address that differs from its listener, pass
+   `--advertise HOST:PORT,...` to `node-init`. These endpoints replace
+   listener addresses in signed discovery records and are saved in the
+   `advertise` array in `node.json`. The same option on `node` or
+   `node-check` overrides that array for one invocation.
+   A `KEY64@` prefix pins the peer's consensus
    public key (the `keygen` output members already exchange for the
    validator list): the node derives the peer's deterministic libp2p
    identity and the Noise handshake verifies it, so a hijacked or

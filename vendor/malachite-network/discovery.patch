@@ -1,0 +1,251 @@
+--- a/vendor/malachite-config/src/lib.rs
++++ b/vendor/malachite-config/src/lib.rs
+@@ -113,6 +113,10 @@
+     /// Address to listen for incoming connections
+     pub listen_addr: Multiaddr,
+ 
++    /// Reachable addresses advertised instead of local listeners when nonempty.
++    #[serde(default)]
++    pub external_addrs: Vec<Multiaddr>,
++
+     /// List of nodes to keep persistent connections to
+     pub persistent_peers: Vec<Multiaddr>,
+ 
+@@ -146,6 +150,7 @@
+     fn default() -> Self {
+         P2pConfig {
+             listen_addr: Multiaddr::empty(),
++            external_addrs: Vec::new(),
+             persistent_peers: vec![],
+             persistent_peers_only: false,
+             discovery: Default::default(),
+@@ -155,6 +160,30 @@
+             protocol_names: Default::default(),
+             channel_names: Default::default(),
+         }
++    }
++}
++
++#[cfg(test)]
++mod external_address_tests {
++    use super::P2pConfig;
++
++    #[test]
++    fn external_addresses_default_when_absent_from_existing_config() {
++        let mut value = serde_json::to_value(P2pConfig::default()).unwrap();
++        value.as_object_mut().unwrap().remove("external_addrs");
++        let decoded: P2pConfig = serde_json::from_value(value).unwrap();
++        assert!(decoded.external_addrs.is_empty());
++    }
++
++    #[test]
++    fn external_addresses_round_trip() {
++        let original = P2pConfig {
++            external_addrs: vec!["/dns4/seed.example/tcp/54453".parse().unwrap()],
++            ..Default::default()
++        };
++        let decoded: P2pConfig =
++            serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
++        assert_eq!(decoded, original);
+     }
+ }
+ 
+--- a/vendor/malachite-app/src/spawn.rs
++++ b/vendor/malachite-app/src/spawn.rs
+@@ -209,6 +209,7 @@
+ 
+     NetworkConfig {
+         listen_addr: cfg.p2p.listen_addr.clone(),
++        external_addrs: cfg.p2p.external_addrs.clone(),
+         persistent_peers: cfg.p2p.persistent_peers.clone(),
+         persistent_peers_only: cfg.p2p.persistent_peers_only,
+         discovery: DiscoveryConfig {
+@@ -283,6 +284,16 @@
+     use malachitebft_config::DiscoveryConfig as SerdeDiscoveryConfig;
+     use malachitebft_network::DiscoveryConfig as RuntimeDiscoveryConfig;
+ 
++    #[test]
++    fn external_addresses_reach_the_runtime_network_config() {
++        let mut config = malachitebft_config::ConsensusConfig::default();
++        config.p2p.listen_addr = "/ip4/127.0.0.1/tcp/9473".parse().unwrap();
++        config.p2p.external_addrs = vec!["/dns4/seed.example/tcp/54453".parse().unwrap()];
++        let runtime =
++            super::make_network_config(&config, &malachitebft_config::ValueSyncConfig::default());
++        assert_eq!(runtime.external_addrs, config.p2p.external_addrs);
++    }
++
+     /// The serde-deserialized default in `malachitebft-config` and the runtime
+     /// default in `malachitebft-discovery` are defined independently. Pin them
+     /// so a change in one without the other is caught immediately.
+--- a/vendor/malachite-network/src/behaviour.rs
++++ b/vendor/malachite-network/src/behaviour.rs
+@@ -215,7 +215,8 @@
+                 consensus_protocol.to_string(),
+                 &identity.keypair,
+             )
+-            .with_agent_version(agent_version),
++            .with_agent_version(agent_version)
++            .with_hide_listen_addrs(!config.external_addrs.is_empty()),
+         );
+ 
+         let ping = ping::Behaviour::new(ping::Config::new().with_interval(Duration::from_secs(5)));
+--- /dev/null
++++ b/vendor/malachite-network/src/external_address_tests.rs
+@@ -0,0 +1,114 @@
++//! Local regression coverage for addresses sent in signed peer discovery records.
++
++use std::collections::HashSet;
++
++use libp2p::core::PeerRecord;
++use malachitebft_metrics::Registry;
++
++use super::*;
++
++async fn identify_info(
++    external_addrs: Vec<Multiaddr>,
++) -> (identify::Info, Multiaddr, libp2p::PeerId) {
++    let identity = NetworkIdentity::new("seed".into(), Keypair::generate_ed25519(), None);
++    let seed_id = identity.keypair.public().to_peer_id();
++    let config = Config {
++        listen_addr: "/ip4/127.0.0.1/tcp/0".parse().unwrap(),
++        external_addrs,
++        persistent_peers: Vec::new(),
++        persistent_peers_only: false,
++        discovery: DiscoveryConfig {
++            enabled: false,
++            ..Default::default()
++        },
++        idle_connection_timeout: Duration::from_secs(30),
++        transport: TransportProtocol::Tcp,
++        gossipsub: GossipSubConfig::default(),
++        pubsub_protocol: PubSubProtocol::default(),
++        channel_names: ChannelNames::default(),
++        rpc_max_size: 1024 * 1024,
++        pubsub_max_size: 1024 * 1024,
++        enable_consensus: false,
++        enable_sync: false,
++        protocol_names: ProtocolNames::default(),
++    };
++    let registry = SharedRegistry::new(Registry::default(), None);
++    let (mut events, control) = spawn(identity, config, registry).await.unwrap().split();
++    let listen_addr = tokio::time::timeout(Duration::from_secs(5), async {
++        loop {
++            if let Event::Listening(address) = events.recv().await.expect("seed stays running") {
++                break address;
++            }
++        }
++    })
++    .await
++    .expect("seed starts listening");
++
++    let observer_key = Keypair::generate_ed25519();
++    let observer_identify =
++        identify::Behaviour::new(identify::Config::new_with_signed_peer_record(
++            ProtocolNames::default().consensus,
++            &observer_key,
++        ));
++    let mut observer = SwarmBuilder::with_existing_identity(observer_key)
++        .with_tokio()
++        .with_tcp(
++            libp2p::tcp::Config::default(),
++            libp2p::noise::Config::new,
++            libp2p::yamux::Config::default,
++        )
++        .unwrap()
++        .with_behaviour(|_| observer_identify)
++        .unwrap()
++        .build();
++    observer.dial(listen_addr.clone()).unwrap();
++    let info = tokio::time::timeout(Duration::from_secs(5), async {
++        loop {
++            tokio::select! {
++                event = observer.select_next_some() => {
++                    if let SwarmEvent::Behaviour(identify::Event::Received { peer_id, info, .. }) = event {
++                        assert_eq!(peer_id, seed_id);
++                        break info;
++                    }
++                }
++                event = events.recv() => assert!(event.is_some(), "seed stays running"),
++            }
++        }
++    })
++    .await
++    .expect("observer receives signed Identify");
++    control.wait_shutdown().await.unwrap();
++    (info, listen_addr, seed_id)
++}
++
++fn verified_addresses(info: &identify::Info, seed_id: libp2p::PeerId) -> HashSet<Multiaddr> {
++    let record = PeerRecord::from_signed_envelope(
++        info.signed_peer_record.clone().expect("signed peer record"),
++    )
++    .expect("peer record signature verifies");
++    assert_eq!(record.peer_id(), seed_id);
++    record.addresses().iter().cloned().collect()
++}
++
++#[tokio::test]
++async fn external_addresses_replace_private_listeners_in_signed_identify() {
++    let advertised: HashSet<Multiaddr> = [
++        "/dns4/seed.example/tcp/54453".parse().unwrap(),
++        "/ip6/2001:db8::1/tcp/9473".parse().unwrap(),
++    ]
++    .into_iter()
++    .collect();
++    let (info, listener, seed_id) = identify_info(advertised.iter().cloned().collect()).await;
++    let identified: HashSet<_> = info.listen_addrs.iter().cloned().collect();
++    assert_eq!(identified, advertised);
++    assert!(!identified.contains(&listener));
++    assert_eq!(verified_addresses(&info, seed_id), advertised);
++}
++
++#[tokio::test]
++async fn external_addresses_empty_preserves_signed_listener_discovery() {
++    let (info, listener, seed_id) = identify_info(Vec::new()).await;
++    let identified: HashSet<_> = info.listen_addrs.iter().cloned().collect();
++    assert!(identified.contains(&listener));
++    assert_eq!(verified_addresses(&info, seed_id), identified);
++}
+--- a/vendor/malachite-network/src/lib.rs
++++ b/vendor/malachite-network/src/lib.rs
+@@ -209,6 +209,8 @@
+ #[derive(Clone, Debug)]
+ pub struct Config {
+     pub listen_addr: Multiaddr,
++    /// Reachable addresses advertised instead of local listeners when nonempty.
++    pub external_addrs: Vec<Multiaddr>,
+     pub persistent_peers: Vec<Multiaddr>,
+     pub persistent_peers_only: bool,
+     pub discovery: DiscoveryConfig,
+@@ -225,6 +227,12 @@
+ }
+ 
+ impl Config {
++    fn apply_external_addresses(&self, swarm: &mut swarm::Swarm<Behaviour>) {
++        for address in &self.external_addrs {
++            swarm.add_external_address(address.clone());
++        }
++    }
++
+     fn apply_to_swarm(&self, cfg: swarm::Config) -> swarm::Config {
+         cfg.with_idle_connection_timeout(self.idle_connection_timeout)
+     }
+@@ -379,6 +387,8 @@
+             }
+         })?;
+ 
++    config.apply_external_addresses(&mut swarm);
++
+     let metrics = registry.with_prefix(METRICS_PREFIX, Metrics::new);
+ 
+     let (tx_event, rx_event) = mpsc::channel(32);
+@@ -1267,6 +1277,9 @@
+ }
+ 
+ #[cfg(test)]
++mod external_address_tests;
++
++#[cfg(test)]
+ mod tests {
+     use super::*;
+ 

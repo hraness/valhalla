@@ -1,0 +1,41 @@
+# Vendored from circlefin/malachite 72143f6c99a98452b587e1c392bdb80944eb2232.
+# Workspace inheritance expanded; unpublished local discovery fix.
+
+[package]
+name = "arc-malachitebft-config"
+description = "Configuration for the Malachite BFT consensus engine"
+version = "0.8.0"
+edition = "2021"
+repository = "https://github.com/circlefin/malachite"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.88"
+readme = "../malachite-network/README.md"
+
+[package.metadata]
+
+[package.metadata.docs]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
+[lints.clippy]
+disallowed_types = "deny"
+doc_overindented_list_items = "allow"
+
+[dependencies]
+bytesize = { version = "2.3", features = ["serde"] }
+humantime-serde = { version = "1.1.1" }
+multiaddr = { version = "0.18.2" }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+thiserror = { version = "2.0", default-features = false }
+tracing = { version = "0.1.41", default-features = false }
+
+[dev-dependencies]
+serde_json = { version = "1.0" }
+toml = { version = "0.8.21" }

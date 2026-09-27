@@ -32,14 +32,24 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
   describe OWNER_KEYDIR SLUG EXPIRY TEXT
   archive OWNER_KEYDIR SLUG EXPIRY
   list | search QUERY | show SLUG | account OWNER64 | proof RECORD64 | evidence RECORD64 | recover
-  node NODE_HOME --config FILE  (build: --features experimental-rooms-node)
-  node-check NODE_HOME --config FILE  (build: --features experimental-rooms-node)
+vhalla rooms COMMAND SOCIAL_STORE NODE_HOME REALM32HEX [arguments]
+  node --config FILE [--advertise HOST:PORT,...]  (build: --features experimental-rooms-node)
+  node-check --config FILE [--advertise HOST:PORT,...]  (build: --features experimental-rooms-node)
+  eligible OWNER64,... (build: --features experimental-rooms-node)
+  rotate HEIGHT KEY64:POWER,... (build: --features experimental-rooms-node)
+  score HEIGHT [MAX] (build: --features experimental-rooms-node)
+vhalla rooms COMMAND SOCIAL_STORE REPLICA_HOME REALM32HEX [arguments]
+  tui NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
+  submit NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
+  submit NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
+  submit NODE_HOME archive OWNER_KEYDIR SLUG --config FILE
+  submit NODE_HOME public-policy OWNER_KEYDIR SLUG NETWORK64 open|closed --config FILE
+  pending NODE_HOME --config FILE
+  status NODE_HOME --config FILE
+vhalla rooms COMMAND [arguments]
   keygen  (build: --features experimental-rooms-node)
-  eligible NODE_HOME OWNER64,... (build: --features experimental-rooms-node)
-  rotate NODE_HOME HEIGHT KEY64:POWER,... (build: --features experimental-rooms-node)
-  score NODE_HOME HEIGHT [MAX] (build: --features experimental-rooms-node)
   network-init OUT --realm R32 --directory D64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]  (build: --features experimental-rooms-node)
-  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen HOST] [--peers [KEY64@]HOST:PORT,...] [--peers-only true] [--discovery true] [--social DIR]  (build: --features experimental-rooms-node)
+  node-init NODE_HOME --network FILE --port N [--node-key HEX64] [--listen IP|localhost] [--advertise HOST:PORT,...] [--peers [KEY64@]HOST:PORT,...] [--peers-only true] [--discovery true] [--social DIR]  (build: --features experimental-rooms-node)
   network-extend IN OUT --from HEIGHT --validators KEY:POWER,...  (build: --features experimental-rooms-node)
   node-update NODE_HOME --network FILE  (build: --features experimental-rooms-node)
   tailcat {plan|status|up} --nodes A/node.json B/node.json ... [--base-port N]  (build: --features experimental-rooms-node)
@@ -47,13 +57,6 @@ vhalla rooms COMMAND SOCIAL_STORE ROOMS_STORE REALM32HEX [arguments] [--now SECO
     status
     up [--tailcat PATH]
   overlay plan --profile tailscale|cloudflare-mesh --members NAME=KEY64@IP:PORT ...  (build: --features experimental-rooms-node)
-  tui REPLICA_HOME NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
-  submit REPLICA_HOME NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
-  submit REPLICA_HOME NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
-  submit REPLICA_HOME NODE_HOME archive OWNER_KEYDIR SLUG --config FILE
-  submit REPLICA_HOME NODE_HOME public-policy OWNER_KEYDIR SLUG NETWORK64 open|closed --config FILE
-  pending REPLICA_HOME NODE_HOME --config FILE
-  status REPLICA_HOME NODE_HOME --config FILE
 SOCIAL_STORE is an existing `vhalla social` store; ROOMS_STORE is created by `init`.
 IDs are full hex. Slot and charge are computed from the current policy quote.
 Read paging: --limit N (1..64). Output is ASCII JSON. The directory clock is
@@ -62,8 +65,12 @@ Recommended launch profile: BASE_COST 8, WINDOW_SEC 86400, MAX_IN_WINDOW 1,
 EPOCH_SEC 86400, MAX_LIFETIME 8, with a committee-curated eligible set.
 `node` hosts a room-consensus validator: NODE_HOME holds its journal, WAL and
 application store; --config names a JSON file with node_key (hex seed), port,
-optional listen (bare host, default 127.0.0.1), peers, validators, directory,
-policy, eligible owners and archive limits. A peers entry is host:port, or
+optional listen (IP literal or localhost, default 127.0.0.1), peers, validators, directory,
+policy, eligible owners and archive limits. The advertise array supplies
+reachable TCP endpoints in place of listener addresses for signed peer
+discovery; `node` and `node-check` accept --advertise to override that array
+for one invocation. `node-init --advertise` saves it in node.json.
+A peers entry is host:port, or
 KEY64@host:port pinning the peer's consensus key - the dial then authenticates
 the deterministic libp2p peer id derived from that key during the Noise
 handshake. peers_only closes the mesh to pinned peers alone (it requires every
@@ -75,7 +82,7 @@ identically; `node-init` merges that file with a member's own node_key,
 port, listen and peers into NODE_HOME/node.json and prints the
 fingerprint to compare across the set. `node-check` runs the full node
 decode path and reports the genesis fingerprint, seeded archive root,
-per-set quorum arithmetic and whether the node key votes.
+per-set quorum arithmetic and when the file's schedule includes the node key.
 `network-extend` copies a shared-params file plus one complete
 replacement validator set activating at a future height; `node-update`
 merges that file into a member's existing node.json - keeping its key,
@@ -90,8 +97,8 @@ builds the same candidate from committed social credit - the top owners
 by `earned` at HEIGHT [MAX].
 Producers submit canonical batches by dropping *.batch files into
 NODE_HOME/intake/; operators evolve the eligible set by dropping *.eligible
-files there - `rooms eligible NODE_HOME OWNER64,...` writes one. Committed
-state is queryable through the store commands.";
+files there; `rooms eligible SOCIAL_STORE NODE_HOME REALM32HEX OWNER64,...`
+writes one. Committed state is queryable through the store commands.";
 
 pub(crate) struct Args {
     command: String,
@@ -103,6 +110,8 @@ pub(crate) struct Args {
     now: u64,
     pub(crate) limit: usize,
     pub(crate) config: Option<String>,
+    #[cfg(feature = "experimental-rooms-node")]
+    pub(crate) advertise: Option<String>,
 }
 impl Args {
     fn parse(raw: Vec<OsString>) -> Result<Self, String> {
@@ -110,6 +119,7 @@ impl Args {
         let mut now = None;
         let mut limit = 32usize;
         let mut config = None;
+        let mut advertise = None;
         let mut literal = false;
         let mut args = raw.into_iter().skip(1);
         while let Some(raw) = args.next() {
@@ -138,6 +148,7 @@ impl Args {
                         }
                     }
                     "--config" => config = Some(option),
+                    "--advertise" => advertise = Some(option),
                     _ => return Err("unknown rooms option".into()),
                 }
             } else {
@@ -148,6 +159,9 @@ impl Args {
             return Err(HELP.into());
         }
         let command = values.remove(0);
+        if advertise.is_some() && !matches!(command.as_str(), "node" | "node-check") {
+            return Err("--advertise is only supported by node and node-check".into());
+        }
         let social_store = values.remove(0);
         let rooms_store = values.remove(0);
         let realm = RealmId(hex128(&values.remove(0))?);
@@ -166,6 +180,8 @@ impl Args {
             },
             limit,
             config,
+            #[cfg(feature = "experimental-rooms-node")]
+            advertise,
         })
     }
     fn count(&self, n: usize) -> Result<(), String> {

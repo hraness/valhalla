@@ -14,8 +14,8 @@ use vhalla_core::RealmId;
 use vhalla_journal::Store as _;
 use vhalla_rooms::{registry::DirectoryPolicy, DirectoryId};
 use vhalla_rooms_node::{
-    net_peer_id, service_config, NodeSpec, PeerSpec, PrivateKey, PublicKey, RoomNode,
-    RoomValidator, RoomValidatorSet,
+    advertise_endpoints, net_peer_id, try_service_config, NodeSpec, PeerSpec, PrivateKey,
+    PublicKey, RoomNode, RoomValidator, RoomValidatorSet,
 };
 use vhalla_social::archive::Limits;
 use vhalla_social::OwnerId;
@@ -33,8 +33,8 @@ struct NodeFile {
     node_key: String,
     /// libp2p TCP listen port.
     port: usize,
-    /// Optional interface to bind, as a bare host — an IP or resolvable
-    /// name, never `host:port`. Default `127.0.0.1`; a non-loopback bind
+    /// Optional interface to bind, as an IP literal or `localhost`,
+    /// never `host:port`. Default `127.0.0.1`; a non-loopback bind
     /// keeps malachite's default per-IP connection bound instead of the
     /// single-host ceiling lift.
     #[serde(default)]
@@ -60,6 +60,9 @@ struct NodeFile {
     /// has nothing to discover.
     #[serde(default)]
     discovery: bool,
+    /// Public TCP endpoints to advertise instead of local listeners.
+    #[serde(default)]
+    advertise: Vec<String>,
     /// Optional shared realm, 32 hex characters. When present it must
     /// equal the REALM positional — `node-init` writes it so a member
     /// cannot boot against the wrong realm by argument.
@@ -431,6 +434,7 @@ fn decode_node(file: &NodeFile) -> Result<DecodedNode, String> {
     }
     let directory = DirectoryId::from_bytes(hex32(&file.directory)?);
     let peers = peers(&file.peers)?;
+    node_service_config(file, &peers)?;
     if file.peers_only && peers.iter().any(|p| p.key.is_none()) {
         return Err(
             "peers_only requires every peer to carry a KEY@host:port pin - an unpinned address cannot authenticate an inbound peer".into(),
@@ -462,7 +466,11 @@ fn load(args: &Args) -> Result<Loaded, String> {
     if raw.len() > 64 * 1024 {
         return Err("config exceeds 64KiB".into());
     }
-    let file: NodeFile = serde_json::from_slice(&raw).map_err(|e| format!("config JSON: {e}"))?;
+    let mut file: NodeFile =
+        serde_json::from_slice(&raw).map_err(|e| format!("config JSON: {e}"))?;
+    if let Some(csv) = &args.advertise {
+        file.advertise = advertised_csv(csv);
+    }
     let decoded = decode_node(&file)?;
     if let Some(realm) = decoded.realm {
         if realm != args.realm.0 {
@@ -494,6 +502,33 @@ fn load(args: &Args) -> Result<Loaded, String> {
     })
 }
 
+fn advertised_csv(csv: &str) -> Vec<String> {
+    if csv.is_empty() {
+        Vec::new()
+    } else {
+        csv.split(',').map(str::to_owned).collect()
+    }
+}
+
+fn node_service_config(
+    file: &NodeFile,
+    peers: &[PeerSpec],
+) -> Result<vhalla_rooms_node::Config, String> {
+    if file.port == 0 || file.port > u16::MAX as usize {
+        return Err("listen TCP port must be 1..65535".into());
+    }
+    let mut config = try_service_config(
+        "vhalla-rooms-node",
+        file.listen.as_deref().unwrap_or("127.0.0.1"),
+        file.port,
+        peers,
+        file.peers_only,
+        file.discovery,
+    )?;
+    advertise_endpoints(&mut config, &file.advertise)?;
+    Ok(config)
+}
+
 /// The `node` subcommand entry point: parse the config, seed genesis from
 /// the committed social snapshot, host the validator until interrupted.
 /// `RUST_LOG` enables malachite's internal tracing on stderr.
@@ -508,14 +543,7 @@ pub fn run(args: &Args) -> Result<(), String> {
 
     let spec = NodeSpec {
         home: args.rooms_store.clone().into(),
-        config: service_config(
-            "vhalla-rooms-node",
-            loaded.file.listen.as_deref().unwrap_or("127.0.0.1"),
-            loaded.file.port,
-            &loaded.peers,
-            loaded.file.peers_only,
-            loaded.file.discovery,
-        ),
+        config: node_service_config(&loaded.file, &loaded.peers)?,
         node_key: loaded.node_key,
         validator_sets: loaded.validator_sets,
         held: BTreeMap::new(),
@@ -570,17 +598,7 @@ pub fn eligible(args: &Args) -> Result<(), String> {
         return Err("eligible takes 1..=256 owner ids".into());
     }
     let bytes = vhalla_rooms_consensus::encode_eligible_update(&owners);
-    let intake = std::path::Path::new(&args.rooms_store).join("intake");
-    std::fs::create_dir_all(&intake).map_err(|e| format!("intake: {e}"))?;
-    // Name the file deterministically from the canonical bytes so a repeated
-    // command converges on one pending marker rather than duplicating work.
-    // Plain hex, never `json::id` — the intake stem filter admits only
-    // `[a-zA-Z0-9._-]`, and a quoted id would rename the drop `.rejected`.
-    let stem = format!("eligible-{}", crate::json::hex(&bytes[8..24]));
-    let target = intake.join(format!("{stem}.eligible"));
-    let tmp = intake.join(format!("{stem}.tmp"));
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("write: {e}"))?;
-    std::fs::rename(&tmp, &target).map_err(|e| format!("rename: {e}"))?;
+    let target = write_intake_update(&args.rooms_store, "eligible", &bytes)?;
     println!(
         "{}",
         json::object(vec![
@@ -589,6 +607,40 @@ pub fn eligible(args: &Args) -> Result<(), String> {
         ])
     );
     Ok(())
+}
+
+/// Hash the entire canonical intent so distinct replacements coexist and
+/// equivalent retries share one pending file. Each writer owns a separate
+/// temporary file, including when identical commands run concurrently.
+fn write_intake_update(home: &str, kind: &str, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+
+    let intake = std::path::Path::new(home).join("intake");
+    std::fs::create_dir_all(&intake).map_err(|e| format!("intake: {e}"))?;
+    // The full digest in plain hex fits the node's 64-character stem limit.
+    let stem = json::hex(&Sha256::digest(bytes));
+    let target = intake.join(format!("{stem}.{kind}"));
+    let mut nonce = [0; 16];
+    getrandom::fill(&mut nonce).map_err(|e| format!("intake randomness: {e}"))?;
+    let tmp = intake.join(format!("{stem}.{}.tmp", json::hex(&nonce)));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| format!("write: {e}"))?;
+    let result = file
+        .write_all(bytes)
+        .map_err(|e| format!("write: {e}"))
+        .and_then(|()| {
+            drop(file);
+            std::fs::rename(&tmp, &target).map_err(|e| format!("rename: {e}"))
+        });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result?;
+    Ok(target)
 }
 
 /// Shared intake-drop tail for `rotate` and `score`: encode the rotation
@@ -600,14 +652,7 @@ fn drop_rotation(
     rotation: &vhalla_rooms_consensus::CommittedRotation,
 ) -> Result<(), String> {
     let bytes = vhalla_rooms_consensus::encode_rotation_update(rotation);
-    let intake = std::path::Path::new(home).join("intake");
-    std::fs::create_dir_all(&intake).map_err(|e| format!("intake: {e}"))?;
-    // Plain hex, never `json::id` — same stem rule as `eligible`.
-    let stem = format!("rotation-{}", crate::json::hex(&bytes[8..24]));
-    let target = intake.join(format!("{stem}.rotation"));
-    let tmp = intake.join(format!("{stem}.tmp"));
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("write: {e}"))?;
-    std::fs::rename(&tmp, &target).map_err(|e| format!("rename: {e}"))?;
+    let target = write_intake_update(home, "rotation", &bytes)?;
     println!(
         "{}",
         json::object(vec![
@@ -772,9 +817,11 @@ pub fn score(args: &Args) -> Result<(), String> {
 /// The `node-check` subcommand: run the full `node` decode path — config
 /// parse, genesis-parameter build, shared archive read — then report the
 /// genesis fingerprint, archive root, quorum arithmetic and this key's
-/// voting status instead of serving. Two members whose `genesis` and
-/// `archive` fields match carry identical genesis bases; a member whose
-/// `node_key_votes_from` is null follows but never votes.
+/// configured voting status instead of serving. Two members whose `genesis`
+/// and `archive` fields match carry identical genesis bases.
+/// `node_key_votes_from` describes the file's schedule; committed rotations
+/// may admit a key absent from that schedule. Use `rooms status` for the
+/// committed schedule.
 pub fn check(args: &Args) -> Result<(), String> {
     if args.value(0).is_some() {
         return Err("node-check takes no positional arguments".into());
@@ -824,7 +871,7 @@ pub fn check(args: &Args) -> Result<(), String> {
     }
     if votes_from.is_none() {
         warnings.push(
-            "node_key is not in any validator set - the node follows but never votes".to_string(),
+            "node_key is not in the configured validator schedule; committed rotations may admit it. Use rooms status to inspect the committed schedule".to_string(),
         );
     }
     let pinned = loaded.peers.iter().filter(|p| p.key.is_some()).count();
@@ -891,6 +938,10 @@ pub fn check(args: &Args) -> Result<(), String> {
             ("pinned_peers", pinned.to_string()),
             ("peers_only", loaded.file.peers_only.to_string()),
             ("discovery", loaded.file.discovery.to_string()),
+            (
+                "advertise",
+                json::array(loaded.file.advertise.iter().map(|a| json::string(a)))
+            ),
             (
                 "warnings",
                 json::array(warnings.iter().map(|w| json::string(w)))
@@ -1202,7 +1253,7 @@ pub fn network_init(raw: &[OsString]) -> Result<(), String> {
 /// `intake/` always, and `node.json` at 0600 — it carries the seed.
 ///
 /// `vhalla rooms node-init NODE_HOME --network FILE --port N
-///  [--node-key HEX64] [--listen HOST] [--peers [KEY64@]HOST:PORT,...]
+///  [--node-key HEX64] [--listen IP|localhost] [--peers [KEY64@]HOST:PORT,...]
 ///  [--peers-only true] [--discovery true] [--social DIR]`
 pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     let (positional, flags) = flags(
@@ -1216,6 +1267,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
             "peers-only",
             "discovery",
             "social",
+            "advertise",
         ],
     )?;
     if positional.len() != 1 {
@@ -1285,6 +1337,18 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     if discovery && parsed_peers.is_empty() {
         return Err("--discovery needs at least one bootstrap peer".into());
     }
+    let advertised = flags
+        .get("advertise")
+        .map_or_else(Vec::new, |csv| advertised_csv(csv));
+    let mut config = try_service_config(
+        "node-init",
+        listen.as_deref().unwrap_or("127.0.0.1"),
+        port,
+        &parsed_peers,
+        peers_only,
+        discovery,
+    )?;
+    advertise_endpoints(&mut config, &advertised)?;
     // `--social DIR` materializes the genesis social store — the empty
     // committed archive under the network's realm and limits, identical
     // on every member. It runs after every fallible flag validates so a
@@ -1313,7 +1377,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     // The node file carries realm so `node`/`node-check` reject a REALM
     // argument that disagrees with the shared params it was scaffolded
     // from.
-    let node = node_json(
+    let mut node = node_json(
         &json::hex(&seed),
         port,
         listen.as_deref(),
@@ -1322,6 +1386,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
         discovery,
         &network,
     );
+    node["advertise"] = serde_json::json!(advertised);
     // node.json carries the validator seed and intake/ is the producer
     // drop boundary, so a scaffolded home is owner-private from creation.
     // A pre-existing home keeps the operator's own mode.
@@ -1339,7 +1404,7 @@ pub fn node_init(raw: &[OsString]) -> Result<(), String> {
     let mut warnings = Vec::new();
     if votes_from.is_none() {
         warnings.push(
-            "this key is not in the validator set - the node follows but never votes; share public_key with the operator to join"
+            "this key is not in the configured validator schedule; committed rotations may admit it. Share public_key with the operator to join"
                 .to_string(),
         );
     }
@@ -1625,7 +1690,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
         }
     }
 
-    let node = node_json(
+    let mut node = node_json(
         &file.node_key,
         file.port,
         file.listen.as_deref(),
@@ -1634,6 +1699,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
         file.discovery,
         &network,
     );
+    node["advertise"] = serde_json::json!(file.advertise);
     write_node_json(&target, &node)?;
 
     let genesis = genesis_fingerprint(
@@ -1667,7 +1733,7 @@ pub fn node_update(raw: &[OsString]) -> Result<(), String> {
     let mut warnings = Vec::new();
     if votes_from.is_none() {
         warnings.push(
-            "node_key is not in any validator set - the node follows but never votes".to_string(),
+            "node_key is not in the configured validator schedule; committed rotations may admit it".to_string(),
         );
     }
     println!(

@@ -887,11 +887,21 @@ impl App {
         let Some(seen) = self.seen.get(&height.as_u64()).cloned() else {
             return Vec::new();
         };
-        // Records are appended in observe order, so scanning forward and
-        // overwriting keeps the newest record per value id.
+        // Wire delivery can reorder rounds, and restart loads records in
+        // filesystem order. Choose metadata explicitly, with the proposer
+        // breaking equal-round ties, so both paths resupply the same record.
         let mut latest: BTreeMap<RoomValueId, &SeenProposal> = BTreeMap::new();
         for record in seen.iter() {
-            latest.insert(record.value_id, record);
+            latest
+                .entry(record.value_id)
+                .and_modify(|retained| {
+                    if (record.round, record.pol_round, record.proposer)
+                        > (retained.round, retained.pol_round, retained.proposer)
+                    {
+                        *retained = record;
+                    }
+                })
+                .or_insert(record);
         }
         let mut out = Vec::new();
         for record in latest.into_values() {
@@ -2586,6 +2596,21 @@ async fn run(
                 _ = held_tick.tick() => Feed::Tick,
             }
         };
+        fold_replay_events(&mut events, &mut replaying);
+        if replaying {
+            // StartHeight can request a value before WalReplayBegin is
+            // broadcast. The connector then parks on that held reply and
+            // cannot deliver replay's next StartedRound. Poll the broadcast
+            // even without another host message, and release these replies
+            // without preparing or publishing any proposal parts.
+            for req in std::mem::take(&mut app.held_replies) {
+                let _ = req.reply.send(LocallyProposedValue::new(
+                    Height::new(req.height),
+                    req.round,
+                    app.tombstone(req.height, req.round),
+                ));
+            }
+        }
         let msg = match feed {
             Feed::Submit(Some(batch)) => {
                 app.submit(batch);
@@ -2649,7 +2674,6 @@ async fn run(
                 timeout,
                 reply,
             } => {
-                fold_replay_events(&mut events, &mut replaying);
                 if replaying {
                     // WAL replay re-drives rounds the engine already
                     // finished: their outcome is in the WAL, and the engine
@@ -2882,6 +2906,44 @@ pub struct PeerSpec {
     pub key: Option<PublicKey>,
 }
 
+/// Set the TCP endpoints this node advertises in signed discovery records.
+/// An empty list preserves libp2p's listener-address discovery. Explicit
+/// endpoints replace listener addresses, for example behind a TCP proxy.
+pub fn advertise_endpoints(config: &mut Config, endpoints: &[String]) -> Result<(), String> {
+    if endpoints.len() > 8 {
+        return Err("advertise accepts at most 8 TCP endpoints".into());
+    }
+    let mut addresses = Vec::new();
+    for endpoint in endpoints {
+        let (host, port) = endpoint
+            .rsplit_once(':')
+            .ok_or("advertise needs HOST:PORT or [IPV6]:PORT")?;
+        let port: u16 = port.parse().map_err(|_| "invalid advertised TCP port")?;
+        if port == 0 {
+            return Err("advertised TCP port must be 1..65535".into());
+        }
+        let ip_host = if host.starts_with('[') && host.ends_with(']') {
+            &host[1..host.len() - 1]
+        } else {
+            host
+        };
+        if ip_host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_unspecified() || ip.is_multicast())
+        {
+            return Err("advertised IP must be a unicast endpoint".into());
+        }
+        let address =
+            tcp_endpoint(host, usize::from(port)).map_err(|error| format!("advertise: {error}"))?;
+        let address = address.parse().map_err(|_| "invalid advertised endpoint")?;
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    config.consensus.p2p.external_addrs = addresses;
+    Ok(())
+}
+
 /// Service config for a hosted validator: libp2p TCP listening on
 /// `listen` at `listen_port`, persistent peering to `peers`, value sync
 /// enabled. This is the same shape `node_config` produces for tests,
@@ -2889,8 +2951,9 @@ pub struct PeerSpec {
 ///
 /// A loopback `listen` keeps the per-IP connection ceiling lifted so a
 /// single-host validator set still meshes; any other bind address keeps
-/// malachite's default per-IP bound. `listen` is a bare host — an IP or
-/// resolvable name — never `host:port`; the port is `listen_port`.
+/// malachite's default per-IP bound. `listen` is an IP literal or
+/// `localhost` (127.0.0.1), never `host:port`. A zero `listen_port` asks
+/// the operating system for an ephemeral port.
 ///
 /// `peers_only` closes the mesh: connections to and from peers outside
 /// the persistent set are rejected. It only makes sense when every peer
@@ -2912,12 +2975,50 @@ pub fn service_config(
     peers_only: bool,
     discovery: bool,
 ) -> Config {
-    let transport = TransportProtocol::Tcp;
-    let loopback = listen
-        .parse::<std::net::IpAddr>()
-        .map(|ip| ip.is_loopback())
-        .unwrap_or(listen == "localhost");
-    Config {
+    try_service_config(moniker, listen, listen_port, peers, peers_only, discovery)
+        .expect("valid service networking configuration")
+}
+
+/// Build service networking from caller-supplied addresses without panicking.
+/// Validate before creating node storage or starting a runtime. Known-valid
+/// programmatic callers can continue to use [`service_config`].
+pub fn try_service_config(
+    moniker: &str,
+    listen: &str,
+    listen_port: usize,
+    peers: &[PeerSpec],
+    peers_only: bool,
+    discovery: bool,
+) -> Result<Config, String> {
+    let listen_ip = if listen == "localhost" {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    } else {
+        listen
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| "listen must be an IP literal or localhost")?
+    };
+    let listen_addr = tcp_endpoint(&listen_ip.to_string(), listen_port)
+        .map_err(|error| format!("listen: {error}"))?
+        .parse()
+        .map_err(|_| "invalid listen TCP endpoint")?;
+    let persistent_peers = peers
+        .iter()
+        .map(|peer| {
+            if peer.port == 0 {
+                return Err("peer TCP port must be 1..65535".to_owned());
+            }
+            let mut address =
+                tcp_endpoint(&peer.host, peer.port).map_err(|error| format!("peer: {error}"))?;
+            if let Some(key) = &peer.key {
+                address.push_str(&format!("/p2p/{}", net_peer_id(key)));
+            }
+            address
+                .parse()
+                .map_err(|_| "invalid peer TCP endpoint".to_owned())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let loopback = listen_ip.is_loopback();
+    Ok(Config {
         moniker: moniker.to_owned(),
         consensus: ConsensusConfig {
             value_payload: ValuePayload::ProposalAndParts,
@@ -2940,29 +3041,8 @@ pub fn service_config(
                     },
                     ..DiscoveryConfig::default()
                 },
-                listen_addr: transport.multiaddr(listen, listen_port),
-                persistent_peers: peers
-                    .iter()
-                    .map(|p| {
-                        // Malachite's multiaddr() only formats /ip4 — a
-                        // resolvable name (provider TCP endpoints are DNS
-                        // names) dials through libp2p's dns transport, and
-                        // an IPv6 literal needs its own component.
-                        let addr = match p.host.parse::<std::net::IpAddr>() {
-                            Ok(std::net::IpAddr::V6(_)) => {
-                                format!("/ip6/{}/tcp/{}", p.host, p.port)
-                            }
-                            Ok(_) => transport.multiaddr(&p.host, p.port).to_string(),
-                            Err(_) => format!("/dns4/{}/tcp/{}", p.host, p.port),
-                        };
-                        match &p.key {
-                            Some(key) => format!("{addr}/p2p/{}", net_peer_id(key))
-                                .parse()
-                                .expect("pinned multiaddr"),
-                            None => addr.parse().expect("peer multiaddr"),
-                        }
-                    })
-                    .collect(),
+                listen_addr,
+                persistent_peers,
                 persistent_peers_only: peers_only,
                 ..Default::default()
             },
@@ -2974,6 +3054,37 @@ pub fn service_config(
             request_timeout: std::time::Duration::from_secs(5),
             ..Default::default()
         },
+    })
+}
+
+fn tcp_endpoint(host: &str, port: usize) -> Result<String, String> {
+    if port > u16::MAX as usize {
+        return Err("TCP port exceeds 65535".into());
+    }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => Ok(format!("/ip4/{ip}/tcp/{port}")),
+        Ok(std::net::IpAddr::V6(ip)) => Ok(format!("/ip6/{ip}/tcp/{port}")),
+        Err(_) => {
+            let name = host.strip_suffix('.').unwrap_or(host);
+            if name.len() > 253
+                || name.split('.').any(|label| {
+                    label.is_empty()
+                        || label.len() > 63
+                        || label.starts_with('-')
+                        || label.ends_with('-')
+                        || !label
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+            {
+                return Err("invalid TCP host".into());
+            }
+            Ok(format!("/dns4/{host}/tcp/{port}"))
+        }
     }
 }
 
