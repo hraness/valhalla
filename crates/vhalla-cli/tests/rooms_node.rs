@@ -3286,4 +3286,97 @@ mod enabled {
             "peers_only + discovery must refuse"
         );
     }
+
+    /// `node-init --social` materializes the genesis social store — the
+    /// empty committed archive under the network's realm and limits —
+    /// so a fresh-network member scaffolds both halves in one step, and
+    /// `node-check` reads the seeded store through its real decode path.
+    #[test]
+    fn node_init_social_seeds_the_genesis_store() {
+        let temp = Temp::new();
+        let plan = fixture::plan(0, 8, 16);
+        let base = port_base();
+        let member = Member {
+            seed: [90; 32],
+            port: base,
+        };
+        let key = hex(PrivateKey::from(member.seed).public_key().as_bytes());
+        let net = temp.path("network.json");
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            &format!(
+                "{},{},{},{},{}",
+                plan.genesis.policy.base_cost,
+                plan.genesis.policy.window_seconds,
+                plan.genesis.policy.max_in_window,
+                plan.genesis.policy.support_epoch_seconds,
+                plan.genesis.policy.max_lifetime_rooms,
+            ),
+            "--validators",
+            &format!("1:{key}:1"),
+        ]);
+
+        let home = temp.path("node-home");
+        let social_dir = temp.path("social-store");
+        rooms_ok(&[
+            "node-init",
+            home.to_str().unwrap(),
+            "--network",
+            net.to_str().unwrap(),
+            "--port",
+            &member.port.to_string(),
+            "--node-key",
+            &hex(&member.seed),
+            "--social",
+            social_dir.to_str().unwrap(),
+        ]);
+
+        // The seeded store holds exactly the empty genesis archive —
+        // readable through the same shared-hold path the node opens.
+        let seeded = vhalla_social_store::read_archive(
+            &social_dir,
+            plan.genesis.realm,
+            plan.genesis.limits,
+        )
+        .unwrap();
+        let empty = vhalla_social::archive::Archive::new(plan.genesis.realm, plan.genesis.limits)
+            .unwrap();
+        assert_eq!(seeded.root(), empty.root());
+
+        // node-check decodes the whole boot path against the seeded store.
+        let check = rooms_ok(&[
+            "node-check",
+            social_dir.to_str().unwrap(),
+            home.to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            home.join("node.json").to_str().unwrap(),
+        ]);
+        assert_eq!(check["genesis"].as_str().unwrap().len(), 64);
+
+        // A second init never reuses or resets the seeded store.
+        let home2 = temp.path("node-home-2");
+        let refused = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "node-init",
+                home2.to_str().unwrap(),
+                "--network",
+                net.to_str().unwrap(),
+                "--port",
+                &member.port.to_string(),
+                "--social",
+                social_dir.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "--social never reuses a store");
+    }
 }

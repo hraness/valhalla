@@ -10,9 +10,10 @@ fronts it, so peers dial the public `host:port` the platform assigns.
 
 - `Dockerfile` builds `vhalla` with `experimental-rooms-node` from this
   repository.
-- `start.sh` scaffolds `NODE_HOME` once from environment — the journal
-  and WAL then live on the volume and survive redeploys — then execs
-  `vhalla rooms node`.
+- `start.sh` scaffolds `NODE_HOME` and the genesis social store once
+  from environment — the journal, WAL and committed social snapshot
+  then live on the volume and survive redeploys — then execs
+  `vhalla rooms node SOCIAL_HOME NODE_HOME REALM --config node.json`.
 - One service per validator. A seed mesh is a small set of these
   services plus their `KEY@host:port` peer lines.
 
@@ -21,8 +22,10 @@ fronts it, so peers dial the public `host:port` the platform assigns.
 | Variable            | Meaning                                              |
 | ------------------- | ---------------------------------------------------- |
 | `NETWORK_FILE_B64`  | base64 of the shared params file `rooms network-init` wrote (identical on every validator) |
+| `REALM`             | the 32-hex `realm` id from the shared params file |
 | `NODE_KEY`          | this validator's 64-hex private seed; its public key must appear in `--validators` |
 | `NODE_PORT`         | libp2p listen port the TCP proxy targets (default `9473`) |
+| `SOCIAL_HOME`       | genesis social store path (default `/data/social`) |
 | `PEERS`             | comma-separated `KEY@host:port` entries for the other validators |
 | `LISTEN`            | bind address (default `0.0.0.0`)                     |
 | `DISCOVERY`         | `true` lets joining observers bootstrap through this validator (default `true`) |
@@ -36,8 +39,9 @@ fronts it, so peers dial the public `host:port` the platform assigns.
 3. `railway tcp-proxy create --port 9473 --service NAME` on each and
    record the public `host:port`.
 4. Generate validator seeds locally, run `rooms network-init` for the
-   shared params file, then set each service's `NODE_KEY`, `PEERS`
-   (the other validators' public endpoints) and `NETWORK_FILE_B64`.
+   shared params file, then set each service's `NODE_KEY`, `REALM`,
+   `PEERS` (the other validators' public endpoints) and
+   `NETWORK_FILE_B64`.
 5. Deploy; `rooms status`/`node-check` against any scaffolded home
    confirms the mesh, and the service logs print the committed height.
 
