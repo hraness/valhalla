@@ -309,3 +309,271 @@ fn context_helpers_report_committed_state() {
 
     let _ = std::fs::remove_dir_all(&base);
 }
+
+fn rotation(from: u64, key: &PrivateKey, power: u64) -> vhalla_rooms_consensus::CommittedRotation {
+    vhalla_rooms_consensus::CommittedRotation {
+        from,
+        validators: vec![vhalla_rooms_consensus::ValidatorMember {
+            key: *key.public_key().as_bytes(),
+            power,
+        }],
+    }
+}
+
+/// Produce actual signed VC2 certificates without running a consensus
+/// engine. Adapter::decide trusts its caller's certificate check, allowing
+/// negative tests to publish a source journal signed by an unauthorized key;
+/// Service::sync must independently reject that journal's certificates.
+fn commit_signed(
+    source: &mut Adapter<FsStore>,
+    key: &PrivateKey,
+    rotation: Option<vhalla_rooms_consensus::CommittedRotation>,
+) {
+    let height = source.frontier().height + 1;
+    let batch = source
+        .application()
+        .prepare_with_games(height, vec![], vec![], vec![], None, rotation)
+        .unwrap()
+        .batch()
+        .clone();
+    let value = batch.value_id();
+    let address = vhalla_rooms_node::Address::from_public_key(&key.public_key()).into_inner();
+    // RV1 precommit: height, round zero, non-nil value, signer address.
+    let mut vote = b"RV1\x01".to_vec();
+    vote.extend_from_slice(&height.to_be_bytes());
+    vote.extend_from_slice(&0u32.to_be_bytes());
+    vote.push(1);
+    vote.extend_from_slice(&value);
+    vote.extend_from_slice(&address);
+    let mut certificate = b"VC2".to_vec();
+    certificate.extend_from_slice(&height.to_be_bytes());
+    certificate.extend_from_slice(&0u32.to_be_bytes());
+    certificate.extend_from_slice(&value);
+    certificate.extend_from_slice(&1u16.to_be_bytes());
+    certificate.extend_from_slice(&address);
+    certificate.extend_from_slice(&key.sign(&vote).to_bytes());
+    assert!(verify_canonical_certificate(
+        &certificate,
+        height,
+        &RoomValueId(value),
+        &RoomValidatorSet::new(vec![RoomValidator::new(key.public_key(), 1)]),
+    ));
+    source.hold(batch);
+    assert_eq!(
+        source.decide(&vhalla_rooms_consensus::CommitCertificate {
+            bytes: certificate,
+            value_commitment: value,
+            height,
+        }),
+        vhalla_rooms_consensus::DecidedOutcome::Acked,
+    );
+}
+
+fn rotation_replica_config(
+    base: &Path,
+    scenario: &fixture::Scenario,
+    initial: &PrivateKey,
+    file_future: &PrivateKey,
+) -> (PathBuf, ServiceConfig) {
+    let social_dir = base.join("social");
+    let mut social =
+        SocialStore::create(&social_dir, scenario.genesis.realm, scenario.genesis.limits).unwrap();
+    social
+        .commit(scenario.genesis.archive.clone(), social.pin())
+        .unwrap();
+    let mut raw: serde_json::Value =
+        serde_json::from_slice(&config_json(scenario, initial)).unwrap();
+    raw["validators"] = serde_json::json!([
+        {"from": 1, "key": hex(initial.public_key().as_bytes()), "power": 1},
+        {"from": 2, "key": hex(initial.public_key().as_bytes()), "power": 2},
+        {"from": 4, "key": hex(file_future.public_key().as_bytes()), "power": 9},
+        {"from": 5, "key": hex(initial.public_key().as_bytes()), "power": 1},
+        {"from": 8, "key": hex(file_future.public_key().as_bytes()), "power": 9},
+    ]);
+    (
+        social_dir,
+        ServiceConfig::parse(&serde_json::to_vec(&raw).unwrap()).unwrap(),
+    )
+}
+
+#[test]
+fn replica_follows_committed_rotations_and_restores_effective_schedule_on_reopen() {
+    let base = temp("rotations");
+    let scenario = fixture::scenario(2, 4);
+    let [initial, first, second, file_future] =
+        [7, 9, 11, 13].map(|seed| PrivateKey::from([seed; 32]));
+    let (social, config) = rotation_replica_config(&base, &scenario, &initial, &file_future);
+    let node = base.join("node");
+    let replica = base.join("replica");
+    let mut source = Adapter::open(node.join("app"), &scenario.genesis).unwrap();
+    let mut service = Service::open(&social, &node, &replica, &config).unwrap();
+
+    // The old committee certifies a future rotation. The effective status
+    // immediately reports it, retaining file activations only below four.
+    commit_signed(&mut source, &initial, Some(rotation(4, &first, 3)));
+    assert_eq!(service.sync().unwrap(), 1);
+    assert_eq!(
+        service
+            .validator_schedule()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![1, 2, 4]
+    );
+    assert_eq!(service.quorum().unwrap().total_power, 1);
+    drop(service);
+    let mut service = Service::open(&social, &node, &replica, &config).unwrap();
+    assert_eq!(
+        service
+            .validator_schedule()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![1, 2, 4]
+    );
+    assert_eq!(
+        service.validator_schedule()[&4].validators[0].public_key,
+        first.public_key()
+    );
+
+    commit_signed(&mut source, &initial, None);
+    commit_signed(&mut source, &initial, Some(rotation(7, &second, 5)));
+    // These heights cross both activations within one sync call. In
+    // particular, file entries at five and eight must not regain control.
+    for (height, key) in [
+        (4, &first),
+        (5, &first),
+        (6, &first),
+        (7, &second),
+        (8, &second),
+    ] {
+        commit_signed(&mut source, key, None);
+        assert_eq!(source.frontier().height, height);
+    }
+    assert_eq!(service.sync().unwrap(), 8);
+    let expected_schedule = BTreeMap::from([
+        (
+            1,
+            RoomValidatorSet::new(vec![RoomValidator::new(initial.public_key(), 1)]),
+        ),
+        (
+            2,
+            RoomValidatorSet::new(vec![RoomValidator::new(initial.public_key(), 2)]),
+        ),
+        (
+            4,
+            RoomValidatorSet::new(vec![RoomValidator::new(first.public_key(), 3)]),
+        ),
+        (
+            7,
+            RoomValidatorSet::new(vec![RoomValidator::new(second.public_key(), 5)]),
+        ),
+    ]);
+    assert_eq!(service.validator_schedule(), &expected_schedule);
+    let expected_quorum = Quorum {
+        height: 8,
+        total_power: 5,
+        threshold: 4,
+        validators: vec![(hex(second.public_key().as_bytes()), 5)],
+    };
+    assert_eq!(service.quorum(), Some(expected_quorum.clone()));
+    drop(service);
+    let mut reopened = Service::open(&social, &node, &replica, &config).unwrap();
+    assert_eq!(reopened.validator_schedule(), &expected_schedule);
+    assert_eq!(reopened.quorum(), Some(expected_quorum.clone()));
+    assert_eq!(reopened.sync().unwrap(), 8);
+
+    // A fresh replica must also cross every rotation in one journal scan.
+    let mut fresh = Service::open(&social, &node, &base.join("fresh"), &config).unwrap();
+    assert_eq!(fresh.sync().unwrap(), 8);
+    assert_eq!(fresh.validator_schedule(), &expected_schedule);
+    assert_eq!(fresh.quorum(), Some(expected_quorum));
+    drop((source, reopened, fresh));
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn replica_rotations_never_authorize_their_own_or_retired_certificates() {
+    let scenario = fixture::scenario(2, 4);
+    let [initial, rotated, file_future] = [17, 19, 21].map(|seed| PrivateKey::from([seed; 32]));
+    for (case, signer, accepted_prefix) in [
+        ("self-authorized", &rotated, 0),
+        ("retired", &initial, 3),
+        ("file-future", &file_future, 3),
+    ] {
+        let base = temp(case);
+        let (social, config) = rotation_replica_config(&base, &scenario, &initial, &file_future);
+        let node = base.join("node");
+        let replica = base.join("replica");
+        let mut source = Adapter::open(node.join("app"), &scenario.genesis).unwrap();
+        if accepted_prefix == 3 {
+            commit_signed(&mut source, &initial, Some(rotation(4, &rotated, 3)));
+            commit_signed(&mut source, &initial, None);
+            commit_signed(&mut source, &initial, None);
+        }
+        commit_signed(&mut source, signer, Some(rotation(9, signer, 7)));
+        let mut service = Service::open(&social, &node, &replica, &config).unwrap();
+        assert_eq!(service.sync().unwrap(), accepted_prefix, "{case}");
+        assert!(
+            !service.registry().validator_schedule().contains_key(&9),
+            "{case}"
+        );
+        if accepted_prefix == 3 {
+            assert_eq!(
+                service.validator_schedule()[&4].validators[0].public_key,
+                rotated.public_key()
+            );
+            assert!(!service.validator_schedule().contains_key(&5));
+            assert!(!service.validator_schedule().contains_key(&8));
+            assert_eq!(service.quorum().unwrap().total_power, 2);
+        }
+        drop(service);
+        let mut reopened = Service::open(&social, &node, &replica, &config).unwrap();
+        assert_eq!(reopened.sync().unwrap(), accepted_prefix, "reopened {case}");
+        assert!(!reopened.registry().validator_schedule().contains_key(&9));
+        drop((source, reopened));
+        let _ = std::fs::remove_dir_all(base);
+    }
+}
+
+#[test]
+fn replica_rejects_journal_markers_that_do_not_bind_the_bundle() {
+    let scenario = fixture::scenario(2, 4);
+    let [initial, rotated] = [23, 25].map(|seed| PrivateKey::from([seed; 32]));
+    for wrong_height in [true, false] {
+        let base = temp("unbound-marker");
+        let (social, config) = rotation_replica_config(&base, &scenario, &initial, &rotated);
+        let node = base.join("node");
+        let mut source = Adapter::open(node.join("app"), &scenario.genesis).unwrap();
+        commit_signed(&mut source, &initial, Some(rotation(4, &rotated, 3)));
+        let signer = if wrong_height { &rotated } else { &initial };
+        commit_signed(&mut source, signer, None);
+        let bundle = source.committed_at_height(2).unwrap();
+        let journal = node.join("app/journal");
+        drop(source);
+        if wrong_height {
+            // A height-four marker points to a height-two bundle signed
+            // by the new committee. Selecting trust by the marker alone
+            // would activate that committee two heights prematurely.
+            FsStore.remove_height_marker(&journal, 2).unwrap();
+            FsStore
+                .write_height_marker(&journal, 4, bundle.id())
+                .unwrap();
+        } else {
+            let wrong_id = [42; 32];
+            assert_ne!(bundle.id(), wrong_id);
+            assert!(FsStore
+                .create_bundle(&journal, wrong_id, bundle.bytes())
+                .unwrap());
+            FsStore.write_height_marker(&journal, 2, wrong_id).unwrap();
+        }
+        let mut service = Service::open(&social, &node, &base.join("replica"), &config).unwrap();
+        assert_eq!(service.sync().unwrap(), 1, "wrong height: {wrong_height}");
+        assert_eq!(
+            service.quorum().unwrap().validators,
+            vec![(hex(initial.public_key().as_bytes()), 1)]
+        );
+        drop(service);
+        let _ = std::fs::remove_dir_all(base);
+    }
+}

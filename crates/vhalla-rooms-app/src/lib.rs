@@ -413,7 +413,8 @@ pub struct Service {
     intake_dir: PathBuf,
     /// `<replica_home>/pending` — local submission markers.
     pending_dir: PathBuf,
-    /// Activation-height → validator set, for certificate checks.
+    /// Effective activation-height → validator set. File entries govern
+    /// only below the first committed rotation, exactly as on the node.
     validators: BTreeMap<u64, RoomValidatorSet>,
 }
 
@@ -458,13 +459,48 @@ impl Service {
             .map_err(|e| Error::Io(format!("replica: {e:?}")))?;
         let pending_dir = replica_home.join("pending");
         std::fs::create_dir_all(&pending_dir).map_err(|e| Error::Io(e.to_string()))?;
-        Ok(Self {
+        let mut service = Self {
             adapter,
             journal_dir: node_home.join("app").join("journal"),
             intake_dir: node_home.join("intake"),
             pending_dir,
             validators: config.validator_sets()?,
-        })
+        };
+        // Adapter::open replays the replica's own durable journal. Its
+        // committed rotations already govern any later certificate, even
+        // before this process performs its first sync.
+        service.refresh_validator_schedule()?;
+        Ok(service)
+    }
+
+    fn refresh_validator_schedule(&mut self) -> Result<(), Error> {
+        let committed = self.registry().validator_schedule();
+        let Some((&first, _)) = committed.first_key_value() else {
+            return Ok(());
+        };
+        let mut effective: BTreeMap<_, _> = self
+            .validators
+            .range(..first)
+            .map(|(&from, set)| (from, set.clone()))
+            .collect();
+        // A later file entry must never override a decided set. Retain
+        // file history below the first committed activation, then use the
+        // complete committed schedule for all remaining heights.
+        for (&from, members) in committed {
+            let validators = members
+                .iter()
+                .map(|member| {
+                    let key = PublicKey::from_bytes(member.key)
+                        .map_err(|e| Error::Config(format!("committed validator key: {e}")))?;
+                    Ok(RoomValidator::new(key, member.power))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            let set = RoomValidatorSet::try_new(validators)
+                .map_err(|e| Error::Config(format!("committed validator set: {e:?}")))?;
+            effective.insert(from, set);
+        }
+        self.validators = effective;
+        Ok(())
     }
 
     /// The replica's committed height.
@@ -492,7 +528,9 @@ impl Service {
         })
     }
 
-    /// The validator set activations configured for this replica.
+    /// Effective validator activations, including committed future
+    /// rotations. File entries at or past the first committed activation
+    /// are excluded, matching the node's certificate-verification policy.
     pub fn validator_schedule(&self) -> &BTreeMap<u64, RoomValidatorSet> {
         &self.validators
     }
@@ -611,6 +649,11 @@ impl Service {
             let Ok(bundle) = Bundle::decode(&bytes) else {
                 break;
             };
+            // The untrusted marker cannot select a later validator set
+            // for an earlier bundle, or redirect a content-addressed read.
+            if bundle.height() != height || bundle.id() != id {
+                break;
+            }
             let Some(set) = ServiceConfig::validators_at(&self.validators, height) else {
                 break;
             };
@@ -618,7 +661,12 @@ impl Service {
                 verify_canonical_certificate(cert, h, &RoomValueId(*value), set)
             });
             match outcome {
-                vhalla_rooms_consensus::DecidedOutcome::Acked => {}
+                vhalla_rooms_consensus::DecidedOutcome::Acked => {
+                    // The carrying batch was checked under the previously
+                    // trusted set. Only its successful durable replay may
+                    // authorize a different set for subsequent bundles.
+                    self.refresh_validator_schedule()?;
+                }
                 _ => break,
             }
         }

@@ -136,6 +136,24 @@ mod enabled {
         }
     }
 
+    fn wait_for_node(deadline: Duration, what: &str, node: &mut Node, ready: impl Fn() -> bool) {
+        let started = Instant::now();
+        while !ready() {
+            let exited = node.child.try_wait().unwrap();
+            if exited.is_some() || started.elapsed() >= deadline {
+                let mut stderr = String::new();
+                if let Ok(file) = fs::File::open(&node.stderr) {
+                    let _ = file.take(8192).read_to_string(&mut stderr);
+                }
+                panic!(
+                    "waiting for {what}: node exit={exited:?}, elapsed={:?}, stderr={stderr}",
+                    started.elapsed()
+                );
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     /// Match Service::submit's intake producer contract: complete bytes in
     /// an ignored sibling first, then atomically publish the watched suffix.
     /// Direct fs::write to *.batch/*.body lets the poller reject a partial file.
@@ -313,12 +331,18 @@ mod enabled {
         // Valid canonical batch: commits at the next height this node wins.
         publish_intake(home.join("intake/one.batch"), plan.batches[&1].encode()).unwrap();
 
-        wait_for(Duration::from_secs(90), "height 1 commit", || {
-            committed(&home, 1)
-        });
-        wait_for(Duration::from_secs(30), "garbage rejection", || {
-            home.join("intake/garbage.rejected").exists()
-        });
+        wait_for_node(
+            Duration::from_secs(90),
+            "height 1 commit",
+            &mut node,
+            || committed(&home, 1),
+        );
+        wait_for_node(
+            Duration::from_secs(30),
+            "garbage rejection",
+            &mut node,
+            || home.join("intake/garbage.rejected").exists(),
+        );
         assert!(
             !home.join("intake/one.batch").exists(),
             "accepted intake file is consumed"
@@ -326,9 +350,12 @@ mod enabled {
 
         // A second submission after the first commit retires cleanly.
         publish_intake(home.join("intake/two.batch"), plan.batches[&2].encode()).unwrap();
-        wait_for(Duration::from_secs(60), "height 2 commit", || {
-            committed(&home, 2)
-        });
+        wait_for_node(
+            Duration::from_secs(60),
+            "height 2 commit",
+            &mut node,
+            || committed(&home, 2),
+        );
 
         // The committed state is a real rooms store under the node home.
         assert!(
@@ -412,6 +439,150 @@ mod enabled {
         // A repeat converges on the same name — no duplicate drops.
         assert!(run().status.success());
         assert_eq!(fs::read_dir(home.join("intake")).unwrap().count(), 1);
+    }
+
+    fn assert_intake_retries(
+        home: &Path,
+        command: &str,
+        intents: &[Vec<String>],
+        expected: &[Vec<u8>],
+    ) {
+        // All these different intents collided under the old payload-prefix
+        // naming rule, despite replacing different owners, powers or heights.
+        assert!(expected
+            .windows(2)
+            .all(|pair| pair[0][8..24] == pair[1][8..24]));
+        let submit = |intent: &[String]| {
+            let mut args = vec![command, "unused-social", home.to_str().unwrap(), REALM_HEX];
+            args.extend(intent.iter().map(String::as_str));
+            field(&rooms_ok(&args), "intake")
+        };
+        let paths: Vec<_> = intents.iter().map(|intent| submit(intent)).collect();
+        assert_eq!(
+            paths
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            intents.len(),
+            "distinct intents must have different pending files"
+        );
+
+        // Reordered canonical inputs and simultaneous exact retries converge
+        // without sharing a writable temporary file or losing another intent.
+        thread::scope(|scope| {
+            let mut retries = Vec::new();
+            for (intent, path) in intents.iter().zip(&paths) {
+                for reverse in [false, true, false, true] {
+                    let mut retry = intent.clone();
+                    if reverse {
+                        let members = retry.last_mut().unwrap();
+                        *members = members.split(',').rev().collect::<Vec<_>>().join(",");
+                    }
+                    let submit = &submit;
+                    retries.push(scope.spawn(move || assert_eq!(submit(&retry), *path)));
+                }
+            }
+            for retry in retries {
+                retry.join().unwrap();
+            }
+        });
+        for (path, bytes) in paths.iter().zip(expected) {
+            assert_eq!(&fs::read(path).unwrap(), bytes);
+            let stem = Path::new(path).file_stem().unwrap().to_str().unwrap();
+            assert!(stem.len() <= 64, "the node accepts at most 64 stem bytes");
+            assert!(stem.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+        assert_eq!(
+            fs::read_dir(home.join("intake")).unwrap().count(),
+            intents.len(),
+            "all distinct intents remain, with no duplicate files or temporary files"
+        );
+    }
+
+    #[test]
+    fn eligible_command_preserves_distinct_intents_and_concurrent_retries() {
+        use vhalla_rooms_consensus::{encode_eligible_update, OwnerId};
+
+        let temp = Temp::new();
+        let first = [7; 32];
+        let mut same_prefix = first;
+        same_prefix[31] = 8;
+        let sets = [
+            vec![first, [9; 32]],
+            vec![first, [11; 32]],
+            vec![same_prefix, [9; 32]],
+        ];
+        let intents: Vec<_> = sets
+            .iter()
+            .map(|set| {
+                vec![set
+                    .iter()
+                    .map(|owner| hex(owner))
+                    .collect::<Vec<_>>()
+                    .join(",")]
+            })
+            .collect();
+        let expected: Vec<_> = sets
+            .iter()
+            .map(|set| {
+                encode_eligible_update(
+                    &set.iter()
+                        .copied()
+                        .map(OwnerId::from_bytes)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_intake_retries(&temp.path("node-home"), "eligible", &intents, &expected);
+    }
+
+    #[test]
+    fn rotate_command_preserves_distinct_intents_and_concurrent_retries() {
+        use vhalla_rooms_consensus::{encode_rotation_update, CommittedRotation, ValidatorMember};
+
+        let temp = Temp::new();
+        let mut keys: Vec<_> = [7, 9, 11]
+            .map(|seed| *PrivateKey::from([seed; 32]).public_key().as_bytes())
+            .into_iter()
+            .collect();
+        keys.sort_unstable();
+        let rotations: Vec<_> = [
+            (8, 1, keys[1]),
+            (8, 2, keys[1]),
+            (8, 1, keys[2]),
+            (8 + (1 << 32), 1, keys[1]),
+        ]
+        .into_iter()
+        .map(|(from, power, last)| CommittedRotation {
+            from,
+            validators: vec![
+                ValidatorMember {
+                    key: keys[0],
+                    power,
+                },
+                ValidatorMember {
+                    key: last,
+                    power: 3,
+                },
+            ],
+        })
+        .collect();
+        let intents: Vec<_> = rotations
+            .iter()
+            .map(|rotation| {
+                vec![
+                    rotation.from.to_string(),
+                    rotation
+                        .validators
+                        .iter()
+                        .map(|member| format!("{}:{}", hex(&member.key), member.power))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ]
+            })
+            .collect();
+        let expected: Vec<_> = rotations.iter().map(encode_rotation_update).collect();
+        assert_intake_retries(&temp.path("node-home"), "rotate", &intents, &expected);
     }
 
     /// The four-process mesh tests take turns: each holds every member's
@@ -2218,10 +2389,11 @@ mod enabled {
         assert!(out["node_key_votes_from"].is_null());
         let warnings = out["warnings"].as_array().unwrap();
         assert!(
-            warnings
-                .iter()
-                .any(|w| w.as_str().unwrap().contains("never votes")),
-            "a fresh key must warn it does not vote: {out}"
+            warnings.iter().any(|w| w
+                .as_str()
+                .unwrap()
+                .contains("not in the configured validator schedule")),
+            "a fresh key must warn it is absent from the configured schedule: {out}"
         );
         // The generated key round-trips: the config parses and the
         // reported public key is the seed's real public key.
@@ -2337,6 +2509,8 @@ mod enabled {
             "7401",
             "--peers",
             "10.0.0.9:7000",
+            "--advertise",
+            "seed.example.test:54453",
         ]);
         let upd = rooms_ok(&[
             "node-update",
@@ -2355,6 +2529,10 @@ mod enabled {
         assert_eq!(node["node_key"].as_str().unwrap(), hex(&seed));
         assert_eq!(node["port"].as_u64(), Some(7401));
         assert_eq!(node["peers"][0].as_str().unwrap(), "10.0.0.9:7000");
+        assert_eq!(
+            node["advertise"],
+            serde_json::json!(["seed.example.test:54453"])
+        );
         assert_eq!(node["validators"].as_array().unwrap().len(), 7);
         assert_eq!(upd["node_key_votes_from"].as_u64(), Some(1));
         // The rewrite keeps the seed file owner-private — the atomic
@@ -2874,7 +3052,7 @@ mod enabled {
         fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
         let home = temp.path("node-home");
         fs::create_dir_all(home.join("intake")).unwrap();
-        let _node = spawn_member(&temp, 0, &net, &home);
+        let mut node = spawn_member(&temp, 0, &net, &home);
 
         // The real submission: Alice creates her room, Bob's sealed
         // reaction rides along as award evidence.
@@ -2907,9 +3085,12 @@ mod enabled {
         let marker = field(&submitted, "marker");
 
         // The intake drop must decide and the marker resolve committed.
-        wait_for(Duration::from_secs(120), "submission commits", || {
-            committed(&home, 1)
-        });
+        wait_for_node(
+            Duration::from_secs(120),
+            "submission commits",
+            &mut node,
+            || committed(&home, 1),
+        );
         let pending = rooms_ok(&[
             "pending",
             net.to_str().unwrap(),
@@ -3232,10 +3413,16 @@ mod enabled {
             &format!("{}@127.0.0.1:{}", key(&members[1]), members[1].port),
             "--discovery",
             "true",
+            "--advertise",
+            "seed.example.test:54453",
         ]);
-        let file: serde_json::Value =
-            serde_json::from_slice(&fs::read(home.join("node.json")).unwrap()).unwrap();
+        let saved_config = fs::read(home.join("node.json")).unwrap();
+        let file: serde_json::Value = serde_json::from_slice(&saved_config).unwrap();
         assert_eq!(file["discovery"].as_bool(), Some(true));
+        assert_eq!(
+            file["advertise"],
+            serde_json::json!(["seed.example.test:54453"])
+        );
 
         // node-check runs the full decode path, which reads the shared
         // genesis archive from a real social store.
@@ -3256,6 +3443,52 @@ mod enabled {
             home.join("node.json").to_str().unwrap(),
         ]);
         assert_eq!(check["discovery"].as_bool(), Some(true));
+        assert_eq!(check["advertise"], file["advertise"]);
+
+        let overridden = rooms_ok(&[
+            "node-check",
+            social_dir.to_str().unwrap(),
+            home.to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            home.join("node.json").to_str().unwrap(),
+            "--advertise",
+            "other.example.test:33412",
+        ]);
+        assert_eq!(
+            overridden["advertise"],
+            serde_json::json!(["other.example.test:33412"])
+        );
+        assert_eq!(fs::read(home.join("node.json")).unwrap(), saved_config);
+
+        // An unroutable wildcard cannot become an advertised endpoint,
+        // and validation must happen before either store is created.
+        let invalid_home = temp.path("invalid-advertise-home");
+        let invalid_social = temp.path("invalid-advertise-social");
+        let refused = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .args([
+                "rooms",
+                "node-init",
+                invalid_home.to_str().unwrap(),
+                "--network",
+                net.to_str().unwrap(),
+                "--port",
+                &members[0].port.to_string(),
+                "--social",
+                invalid_social.to_str().unwrap(),
+                "--advertise",
+                "0.0.0.0:9473",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !refused.status.success(),
+            "wildcard advertisement must refuse"
+        );
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("advertise"));
+        assert!(!invalid_home.exists());
+        assert!(!invalid_social.exists());
 
         // peers_only + discovery is a contradiction: a closed mesh has
         // nothing to discover.
@@ -3285,6 +3518,178 @@ mod enabled {
             !refused.status.success(),
             "peers_only + discovery must refuse"
         );
+    }
+
+    #[test]
+    fn node_networking_rejects_invalid_inputs_before_mutation() {
+        let temp = Temp::new();
+        let plan = fixture::plan(0, 8, 16);
+        let net = temp.path("network.json");
+        let key = PrivateKey::from([89; 32]);
+        rooms_ok(&[
+            "network-init",
+            net.to_str().unwrap(),
+            "--realm",
+            REALM_HEX,
+            "--directory",
+            &hex(plan.genesis.directory.as_bytes()),
+            "--policy",
+            "1,86400,8,86400,16",
+            "--validators",
+            &format!("1:{}:1", hex(key.public_key().as_bytes())),
+        ]);
+        let assert_error = |output: std::process::Output, field: &str| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "normal CLI failure: {stderr}"
+            );
+            assert!(!stderr.contains("panicked"), "{stderr}");
+            assert!(stderr.contains(field), "{field}: {stderr}");
+        };
+        for (index, (flag, value, field)) in [
+            ("--advertise", "0.0.0.0:9473", "advertis"),
+            ("--listen", "bad/host", "listen"),
+            ("--listen", "127.0.0.1:9473", "listen"),
+            ("--listen", "seed.example.test", "listen"),
+            ("--peers", "bad/host:9473", "peer"),
+            ("--peers", "127.0.0.1:65536", "peer"),
+            ("--peers", "127.0.0.1:0", "peer"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let home = temp.path(&format!("invalid-home-{index}"));
+            let social = temp.path(&format!("invalid-social-{index}"));
+            let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+                .env("HRANESS_SUPPORT", "off")
+                .args([
+                    "rooms",
+                    "node-init",
+                    home.to_str().unwrap(),
+                    "--network",
+                    net.to_str().unwrap(),
+                    "--port",
+                    "9473",
+                    "--social",
+                    social.to_str().unwrap(),
+                    flag,
+                    value,
+                ])
+                .output()
+                .unwrap();
+            assert_error(output, field);
+            assert!(!home.exists(), "invalid {flag} must not create node home");
+            assert!(
+                !social.exists(),
+                "invalid {flag} must not create social store"
+            );
+        }
+
+        let home = temp.path("existing-home");
+        let social = temp.path("existing-social");
+        rooms_ok(&[
+            "node-init",
+            home.to_str().unwrap(),
+            "--network",
+            net.to_str().unwrap(),
+            "--port",
+            "9473",
+            "--social",
+            social.to_str().unwrap(),
+        ]);
+        let path = home.join("node.json");
+        let valid: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for (field, value) in [
+            ("listen", serde_json::json!("bad/host")),
+            ("listen", serde_json::json!("seed.example.test")),
+            ("port", serde_json::json!(65536)),
+            ("peers", serde_json::json!(["bad/host:9473"])),
+            ("peers", serde_json::json!(["127.0.0.1:65536"])),
+            ("advertise", serde_json::json!(["0.0.0.0:9473"])),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            let saved = serde_json::to_vec(&invalid).unwrap();
+            fs::write(&path, &saved).unwrap();
+            for args in [
+                vec![
+                    "node-check",
+                    social.to_str().unwrap(),
+                    home.to_str().unwrap(),
+                    REALM_HEX,
+                    "--config",
+                    path.to_str().unwrap(),
+                ],
+                vec![
+                    "node-update",
+                    home.to_str().unwrap(),
+                    "--network",
+                    net.to_str().unwrap(),
+                ],
+            ] {
+                let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+                    .env("HRANESS_SUPPORT", "off")
+                    .arg("rooms")
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert_error(
+                    output,
+                    match field {
+                        "port" => "listen",
+                        "peers" => "peer",
+                        "advertise" => "advertis",
+                        field => field,
+                    },
+                );
+                assert_eq!(fs::read(&path).unwrap(), saved);
+                assert!(!home.join("app").exists());
+            }
+        }
+
+        // Older configs omit advertise. Localhost and IPv6 listeners decode
+        // through the same fallible path without requiring a bound socket.
+        for listen in ["localhost", "::1"] {
+            let mut old = valid.clone();
+            old.as_object_mut().unwrap().remove("advertise");
+            old["listen"] = serde_json::json!(listen);
+            fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+            let checked = rooms_ok(&[
+                "node-check",
+                social.to_str().unwrap(),
+                home.to_str().unwrap(),
+                REALM_HEX,
+                "--config",
+                path.to_str().unwrap(),
+            ]);
+            assert_eq!(checked["listen"].as_str(), Some(listen));
+            assert_eq!(checked["advertise"], serde_json::json!([]));
+        }
+
+        // Existing runtime configs can bind an ephemeral listener. Both
+        // read-only checking and schedule updates must preserve that choice.
+        let mut ephemeral = valid;
+        ephemeral["port"] = serde_json::json!(0);
+        fs::write(&path, serde_json::to_vec(&ephemeral).unwrap()).unwrap();
+        let checked = rooms_ok(&[
+            "node-check",
+            social.to_str().unwrap(),
+            home.to_str().unwrap(),
+            REALM_HEX,
+            "--config",
+            path.to_str().unwrap(),
+        ]);
+        assert_eq!(checked["port"].as_u64(), Some(0));
+        rooms_ok(&[
+            "node-update",
+            home.to_str().unwrap(),
+            "--network",
+            net.to_str().unwrap(),
+        ]);
+        let updated: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(updated["port"].as_u64(), Some(0));
     }
 
     /// `node-init --social` materializes the genesis social store — the

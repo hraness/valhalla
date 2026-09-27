@@ -18,16 +18,25 @@ if [ ! -f "$NODE_HOME/node.json" ] || [ ! -d "$SOCIAL_HOME" ]; then
   # --social seeds the genesis store before the node.json
   # never-overwrite check, so a re-run completes a half-scaffolded
   # home; the only tolerated failure is both artifacts already existing.
-  vhalla rooms node-init "$NODE_HOME" \
+  set -- vhalla rooms node-init "$NODE_HOME" \
     --network /tmp/network.json \
     --port "$NODE_PORT" \
     --node-key "$NODE_KEY" \
     --listen "$LISTEN" \
     --peers "$PEERS" \
     --discovery "$DISCOVERY" \
-    --social "$SOCIAL_HOME" || true
+    --social "$SOCIAL_HOME"
+  if [ -n "${ADVERTISE:-}" ]; then
+    set -- "$@" --advertise "$ADVERTISE"
+  fi
+  "$@" || true
   rm -f /tmp/network.json
   [ -f "$NODE_HOME/node.json" ]
   [ -d "$SOCIAL_HOME" ]
 fi
-exec vhalla rooms node "$SOCIAL_HOME" "$NODE_HOME" "$REALM" --config "$NODE_HOME/node.json"
+set -- vhalla rooms node "$SOCIAL_HOME" "$NODE_HOME" "$REALM" --config "$NODE_HOME/node.json"
+# Runtime networking overrides leave persisted identity, genesis and WAL intact.
+if [ -n "${ADVERTISE:-}" ]; then
+  set -- "$@" --advertise "$ADVERTISE"
+fi
+exec "$@"

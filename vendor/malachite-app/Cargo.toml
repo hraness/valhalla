@@ -1,0 +1,55 @@
+# Vendored from circlefin/malachite 72143f6c99a98452b587e1c392bdb80944eb2232.
+# Workspace inheritance expanded; unpublished local discovery fix.
+
+[package]
+name = "arc-malachitebft-app"
+description = "High-level interface for building applications on top of the Malachite BFT consensus engine"
+version = "0.8.0"
+edition = "2021"
+repository = "https://github.com/circlefin/malachite"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.88"
+readme = "../malachite-network/README.md"
+
+[package.metadata]
+
+[package.metadata.docs]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+borsh = ["malachitebft-core-consensus/borsh"]
+
+[dependencies]
+malachitebft-codec = { version = "0.8.0", package = "arc-malachitebft-codec", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-config = { version = "0.8.0", package = "arc-malachitebft-config", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-core-consensus = { version = "0.8.0", package = "arc-malachitebft-core-consensus", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-core-types = { version = "0.8.0", package = "arc-malachitebft-core-types", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-engine = { version = "0.8.0", package = "arc-malachitebft-engine", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-metrics = { version = "0.8.0", package = "arc-malachitebft-metrics", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-network = { version = "0.8.0", package = "arc-malachitebft-network", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-peer = { version = "0.8.0", package = "arc-malachitebft-peer", default-features = false, git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-signing = { version = "0.8.0", package = "arc-malachitebft-signing", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-sync = { version = "0.8.0", package = "arc-malachitebft-sync", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachitebft-wal = { version = "0.8.0", package = "arc-malachitebft-wal", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+async-trait = { version = "0.1.89" }
+derive-where = { version = "1.6.0" }
+eyre = { version = "0.6" }
+libp2p-identity = { version = "0.2.12" }
+ractor = { version = "0.15.10", default-features = false, features = ["async-trait", "tokio_runtime"] }
+rand = { version = "0.8.5", features = ["std_rng", "small_rng"] }
+serde = { version = "1.0", default-features = false }
+tokio = { version = "1.47.1" }
+tracing = { version = "0.1.41", default-features = false }
+libp2p = { version = "0.56.0", features = ["macros", "identify", "tokio", "ed25519", "ecdsa", "tcp", "quic", "noise", "yamux", "gossipsub", "dns", "ping", "metrics", "request-response", "cbor", "serde", "kad"] }
+
+[lints]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
+[lints.clippy]
+disallowed_types = "deny"
+doc_overindented_list_items = "allow"

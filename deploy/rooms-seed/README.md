@@ -29,6 +29,7 @@ fronts it, so peers dial the public `host:port` the platform assigns.
 | `PEERS`             | comma-separated `KEY@host:port` entries for the other validators |
 | `LISTEN`            | bind address (default `0.0.0.0`)                     |
 | `DISCOVERY`         | `true` lets joining observers bootstrap through this validator (default `true`) |
+| `ADVERTISE`         | public TCP proxy `HOST:PORT` (comma-separated for multiple endpoints); replaces private listener addresses in signed discovery records |
 
 ## Railway steps
 
@@ -37,7 +38,8 @@ fronts it, so peers dial the public `host:port` the platform assigns.
    dockerfile path at it).
 2. Attach a volume mounted at `/data` to each service.
 3. `railway tcp-proxy create --port 9473 --service NAME` on each and
-   record the public `host:port`.
+   record the public `host:port`. Set each service's `ADVERTISE` to its own
+   public endpoint so joining peers can dial the addresses discovery shares.
 4. Generate validator seeds locally, run `rooms network-init` for the
    shared params file, then set each service's `NODE_KEY`, `REALM`,
    `PEERS` (the other validators' public endpoints) and
@@ -52,6 +54,10 @@ fronts it, so peers dial the public `host:port` the platform assigns.
   dialling any single member.
 - `NODE_KEY` is the validator's signing seed — keep it a platform
   secret; `NETWORK_FILE_B64` is public material by design.
+- `ADVERTISE` is validated and saved during first setup. On later starts it
+  overrides the advertised endpoints without changing the persisted node
+  config, identity or consensus history. Leave it unset to use the saved
+  configuration. Discovery behind a TCP proxy requires a public endpoint.
 - A validator that sleeps stalls quorum. Size the set for the
   availability you actually operate, and rotate members in through
   `rooms rotate` rather than re-editing files.
