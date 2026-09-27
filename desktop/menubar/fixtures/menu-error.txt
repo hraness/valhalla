@@ -1,4 +1,4 @@
-[mark.people Vh, attention] Valhalla · Couldn't read your rooms
+[mark.shield Vh, attention] Valhalla · Couldn't read your rooms
 Valhalla
 ⚠︎ Couldn't read your rooms · Check that your node is running, then refresh
 ─────────

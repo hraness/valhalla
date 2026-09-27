@@ -175,7 +175,7 @@ pub fn build(view: View) -> MenuModel {
         nodes,
         ..MenuModel::default()
     };
-    model.set_mark(StatusMark::new(Symbol::MarkPeople, "Vh").with_tone(tone));
+    model.set_mark(StatusMark::new(Symbol::MarkShield, "Vh").with_tone(tone));
     model
 }
 
