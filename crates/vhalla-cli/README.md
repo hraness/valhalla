@@ -33,29 +33,40 @@ from identity custody. This optional local state contains no keys or email.
 
 ### Menu-bar companion
 
-`vhalla menubar` launches the macOS status-item companion built from
-`desktop/menubar` (`cargo build --release --manifest-path desktop/Cargo.toml`,
-or set `VHALLA_MENUBAR_PATH`). The companion renders the agent outputs
-directory — `vhalla outputs` creates and prints it — so owners can see and
-open the descriptively named files their agents leave behind. It is a
-disposable, read-only client; identities and stores remain explicit-path.
+`vhalla menubar` opens the Valhalla menu bar on macOS. The menu shows how
+your rooms are doing (rooms in sync, sends waiting, sends that didn't go
+through) from the counts `vhalla menubar refresh` saves, and the newest files
+in the outputs folder (`vhalla outputs` creates and prints it). It never opens
+an identity or a store.
 
-The lifecycle subcommands keep the companion unbundled — no `.app` package,
-signing, or notarization is involved anywhere:
+The menu bar is a separate binary. `curl -fsSL https://vhalla.com/install.sh |
+sh -s -- --with-menubar` puts it next to `vhalla`; a checkout can build it with
+`cargo build --release --manifest-path desktop/Cargo.toml`, or point
+`VHALLA_MENUBAR_PATH` at a build.
 
 ```console
-vhalla menubar             # resolve and launch once
-vhalla menubar status      # installed binary, launch agent, launch resolution
-vhalla menubar install     # copy a release build into the state directory and
-                           # register a per-user LaunchAgent (survives login)
-vhalla menubar uninstall   # boot out the agent and remove installed files
+vhalla menubar             # open it now
+vhalla menubar install     # copy it into the Valhalla folder and open it at login
+vhalla menubar status      # whether it opens at login and is running
+vhalla menubar uninstall   # stop opening it at login and remove the copy
 ```
 
-`install` is idempotent: it prefers the freshly built
-`desktop/target/release/vhalla-menubar` over the already-installed copy, so
-rebuilding then reinstalling is the upgrade path. Resolution for a bare
-launch is `VHALLA_MENUBAR_PATH`, the installed copy, a binary adjacent to
-`vhalla`, then the repository release build.
+`install` copies the newest build it finds (`VHALLA_MENUBAR_PATH`, a binary
+next to `vhalla`, the repository release build) into
+`~/Library/Application Support/Valhalla/bin/`, then hands over to that copy's
+own `install`, which writes the login item through desktop-foundation's shared
+LaunchAgent helper. macOS shows a notice that `vhalla-menubar` can open at
+login. The login item takes effect at the next login and `install` opens the
+menu bar now. It also removes the `com.hraness.valhalla.menubar` login item
+earlier releases wrote, when that file is exactly theirs. Menu bars from
+releases before this one have no `install` command of their own; `install`
+refuses them and points to the installer.
+
+A copy downloaded in a browser is quarantined, and macOS stops it because it
+isn't notarized. `vhalla menubar` then says so and names the fix: open System
+Settings › Privacy & Security and choose Open Anyway. It never removes the
+quarantine itself. The installer downloads with `curl`, which macOS doesn't
+quarantine.
 
 ### Releases
 
@@ -944,19 +955,22 @@ identity. Signed archives, spent invitation
 state and validator recovery have separate persistence requirements; do
 not interpret a restored signing key as complete network-state recovery.
 
-**9. Surface `rooms status` in the menubar.**
+**9. Surface `rooms status` in the menu bar.**
 
-The menubar is read-only and never opens an identity or store. It renders
-the `vhalla outputs` directory, so the safe integration is to write the
-status JSON there with the dedicated refresh subcommand:
+The menu bar never opens an identity or store. `vhalla menubar refresh` runs
+`rooms status` with the same arguments and saves only counts (rooms, height,
+sends waiting, sends that didn't go through) and the time to
+`menubar-status.json` in the Valhalla folder:
 
 ```console
 vhalla menubar refresh ./genesis-social ./replica 00000000000000000000000000000047 ./node \
   --config ./node/node.json
 ```
 
-`vhalla menubar` then lists `rooms-status.json`; selecting it opens the
-file. Re-run `vhalla menubar refresh` whenever you want an updated view.
+The top of the menu then reads, for example, "4 rooms in sync" or "1 send
+didn't go through". A refresh that can't read room status saves that too, so
+the menu shows "Couldn't read your rooms" instead of old counts. After an
+hour the menu marks the counts out of date; re-run the refresh for a new view.
 
 ### Executable local onboarding rehearsal
 

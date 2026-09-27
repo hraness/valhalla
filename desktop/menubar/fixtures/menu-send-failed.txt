@@ -1,0 +1,17 @@
+[mark.people Vh, attention] Valhalla · 1 send didn't go through
+Valhalla
+⚠︎ 1 send didn't go through · 1 room · updated 1 min ago
+─────────
+summary 4 · 2 KB · today  MD
+  ⌥ Show in Finder
+summary 3 · 2 KB · today  MD
+  ⌥ Show in Finder
+summary 2 · 2 KB · today  MD
+  ⌥ Show in Finder
+Show all 5 outputs (primary)  ⌘O
+─────────
+✓ Open at login
+─────────
+♡ Updates & support ↗
+  ⌥ Copy diagnostics
+Quit Valhalla

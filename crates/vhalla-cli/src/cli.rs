@@ -75,6 +75,13 @@ impl Style {
         Style { color, ascii }
     }
 
+    pub(crate) fn stdout() -> Self {
+        Self::detect(
+            &|name| std::env::var(name).ok(),
+            std::io::stdout().is_terminal(),
+        )
+    }
+
     pub(crate) fn stderr() -> Self {
         Self::detect(
             &|name| std::env::var(name).ok(),

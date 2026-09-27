@@ -1,0 +1,90 @@
+{
+  "appId": "valhalla",
+  "items": [
+    {
+      "kind": "header",
+      "label": "Valhalla"
+    },
+    {
+      "detail": "Updated 5 min ago",
+      "kind": "status",
+      "label": "4 rooms in sync",
+      "symbol": "status.ok"
+    },
+    {
+      "kind": "separator"
+    },
+    {
+      "alternate": {
+        "id": "outputs.reveal.file1",
+        "label": "Show in Finder",
+        "symbol": "action.folder"
+      },
+      "badge": "MD",
+      "id": "outputs.open.file1",
+      "kind": "action",
+      "label": "summary 1",
+      "subtitle": "2 KB · today",
+      "symbol": "item.file"
+    },
+    {
+      "alternate": {
+        "id": "outputs.reveal.file2",
+        "label": "Show in Finder",
+        "symbol": "action.folder"
+      },
+      "badge": "MD",
+      "id": "outputs.open.file2",
+      "kind": "action",
+      "label": "summary 0",
+      "subtitle": "2 KB · today",
+      "symbol": "item.file"
+    },
+    {
+      "id": "outputs.folder",
+      "kind": "action",
+      "label": "Open outputs folder",
+      "opens": "finder",
+      "role": "primary",
+      "shortcut": "CmdOrCtrl+O",
+      "symbol": "action.folder"
+    },
+    {
+      "kind": "separator"
+    },
+    {
+      "id": "login",
+      "kind": "action",
+      "label": "Open at login",
+      "state": "on"
+    },
+    {
+      "kind": "separator"
+    },
+    {
+      "alternate": {
+        "id": "support.diagnostics",
+        "label": "Copy diagnostics",
+        "symbol": "action.copy"
+      },
+      "id": "support",
+      "kind": "action",
+      "label": "Updates & support",
+      "opens": "browser",
+      "symbol": "action.support"
+    },
+    {
+      "kind": "quit",
+      "label": "Quit Valhalla"
+    }
+  ],
+  "mark": {
+    "letters": "Vh",
+    "symbol": "mark.people"
+  },
+  "name": "Valhalla",
+  "revision": 1,
+  "tooltip": "Valhalla · 4 rooms in sync",
+  "type": "snapshot",
+  "version": 2
+}

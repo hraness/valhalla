@@ -440,28 +440,58 @@ fn outputs(args: &[std::ffi::OsString]) -> Result<(), String> {
     Ok(())
 }
 
-/// `vhalla menubar [run|install|uninstall|status|refresh]` — the menu-bar
-/// companion lifecycle. The companion is a disposable unbundled client:
-/// `run` launches it once, `install` copies a qualified release binary to
-/// the per-user state directory and registers a LaunchAgent so it
-/// survives login — no `.app` packaging, signing or notarization is
-/// involved anywhere. `refresh` captures a `rooms status` snapshot and
-/// writes it to the outputs directory so the menu bar can show it.
+/// `vhalla menubar [run|install|uninstall|status|start|refresh]` — the menu
+/// bar. It is a separate unbundled binary: `run` opens it, `install` copies
+/// it into the Valhalla folder and hands over to its own `install`, which
+/// writes the login item through desktop-foundation's shared helper.
+/// `refresh` saves room counts for the menu to show.
 #[cfg(unix)]
 fn menubar(args: &[std::ffi::OsString]) -> Result<(), String> {
     match args.get(1).and_then(|a| a.to_str()) {
         None if args.len() == 1 => menubar_launch(),
-        Some("run") if args.len() == 2 => menubar_launch(),
+        Some("run" | "start") if args.len() == 2 => menubar_launch(),
         Some("install") if args.len() == 2 => menubar_install(),
         Some("uninstall") if args.len() == 2 => menubar_uninstall(),
         Some("status") if args.len() == 2 => menubar_status(),
-        Some("refresh") if args.len() >= 9 => menubar_refresh(&args[3..]),
-        _ => Err("usage: vhalla menubar [run|install|uninstall|status|refresh]".into()),
+        Some("refresh") if args.len() >= 6 => menubar_refresh(&args[2..]),
+        _ => Err(
+            "usage: vhalla menubar [run|install|uninstall|status]\n       vhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE"
+                .into(),
+        ),
     }
 }
 
+/// The login item earlier releases wrote. Install and uninstall retire it.
 #[cfg(unix)]
-const MENUBAR_LAUNCH_AGENT: &str = "com.hraness.valhalla.menubar";
+const LEGACY_LAUNCH_AGENT: &str = "com.hraness.valhalla.menubar";
+
+/// Bytes every `vhalla-menubar` with its own `install`, `uninstall`,
+/// `status` and `start` carries. Earlier releases ignored their arguments
+/// and opened the menu instead, so they must never be handed a command.
+#[cfg(unix)]
+const MENUBAR_LIFECYCLE_MARKER: &[u8] = b"vhalla-menubar-lifecycle:1";
+
+#[cfg(unix)]
+fn menubar_has_lifecycle(binary: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(binary)
+        .and_then(|file| file.take(256 * 1024 * 1024).read_to_end(&mut bytes))
+        .is_ok()
+        && bytes
+            .windows(MENUBAR_LIFECYCLE_MARKER.len())
+            .any(|window| window == MENUBAR_LIFECYCLE_MARKER)
+}
+
+#[cfg(unix)]
+const MENUBAR_TOO_OLD: &str = "This vhalla-menubar is from an older release
+It can't set up its own login item. Get the menu bar that matches this vhalla:
+curl -fsSL https://vhalla.com/install.sh | sh -s -- --with-menubar
+→ vhalla menubar install";
+
+/// `vhalla-menubar` exits with this when another copy holds the menu bar.
+#[cfg(unix)]
+const MENUBAR_ALREADY_RUNNING: i32 = 3;
 
 /// `state_directory()/bin/vhalla-menubar` — the stable per-user install
 /// location a bare `vhalla menubar` resolves before the repository build.
@@ -483,12 +513,12 @@ fn qualified_binary(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Resolution order: the installed copy, a sibling of this executable,
-/// then the in-repository release build. Debug builds are deliberately
-/// absent — development binaries go through `VHALLA_MENUBAR_PATH`.
-/// `install` uses the reverse order (release build first, installed copy
-/// last) so a rebuilt binary upgrades the installation rather than
-/// reinstalling it onto itself.
+/// Resolution order: the installed copy, a sibling of this executable
+/// (where `install.sh --with-menubar` puts it), then the in-repository
+/// release build. Debug builds are deliberately absent — development
+/// binaries go through `VHALLA_MENUBAR_PATH`. `install` uses the reverse
+/// order (new builds first, installed copy last) so a new binary upgrades
+/// the installation rather than reinstalling it onto itself.
 #[cfg(unix)]
 fn menubar_candidates(for_install: bool) -> Vec<std::path::PathBuf> {
     let mut candidates = Vec::new();
@@ -514,6 +544,13 @@ fn menubar_candidates(for_install: bool) -> Vec<std::path::PathBuf> {
     candidates
 }
 
+/// What a person sees when no menu bar binary is on this Mac.
+#[cfg(unix)]
+const MENUBAR_NOT_INSTALLED: &str = "The Valhalla menu bar isn't on this Mac yet
+It's a separate download. The installer can add it next to vhalla:
+curl -fsSL https://vhalla.com/install.sh | sh -s -- --with-menubar
+→ vhalla menubar install";
+
 #[cfg(unix)]
 fn resolve_menubar(for_install: bool) -> Result<std::path::PathBuf, String> {
     if let Some(value) = std::env::var_os("VHALLA_MENUBAR_PATH") {
@@ -522,17 +559,54 @@ fn resolve_menubar(for_install: bool) -> Result<std::path::PathBuf, String> {
             return if qualified_binary(&path) {
                 Ok(path)
             } else {
-                Err("VHALLA_MENUBAR_PATH names no qualified binary — it is not built, not executable, or group/world-writable".into())
+                Err("VHALLA_MENUBAR_PATH doesn't name a usable menu bar\nIt must be a built vhalla-menubar that only you can change.\n→ vhalla help menubar".into())
             };
         }
     }
     menubar_candidates(for_install)
         .into_iter()
         .find(|path| qualified_binary(path))
-        .ok_or_else(|| {
-            "vhalla-menubar is not built; run `cargo build --release --manifest-path desktop/Cargo.toml`"
-                .to_owned()
-        })
+        .ok_or_else(|| MENUBAR_NOT_INSTALLED.to_owned())
+}
+
+/// How a menu bar start ended, from its exit status after a short wait.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenubarStart {
+    Running,
+    AlreadyRunning,
+    /// Killed at launch: on macOS this is how Gatekeeper stops an
+    /// unverified download.
+    Blocked,
+    Failed,
+}
+
+#[cfg(unix)]
+fn menubar_start_outcome(status: Option<std::process::ExitStatus>) -> MenubarStart {
+    use std::os::unix::process::ExitStatusExt;
+    match status {
+        None => MenubarStart::Running,
+        Some(status) if status.code() == Some(MENUBAR_ALREADY_RUNNING) => {
+            MenubarStart::AlreadyRunning
+        }
+        Some(status) if status.signal() == Some(9) => MenubarStart::Blocked,
+        Some(_) => MenubarStart::Failed,
+    }
+}
+
+/// The recovery for a menu bar macOS stopped at launch. It follows
+/// desktop-foundation's first-launch approval steps: the person decides,
+/// and nothing here removes quarantine or changes Gatekeeper.
+#[cfg(unix)]
+fn menubar_blocked_message(binary: &std::path::Path) -> String {
+    format!(
+        "macOS stopped the Valhalla menu bar from opening
+It may not trust {} because it was downloaded in a browser and isn't notarized.
+If you trust this download, open System Settings › Privacy & Security and choose Open Anyway for vhalla-menubar, then try again.
+The installer (curl -fsSL https://vhalla.com/install.sh | sh -s -- --with-menubar) fetches it without this check.
+→ vhalla menubar",
+        binary.file_name().and_then(|name| name.to_str()).unwrap_or("vhalla-menubar")
+    )
 }
 
 #[cfg(unix)]
@@ -543,66 +617,41 @@ fn menubar_launch() -> Result<(), String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("could not start the menu bar: {e}"))?;
+        .map_err(|_| MENUBAR_NOT_INSTALLED.to_owned())?;
     std::thread::sleep(std::time::Duration::from_millis(400));
-    match child.try_wait().map_err(|e| e.to_string())? {
-        Some(status) if status.success() => println!("valhalla menu bar already running"),
-        Some(status) => return Err(format!("the menu bar exited during startup ({status})")),
-        None => println!("valhalla menu bar running"),
+    let status = child.try_wait().map_err(|e| e.to_string())?;
+    let ok = if cli::Style::stdout().ascii {
+        "OK"
+    } else {
+        "✓"
+    };
+    match menubar_start_outcome(status) {
+        MenubarStart::Running => println!("{ok} Valhalla is in your menu bar"),
+        MenubarStart::AlreadyRunning => println!("{ok} Valhalla is already in your menu bar"),
+        MenubarStart::Blocked => return Err(menubar_blocked_message(&binary)),
+        MenubarStart::Failed => {
+            return Err(format!(
+                "The Valhalla menu bar stopped while opening\nRun it directly to see why: {}\n→ vhalla menubar status",
+                binary.display()
+            ))
+        }
     }
     Ok(())
 }
 
-/// `~/Library/LaunchAgents/<label>.plist`.
+/// `~/Library/LaunchAgents/com.hraness.valhalla.menubar.plist`.
 #[cfg(unix)]
-fn launch_agent_path() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .ok_or("could not resolve HOME")?;
-    Ok(home
-        .join("Library/LaunchAgents")
-        .join(format!("{MENUBAR_LAUNCH_AGENT}.plist")))
+fn legacy_launch_agent_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    Some(
+        home.join("Library/LaunchAgents")
+            .join(format!("{LEGACY_LAUNCH_AGENT}.plist")),
+    )
 }
 
-/// The launchd `gui/<uid>` domain of the logged-in user, resolved through
-/// `id -u` — this crate forbids `unsafe`, so `libc::getuid` is not an
-/// option.
+/// The exact plist earlier releases wrote for `binary`.
 #[cfg(unix)]
-fn user_launch_domain() -> Result<String, String> {
-    let output = std::process::Command::new("/usr/bin/id")
-        .arg("-u")
-        .output()
-        .map_err(|e| format!("could not resolve the user id: {e}"))?;
-    let uid =
-        String::from_utf8(output.stdout).map_err(|_| "id -u did not print UTF-8".to_owned())?;
-    let uid: u64 = uid
-        .trim()
-        .parse()
-        .map_err(|_| "id -u did not print a numeric uid".to_owned())?;
-    if uid < 1 {
-        return Err("the menu bar requires a logged-in macOS user".into());
-    }
-    Ok(format!("gui/{uid}"))
-}
-
-#[cfg(unix)]
-fn launchctl(args: &[&str]) -> Result<(), String> {
-    let status = std::process::Command::new("/bin/launchctl")
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("could not run launchctl: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("launchctl {} failed ({status})", args[0]))
-    }
-}
-
-#[cfg(unix)]
-fn launch_agent_plist(binary: &std::path::Path) -> String {
+fn legacy_launch_agent_plist(binary: &std::path::Path) -> String {
     let path = binary.to_string_lossy();
     let escaped = path
         .replace('&', "&amp;")
@@ -612,10 +661,307 @@ fn launch_agent_plist(binary: &std::path::Path) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{MENUBAR_LAUNCH_AGENT}</string>\n\
+         <plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{LEGACY_LAUNCH_AGENT}</string>\n\
          \x20 <key>ProgramArguments</key>\n  <array>\n    <string>{escaped}</string>\n  </array>\n\
          \x20 <key>RunAtLoad</key>\n  <true/>\n</dict>\n</plist>\n"
     )
+}
+
+/// Whether `plist` is exactly the file an earlier release wrote. Anything
+/// else was written or edited by someone else and is left alone.
+#[cfg(unix)]
+fn is_legacy_launch_agent(plist: &std::path::Path, installed: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(plist).is_ok_and(|meta| meta.is_file() && meta.len() <= 4096)
+        && std::fs::read_to_string(plist)
+            .is_ok_and(|text| text == legacy_launch_agent_plist(installed))
+}
+
+/// Stops and removes the login item an earlier release wrote, when it is
+/// exactly theirs. It unloads the old label so the old and new login items
+/// never both open the menu bar.
+#[cfg(unix)]
+fn retire_legacy_launch_agent(installed: &std::path::Path) {
+    let Some(plist) = legacy_launch_agent_path() else {
+        return;
+    };
+    if !is_legacy_launch_agent(&plist, installed) {
+        return;
+    }
+    if let Some(uid) = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .filter(|uid| *uid > 0)
+    {
+        let _ = std::process::Command::new("/bin/launchctl")
+            .args(["bootout", &format!("gui/{uid}/{LEGACY_LAUNCH_AGENT}")])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = std::fs::remove_file(plist);
+}
+
+/// Runs the installed menu bar's own lifecycle command with this terminal,
+/// so its notice, output and exit code reach the person unchanged.
+#[cfg(unix)]
+fn run_menubar_helper(binary: &std::path::Path, command: &str) -> Result<(), String> {
+    let status = std::process::Command::new(binary)
+        .arg(command)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|_| MENUBAR_NOT_INSTALLED.to_owned())?;
+    match menubar_start_outcome(Some(status)) {
+        _ if status.success() => Ok(()),
+        MenubarStart::Blocked => Err(menubar_blocked_message(binary)),
+        // The helper has already said what went wrong.
+        _ => std::process::exit(status.code().unwrap_or(1)),
+    }
+}
+
+#[cfg(unix)]
+fn copy_menubar(source: &std::path::Path, installed: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let bin_dir = installed
+        .parent()
+        .ok_or("the install folder has no parent")?;
+    std::fs::create_dir_all(bin_dir).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(bin_dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())?;
+    let temporary = installed.with_file_name(format!(".vhalla-menubar.tmp-{}", std::process::id()));
+    let copy = || -> Result<(), String> {
+        std::fs::copy(source, &temporary).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        std::fs::rename(&temporary, installed).map_err(|e| e.to_string())
+    };
+    copy().map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("Couldn't copy the menu bar into place\n{error}\n→ vhalla menubar status")
+    })
+}
+
+#[cfg(unix)]
+fn menubar_install() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("The menu bar runs only on macOS".into());
+    }
+    let source = resolve_menubar(true)?;
+    if !menubar_has_lifecycle(&source) {
+        return Err(MENUBAR_TOO_OLD.into());
+    }
+    let installed =
+        installed_menubar().ok_or("Couldn't find your home folder\n→ vhalla help menubar")?;
+    if source != installed {
+        copy_menubar(&source, &installed)?;
+    }
+    retire_legacy_launch_agent(&installed);
+    run_menubar_helper(&installed, "install")?;
+    run_menubar_helper(&installed, "start")
+}
+
+#[cfg(unix)]
+fn menubar_uninstall() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("The menu bar runs only on macOS".into());
+    }
+    let installed =
+        installed_menubar().ok_or("Couldn't find your home folder\n→ vhalla help menubar")?;
+    retire_legacy_launch_agent(&installed);
+    let ok = if cli::Style::stdout().ascii {
+        "OK"
+    } else {
+        "✓"
+    };
+    if !qualified_binary(&installed) {
+        println!("{ok} Valhalla won't open at login");
+        return Ok(());
+    }
+    if menubar_has_lifecycle(&installed) {
+        run_menubar_helper(&installed, "uninstall")?;
+    } else {
+        println!("{ok} Valhalla won't open at login");
+    }
+    std::fs::remove_file(&installed).map_err(|error| {
+        format!("Valhalla no longer opens at login, but its copy couldn't be removed\n{error}\n→ vhalla menubar uninstall")
+    })
+}
+
+#[cfg(unix)]
+fn menubar_status() -> Result<(), String> {
+    match installed_menubar() {
+        Some(installed) if qualified_binary(&installed) && menubar_has_lifecycle(&installed) => {
+            run_menubar_helper(&installed, "status")
+        }
+        Some(installed) if qualified_binary(&installed) => {
+            let next = if cli::Style::stdout().ascii {
+                "->"
+            } else {
+                "→"
+            };
+            println!("An older Valhalla menu bar is installed.\n{next} vhalla menubar install");
+            Ok(())
+        }
+        _ => {
+            let next = if cli::Style::stdout().ascii {
+                "->"
+            } else {
+                "→"
+            };
+            println!("Valhalla's menu bar isn't installed.\n{next} vhalla menubar install");
+            Ok(())
+        }
+    }
+}
+
+/// `menubar-status.json` in the Valhalla folder: counts from one `rooms
+/// status` read and when it happened. No room names, keys or paths.
+#[cfg(unix)]
+fn menubar_status_json(now_ms: u128, rooms: Result<MenubarRooms, &str>) -> String {
+    match rooms {
+        Ok(r) => format!(
+            "{{\"schemaVersion\":1,\"refreshedAt\":{now_ms},\"rooms\":{{\"count\":{},\"height\":{},\"waiting\":{},\"failed\":{},\"partial\":{}}}}}\n",
+            r.count, r.height, r.waiting, r.failed, r.partial
+        ),
+        Err(code) => format!("{{\"schemaVersion\":1,\"refreshedAt\":{now_ms},\"error\":\"{code}\"}}\n"),
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MenubarRooms {
+    count: u64,
+    height: u64,
+    waiting: u64,
+    failed: u64,
+    partial: bool,
+}
+
+/// Reads the counts the menu shows from `rooms status` JSON.
+#[cfg(all(unix, feature = "experimental-rooms-tui"))]
+fn menubar_rooms(stdout: &[u8]) -> Option<MenubarRooms> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    let number = |v: &serde_json::Value| {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    };
+    let summary = value.get("pendingSummary")?;
+    let count = |name: &str| summary.get(name).and_then(number).unwrap_or(0);
+    Some(MenubarRooms {
+        count: value.get("rooms")?.as_array()?.len() as u64,
+        height: value.get("height").and_then(number).unwrap_or(0),
+        waiting: count("queued") + count("submitted"),
+        failed: count("collision") + count("rejected"),
+        partial: matches!(value.get("partial"), Some(serde_json::Value::Bool(true)))
+            || value.get("partial").and_then(|v| v.as_str()) == Some("true"),
+    })
+}
+
+/// `vhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME
+/// --config FILE` — reads `rooms status` and saves its counts for the menu
+/// bar. Read-only for rooms: it never touches identities or the stores
+/// beyond what `rooms status` reads.
+#[cfg(unix)]
+fn menubar_refresh(args: &[std::ffi::OsString]) -> Result<(), String> {
+    let root = state_directory().ok_or("Couldn't find your home folder\n→ vhalla help menubar")?;
+    std::fs::create_dir_all(&root)
+        .map_err(|e| format!("Couldn't create the Valhalla folder\n{e}"))?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    #[cfg(feature = "experimental-rooms-tui")]
+    let (rooms, failure) = {
+        let exe =
+            std::env::current_exe().map_err(|e| format!("Couldn't find vhalla itself\n{e}"))?;
+        let mut rooms_args: Vec<std::ffi::OsString> = vec!["rooms".into(), "status".into()];
+        rooms_args.extend(args.iter().map(|a| a.to_owned()));
+        let out = std::process::Command::new(exe)
+            .args(&rooms_args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("Couldn't run vhalla rooms status\n{e}"))?;
+        if out.status.success() {
+            match menubar_rooms(&out.stdout) {
+                Some(rooms) => (Ok(rooms), None),
+                None => (
+                    Err("rooms-unreadable"),
+                    Some(
+                        "vhalla rooms status printed something the menu bar can't read".to_owned(),
+                    ),
+                ),
+            }
+        } else {
+            let detail = String::from_utf8_lossy(&out.stderr);
+            let detail = detail
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("")
+                .trim_start_matches("vhalla: ")
+                .to_owned();
+            (
+                Err("rooms-unavailable"),
+                Some(format!(
+                    "Couldn't read your rooms\n{detail}\n→ vhalla rooms status {}",
+                    args.iter()
+                        .map(|a| a.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )),
+            )
+        }
+    };
+    #[cfg(not(feature = "experimental-rooms-tui"))]
+    let (rooms, failure): (Result<MenubarRooms, &str>, Option<String>) = {
+        let _ = args;
+        (
+            Err("not-built"),
+            Some(
+                "This vhalla was built without rooms, so there's no room status to show".to_owned(),
+            ),
+        )
+    };
+    let path = root.join("menubar-status.json");
+    atomic_write(&path, &menubar_status_json(now_ms, rooms), 0o600)
+        .map_err(|e| format!("Couldn't save room status for the menu bar\n{e}"))?;
+    if let Some(message) = failure {
+        return Err(message);
+    }
+    if let Ok(rooms) = rooms {
+        let ok = if cli::Style::stdout().ascii {
+            "OK"
+        } else {
+            "✓"
+        };
+        let plural = |n: u64, one: &str, many: &str| {
+            if n == 1 {
+                format!("1 {one}")
+            } else {
+                format!("{n} {many}")
+            }
+        };
+        let mut line = format!(
+            "{ok} Room status saved for the menu bar: {}",
+            plural(rooms.count, "room", "rooms")
+        );
+        if rooms.waiting > 0 {
+            line.push_str(&format!(
+                ", {} waiting",
+                plural(rooms.waiting, "send", "sends")
+            ));
+        }
+        if rooms.failed > 0 {
+            line.push_str(&format!(
+                ", {} didn't go through",
+                plural(rooms.failed, "send", "sends")
+            ));
+        }
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// Write `content` to `path` atomically (same-directory temp + rename)
@@ -646,151 +992,6 @@ fn atomic_write(path: &std::path::Path, content: &str, mode: u32) -> Result<(), 
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn menubar_install() -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("menubar install manages a launchd agent, which exists only on macOS".into());
-    }
-    let source = resolve_menubar(true)?;
-    let installed =
-        installed_menubar().ok_or("could not resolve the state directory (is HOME set?)")?;
-    if source != installed {
-        use std::os::unix::fs::PermissionsExt;
-        let bin_dir = installed.parent().unwrap();
-        std::fs::create_dir_all(bin_dir).map_err(|e| e.to_string())?;
-        std::fs::set_permissions(bin_dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
-        let temporary =
-            installed.with_file_name(format!(".vhalla-menubar.tmp-{}", std::process::id()));
-        let copy = || -> Result<(), String> {
-            std::fs::copy(&source, &temporary).map_err(|e| e.to_string())?;
-            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| e.to_string())?;
-            std::fs::rename(&temporary, &installed).map_err(|e| e.to_string())
-        };
-        if let Err(error) = copy() {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(format!("could not install the menu-bar binary: {error}"));
-        }
-    }
-    let plist = launch_agent_path()?;
-    if let Some(dir) = plist.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    atomic_write(&plist, &launch_agent_plist(&installed), 0o600)?;
-    let domain = user_launch_domain()?;
-    // A stale registration is replaced idempotently; a failed bootout just
-    // means the label was not loaded. Bootout is asynchronous — bootstrap
-    // races the teardown unless the label has actually left the domain.
-    let label = format!("{domain}/{MENUBAR_LAUNCH_AGENT}");
-    let _ = launchctl(&["bootout", &label]);
-    for _ in 0..20 {
-        let still_loaded = std::process::Command::new("/bin/launchctl")
-            .args(["print", &label])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !still_loaded {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    launchctl(&["bootstrap", &domain, &plist.to_string_lossy()])
-        .map_err(|e| format!("the launch agent could not be loaded: {e}"))?;
-    println!("installed: {}", installed.display());
-    println!("launch agent loaded: {MENUBAR_LAUNCH_AGENT}");
-    Ok(())
-}
-
-#[cfg(unix)]
-fn menubar_uninstall() -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
-        return Err("menubar uninstall manages a launchd agent, which exists only on macOS".into());
-    }
-    if let Ok(domain) = user_launch_domain() {
-        let _ = launchctl(&["bootout", &format!("{domain}/{MENUBAR_LAUNCH_AGENT}")]);
-    }
-    if let Ok(plist) = launch_agent_path() {
-        let _ = std::fs::remove_file(plist);
-    }
-    if let Some(installed) = installed_menubar() {
-        let _ = std::fs::remove_file(installed);
-    }
-    println!("valhalla menu bar uninstalled");
-    Ok(())
-}
-
-#[cfg(unix)]
-fn menubar_status() -> Result<(), String> {
-    match installed_menubar() {
-        Some(installed) if qualified_binary(&installed) => {
-            println!("installed: {}", installed.display());
-        }
-        _ => println!("installed: none"),
-    }
-    if cfg!(target_os = "macos") {
-        let plist = launch_agent_path()?;
-        if !plist.exists() {
-            println!("launch agent: none");
-        } else {
-            let loaded = user_launch_domain()
-                .map(|domain| {
-                    std::process::Command::new("/bin/launchctl")
-                        .args(["print", &format!("{domain}/{MENUBAR_LAUNCH_AGENT}")])
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false);
-            println!(
-                "launch agent: {}",
-                if loaded { "loaded" } else { "not loaded" }
-            );
-        }
-    }
-    match resolve_menubar(false) {
-        Ok(binary) => println!("launch resolves to: {}", binary.display()),
-        Err(_) => println!("launch resolves to: nothing qualified"),
-    }
-    Ok(())
-}
-
-/// `vhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME
-/// --config FILE` — captures a `rooms status` snapshot and writes it to
-/// `state_directory()/outputs/rooms-status.json` so the menu bar can list
-/// and open it. This is a read-only wrapper: it never touches identities
-/// or the rooms stores.
-#[cfg(unix)]
-fn menubar_refresh(args: &[std::ffi::OsString]) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate this executable: {e}"))?;
-    let mut rooms_args: Vec<std::ffi::OsString> = vec!["rooms".into(), "status".into()];
-    rooms_args.extend(args.iter().map(|a| a.to_owned()));
-    let out = std::process::Command::new(exe)
-        .args(&rooms_args)
-        .output()
-        .map_err(|e| format!("could not run vhalla rooms status: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("rooms status failed: {err}"));
-    }
-    let directory = state_directory()
-        .ok_or_else(|| "could not resolve the state directory (is HOME set?)".to_owned())?
-        .join("outputs");
-    std::fs::create_dir_all(&directory)
-        .map_err(|e| format!("could not create the outputs directory: {e}"))?;
-    let path = directory.join("rooms-status.json");
-    std::fs::write(&path, &out.stdout)
-        .map_err(|e| format!("could not write {path}: {e}", path = path.display()))?;
-    println!("{}", path.display());
     Ok(())
 }
 
@@ -1177,5 +1378,130 @@ mod identity_copy_tests {
         );
         assert_eq!(phrase_warning(cli::Audience::Quiet, PLAIN), None);
         assert_eq!(phrase_warning(cli::Audience::Agent, PLAIN), None);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod menubar_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    const PLAIN: cli::Style = cli::Style {
+        color: false,
+        ascii: false,
+    };
+
+    #[test]
+    fn start_outcomes_follow_the_menu_bar_exit() {
+        let exit = |code: i32| Some(std::process::ExitStatus::from_raw(code << 8));
+        assert_eq!(menubar_start_outcome(None), MenubarStart::Running);
+        assert_eq!(menubar_start_outcome(exit(3)), MenubarStart::AlreadyRunning);
+        assert_eq!(menubar_start_outcome(exit(1)), MenubarStart::Failed);
+        assert_eq!(
+            menubar_start_outcome(Some(std::process::ExitStatus::from_raw(9))),
+            MenubarStart::Blocked
+        );
+    }
+
+    #[test]
+    fn a_blocked_menu_bar_gets_the_open_anyway_steps_and_no_bypass() {
+        let message =
+            menubar_blocked_message(std::path::Path::new("/Users/me/Downloads/vhalla-menubar"));
+        let text = cli::render_error(&message, cli::Audience::Human, PLAIN);
+        assert!(
+            text.starts_with("✗ macOS stopped the Valhalla menu bar from opening.\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("System Settings › Privacy & Security"),
+            "{text}"
+        );
+        assert!(text.contains("Open Anyway"), "{text}");
+        assert!(text.ends_with("→ vhalla menubar\n"), "{text}");
+        assert!(!text.contains("xattr") && !text.contains("spctl"), "{text}");
+        assert!(!text.contains("/Users/me"), "{text}");
+    }
+
+    #[test]
+    fn the_missing_binary_copy_points_to_the_installer() {
+        let text = cli::render_error(MENUBAR_NOT_INSTALLED, cli::Audience::Human, PLAIN);
+        assert_eq!(
+            text,
+            "✗ The Valhalla menu bar isn't on this Mac yet.\n  It's a separate download. The installer can add it next to vhalla:\n  curl -fsSL https://vhalla.com/install.sh | sh -s -- --with-menubar\n→ vhalla menubar install\n"
+        );
+    }
+
+    #[test]
+    fn only_the_exact_legacy_login_item_is_retired() {
+        let dir = std::env::temp_dir().join(format!("vhalla-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let installed = dir.join("bin/vhalla-menubar");
+        let plist = dir.join("legacy.plist");
+        std::fs::write(&plist, legacy_launch_agent_plist(&installed)).unwrap();
+        assert!(is_legacy_launch_agent(&plist, &installed));
+        assert!(!is_legacy_launch_agent(&plist, &dir.join("other")));
+        std::fs::write(
+            &plist,
+            legacy_launch_agent_plist(&installed).replace("<true/>", "<false/>"),
+        )
+        .unwrap();
+        assert!(!is_legacy_launch_agent(&plist, &installed));
+        assert!(!is_legacy_launch_agent(
+            &dir.join("missing.plist"),
+            &installed
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_menu_bars_with_their_own_lifecycle_get_commands() {
+        let dir = std::env::temp_dir().join(format!("vhalla-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("old");
+        let new = dir.join("new");
+        std::fs::write(&old, b"\x7fELF old menu bar").unwrap();
+        let mut bytes = b"\xcf\xfa\xed\xfe".to_vec();
+        bytes.extend_from_slice(MENUBAR_LIFECYCLE_MARKER);
+        std::fs::write(&new, bytes).unwrap();
+        assert!(!menubar_has_lifecycle(&old));
+        assert!(menubar_has_lifecycle(&new));
+        assert!(!menubar_has_lifecycle(&dir.join("missing")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_status_file_holds_counts_only() {
+        let rooms = MenubarRooms {
+            count: 4,
+            height: 1200,
+            waiting: 1,
+            failed: 0,
+            partial: false,
+        };
+        assert_eq!(
+            menubar_status_json(5, Ok(rooms)),
+            "{\"schemaVersion\":1,\"refreshedAt\":5,\"rooms\":{\"count\":4,\"height\":1200,\"waiting\":1,\"failed\":0,\"partial\":false}}\n"
+        );
+        assert_eq!(
+            menubar_status_json(5, Err("rooms-unavailable")),
+            "{\"schemaVersion\":1,\"refreshedAt\":5,\"error\":\"rooms-unavailable\"}\n"
+        );
+    }
+
+    #[cfg(feature = "experimental-rooms-tui")]
+    #[test]
+    fn room_counts_come_from_rooms_status() {
+        let json = br#"{"height":12,"revision":3,"partial":false,"quorum":null,"schedule":[],"rooms":[{"slug":"design"},{"slug":"ops"}],"pendingSummary":{"queued":1,"submitted":1,"committed":4,"collision":1,"rejected":0},"pending":[]}"#;
+        assert_eq!(
+            menubar_rooms(json),
+            Some(MenubarRooms {
+                count: 2,
+                height: 12,
+                waiting: 2,
+                failed: 1,
+                partial: false
+            })
+        );
+        assert_eq!(menubar_rooms(b"not json"), None);
     }
 }

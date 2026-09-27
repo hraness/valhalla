@@ -1,0 +1,15 @@
+[mark.people Vh] Valhalla · 4 rooms in sync
+Valhalla
+✓ 4 rooms in sync · Updated 5 min ago
+─────────
+summary 1 · 2 KB · today  MD
+  ⌥ Show in Finder
+summary 0 · 2 KB · today  MD
+  ⌥ Show in Finder
+Open outputs folder (primary)  ⌘O
+─────────
+✓ Open at login
+─────────
+♡ Updates & support ↗
+  ⌥ Copy diagnostics
+Quit Valhalla
