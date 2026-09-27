@@ -3339,14 +3339,11 @@ mod enabled {
 
         // The seeded store holds exactly the empty genesis archive —
         // readable through the same shared-hold path the node opens.
-        let seeded = vhalla_social_store::read_archive(
-            &social_dir,
-            plan.genesis.realm,
-            plan.genesis.limits,
-        )
-        .unwrap();
-        let empty = vhalla_social::archive::Archive::new(plan.genesis.realm, plan.genesis.limits)
-            .unwrap();
+        let seeded =
+            vhalla_social_store::read_archive(&social_dir, plan.genesis.realm, plan.genesis.limits)
+                .unwrap();
+        let empty =
+            vhalla_social::archive::Archive::new(plan.genesis.realm, plan.genesis.limits).unwrap();
         assert_eq!(seeded.root(), empty.root());
 
         // node-check decodes the whole boot path against the seeded store.
