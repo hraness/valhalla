@@ -94,6 +94,7 @@ main {
 
 /* Header: brand, plain links, one action, appearance menu last. */
 .masthead {
+  background:var(--paper);
   --hraness-marketing-measure:var(--page-measure);
   --hraness-marketing-gutter:var(--gutter);
   --hraness-marketing-header-height:64px;

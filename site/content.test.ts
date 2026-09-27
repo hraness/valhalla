@@ -53,7 +53,8 @@ test('readiness and privacy limitations stay discoverable from the home page', (
   expect(home).toContain('href="/docs/status/"');
   expect(home).toContain('Private rooms');
   expect(home).toContain('Not ready');
-  expect(home).toContain('Illustrative network');
+  expect(home).toContain('never touches the network');
+  expect(home).toContain('There is no public network or hosted service to join yet');
   expect(home).not.toContain('href="https://app.vhalla.com');
   const status=pages.get('/docs/status/')!;
   for(const phrase of ['4,096', '30 seconds', '512', 'Incremental finalization', 'Status/Stage hints never advance permanent retention', 'independent-machine']) {
