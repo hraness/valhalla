@@ -6,6 +6,10 @@ platform with Docker builds, a public TCP endpoint and a mounted volume
 wildcard address inside the container and the provider's TCP proxy
 fronts it, so peers dial the public `host:port` the platform assigns.
 
+The [27 September 2026 mesh report](../../docs/rooms-seed-mesh-2026-09-27.md)
+records a three-seed deployment, discovery from one bootstrap peer, a laptop
+joining and leaving the voting set, and matching committed state.
+
 ## Shape
 
 - `Dockerfile` builds `vhalla` with `experimental-rooms-node` from this
