@@ -77,7 +77,7 @@ for (const match of fontCSS.matchAll(/url\(["']?(\.\/fonts\/[^"')]+)["']?\)/g)) 
 }
 await cp(resolve(kit, "marketing-assets"), resolve(output, "design/marketing-assets"), { recursive: true });
 await cp(resolve(kit, "../LICENSE"), resolve(output, "design/LICENSE"));
-const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts"), resolve(root, "fairy-field.ts"), resolve(root, "status-page.ts")], outdir: output, naming: "[name].js", target: "browser", format: "iife", minify: true });
+const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts"), resolve(root, "status-page.ts")], outdir: output, naming: "[name].js", target: "browser", format: "iife", minify: true });
 if (!result.success) throw new AggregateError(result.logs, "Script bundle failed");
 const pkg = JSON.parse(await readFile(resolve(kit, "../package.json"), "utf8"));
 await writeFile(resolve(output, "design/source.json"), JSON.stringify({ package: pkg.name, version: pkg.version, files: Object.fromEntries(await Promise.all(files.map(async name => [name, createHash("sha256").update(await readFile(resolve(output, "design", name))).digest("hex")]))) }, null, 2));
