@@ -3,7 +3,7 @@
 - `index.html`, `styles.css`, `appearance.ts`, `install.sh` (the `curl | sh` installer served at `/install.sh`), and `build.ts` own the static Valhalla website. `home.ts` builds the home page's FAQ structured data from the visible FAQ. Keep `install.sh` POSIX, checksum-verified and pinned to the release named in `pages.ts` (`latestRelease`).
 - `pages.ts` owns documentation pages with their Diátaxis kinds; `compare.ts` owns comparison and use-case pages; `writing.ts` owns the `/writing/` hub; `articles.ts` owns the essays and technique posts (bodies in `articles/<slug>.md`, review records in `article-admissions.ts`, validated by `articles.test.ts`), and only records marked `indexable` reach discovery; `discovery.ts` adds indexable posts to the sitemap, `llms.txt` and the Atom feed at `/writing/feed.xml`; `docs.ts` renders every collection with grouped navigation, breadcrumbs and per-page JSON-LD.
 - `tools/qualify_browser.mjs` walks every built `index.html` (not just `/docs/`) and checks overflow, navigation, CSP and console errors at desktop and phone widths.
-- `valhalla-mark.svg` and `BRAND_ASSETS.md` record the checked header identity and unchanged browser/social assets. `generate-og.tsx` emits `social.png` plus the per-collection `og-*.png` cards through the shared social-image grammar, using the text in `social-cards.ts`; each collection's renderer sets `og:image`/`twitter:image` and matching alt text.
+- `valhalla-mark.svg` and `BRAND_ASSETS.md` record the checked header identity and unchanged browser/social assets. `generate-og.tsx` emits `social.png` plus the per-collection `og-*.png` cards from the site's one `defineSocialImageSite` declaration in `social-cards.ts`; each collection's renderer sets `og:image`/`twitter:image` and matching alt text from `socialImageAlt`.
 - `metadata.test.ts`, `content.test.ts` and `support-footer.test.ts` verify discovery, per-page CSP hashes, link resolution and the shared support boundary.
 - `tools/update_csp.ts` rewrites the JSON-LD hashes in `vercel.json` from the rendered pages.
 
@@ -13,6 +13,7 @@
 - Use the released Design Kit recipe for both header title and exact-alpha mark. Keep the original SVG fallback, existing home label, navigation, and final appearance control.
 - Declare the mask URL in the external stylesheet. Preserve the restrictive CSP without adding inline-style or script exceptions.
 - Copy every imported design stylesheet and its license; record their exact hashes in the built source receipt.
+- Share images come only from the shared `@hraness/web-discovery` social-image template via the site's single `defineSocialImageSite` declaration in `social-cards.ts`. Pages pass copy only (`eyebrow`, `headline`, `description`); add no per-site drawing code.
 - Run `bun run check:site` and inspect the built header at phone and desktop sizes. Follow `README.md` for site deployment and production verification, and preserve required repository CI.
 
 # Public copy

@@ -7,7 +7,7 @@ import { writing } from "./writing.ts";
 import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from "./docs.ts";
 import { articles, articleHref } from "./articles.ts";
 import { homeFaq, renderHome } from "./home.ts";
-import { socialCardAlt } from "./social-cards.ts";
+import { socialCardAlt, socialCards, socialSite } from "./social-cards.ts";
 
 const index = await readFile(new URL("./index.html", import.meta.url), "utf8");
 const home = renderHome(index);
@@ -143,4 +143,18 @@ test("every social card is a committed 1200×630 PNG", async () => {
     const digest = createHash("sha256").update(png).digest("hex");
     expect(brandAssets, `${name} hash in BRAND_ASSETS.md`).toContain(`\`${name}\` SHA-256: \`${digest}\``);
   }
+});
+
+test("every social card renders from the one shared site declaration", async () => {
+  const icon = await readFile(new URL("./icon.png", import.meta.url));
+  expect(socialSite.name).toBe("Valhalla");
+  expect(socialSite.domain).toBe("vhalla.com");
+  expect(socialSite.icon).toEqual({ kind: "app", src: `data:image/png;base64,${icon.toString("base64")}` });
+  expect(socialCards.map(card => card.file).sort()).toEqual(["og-compare.png", "og-docs.png", "og-usecases.png", "og-writing.png", "social.png"]);
+  for (const card of socialCards) {
+    if (card.page) expect(Object.keys(card.page).every(key => ["eyebrow", "headline", "description"].includes(key)), card.file).toBe(true);
+  }
+  const generator = await readFile(new URL("./generate-og.tsx", import.meta.url), "utf8");
+  expect(generator).toContain("createSocialImageCard(socialImageSiteDetails(socialSite, variant.page))");
+  expect(generator).not.toMatch(/<svg|<div|ImageResponse/);
 });
