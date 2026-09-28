@@ -20,7 +20,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --show-error --location --retry 3 --connect-timeout 30 --max-time 300 "$url" -o "$RUNNER_TEMP/lean.tar.zst" --write-out 'download_seconds=%{time_total}\narchive_bytes=%{size_download}\n'
       - name: Verify distribution, proofs, axioms and shared corpus
         run: python3 verify/run_lean.py --archive "$RUNNER_TEMP/lean.tar.zst" --out "$RUNNER_TEMP/lean-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: lean-quorum-evidence
@@ -48,7 +48,7 @@ jobs:
           curl -sSfL https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar -o "$RUNNER_TEMP/tla2tools.jar"
       - name: Verify tool digest, finite models and counterexample mutations
         run: python3 verify/run_tlc.py --java "$RUNNER_TEMP/private-jre/bin/java" --jar "$RUNNER_TEMP/tla2tools.jar" --out "$RUNNER_TEMP/private-models"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: private-model-evidence
