@@ -2,6 +2,8 @@
 // FAQ at build time, so search engines and readers get the same questions and
 // answers. Each JSON-LD answer is the text of the first paragraph of the
 // visible answer; put "more" links in a later paragraph.
+import { latestRelease } from './pages.ts';
+
 type FaqEntry = { question: string; answer: string };
 
 const decode = (value: string) => value
@@ -37,6 +39,9 @@ export function renderHome(template: string): string {
   const graph = JSON.parse(script[1]);
   const node = graph['@graph']?.find((item: { '@type'?: string }) => item['@type'] === 'FAQPage');
   if (!node) throw new Error('Home JSON-LD has no FAQPage node');
+  const software = graph['@graph']?.find((item: { '@type'?: string }) => item['@type'] === 'SoftwareApplication');
+  if (!software) throw new Error('Home JSON-LD has no SoftwareApplication node');
+  software.softwareVersion = latestRelease.replace(/^v/, '');
   node.mainEntity = faq.map(({ question, answer }) => ({ '@type': 'Question', name: question, acceptedAnswer: { '@type': 'Answer', text: answer } }));
   const json = JSON.stringify(graph).replaceAll('<', '\\u003c');
   return template.replace(script[0], () => `<script type="application/ld+json">${json}</script>`);

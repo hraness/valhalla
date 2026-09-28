@@ -34,13 +34,15 @@ test('every local page destination and section resolves', () => {
   }
 });
 
+const quarantinedPaths = new Set(articles.filter(article => article.admission.lifecycle === 'quarantined').map(articleHref));
 test('documentation and marketing pages are static, accessible and correctly canonicalized', () => {
   for (const [path, html] of pages) {
     if (path==='/') continue;
     expect(html, path).toContain(`href="https://vhalla.com${path}"`);
     expect(html).toContain('<main id="main"');
     expect(html).toContain('Skip to content');
-    expect(html).toContain('aria-current="page"');
+    // Quarantined articles stay out of every navigation list, so they have no current nav item.
+    if (!quarantinedPaths.has(path)) expect(html, path).toContain('aria-current="page"');
     expect(html).toMatch(/<summary>(Documentation|Compare|Writing|Explore)/);
     expect(html).not.toContain('<form');
     expect(html).not.toMatch(/<script[^>]+src="https?:/);
@@ -79,6 +81,21 @@ test('comparisons state custody and status', () => {
   for (const page of compare) {
     const html=pages.get(compareHref(page))!;
     expect(html, compareHref(page)).toContain('development');
+  }
+});
+
+test('every comparison and use case names its checked sources and the date', () => {
+  for (const [path, page] of [...compare.map(item => [compareHref(item), item] as const), ['/use-cases/', useCases] as const]) {
+    expect(page.checkedOn, path).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(Number.isNaN(Date.parse(`${page.checkedOn}T00:00:00Z`)), path).toBe(false);
+    expect(page.sources?.length ?? 0, path).toBeGreaterThan(0);
+    for (const source of page.sources ?? []) expect(source.url, path).toStartWith('https://');
+    const html = pages.get(path)!;
+    expect(html, path).toContain(`Checked on ${page.checkedOn}`);
+    expect(html, path).toContain('<h2 id="sources">Sources</h2>');
+    for (const source of page.sources ?? []) expect(html, path).toContain(`href="${source.url}"`);
+    const graph = JSON.parse(html.match(/<script type="application\/ld\+json">(.+?)<\/script>/)![1]);
+    expect(graph['@graph'][0].dateModified, path).toBe(page.checkedOn);
   }
 });
 

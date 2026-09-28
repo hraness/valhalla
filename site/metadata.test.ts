@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { docs } from "./pages.ts";
+import { docs, latestRelease } from "./pages.ts";
 import { compare, useCases } from "./compare.ts";
 import { writing } from "./writing.ts";
 import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from "./docs.ts";
@@ -44,8 +44,22 @@ test("structured data describes only what the page shows", () => {
   const app = graph["@graph"][2];
   expect(app.description).toContain("in development");
   expect(app.applicationCategory).toBe("CommunicationApplication");
-  expect(app.operatingSystem).toBeUndefined();
-  expect(app.offers).toBeUndefined();
+  // Platform, price, license and version repeat the visible hero facts.
+  const heroFacts = index.match(/<p class="hero-facts">([^<]+)<\/p>/)?.[1] ?? "";
+  expect(heroFacts).toContain(latestRelease);
+  expect(app.softwareVersion).toBe(latestRelease.replace(/^v/, ""));
+  expect(heroFacts).toContain("Apple Silicon macOS and x86-64 Linux");
+  expect(app.operatingSystem).toBe("macOS (Apple Silicon), Linux (x86-64)");
+  expect(heroFacts).toContain("nothing to pay");
+  expect(app.offers).toEqual({ "@type": "Offer", price: "0", priceCurrency: "USD" });
+  expect(heroFacts).toContain("MIT license");
+  expect(app.license).toBe("https://opensource.org/licenses/MIT");
+  // Every node names the same publisher by @id.
+  const [organization, website, , source] = graph["@graph"];
+  expect(organization["@id"]).toBe("https://hraness.com/#organization");
+  expect(website.publisher).toEqual({ "@id": "https://hraness.com/#organization" });
+  expect(app.author).toEqual({ "@id": "https://hraness.com/#organization" });
+  expect(source.author).toEqual({ "@id": "https://hraness.com/#organization" });
   const faq = graph["@graph"][4];
   const questions = index.matchAll(/hraness-marketing-question__summary">([^<]+)</g);
   expect(faq.mainEntity.length).toBe([...questions].length);

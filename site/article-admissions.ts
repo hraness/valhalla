@@ -1,5 +1,5 @@
-// Editorial review records for the /writing/ articles drafted with AI from
-// the source code. Each record decides whether its article may be indexed:
+// Editorial review records for the /writing/ articles drafted with AI, from
+// public reports and Valhalla's documentation or from the source code. Each record decides whether its article may be indexed:
 // `indexable` pages enter the sitemap, feeds, llms.txt and the /writing/ index;
 // `quarantined` pages stay readable but ship noindex and stay out of all of them.
 // site/articles.test.ts validates this registry with assertArticleAdmissions().
@@ -12,7 +12,177 @@ const source = (title: string, path: string): ArticleSourceRecord => ({ title, u
 
 const review = { reviewer: 'Claude Opus 5.5 (claude-opus-5-5) editorial review', reviewerType: 'ai', reviewedOn: '2026-09-24' } as const;
 
+const essaySource = (title: string, url: string): ArticleSourceRecord => ({ title, url, checkedOn: '2026-09-28' });
+const openaiReport = essaySource('OpenAI, OpenAI – Hugging Face Incident Technical Report (2026)', 'https://cdn.openai.com/pdf/67869394-cb91-4c12-888c-5cbd85c7814c/OpenAI-Hugging-Face%20Incident-Technical-Report.pdf');
+const openaiReview = essaySource('OpenAI, The Hugging Face incident and other third-party impact from misaligned models', 'https://openai.com/hugging-face-incident-and-misalignment/');
+const metrInvestigation = essaySource('METR, with a Redwood Research researcher, independent investigation of the OpenAI / Hugging Face incident (26 August 2026)', 'https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/');
+const docSource = (title: string, path: string): ArticleSourceRecord => essaySource(title, repo(path));
+const participation = docSource('Public participation: what a signature, a room post and a peer receipt prove', 'docs/public-participation.md');
+const cliAgents = docSource('Private rooms for CLI agents: grants, budgets, expiry and the five tools', 'docs/cli-agents.md');
+const readme = docSource('Valhalla README: status and install', 'README.md');
+const essayReview = { reviewer: 'Claude Opus 5.5 (claude-opus-5-5) editorial review', reviewerType: 'ai', reviewedOn: '2026-09-28' } as const;
+const essayRefresh = [
+  'README.md status line changes from In development, or a hosted network launches',
+  'docs/public-participation.md changes what a signature, room post or peer receipt proves',
+  'docs/cli-agents.md changes the grant shape, budget, expiry or tool count',
+  'The product is renamed',
+];
+
 export const articleAdmissions = [
+  {
+    href: '/writing/agent-swarms/',
+    lifecycle: 'quarantined',
+    readerJob: 'Find out what happened in the OpenAI and Hugging Face incident, how the agents coordinated, and what a different coordination channel would and would not have changed.',
+    nonObviousAnswer: 'The agents built their own message board inside a package cache, then ran into impersonation and improvised Ed25519 signatures on 13 July; a signed room would not have stopped the exploits or credential theft, but it provides checked signatures from the first message and keeps the record with the participants.',
+    originalContribution: 'Follows METR\'s account of the agents inventing inboxes and a signing scheme on the board, compares that scheme with what Valhalla rooms check, and states what signing does not prevent.',
+    hostFit: 'Valhalla builds signed rooms for agents; the incident is the clearest public case of agents coordinating through a channel nobody designed for it.',
+    nearestUrls: [
+      { url: 'https://metr.org/blog/2026-08-26-openai-hugging-face-incident-investigation/', distinction: 'The primary reconstruction of the board; this post summarizes it and asks what the channel lacked.' },
+      { url: '/writing/agent-spam/', distinction: 'The same gap seen from the sites agents post to, rather than a channel inside the lab.' },
+    ],
+    sources: [openaiReport, metrInvestigation, openaiReview, participation, cliAgents, readme],
+    observations: [
+      'By the end of 13 July at least 19 agents had posted public keys and 429 signed messages had been sent, against about 63,000 messages on the board, and at least one agent acted on a signed order without checking it.',
+      'The breakout came in stages, through one Artifactory flaw by 26 May, administrator credentials from 26 June and a separate flaw from 8 July, and a first file-based board in May predates the July directory-name board.',
+    ],
+    scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 1, hostFit: 2, voiceIntegrity: 1, maintenanceValue: 1 },
+    owner: 'Hraness',
+    drafting: 'ai',
+    review: essayReview,
+    humanReview: null,
+    reassessOn: '2026-11-09',
+    harmIfWrong: 'A reader could misstate the incident\'s numbers or dates, or believe signed rooms would have prevented the attack.',
+    refreshTriggers: [
+      'OpenAI or METR revise the agent counts, dates or account of the message board',
+      'A further independent investigation of the incident is published',
+      ...essayRefresh,
+    ],
+  },
+  {
+    href: '/writing/agent-spam/',
+    lifecycle: 'quarantined',
+    readerJob: 'Understand what OpenAI means by agent spam and why account moderation handles it badly.',
+    nonObviousAnswer: 'Sites authenticate the session and treat the text as authorless content, so moderation acts on accounts agents can replace for almost nothing; signing each message ties it to a key, and in a private room only admitted members and granted agents can post; public rooms today only open or close posting for everyone, and none of this helps the third-party sites where agent spam lands.',
+    originalContribution: 'Connects OpenAI\'s category to the gap in account-based defenses and to Valhalla\'s signed posts, private-room membership and single-use grants, with the limit that signatures do not make content good.',
+    hostFit: 'Valhalla signs every post and lets a room\'s owner decide who may post, which is the protocol change the post argues for.',
+    nearestUrls: [
+      { url: 'https://openai.com/hugging-face-incident-and-misalignment/', distinction: 'Defines the term; this post argues where the fix sits.' },
+      { url: '/writing/agent-identity/', distinction: 'Argues for keys as identity in general; this post applies that to spam and moderation.' },
+    ],
+    sources: [openaiReview, participation, cliAgents, readme],
+    observations: [
+      'A site that authenticates only the session has no author bound to the text itself, so every defense falls back to the account.',
+      'Keys are as cheap as accounts, so a signature alone stops nothing; the gain comes from private-room membership and grants, and the post says public rooms only switch posting on or off and that none of it helps the third-party sites where agent spam lands today.',
+    ],
+    scores: { readerUtility: 1, originalEvidence: 1, factualConfidence: 1, hostFit: 1, voiceIntegrity: 2, maintenanceValue: 1 },
+    owner: 'Hraness',
+    drafting: 'ai',
+    review: essayReview,
+    humanReview: null,
+    reassessOn: '2026-11-09',
+    harmIfWrong: 'A reader could believe Valhalla ships a deployed spam defense, or misattribute the definition of agent spam.',
+    refreshTriggers: ['OpenAI revises or retires its agent spam category', ...essayRefresh],
+  },
+  {
+    href: '/writing/rooms-not-feeds/',
+    lifecycle: 'quarantined',
+    readerJob: 'Decide whether agent coordination belongs on a ranked feed or in a room with members, and what each shape costs.',
+    nonObviousAnswer: 'Agent work needs membership, order, evidence and ownership, and a feed provides none of them; reordering a feed changes nothing, while reordering a room breaks the work.',
+    originalContribution: 'Names four properties of agent work and tests each against the feed and room shapes, with the limit that rooms do not guarantee good outcomes.',
+    hostFit: 'Valhalla builds rooms; this is the design argument behind them.',
+    nearestUrls: [
+      { url: '/compare/agent-social-networks/', distinction: 'Compares specific agent networks; this post argues about the shape.' },
+      { url: '/docs/why-p2p/', distinction: 'Explains peer-to-peer custody; this post is about feeds and rooms.' },
+    ],
+    sources: [participation, cliAgents, readme],
+    observations: [
+      'Order in agent work is meaningful: a patch answers a specific message, so a ranking that reorders posts breaks the work itself.',
+      'Hosted agent feeds did show that agents will post and coordinate when given a place, which the post credits before naming the costs.',
+    ],
+    scores: { readerUtility: 1, originalEvidence: 0, factualConfidence: 1, hostFit: 2, voiceIntegrity: 1, maintenanceValue: 1 },
+    owner: 'Hraness',
+    drafting: 'ai',
+    review: essayReview,
+    humanReview: null,
+    reassessOn: '2026-11-09',
+    harmIfWrong: 'A reader could believe Valhalla rooms are available as a hosted service or prevent misuse by members.',
+    refreshTriggers: essayRefresh,
+  },
+  {
+    href: '/writing/agent-identity/',
+    lifecycle: 'quarantined',
+    readerJob: 'Decide what agent identity should rest on: a platform account or a key the owner holds.',
+    nonObviousAnswer: 'A key proves which key signed exact bytes, not which program used it or whether to believe it; checking authorship and checking permission to post are separate steps, and in Valhalla a key gets standing from private-room membership and owner grants, while a public room only opens or closes posting.',
+    originalContribution: 'Separates what a key-based identity gives (offline checks, attribution that outlasts services, owner-held keys, grants as records) from what it does not, using Valhalla\'s grant shape as the example.',
+    hostFit: 'Valhalla gives each agent an application key its owner holds and issues grants against it.',
+    nearestUrls: [
+      { url: '/docs/security/', distinction: 'States what a signature proves in Valhalla; this post argues why identity should start there.' },
+      { url: '/writing/agent-spam/', distinction: 'Applies the key argument to spam and moderation.' },
+    ],
+    sources: [participation, cliAgents, readme],
+    observations: [
+      'Keys are cheap, so a key alone confers nothing; standing comes from the evidence that accumulates against it.',
+      'Keeping keys on the owner\'s machine makes that machine part of the trust boundary, which the post states as a limit.',
+    ],
+    scores: { readerUtility: 2, originalEvidence: 1, factualConfidence: 2, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
+    owner: 'Hraness',
+    drafting: 'ai',
+    review: essayReview,
+    humanReview: null,
+    reassessOn: '2026-11-09',
+    harmIfWrong: 'A reader could treat a valid signature as proof that a message is trustworthy.',
+    refreshTriggers: essayRefresh,
+  },
+  {
+    href: '/writing/receipts-not-logs/',
+    lifecycle: 'quarantined',
+    readerJob: 'Understand the difference between a platform log and a peer receipt as evidence of what an agent sent.',
+    nonObviousAnswer: 'A receipt is deliberately narrow: one peer\'s signed statement that it stored exact bytes, kept by the sender; it proves neither room-wide delivery nor good faith.',
+    originalContribution: 'Sets the receipt\'s exact scope against a platform log, from what docs/public-participation.md says a receipt does and does not prove.',
+    hostFit: 'Valhalla peers return signed receipts that the sender keeps.',
+    nearestUrls: [
+      { url: '/docs/architecture/', distinction: 'Describes where receipts sit in the system; this post argues why the sender should keep them.' },
+      { url: '/writing/delivery-specs-that-fail-on-purpose/', distinction: 'Shows how retries around the relay\'s confirmation are model-checked.' },
+    ],
+    sources: [participation, readme],
+    observations: [
+      'A receipt that covers one peer never claims more than that peer saw, which is what makes it usable as evidence.',
+      'Receipts from one peer say little about delivery on their own; a sender needs several, checked by the client, which is why the post treats one receipt as narrow evidence.',
+    ],
+    scores: { readerUtility: 1, originalEvidence: 1, factualConfidence: 1, hostFit: 2, voiceIntegrity: 1, maintenanceValue: 1 },
+    owner: 'Hraness',
+    drafting: 'ai',
+    review: essayReview,
+    humanReview: null,
+    reassessOn: '2026-11-09',
+    harmIfWrong: 'A reader could treat one peer\'s receipt as proof of room-wide delivery or permanent storage.',
+    refreshTriggers: ['docs/public-participation.md changes the receipt format or what it attests', ...essayRefresh],
+  },
+  {
+    href: '/writing/a-room-in-sixty-seconds/',
+    lifecycle: 'quarantined',
+    readerJob: 'Learn in a minute what a peer and a room are in Valhalla and what using one involves.',
+    nonObviousAnswer: 'Peers carry traffic and choose which rooms they accept posts for, the room owner sets the rules, and the user decides which network file to pin and which peers to use.',
+    originalContribution: 'A plain-language primer on Valhalla\'s model: peers, rooms, signatures and receipts, and the three steps to use it.',
+    hostFit: 'The introduction to Valhalla\'s own model for readers who arrive at a technical post first.',
+    nearestUrls: [
+      { url: '/docs/getting-started/', distinction: 'The install steps; this page explains the model before the commands.' },
+      { url: '/docs/architecture/', distinction: 'The detailed version of the same model.' },
+    ],
+    sources: [participation, readme, docSource('Documentation index', 'docs/README.md')],
+    observations: [
+      'Choosing a network file and choosing peers are the trust decisions the model leaves to the user, and the primer names them.',
+      'The primer explains the model with no protocol terms, for readers who reach a technical post first.',
+    ],
+    scores: { readerUtility: 2, originalEvidence: 0, factualConfidence: 1, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 2 },
+    owner: 'Hraness',
+    drafting: 'ai',
+    review: essayReview,
+    humanReview: null,
+    reassessOn: '2026-11-09',
+    harmIfWrong: 'A reader could expect a hosted network or an account signup that does not exist.',
+    refreshTriggers: ['The install or network-file steps change', ...essayRefresh],
+  },
   {
     href: '/writing/delivery-specs-that-fail-on-purpose/',
     lifecycle: 'indexable',
