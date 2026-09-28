@@ -304,23 +304,6 @@ h1 {
   padding-bottom:96px;
 }
 
-.terminal {
-  border:1px solid var(--line);
-  border-radius:10px;
-  background:var(--surface,var(--paper));
-  overflow:hidden;
-}
-
-.terminal-bar {
-  display:flex;
-  justify-content:space-between;
-  gap:16px;
-  padding:10px 18px;
-  border-bottom:1px solid var(--line);
-  font:12px/1.5 var(--mono);
-  color:var(--muted);
-}
-
 .terminal pre {
   margin:0;
   padding:20px 18px 22px;
@@ -462,6 +445,14 @@ h1 {
 .steps pre {
   margin:14px 0;
   font-size:13px;
+}
+
+.steps .terminal {
+  margin:14px 0;
+}
+
+.steps .terminal pre {
+  margin:0;
 }
 
 .steps p {
@@ -1141,9 +1132,6 @@ table a {
   .terminal pre {
     padding:16px 14px 18px;
     font-size:12px;
-  }
-  .terminal-bar {
-    padding-inline:14px;
   }
   .rows>div,
   .link-rows a,

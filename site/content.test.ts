@@ -7,7 +7,8 @@ import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting,
 import { articles, articleHref, indexableArticles } from './articles.ts';
 import { articleEvidenceRevision } from './article-admissions.ts';
 import { renderLlms, renderSitemap } from './discovery.ts';
-const home = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+import { renderHome } from './home.ts';
+const home = renderHome(await readFile(new URL('./index.html', import.meta.url), 'utf8'));
 const pages = new Map([['/', home], ...docs.map(page=>[docHref(page), renderDoc(page, home)]), ...compare.map(page=>[compareHref(page), renderCompare(page, home)]), ...writing.map(page=>[writingHref(page), renderWriting(page, home)]), ...articles.map(article=>[articleHref(article), renderArticle(article, home)]), ['/use-cases/', renderUseCases(home)]]);
 
 test('every local page destination and section resolves', () => {
