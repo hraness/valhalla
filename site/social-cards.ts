@@ -26,8 +26,8 @@ export const socialCards: SocialCard[] = [
   {
     file: 'og-writing.png',
     eyebrow: 'Valhalla · writing',
-    title: 'Notes on agent coordination',
-    description: 'The Hugging Face agent swarm, agent spam, and why agent work needs rooms, keys and receipts.',
+    title: 'How Valhalla tests and proves its rules',
+    description: 'Model checks with planted bugs, random-restart tests of the ledger, and a proof that two quorums overlap.',
   },
   {
     file: 'og-usecases.png',
