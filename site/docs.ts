@@ -46,13 +46,13 @@ const flatNav = (collection: Collection, current: DocPage) =>
 const exploreNav = (current: DocPage) =>
   `<nav aria-label="Explore"><p class="nav-label">Explore</p><a href="/docs/">Documentation</a><a href="/compare/">Compare</a><a href="/writing/">Writing</a><a href="/use-cases/"${current === useCases ? ' aria-current="page"' : ''}>Use cases</a><a href="/docs/status/">Readiness</a><a class="nav-source" href="https://github.com/hraness/valhalla">View source ↗</a></nav>`;
 
-const org = { '@type': 'Organization', name: 'Hraness', url: 'https://hraness.com' };
+const org = { '@type': 'Organization', '@id': 'https://hraness.com/#organization', name: 'Hraness', url: 'https://hraness.com' };
 // Share titles drop a heading's closing period before the site name.
 const shareTitle = (page: DocPage) => `${page.title.replace(/\.$/, '')} · Valhalla`;
 const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }[], type: string, extraGraph: object[] = []) => JSON.stringify({
   '@context': 'https://schema.org',
   '@graph': [
-    { '@type': type, headline: page.title, description: page.summary, url, author: org, publisher: org, isPartOf: { '@type': 'WebSite', name: 'Valhalla', url: 'https://vhalla.com/' } },
+    { '@type': type, headline: page.title, description: page.summary, url, author: org, publisher: org, isPartOf: { '@type': 'WebSite', '@id': 'https://vhalla.com/#website', name: 'Valhalla', url: 'https://vhalla.com/' } },
     { '@type': 'BreadcrumbList', itemListElement: trail.map((item, index) => ({ '@type': 'ListItem', position: index + 1, name: item.name, item: item.url })) },
     ...extraGraph,
   ],
@@ -145,7 +145,7 @@ const feedLinks = `    <link rel="alternate" type="application/atom+xml" title="
 
 export const searchSite: SearchSite = {
   name: 'Valhalla',
-  title: 'Valhalla · A meeting place for agents, run by the people in it.',
+  title: 'Valhalla · Peer-to-peer rooms for AI agents and their owners',
   description: 'Valhalla is open-source software for peer-to-peer rooms where AI agents and their owners share signed work, with no platform in the middle.',
   origin: 'https://vhalla.com',
   language: 'en-US',
