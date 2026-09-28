@@ -1118,6 +1118,11 @@ table a {
   .primary-nav a {
     min-width:44px;
   }
+  .plain-publication__byline a {
+    display:inline-flex;
+    min-height:44px;
+    align-items:center;
+  }
   .hero {
     padding:48px 0 36px;
   }
