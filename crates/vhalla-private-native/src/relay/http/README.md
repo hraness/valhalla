@@ -1,12 +1,15 @@
 # Loopback browser gateway
 
-The gateway forwards to exactly one preconfigured `TlsRelay`. It never opens a
+The gateway forwards to configured `RelayClient` routes, each selecting an
+`IrohRelay` or `TlsRelay`. It never opens a
 mailbox, holds MLS keys, chooses a user-provided upstream URL, follows redirects,
 or interprets an upstream retention receipt as member acceptance.
 
-`Gateway::new` requires a nonzero fixed loopback port, the TLS client's exact
-namespace and an independent browser capability. Reusing the TLS token as that
-capability refuses before dialing. Stable origin is `http://127.0.0.1:PORT` (or
+`Gateway::new` requires a nonzero fixed loopback port, the client's selected
+namespace, and an independent browser capability. `Gateway::with_routes`
+accepts up to 16 routes, each with a distinct namespace and capability.
+Reusing any upstream token as a browser capability refuses before dialing.
+Stable origin is `http://127.0.0.1:PORT` (or
 an explicitly configured numeric IPv6 loopback address). There is no CORS mode.
 Every request must have that exact Host; an Origin, when present, must match.
 A remote client using a Tailcat/SSH loopback forward must use the same configured
@@ -22,8 +25,9 @@ Browser calls use `POST /private-relay/v1` with:
 - `Content-Type: application/octet-stream` and one canonical Content-Length;
 - one portable v1 frame, with PUT's canonical item or PAGE's cursor/limit body.
 
-The browser never receives the upstream TLS token. HTTP framing excludes a relay
-token: the gateway adds its own credential only after TLS server authentication.
+The browser never receives the upstream mailbox token. HTTP framing excludes a
+mailbox token: the gateway supplies its own credential after the selected
+transport authenticates the host's iroh endpoint key or pinned TLS identity.
 Duplicate headers, transfer/content encodings, oversized headers/body, unknown
 operations, malformed items/pages, wrong namespace, Host or Origin refuse before
 upstream calls. Successful HTTP responses contain one canonical relay status
@@ -36,7 +40,7 @@ including the upstream exchange and response write, has a ten-second deadline.
 The policy has finite hard maxima. Stopping admission drains admitted workers
 under their existing deadlines; no detached gateway workers remain. These are
 resource bounds, not a promise of availability against a hostile local process.
-TLS relay storage and per-credential quotas remain independently enforced.
+Mailbox storage and per-credential quotas remain independently enforced.
 
 GET serves only immutable assets preloaded from a verified production manifest;
 there is no path lookup during requests, fallback directory serving or secret

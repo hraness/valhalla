@@ -28,7 +28,63 @@ const essayRefresh = [
   'The product is renamed',
 ];
 
+// Reviewed source for the iroh integration, distinct from older articles' evidence.
+const irohEvidenceRevision = '9d99f2f1cd0bce7098def22b19e01b1f515335a7';
+const irohSource = (title: string, path: string): ArticleSourceRecord => essaySource(title, `https://github.com/hraness/valhalla/blob/${irohEvidenceRevision}/${path}`);
+
 export const articleAdmissions = [
+  {
+    href: '/writing/iroh-private-p2p-transport/',
+    lifecycle: 'indexable',
+    readerJob: 'Choose a transport for a private peer-to-peer application and understand why Valhalla uses iroh for new private mailboxes.',
+    nonObviousAnswer: 'A network relay and a durable mailbox solve different availability problems. Public-key connectivity removes address and certificate setup work, while room membership, offline storage, and uncertain-delivery retries remain application responsibilities.',
+    originalContribution: 'Connects the transport comparison to Valhalla’s implementation: pinned endpoint identity, queue identity that excludes routing hints, a native browser gateway, and a public-relay test that disables client UDP.',
+    hostFit: 'Explains the source implementation behind Valhalla’s private-room setup and distinguishes it from the public consensus network and the hosted TCP/TLS service.',
+    nearestUrls: [
+      { url: 'https://docs.rs/iroh/1.2.0/iroh/', distinction: 'The transport API and connection behavior; this article explains application responsibilities and the Valhalla integration.' },
+      { url: '/docs/private-rooms/', distinction: 'The setup procedure; this article explains the design and alternative transport choices.' },
+      { url: '/writing/delivery-specs-that-fail-on-purpose/', distinction: 'The retry-model tests; this article shows why a new transport cannot replace those delivery rules.' },
+    ],
+    sources: [
+      essaySource('Iroh: connection establishment, public-key authentication, relays, and streams', 'https://docs.rs/iroh/1.2.0/iroh/'),
+      essaySource('Iroh Minimal endpoint preset', 'https://docs.rs/iroh/1.2.0/iroh/endpoint/presets/struct.Minimal.html'),
+      essaySource('IETF RFC 9000: QUIC transport', 'https://www.rfc-editor.org/rfc/rfc9000.txt'),
+      essaySource('IETF RFC 9001: TLS for QUIC and Initial packet protection', 'https://www.rfc-editor.org/rfc/rfc9001.txt'),
+      essaySource('WebRTC: peer connections, signaling, and ICE', 'https://webrtc.org/getting-started/peer-connections'),
+      essaySource('libp2p: Circuit Relay v2 specification', 'https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md'),
+      essaySource('libp2p: Direct Connection Upgrade through Relay specification', 'https://github.com/libp2p/specs/blob/master/relay/DCUtR.md'),
+      essaySource('WireGuard: encrypted VPN and IP packet routing', 'https://www.wireguard.com/'),
+      essaySource('Tailscale: direct, DERP, and peer-relay connection types', 'https://tailscale.com/docs/reference/connection-types'),
+      essaySource('IETF RFC 9420: Messaging Layer Security and delivery services', 'https://www.rfc-editor.org/rfc/rfc9420.txt'),
+      irohSource('Iroh operator guide: identity, invitations, routing, and TLS-specific limits', 'docs/iroh-private-rooms.md'),
+      irohSource('Implementation plan and dated validation results', 'docs/iroh-transport-plan.md'),
+      irohSource('Iroh adapter: endpoint validation, queue identity, and authenticated requests', 'crates/vhalla-private-native/src/relay/iroh.rs'),
+      irohSource('Direct and public-relay tests, including client UDP disabled', 'crates/vhalla-private-native/src/relay/iroh/tests.rs'),
+      irohSource('Browser HTTP gateway test with a real iroh upstream', 'crates/vhalla-private-native/src/relay/http/tests.rs'),
+      irohSource('TLS hosting and certificate maintenance', 'docs/local-host.md'),
+      irohSource('Railway deployment: explicit TCP/TLS host selection', 'deploy/railway/start.sh'),
+    ],
+    observations: [
+      'Binding queued work to a peer key and mailbox while excluding routing hints lets connectivity change without silently sending saved messages to another identity.',
+      'A relay-only test with client UDP disabled proves a relayed transport path; keeping both endpoints on one machine leaves independent-NAT behavior untested.',
+    ],
+    scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 2, hostFit: 2, voiceIntegrity: 1, maintenanceValue: 2 },
+    owner: 'Hraness',
+    drafting: 'ai-from-source',
+    review: { reviewer: 'Codex (GPT-6) AI editorial review', reviewerType: 'ai', reviewedOn: '2026-09-28' },
+    humanReview: null,
+    reassessOn: '2026-11-09',
+    harmIfWrong: 'A reader could confuse transport encryption with anonymity or room authorization, assume an installed release includes iroh, or mistake a same-machine relay test for independent-network evidence.',
+    refreshTriggers: [
+      'The private host default, endpoint identity, relay discovery configuration, or queue identity changes',
+      'A release packages the iroh implementation or the documented source revision advances',
+      'The browser removes or changes its native gateway requirement',
+      'Independent-machine NAT tests or comparative performance measurements become available',
+      'The Railway host changes transport, or iroh gains generation maintenance operations',
+      'Iroh, WebRTC, libp2p, or Tailscale change the documented connection behavior',
+      'Valhalla is renamed or changes status',
+    ],
+  },
   {
     href: '/writing/agent-swarms/',
     lifecycle: 'quarantined',

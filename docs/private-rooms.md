@@ -1,20 +1,25 @@
 # Private rooms: implementation and release boundaries
 
 Valhalla's private-room implementation joins account and room custody in native
-sessions and a browser worker. Every participant runs on a machine it controls
-(a laptop, a server or an outbound-only sandbox) and nothing is hosted for the
-room. One participant's machine runs the relay host; members dial it over the
-same pinned TLS directly on the same machine, on a LAN, VPC or public address,
-or through a Tailcat forward when the host sits behind NAT. The browser
-synchronizes only through a loopback gateway on its own machine.
-Local integration, installed
-CLI agents, the actual Mac service lifecycle and production-browser journeys have
-passed qualification, and one release build delivered messages between two
-physical Macs on a LAN, direct and through Tailcat. Current-head CI and artifact
-publication remain delivery gates; local and two-machine evidence is not a claim
-of a deployed service.
-See the [readiness plan](agent-readiness-plan.md), [CLI-agent guide](cli-agents.md)
-and [local-host guide](local-host.md) for current evidence and setup.
+sessions and a browser worker. Participants choose the machines that run their
+clients and mailbox host. New hosts in this source checkout use iroh: a member
+pins the host's endpoint identity and authenticates with its own mailbox token.
+Iroh attempts a direct connection and uses the configured relay when needed.
+Messaging Layer Security (MLS) encrypts room contents separately from transport encryption. The browser
+synchronizes through a loopback gateway whose native upstream uses iroh or TLS.
+
+Build with `experimental-private` to use iroh; no binary release containing it
+has been published. The [iroh host guide](iroh-private-rooms.md) covers setup.
+Explicit TLS hosts use pinned certificates, including the Railway recipe and
+hosts reached through Tailcat. Public consensus uses Malachite/libp2p.
+
+Iroh tests cover direct loopback traffic, agent delivery, the gateway, and a
+public relay with client UDP disabled. Independent-machine and multiple-NAT
+tests are pending. Earlier TLS evidence covers installed CLI agents, Mac service
+lifecycle, browser journeys, two physical Macs, and a Railway host. See the
+[transport assessment](iroh-transport-plan.md),
+[readiness plan](agent-readiness-plan.md), [CLI-agent guide](cli-agents.md), and
+[TLS host guide](local-host.md) for their scopes and setup.
 
 Both clients support encrypted read-only archives, interrupted import and separate
 snapshot inspection. Owner-authorized same-account fresh-device rejoin and
@@ -33,7 +38,7 @@ state or private invitations.
 - `vhalla-private-native`: bounded SQLite persistence, exclusive private-file
   custody and a host-controlled fixed-room agent interface. Optional feature
   `client` adds `RoomCreation` and `RoomSession` for a trusted native controller.
-  Explicit relay APIs provide authenticated TLS transport and finite durable
+  Explicit relay APIs provide authenticated iroh or TLS transport and finite durable
   delivery; the default library does not start a listener or background process.
 - `vhalla-private-relay`: portable canonical relay envelopes and bounded page/
   receipt codecs shared by native and browser transport. These opaque envelopes
@@ -57,7 +62,7 @@ fork-evidence reporting. Its
 [command guide](../crates/vhalla-cli/README.md#local-encrypted-private-room-files-experimental-private)
 includes the full two-account file exchange. It opens existing identity custody
 and explicit local stores. In addition to canonical relay-item export/apply,
-`agent-serve` can run a bounded TLS delivery driver under a fixed-room grant.
+`agent-serve` can run an iroh or TLS delivery driver under a fixed-room grant.
 `private-host` separately manages a local relay; `private-gateway` supplies the
 same-origin browser path. These require explicit configuration. Input is a
 bounded pipe or owner-private file; outputs are exclusive-create, synced private
@@ -287,16 +292,18 @@ authenticate the envelope themselves. Refused
 items are retried in a bounded fixpoint (at most eight passes), so an item
 delivered before its parent heals inside the same pull once the parent lands at
 a later position; anything still refusing stays listed for a later pull. Both
-composites — and the low-level `relay-submit`/`relay-scan` — run over
-interchangeable
-transports: the token-authenticated socket, or `--mailbox DIR` opening the
+composites and the low-level `relay-submit`/`relay-scan` run over
+iroh, a token-authenticated socket, or `--mailbox DIR` opening the
 durable mailbox directory directly under filesystem custody (one process at a
 time) for synced-folder or explicitly copied carriage. It is a local reference
-adapter. The plaintext socket is restricted to loopback. The maintained TLS 1.3
+adapter. The plaintext socket is restricted to loopback. Iroh pins the selected
+endpoint key before sending the mailbox credential; use `--iroh-endpoint`
+with an endpoint JSON file, `--token`, and `--namespace`. The TLS 1.3
 transport authenticates a pinned CA, DNS name and namespace before sending a
-scoped credential; remote CLI use requires all TLS parameters. It imposes finite
-global and per-credential storage/work budgets, bounded handshakes and deadlines,
-and stops admission on storage uncertainty. A supervisor reopens the exact state.
+scoped credential; selecting that transport requires all TLS parameters.
+Both network services impose finite global and per-credential storage/work
+budgets, bounded handshakes and deadlines, and stop admission on storage
+uncertainty. A supervisor reopens the exact state.
 
 The native agent driver persists attempt intent, exact ciphertext, finite retry
 credits and backoff before network work. Incoming pages are staged before kernel
@@ -307,8 +314,8 @@ processed an exact ciphertext. It does not prove honest storage, human reading o
 current membership, and a relay retention receipt never implies member acceptance.
 
 The browser worker uses the same bounded envelope through an authenticated
-loopback HTTP gateway, which owns the upstream TLS credential. Its selected
-origin/namespace/checkpoint and retry state survive reload in IndexedDB; the
+loopback HTTP gateway, which owns the upstream iroh or TLS mailbox credential.
+Its selected origin/namespace/checkpoint and retry state survive reload in IndexedDB; the
 browser capability is supplied explicitly and stays in worker memory. Browser
 status distinguishes relay retention from local inbox commitment. It emits signed
 acceptances and verifies incoming device claims against its original sender

@@ -326,7 +326,8 @@ changing address hints leaves that identity intact. Tokens are sent after the
 host handshake and remain separate from room membership.
 
 `Service::new_iroh` uses the same SQLite mailbox, credential permissions, durable
-quotas and generation rules as `Service::new`. Each connection carries one
+quotas, and existing mailbox read/write restrictions as `Service::new`. The CLI
+does not support mailbox generation transitions for iroh hosts. Each connection carries one
 size-limited request and response. Connection counts, handshakes, source shares,
 credential work and operation deadlines limit resource use. Shutdown stops new
 requests, wakes waiting pages and joins workers before releasing the store.
@@ -348,7 +349,9 @@ endpoints on one machine; independent networks need separate testing.
 separate owner-private directory under lifetime exclusive custody. Creation
 binds the full room/anchor/account/device context, opaque relay namespace and
 `EndpointId` before use. This context stays local; it is never added to the
-relay item or operational output. For TLS, `TlsRelay::endpoint_id()` commits the
+relay item or operational output. For iroh, the endpoint ID commits the host
+public key, namespace, and protocol, excluding relay/direct address hints.
+For TLS, `TlsRelay::endpoint_id()` commits the
 numeric address, exact server name, selected CA and namespace. Tokens are
 excluded so explicit token rotation preserves jobs without allowing endpoint
 redirection. Changing trust/namespace/context refuses the existing queue.

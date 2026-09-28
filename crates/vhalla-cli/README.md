@@ -1584,9 +1584,9 @@ setup, endpoint identity and network paths; the [local host guide](../../docs/lo
 covers TLS and supervision; the
 [CLI-agent guide](../../docs/cli-agents.md) covers grants and delivery.
 `private invite` and `private join --invite` below package one member's
-onboarding into a single owner-private file. The private commands first shipped
-in release binaries at v0.2.1; the non-loopback listeners, bundled invite and
-Linux supervisor units are on `main` and not yet in a tagged release.
+onboarding into a single owner-private file. Iroh requires this source build;
+no binary release containing it has been published. Check an installed release's
+help before applying source instructions.
 
 A private store belongs to one complete room/anchor/account/device context. The
 existing account identity and room store remain separate explicit paths. Create
@@ -1701,11 +1701,13 @@ separate files. `--host` reads the sealed host home, so the owner must run
 `invite` on the machine that hosts the mailbox (or where a faithful private
 copy of that home exists); when the mailbox lives on someone else's server,
 use the granular offer/import/request/accept/join flow above and hand the
-recipient `connection.json`, `ca.der` and one `client-N.token` instead.
+recipient `connection.json` and one `client-N.token` instead. A TLS host also
+requires `ca.der`.
 `private invite` verifies the sealed host configuration, takes
 one enrolled, unrevoked `--credential` index and emits a single owner-private
-JSON bundle containing the offer, relay namespace, TLS name, CA certificate,
-that credential's token and the advertised dial addresses.
+JSON bundle containing the offer, mailbox namespace, and that credential's
+token. An iroh bundle adds the pinned endpoint key and route hints; a TLS bundle
+adds the TLS name, CA certificate, and advertised dial addresses.
 
 ```sh
 vhalla private invite owner-key owner-room \
@@ -1724,11 +1726,13 @@ membership. A failed invite write preserves the consumed offer operation for
 exact retry.
 
 The recipient consumes the bundle in one step. `private join --invite` checks
-the offer against the expected `--owner` and the current account, selects the
-first advertised address (or an explicit `--addr` that must appear in the
-bundle), commits the fresh member store, lays down `ca.der`, `token.hex` and a
-`delivery.json` profile inside a new owner-private `--delivery-dir`, initializes
-its delivery state and writes the encrypted admission request.
+the offer against the expected `--owner` and the current account, then commits
+the fresh member store. It writes `token.hex` and a `delivery.json` profile
+inside a new owner-private `--delivery-dir`, initializes its delivery state,
+and writes the encrypted admission request. An iroh invitation selects the
+endpoint identity, produces a version-four delivery profile, and refuses
+`--addr`. A TLS invitation selects the first advertised address (or an explicit
+`--addr` from the bundle) and also writes `ca.der`.
 
 ```sh
 vhalla private join member-key member-room \

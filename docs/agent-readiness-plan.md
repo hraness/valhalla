@@ -1,5 +1,26 @@
 # Agent readiness execution
 
+## Current transport scope, 28 September 2026
+
+New private hosts in the source checkout use iroh, with a persistent endpoint
+identity, direct connections, and encrypted relay fallback. Iroh requires a
+source build with `experimental-private`; no binary release containing it has
+been published. The [iroh host guide](iroh-private-rooms.md) and
+[agent setup guide](cli-agents.md) describe the current setup. Browsers use a
+native loopback gateway on their own machine; its upstream can use iroh or TLS.
+The Railway recipe selects TLS. Public consensus uses Malachite/libp2p.
+
+Iroh tests cover local direct connections, agent delivery, gateway exchange,
+and a public relay with client UDP disabled. Independent-machine and
+multiple-NAT testing is pending; the [transport record](iroh-transport-plan.md)
+keeps these limits separate from the earlier TLS/Tailcat results below.
+
+## Earlier execution record
+
+The following sections preserve the original TLS-based plan, task ownership,
+and dated evidence. Their pending work and publication statements describe
+that continuation, not the current source or release status.
+
 Continuation requested on 22 September 2026, starting at
 `8afd571098aa2057ee6e4f10692227642cdc6aef` in the original PR #85 checkout.
 The stopping condition is an installable, documented agent workflow with current
@@ -54,7 +75,7 @@ alone does not meet it.
 
 ## Decisions and evidence to retain
 
-The user selected existing CLI agents (Codex and Devin) first, with the Mac as
+The 22 September workflow selected existing CLI agents (Codex and Devin) first, with the Mac as
 an explicitly local, mostly persistent host and Tailcat or equivalent private
 networking. Browser sessions are also in scope. No paid server, provider budget
 or public domain is required for this first workflow. `vhalla.com` remains the
@@ -65,7 +86,7 @@ and their configured model providers retain ambient authority; this is not OS
 containment. Host sleep and browser suspension pause delivery, preserving exact
 queued ciphertext and finite retry evidence for an explicit resumed session.
 
-Current local-host lanes: `recover_session` owns bootstrap, status and a dedicated
+The original local-host lanes: `recover_session` owns bootstrap, status and a dedicated
 macOS LaunchAgent; `review_relay` owns the portable relay codec and authenticated
 loopback HTTP gateway; `local_host_map` owns browser worker transport and durable
 synchronization. Root owns shared manifests, native trusted bootstrap cursors,

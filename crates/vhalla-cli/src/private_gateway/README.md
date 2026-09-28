@@ -1,10 +1,10 @@
 # Gateway configuration
 
 `vhalla private-gateway serve /absolute/private/gateway.json` serves a packaged
-production browser UI and explicitly configured TLS relays at a stable loopback origin.
-Run it as a separate foreground process alongside the TLS host. It connects as
-a TLS client and never opens a second mailbox writer. The host's LaunchAgent
-manages the relay only; it does not start the browser gateway.
+production browser UI and configured iroh or TLS hosts at a stable loopback origin.
+Run it as a separate process on the browser's machine while the selected host
+is running. It connects as a native client and never opens a second mailbox
+writer. The host's LaunchAgent manages the relay only; it does not start the browser gateway.
 
 Lifecycle commands take the same canonical absolute config path:
 
@@ -14,7 +14,7 @@ Lifecycle commands take the same canonical absolute config path:
   launchd's stdout/stderr redirection lands in. `status --probe` additionally
   performs a real bounded loopback HTTP GET and reports whether the listener
   answered `HTTP/1.1 200`; a probe proves listener shape only, never upstream
-  TLS or mailbox retention.
+  connectivity or mailbox retention.
 - `vhalla private-gateway install CONFIG` validates the full configuration,
   writes the exact plist for that one label into `~/Library/LaunchAgents` and
   bootstraps it (on Linux, the exact `<label>.service` user unit under
@@ -37,7 +37,7 @@ Lifecycle commands take the same canonical absolute config path:
 
 An unwinding connection-local handler panic closes that request without a
 success response. The gateway continues only when the shared admission budget
-is unpoisoned and the panic occurred outside the upstream TLS exchange. Failed
+is unpoisoned and the panic occurred outside the upstream exchange. Failed
 requests retain their admission charges; isolation does not reset limits.
 A poisoned shared budget, a panic during upstream exchange, an unexpected
 worker failure or inability to spawn a worker stops admission and drains the
@@ -55,20 +55,27 @@ then restarts both processes and checks exact duplicate retention at the same
 origin. It uses synthetic local custody and assets; it does not inject a signal
 inside an upstream filesystem barrier or qualify launchd supervision.
 
-The bounded 0600 configuration file and credential/CA files must have 0700 parent
+## Choose an upstream
+
+Iroh support requires a source CLI built with `experimental-private`. New private
+hosts use iroh, and gateway format 3 selects the upstream transport explicitly.
+The 0600 configuration file and credential files must have 0700 parent
 directories. All paths are absolute. Unknown fields refuse. Example structure
 (values below are placeholders, never usable credentials):
 
 ```json
 {
-  "format": 1,
+  "format": 3,
   "listen": "127.0.0.1:8790",
   "namespace": "<64 lowercase hex characters from the selected relay host>",
   "browser_token_file": "/private/host/browser-token",
   "upstream": {
-    "addr": "127.0.0.1:8788",
-    "tls_name": "relay.local",
-    "tls_ca_file": "/private/host/ca.der",
+    "transport": "iroh",
+    "endpoint": {
+      "endpoint_id": "<64 lowercase hex characters from connection.json>",
+      "relay_url": "https://use1-1.relay.n0.iroh.link.",
+      "addresses": []
+    },
     "token_file": "/private/host/gateway-upstream-token"
   },
   "assets_dir": "/absolute/packaged-production-ui",
@@ -76,24 +83,46 @@ directories. All paths are absolute. Unknown fields refuse. Example structure
 }
 ```
 
-Tokens are independent nonzero 32-byte values encoded as canonical lowercase hex,
-with at most one terminal newline. TLS uses the exact supplied CA/server name;
-there is no ambient trust or plaintext fallback. Asset manifest purpose must be
+Copy `namespace` and the entire `endpoint` object from the host's
+`connection.json`. Supply a separate enrolled mailbox token for the gateway.
+Create `browser_token_file` with an independent random nonzero 32-byte value
+encoded as 64 lowercase hex characters. Both token files allow at most one
+terminal newline. Iroh authenticates the endpoint key before sending the
+mailbox credential. Its direct-address and relay fields are routing hints.
+
+For TLS, keep format 3 and replace only `upstream` with:
+
+```json
+{
+  "transport": "tls",
+  "addr": "127.0.0.1:8788",
+  "tls_name": "relay.local",
+  "tls_ca_file": "/private/host/ca.der",
+  "token_file": "/private/host/gateway-upstream-token"
+}
+```
+
+The CA file has the same private-file permissions. TLS uses the supplied
+CA/server name; neither transport falls back to the other or to plaintext.
+Asset manifest purpose must be
 `production`, every allowed file's size/hash must match, and the complete in-memory
 allowlist is bounded to 64 files/64 MiB. Unlisted files cannot be served.
 
-For a drained mailbox transition, format 2 adds a `retained` array containing
-the predecessor routes. Each entry has exactly `namespace`,
-`browser_token_file` and `upstream`, with the same shapes as the active fields.
+Formats 1 and 2 accept the untagged TLS `upstream` shape, with no `transport`
+field. Format 1 accepts one route. Formats 2 and 3 accept a `retained` array of
+predecessor routes. Each entry has `namespace`, `browser_token_file`, and
+`upstream`, with the same shape as the active fields; all format-3 upstreams
+must include their transport tag.
 Keep `listen` unchanged: moving the browser origin would select a different
 IndexedDB store. The active route plus retained routes are limited to 16.
 Each namespace and browser capability must be distinct. No browser capability
-may equal any route's TLS credential.
+may equal any route's mailbox credential.
 
 Requests select only an enrolled namespace using the existing request header.
-They cannot choose a destination, TLS name or redirect. All routes share the
-gateway's connection, request and byte limits. The old TLS host retains its
-permanent fence, allowing reads and exact already-stored retries while refusing
+They cannot choose a destination, endpoint key, TLS name, or redirect. All routes
+share the gateway's connection, request, and byte limits. Mailbox generation
+transitions require a TLS host; iroh hosts refuse that maintenance. The old TLS
+host retains its permanent fence, allowing reads and exact already-stored retries while refusing
 new items. Configuring a route does not migrate a browser profile or authorize
 a generation change; the paused controller must complete that separately.
 
@@ -109,8 +138,8 @@ decimal-string `initial_cursor` from 0 through the mailbox capacity of 4,096.
 That cursor is an explicitly trusted enrollment
 boundary, not permission to skip undecryptable retained history. Browser custody
 binds it immutably with the full room context. The browser capability is supplied
-again on every unlock and excluded from retained profile state; never put the TLS credential in the browser profile
-or persist the browser capability to IndexedDB. `initial_cursor` in host config
+again on every unlock and excluded from retained profile state; never put the
+mailbox credential in the browser profile or persist the browser capability to IndexedDB. `initial_cursor` in host config
 records guidance for the matching browser profile; the gateway neither exports
 a profile endpoint nor uses that field to authorize skipping history. Each HTTP
 request carries its own cursor, and the browser enforces its retained cursor

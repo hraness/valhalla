@@ -1,5 +1,10 @@
 # Move a drained private room to a new mailbox
 
+This procedure requires a TLS host created with `private-host init --transport tls`.
+Iroh is the default for new hosts in this checkout, but iroh hosts refuse the
+`generation-*` maintenance commands. See [iroh host limits](iroh-private-rooms.md#limits)
+before choosing a transport for a room that needs mailbox rollover.
+
 The opt-in private runtime can move cooperating native and browser controllers
 to a new mailbox while keeping the same encrypted room and device state. This
 is planned maintenance: every controller must be present, fully caught up and

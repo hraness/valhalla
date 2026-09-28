@@ -1,5 +1,29 @@
 # Valhalla docs
 
+## Set up private rooms
+
+New private hosts in this source checkout use iroh, with a saved endpoint
+identity, direct connections, and encrypted relay fallback. Build from source
+with `experimental-private`; published installers keep their release's behavior.
+
+- [Host private rooms with iroh](iroh-private-rooms.md): build, start a host,
+  invite members, and select a network path.
+- [Private rooms for CLI agents](cli-agents.md): connect Codex or Devin to a
+  room with a fixed grant and a durable delivery queue.
+- [Browser setup](../browser/README.md#explicit-local-host-private-sync): build the
+  private browser and connect it through a local gateway.
+- [TLS host setup](local-host.md) and [Railway deployment](../deploy/railway/README.md):
+  operate a host using pinned certificates.
+- [Transport assessment](iroh-transport-plan.md) and
+  [transport comparison](https://vhalla.com/writing/iroh-private-p2p-transport/):
+  why private hosts use iroh and why public consensus uses Malachite/libp2p.
+
+Iroh's independent-machine and multiple-NAT testing is pending. The historical
+TLS measurements below describe a different transport. The
+[mailbox generation guide](private-generations.md) applies to TLS hosts only.
+
+## Implementation and test records
+
 The current work is tracked in the
 [private-room pilot plan](../kb/plans/valhalla-private-room-pilot.md): responsive
 delivery, recipient joining, agent/browser collaboration, drained mailbox

@@ -169,17 +169,15 @@ Neither action recalls plaintext that an authorized provider already received.
 
 ## Local hosting and persistent delivery
 
-New private hosts use [iroh](iroh-private-rooms.md). An invitation creates a
-version-four delivery profile with a pinned endpoint under `transport`, without
-TLS address or certificate fields. The following manual profile describes the
-explicit TLS option. Both transports use the same durable queue and agent
-permissions.
+New private hosts in a source build use [iroh](iroh-private-rooms.md). An
+invitation creates a version-four delivery profile with a pinned endpoint under
+`transport`, without TLS address or certificate fields. Iroh support has not been published in a
+binary release. Both transports use the same durable queue and agent permissions.
 
-Use [local host setup](local-host.md) to initialize the host mailbox on a laptop
-or server, keep its service running, and choose how clients reach it: on the
-same machine, directly over a LAN or the Internet, or through a saved Tailcat
-key when the host sits behind NAT. Set `addr` to one of the `addresses` in the
-host's `connection.json`, or to your own Tailcat forward. Host sleep delays
+Use [iroh host setup](iroh-private-rooms.md) to initialize a mailbox on a laptop
+or server and keep its service running. Copy the selected `endpoint` from its
+`connection.json`; iroh attempts direct connectivity and can use the configured
+relay when needed. Host sleep delays
 delivery; it does not lose or renew the queued work. No paid server or public
 domain is required.
 
@@ -190,7 +188,7 @@ argument. Use a private JSON file with this exact shape:
 
 ```json
 {
-  "version": 1,
+  "version": 4,
   "context": {
     "room": "64 lowercase hex digits from authenticated inspect",
     "anchor": "64 lowercase hex digits from authenticated inspect",
@@ -198,9 +196,14 @@ argument. Use a private JSON file with this exact shape:
     "device": "64 lowercase hex digits from authenticated inspect"
   },
   "namespace": "64 lowercase hex digits from the selected host connection.json",
-  "addr": "127.0.0.1:7443",
-  "tls_name": "relay.example.invalid",
-  "ca": "/private/config/relay-ca.der",
+  "transport": {
+    "kind": "iroh",
+    "endpoint": {
+      "endpoint_id": "64 lowercase hex digits from the selected host connection.json",
+      "relay_url": "https://use1-1.relay.n0.iroh.link.",
+      "addresses": []
+    }
+  },
   "token": "/private/config/relay-token.hex",
   "state": "/private/config/new-delivery-state",
   "max_jobs": 1024,
@@ -213,11 +216,27 @@ argument. Use a private JSON file with this exact shape:
 }
 ```
 
-Replace the illustrative address and fields with the explicitly selected relay.
+Replace the illustrative fields with the selected host and authenticated room.
 The token file contains 64 lowercase hex digits, optionally followed by one
-newline. TLS validates the selected CA, DNS identity and namespace before sending
-the credential. Numeric dial address, DNS name, CA, namespace and full local
-context bind the persistent queue; rotating the token does not redirect old jobs.
+newline. Iroh authenticates the selected endpoint key before sending the
+credential. The endpoint key, namespace, and full local context bind the
+persistent queue. A token change does not redirect old jobs; address and relay
+hints may change without changing the selected identity.
+
+For an explicit [TLS host](local-host.md), use `"version": 1`, omit `transport`,
+and add the following top-level fields instead:
+
+```json
+{
+  "addr": "127.0.0.1:7443",
+  "tls_name": "relay.example.invalid",
+  "ca": "/private/config/relay-ca.der"
+}
+```
+
+Set `addr` to an advertised host address or a fixed Tailcat forward. TLS pins
+the selected CA, name, and namespace before sending the credential; its
+persistent queue also binds the numeric dial address.
 `emit_acceptance` separately authorizes host-generated recipient receipts, even
 when the agent's own message permission is read-only.
 
@@ -233,7 +252,7 @@ For those hosts, `"mailbox_polling": "interactive"` before the first
 after an empty scan, or one second for 30 seconds after newly queued or
 observed work. The default, `"adaptive"`, waits 10, 20, then at most 30
 seconds after successive empty scans. Interactive mode trades up to six times
-as many steady idle TLS exchanges for a shorter wait to discover incoming
+as many steady idle network exchanges for a shorter wait to discover incoming
 messages. These intervals exclude scheduler, network and processing time; they
 are not delivery deadlines. Network errors retain their separate retry delay
 in both modes.
@@ -261,9 +280,11 @@ vhalla private delivery-init /absolute/account /absolute/room \
   --config /private/config/delivery.json
 ```
 
-Initialization publishes a version-2 selected profile after the control queue
-is durable. To opt an existing version-1 delivery state into encrypted-control
-forwarding, stop its agent and use the same account, room and profile:
+Initialization creates both application and encrypted-control queues. An iroh
+profile stays at version four. A TLS version-one profile advances to version
+two after the control queue is durable. To opt an existing version-one TLS
+delivery state into encrypted-control forwarding, stop its agent and use the
+same account, room, and profile:
 
 ```sh
 vhalla private delivery-upgrade /absolute/account /absolute/room \
