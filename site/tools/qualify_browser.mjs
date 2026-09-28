@@ -6,7 +6,7 @@ import {spawn} from 'node:child_process';
 import {readFile,writeFile,mkdir,mkdtemp,readdir} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 const [rootArg,chromePath,outArg,headersArg,mode]=process.argv.slice(2), root=resolve(rootArg),out=resolve(outArg);
-if(mode!==undefined&&mode!=='--appearance-only')throw Error('unknown qualification mode');
+if(mode!==undefined&&!['--appearance-only','--public-pages','--production'].includes(mode))throw Error('unknown qualification mode');
 await mkdir(out,{recursive:false});const profile=await mkdtemp(join(out,'profile-'));
 const headers=JSON.parse(await readFile(headersArg,'utf8')).headers[0].headers;
 const server=createServer(async(req,res)=>{try{let path=decodeURIComponent(new URL(req.url,'http://127.0.0.1').pathname);if(path.endsWith('/'))path+='index.html';const f=resolve(root,'.'+path);if(!f.startsWith(root+sep))throw Error('nonlocal');for(const h of headers)res.setHeader(h.key,h.value);res.setHeader('Content-Type',f.endsWith('.html')?'text/html':f.endsWith('.css')?'text/css':f.endsWith('.js')?'text/javascript':f.endsWith('.png')?'image/png':f.endsWith('.svg')?'image/svg+xml':f.endsWith('.woff2')?'font/woff2':'application/octet-stream');res.end(await readFile(f));}catch{res.writeHead(404);res.end();}});
@@ -16,7 +16,7 @@ let log='',socket,seq=0;const pending=new Map();
 // have no physical pointer; this configures native Blink media, never matchMedia.
 // https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/chromium/chromium.ts
 const desktopInput='--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4';
-const chrome=trackChild(spawn(chromePath,['--headless',desktopInput,'--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
+const chrome=trackChild(spawn(chromePath,['--headless',desktopInput,'--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server',mode==='--production'?'--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE vhalla.com':'--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
 const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id=++seq;pending.set(id,{resolve,reject});socket.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));});
 async function work(){
  const ws=await new Promise((r,j)=>{chrome.once('error',j);chrome.once('exit',c=>j(Error('Chrome exit '+c)));chrome.stderr.on('data',c=>{log+=c;const m=log.match(/DevTools listening on (ws:\/\/\S+)/);if(m)r(m[1]);});});
@@ -27,9 +27,39 @@ async function work(){
  await call('Page.enable',{},sessionId);await call('Runtime.enable',{},sessionId);await call('Log.enable',{},sessionId);
  await call('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'light'}]},sessionId);
  const evaluate=async expression=>{const r=await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},sessionId);if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
- const base='http://127.0.0.1:'+server.address().port;
+ const base=mode==='--production'?'https://vhalla.com':'http://127.0.0.1:'+server.address().port;
  async function navigate(path,width,height){await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<600},sessionId);await call('Page.navigate',{url:base+path},sessionId);let ready=false;for(let i=0;i<200;i++){if(await evaluate("location.pathname==="+JSON.stringify(path)+" && document.readyState==='complete' && !!document.querySelector('main')")){ready=true;break;}await new Promise(r=>setTimeout(r,25));}if(!ready)throw Error('navigation did not finish '+path);await evaluate('document.fonts.ready.then(()=>true)');}
  async function shot(name){const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},sessionId);await writeFile(join(out,name+'.png'),Buffer.from(data,'base64'));}
+ if(mode==='--public-pages'||mode==='--production'){
+  const paths=['/'], results=[];
+  const walk=async dir=>{for(const entry of await readdir(join(root,dir),{withFileTypes:true})){
+   if(!entry.isDirectory())continue;
+   const sub=dir?dir+'/'+entry.name:entry.name;
+   try{await readFile(join(root,sub,'index.html'));paths.push('/'+sub+'/');}catch{}
+   await walk(sub);
+  }};
+  await walk('');
+  if(paths.length>2500)throw Error('unexpected public-page inventory');
+  for(const theme of ['light','dark']){
+   await call('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:theme}]},sessionId);
+   for(const width of [360,390,1440])for(const path of paths){
+    await navigate(path,width,width===360?740:width===390?844:900);
+    await evaluate("document.fonts.ready.then(()=>true)");
+    const state=await evaluate(`({path:location.pathname,title:document.title,theme:document.documentElement.dataset.theme,width:innerWidth,clientWidth:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,heading:document.querySelector('h1')?.textContent,footer:!!document.querySelector('footer'),footerFlow:[...document.querySelectorAll('footer')].every(el=>['static','relative'].includes(getComputedStyle(el).position)),targets:[...document.querySelectorAll('header a,header button,header summary')].filter(el=>el.getClientRects().length).map(el=>({label:el.textContent||el.getAttribute('aria-label'),width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}))})`);
+    const name=(path==='/'?'home':path.replaceAll('/','_'))+'-'+width+'-'+theme;
+    const {cssContentSize}=await call('Page.getLayoutMetrics',{},sessionId);
+    const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:cssContentSize.width,height:cssContentSize.height,scale:1}},sessionId);
+    const screenshot=Buffer.from(data,'base64');
+    const screenshotWidth=screenshot.readUInt32BE(16);
+    await writeFile(join(out,name+'.png'),screenshot);
+    results.push({width,theme,...state,screenshotWidth});
+    await writeFile(join(out,name+'.json'),JSON.stringify(results.at(-1),null,2)+'\n');
+    if(screenshotWidth>width||screenshotWidth<state.clientWidth||state.width!==width||state.scroll>width||!state.heading||!state.footer||!state.footerFlow||state.theme!==theme||(width<600&&state.targets.some(target=>target.width<44||target.height<44)))throw Error('public layout failed '+JSON.stringify(results.at(-1)));
+   }
+  }
+  if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
+  return {passed:true,mode,origin:base,source:process.env.GITHUB_SHA??null,pages:paths,results,consoleErrors:errors,root,profile};
+ }
  const appearance=await qualifyAppearance({call,evaluate,navigate,sessionId});
  if(mode==='--appearance-only'){
   if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
@@ -78,7 +108,7 @@ async function work(){
  return {passed:true,pages:results,viewports:[1365,1024,768,390,320],light,dark,noScript,keyboard,appearance,consoleErrors:errors,root,profile};
 }
 await runQualification({
-  work, timeoutMs: 150000,
+  work, timeoutMs: mode==='--public-pages'||mode==='--production'?300000:150000,
   cleanup: async () => {
     try { await cleanupOwned({children:[chrome], server, socket, pending}); }
     finally { await writeFile(join(out,'chrome.log'),log); }

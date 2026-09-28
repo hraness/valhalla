@@ -1,6 +1,13 @@
 name: Rust
 
 on:
+  workflow_dispatch:
+    inputs:
+      production:
+        description: Also verify the fixed vhalla.com public site
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [main]
   pull_request:
@@ -489,6 +496,11 @@ jobs:
           node-version: '24'
       - name: Static site responsive, keyboard and CSP qualification
         run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
+      - name: Every public page at phone and desktop sizes in both themes
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-public-site-results" "$GITHUB_WORKSPACE/vercel.json" --public-pages
+      - name: Fixed production public-page verification
+        if: github.event_name == 'workflow_dispatch' && inputs.production
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-production-site-results" "$GITHUB_WORKSPACE/vercel.json" --production
       - name: Retain site visual evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -498,6 +510,10 @@ jobs:
             ${{ runner.temp }}/vhalla-site-results/receipt.json
             ${{ runner.temp }}/vhalla-site-results/chrome.log
             ${{ runner.temp }}/vhalla-site-results/*.png
+            ${{ runner.temp }}/vhalla-public-site-results/*.json
+            ${{ runner.temp }}/vhalla-public-site-results/*.png
+            ${{ runner.temp }}/vhalla-production-site-results/*.json
+            ${{ runner.temp }}/vhalla-production-site-results/*.png
           if-no-files-found: warn
           retention-days: 14
 

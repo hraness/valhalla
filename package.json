@@ -15,8 +15,8 @@
     "generate:og": "bun site/generate-og.tsx"
   },
   "dependencies": {
-    "@hraness/design-kit": "github:hraness/design-kit#v0.21.0",
-    "@hraness/site-footer": "github:hraness/site-footer#v0.19.3"
+    "@hraness/design-kit": "github:hraness/design-kit#v0.23.0",
+    "@hraness/site-footer": "github:hraness/site-footer#v0.20.0"
   },
   "devDependencies": {
     "@hraness/web-discovery": "github:hraness/web-discovery#v0.8.0",

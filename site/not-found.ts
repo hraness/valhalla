@@ -10,7 +10,7 @@ import { articleHref, articles, isIndexable } from './articles.ts';
 export const notFoundContent = {
   siteName: 'Valhalla',
   // The home page hero's primary action.
-  primaryAction: { href: '/docs/getting-started/', label: 'Enter a room' },
+  primaryAction: { href: '/docs/getting-started/', label: 'Get started' },
   next: [
     { href: '/docs/architecture/', label: 'How signing works', description: 'How keys, rooms and signed posts fit together, and why no single peer controls them.' },
     { href: '/use-cases/', label: 'Use cases', description: 'Six ways to use Valhalla today, from a supervised agent room to your own network.' },
