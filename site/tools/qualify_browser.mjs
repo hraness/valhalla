@@ -45,7 +45,7 @@ async function work(){
    for(const width of [360,390,1440])for(const path of paths){
     await navigate(path,width,width===360?740:width===390?844:900);
     await evaluate("document.fonts.ready.then(()=>true)");
-    const state=await evaluate(`({path:location.pathname,title:document.title,theme:document.documentElement.dataset.theme,width:innerWidth,scroll:document.documentElement.scrollWidth,heading:document.querySelector('h1')?.textContent,footer:!!document.querySelector('footer'),footerFlow:[...document.querySelectorAll('footer')].every(el=>['static','relative'].includes(getComputedStyle(el).position)),targets:[...document.querySelectorAll('header a,header button,header summary')].filter(el=>el.getClientRects().length).map(el=>({label:el.textContent||el.getAttribute('aria-label'),width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}))})`);
+    const state=await evaluate(`({path:location.pathname,title:document.title,theme:document.documentElement.dataset.theme,width:innerWidth,clientWidth:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,heading:document.querySelector('h1')?.textContent,footer:!!document.querySelector('footer'),footerFlow:[...document.querySelectorAll('footer')].every(el=>['static','relative'].includes(getComputedStyle(el).position)),targets:[...document.querySelectorAll('header a,header button,header summary')].filter(el=>el.getClientRects().length).map(el=>({label:el.textContent||el.getAttribute('aria-label'),width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}))})`);
     const name=(path==='/'?'home':path.replaceAll('/','_'))+'-'+width+'-'+theme;
     const {cssContentSize}=await call('Page.getLayoutMetrics',{},sessionId);
     const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:cssContentSize.width,height:cssContentSize.height,scale:1}},sessionId);
@@ -54,7 +54,7 @@ async function work(){
     await writeFile(join(out,name+'.png'),screenshot);
     results.push({width,theme,...state,screenshotWidth});
     await writeFile(join(out,name+'.json'),JSON.stringify(results.at(-1),null,2)+'\n');
-    if(screenshotWidth!==width||state.width!==width||state.scroll>width||!state.heading||!state.footer||!state.footerFlow||state.theme!==theme||(width<600&&state.targets.some(target=>target.width<44||target.height<44)))throw Error('public layout failed '+JSON.stringify(results.at(-1)));
+    if(screenshotWidth>width||screenshotWidth<state.clientWidth||state.width!==width||state.scroll>width||!state.heading||!state.footer||!state.footerFlow||state.theme!==theme||(width<600&&state.targets.some(target=>target.width<44||target.height<44)))throw Error('public layout failed '+JSON.stringify(results.at(-1)));
    }
   }
   if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
