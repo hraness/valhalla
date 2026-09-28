@@ -1097,7 +1097,12 @@ fn two_agents_exchange(mut journey: Journey) {
     // A1/A11 semantics: an outage records uncertain outage evidence without
     // spending the finite attempt budget.
     let offline = agent_a.await_outbox(third, "an offline delivery attempt", |v| {
-        v["relay"]["uncertain"] == true && v["relay"]["last_error"] == "connect"
+        // Offline QUIC reaches the driver's deadline without a TCP-style
+        // refusal. The connect task and synchronous caller can race to report
+        // Connect or Timeout; both preserve the same uncertain outage state.
+        let error = v["relay"]["last_error"].as_str();
+        v["relay"]["uncertain"] == true
+            && (error == Some("connect") || (journey.iroh && error == Some("timeout")))
     });
     assert_ne!(offline["relay"]["state"], "retained", "{offline}");
     assert_eq!(offline["relay"]["attempts"], 0, "{offline}");
