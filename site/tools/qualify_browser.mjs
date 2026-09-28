@@ -49,10 +49,12 @@ async function work(){
     const name=(path==='/'?'home':path.replaceAll('/','_'))+'-'+width+'-'+theme;
     const {cssContentSize}=await call('Page.getLayoutMetrics',{},sessionId);
     const {data}=await call('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:cssContentSize.width,height:cssContentSize.height,scale:1}},sessionId);
-    await writeFile(join(out,name+'.png'),Buffer.from(data,'base64'));
-    results.push({width,theme,...state});
+    const screenshot=Buffer.from(data,'base64');
+    const screenshotWidth=screenshot.readUInt32BE(16);
+    await writeFile(join(out,name+'.png'),screenshot);
+    results.push({width,theme,...state,screenshotWidth});
     await writeFile(join(out,name+'.json'),JSON.stringify(results.at(-1),null,2)+'\n');
-    if(state.width!==width||state.scroll>width||!state.heading||!state.footer||!state.footerFlow||state.theme!==theme||(width<600&&state.targets.some(target=>target.width<44||target.height<44)))throw Error('public layout failed '+JSON.stringify(results.at(-1)));
+    if(screenshotWidth!==width||state.width!==width||state.scroll>width||!state.heading||!state.footer||!state.footerFlow||state.theme!==theme||(width<600&&state.targets.some(target=>target.width<44||target.height<44)))throw Error('public layout failed '+JSON.stringify(results.at(-1)));
    }
   }
   if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
