@@ -1,6 +1,7 @@
 // Maintained static documentation. No visitor input, runtime fetches or analytics.
 export type DocKind = 'tutorial' | 'how-to' | 'reference' | 'explanation';
-export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string; kind?: DocKind; metaTitle?: string };
+export type DocSource = { label: string; url: `https://${string}` };
+export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string; kind?: DocKind; metaTitle?: string; checkedOn?: string; sources?: DocSource[] };
 export const docKindLabels: Record<DocKind, string> = {
   tutorial: 'Tutorials',
   'how-to': 'How-to guides',

@@ -49,10 +49,10 @@ const exploreNav = (current: DocPage) =>
 const org = { '@type': 'Organization', '@id': 'https://hraness.com/#organization', name: 'Hraness', url: 'https://hraness.com' };
 // Share titles drop a heading's closing period before the site name.
 const shareTitle = (page: DocPage) => `${page.title.replace(/\.$/, '')} · Valhalla`;
-const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }[], type: string, extraGraph: object[] = []) => JSON.stringify({
+const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }[], type: string, extraGraph: object[] = [], dateModified?: string) => JSON.stringify({
   '@context': 'https://schema.org',
   '@graph': [
-    { '@type': type, headline: page.title, description: page.summary, url, author: org, publisher: org, isPartOf: { '@type': 'WebSite', '@id': 'https://vhalla.com/#website', name: 'Valhalla', url: 'https://vhalla.com/' } },
+    { '@type': type, headline: page.title, description: page.summary, url, author: org, publisher: org, isPartOf: { '@type': 'WebSite', '@id': 'https://vhalla.com/#website', name: 'Valhalla', url: 'https://vhalla.com/' }, ...(dateModified ? { dateModified } : {}) },
     { '@type': 'BreadcrumbList', itemListElement: trail.map((item, index) => ({ '@type': 'ListItem', position: index + 1, name: item.name, item: item.url })) },
     ...extraGraph,
   ],
@@ -88,11 +88,16 @@ export const masthead = (template: string) => {
   return header;
 };
 
-function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string; ogImage: string; extraGraph?: object[]; extraHead?: string; contentAfter?: string }) {
+// A page that names other products lists the primary sources it was checked against, and the date.
+const sourcesHtml = (sources: readonly { label: string; url: string }[]) =>
+  `<h2 id="sources">Sources</h2><ul class="doc-sources">${sources.map(source => `<li><a href="${escape(source.url)}">${escape(source.label)} ↗</a></li>`).join('')}</ul>`;
+
+function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string; ogImage: string; extraGraph?: object[]; extraHead?: string; contentAfter?: string; dateModified?: string }) {
   const url = opts.url;
-  const head = renderHead(template, { url, title: opts.title, description: page.summary, shareTitle: shareTitle(page), ogImage: opts.ogImage, jsonLd: jsonLd(page, url, opts.trail, opts.articleType, opts.extraGraph), extraHead: opts.extraHead });
+  const head = renderHead(template, { url, title: opts.title, description: page.summary, shareTitle: shareTitle(page), ogImage: opts.ogImage, jsonLd: jsonLd(page, url, opts.trail, opts.articleType, opts.extraGraph, opts.dateModified), extraHead: opts.extraHead });
   const header = masthead(template);
-  const body = opts.contentAfter ? page.content.replace('<h2 id="further">', `${opts.contentAfter}<h2 id="further">`) : page.content;
+  const withSources = page.sources?.length ? `${page.content}\n${sourcesHtml(page.sources)}` : page.content;
+  const body = opts.contentAfter ? withSources.replace('<h2 id="further">', `${opts.contentAfter}<h2 id="further">`) : withSources;
   const headings = [...body.matchAll(/<h2 id="([^"]+)">([^<]+)<\/h2>/g)];
   const toc = headings.length >= 3 ? `<aside class="doc-toc"><nav aria-label="On this page"><p class="nav-label">On this page</p>${headings.map(m=>`<a href="#${m[1]}">${m[2]}</a>`).join('')}</nav></aside>` : '';
   const index = opts.siblings.indexOf(page);
@@ -133,8 +138,9 @@ export function renderCompare(page: DocPage, template: string): string {
     navTitle: 'Compare',
     siblings: collection.pages,
     siblingHref: compareHref,
-    updatedLabel: 'Comparison notes',
+    updatedLabel: page.checkedOn ? `Checked on ${page.checkedOn}` : 'Comparison notes',
     ogImage: collection.ogImage,
+    ...(page.checkedOn ? { dateModified: page.checkedOn } : {}),
   });
 }
 
@@ -263,7 +269,8 @@ export function renderUseCases(template: string): string {
     navTitle: 'Explore',
     siblings: [useCases],
     siblingHref: () => '/use-cases/',
-    updatedLabel: 'Use cases',
+    updatedLabel: useCases.checkedOn ? `Use cases · Checked on ${useCases.checkedOn}` : 'Use cases',
     ogImage: 'og-usecases.png',
+    ...(useCases.checkedOn ? { dateModified: useCases.checkedOn } : {}),
   });
 }
