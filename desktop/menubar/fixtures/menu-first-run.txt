@@ -1,4 +1,4 @@
-[mark.people Vh] Valhalla · No room status yet
+[mark.shield Vh] Valhalla · No room status yet
 Valhalla
 ○ No room status yet · Run vhalla menubar refresh to see your rooms
 ─────────
