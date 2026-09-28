@@ -493,7 +493,7 @@ class Fixture:
         require(port not in (9473, 8790, 19473), "ephemeral port overlaps maintained fixture port")
         self.addr = f"127.0.0.1:{port}"
         host = self.root / "host"
-        initialized = json.loads(await self.command(["private-host", "init", str(host), "--listen", self.addr,
+        initialized = json.loads(await self.command(["private-host", "init", str(host), "--transport", "tls", "--listen", self.addr,
                                 "--tls-name", "runtime.test.invalid", "--executable", str(self.cli)]))
         require(initialized.get("status") == "initialized", "host initialization refused")
         self.connection = json.loads((host / "connection.json").read_text())

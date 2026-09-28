@@ -83,6 +83,13 @@ endpoint:
 
 ## Build from source
 
+New private hosts in this checkout use [iroh](docs/iroh-private-rooms.md):
+members connect to a saved endpoint identity, with direct connections or an
+encrypted relay path. Setup needs no CA certificate or Tailcat process.
+Explicit TLS hosting remains available with `private-host init --transport tls`.
+The [assessment and implementation plan](docs/iroh-transport-plan.md) explains
+the scope and validation; published binaries keep their own version's behavior.
+
 Build the checkout corresponding to these instructions with the repository’s
 supported Rust toolchain and committed lockfile:
 

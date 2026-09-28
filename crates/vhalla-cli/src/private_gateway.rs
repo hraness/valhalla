@@ -17,9 +17,10 @@ use std::{
 };
 use vhalla_private_native::relay::{
     http::{Assets, BrowserCapability, Gateway, GatewayLimits, GatewayRoute, MAX_ASSET_BYTES},
+    iroh::{IrohEndpoint, IrohRelay},
     net::RelayToken,
     tls::TlsRelay,
-    RelayNamespace, MAX_RELAY_ITEMS,
+    RelayClient, RelayNamespace, MAX_RELAY_ITEMS,
 };
 use zeroize::Zeroizing;
 #[cfg(test)]
@@ -30,11 +31,76 @@ const REFUSED: &str =
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Upstream {
+struct TlsUpstream {
     addr: crate::endpoint::Endpoint,
     tls_name: String,
     tls_ca_file: PathBuf,
     token_file: PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(tag = "transport", rename_all = "lowercase", deny_unknown_fields)]
+enum SelectedUpstream {
+    Iroh {
+        endpoint: IrohEndpoint,
+        token_file: PathBuf,
+    },
+    Tls {
+        addr: crate::endpoint::Endpoint,
+        tls_name: String,
+        tls_ca_file: PathBuf,
+        token_file: PathBuf,
+    },
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Upstream {
+    Selected(SelectedUpstream),
+    Legacy(TlsUpstream),
+}
+impl Upstream {
+    fn token_file(&self) -> &Path {
+        match self {
+            Self::Selected(
+                SelectedUpstream::Iroh { token_file, .. }
+                | SelectedUpstream::Tls { token_file, .. },
+            ) => token_file,
+            Self::Legacy(value) => &value.token_file,
+        }
+    }
+    fn selected(&self) -> bool {
+        matches!(self, Self::Selected(_))
+    }
+    fn client(&self, token: RelayToken, namespace: RelayNamespace) -> Result<RelayClient, String> {
+        let tls = |addr: &crate::endpoint::Endpoint, name: &str, ca: &Path| {
+            TlsRelay::new(
+                addr.resolve()
+                    .map_err(|_| "gateway upstream endpoint refused")?,
+                name,
+                private(ca, 65536)?.to_vec(),
+                token,
+                namespace,
+            )
+            .map(Into::into)
+            .map_err(|_| "gateway TLS profile refused".into())
+        };
+        match self {
+            Self::Selected(SelectedUpstream::Iroh { endpoint, .. }) => {
+                endpoint
+                    .validate()
+                    .map_err(|_| "gateway iroh endpoint refused")?;
+                IrohRelay::new(endpoint.clone(), token, namespace)
+                    .map(Into::into)
+                    .map_err(|_| "gateway iroh profile refused".into())
+            }
+            Self::Selected(SelectedUpstream::Tls {
+                addr,
+                tls_name,
+                tls_ca_file,
+                ..
+            }) => tls(addr, tls_name, tls_ca_file),
+            Self::Legacy(value) => tls(&value.addr, &value.tls_name, &value.tls_ca_file),
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -182,8 +248,13 @@ fn assets(root: &Path) -> Result<Assets, String> {
 pub(crate) fn load(path: &Path) -> Result<(Gateway, SocketAddr), String> {
     let config: Config = serde_json::from_slice(&private(path, 65536)?)
         .map_err(|_| "gateway configuration malformed")?;
-    if ![1, 2].contains(&config.format)
+    if ![1, 2, 3].contains(&config.format)
         || (config.format == 1 && !config.retained.is_empty())
+        || (config.format == 3) != config.upstream.selected()
+        || config
+            .retained
+            .iter()
+            .any(|route| (config.format == 3) != route.upstream.selected())
         || config.retained.len() > 15
         || !config.listen.ip().is_loopback()
         || config.listen.port() == 0
@@ -194,7 +265,7 @@ pub(crate) fn load(path: &Path) -> Result<(Gateway, SocketAddr), String> {
             .is_none_or(|n| n.to_string() != config.initial_cursor || n > MAX_RELAY_ITEMS as u64)
     {
         return Err(
-            "gateway needs format 1 or 2, at most 15 retained routes, fixed loopback port and canonical initial_cursor within mailbox capacity".into(),
+            "gateway needs format 1, 2 or explicitly tagged 3, at most 15 retained routes, fixed loopback port and canonical initial_cursor within mailbox capacity".into(),
         );
     }
     let mut routes = vec![route(
@@ -226,22 +297,15 @@ fn route(
     let namespace =
         RelayNamespace::from_bytes(hex(namespace)?).map_err(|_| "gateway namespace refused")?;
     let browser_token = Zeroizing::new(token(browser_token_file)?);
-    let upstream_token = Zeroizing::new(token(&upstream.token_file)?);
+    let upstream_token = Zeroizing::new(token(upstream.token_file())?);
     if *browser_token == *upstream_token {
-        return Err("browser capability must differ from upstream TLS credential".into());
+        return Err("browser capability must differ from upstream relay credential".into());
     }
-    let client = TlsRelay::new(
-        upstream
-            .addr
-            .resolve()
-            .map_err(|_| "gateway upstream endpoint refused")?,
-        &upstream.tls_name,
-        private(&upstream.tls_ca_file, 65536)?.to_vec(),
+    let client = upstream.client(
         RelayToken::from_bytes(*upstream_token)
             .map_err(|_| "gateway upstream credential refused")?,
         namespace,
-    )
-    .map_err(|_| "gateway TLS profile refused")?;
+    )?;
     GatewayRoute::new(
         namespace,
         BrowserCapability::from_bytes(*browser_token)

@@ -67,7 +67,7 @@ do not label a local harness receipt as a two-Mac pass.
 Use the exact [local-host procedure](local-host.md) on Mac A:
 
 ```sh
-/ABS/VHALLA_A private-host init /ABS/RUN_A/host --listen 127.0.0.1:9473 --tls-name relay.valhalla.invalid --executable /ABS/VHALLA_A
+/ABS/VHALLA_A private-host init /ABS/RUN_A/host --transport tls --listen 127.0.0.1:9473 --tls-name relay.valhalla.invalid --executable /ABS/VHALLA_A
 /ABS/VHALLA_A private-host add-credential /ABS/RUN_A/host
 /ABS/VHALLA_A private-host status /ABS/RUN_A/host
 /ABS/VHALLA_A private-host serve /ABS/RUN_A/host
@@ -137,7 +137,7 @@ check their respective listeners only, not end-to-end delivery.
    A later join needs an owner-approved boundary after older traffic drains;
    if that trusted boundary cannot be established, mark the late-join case
    **BLOCKED**, never guess a cursor or copy an old device.
-3. Follow the [agent delivery guide](cli-agents.md#local-hosting-and-persistent-tls-delivery)
+3. Follow the [agent delivery guide](cli-agents.md#local-hosting-and-persistent-delivery)
    for each native profile: A selects `127.0.0.1:9473`, B selects
    `127.0.0.1:19473`; each uses its own context, credential and new delivery
    directory. Run `private delivery-init ID ROOM --config PROFILE` once.

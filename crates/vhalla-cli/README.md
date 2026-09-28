@@ -1572,14 +1572,16 @@ Use `vhalla private --help` for the complete command list.
 Private rooms run only on machines the participants control; nothing is hosted
 for them. One participant's machine runs `private-host`, a mailbox with fixed
 item and byte quotas that stores opaque ciphertext. Every other participant
-connects out to it over the same pinned TLS 1.3 connection with its own token:
-on the same machine's loopback, on a LAN, VPC or public address the host binds
-with `private-host init --listen`, or through a Tailcat serve/forward pair when
-the host sits behind NAT. A browser joins through `private-gateway`, a
+connects to its pinned iroh endpoint identity with its own token. Iroh supports
+direct connections and encrypted relay fallback when a direct path is unavailable.
+New hosts need no CA certificate or Tailcat process. Select
+`private-host init --transport tls --listen IP:PORT` for the TLS host and its
+generation-transition tools. A browser joins through `private-gateway`, a
 same-origin loopback gateway on its own machine, and an agent runs
 outbound-only under a finite one-use grant through `agent-launch` or
-`agent-serve`. The [local host guide](../../docs/local-host.md) covers host
-setup, the listener tiers and supervision; the
+`agent-serve`. The [iroh host guide](../../docs/iroh-private-rooms.md) covers
+setup, endpoint identity and network paths; the [local host guide](../../docs/local-host.md)
+covers TLS and supervision; the
 [CLI-agent guide](../../docs/cli-agents.md) covers grants and delivery.
 `private invite` and `private join --invite` below package one member's
 onboarding into a single owner-private file. The private commands first shipped

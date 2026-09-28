@@ -177,6 +177,7 @@ pub(super) fn tailcat_plist(
 // Pinned Tailcat v0.7.0 `serve` accepts bare ports and proxies them to
 // localhost; it does not support the later upstream PORT:TARGET syntax.
 pub(super) fn tailcat_port(config: &Config) -> Result<String, String> {
+    super::require_tls(config)?;
     if config.listen.ip() != std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
         || config.listen.port() == 0
     {
@@ -192,6 +193,7 @@ pub(super) fn tailcat_port(config: &Config) -> Result<String, String> {
 pub(super) fn test_config(label: &str) -> Config {
     Config {
         version: 1,
+        iroh: None,
         retained_generations: Vec::new(),
         advertise: Vec::new(),
         label: label.into(),
@@ -608,7 +610,9 @@ mod mac {
         agent_status(&spec(&loaded.home, &loaded.config)?)
     }
     pub(in crate::private_host) fn install(loaded: &Loaded) -> Result<(), String> {
-        if time::OffsetDateTime::now_utc().unix_timestamp() >= loaded.config.certificate_expires_at
+        if loaded.config.iroh.is_none()
+            && time::OffsetDateTime::now_utc().unix_timestamp()
+                >= loaded.config.certificate_expires_at
         {
             return Err("refusing to install an expired TLS host".into());
         }
@@ -633,6 +637,7 @@ mod mac {
                 home: home.clone(),
                 config: Config {
                     version: 1,
+                    iroh: None,
                     retained_generations: Vec::new(),
                     advertise: Vec::new(),
                     label: "me.vhalla.private-host.install-test".into(),
@@ -825,6 +830,7 @@ mod mac {
                 home: home.clone(),
                 config: Config {
                     version: 1,
+                    iroh: None,
                     retained_generations: Vec::new(),
                     advertise: Vec::new(),
                     label: "me.vhalla.private-host.probe-test".into(),
@@ -940,6 +946,7 @@ mod mac {
                 home: home.clone(),
                 config: Config {
                     version: 1,
+                    iroh: None,
                     retained_generations: Vec::new(),
                     advertise: Vec::new(),
                     label: "me.vhalla.private-host.test".into(),
@@ -995,6 +1002,7 @@ mod tests {
     fn launch_agent_escapes_paths_and_has_bounded_nonsecret_supervision() {
         let mut c = Config {
             version: 1,
+            iroh: None,
             retained_generations: Vec::new(),
             advertise: Vec::new(),
             label: "me.vhalla.private-host.test".into(),

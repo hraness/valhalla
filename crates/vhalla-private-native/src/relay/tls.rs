@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod ledger;
-mod service;
+pub(super) mod service;
 pub use ledger::{CredentialAllowance, CredentialSpend, FencedQuotaSnapshot};
 pub use service::{Credential, Permissions, Service, ServiceLimits};
 #[cfg(test)]

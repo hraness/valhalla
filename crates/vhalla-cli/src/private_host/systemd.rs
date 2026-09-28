@@ -425,7 +425,9 @@ pub(super) fn status(loaded: &Loaded) -> Result<serde_json::Value, String> {
 }
 #[cfg(target_os = "linux")]
 pub(super) fn install(loaded: &Loaded) -> Result<(), String> {
-    if time::OffsetDateTime::now_utc().unix_timestamp() >= loaded.config.certificate_expires_at {
+    if loaded.config.iroh.is_none()
+        && time::OffsetDateTime::now_utc().unix_timestamp() >= loaded.config.certificate_expires_at
+    {
         return Err("refusing to install an expired TLS host".into());
     }
     linux::agent_install(&spec(&loaded.home, &loaded.config)?)

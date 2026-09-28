@@ -11,6 +11,7 @@ chmod 700 /data 2>/dev/null || true
 if [ ! -f "$HOME_DIR/config.json" ]; then
   rmdir "$HOME_DIR" 2>/dev/null || true
   vhalla private-host init "$HOME_DIR" \
+    --transport tls \
     --listen 127.0.0.1:9473 \
     --tls-name relay.valhalla.invalid \
     --executable /usr/local/bin/vhalla

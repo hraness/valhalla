@@ -2204,23 +2204,34 @@ fn private_cli_relay_submit_checks_an_explicit_namespace_before_transport() {
 
 #[test]
 fn private_cli_invite_bundle_carries_member_store_delivery_and_request() {
+    invite_bundle_journey(false);
+}
+#[test]
+fn private_cli_iroh_invite_pins_endpoint_before_creating_member_and_delivery() {
+    invite_bundle_journey(true);
+}
+fn invite_bundle_journey(iroh: bool) {
     let f = Fixture::new();
     // A real private-host home supplies the credential, CA and dial addresses.
     let host = f.root.join("host-home");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener);
-    let init = Command::new(env!("CARGO_BIN_EXE_vhalla"))
-        .args(["private-host", "init"])
-        .arg(&host)
-        .args([
-            "--listen".to_string(),
-            addr.to_string(),
-            "--tls-name".into(),
-            "invite.test.invalid".into(),
-        ])
-        .output()
-        .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vhalla"));
+    command.args(["private-host", "init"]).arg(&host);
+    if iroh {
+        command.args(["--iroh-bind", &addr.to_string(), "--relay-url", "none"]);
+    } else {
+        command.args([
+            "--transport",
+            "tls",
+            "--listen",
+            &addr.to_string(),
+            "--tls-name",
+            "invite.test.invalid",
+        ]);
+    }
+    let init = command.output().unwrap();
     assert!(
         init.status.success(),
         "private-host init: {}",
@@ -2243,11 +2254,55 @@ fn private_cli_invite_bundle_carries_member_store_delivery_and_request() {
     );
     let invite: Value = serde_json::from_slice(&fs::read(f.root.join("invite")).unwrap()).unwrap();
     assert_eq!(invite["kind"], "valhalla-private-invite");
-    assert_eq!(invite["version"], serde_json::json!(1));
-    assert_eq!(
-        invite["relay"]["addresses"],
-        serde_json::json!([addr.to_string()])
-    );
+    if iroh {
+        assert_eq!(invite["version"], 2);
+        assert_eq!(invite["relay"]["transport"]["kind"], "iroh");
+        assert!(invite["relay"].get("ca").is_none());
+        for (index, changed) in [
+            {
+                let mut value = invite.clone();
+                value["relay"]["ca"] = "00".into();
+                value
+            },
+            {
+                let mut value = invite.clone();
+                value["relay"]["transport"]["endpoint"]["endpoint_id"] = "invalid".into();
+                value
+            },
+            {
+                let mut value = invite.clone();
+                value["relay"]["transport"]["endpoint"]["extra"] = true.into();
+                value
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            f.write("bad-iroh-invite", &serde_json::to_vec(&changed).unwrap());
+            let mut flags = f.validity();
+            flags.extend([
+                ("invite", f.path("bad-iroh-invite")),
+                ("owner", f.owner.clone()),
+                ("operation", op(1)),
+                ("delivery-dir", f.path("bad-delivery")),
+                ("out", f.path("bad-request")),
+            ]);
+            let result = f.run("join", "member-key", Some("bad-member"), &flags, None);
+            assert!(
+                !result.status.success(),
+                "malformed iroh invite {index} accepted"
+            );
+            assert!(!f.root.join("bad-member").exists());
+            assert!(!f.root.join("bad-delivery").exists());
+            assert!(!f.root.join("bad-request").exists());
+        }
+    } else {
+        assert_eq!(invite["version"], 1);
+        assert_eq!(
+            invite["relay"]["addresses"],
+            serde_json::json!([addr.to_string()])
+        );
+    }
     assert_eq!(
         invite["relay"]["token"].as_str().unwrap(),
         std::str::from_utf8(&fs::read(host.join("client-2.token")).unwrap())
@@ -2264,16 +2319,24 @@ fn private_cli_invite_bundle_carries_member_store_delivery_and_request() {
         ("owner", f.owner.clone()),
         ("operation", op(1)),
         ("delivery-dir", delivery.to_str().unwrap().to_owned()),
-        ("addr", addr.to_string()),
         ("out", f.path("request")),
     ]);
+    if !iroh {
+        flags.push(("addr", addr.to_string()));
+    }
     f.ok("join", "member-key", Some("member-room"), &flags);
     let profile: Value =
         serde_json::from_slice(&fs::read(delivery.join("delivery.json")).unwrap()).unwrap();
-    assert_eq!(profile["addr"], addr.to_string());
-    assert_eq!(profile["tls_name"], "invite.test.invalid");
-    // initialize() publishes the control-delivery activation version in place.
-    assert_eq!(profile["version"], serde_json::json!(2));
+    if iroh {
+        assert_eq!(profile["version"], 4);
+        assert_eq!(profile["transport"], invite["relay"]["transport"]);
+        assert!(profile.get("ca").is_none());
+        assert!(!delivery.join("ca.der").exists());
+    } else {
+        assert_eq!(profile["addr"], addr.to_string());
+        assert_eq!(profile["tls_name"], "invite.test.invalid");
+        assert_eq!(profile["version"], 2);
+    }
     assert_eq!(profile["context"]["account"], f.member);
     assert_eq!(
         profile["namespace"],
@@ -2313,6 +2376,8 @@ fn private_cli_invite_and_join_refuse_wrong_or_reused_material() {
         .args(["private-host", "init"])
         .arg(&host)
         .args([
+            "--transport".to_string(),
+            "tls".into(),
             "--listen".to_string(),
             addr.to_string(),
             "--tls-name".into(),

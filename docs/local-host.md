@@ -1,5 +1,13 @@
 # Local private-room host
 
+New hosts in this checkout use iroh. Follow [the iroh host guide](iroh-private-rooms.md)
+to connect with a saved endpoint identity and relay fallback, without issuing
+certificates or configuring Tailcat. Build with `experimental-private` from
+this checkout; a previously published binary keeps its own documented commands.
+
+The rest of this page describes the explicit `--transport tls` option, including
+certificate maintenance and the TLS generation-transition tools.
+
 A laptop or server you control can host the opaque private relay. No paid cloud
 is required. Clients reach the relay on the same machine, directly over your
 network or the Internet when the host has an address they can dial, or through
@@ -26,6 +34,7 @@ certificate name and does not need public DNS.
 
 ```sh
 /absolute/vhalla private-host init /private/operator/valhalla-host \
+  --transport tls \
   --listen 127.0.0.1:9473 --tls-name relay.valhalla.invalid \
   --executable /absolute/stable/vhalla
 /absolute/vhalla private-host status /private/operator/valhalla-host
@@ -274,6 +283,7 @@ For example, a laptop that hosts agents on the same Wi-Fi network:
 
 ```sh
 /absolute/vhalla private-host init /private/operator/valhalla-host \
+  --transport tls \
   --listen 192.168.1.20:9473 --executable /absolute/stable/vhalla
 ```
 
@@ -329,6 +339,7 @@ APP_PORT="${APP_PORT:-19473}"
 chmod 700 /data 2>/dev/null || true
 if [ ! -f "$HOME_DIR/config.json" ]; then
   vhalla private-host init "$HOME_DIR" \
+    --transport tls \
     --listen 127.0.0.1:9473 \
     --tls-name relay.valhalla.invalid \
     --executable /usr/local/bin/vhalla
@@ -431,7 +442,7 @@ On each client, select one fixed local forwarding port:
 /absolute/tailcat forward --bind=127.0.0.1 PRIVATE_TAILCAT_ADDRESS 19473:9473
 ```
 
-The client's [delivery profile](cli-agents.md#local-hosting-and-persistent-tls-delivery)
+The client's [delivery profile](cli-agents.md#local-hosting-and-persistent-delivery)
 then uses `127.0.0.1:19473`, the exact TLS name, transferred `ca.der`, selected
 namespace and its own token file. For a loopback host, `listen` and `addresses`
 in `connection.json` name the host machine only; a Tailcat client dials its own

@@ -128,7 +128,7 @@ pub(super) fn require_idle(home: &Path) -> Result<(), String> {
 
 /// Structural validation also runs on historical configs used by seal recovery.
 pub(super) fn validate_selection(config: &Config) -> Result<(), String> {
-    if config.version < 3 {
+    if config.version < 3 || config.iroh.is_some() {
         return if config.retained_generations.is_empty() {
             Ok(())
         } else {
