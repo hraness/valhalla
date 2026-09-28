@@ -1,5 +1,23 @@
 # Private runtime readiness continuation
 
+## Current transport scope, 28 September 2026
+
+New private hosts in a source build use iroh. The
+[iroh host guide](iroh-private-rooms.md) covers the `experimental-private` build
+and setup; no binary release containing iroh has been published. TLS is an
+explicit host option and is used by the Railway recipe. Browser clients reach
+either transport through a native loopback gateway. Public consensus uses
+Malachite/libp2p.
+
+The tests and performance numbers below used TLS and retain their original
+artifact identities. They do not measure iroh latency, resource use, or behavior
+across independent devices. Iroh's local direct, gateway, agent, and public-relay
+tests are recorded in the [transport assessment](iroh-transport-plan.md);
+independent-machine and multiple-NAT tests are pending. Mailbox generation
+transitions in the follow-on list apply to TLS hosts only.
+
+## Earlier continuation
+
 This continuation started from `1cff4f5fc202b1a1a987d6ae52672188956774b0`
 and merged in PR101 at `4b08106`. The implementation and local measurements
 below describe that delivered change. The active follow-on work is the

@@ -1,8 +1,8 @@
 # Host private rooms with iroh
 
-In development. Build this checkout with `experimental-private` to use iroh
-for private rooms. The commands here describe this source version; check an
-installed release's help before using them.
+In development. Iroh support requires a source build with `experimental-private`;
+no binary release containing it has been published. The installer and Homebrew
+install the published release. These commands describe the source checkout.
 
 An iroh host has a saved public endpoint identity. Members connect to that
 identity and authenticate with their own mailbox tokens. Iroh attempts direct
@@ -51,8 +51,10 @@ before installing that service.
 Use `private invite` with the host directory and an enrolled credential index.
 The resulting confidential file contains the room offer, pinned iroh endpoint,
 mailbox namespace and that participant's token. `private join --invite` creates
-the member's room and delivery profile. The [private-room commands](private-rooms.md)
-describe the required account, validity and operation arguments.
+the member's room and delivery profile. Follow the
+[invitation commands](../crates/vhalla-cli/README.md#one-invite-file-bundled-offer-and-delivery-material)
+for the account, validity, operation, and admission steps. Creating a transport
+connection alone does not complete the room invitation.
 
 Iroh invitations use version two. A recipient does not choose an IP address or
 copy a CA certificate. Reject an invitation if its endpoint identity is not the
@@ -88,10 +90,33 @@ The persistent queue binds the endpoint key and namespace. Changing a routing
 hint keeps that identity; selecting another key or mailbox refuses the old
 queue.
 
-A browser still uses its native loopback gateway and keeps its existing origin
-and storage. Gateway format three selects an iroh upstream with
-`{"transport":"iroh","endpoint":{...},"token_file":"/absolute/private/token"}`.
-The browser capability remains separate from the host's mailbox token.
+## Connect a browser
+
+Build the [production private browser](../browser/README.md#explicit-local-host-private-sync)
+and run a native loopback gateway on the browser's machine. Use the complete
+[format-three gateway example](../crates/vhalla-cli/src/private_gateway/README.md#choose-an-upstream).
+Copy `namespace` and `endpoint` from the host's `connection.json`, and give the
+gateway its own mailbox credential. The browser receives a separate capability;
+it never receives the host's mailbox token or endpoint private key.
+
+The browser stays at a fixed `http://127.0.0.1:PORT` origin. Its gateway connects
+to the selected iroh endpoint; the browser itself does not speak iroh. Changing
+the gateway's upstream keeps the origin and IndexedDB storage, but changing the
+endpoint identity or mailbox requires the corresponding reviewed room and
+delivery selection.
+
+## Use the lower-level relay commands
+
+`relay-submit`, `relay-scan`, `relay-push`, and `relay-pull` accept
+`--iroh-endpoint /absolute/private/endpoint.json --token /absolute/private/client.token
+--namespace HEX64`. The endpoint file contains only the `endpoint` object from
+`connection.json`, not the whole connection document. Keep it and the token as
+owner-private files in an owner-private directory. These flags cannot be
+combined with `--addr`, `--tls-ca`, `--tls-name`, or `--mailbox`.
+
+The [CLI relay reference](../crates/vhalla-cli/README.md#explicit-private-relay-tls)
+describes the separate TLS path. Both transports submit already-encrypted items;
+neither creates room membership.
 
 ## Select a network path
 

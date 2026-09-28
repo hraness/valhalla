@@ -7,17 +7,26 @@ fault tests. `vhalla.com` is the existing Vercel static marketing/documentation
 project: `vercel.json` builds `site/dist`. Neither the domain nor website
 publication establishes that a Valhalla application peer or relay is running.
 
-The selected first workflow runs on the user's Mac as a mostly persistent local
-host. A dedicated service retains only opaque mailbox data; CLI agents and browser
-workers retain their own custody. Tailcat can expose exact loopback service ports
-using a saved key. Browser clients use a fixed forwarding port and stable origin.
+New private hosts in this source checkout use iroh. Build with
+`experimental-private` and follow the [iroh host guide](iroh-private-rooms.md);
+no binary release containing iroh has been published. The host keeps a persistent
+endpoint key, and clients use direct connections or the configured encrypted
+relay path. The public consensus network uses Malachite/libp2p.
+
+A participant's laptop or server runs the mailbox service, which retains opaque
+ciphertext; CLI agents and browser workers retain their own room state. A browser
+uses a native loopback gateway at a fixed origin on its own machine. That
+gateway connects to the selected iroh or TLS host. Explicit TLS hosting,
+including the Railway recipe, can use a direct TCP path or a Tailcat forward.
 No paid host or public DNS endpoint is required. Sleep, network loss and browser
 suspension are expected outages, not authority to reset queues or custody.
 
 Use synthetic accounts and rooms for qualification. Do not transfer the user's
 real private stores, credentials, archives or browser profiles. Local process and
-restart evidence qualifies this local use; remote Tailcat and independent-device
-claims require separate measurements on that actual path.
+restart evidence qualifies its tested local use. Iroh has local direct and
+public-relay evidence with client UDP disabled, but independent-machine and
+multiple-NAT tests are pending. Earlier TLS/Tailcat measurements do not establish
+iroh behavior. Record the transport and actual path for every run.
 
 Two machines can establish behavior when one participant disconnects. They do
 not establish the four independent validator failure domains needed to qualify
@@ -29,11 +38,13 @@ create additional failure tolerance.
 
 The public peer binds loopback behind an operator-owned TLS proxy and checks its
 exact advertised HTTPS route and browser Origin. Preserve those restrictions.
-The private relay has a maintained TLS service with scoped credentials and
+The private mailbox supports iroh and explicit TLS with scoped credentials and
 durable quotas, plus a loopback-only reference socket and a directly accessed
-mailbox directory. Use the dedicated `private-host` lifecycle for local hosting or the explicit
-`relay-tls-serve` adapter for a separately operated listener. The TLS library
-and fault tests do not establish a running public endpoint.
+mailbox directory. Use the `private-host` lifecycle for either network transport;
+`relay-tls-serve` is a lower-level TLS adapter. Iroh pins the host's endpoint key;
+TLS pins its CA, name, and namespace. Certificate renewal, Tailcat templates, and
+mailbox generation transitions require a TLS host. Transport and fault tests
+describe only the paths they exercised.
 
 The maintained relay adapter establishes server identity before transmitting
 credentials, binds the chosen namespace independently of a server response,
@@ -62,6 +73,7 @@ ordinary operational logs.
 | Host role, OS/browser version and pseudonymous machine identifier | Which participant performed an action; identifiers alone do not prove independent infrastructure |
 | Separately reviewed provider/region/power/network placement | The actual failure assumptions; two processes on one host do not count as independent |
 | Independently obtained bootstrap pin and full selected peer identity | The client's trust selection before dialing |
+| Private transport selection, endpoint key or TLS identity, configured relay/address hints, and observed direct or relayed connection path | Which private connection was tested; a configured relay URL alone does not establish relay use |
 | DNS, certificate identity/expiry, HTTPS route and Origin/CORS observations | The deployed transport configuration actually exercised |
 | Case start/end, exact fault boundary, observed durable state and cleanup outcome | Which operation was interrupted and what survived; a timeout alone is not a pass |
 | File/packet commitments, monotone positions and authenticated receipts | Correlation without logging private contents; each receipt retains its actual claim |
@@ -77,7 +89,9 @@ anti-replay state, journals, WAL, retained intents or a used cursor.
    the independent bootstrap pin, discover and explicitly select a peer, post,
    and verify exact readback from the second machine. Repeat with the optional
    private client using a confidential invitation; public discovery must never
-   receive its bootstrap or membership material.
+   receive its bootstrap or membership material. For iroh, record separate
+   direct and forced-relay runs across independent machines and NATs. Disable
+   client UDP for the relay case and verify the observed path.
 2. **Offline catch-up:** stop the receiving client, retain traffic, restart with
    its original custody and catch up in bounded pages. Repeat with relay outage
    and a lost response after acceptance. Check exact retries and monotone

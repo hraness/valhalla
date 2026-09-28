@@ -1,5 +1,23 @@
 # Current release readiness
 
+## Iroh source status, 28 September 2026
+
+New private hosts in the source tree use iroh. This feature requires a source
+build with `experimental-private`; no binary release containing iroh has been
+published. Installer and Homebrew releases keep their release's transport
+behavior. The [iroh host guide](iroh-private-rooms.md) gives the source commands.
+
+Native host/client tests, agent delivery, browser-gateway exchange, and a public
+relay test with client UDP disabled passed. The public-relay test used two
+endpoints on one machine; independent-machine and multiple-NAT testing is
+pending. [The implementation record](iroh-transport-plan.md) gives the scope.
+The Railway recipe selects TLS, and its deployment or earlier measurements do
+not establish a production iroh delivery path. Public consensus uses
+Malachite/libp2p. Iroh hosts do not support TLS certificate maintenance,
+Tailcat templates, or mailbox generation transitions.
+
+## Earlier release evidence
+
 The original inventory below describes source on 22 September 2026. The
 [23 September continuation](production-formal-plan-2026-09-23.md) and
 [execution record](readiness-execution-2026-09-23.md) track subsequent repairs,

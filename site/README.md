@@ -1,7 +1,7 @@
 # Valhalla marketing and documentation site
 
 A static home page, a documentation hub with fourteen pages, a comparison hub
-with four comparisons, a writing hub with six notes, and a use-cases page for
+with four comparisons, a writing hub with reviewed technical posts, and a use-cases page for
 vhalla.com. Documentation follows the Diátaxis split: tutorials, how-to guides,
 reference and explanation. Keep every claim true to the current source and the
 [promotion plan](../kb/plans/valhalla-promotion-gates.md); the copy rules are in
@@ -63,6 +63,13 @@ or recreate the project to repair a page.
   account-owned fixed-room adapter, but it is a cooperating-host boundary and
   does not claim OS or provider isolation. Ordinary public builds exclude
   optional MLS dependencies.
+- New private hosts at `documentedRevision` default to iroh. Keep the source-build
+  requirement separate from `latestRelease` and installer instructions. Public
+  consensus still uses Malachite/libp2p, and browsers still use a native loopback
+  gateway. TLS is explicit and remains the existing Railway recipe’s transport.
+  Local direct and real public-relay iroh tests passed; the earlier two-laptop
+  and hosted-container results used TLS. Independent-machine and multiple-NAT
+  iroh behavior remain untested.
 - Keep current CLI examples aligned with `public_activity`, `public_serve`,
   private archive and Clankdar command help. Native continuity has its own receipt
   session: temporary staging, terminal admission and the exact-source Evidence

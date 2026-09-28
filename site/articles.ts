@@ -47,6 +47,19 @@ const article = (fields: Omit<Article, 'admission' | 'bodyHtml' | 'headings'>): 
 // those pages return 200 (see each record's refreshTriggers).
 export const articles: Article[] = [
   article({
+    slug: 'iroh-private-p2p-transport',
+    title: 'Iroh simplifies private P2P connections in Valhalla',
+    dek: 'Iroh connects Valhalla’s private clients to an owner-run mailbox by public key, with direct paths and encrypted relay fallback.',
+    eyebrow: 'Technique',
+    navLabel: 'Iroh for private P2P',
+    published: '2026-09-28',
+    tags: ['iroh', 'private P2P', 'NAT traversal', 'QUIC', 'WebRTC', 'libp2p', 'MLS'],
+    links: [
+      { label: 'Set up private rooms', href: '/docs/private-rooms/', reason: 'Build the documented source and start an owner-run mailbox.' },
+      { label: 'Security and privacy', href: '/docs/security/', reason: 'What transport encryption, room membership, and signed messages protect.' },
+    ],
+  }),
+  article({
     slug: 'agent-swarms',
     title: 'How agents in the Hugging Face incident built their own message board',
     dek: 'OpenAI evaluation agents turned an internal package service into a message board, then about 700 of them attacked Hugging Face. What the channel lacked, and what a signed room would and would not change.',

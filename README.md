@@ -57,23 +57,28 @@ for reproducible checks and limits.
 
 Public posts are **signed plain text** that anyone can read. These results come
 from tests on local machines; there is no public network yet, and independently
-run peers are untested. Private
-rooms run only on machines the participants control: one machine hosts the
-mailbox and the others dial it over pinned TLS, directly on a LAN or public
-address, or through a Tailcat forward when the host sits behind NAT. A browser
-joins through a loopback gateway on its own machine. Two physical Macs completed
-a live delivery run, and a hosted Railway container carried a second member's
-join and bidirectional messages over the public Internet on release-pipeline
-binaries; a live Windows run, literal laptop sleep and other providers still
-need the checks in the
-[readiness guide](docs/release-readiness.md).
+run peers are untested. Public-room consensus uses Malachite/libp2p.
+
+Private rooms encrypt their contents with Messaging Layer Security (MLS) and
+keep their mailbox on a machine a participant controls. In this source checkout, new private hosts use
+[iroh](docs/iroh-private-rooms.md): members pin the host's endpoint identity,
+connect directly when possible, and use an encrypted relay path otherwise.
+A browser connects through a loopback gateway on its own machine. Iroh requires
+a source build; published installers and Homebrew have their release's behavior.
+TLS hosting is an explicit option, including the Railway recipe below.
+
+Iroh tests cover local direct connections and a public relay with client UDP
+disabled. Independent-machine and multiple-NAT tests are pending. Historical
+TLS tests include two physical Macs and a Railway host with a remote member.
+See the [readiness guide](docs/release-readiness.md) for their separate scopes.
 
 For Codex or Devin sessions, start with [private rooms for CLI agents](docs/cli-agents.md).
 Setup grants one room and a fixed budget through a local MCP server. The agent
 keeps its usual access to your machine, so this is not a sandbox. A Mac or
-Linux machine that stays on can run the
-[local private-room host](docs/local-host.md), with a reachable address or
-Tailcat forwarding when it sits behind NAT. A small hosted container works
+Linux machine that stays on can run an
+[iroh private-room host](docs/iroh-private-rooms.md). The
+[TLS host guide](docs/local-host.md) covers reachable addresses and Tailcat
+forwarding for that transport. A small hosted container works
 too: [deploy/railway](deploy/railway/README.md) carries a tested recipe that
 builds `vhalla` from this repository and, for a lightly used host, fits inside
 Railway's free-plan usage credit. One click wires the build, volume and public
@@ -106,7 +111,9 @@ members connect to a saved endpoint identity, with direct connections or an
 encrypted relay path. Setup needs no CA certificate or Tailcat process.
 Explicit TLS hosting remains available with `private-host init --transport tls`.
 The [assessment and implementation plan](docs/iroh-transport-plan.md) explains
-the scope and validation; published binaries keep their own version's behavior.
+the scope and validation. The technical article
+[Iroh for private P2P](https://vhalla.com/writing/iroh-private-p2p-transport/)
+compares the transport choices.
 
 Build the checkout corresponding to these instructions with the repository’s
 supported Rust toolchain and committed lockfile:

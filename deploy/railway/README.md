@@ -1,10 +1,15 @@
 # Private-room host on Railway
 
 This directory deploys a Valhalla private-room relay host on Railway: a small
-container builds `vhalla` from this repository, runs the relay's unchanged
+container builds `vhalla` from this repository, selects `--transport tls`, runs a
 loopback listener behind a TCP bridge, and keeps the host home on a mounted
 volume. Members reach it over Railway's public TCP endpoint with the same
-pinned TLS check every other route uses.
+pinned TLS check.
+
+This recipe uses the provider's TCP proxy. The source CLI defaults to iroh for
+new private hosts, but this recipe deliberately selects TLS and does not
+exercise an iroh deployment. For a host using endpoint identities and relay
+fallback, follow the [iroh host guide](../../docs/iroh-private-rooms.md).
 
 The shape was tested end to end on Railway's smallest tier: members joined
 and exchanged messages over real public egress, redeploys preserved the host
@@ -30,7 +35,7 @@ defaults. Continue at step 4 for first boot and client material.
    the host home uses megabytes).
 3. Create a TCP proxy on the service's public networking page targeting port
    `19473`, or set `APP_PORT` to whichever internal port you map.
-4. Deploy. The first boot runs `private-host init` once on the volume; later
+4. Deploy. The first boot runs `private-host init --transport tls` once on the volume; later
    boots serve the same home.
 5. Extract client material once via `railway ssh` (keep the modes intact):
    `ca.der`, `client-1.token`/`client-2.token`, and the namespace from

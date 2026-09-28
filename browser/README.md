@@ -340,9 +340,14 @@ by the gateway.
 
 A production `private-rooms` build can run at a **fixed**
 `http://127.0.0.1:PORT` origin served by `vhalla private-gateway`. The gateway
-forwards opaque relay requests through the selected CA/name-pinned TLS endpoint.
-Run native Tailcat forwarding on that browser's machine when the relay host is
-elsewhere. A generic `tailcat browse` chooses a random local port and therefore a
+forwards opaque requests to a pinned iroh endpoint or a CA/name-pinned TLS host.
+New private hosts in a source build use iroh. Build the native CLI with
+`experimental-private` and follow the [gateway configuration](../crates/vhalla-cli/src/private_gateway/README.md#choose-an-upstream)
+to select that upstream. The gateway runs on the browser's machine; the browser
+itself does not speak iroh. Iroh support requires a source build.
+
+For a TLS host that needs a Tailcat route, run native Tailcat forwarding on that
+browser's machine. A generic `tailcat browse` chooses a random local port and therefore a
 new IndexedDB origin; use a fixed explicit forward instead. Browser-only/mobile
 Tailcat, autonomous browser hosting and background persistence are not implemented.
 When forwarding the gateway itself, use the same `127.0.0.1` host and local port

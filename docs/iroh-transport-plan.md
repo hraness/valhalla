@@ -79,7 +79,7 @@ without changed inputs or missing evidence.
 
 ## Sources
 
-- [Iroh documentation](https://docs.iroh.com/): endpoint identity, direct
+- [Iroh documentation](https://docs.iroh.computer/): endpoint identity, direct
   connectivity and encrypted relay transport.
 - [Iroh crate](https://docs.rs/iroh/1.2.0/iroh/): pinned version 1.2.0,
   endpoint and stream APIs. Its declared minimum Rust version is 1.91.
