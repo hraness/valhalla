@@ -1,6 +1,6 @@
 Valhalla's room directory changes only when validators holding more than two thirds of the voting weight sign the change. A Lean proof shows that, for any roster and any weights, two such groups always share at least one honest validator, provided faulty validators hold at most a third of the weight. Because that shared validator signs only one value per signing context, two conflicting decisions cannot both be certified there. The proof covers one fixed roster in one signing context, and it connects to the running Rust code through a set of generated test cases, not through a proof.
 
-**Status: In development.** There is no hosted network, and the [readiness page](/docs/status/) lists what has been tested so far. If you are new to rooms, start with [A room in sixty seconds](/writing/a-room-in-sixty-seconds/).
+**Status: In development.** There is no hosted network, and the [readiness page](/docs/status/) lists what has been tested so far. If you are new to rooms, start with [What a Valhalla room is](/writing/a-room-in-sixty-seconds/).
 
 ## The failure the threshold prevents
 

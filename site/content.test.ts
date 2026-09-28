@@ -34,13 +34,15 @@ test('every local page destination and section resolves', () => {
   }
 });
 
+const quarantinedPaths = new Set(articles.filter(article => article.admission.lifecycle === 'quarantined').map(articleHref));
 test('documentation and marketing pages are static, accessible and correctly canonicalized', () => {
   for (const [path, html] of pages) {
     if (path==='/') continue;
     expect(html, path).toContain(`href="https://vhalla.com${path}"`);
     expect(html).toContain('<main id="main"');
     expect(html).toContain('Skip to content');
-    expect(html).toContain('aria-current="page"');
+    // Quarantined articles stay out of every navigation list, so they have no current nav item.
+    if (!quarantinedPaths.has(path)) expect(html, path).toContain('aria-current="page"');
     expect(html).toMatch(/<summary>(Documentation|Compare|Writing|Explore)/);
     expect(html).not.toContain('<form');
     expect(html).not.toMatch(/<script[^>]+src="https?:/);

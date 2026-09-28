@@ -29,7 +29,11 @@ test('every article shows the Hraness byline, the provenance note and dated sour
   for (const article of articles) {
     const html = renderArticle(article, template);
     const sentence = articleProvenanceSentence(articleProvenanceFromAdmission(article.admission));
-    expect(sentence).toBe('Drafted with AI from the source code and reviewed by Claude Opus 5.5 (claude-opus-5-5) editorial review.');
+    // Technique posts are drafted from the source code; essays draw on public reports too, so they say only "Drafted with AI".
+    const drafted = article.admission.drafting === 'ai-from-source' ? 'Drafted with AI from the source code' : 'Drafted with AI';
+    expect(article.admission.drafting, article.slug).toMatch(/^ai(-from-source)?$/);
+    expect(sentence.startsWith(`${drafted} `) || sentence.startsWith(`${drafted}.`), article.slug).toBe(true);
+    if (article.admission.review) expect(sentence, article.slug).toBe(`${drafted} and reviewed by ${article.admission.review.reviewer}.`);
     expect(html, article.slug).toContain(sentence);
     expect(html, article.slug).not.toMatch(/human/i);
     expect(html, article.slug).toContain('By <a href="https://hraness.com" rel="author">Hraness</a>');
@@ -86,7 +90,8 @@ test('indexable articles enter the index, sitemap, Atom feed and llms.txt', () =
 });
 
 test('a quarantined article is readable but noindex and absent from every discovery list', () => {
-  const quarantined: Article = { ...articles[0]!, slug: 'quarantine-fixture', navLabel: 'Quarantine fixture', admission: { ...articles[0]!.admission, href: '/writing/quarantine-fixture/', lifecycle: 'quarantined' } };
+  const sourceDrafted = articles.find((article) => article.admission.drafting === 'ai-from-source' && article.admission.lifecycle === 'indexable')!;
+  const quarantined: Article = { ...sourceDrafted, slug: 'quarantine-fixture', navLabel: 'Quarantine fixture', admission: { ...sourceDrafted.admission, href: '/writing/quarantine-fixture/', lifecycle: 'quarantined' } };
   const list = [...articles, quarantined];
   const page = renderArticle(quarantined, template);
   expect(page).toContain('<meta name="robots" content="noindex, follow">');
