@@ -16,7 +16,7 @@ for arg in "$@"; do
   esac
 done
 
-VERSION="v0.2.3"
+VERSION="v0.2.8"
 BASE="https://github.com/hraness/valhalla/releases/download/$VERSION"
 INSTALL_DIR="${VHALLA_INSTALL_DIR:-$HOME/.local/bin}"
 
