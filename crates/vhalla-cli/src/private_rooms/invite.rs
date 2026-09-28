@@ -13,6 +13,7 @@ use vhalla_identity::Identity;
 use vhalla_private_kernel::{protocol::Key, ContactBootstrap};
 use vhalla_private_native::client::{RoomCreation, RoomSession};
 use vhalla_private_native::private_rooms::NativePrivateStore;
+use vhalla_private_native::relay::{iroh::IrohEndpoint, net::RelayToken};
 
 use super::{agent_delivery, files, Args, REFUSED};
 
@@ -33,10 +34,32 @@ struct Bundle {
 #[serde(deny_unknown_fields)]
 struct BundleRelay {
     namespace: String,
-    tls_name: String,
-    ca: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tls_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ca: Option<String>,
     token: String,
-    addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    addresses: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport: Option<BundleTransport>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+enum BundleTransport {
+    Iroh { endpoint: IrohEndpoint },
+}
+
+enum ParsedTransport {
+    Tls {
+        tls_name: String,
+        ca: Vec<u8>,
+        addresses: Vec<SocketAddr>,
+    },
+    Iroh {
+        endpoint: IrohEndpoint,
+    },
 }
 
 fn unhex(raw: &str, what: &str) -> Result<Vec<u8>, String> {
@@ -69,56 +92,93 @@ fn unhex32(raw: &str, what: &str) -> Result<[u8; 32], String> {
 struct Parsed {
     offer: Vec<u8>,
     namespace: String,
-    tls_name: String,
-    ca: Vec<u8>,
     token: [u8; 32],
-    addresses: Vec<SocketAddr>,
+    transport: ParsedTransport,
 }
 
 fn decode(raw: &[u8]) -> Result<Parsed, String> {
     let bundle: Bundle =
         serde_json::from_slice(raw).map_err(|_| "invite is not a canonical bundle")?;
-    if bundle.kind != KIND || bundle.version != 1 {
+    if bundle.kind != KIND || ![1, 2].contains(&bundle.version) {
         return Err("invite kind or version is not supported".into());
     }
     let offer = unhex(&bundle.offer, "offer")?;
     if offer.len() > super::OFFER_LIMIT {
         return Err("invite offer exceeds its bound".into());
     }
-    super::unhex::<32>(&bundle.relay.namespace)
-        .map_err(|_| "invite namespace must be 64-digit hex")?;
-    if bundle.relay.tls_name.is_empty()
-        || bundle.relay.tls_name.len() > 253
-        || !bundle
-            .relay
-            .tls_name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
-    {
-        return Err("invite TLS name must be a plain DNS-style name".into());
-    }
-    let ca = unhex(&bundle.relay.ca, "CA")?;
-    if ca.len() > 65536 {
-        return Err("invite CA exceeds its bound".into());
-    }
+    let ns = vhalla_private_native::relay::RelayNamespace::from_bytes(super::unhex::<32>(
+        &bundle.relay.namespace,
+    )?)
+    .map_err(|_| "invite namespace refused")?;
     let token = unhex32(&bundle.relay.token, "token")?;
-    if !(1..=4).contains(&bundle.relay.addresses.len()) {
-        return Err("invite must carry one to four addresses".into());
-    }
-    let mut addresses = Vec::with_capacity(bundle.relay.addresses.len());
-    for text in &bundle.relay.addresses {
-        addresses.push(
-            text.parse::<SocketAddr>()
-                .map_err(|_| "invite address must be IP:PORT")?,
-        );
-    }
+    RelayToken::from_bytes(token).map_err(|_| "invite token refused")?;
+    let transport = match (bundle.version, bundle.relay.transport) {
+        (2, Some(BundleTransport::Iroh { endpoint })) => {
+            let shape: serde_json::Value =
+                serde_json::from_slice(raw).map_err(|_| "invite encoding refused")?;
+            if ["tls_name", "ca", "addresses"]
+                .iter()
+                .any(|key| shape["relay"].get(*key).is_some())
+            {
+                return Err("iroh invite cannot carry TLS routing fields".into());
+            }
+            if bundle.relay.tls_name.is_some()
+                || bundle.relay.ca.is_some()
+                || bundle.relay.addresses.is_some()
+            {
+                return Err("iroh invite cannot carry TLS routing fields".into());
+            }
+            endpoint
+                .validate()
+                .map_err(|_| "invite iroh endpoint refused")?;
+            ParsedTransport::Iroh { endpoint }
+        }
+        (1, None) => {
+            let tls_name = bundle.relay.tls_name.ok_or("invite TLS name missing")?;
+            if tls_name.is_empty()
+                || tls_name.len() > 253
+                || !tls_name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+            {
+                return Err("invite TLS name must be a plain DNS-style name".into());
+            }
+            let ca = unhex(&bundle.relay.ca.ok_or("invite CA missing")?, "CA")?;
+            if ca.len() > 65536 {
+                return Err("invite CA exceeds its bound".into());
+            }
+            let source = bundle.relay.addresses.ok_or("invite addresses missing")?;
+            if !(1..=4).contains(&source.len()) {
+                return Err("invite must carry one to four addresses".into());
+            }
+            let addresses = source
+                .iter()
+                .map(|text| {
+                    text.parse::<SocketAddr>()
+                        .map_err(|_| "invite address must be IP:PORT")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            vhalla_private_native::relay::tls::TlsRelay::new(
+                addresses[0],
+                &tls_name,
+                ca.clone(),
+                RelayToken::from_bytes(token).map_err(|_| "invite token refused")?,
+                ns,
+            )
+            .map_err(|_| "invite TLS profile refused")?;
+            ParsedTransport::Tls {
+                tls_name,
+                ca,
+                addresses,
+            }
+        }
+        _ => return Err("invite must select its versioned transport explicitly".into()),
+    };
     Ok(Parsed {
         offer,
         namespace: bundle.relay.namespace,
-        tls_name: bundle.relay.tls_name,
-        ca,
         token,
-        addresses,
+        transport,
     })
 }
 
@@ -136,18 +196,27 @@ pub(super) async fn invite(args: &Args, room: &mut RoomSession) -> Result<(), St
         .create_contact_offer(args.operation()?, args.key("recipient")?, args.validity()?)
         .await
         .map_err(|_| REFUSED)?;
-    let bundle = json!({
-        "kind": KIND,
-        "version": 1,
-        "offer": super::hex(secret.confidential_bytes()),
-        "relay": {
-            "namespace": material.namespace,
-            "tls_name": material.tls_name,
-            "ca": super::hex(&material.ca),
-            "token": super::hex(&material.token),
-            "addresses": material.addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-        },
-    });
+    let (version, relay) = match material.transport {
+        crate::private_host::InviteTransport::Tls {
+            tls_name,
+            ca,
+            addresses,
+        } => (
+            1,
+            json!({
+                "namespace": material.namespace, "tls_name": tls_name, "ca": super::hex(&ca),
+                "token": super::hex(&material.token), "addresses": addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            }),
+        ),
+        crate::private_host::InviteTransport::Iroh { endpoint } => (
+            2,
+            json!({
+                "namespace": material.namespace, "token": super::hex(&material.token),
+                "transport": {"kind":"iroh", "endpoint": endpoint},
+            }),
+        ),
+    };
+    let bundle = json!({"kind": KIND, "version": version, "offer": super::hex(secret.confidential_bytes()), "relay": relay});
     args.output(&serde_json::to_vec_pretty(&bundle).map_err(|_| "invite encoding refused")?)
 }
 
@@ -161,19 +230,29 @@ pub(super) async fn join(args: &Args, identity: Identity) -> Result<(), String> 
     let account = Key::from_bytes(identity.public_key()).map_err(|_| REFUSED)?;
     let owner = args.key("owner")?;
     ContactBootstrap::inspect(&parsed.offer, owner, account, super::now()?).map_err(|_| REFUSED)?;
-    let addr = match args.flags.get("addr") {
-        Some(value) => {
-            let chosen: SocketAddr = value
-                .to_str()
-                .ok_or("invite address must be UTF-8")?
-                .parse()
-                .map_err(|_| "invite address must be IP:PORT")?;
-            if !parsed.addresses.contains(&chosen) {
-                return Err("selected address is not one the invite advertises".into());
+    let addr = match &parsed.transport {
+        ParsedTransport::Iroh { .. } => {
+            if args.flags.contains_key("addr") {
+                return Err(
+                    "iroh invite selects the peer identity; --addr is only for TLS invites".into(),
+                );
             }
-            chosen
+            None
         }
-        None => parsed.addresses[0],
+        ParsedTransport::Tls { addresses, .. } => Some(match args.flags.get("addr") {
+            Some(value) => {
+                let chosen: SocketAddr = value
+                    .to_str()
+                    .ok_or("invite address must be UTF-8")?
+                    .parse()
+                    .map_err(|_| "invite address must be IP:PORT")?;
+                if !addresses.contains(&chosen) {
+                    return Err("selected address is not one the invite advertises".into());
+                }
+                chosen
+            }
+            None => addresses[0],
+        }),
     };
     let delivery_dir = super::agent_setup::canonical_new_path(
         Path::new(args.value("delivery-dir")?),
@@ -199,15 +278,13 @@ pub(super) async fn join(args: &Args, identity: Identity) -> Result<(), String> 
 
     let (directory, _) =
         vhalla_custody::create_private_directory(&delivery_dir).map_err(|_| REFUSED)?;
-    let ca_path = delivery_dir.join("ca.der");
     let token_path = delivery_dir.join("token.hex");
     let delivery_path = delivery_dir.join("delivery.json");
-    files::write(&ca_path, &parsed.ca)?;
     files::write(
         &token_path,
         format!("{}\n", super::hex(&parsed.token)).as_bytes(),
     )?;
-    let profile = json!({
+    let mut profile = json!({
         "version": 1,
         "context": {
             "room": super::hex(context.scope.room.as_bytes()),
@@ -216,9 +293,6 @@ pub(super) async fn join(args: &Args, identity: Identity) -> Result<(), String> 
             "device": super::hex(context.device.as_bytes()),
         },
         "namespace": parsed.namespace,
-        "addr": addr.to_string(),
-        "tls_name": parsed.tls_name,
-        "ca": ca_path,
         "token": token_path,
         "state": delivery_dir.join("delivery-state"),
         "max_jobs": 1024,
@@ -229,6 +303,19 @@ pub(super) async fn join(args: &Args, identity: Identity) -> Result<(), String> 
         "emit_acceptance": true,
         "initial_cursor": 0,
     });
+    match parsed.transport {
+        ParsedTransport::Iroh { endpoint } => {
+            profile["version"] = json!(4);
+            profile["transport"] = json!({"kind":"iroh", "endpoint": endpoint});
+        }
+        ParsedTransport::Tls { tls_name, ca, .. } => {
+            let ca_path = delivery_dir.join("ca.der");
+            files::write(&ca_path, &ca)?;
+            profile["addr"] = json!(addr.ok_or(REFUSED)?.to_string());
+            profile["tls_name"] = json!(tls_name);
+            profile["ca"] = json!(ca_path);
+        }
+    }
     files::write(
         &delivery_path,
         &serde_json::to_vec_pretty(&profile).map_err(|_| "delivery profile encoding refused")?,

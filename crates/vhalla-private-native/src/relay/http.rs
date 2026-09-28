@@ -1,6 +1,8 @@
 //! Loopback-only, same-origin browser gateway to explicitly selected TLS relays.
 //! No mailbox is opened here. Admission precedes upstream network effects.
-use super::{codec::*, net::NetError, tls::TlsRelay, RelayItem, RelayNamespace};
+#[cfg(test)]
+use super::tls::TlsRelay;
+use super::{codec::*, net::NetError, RelayClient, RelayItem, RelayNamespace};
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
@@ -143,7 +145,7 @@ impl Assets {
 trait Upstream: Send + Sync {
     fn exchange(&self, op: u8, body: &[u8], deadline: Instant) -> Result<Vec<u8>>;
 }
-impl Upstream for TlsRelay {
+impl Upstream for RelayClient {
     fn exchange(&self, op: u8, body: &[u8], deadline: Instant) -> Result<Vec<u8>> {
         match op {
             OP_PUT => self
@@ -198,15 +200,16 @@ struct Route {
 pub struct GatewayRoute {
     namespace: RelayNamespace,
     capability: BrowserCapability,
-    upstream: TlsRelay,
+    upstream: RelayClient,
 }
 impl GatewayRoute {
     /// Keep a separate browser capability and the exact pinned TLS profile.
     pub fn new(
         namespace: RelayNamespace,
         capability: BrowserCapability,
-        upstream: TlsRelay,
+        upstream: impl Into<RelayClient>,
     ) -> Result<Self> {
+        let upstream = upstream.into();
         if upstream.token_matches(&capability.0) {
             return Err(NetError::Denied);
         }
@@ -230,7 +233,7 @@ impl Gateway {
         address: SocketAddr,
         namespace: RelayNamespace,
         capability: BrowserCapability,
-        upstream: TlsRelay,
+        upstream: impl Into<RelayClient>,
         assets: Assets,
         limits: GatewayLimits,
     ) -> Result<Self> {

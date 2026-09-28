@@ -29,9 +29,10 @@ use vhalla_private_kernel::{
 };
 use vhalla_private_native::relay::{
     delivery::{DeliveryStore, JobState, Limits, RetryPolicy},
+    iroh::{IrohEndpoint, IrohRelay},
     net::{NetError, RelayToken, ScanDirectory},
     tls::TlsRelay,
-    RelayItem, RelayKind, RelayNamespace, MAX_RELAY_ITEMS, MAX_RELAY_PAGE,
+    RelayClient, RelayItem, RelayKind, RelayNamespace, MAX_RELAY_ITEMS, MAX_RELAY_PAGE,
 };
 #[cfg(unix)]
 use vhalla_private_native::{
@@ -98,7 +99,7 @@ struct Watch {
 }
 #[cfg(unix)]
 impl Watch {
-    fn spawn(relay: TlsRelay, staged_head: u64) -> Self {
+    fn spawn(relay: RelayClient, staged_head: u64) -> Self {
         let head = Arc::new(AtomicU64::new(staged_head));
         let cursor = Arc::new(AtomicU64::new(staged_head));
         let state = Arc::new(AtomicU8::new(WATCH_LIVE));
@@ -178,9 +179,14 @@ struct Config {
     version: u32,
     context: ContextConfig,
     namespace: String,
-    addr: Endpoint,
-    tls_name: String,
-    ca: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    addr: Option<Endpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tls_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ca: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport: Option<SelectedTransport>,
     token: PathBuf,
     state: PathBuf,
     max_jobs: usize,
@@ -203,6 +209,19 @@ struct Config {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+enum SelectedTransport {
+    Iroh {
+        endpoint: IrohEndpoint,
+    },
+    Tls {
+        addr: Endpoint,
+        tls_name: String,
+        ca: PathBuf,
+    },
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ContextConfig {
     room: String,
@@ -211,11 +230,20 @@ struct ContextConfig {
     device: String,
 }
 impl Config {
-    fn load(path: &Path, context: Context) -> Result<(Self, RelayNamespace, TlsRelay), String> {
+    fn load(path: &Path, context: Context) -> Result<(Self, RelayNamespace, RelayClient), String> {
         let bytes = files::read(path, 16384, false)?;
         let mut c: Self = serde_json::from_slice(&bytes).map_err(|_| REFUSED)?;
-        if ![1, 2, 3].contains(&c.version) || (c.version == 3) != c.lineage.is_some() {
+        if ![1, 2, 3, 4].contains(&c.version) || (c.version == 3) != c.lineage.is_some() {
             return Err(REFUSED.into());
+        }
+        if c.version == 4 {
+            let shape: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| REFUSED)?;
+            if ["addr", "tls_name", "ca"]
+                .iter()
+                .any(|key| shape.get(*key).is_some())
+            {
+                return Err("tagged delivery profiles cannot carry legacy TLS fields".into());
+            }
         }
         c.encoded = bytes.to_vec();
         generation::check_selection(path, &c)?;
@@ -228,11 +256,7 @@ impl Config {
             account: key(&c.context.account)?,
             device: key(&c.context.device)?,
         };
-        if selected != context
-            || !c.state.is_absolute()
-            || !c.ca.is_absolute()
-            || !c.token.is_absolute()
-        {
+        if selected != context || !c.state.is_absolute() || !c.token.is_absolute() {
             return Err(REFUSED.into());
         }
         let parent = c
@@ -248,15 +272,44 @@ impl Config {
         let token = std::str::from_utf8(&token).map_err(|_| REFUSED)?;
         let token = RelayToken::from_bytes(unhex(token.strip_suffix('\n').unwrap_or(token))?)
             .map_err(|_| REFUSED)?;
-        let relay = TlsRelay::new(
-            c.addr.resolve().map_err(|_| REFUSED)?,
-            &c.tls_name,
-            files::read(&c.ca, 65536, false)?.to_vec(),
+        let relay = c.client(token, namespace)?;
+        Ok((c, namespace, relay))
+    }
+    fn tls_fields(&self) -> Result<(&Endpoint, &str, &Path), String> {
+        match &self.transport {
+            Some(SelectedTransport::Iroh { .. }) => Err("mailbox generation changes are not supported for iroh; retain the existing host and delivery queues".into()),
+            Some(SelectedTransport::Tls { addr, tls_name, ca }) => Ok((addr, tls_name, ca)),
+            None => Ok((self.addr.as_ref().ok_or(REFUSED)?, self.tls_name.as_deref().ok_or(REFUSED)?, self.ca.as_deref().ok_or(REFUSED)?)),
+        }
+    }
+    fn client(&self, token: RelayToken, namespace: RelayNamespace) -> Result<RelayClient, String> {
+        let legacy = self.addr.is_some() || self.tls_name.is_some() || self.ca.is_some();
+        if (self.version == 4) != self.transport.is_some()
+            || (self.transport.is_some() && legacy)
+            || (self.transport.is_none()
+                && !(self.addr.is_some() && self.tls_name.is_some() && self.ca.is_some()))
+        {
+            return Err("delivery profile must select exactly one complete transport".into());
+        }
+        if let Some(SelectedTransport::Iroh { endpoint }) = &self.transport {
+            endpoint.validate().map_err(|_| REFUSED)?;
+            return IrohRelay::new(endpoint.clone(), token, namespace)
+                .map(Into::into)
+                .map_err(|_| REFUSED.into());
+        }
+        let (addr, tls_name, ca) = self.tls_fields()?;
+        if !ca.is_absolute() {
+            return Err(REFUSED.into());
+        }
+        TlsRelay::new(
+            addr.resolve().map_err(|_| REFUSED)?,
+            tls_name,
+            files::read(ca, 65536, false)?.to_vec(),
             token,
             namespace,
         )
-        .map_err(|_| REFUSED)?;
-        Ok((c, namespace, relay))
+        .map(Into::into)
+        .map_err(|_| REFUSED.into())
     }
     fn limits(&self) -> Limits {
         Limits {
@@ -273,7 +326,7 @@ impl Config {
     }
 }
 
-fn binding(context: Context, ns: RelayNamespace, relay: &TlsRelay, config: &Config) -> Vec<u8> {
+fn binding(context: Context, ns: RelayNamespace, relay: &RelayClient, config: &Config) -> Vec<u8> {
     // Version 1 omitted limits and retry authority. Refuse it without altering
     // the old state; reinterpreting its queue would silently widen a new config.
     // Versions 2 and 3 retain their exact adaptive-policy bytes. Version 4
@@ -408,7 +461,7 @@ pub(super) fn open_queue(
         _ => return Err(REFUSED.into()),
     };
     let (config, namespace, relay) = Config::load(Path::new(args.value("config")?), context)?;
-    if stream == "control" && ![2, 3].contains(&config.version) {
+    if stream == "control" && ![2, 3, 4].contains(&config.version) {
         return Err(
             "control delivery requires an explicit delivery-upgrade of this legacy profile".into(),
         );
@@ -529,6 +582,10 @@ fn publish_control_version_with(
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or(REFUSED)?;
+    if version == 4 {
+        directory.sync_all().map_err(|_| REFUSED)?;
+        return Ok(());
+    }
     if ![1, 2].contains(&version) {
         return Err(REFUSED.into());
     }
@@ -585,7 +642,12 @@ fn publish_control_version_with(
     Ok(())
 }
 
-fn control_binding(c: &Config, context: Context, ns: RelayNamespace, relay: &TlsRelay) -> Vec<u8> {
+fn control_binding(
+    c: &Config,
+    context: Context,
+    ns: RelayNamespace,
+    relay: &RelayClient,
+) -> Vec<u8> {
     let mut bytes = b"VHDELCTRL\x01".to_vec();
     bytes.extend(binding(context, ns, relay, c));
     bytes
@@ -595,7 +657,7 @@ fn enable_controls(
     c: &Config,
     context: Context,
     ns: RelayNamespace,
-    relay: &TlsRelay,
+    relay: &RelayClient,
     allow_creation: bool,
 ) -> Result<(), String> {
     let path = c.state.join("controls");
@@ -643,7 +705,7 @@ pub(super) struct Driver {
     config: Config,
     context: Context,
     namespace: RelayNamespace,
-    relay: TlsRelay,
+    relay: RelayClient,
     queue: DeliveryStore,
     controls: DeliveryStore,
     control_outgoing: u64,
@@ -687,7 +749,7 @@ impl Driver {
     pub(super) fn open(path: &Path, context: Context) -> Result<Self, String> {
         let (config, namespace, relay) = Config::load(path, context)?;
         generation::check_active(&config)?;
-        if ![2, 3].contains(&config.version) {
+        if ![2, 3, 4].contains(&config.version) {
             return Err("legacy delivery profile requires delivery-upgrade before another agent-serve launch".into());
         }
         let (directory, owner) =

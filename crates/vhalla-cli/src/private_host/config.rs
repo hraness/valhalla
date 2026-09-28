@@ -28,9 +28,15 @@ const STATIC_FILES: [&str; 6] = [
     "connection.json",
     "launch-agent.plist",
 ];
+const IROH_FILES: [&str; 3] = ["endpoint.key", "connection.json", "launch-agent.plist"];
 /// Immutable sealed files for a home with this many enrolled credentials.
 fn expected_files(config: &Config) -> Vec<String> {
-    STATIC_FILES
+    let files: &[&str] = if config.iroh.is_some() {
+        &IROH_FILES
+    } else {
+        &STATIC_FILES
+    };
+    files
         .iter()
         .map(|name| (*name).to_owned())
         .chain((1..=config.credential_ids.len()).map(|index| format!("client-{index}.token")))
@@ -65,6 +71,8 @@ pub(super) struct RetainedGeneration {
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh: Option<vhalla_private_native::relay::iroh::IrohEndpoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retained_generations: Vec<RetainedGeneration>,
     pub label: String,
@@ -277,6 +285,99 @@ pub(super) fn initialize(
     )
 }
 
+pub(super) fn initialize_iroh(
+    path: &Path,
+    listen: SocketAddr,
+    relay_url: Option<String>,
+    executable: &Path,
+) -> Result<Loaded, String> {
+    let home = resolve(path)?;
+    if !super::iroh_listener_selection(listen, relay_url.as_deref()) {
+        return Err("iroh needs a relay URL or a fixed reachable --iroh-bind address".into());
+    }
+    let executable = executable
+        .canonicalize()
+        .map_err(|_| "selected executable unavailable")?;
+    let metadata = fs::metadata(&executable).map_err(|_| REFUSED)?;
+    if !metadata.is_file() || metadata.mode() & 0o111 == 0 || metadata.mode() & 0o6022 != 0 {
+        return Err("selected executable must be a regular executable without set-ID or group/world write permission".into());
+    }
+    let key = random::<32>()?;
+    let endpoint = vhalla_private_native::relay::iroh::IrohEndpoint {
+        endpoint_id: vhalla_private_native::relay::iroh::endpoint_id_from_secret(&key),
+        relay_url,
+        addresses: super::iroh_addresses(listen),
+    };
+    endpoint
+        .validate()
+        .map_err(|_| "invalid iroh endpoint or relay URL")?;
+    let namespace = RelayNamespace::from_bytes(*random::<32>()?).map_err(|_| REFUSED)?;
+    let tokens = [random::<32>()?, random::<32>()?];
+    let mut config = Config {
+        version: 4,
+        iroh: Some(endpoint),
+        retained_generations: Vec::new(),
+        label: label(&home)?,
+        listen,
+        advertise: Vec::new(),
+        tls_name: String::new(),
+        executable,
+        namespace: hex(namespace.as_bytes()),
+        credential_ids: vec![hex(random::<16>()?.as_ref()), hex(random::<16>()?.as_ref())],
+        credential_generations: vec![1, 1],
+        revoked_credential_ids: BTreeSet::new(),
+        mailbox: default_mailbox(),
+        created_at: time::OffsetDateTime::now_utc().unix_timestamp(),
+        certificate_expires_at: 0,
+        authority_expires_at: 0,
+        leaf_lifetime_seconds: None,
+        files: BTreeMap::new(),
+    };
+    let planned_agent = launchd::plist(&home, &config)?;
+    custody::create_private_directory(&home).map_err(|_| {
+        "host initialization requires a never-used path; preserve any existing or partial home"
+    })?;
+    write(&home, "endpoint.key", key.as_ref())?;
+    for (index, token) in tokens.iter().enumerate() {
+        write(
+            &home,
+            &format!("client-{}.token", index + 1),
+            Zeroizing::new(hex(token.as_ref())).as_bytes(),
+        )?;
+    }
+    write(
+        &home,
+        "connection.json",
+        &connection_document(&home, &config, None)?,
+    )?;
+    write(&home, "launch-agent.plist", planned_agent.as_bytes())?;
+    Service::initialize(
+        FileStore::create_new(
+            home.join("mailbox"),
+            namespace,
+            Limits {
+                max_items: 4096,
+                max_bytes: 256 * 1024 * 1024,
+            },
+        )
+        .map_err(|_| REFUSED)?,
+    )
+    .map_err(|_| REFUSED)?;
+    for name in expected_files(&config) {
+        config
+            .files
+            .insert(name.clone(), digest(&read(&home, &name, 65536)?));
+    }
+    drop(service(&home, &config)?);
+    let bytes = serde_json::to_vec(&config).map_err(|_| REFUSED)?;
+    write(&home, "config.json", &bytes)?;
+    write(&home, "complete", digest(&bytes).as_bytes())?;
+    fs::File::open(home.parent().ok_or(REFUSED)?)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| REFUSED)?;
+    load(&home)
+}
+
 pub(super) fn initialize_with_leaf_lifetime(
     path: &Path,
     listen: SocketAddr,
@@ -328,6 +429,7 @@ pub(super) fn initialize_with_leaf_lifetime(
     .map_err(|_| "invalid TLS trust/name selection")?;
     let mut config = Config {
         version: 2,
+        iroh: None,
         retained_generations: Vec::new(),
         label: label(&home)?,
         listen,
@@ -429,12 +531,13 @@ pub(super) fn load_for_stop(path: &Path) -> Result<Loaded, String> {
 /// Validate proposed manifests before publication, using the same structural
 /// constraints as readers. File commitments are checked separately.
 fn validate_config(home: &Path, config: &Config) -> Result<(), String> {
-    if ![1, 2, 3].contains(&config.version)
+    if ![1, 2, 3, 4].contains(&config.version)
         || config.label != label(&resolve(home)?)?
-        || !super::listener_selection(config.listen, &config.advertise)
+        || (config.iroh.is_none() && !super::listener_selection(config.listen, &config.advertise))
         || !config.executable.is_absolute()
-        || config.certificate_expires_at <= config.created_at
-        || config.authority_expires_at <= config.certificate_expires_at
+        || (config.iroh.is_none()
+            && (config.certificate_expires_at <= config.created_at
+                || config.authority_expires_at <= config.certificate_expires_at))
         || !(2..=64).contains(&config.credential_ids.len())
         || !valid_mailbox(&config.mailbox)
         || config
@@ -461,6 +564,23 @@ fn validate_config(home: &Path, config: &Config) -> Result<(), String> {
             .iter()
             .any(|id| !config.credential_ids.contains(id))
     {
+        return Err(REFUSED.into());
+    }
+    if let Some(endpoint) = &config.iroh {
+        endpoint.validate().map_err(|_| REFUSED)?;
+        if config.version != 4
+            || !config.retained_generations.is_empty()
+            || !config.advertise.is_empty()
+            || !config.tls_name.is_empty()
+            || config.certificate_expires_at != 0
+            || config.authority_expires_at != 0
+            || config.leaf_lifetime_seconds.is_some()
+            || !super::iroh_listener_selection(config.listen, endpoint.relay_url.as_deref())
+            || endpoint.addresses != super::iroh_addresses(config.listen)
+        {
+            return Err(REFUSED.into());
+        }
+    } else if config.version == 4 {
         return Err(REFUSED.into());
     }
     super::generation::validate_selection(config)?;
@@ -505,6 +625,16 @@ pub(super) fn load(path: &Path) -> Result<Loaded, String> {
             return Err(REFUSED.into());
         }
     }
+    if let Some(endpoint) = &loaded.config.iroh {
+        let raw = read_bound(&loaded.home, &loaded.config, "endpoint.key", 32)?;
+        let key: [u8; 32] = raw.as_slice().try_into().map_err(|_| REFUSED)?;
+        if key == [0; 32]
+            || vhalla_private_native::relay::iroh::endpoint_id_from_secret(&key)
+                != endpoint.endpoint_id
+        {
+            return Err(REFUSED.into());
+        }
+    }
     Ok(loaded)
 }
 
@@ -524,6 +654,13 @@ pub(super) fn connection_document(
     config: &Config,
     previous: Option<&str>,
 ) -> Result<Vec<u8>, String> {
+    if let Some(endpoint) = &config.iroh {
+        return serde_json::to_vec(&serde_json::json!({
+            "version":2,"transport":"iroh","endpoint":endpoint,
+            "namespace":config.namespace,"mailbox":config.mailbox,"client_tokens":"not included"
+        }))
+        .map_err(|_| REFUSED.into());
+    }
     let mut document = serde_json::json!({"version":1,"namespace":config.namespace,"listen":config.listen,"addresses":addresses(config),"tls_name":config.tls_name,"ca_file":"ca.der","ca_sha256":digest(&read(home,"ca.der",65536)?),"certificate_expires_at":config.certificate_expires_at,"mailbox":config.mailbox,"transport":"TLS 1.3; copy CA and one separate private credential through a trusted channel","client_tokens":"not included"});
     if let Some(previous) = previous {
         document["previous_namespace"] = previous.into();
@@ -854,10 +991,16 @@ pub(super) fn upgrade_config(config: &mut Config) {
     }
 }
 fn renew_at(home: &Path, leaf_days: Option<i64>, now: time::OffsetDateTime) -> Result<i64, String> {
+    // Refuse a complete iroh home without creating maintenance state. A torn
+    // TLS selection still follows the existing locked recovery path below.
+    if let Ok(loaded) = load(home) {
+        super::require_tls(&loaded.config)?;
+    }
     let _maintenance = maintenance_lock(home)?;
     super::generation::require_idle(home)?;
     recover_seal(home)?;
     let loaded = load(home)?;
+    super::require_tls(&loaded.config)?;
     let lifetime = match leaf_days {
         Some(days) => days.checked_mul(86400).ok_or(REFUSED)?,
         None => loaded.config.leaf_lifetime_seconds.ok_or(
@@ -1063,6 +1206,50 @@ mod tests {
         rewrite(home, "config.json", &bytes).unwrap();
         rewrite(home, "complete", digest(&bytes).as_bytes()).unwrap();
         assert!(load(home).is_ok());
+    }
+
+    #[test]
+    fn iroh_identity_is_sealed_and_credential_maintenance_keeps_it() {
+        let parent = Home::new();
+        let home = parent.0.parent().unwrap().join("iroh");
+        let loaded = initialize_iroh(
+            &home,
+            "0.0.0.0:0".parse().unwrap(),
+            Some(vhalla_private_native::relay::iroh::DEFAULT_RELAY_URL.to_owned()),
+            &std::env::current_exe().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(loaded.config.version, 4);
+        let endpoint = loaded.config.iroh.unwrap().endpoint_id;
+        let key = read(&home, "endpoint.key", 32).unwrap();
+        assert_eq!(key.len(), 32);
+        for name in ["ca.der", "ca-key.der", "server.der", "server-key.der"] {
+            assert!(!home.join(name).exists());
+        }
+        let before = snapshot(&home);
+        assert!(renew(&home, Some(1))
+            .unwrap_err()
+            .contains("requires a TLS host"));
+        assert_eq!(snapshot(&home), before);
+        add_credential(&home).unwrap();
+        let original_id = load(&home).unwrap().config.credential_ids[0].clone();
+        credential_lifecycle(&home, 1, false).unwrap();
+        credential_lifecycle(&home, 1, true).unwrap();
+        recover(&home).unwrap();
+        let loaded = load(&home).unwrap();
+        assert_eq!(loaded.config.iroh.as_ref().unwrap().endpoint_id, endpoint);
+        assert_eq!(loaded.config.credential_ids[0], original_id);
+        assert_eq!(
+            read(&home, "endpoint.key", 32).unwrap().as_slice(),
+            key.as_slice()
+        );
+        drop(service(&home, &loaded.config).unwrap());
+        rewrite(&home, "endpoint.key", &[7; 32]).unwrap();
+        assert!(load(&home).is_err());
+        assert_eq!(
+            read(&home, "endpoint.key", 32).unwrap().as_slice(),
+            &[7; 32]
+        );
     }
     #[test]
     fn repeated_renewal_preserves_policy_and_ca_boundary_remains_loadable() {

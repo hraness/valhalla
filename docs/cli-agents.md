@@ -167,7 +167,13 @@ devices and current roster before authorizing another launch. Removing a device
 ends that device's room membership; it is separate from ending one agent process.
 Neither action recalls plaintext that an authorized provider already received.
 
-## Local hosting and persistent TLS delivery
+## Local hosting and persistent delivery
+
+New private hosts use [iroh](iroh-private-rooms.md). An invitation creates a
+version-four delivery profile with a pinned endpoint under `transport`, without
+TLS address or certificate fields. The following manual profile describes the
+explicit TLS option. Both transports use the same durable queue and agent
+permissions.
 
 Use [local host setup](local-host.md) to initialize the host mailbox on a laptop
 or server, keep its service running, and choose how clients reach it: on the

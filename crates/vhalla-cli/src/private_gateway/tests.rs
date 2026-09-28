@@ -80,6 +80,35 @@ fn configuration_refuses_unsafe_origin_unknown_fields_and_noncanonical_hex() {
 }
 
 #[test]
+fn tagged_iroh_gateway_route_refuses_transport_confusion() {
+    let selected = serde_json::json!({
+        "transport": "iroh",
+        "endpoint": {
+            "endpoint_id": vhalla_private_native::relay::iroh::endpoint_id_from_secret(&[71; 32]),
+            "relay_url": null,
+            "addresses": ["127.0.0.1:9999"]
+        },
+        "token_file": "/private/owner/token"
+    });
+    let upstream: Upstream = serde_json::from_value(selected.clone()).unwrap();
+    assert!(upstream.selected());
+    for field in ["addr", "tls_name", "tls_ca_file"] {
+        let mut mixed = selected.clone();
+        mixed[field] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<Upstream>(mixed).is_err(),
+            "mixed field {field} accepted"
+        );
+    }
+    let mut foreign = selected.clone();
+    foreign["transport"] = "automatic".into();
+    assert!(serde_json::from_value::<Upstream>(foreign).is_err());
+    let mut foreign = selected;
+    foreign["endpoint"]["token"] = "not a routing hint".into();
+    assert!(serde_json::from_value::<Upstream>(foreign).is_err());
+}
+
+#[test]
 fn invalid_initial_cursor_refuses_before_credentials_or_assets_are_read() {
     use std::os::unix::fs::PermissionsExt;
     let root = root("cursor");

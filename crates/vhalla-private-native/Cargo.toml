@@ -11,6 +11,7 @@ default = []
 client = ["dep:vhalla-identity"]
 agent-rpc = ["client", "dep:serde_json"]
 relay-tls = ["dep:rustls"]
+relay-iroh = ["relay-tls", "dep:iroh", "dep:tokio", "dep:serde"]
 
 [dependencies]
 vhalla-private-relay = { path = "../vhalla-private-relay" }
@@ -20,6 +21,9 @@ sha2 = { version = "=0.10.9", default-features = false }
 vhalla-custody = { path = "../vhalla-custody" }
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring"], optional = true }
 serde_json = { version = "1", optional = true }
+iroh = { version = "=1.2.0", default-features = false, features = ["tls-ring"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 vhalla-private-kernel = { path = "../vhalla-private-kernel" }
 
 [dev-dependencies]

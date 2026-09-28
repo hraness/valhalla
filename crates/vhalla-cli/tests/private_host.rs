@@ -53,6 +53,9 @@ impl Fixture {
     fn command(&self, action: &str) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_vhalla"));
         command.args(["private-host", action]).arg(self.home());
+        if action == "init" {
+            command.args(["--transport", "tls"]);
+        }
         command
     }
     fn init(&self) -> Output {
@@ -649,8 +652,12 @@ fn gateway_sigterm_drains_admitted_put_and_restart_reconciles_exact_retention() 
     let mut body = ((encoded.len() + 1) as u32).to_be_bytes().to_vec();
     body.push(1);
     body.extend(encoded);
-    let header = format!("POST /private-relay/v1 HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nAuthorization: Bearer {}\r\nX-Vhalla-Namespace: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
-        "08".repeat(32), f.json("connection.json")["namespace"].as_str().unwrap(), body.len());
+    let header = format!(
+        "POST /private-relay/v1 HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nAuthorization: Bearer {}\r\nX-Vhalla-Namespace: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+        "08".repeat(32),
+        f.json("connection.json")["namespace"].as_str().unwrap(),
+        body.len()
+    );
     let mut service = gateway(&config, &origin);
     let mut put = connect(addr);
     put.write_all(header.as_bytes()).unwrap();

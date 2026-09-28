@@ -18,13 +18,14 @@ use std::{
     },
 };
 use vhalla_private_native::relay::{
+    iroh::{IrohEndpoint, IrohListener, IrohRelay, DEFAULT_RELAY_URL},
     net::RelayToken,
     tls::{self, Credential, Permissions, Service, ServiceLimits},
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--listen IP:PORT] [--advertise IP:PORT[,IP:PORT...]] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_TEMPLATE\nOwner-private TLS mailbox with a separate credential per client. It listens on 127.0.0.1:9473 unless --listen names another address of this machine, such as its LAN or public address; --advertise lists up to four addresses clients dial instead, such as a cloud server's public address. install, status and uninstall manage a LaunchAgent on macOS or a systemd user unit on Linux; tailcat-plist writes the matching overlay template on each. Maintenance activates at the next drained service restart. No account keys, automatic update, firewall changes, or cloud provisioning.";
-const REFUSED: &str = "local host refused; preserve the exact home, configuration, certificates and mailbox; never reset retained custody";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--transport iroh|tls] [--iroh-bind IP:PORT] [--relay-url URL|none] [--listen IP:PORT] [--advertise IP:PORT[,IP:PORT...]] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_TEMPLATE\nOwner-private mailbox with a separate credential per client. New hosts use iroh with an authenticated endpoint identity and automatic direct or relayed connectivity; no CA or certificate renewal is needed. --relay-url none requires a fixed --iroh-bind address. Explicit --transport tls enables --listen, --advertise, --tls-name and --leaf-days. install, status and uninstall manage a LaunchAgent on macOS or a systemd user unit on Linux. Maintenance activates at the next drained service restart.";
+const REFUSED: &str = "local host refused; preserve the exact home, configuration, endpoint keys and mailbox; never reset retained custody";
 /// Status marks the leaf for explicit operator renewal inside this window.
 const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
 
@@ -33,7 +34,7 @@ pub(crate) fn plain_refusal(error: &str) -> Option<&'static str> {
     Some(match error {
         REFUSED => {
             "The private host couldn't finish that step\n\
-             Keep the host folder, its settings, certificates and mailbox exactly as they are. Never reset them to get past this.\n\
+             Keep the host folder, its settings, endpoint keys and mailbox exactly as they are. Never reset them to get past this.\n\
              → vhalla private-host status HOME"
         }
         events::REFUSED => {
@@ -41,7 +42,9 @@ pub(crate) fn plain_refusal(error: &str) -> Option<&'static str> {
              Keep the host or gateway folder as it is, and check that it belongs to you and only you can open it.\n\
              → ls -ld FOLDER"
         }
-        HELP => "That private-host command is incomplete or has an option it doesn't take\n→ vhalla help private-host",
+        HELP => {
+            "That private-host command is incomplete or has an option it doesn't take\n→ vhalla help private-host"
+        }
         _ => return None,
     })
 }
@@ -74,6 +77,9 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
     let home = Path::new(&args[2]);
     match args[1].to_str() {
         Some("init") => {
+            let mut transport = "iroh";
+            let mut iroh_bind: SocketAddr = "0.0.0.0:0".parse().map_err(|_| REFUSED)?;
+            let mut relay_url = Some(DEFAULT_RELAY_URL.to_owned());
             let mut listen: SocketAddr = "127.0.0.1:9473".parse().map_err(|_| REFUSED)?;
             let mut advertise = Vec::new();
             let mut name = "relay.valhalla.invalid".to_owned();
@@ -89,6 +95,15 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                     return Err(HELP.into());
                 }
                 match flag {
+                    "--transport" => {
+                        transport = pair[1].to_str().ok_or(HELP)?;
+                        if !["iroh", "tls"].contains(&transport) { return Err(HELP.into()); }
+                    }
+                    "--iroh-bind" => iroh_bind = pair[1].to_str().ok_or(HELP)?.parse().map_err(|_| HELP)?,
+                    "--relay-url" => {
+                        let url = pair[1].to_str().ok_or(HELP)?;
+                        relay_url = if url == "none" { None } else { Some(url.to_owned()) };
+                    }
                     "--listen" => {
                         listen = pair[1].to_str().ok_or(HELP)?.parse().map_err(|_| HELP)?
                     }
@@ -120,6 +135,17 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                     _ => return Err(HELP.into()),
                 }
             }
+            if transport == "iroh" {
+                if ["--listen", "--advertise", "--tls-name", "--leaf-days"].iter().any(|flag| seen.contains(flag)) {
+                    return Err("TLS options require explicit --transport tls; use --iroh-bind and --relay-url for iroh".into());
+                }
+                let loaded = config::initialize_iroh(home, iroh_bind, relay_url, &executable)?;
+                println!("{}", serde_json::json!({"status":"initialized","transport":"iroh","home":loaded.home,"connection":loaded.home.join("connection.json"),"endpoint":loaded.config.iroh,"launch_agent":loaded.home.join("launch-agent.plist"),"label":loaded.config.label}));
+                return Ok(());
+            }
+            if ["--iroh-bind", "--relay-url"].iter().any(|flag| seen.contains(flag)) {
+                return Err("iroh options cannot be combined with --transport tls".into());
+            }
             if !endpoint(listen) {
                 return Err("--listen needs one unicast IP address of this machine and a nonzero port; wildcard, multicast, broadcast, link-local and scoped addresses are refused".into());
             }
@@ -143,6 +169,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         Some("tailcat-plist") if args.len() == 9 => {
+            require_tls(&config::load(home)?.config)?;
             let mut options = std::collections::BTreeMap::new();
             for pair in args[3..].as_chunks::<2>().0.iter() {
                 let flag = pair[0].to_str().ok_or(HELP)?;
@@ -189,11 +216,13 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         Some(action @ ("generation-check" | "generation-prepare")) if args.len() == 7 && args[3] == "--plan" && args[5] == "--receipts" => {
+            require_tls(&config::load(home)?.config)?;
             generation::check(home, Path::new(&args[4]), Path::new(&args[6]), action == "generation-prepare")?;
             println!("{}", serde_json::json!({"status": if action == "generation-check" {"generation_checked"} else {"generation_prepared"}, "private_evidence":"retained in the exact host home"}));
             Ok(())
         }
         Some(action @ ("generation-fence" | "generation-cutover" | "generation-recover")) if args.len() == 3 => {
+            require_tls(&config::load(home)?.config)?;
             if action == "generation-fence" { generation::fence(home)?; } else { generation::cutover(home)?; }
             println!("{}", serde_json::json!({"status": if action == "generation-fence" {"generation_fenced"} else {"generation_selected"}, "restart_required":true, "private_evidence":"retained in the exact host home"}));
             Ok(())
@@ -227,8 +256,9 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
         Some("serve") if args.len() == 3 => {
             // Ask before taking the maintenance lock so an unanswered notice
             // never blocks maintenance on this host.
-            let listen = config::load(home)?.config.listen;
-            if crate::local_network::before_listening(listen, true)
+            let selection = config::load(home)?.config;
+            let listen = selection.listen;
+            if selection.iroh.is_none() && crate::local_network::before_listening(listen, true)
                 == crate::local_network::Choice::Skip
             {
                 return Err(format!(
@@ -258,6 +288,13 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                     let now = time::OffsetDateTime::now_utc().unix_timestamp();
                     let mut report = serde_json::json!({"status":"configured","home":loaded.home,"label":loaded.config.label,"listen":loaded.config.listen,"tls_name":loaded.config.tls_name,"namespace":loaded.config.namespace,"mailbox":loaded.config.mailbox,"credentials":loaded.config.credential_ids.len(),"certificate_expires_at":loaded.config.certificate_expires_at,"certificate_expired":now>=loaded.config.certificate_expires_at,"certificate_expiring":now>=loaded.config.certificate_expires_at-RENEWAL_WARNING_SECS&&now<loaded.config.certificate_expires_at,"certificate_warning_secs":RENEWAL_WARNING_SECS,"service":launchd::status(&loaded)?,"log":loaded.home.join(launchd::LOG_NAME),"supervisor_log":loaded.home.join(launchd::SUPERVISOR_LOG_NAME),"recent_events":events::tail(&loaded.home,8)?});
                     report["addresses"] = serde_json::json!(config::addresses(&loaded.config));
+                    report["transport"] = if loaded.config.iroh.is_some() { "iroh" } else { "tls" }.into();
+                    if let Some(endpoint) = &loaded.config.iroh {
+                        for key in ["tls_name", "certificate_expires_at", "certificate_expired", "certificate_expiring", "certificate_warning_secs", "addresses"] {
+                            report.as_object_mut().ok_or(REFUSED)?.remove(key);
+                        }
+                        report["endpoint"] = serde_json::json!(endpoint);
+                    }
                     report["active_credentials"] = (loaded.config.credential_ids.len()
                         - loaded.config.revoked_credential_ids.len())
                     .into();
@@ -270,7 +307,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
                         report["probe"] = probe(&loaded)?;
                     } else {
                         report["health"] =
-                            "not probed; loaded service is not TLS or retention evidence".into();
+                            "not probed; loaded service does not establish connectivity or retention".into();
                     }
                     println!("{report}");
                     Ok(())
@@ -303,11 +340,6 @@ fn service(home: &Path, config: &Config) -> Result<Service, String> {
 fn service_ids(home: &Path, config: &Config, allowed: &[String]) -> Result<Service, String> {
     let namespace =
         RelayNamespace::from_bytes(config::decode_hex(&config.namespace)?).map_err(|_| REFUSED)?;
-    let tls = tls::server_config(
-        vec![config::read_bound(home, config, "server.der", 65536)?.to_vec()],
-        config::read_bound(home, config, "server-key.der", 65536)?.to_vec(),
-    )
-    .map_err(|_| REFUSED)?;
     let mut credentials = Vec::new();
     for (index, id) in config.credential_ids.iter().enumerate() {
         if config.revoked_credential_ids.contains(id) || !allowed.contains(id) {
@@ -349,13 +381,17 @@ fn service_ids(home: &Path, config: &Config, allowed: &[String]) -> Result<Servi
             indexes.join(" or ")
         ));
     }
-    Service::new(
-        FileStore::open(home.join(&config.mailbox), namespace).map_err(|_| REFUSED)?,
-        tls,
-        credentials,
-        ServiceLimits::default(),
+    let store = FileStore::open(home.join(&config.mailbox), namespace).map_err(|_| REFUSED)?;
+    if config.iroh.is_some() {
+        return Service::new_iroh(store, credentials, ServiceLimits::default())
+            .map_err(|_| REFUSED.into());
+    }
+    let tls = tls::server_config(
+        vec![config::read_bound(home, config, "server.der", 65536)?.to_vec()],
+        config::read_bound(home, config, "server-key.der", 65536)?.to_vec(),
     )
-    .map_err(|_| REFUSED.into())
+    .map_err(|_| REFUSED)?;
+    Service::new(store, tls, credentials, ServiceLimits::default()).map_err(|_| REFUSED.into())
 }
 
 /// Read-only material `private invite` embeds for one participant: the
@@ -364,10 +400,18 @@ fn service_ids(home: &Path, config: &Config, allowed: &[String]) -> Result<Servi
 /// read, so a bundle can only carry current attested host material.
 pub(crate) struct InviteMaterial {
     pub namespace: String,
-    pub tls_name: String,
-    pub addresses: Vec<SocketAddr>,
-    pub ca: Vec<u8>,
     pub token: Vec<u8>,
+    pub transport: InviteTransport,
+}
+pub(crate) enum InviteTransport {
+    Tls {
+        tls_name: String,
+        addresses: Vec<SocketAddr>,
+        ca: Vec<u8>,
+    },
+    Iroh {
+        endpoint: IrohEndpoint,
+    },
 }
 pub(crate) fn invite_material(home: &Path, index: usize) -> Result<InviteMaterial, String> {
     let loaded = config::load(home)?;
@@ -392,9 +436,16 @@ pub(crate) fn invite_material(home: &Path, index: usize) -> Result<InviteMateria
     let token = config::decode_hex::<32>(text.trim_end_matches('\n'))?;
     Ok(InviteMaterial {
         namespace: loaded.config.namespace.clone(),
-        tls_name: loaded.config.tls_name.clone(),
-        addresses: config::addresses(&loaded.config),
-        ca: config::read_bound(&loaded.home, &loaded.config, "ca.der", 65536)?.to_vec(),
+        transport: match &loaded.config.iroh {
+            Some(endpoint) => InviteTransport::Iroh {
+                endpoint: endpoint.clone(),
+            },
+            None => InviteTransport::Tls {
+                tls_name: loaded.config.tls_name.clone(),
+                addresses: config::addresses(&loaded.config),
+                ca: config::read_bound(&loaded.home, &loaded.config, "ca.der", 65536)?.to_vec(),
+            },
+        },
         token: token.to_vec(),
     })
 }
@@ -403,7 +454,6 @@ pub(crate) fn invite_material(home: &Path, index: usize) -> Result<InviteMateria
 /// against the configured listener and reports the outcome without secrets.
 fn probe(loaded: &Loaded) -> Result<serde_json::Value, String> {
     use std::time::{Duration, Instant};
-    let ca = config::read_bound(&loaded.home, &loaded.config, "ca.der", 65536)?;
     let Some(index) = loaded
         .config
         .credential_ids
@@ -423,6 +473,18 @@ fn probe(loaded: &Loaded) -> Result<serde_json::Value, String> {
         .map_err(|_| REFUSED)?;
     let namespace = RelayNamespace::from_bytes(config::decode_hex(&loaded.config.namespace)?)
         .map_err(|_| REFUSED)?;
+    if let Some(endpoint) = &loaded.config.iroh {
+        let relay = IrohRelay::new(endpoint.clone(), token, namespace).map_err(|_| REFUSED)?;
+        return match relay.page_until(0, 1, Instant::now() + Duration::from_secs(10)) {
+            Ok(page) => Ok(
+                serde_json::json!({"transport":"iroh","probed":true,"head":page.head,"records":page.records.len()}),
+            ),
+            Err(error) => Ok(
+                serde_json::json!({"transport":"iroh","probed":false,"error":net_error_name(&error)}),
+            ),
+        };
+    }
+    let ca = config::read_bound(&loaded.home, &loaded.config, "ca.der", 65536)?;
     let relay = tls::TlsRelay::new(
         loaded.config.listen,
         &loaded.config.tls_name,
@@ -460,6 +522,9 @@ fn net_error_name(error: &vhalla_private_native::relay::net::NetError) -> &'stat
 }
 
 fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
+    if loaded.config.iroh.is_some() {
+        return serve_iroh(loaded, maintenance);
+    }
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     if now < loaded.config.created_at - 300 || now >= loaded.config.certificate_expires_at {
         return Err(
@@ -503,14 +568,16 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable => {
-                    return Err(format!("relay listener {address} is not an address of this machine; clients dial it, so restore that address (for example with a DHCP reservation) rather than changing the listener"));
+                    return Err(format!(
+                        "relay listener {address} is not an address of this machine; clients dial it, so restore that address (for example with a DHCP reservation) rather than changing the listener"
+                    ));
                 }
                 Err(error) => {
                     return Err(bind_error(
                         address,
                         Some(&error),
                         &format!("vhalla private-host status {}", loaded.home.display()),
-                    ))
+                    ));
                 }
             }
         }
@@ -549,6 +616,80 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
         let _ = events::append(&loaded.home,"serve-stop",&[("reason",reason),("ok",if result.is_ok(){"true"}else{"false"})]);
         result
     })
+}
+
+fn serve_iroh(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
+    let endpoint = loaded.config.iroh.as_ref().ok_or(REFUSED)?;
+    let service = service(&loaded.home, &loaded.config)?;
+    let raw = config::read_bound(&loaded.home, &loaded.config, "endpoint.key", 32)?;
+    let key = raw.as_slice().try_into().map_err(|_| REFUSED)?;
+    let listener = IrohListener::bind(key, loaded.config.listen, endpoint.relay_url.as_deref())
+        .map_err(|_| {
+            "iroh could not start; preserve the host and check its relay connection or bind address"
+        })?;
+    listener.set_namespace(
+        RelayNamespace::from_bytes(config::decode_hex(&loaded.config.namespace)?)
+            .map_err(|_| REFUSED)?,
+    );
+    events::bound_supervisor_output(&loaded.home);
+    drop(maintenance);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| REFUSED)?;
+    runtime.block_on(async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate()).map_err(|_| REFUSED)?;
+        let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| REFUSED)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let selected = stop.clone();
+        events::append(&loaded.home, "serve-start", &[("transport", "iroh")])?;
+        let mut worker = tokio::task::spawn_blocking(move || service.serve_iroh_until(listener, None, selected));
+        println!("{}", serde_json::json!({"status":"listening","transport":"iroh","listen":loaded.config.listen,"endpoint":loaded.config.iroh,"label":loaded.config.label,"generations":1}));
+        let (result, reason) = tokio::select! {
+            result = &mut worker => (Some(result), "worker"),
+            _ = terminate.recv() => (None, "terminate"),
+            _ = interrupt.recv() => (None, "interrupt"),
+        };
+        stop.store(true, Ordering::Release);
+        let result = match result { Some(result) => result, None => worker.await };
+        let result = if matches!(result, Ok(Ok(()))) { Ok(()) } else { Err(REFUSED.to_owned()) };
+        let _ = events::append(&loaded.home, "serve-stop", &[("reason", reason), ("ok", if result.is_ok() { "true" } else { "false" })]);
+        result
+    })
+}
+
+fn require_tls(config: &Config) -> Result<(), String> {
+    if config.iroh.is_some() {
+        Err("this operation requires a TLS host; iroh hosts need no certificate renewal or Tailcat template, and mailbox generation transitions are not yet supported; the host is unchanged".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn iroh_addresses(listen: SocketAddr) -> Vec<SocketAddr> {
+    if endpoint(listen) {
+        vec![listen]
+    } else {
+        Vec::new()
+    }
+}
+
+fn iroh_listener_selection(listen: SocketAddr, relay_url: Option<&str>) -> bool {
+    if relay_url.is_none() {
+        return endpoint(listen);
+    }
+    let mut checked = listen;
+    if checked.port() == 0 {
+        checked.set_port(1);
+    }
+    endpoint(checked)
+        || match checked {
+            SocketAddr::V4(address) => address.ip().is_unspecified(),
+            SocketAddr::V6(address) => {
+                address.ip().is_unspecified() && address.scope_id() == 0 && address.flowinfo() == 0
+            }
+        }
 }
 
 fn loopback(listen: SocketAddr) -> bool {
@@ -636,6 +777,29 @@ mod listener_tests {
     }
     fn at(text: &str) -> SocketAddr {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn direct_iroh_requires_a_persistently_dialable_bind_address() {
+        assert!(iroh_listener_selection(at("127.0.0.1:9473"), None));
+        assert_eq!(
+            iroh_addresses(at("127.0.0.1:9473")),
+            vec![at("127.0.0.1:9473")]
+        );
+        for address in ["0.0.0.0:0", "127.0.0.1:0", "[::]:9473"] {
+            assert!(!iroh_listener_selection(at(address), None));
+            assert!(iroh_listener_selection(
+                at(address),
+                Some(DEFAULT_RELAY_URL)
+            ));
+            assert!(iroh_addresses(at(address)).is_empty());
+        }
+        for address in ["224.0.0.1:9473", "255.255.255.255:9473", "[fe80::1%2]:9473"] {
+            assert!(!iroh_listener_selection(
+                at(address),
+                Some(DEFAULT_RELAY_URL)
+            ));
+        }
     }
 
     #[test]

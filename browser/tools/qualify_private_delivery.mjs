@@ -327,7 +327,7 @@ async function gatewayStart() {gateway=await child(['private-gateway','serve',jo
 async function relayStart() {if(options.generationPilot){relay=await child(['private-host','serve',hostHome],'\"status\":\"listening\"');return;}relay=await child(['private','relay-tls-serve',join(output,'mailbox'),'--namespace',namespace,'--config',join(output,'tls.json'),'--cert',join(output,'server.der'),'--key',join(output,'server-key.der'),'--listen',tlsAddress],'relay-tls-serve '+tlsAddress);}
 async function fixture() {
   if(options.generationPilot) {
-    await command(cli,['private-host','init',hostHome,'--listen',tlsAddress,'--tls-name','relay.test','--executable',cli]);
+    await command(cli,['private-host','init',hostHome,'--transport','tls','--listen',tlsAddress,'--tls-name','relay.test','--executable',cli]);
     await command(cli,['private-host','add-credential',hostHome]);
     const config=JSON.parse(await readFile(join(hostHome,'config.json'),'utf8'));
     if(config.credential_ids.length!==3)throw Error('generation fixture credential inventory');

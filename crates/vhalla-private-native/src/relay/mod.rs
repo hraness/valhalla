@@ -25,11 +25,21 @@ pub mod delivery;
 /// Loopback same-origin browser adapter forwarding exclusively over TLS.
 #[cfg(feature = "relay-tls")]
 pub mod http;
+/// Public-key authenticated QUIC transport with optional NAT relay assistance.
+#[cfg(feature = "relay-iroh")]
+pub mod iroh;
 /// Authenticated socket adapter and durable cursor catch-up for this boundary.
 pub mod net;
+#[cfg(feature = "relay-iroh")]
+mod relay_client;
 /// Verified TLS transport and bounded credential-scoped service.
 #[cfg(feature = "relay-tls")]
 pub mod tls;
+#[cfg(feature = "relay-iroh")]
+pub use relay_client::RelayClient;
+/// Explicitly selected authenticated mailbox client.
+#[cfg(all(feature = "relay-tls", not(feature = "relay-iroh")))]
+pub type RelayClient = tls::TlsRelay;
 
 use vhalla_private_relay::{kind_byte, kind_from_byte, MAGIC};
 pub use vhalla_private_relay::{

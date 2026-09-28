@@ -83,7 +83,7 @@ struct Work {
     bytes: u64,
     inflight: usize,
 }
-struct State {
+pub(crate) struct State {
     store: FileStore,
     credentials: Vec<Credential>,
     limits: ServiceLimits,
@@ -107,7 +107,7 @@ struct State {
 /// each waiter still occupies its connection, in-flight and window shares.
 pub struct Service {
     state: Arc<Mutex<State>>,
-    config: Arc<ServerConfig>,
+    config: Option<Arc<ServerConfig>>,
     notify: Arc<Condvar>,
 }
 
@@ -144,6 +144,23 @@ impl Service {
         credentials: Vec<Credential>,
         limits: ServiceLimits,
     ) -> Result<Self> {
+        Self::configured(store, Some(config), credentials, limits)
+    }
+    /// Open the same durable mailbox and quota ledger for public-key transport.
+    #[cfg(feature = "relay-iroh")]
+    pub fn new_iroh(
+        store: FileStore,
+        credentials: Vec<Credential>,
+        limits: ServiceLimits,
+    ) -> Result<Self> {
+        Self::configured(store, None, credentials, limits)
+    }
+    fn configured(
+        store: FileStore,
+        config: Option<Arc<ServerConfig>>,
+        credentials: Vec<Credential>,
+        limits: ServiceLimits,
+    ) -> Result<Self> {
         if !(2..=64).contains(&limits.max_connections)
             || limits.request_timeout.is_zero()
             || limits.request_timeout > Duration::from_secs(30)
@@ -156,7 +173,7 @@ impl Service {
             || limits.max_wait > Duration::from_secs(120)
             || credentials.is_empty()
             || credentials.len() > 64
-            || config.max_early_data_size != 0
+            || config.as_ref().is_some_and(|c| c.max_early_data_size != 0)
         {
             return Err(NetError::Bounds);
         }
@@ -254,9 +271,11 @@ impl Service {
             .execute_batch("COMMIT")
             .map_err(|_| NetError::Unavailable)?;
         store.sync().map_err(|_| NetError::Unavailable)?;
-        let mut selected = (*config).clone();
-        selected.alpn_protocols = vec![protocol(store.namespace())];
-        let config = Arc::new(selected);
+        let config = config.map(|config| {
+            let mut selected = (*config).clone();
+            selected.alpn_protocols = vec![protocol(store.namespace())];
+            Arc::new(selected)
+        });
         Ok(Self {
             notify: Arc::new(Condvar::new()),
             state: Arc::new(Mutex::new(State {
@@ -295,6 +314,7 @@ impl Service {
         limit: Option<u64>,
         stop: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<()> {
+        let config = self.config.clone().ok_or(NetError::Bounds)?;
         let (max, timeout, window, max_handshakes) = {
             let s = self.state.lock().map_err(|_| NetError::Unavailable)?;
             (
@@ -382,7 +402,7 @@ impl Service {
             }
             handshakes += 1;
             let state = self.state.clone();
-            let config = self.config.clone();
+            let config = config.clone();
             let notify = self.notify.clone();
             let stopped = draining.clone();
             let deadline = Instant::now() + timeout;
@@ -417,7 +437,23 @@ impl Service {
         }
         failure.map_or(Ok(()), Err)
     }
-    fn unhealthy(&self) -> bool {
+    #[cfg(feature = "relay-iroh")]
+    pub(crate) fn iroh_parameters(&self) -> Result<(RelayNamespace, ServiceLimits)> {
+        let state = self.state.lock().map_err(|_| NetError::Unavailable)?;
+        Ok((state.store.namespace(), state.limits))
+    }
+    #[cfg(feature = "relay-iroh")]
+    pub(crate) fn request_handler(&self) -> RequestHandler {
+        RequestHandler {
+            state: self.state.clone(),
+            notify: self.notify.clone(),
+        }
+    }
+    #[cfg(feature = "relay-iroh")]
+    pub(crate) fn wake_waiters(&self) {
+        self.notify.notify_all();
+    }
+    pub(crate) fn unhealthy(&self) -> bool {
         match self.state.try_lock() {
             Ok(state) => state.poisoned,
             Err(std::sync::TryLockError::Poisoned(_)) => true,
@@ -480,7 +516,7 @@ impl Sources {
 /// which include an overlay forward that terminates here, share only the
 /// global bounds. IPv4-mapped IPv6 peers count as IPv4; other IPv6 peers group
 /// by /64 because one network usually controls a whole /64.
-fn remote_source(peer: IpAddr) -> Option<IpAddr> {
+pub(crate) fn remote_source(peer: IpAddr) -> Option<IpAddr> {
     match peer.to_canonical() {
         ip if ip.is_loopback() => None,
         IpAddr::V6(ip) => {
@@ -556,8 +592,59 @@ fn serve_one(
     socket.deadline = deadline;
     let mut tls = StreamOwned::new(connection, socket);
     let request = read_frame(&mut tls, MAX_REQUEST, deadline)?;
+    let reply = process_request(state, notify, draining, &request, deadline)?;
+    tls.sock.deadline = reply.deadline;
+    write_frame(&mut tls, reply.code, &reply.body, reply.deadline)
+}
+#[cfg(feature = "relay-iroh")]
+#[derive(Clone)]
+pub(crate) struct RequestHandler {
+    state: Arc<Mutex<State>>,
+    notify: Arc<Condvar>,
+}
+#[cfg(feature = "relay-iroh")]
+impl RequestHandler {
+    pub(crate) fn process(
+        &self,
+        request: &[u8],
+        deadline: Instant,
+        draining: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<Reply> {
+        process_request(
+            self.state.clone(),
+            self.notify.clone(),
+            draining,
+            request,
+            deadline,
+        )
+    }
+}
+/// Keeps the credential's in-flight slot until the transport finishes writing.
+pub(crate) struct Reply {
+    pub(crate) code: u8,
+    pub(crate) body: Vec<u8>,
+    pub(crate) deadline: Instant,
+    _admission: Option<Admission>,
+}
+impl Reply {
+    fn refusal(code: u8, deadline: Instant) -> Self {
+        Self {
+            code,
+            body: Vec::new(),
+            deadline,
+            _admission: None,
+        }
+    }
+}
+fn process_request(
+    state: Arc<Mutex<State>>,
+    notify: Arc<Condvar>,
+    draining: Arc<std::sync::atomic::AtomicBool>,
+    request: &[u8],
+    deadline: Instant,
+) -> Result<Reply> {
     if request.len() < 33 {
-        return write_frame(&mut tls, STATUS_DENIED, &[], deadline);
+        return Ok(Reply::refusal(STATUS_DENIED, deadline));
     }
     let mut s = state.lock().map_err(|_| NetError::Unavailable)?;
     remaining(deadline).map_err(io)?;
@@ -570,14 +657,14 @@ fn serve_one(
         .position(|c| c.tokens.iter().any(|t| token_matches(t, &request[1..33])))
     else {
         drop(s);
-        return write_frame(&mut tls, STATUS_DENIED, &[], deadline);
+        return Ok(Reply::refusal(STATUS_DENIED, deadline));
     };
     let c = &s.credentials[index];
     if (request[0] == OP_PUT && !c.permissions.put)
         || (request[0] == OP_PAGE && !c.permissions.page)
     {
         drop(s);
-        return write_frame(&mut tls, STATUS_DENIED, &[], deadline);
+        return Ok(Reply::refusal(STATUS_DENIED, deadline));
     }
     let (id, max_inflight, max_requests, max_bytes) = (
         c.id,
@@ -607,7 +694,7 @@ fn serve_one(
         || key.bytes.saturating_add(bytes) > max_bytes
     {
         drop(s);
-        return write_frame(&mut tls, STATUS_CAPACITY, &[], deadline);
+        return Ok(Reply::refusal(STATUS_CAPACITY, deadline));
     }
     key.inflight += 1;
     key.requests += 1;
@@ -621,16 +708,18 @@ fn serve_one(
     let mut reply_deadline = deadline;
     let response = if request[0] == OP_PUT {
         put(&mut s, id, &request[33..])
-    } else if let Some((after, limit, wait_ms)) = page_wait_fields(&request) {
+    } else if let Some((after, limit, wait_ms)) = page_wait_fields(request) {
         // A held page keeps its admitted slot and this request's charges for
         // the whole bounded wait; the response gets a fresh write reserve
         // because the original deadline may already have elapsed.
         let until =
             Instant::now() + Duration::from_millis(u64::from(wait_ms)).min(s.limits.max_wait);
-        reply_deadline = until + WRITE_RESERVE;
-        tls.sock.deadline = reply_deadline;
         let (guard, outcome) = waited_page(s, &notify, &draining, after, limit, until);
         s = guard;
+        // A put or shutdown can end the hold early. Only the write reserve
+        // remains after that wake; retaining the original wait deadline lets
+        // an abandoned QUIC peer delay shutdown for the entire requested hold.
+        reply_deadline = Instant::now() + WRITE_RESERVE;
         outcome
     } else {
         dispatch(&mut s.store, request[0], &request[33..])
@@ -661,9 +750,12 @@ fn serve_one(
         }
         s.global.bytes = s.global.bytes.saturating_add(billed);
     }
-    let result = write_frame(&mut tls, code, &body, reply_deadline);
-    drop(admitted);
-    result
+    Ok(Reply {
+        code,
+        body,
+        deadline: reply_deadline,
+        _admission: Some(admitted),
+    })
 }
 /// A condvar wake under a held page is a local re-check, not a wire exchange:
 /// capping each step this way keeps a stop flag or poisoned state observable

@@ -63,15 +63,21 @@ fn request(gateway: &Gateway, body: &[u8]) -> Vec<u8> {
     [head.as_bytes(), body].concat()
 }
 fn exchange(gateway: Gateway, listener: TcpListener, raw: &[u8]) -> Vec<u8> {
+    exchange_with_timeout(gateway, listener, raw, Duration::from_secs(2))
+}
+fn exchange_with_timeout(
+    gateway: Gateway,
+    listener: TcpListener,
+    raw: &[u8],
+    timeout: Duration,
+) -> Vec<u8> {
     let address = listener.local_addr().unwrap();
     let worker = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let _ = handle(&gateway.0, stream);
     });
     let mut socket = TcpStream::connect(address).unwrap();
-    socket
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
+    socket.set_read_timeout(Some(timeout)).unwrap();
     socket.write_all(raw).unwrap();
     socket.shutdown(std::net::Shutdown::Write).unwrap();
     let mut response = Vec::new();
@@ -83,6 +89,173 @@ fn exchange(gateway: Gateway, listener: TcpListener, raw: &[u8]) -> Vec<u8> {
     }
     worker.join().unwrap();
     response
+}
+
+#[cfg(feature = "relay-iroh")]
+#[test]
+fn real_iroh_upstream_retains_exact_http_items_and_refuses_browser_capability() {
+    use crate::relay::{
+        iroh::{IrohListener, IrohRelay},
+        net::RelayToken,
+        tls::{Credential, Permissions, Service, ServiceLimits},
+        FileStore, Limits,
+    };
+    use vhalla_private_kernel::{OperationId, OutboxKind};
+
+    struct Host {
+        path: std::path::PathBuf,
+        stop: Arc<AtomicBool>,
+        worker: Option<thread::JoinHandle<Result<()>>>,
+    }
+    impl Drop for Host {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            let stopped = self
+                .worker
+                .take()
+                .is_none_or(|worker| matches!(worker.join(), Ok(Ok(()))));
+            if thread::panicking() || !stopped {
+                eprintln!("retained iroh gateway fixture: {}", self.path.display());
+            } else {
+                std::fs::remove_dir_all(&self.path).unwrap();
+            }
+            if !thread::panicking() {
+                assert!(stopped, "iroh gateway host did not drain successfully");
+            }
+        }
+    }
+    fn response_body(response: &[u8]) -> Vec<u8> {
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        let start = response.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+        let (status, body) = decode_frame(&response[start..], MAX_RESPONSE).unwrap();
+        decode_status(status, body).unwrap()
+    }
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "vhalla-iroh-gateway-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let namespace = RelayNamespace::from_bytes([9; 32]).unwrap();
+    let storage = Limits {
+        max_items: 8,
+        max_bytes: 4096,
+    };
+    Service::initialize(FileStore::create_new(&path, namespace, storage).unwrap()).unwrap();
+    let service = Service::new_iroh(
+        FileStore::open(&path, namespace).unwrap(),
+        vec![Credential {
+            id: [1; 16],
+            tokens: vec![RelayToken::from_bytes([7; 32]).unwrap()],
+            namespace,
+            permissions: Permissions {
+                put: true,
+                page: true,
+            },
+            storage: Limits {
+                max_items: storage.max_items / 2,
+                max_bytes: storage.max_bytes / 2,
+            },
+            max_inflight: 2,
+            requests_per_window: 64,
+            bytes_per_window: 1024 * 1024,
+        }],
+        ServiceLimits::default(),
+    )
+    .unwrap();
+    let listener = IrohListener::bind([2; 32], "127.0.0.1:0".parse().unwrap(), None).unwrap();
+    listener.set_namespace(namespace);
+    let relay = IrohRelay::new(
+        listener.endpoint(),
+        RelayToken::from_bytes([7; 32]).unwrap(),
+        namespace,
+    )
+    .unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let selected = stop.clone();
+    let _host = Host {
+        path,
+        stop,
+        worker: Some(thread::spawn(move || {
+            service.serve_iroh_until(listener, None, selected)
+        })),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let gateway = Gateway::new(
+        listener.local_addr().unwrap(),
+        namespace,
+        BrowserCapability::from_bytes([8; 32]).unwrap(),
+        relay,
+        Assets::new(BTreeMap::from([(
+            "index.html".into(),
+            b"verified UI".to_vec(),
+        )]))
+        .unwrap(),
+        GatewayLimits {
+            timeout: Duration::from_secs(10),
+            ..GatewayLimits::default()
+        },
+    )
+    .unwrap();
+    let send = |body: &[u8]| {
+        exchange_with_timeout(
+            Gateway(gateway.0.clone()),
+            listener.try_clone().unwrap(),
+            &request(&gateway, body),
+            Duration::from_secs(12),
+        )
+    };
+    let item = RelayItem::new(
+        namespace,
+        1,
+        OperationId::from_bytes([3; 16]).unwrap(),
+        OutboxKind::Application,
+        b"opaque browser ciphertext",
+    )
+    .unwrap();
+    let put = frame(OP_PUT, &item.encode().unwrap());
+    let receipt = decode_receipt(&response_body(&send(&put)), &item).unwrap();
+    assert_eq!(receipt.position, 1);
+    assert!(!receipt.duplicate);
+    let retry = decode_receipt(&response_body(&send(&put)), &item).unwrap();
+    assert_eq!(retry.position, receipt.position);
+    assert_eq!(retry.digest, receipt.digest);
+    assert!(retry.duplicate);
+
+    let refused = RelayItem::new(
+        namespace,
+        2,
+        OperationId::from_bytes([4; 16]).unwrap(),
+        OutboxKind::Application,
+        b"must not be retained",
+    )
+    .unwrap();
+    let mut unauthorized = request(&gateway, &frame(OP_PUT, &refused.encode().unwrap()));
+    let header = b"Authorization: Bearer ";
+    let token = unauthorized
+        .windows(header.len())
+        .position(|v| v == header)
+        .unwrap()
+        + header.len();
+    unauthorized[token] = b'6';
+    let refusal = exchange_with_timeout(
+        Gateway(gateway.0.clone()),
+        listener.try_clone().unwrap(),
+        &unauthorized,
+        Duration::from_secs(12),
+    );
+    assert!(refusal.starts_with(b"HTTP/1.1 403"));
+
+    let page = decode_page(
+        &response_body(&send(&frame(OP_PAGE, &page_request(0, 8).unwrap()))),
+        0,
+        8,
+    )
+    .unwrap();
+    assert_eq!(page.head, 1);
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0].item, item);
 }
 #[test]
 fn unauthorized_or_malformed_requests_never_touch_upstream() {
@@ -346,8 +519,14 @@ fn retained_generations_require_their_exact_namespace_capability_and_body() {
         )
         .unwrap();
         let body = frame(OP_PUT, &item.encode().unwrap());
-        let header = format!("POST {ENDPOINT} HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nAuthorization: Bearer {}\r\nX-Vhalla-Namespace: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
-            gateway.0.host, gateway.origin(), format!("{capability:02x}").repeat(32), format!("{namespace:02x}").repeat(32), body.len());
+        let header = format!(
+            "POST {ENDPOINT} HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nAuthorization: Bearer {}\r\nX-Vhalla-Namespace: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            gateway.0.host,
+            gateway.origin(),
+            format!("{capability:02x}").repeat(32),
+            format!("{namespace:02x}").repeat(32),
+            body.len()
+        );
         let response = exchange(gateway, listener, &[header.as_bytes(), &body].concat());
         assert_eq!(response.starts_with(b"HTTP/1.1 200"), expected.is_some());
         for (index, counter) in calls.iter().enumerate() {

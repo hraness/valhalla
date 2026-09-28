@@ -1,8 +1,9 @@
 # Native private-room storage
 
 This workspace crate provides native persistence, a fixed-room agent interface,
-an opaque relay-item protocol, and an optional trusted private-room session. It
-does not install a network transport or a CLI. See [release boundaries](../../docs/private-rooms.md).
+an opaque relay-item protocol, optional authenticated network transports, and
+an optional trusted private-room session. The separate CLI selects and operates
+these adapters. See [release boundaries](../../docs/private-rooms.md).
 The `private_rooms` backend accepts only opaque stored images and records, with
 no key or plaintext API. An opaque byte constructor is not proof of encryption.
 The kernel supplies MLS and authenticated encryption. The separate optional
@@ -304,6 +305,42 @@ Use Rust 1.98.1 for these commands. This transport has not yet qualified an
 independently operated public host. Relay receipts continue to mean retention
 only; offline job scheduling and authenticated member acceptance are distinct
 client features.
+
+## Public-key relay transport (`relay-iroh`)
+
+`relay::iroh::IrohRelay` connects to a pinned host public key using
+[iroh's encrypted QUIC connections](https://docs.rs/iroh/1.2.0/iroh/).
+An operator can configure an HTTPS relay to establish connections across NATs;
+iroh attempts a direct UDP path when possible and can carry traffic through the
+relay when a direct path is unavailable. The default host relay is Number 0's
+North America east service. The configured relay can observe endpoint identities,
+IP addresses and traffic timing, but cannot decrypt application data. The random
+mailbox namespace appears in protocol negotiation; do not derive it from private
+room metadata.
+
+An `IrohEndpoint` contains the host's public key and optional relay and direct
+address hints. `IrohRelay::new` only validates that configuration; the first
+exchange starts its shared runtime. No public address lookup or publication is
+configured. Host identity and mailbox namespace bind durable delivery jobs;
+changing address hints leaves that identity intact. Tokens are sent after the
+host handshake and remain separate from room membership.
+
+`Service::new_iroh` uses the same SQLite mailbox, credential permissions, durable
+quotas and generation rules as `Service::new`. Each connection carries one
+size-limited request and response. Connection counts, handshakes, source shares,
+credential work and operation deadlines limit resource use. Shutdown stops new
+requests, wakes waiting pages and joins workers before releasing the store.
+Synchronous clients own their runtime thread and can be called from an async
+application. `RelayClient` selects either transport without an automatic
+fallback. The loopback browser gateway accepts both transports.
+
+Tests in `relay::iroh::tests` exercise direct loopback connections, host-key and
+namespace rejection, credential rejection, durable quota enforcement, exact
+retries and held pages. The ignored
+`public_relay_only_retains_and_reads_synthetic_ciphertext` test disables client
+UDP, verifies relay paths and exchanges synthetic ciphertext through the public
+relay. Run it explicitly when network access is available. It covers two
+endpoints on one machine; independent networks need separate testing.
 
 ## Trusted-host offline delivery
 

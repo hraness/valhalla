@@ -101,10 +101,10 @@ vhalla private relay-page MAILBOX --namespace NS64 --after N --limit N --out PAG
 vhalla private relay-serve MAILBOX --namespace NS64 --token FILE|- --listen IP:PORT
 vhalla private relay-tls-init MAILBOX --namespace NS64
 vhalla private relay-tls-serve MAILBOX --namespace NS64 --config PRIVATE_JSON --cert DER --key PKCS8_DER --listen IP:PORT
-vhalla private relay-submit RELAY_ITEM [--namespace NS64] (--addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) --out RECEIPT_JSON
-vhalla private relay-scan CURSOR_DIR --namespace NS64 (--addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) [--limit N] --out SCAN_JSON
-vhalla private relay-push ID STORE --namespace NS64 (--addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) [--after N] [--limit N] --out PUSH_JSON
-vhalla private relay-pull ID STORE --namespace NS64 --dir CURSOR_DIR (--addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) [--limit N] --out PULL_JSON
+vhalla private relay-submit RELAY_ITEM [--namespace NS64] (--iroh-endpoint FILE --token FILE | --addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) --out RECEIPT_JSON
+vhalla private relay-scan CURSOR_DIR --namespace NS64 (--iroh-endpoint FILE --token FILE | --addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) [--limit N] --out SCAN_JSON
+vhalla private relay-push ID STORE --namespace NS64 (--iroh-endpoint FILE --token FILE | --addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) [--after N] [--limit N] --out PUSH_JSON
+vhalla private relay-pull ID STORE --namespace NS64 --dir CURSOR_DIR (--iroh-endpoint FILE --token FILE | --addr IP:PORT --token FILE|- | --mailbox MAILBOX_DIR) [--limit N] --out PULL_JSON
 vhalla private control-export ID STORE --after N --parent CONTROL64|none --out CIPHERTEXT
 vhalla private control-proof ID STORE --after N --parent CONTROL64|none --out SIGNED
 vhalla private observe ID STORE --control SIGNED --out JSON
@@ -120,7 +120,7 @@ vhalla private archive-inspect ID ARCHIVE_STORE --archive FILE.vharchive --out P
 vhalla private archive-inbox|archive-outbox ID ARCHIVE_STORE --archive FILE.vharchive --after N --limit N --out PRIVATE_JSON [--max-records N --max-bytes N]
 Archives are inert encrypted complete-state copies; they cannot restore or transfer a live device. Preserve the exact file for resume and finalization inspection. No account-key-only recovery.
 control-proof exports signed owner controls for inspection; observe compares one signed control against retained history only and writes durable quarantine on a proven conflict; fork-evidence reports the retained proof. None claim global freshness or grant succession.
-Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated loopback-only TCP socket while relay-submit retains one item and relay-scan stages a bounded prefix after a durable cursor into an explicitly namespace-bound private directory. Both scan transports require --namespace; preserve older nonempty unbound directories and select a new empty directory. Legacy plaintext bootstrap artifacts are never relay eligible. relay-submit/relay-scan/relay-push/relay-pull accept either the socket transport (--addr with --token) or --mailbox DIR, which opens the durable mailbox directly under filesystem custody — one process at a time, suitable for a synced or explicitly copied directory. relay-push submits a bounded local outbox prefix and relay-pull scans then applies each applicable item, reopening custody after each deterministic refusal and retrying refused items within one pull so out-of-order delivery heals without an extra pass; neither emits plaintext or claims acceptance by another member. relay-unwrap verifies one retained item and writes only its inner payload, feeding skipped encrypted contact requests to the dedicated commands which authenticate the envelope themselves. A mailbox assigns each retained item its own increasing position shared by every sender in the namespace, so pages, cursors and relay-get use positions while each item still carries its sender-local outbox sequence. Remote transports require --addr IP:PORT|NAME:PORT --token FILE --tls-ca DER --tls-name DNS together; a DNS name resolves at use while TLS verifies the selected certificate authority, server name and opaque namespace before sending credentials; there is no plaintext fallback. relay-tls-init explicitly enrolls an empty mailbox in durable credential quotas before relay-tls-serve can start. Agent grants explicitly authorize one cooperating-host MCP session with finite quotas and a retained one-use claim; they do not sandbox external CLI tools or authenticate the declared inference provider. There is no reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
+Existing identity; create/import always require a never-used store. Relay items are canonical opaque envelopes for an adapter or explicit local handoff; relay-apply dispatches only the authenticated item kind and never treats a relay receipt as member acceptance. The relay-mailbox/put/get/page commands operate a durable opaque mailbox and never open identity or room custody. relay-serve exposes one mailbox over a token-authenticated loopback-only TCP socket while relay-submit retains one item and relay-scan stages a bounded prefix after a durable cursor into an explicitly namespace-bound private directory. Both scan transports require --namespace; preserve older nonempty unbound directories and select a new empty directory. Legacy plaintext bootstrap artifacts are never relay eligible. relay-submit/relay-scan/relay-push/relay-pull accept either the socket transport (--addr with --token) or --mailbox DIR, which opens the durable mailbox directly under filesystem custody — one process at a time, suitable for a synced or explicitly copied directory. relay-push submits a bounded local outbox prefix and relay-pull scans then applies each applicable item, reopening custody after each deterministic refusal and retrying refused items within one pull so out-of-order delivery heals without an extra pass; neither emits plaintext or claims acceptance by another member. relay-unwrap verifies one retained item and writes only its inner payload, feeding skipped encrypted contact requests to the dedicated commands which authenticate the envelope themselves. A mailbox assigns each retained item its own increasing position shared by every sender in the namespace, so pages, cursors and relay-get use positions while each item still carries its sender-local outbox sequence. Iroh transport uses --iroh-endpoint FILE --token FILE --namespace NS64 and pins the selected endpoint public key before sending the mailbox credential. The endpoint file contains the endpoint object from connection.json. Explicit TLS transport requires --addr IP:PORT|NAME:PORT --token FILE --tls-ca DER --tls-name DNS together; a DNS name resolves at use while TLS verifies the selected certificate authority, server name and opaque namespace before sending credentials; there is no plaintext fallback. relay-tls-init explicitly enrolls an empty mailbox in durable credential quotas before relay-tls-serve can start. Agent grants explicitly authorize one cooperating-host MCP session with finite quotas and a retained one-use claim; they do not sandbox external CLI tools or authenticate the declared inference provider. There is no reset or automatic migration. Secret/plaintext input is a bounded pipe or 0600 file in a 0700 directory; all outputs are new 0600 files in a 0700 directory. No content is printed. Save exact operation, validity, epoch and roster for retries; output failure never authorizes regenerating or resetting a device.";
 
 const REFUSED: &str = "private operation refused; preserve the existing store and reopen it; never reset or recreate a device";
 const OFFER_LIMIT: usize = 1024;
@@ -227,6 +227,7 @@ impl Args {
             "relay-tls-serve" => &["namespace", "config", "cert", "key", "listen"],
             "relay-submit" => &[
                 "addr",
+                "iroh-endpoint",
                 "token",
                 "mailbox",
                 "namespace",
@@ -236,6 +237,7 @@ impl Args {
             ],
             "relay-scan" => &[
                 "addr",
+                "iroh-endpoint",
                 "token",
                 "mailbox",
                 "namespace",
@@ -247,6 +249,7 @@ impl Args {
             "relay-push" => &[
                 "namespace",
                 "addr",
+                "iroh-endpoint",
                 "token",
                 "tls-ca",
                 "tls-name",
@@ -259,6 +262,7 @@ impl Args {
                 "namespace",
                 "dir",
                 "addr",
+                "iroh-endpoint",
                 "token",
                 "tls-ca",
                 "tls-name",
@@ -313,7 +317,7 @@ impl Args {
         for required in allowed.iter().filter(|name| {
             command != "join"
                 && !matches!(**name, "max-records" | "max-items" | "max-bytes")
-                && !matches!(**name, "tls-ca" | "tls-name")
+                && !matches!(**name, "tls-ca" | "tls-name" | "iroh-endpoint")
                 && !(command == "agent-grant"
                     && !matches!(**name, "mode" | "disclosure" | "receipt" | "out"))
                 && !(command == "delivery-pause" && **name == "reviewed-bootstrap")
@@ -1185,6 +1189,7 @@ fn relay_peer(args: &Args, name: &str) -> Result<std::net::SocketAddr, String> {
 enum RelayTransport {
     Socket(vhalla_private_native::relay::net::SocketRelay),
     Tls(vhalla_private_native::relay::tls::TlsRelay),
+    Iroh(vhalla_private_native::relay::iroh::IrohRelay),
     Mailbox(vhalla_private_native::relay::FileStore),
 }
 impl RelayTransport {
@@ -1195,6 +1200,7 @@ impl RelayTransport {
         match self {
             Self::Socket(relay) => relay.submit(item).map_err(net_error),
             Self::Tls(relay) => relay.submit(item).map_err(net_error),
+            Self::Iroh(relay) => relay.submit(item).map_err(net_error),
             Self::Mailbox(store) => store.put(item.clone()).map_err(relay_error),
         }
     }
@@ -1211,6 +1217,7 @@ impl RelayTransport {
         let receipt = match self {
             Self::Socket(relay) => relay.submit_until(item, deadline).map_err(net_error),
             Self::Tls(relay) => relay.submit_until(item, deadline).map_err(net_error),
+            Self::Iroh(relay) => relay.submit_until(item, deadline).map_err(net_error),
             Self::Mailbox(store) => store.put(item.clone()).map_err(relay_error),
         }?;
         if std::time::Instant::now() >= deadline {
@@ -1224,6 +1231,7 @@ impl RelayTransport {
         match self {
             Self::Socket(relay) => relay,
             Self::Tls(relay) => relay,
+            Self::Iroh(relay) => relay,
             Self::Mailbox(store) => store,
         }
     }
@@ -1233,6 +1241,29 @@ fn relay_transport(
     args: &Args,
     namespace: Option<vhalla_private_native::relay::RelayNamespace>,
 ) -> Result<RelayTransport, String> {
+    if args.flags.contains_key("iroh-endpoint") {
+        if !args.flags.contains_key("namespace") {
+            return Err("iroh requires an explicit --namespace".into());
+        }
+        if ["addr", "mailbox", "tls-ca", "tls-name"]
+            .iter()
+            .any(|field| args.flags.contains_key(*field))
+            || !args.flags.contains_key("token")
+        {
+            return Err("iroh requires --iroh-endpoint, --token and --namespace without TLS, address or mailbox options".into());
+        }
+        let endpoint: vhalla_private_native::relay::iroh::IrohEndpoint =
+            serde_json::from_slice(&args.input("iroh-endpoint", 8192, false)?)
+                .map_err(|_| "iroh endpoint must be strict JSON")?;
+        endpoint.validate().map_err(|_| "iroh endpoint refused")?;
+        return vhalla_private_native::relay::iroh::IrohRelay::new(
+            endpoint,
+            relay_token(args)?,
+            namespace.ok_or("iroh requires an explicit --namespace")?,
+        )
+        .map(RelayTransport::Iroh)
+        .map_err(net_error);
+    }
     let tls_ca = args.flags.contains_key("tls-ca");
     let tls_name = args.flags.contains_key("tls-name");
     if tls_ca || tls_name {
@@ -1269,7 +1300,7 @@ fn relay_transport(
             )
             .map_err(relay_error)?,
         )),
-        _ => Err("choose exactly one relay transport: --addr with --token, or --mailbox".into()),
+        _ => Err("choose exactly one relay transport: --iroh-endpoint with --token, --addr with --token, or --mailbox".into()),
     }
 }
 

@@ -51,6 +51,16 @@ async function wait(probe,label) {
 }
 const instrumentation=`
 window.qaURLs=new Set(); window.qaInjected=false;
+window.qaHoldIdentityWatchdog=false; window.qaHeldIdentityWatchdogTicks=0; window.qaIdentityWatchdogs=0;
+const interval=window.setInterval.bind(window);
+window.setInterval=function(callback,delay,...args){
+  if(delay!==500 || typeof callback!=='function')return interval(callback,delay,...args);
+  qaIdentityWatchdogs++;
+  return interval((...tickArgs)=>{
+    if(qaHoldIdentityWatchdog){qaHeldIdentityWatchdogTicks++;return;}
+    callback(...tickArgs);
+  },delay,...args);
+};
 Object.defineProperty(window, "showSaveFilePicker", {configurable:true,writable:true,value:undefined});
 window.qaKeyboardClicks={'private-enter':0,'private-locator-retained':0};
 document.addEventListener('click',event=>{
@@ -189,6 +199,23 @@ async function reopen(page) {
   await evaluate(page,"(async()=>{qset('password',qpassword);await qclick('unlock');await qwait(()=>qid('identity-state').textContent==='Unlocked','explicit unlock');await qclick('private-enter');await qwait(()=>!qid('private-open').disabled,'new private entry');return true;})()");
   await setFile(page,'private-locator-file',page.locator);
   await evaluate(page,"(async()=>{await qclick('private-open');await qidle();return true;})()");
+}
+async function qualifyWorkerRetirement(page) {
+  // Real worker termination, explicit password unlock and exact room reopen
+  // must release retired callbacks without depending on the watchdog timer.
+  // Hold only this page's one 500 ms identity watchdog; all request/poll timers,
+  // worker messages and the other account contexts keep running normally.
+  const before=await evaluate(page,"(()=>{qassert(qaIdentityWatchdogs===1,'expected one identity watchdog');qaHoldIdentityWatchdog=true;qaHeldIdentityWatchdogTicks=0;return {account:qid('public-key').textContent,membership:qid('private-membership-details').textContent};})()");
+  try {
+    for(let cycle=0;cycle<6;cycle++){
+      await leave(page);await reopen(page);
+      await invoke(page,`function(before){qassert(qid('public-key').textContent===before.account,'worker restart changed account');qassert(qid('private-membership-details').textContent===before.membership,'worker restart changed retained room');return true;}`,[before]);
+    }
+    await evaluate(page,"(async()=>{await qwait(()=>qaHeldIdentityWatchdogTicks>0,'watchdog was held during worker restarts');return true;})()");
+  } finally {
+    await evaluate(page,"qaHoldIdentityWatchdog=false;true");
+  }
+  facts.push('six real leave/unlock/exact-reopen cycles release retired worker callbacks while the identity watchdog is held; each lock clears private views and each reopen retains the same account and room');
 }
 async function reload(page) {
   // A real document teardown: a fresh target in the same browser context gets
@@ -492,6 +519,7 @@ async function task(abortSignal) {
   await setFile(owner,'private-control-file',successorRenewal.path);
   await evaluate(owner,"(async()=>{await qclick('private-apply-control');await qidle();qassert(qid('private-remove').disabled,'demoted owner regained owner actions');return true;})()");
   await qualifyArchives({owner,fresh,output,evaluate,invoke,setFile,download,send,leave,reopen,restartArchive,facts});
+  await qualifyWorkerRetirement(owner);
   await leave(owner);await leave(fresh);
   facts.push('account-authorized succession hands ownership to the enrolled same-account device through one distributed owner control: the predecessor keeps ordinary membership, and the promoted successor issues controls the predecessor applies in order');
   if(unexpectedNetwork||networkWrites)throw Error('unexpected route, network write or unbounded download event');

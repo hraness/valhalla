@@ -135,7 +135,7 @@ struct State {
     saved: IdentitySnapshot,
     worker: Option<Worker>,
     callbacks: Option<Callbacks>,
-    // A worker callback may retire itself. Drop it on a later event-loop turn.
+    // A worker callback may retire itself. Drop it after that callback returns.
     retired: Vec<Callbacks>,
     generation: u64,
     operation: u64,
@@ -289,14 +289,34 @@ fn stop_worker(app: &App) {
         worker.set_onerror(None);
         worker.terminate();
     }
-    if let Some(callbacks) = state.callbacks.take() {
+    let retired = if let Some(callbacks) = state.callbacks.take() {
         state.retired.push(callbacks);
-    }
+        true
+    } else {
+        false
+    };
     state.ready = false;
     state.ready_deadline = None;
     state.unlocked = false;
     #[cfg(feature = "private-rooms")]
     state.private.stopped();
+    let generation = state.generation;
+    drop(state);
+    if retired {
+        let weak = Rc::downgrade(app);
+        // A callback can stop its own worker. spawn_local always waits for the
+        // next microtask, so that callback has returned before its closure is
+        // dropped. Do not make ordinary restarts consume the bounded retirement
+        // slots until the watchdog's next (potentially throttled) timer tick.
+        spawn_local(async move {
+            if let Some(app) = weak.upgrade() {
+                let mut state = app.borrow_mut();
+                if state.generation == generation {
+                    state.retired.clear();
+                }
+            }
+        });
+    }
 }
 fn fail(app: &App, message: &str) {
     let (loading, pending, storage) = {

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Output, Stdio},
@@ -22,9 +22,10 @@ use std::{
 use vhalla_private_kernel::{MemberAcceptance, OperationId, OutboxKind};
 use vhalla_private_native::relay::{
     delivery::{DeliveryStore, JobState},
+    iroh::{IrohEndpoint, IrohRelay},
     net::{NetError, RelayToken},
     tls::TlsRelay,
-    RelayItem, RelayKind, RelayNamespace, RelayPage,
+    RelayClient, RelayItem, RelayKind, RelayNamespace, RelayPage,
 };
 
 const TLS_NAME: &str = "steel-thread.test.invalid";
@@ -69,6 +70,7 @@ impl Who {
 }
 
 struct Journey {
+    iroh: bool,
     root: PathBuf,
     addr: SocketAddr,
     now: u64,
@@ -100,6 +102,7 @@ impl Journey {
             }
         };
         let journey = Self {
+            iroh: false,
             root,
             addr,
             now: time.as_secs(),
@@ -113,6 +116,13 @@ impl Journey {
                 .create(journey.path(who.dir()))
                 .unwrap();
         }
+        journey
+    }
+    fn with_iroh() -> Self {
+        let mut journey = Self::new();
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        journey.addr = socket.local_addr().unwrap();
+        journey.iroh = true;
         journey
     }
     fn path(&self, name: &str) -> PathBuf {
@@ -183,8 +193,20 @@ impl Journey {
         let mut command = self.vhalla();
         command
             .args(["private-host", "init"])
-            .arg(self.path("host"))
-            .args(["--listen", &self.addr.to_string(), "--tls-name", TLS_NAME])
+            .arg(self.path("host"));
+        if self.iroh {
+            command.args(["--iroh-bind", &self.addr.to_string(), "--relay-url", "none"]);
+        } else {
+            command.args([
+                "--transport",
+                "tls",
+                "--listen",
+                &self.addr.to_string(),
+                "--tls-name",
+                TLS_NAME,
+            ]);
+        }
+        command
             .arg("--executable")
             .arg(env!("CARGO_BIN_EXE_vhalla"));
         let output = run(command);
@@ -244,7 +266,20 @@ impl Journey {
         ))
         .unwrap()
     }
-    fn relay_client(&self, token: [u8; 32]) -> TlsRelay {
+    fn relay_client(&self, token: [u8; 32]) -> RelayClient {
+        if self.iroh {
+            let endpoint: IrohEndpoint = serde_json::from_value(
+                self.json(&self.path("host/connection.json"))["endpoint"].clone(),
+            )
+            .unwrap();
+            return IrohRelay::new(
+                endpoint,
+                RelayToken::from_bytes(token).unwrap(),
+                self.namespace(),
+            )
+            .unwrap()
+            .into();
+        }
         TlsRelay::new(
             self.addr,
             TLS_NAME,
@@ -253,6 +288,7 @@ impl Journey {
             self.namespace(),
         )
         .unwrap()
+        .into()
     }
     fn host_token(&self, who: Who) -> [u8; 32] {
         let raw = fs::read(self.path("host").join(who.token())).unwrap();
@@ -260,7 +296,7 @@ impl Journey {
     }
     /// Match the complete bounded mailbox to this journey's committed
     /// admission artifacts, including the separately forwarded control.
-    fn assert_relay_contents(&self, mailbox: &TlsRelay, sent: u64) -> RelayPage {
+    fn assert_relay_contents(&self, mailbox: &RelayClient, sent: u64) -> RelayPage {
         let expected = 3 + 2 * sent;
         assert!(expected <= 64, "journey fits in one complete relay page");
         let deadline = Instant::now() + CONVERGENCE;
@@ -426,13 +462,15 @@ impl Journey {
         let context = &self.json(&self.agent_path(who, "inspect.json"))["status"];
         let ca = self.agent_path(who, "relay-ca.der");
         let token = self.agent_path(who, "relay-token.hex");
-        self.write_private(&ca, &fs::read(self.path("host/ca.der")).unwrap());
+        if !self.iroh {
+            self.write_private(&ca, &fs::read(self.path("host/ca.der")).unwrap());
+        }
         self.write_private(
             &token,
             &fs::read(self.path("host").join(who.token())).unwrap(),
         );
         let connection = self.json(&self.path("host/connection.json"));
-        let profile = json!({
+        let mut profile = json!({
             "version": 1,
             "context": {
                 "room": context["room"], "anchor": context["anchor"],
@@ -447,8 +485,20 @@ impl Journey {
             "initial_backoff_secs": 5, "max_backoff_secs": 300,
             "emit_acceptance": true, "initial_cursor": 0
         });
-        assert_eq!(profile["addr"], self.addr.to_string());
-        assert_eq!(profile["tls_name"], TLS_NAME);
+        if self.iroh {
+            let fields = profile.as_object_mut().unwrap();
+            fields.remove("addr");
+            fields.remove("tls_name");
+            fields.remove("ca");
+            fields.insert("version".into(), json!(4));
+            fields.insert(
+                "transport".into(),
+                json!({"kind":"iroh", "endpoint":connection["endpoint"]}),
+            );
+        } else {
+            assert_eq!(profile["addr"], self.addr.to_string());
+            assert_eq!(profile["tls_name"], TLS_NAME);
+        }
         let path = self.agent_path(who, "delivery.json");
         self.write_private(&path, &serde_json::to_vec_pretty(&profile).unwrap());
         self.private_ok("delivery-init", who, true, &[("config", self.text(&path))]);
@@ -977,7 +1027,15 @@ fn run(mut command: Command) -> Output {
 
 #[test]
 fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
-    let mut journey = Journey::new();
+    two_agents_exchange(Journey::new());
+}
+
+#[test]
+fn iroh_two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
+    two_agents_exchange(Journey::with_iroh());
+}
+
+fn two_agents_exchange(mut journey: Journey) {
     // 1. Product host on an ephemeral loopback port.
     journey.host_init();
     let mut host = journey.host_serve();
@@ -1039,7 +1097,12 @@ fn two_agents_exchange_accept_survive_host_restart_and_refuse_wrong_token() {
     // A1/A11 semantics: an outage records uncertain outage evidence without
     // spending the finite attempt budget.
     let offline = agent_a.await_outbox(third, "an offline delivery attempt", |v| {
-        v["relay"]["uncertain"] == true && v["relay"]["last_error"] == "connect"
+        // Offline QUIC reaches the driver's deadline without a TCP-style
+        // refusal. The connect task and synchronous caller can race to report
+        // Connect or Timeout; both preserve the same uncertain outage state.
+        let error = v["relay"]["last_error"].as_str();
+        v["relay"]["uncertain"] == true
+            && (error == Some("connect") || (journey.iroh && error == Some("timeout")))
     });
     assert_ne!(offline["relay"]["state"], "retained", "{offline}");
     assert_eq!(offline["relay"]["attempts"], 0, "{offline}");

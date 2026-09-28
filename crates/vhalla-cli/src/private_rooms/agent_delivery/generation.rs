@@ -108,7 +108,7 @@ pub(super) fn verify_baselines(
 fn profile(
     context: Context,
     namespace: RelayNamespace,
-    relay: &TlsRelay,
+    relay: &RelayClient,
     config: &Config,
 ) -> [u8; 32] {
     Sha256::digest(binding(context, namespace, relay, config)).into()
@@ -136,8 +136,12 @@ fn locked(
     config: &Config,
     context: Context,
     ns: RelayNamespace,
-    relay: &TlsRelay,
+    relay: &RelayClient,
 ) -> Result<(File, DeliveryStore, DeliveryStore, ScanDirectory), String> {
+    config.tls_fields()?;
+    if config.version == 4 {
+        return Err("mailbox generation changes are not supported for tagged transport profiles; retain the existing delivery queues".into());
+    }
     let (_, owner) = custody::open_private_directory(&config.state).map_err(|_| REFUSED)?;
     let lock =
         custody::open_private_file(&config.state.join("lock"), owner, 0).map_err(|_| REFUSED)?;
@@ -626,13 +630,12 @@ pub(in crate::private_rooms) async fn transition(
 fn retained_transport(
     config: &Config,
     context: Context,
-) -> Result<(RelayNamespace, TlsRelay), String> {
+) -> Result<(RelayNamespace, RelayClient), String> {
     if config.context.room != hex(context.scope.room.as_bytes())
         || config.context.anchor != hex(context.scope.anchor.as_bytes())
         || config.context.account != hex(context.account.as_bytes())
         || config.context.device != hex(context.device.as_bytes())
         || !config.state.is_absolute()
-        || !config.ca.is_absolute()
         || !config.token.is_absolute()
     {
         return Err(REFUSED.into());
@@ -642,14 +645,11 @@ fn retained_transport(
     let token = std::str::from_utf8(&token)
         .map_err(|_| REFUSED)?
         .trim_end_matches('\n');
-    let relay = TlsRelay::new(
-        config.addr.resolve().map_err(|_| REFUSED)?,
-        &config.tls_name,
-        files::read(&config.ca, 65536, false)?.to_vec(),
+    config.tls_fields()?;
+    let relay = config.client(
         RelayToken::from_bytes(unhex(token)?).map_err(|_| REFUSED)?,
         ns,
-    )
-    .map_err(|_| REFUSED)?;
+    )?;
     Ok((ns, relay))
 }
 
@@ -660,19 +660,21 @@ fn check_fence(
     next: &Config,
     ns: RelayNamespace,
 ) -> Result<(), String> {
-    let ca = Sha256::digest(files::read(&old.ca, 65536, false)?.as_slice());
+    let (old_addr, old_name, old_ca) = old.tls_fields()?;
+    let (next_addr, next_name, next_ca) = next.tls_fields()?;
+    let ca = Sha256::digest(files::read(old_ca, 65536, false)?.as_slice());
     if fence.version != 1
         || fence.transition != hex(&receipt.transition)
         || fence.predecessor != hex(&receipt.namespace)
         || fence.successor != hex(ns.as_bytes())
         || fence.head != receipt.terminal_head.to_string()
         || fence.items_commitment != hex(&receipt.items_commitment)
-        || fence.predecessor_address != old.addr
-        || fence.successor_address != next.addr
-        || fence.tls_name != old.tls_name
-        || fence.tls_name != next.tls_name
+        || &fence.predecessor_address != old_addr
+        || &fence.successor_address != next_addr
+        || fence.tls_name != old_name
+        || fence.tls_name != next_name
         || fence.ca_sha256 != hex(&ca)
-        || Sha256::digest(files::read(&next.ca, 65536, false)?.as_slice()) != ca
+        || Sha256::digest(files::read(next_ca, 65536, false)?.as_slice()) != ca
         || fence.receipt_commitments.len() > 128
         || !fence
             .receipt_commitments
@@ -701,7 +703,7 @@ fn initialize_successor(
     next: &Config,
     context: Context,
     ns: RelayNamespace,
-    relay: &TlsRelay,
+    relay: &RelayClient,
     receipt: &ControllerPauseReceipt,
     selected: bool,
 ) -> Result<(), String> {

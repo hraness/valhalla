@@ -17,7 +17,7 @@ experimental-sync = ["experimental-social", "experimental-network", "dep:vhalla-
 
 experimental-public = ["experimental-rooms-node", "vhalla-identity/room-activity", "dep:vhalla-room-activity", "dep:vhalla-room-activity-store", "dep:vhalla-browser-storage", "dep:vhalla-public-client", "dep:vhalla-public-peer", "dep:vhalla-public-protocol", "dep:vhalla-rooms-app"]
 
-experimental-private = ["dep:vhalla-private-native", "vhalla-private-native/relay-tls", "vhalla-private-native/agent-rpc", "dep:vhalla-private-kernel", "dep:vhalla-custody", "dep:zeroize", "dep:tokio", "dep:serde", "dep:serde_json", "dep:rustix", "dep:getrandom", "dep:sha2", "dep:rcgen", "dep:time"]
+experimental-private = ["dep:vhalla-private-native", "vhalla-private-native/relay-iroh", "vhalla-private-native/agent-rpc", "dep:vhalla-private-kernel", "dep:vhalla-custody", "dep:zeroize", "dep:tokio", "dep:serde", "dep:serde_json", "dep:rustix", "dep:getrandom", "dep:sha2", "dep:rcgen", "dep:time"]
 
 [dependencies]
 hraness-support-foundation = { git = "https://github.com/hraness/support-foundation", rev = "b32c1c81bb2444f50509ed54388758ecfab1f1c0" }
