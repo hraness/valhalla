@@ -61,11 +61,14 @@ jobs:
             paths="$(printf '%s\n' "$rows" | tr '\t' '\n' | sed '/^$/d')"
             nonrust='^((site|docs|kb)/.+|bun\.lock|package\.json|vercel\.json|\.vercelignore|LICENSE|railway\.toml|[^/]+\.md)$'
             # The files API lists at most 3,000 paths; anything incomplete runs everything.
+            # Here-strings, not `printf | grep -q`: under pipefail an early
+            # grep -q match SIGPIPEs printf on lists over the 64 KiB pipe
+            # buffer, and the `!` would turn that into a false skip.
             if [ "$count" -gt 0 ] && [ "$count" = "$CHANGED_FILES" ] \
-              && ! printf '%s\n' "$paths" | grep -Evq "$nonrust" \
-              && ! printf '%s\n' "$paths" | grep -qx 'CHANGELOG.md'; then
+              && ! grep -Evq "$nonrust" <<<"$paths" \
+              && ! grep -qx 'CHANGELOG.md' <<<"$paths"; then
               rust=false
-              if ! printf '%s\n' "$paths" | grep -q '^docs/'; then
+              if ! grep -q '^docs/' <<<"$paths"; then
                 formal=false
               fi
             fi
@@ -342,6 +345,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Browser and portable adapter lint
         run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser/private-rooms,vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown -- -D warnings
+      # The production artifact's Trunk is built from source on purpose
+      # (published bytes come from a crates.io-locked toolchain, not a
+      # prebuilt download); rust-cache restores ~/.cargo/bin so a warm run
+      # skips the compile. Qualification-only builds below use the prebuilt.
       - name: Install pinned Trunk
         run: cargo install trunk --locked --version 0.21.14
       - name: Build production without local qualification routes

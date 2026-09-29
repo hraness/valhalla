@@ -17,6 +17,11 @@ concurrency:
 jobs:
   validate:
     uses: ./.github/workflows/rust.yml
+    # A reusable workflow's jobs cannot exceed the caller's token scope; the
+    # Rust workflow's change-filter job requests pull-requests: read.
+    permissions:
+      contents: read
+      pull-requests: read
 
   # Builders only stage artifacts, so they start with validation instead of
   # after it; publish still needs validate and every builder.
