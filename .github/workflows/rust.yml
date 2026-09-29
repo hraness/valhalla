@@ -126,8 +126,7 @@ jobs:
         # `cache` names the rust-cache key: lanes that compile the same
         # package set share one. Lanes run under cargo-nextest (one process per
         # test, all test binaries of a lane in parallel) unless `harness` is
-        # libtest: the vhalla-cli rooms_node suite serializes its four-process
-        # mesh tests with an in-process mutex that nextest would not honour.
+        # libtest (see the cli and private-rooms lanes below).
         include:
           # vhalla-rooms-node is ~17min serial; the named long poles run in
           # dedicated lanes while the residual lane --skips them, so a new
@@ -147,6 +146,8 @@ jobs:
           # The cli live-mesh suite spawns real `rooms node` subprocesses;
           # its longest poles run in a dedicated lane while the residual
           # lane --skips them, same split discipline as rooms-node above.
+          # vhalla-cli's rooms_node suite serializes its four-process mesh
+          # tests with an in-process mutex that nextest would not honour.
           - name: cli-heavy
             cache: cli
             harness: libtest
@@ -160,14 +161,27 @@ jobs:
           - name: stateful-storage
             cache: stateful-storage
             packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
+          # One room-activity-store test runs ~7.5 min on its own; it gets a
+          # lane that compiles only its crate, and public-network --skips it.
+          - name: public-network-heavy
+            cache: room-activity-store
+            packages: -p vhalla-room-activity-store
+            args: -- unix::tests::lifetime_history_exceeds_social_archive_limit_with_bounded_pages
           - name: public-network
             cache: public-network
             packages: -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
+            args: -- --skip unix::tests::lifetime_history_exceeds_social_archive_limit_with_bounded_pages
           - name: discovery-advertisements
             cache: discovery-advertisements
             packages: -p arc-malachitebft-network -p arc-malachitebft-config -p arc-malachitebft-app
+          # The private relay HTTP tests (relay::http::tests, real iroh
+          # upstream) race their fixture startup when started in a fresh
+          # process: under nextest, shutdown(Write) hit ENOTCONN in run
+          # 36525563105. Keep libtest here until that fixture waits for
+          # readiness.
           - name: private-rooms
             cache: private-rooms
+            harness: libtest
             packages: -p vhalla-private-kernel -p vhalla-private-native -p vhalla-private-relay
           - name: remaining
             cache: remaining
