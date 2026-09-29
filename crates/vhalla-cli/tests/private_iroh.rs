@@ -70,8 +70,14 @@ impl Fixture {
         .unwrap()
     }
     fn serve(&self) -> Server {
-        let mut child = self
-            .command("serve")
+        self.serve_with_socket(None)
+    }
+    fn serve_with_socket(&self, socket: Option<&std::path::Path>) -> Server {
+        let mut command = self.command("serve");
+        if let Some(path) = socket {
+            command.arg("--habitat-link-socket").arg(path);
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -98,6 +104,7 @@ impl Fixture {
         }
         let ready: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(ready["status"], "listening");
+        assert_eq!(ready["habitat_link"], socket.is_some());
         server
     }
 }
@@ -247,4 +254,33 @@ fn direct_host_preserves_identity_items_and_credential_revocation_across_restart
     let remaining = fixture.client(fixture.token(2));
     assert_eq!(remaining.page(0, 2).unwrap().records[0].item, item);
     host.stop();
+}
+
+#[test]
+fn habitat_link_is_opt_in_and_does_not_disable_the_mailbox() {
+    let fixture = Fixture::new();
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let bind = socket.local_addr().unwrap();
+    drop(socket);
+    let mut init = fixture.command("init");
+    init.args(["--iroh-bind", &bind.to_string(), "--relay-url", "none"]);
+    ok(&run(init));
+    let before = fs::read(fixture.home().join("config.json")).unwrap();
+    // Socket availability is checked per request; the mailbox remains useful
+    // while its local execution adapter is stopped or restarting.
+    let path = fixture.0.join("algal.sock");
+    let mut host = fixture.serve_with_socket(Some(&path));
+    assert!(fixture
+        .client(fixture.token(1))
+        .page(0, 1)
+        .unwrap()
+        .records
+        .is_empty());
+    host.stop();
+    assert_eq!(
+        fs::read(fixture.home().join("config.json")).unwrap(),
+        before
+    );
+    let mut default_host = fixture.serve();
+    default_host.stop();
 }

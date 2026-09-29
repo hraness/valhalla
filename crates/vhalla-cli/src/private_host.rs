@@ -24,7 +24,7 @@ use vhalla_private_native::relay::{
     FileStore, Limits, RelayNamespace,
 };
 
-pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--transport iroh|tls] [--iroh-bind IP:PORT] [--relay-url URL|none] [--listen IP:PORT] [--advertise IP:PORT[,IP:PORT...]] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve|install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_TEMPLATE\nOwner-private mailbox with a separate credential per client. New hosts use iroh with an authenticated endpoint identity and automatic direct or relayed connectivity; no CA or certificate renewal is needed. --relay-url none requires a fixed --iroh-bind address. Explicit --transport tls enables --listen, --advertise, --tls-name and --leaf-days. install, status and uninstall manage a LaunchAgent on macOS or a systemd user unit on Linux. Maintenance activates at the next drained service restart.";
+pub(crate) const HELP: &str = "vhalla private-host init NEW_HOME [--transport iroh|tls] [--iroh-bind IP:PORT] [--relay-url URL|none] [--listen IP:PORT] [--advertise IP:PORT[,IP:PORT...]] [--tls-name NAME] [--executable ABSOLUTE_BINARY] [--leaf-days 1-1824]\nvhalla private-host serve HOME [--habitat-link-socket ABSOLUTE_SOCKET]\nvhalla private-host install|uninstall HOME\nvhalla private-host status HOME [--probe]\nvhalla private-host add-credential|rotate|recover HOME\nvhalla private-host generation-inspect PRIVATE_RECEIPT --out PRIVATE_JSON\nvhalla private-host generation-check|generation-prepare HOME --plan PRIVATE_PLAN --receipts PRIVATE_DIRECTORY\nvhalla private-host generation-fence|generation-cutover|generation-recover HOME\nvhalla private-host renew HOME [--leaf-days 1-1824]\nvhalla private-host revoke-credential|replace-credential HOME INDEX\nvhalla private-host tailcat-plist HOME --binary ABSOLUTE_TAILCAT --key ABSOLUTE_SAVED_KEY --out NEW_PRIVATE_TEMPLATE\nOwner-private mailbox with a separate credential per client. New hosts use iroh with an authenticated endpoint identity and automatic direct or relayed connectivity; no CA or certificate renewal is needed. --relay-url none requires a fixed --iroh-bind address. Explicit --transport tls enables --listen, --advertise, --tls-name and --leaf-days. install, status and uninstall manage a LaunchAgent on macOS or a systemd user unit on Linux. Maintenance activates at the next drained service restart.";
 const REFUSED: &str = "local host refused; preserve the exact home, configuration, endpoint keys and mailbox; never reset retained custody";
 /// Status marks the leaf for explicit operator renewal inside this window.
 const RENEWAL_WARNING_SECS: i64 = 30 * 86400;
@@ -253,10 +253,23 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             );
             Ok(())
         }
-        Some("serve") if args.len() == 3 => {
+        Some("serve") if args.len() == 3 || args.len() == 5 => {
+            let habitat_link = match args.get(3) {
+                None => None,
+                Some(flag) if flag == "--habitat-link-socket" => Some(
+                    vhalla_private_native::habitat_link::HabitatLinkService::new(
+                        vhalla_private_native::habitat_link::UnixHabitatLinkHandler::new(Path::new(&args[4]))
+                            .map_err(|_| "--habitat-link-socket requires an absolute socket path")?,
+                    ),
+                ),
+                _ => return Err(HELP.into()),
+            };
             // Ask before taking the maintenance lock so an unanswered notice
             // never blocks maintenance on this host.
             let selection = config::load(home)?.config;
+            if habitat_link.is_some() && selection.iroh.is_none() {
+                return Err("--habitat-link-socket requires an Iroh host".into());
+            }
             let listen = selection.listen;
             if selection.iroh.is_none() && crate::local_network::before_listening(listen, true)
                 == crate::local_network::Choice::Skip
@@ -269,7 +282,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<(), String> {
             }
             let maintenance = config::maintenance_lock(home)?;
             generation::require_idle(home)?;
-            serve(config::load(home)?, maintenance)
+            serve(config::load(home)?, maintenance, habitat_link)
         }
         Some(action @ ("status" | "install" | "uninstall"))
             if args.len() == 3 || (action == "status" && args.len() == 4) =>
@@ -521,9 +534,13 @@ fn net_error_name(error: &vhalla_private_native::relay::net::NetError) -> &'stat
     }
 }
 
-fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
+fn serve(
+    loaded: Loaded,
+    maintenance: std::fs::File,
+    habitat_link: Option<vhalla_private_native::habitat_link::HabitatLinkService>,
+) -> Result<(), String> {
     if loaded.config.iroh.is_some() {
-        return serve_iroh(loaded, maintenance);
+        return serve_iroh(loaded, maintenance, habitat_link);
     }
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     if now < loaded.config.created_at - 300 || now >= loaded.config.certificate_expires_at {
@@ -618,7 +635,11 @@ fn serve(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
     })
 }
 
-fn serve_iroh(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> {
+fn serve_iroh(
+    loaded: Loaded,
+    maintenance: std::fs::File,
+    habitat_link: Option<vhalla_private_native::habitat_link::HabitatLinkService>,
+) -> Result<(), String> {
     let endpoint = loaded.config.iroh.as_ref().ok_or(REFUSED)?;
     let service = service(&loaded.home, &loaded.config)?;
     let raw = config::read_bound(&loaded.home, &loaded.config, "endpoint.key", 32)?;
@@ -644,8 +665,12 @@ fn serve_iroh(loaded: Loaded, maintenance: std::fs::File) -> Result<(), String> 
         let stop = Arc::new(AtomicBool::new(false));
         let selected = stop.clone();
         events::append(&loaded.home, "serve-start", &[("transport", "iroh")])?;
-        let mut worker = tokio::task::spawn_blocking(move || service.serve_iroh_until(listener, None, selected));
-        println!("{}", serde_json::json!({"status":"listening","transport":"iroh","listen":loaded.config.listen,"endpoint":loaded.config.iroh,"label":loaded.config.label,"generations":1}));
+        let habitat_link_enabled = habitat_link.is_some();
+        let mut worker = tokio::task::spawn_blocking(move || match habitat_link {
+            Some(handler) => service.serve_iroh_with_habitat_link_until(listener, None, selected, handler),
+            None => service.serve_iroh_until(listener, None, selected),
+        });
+        println!("{}", serde_json::json!({"status":"listening","transport":"iroh","habitat_link":habitat_link_enabled,"listen":loaded.config.listen,"endpoint":loaded.config.iroh,"label":loaded.config.label,"generations":1}));
         let (result, reason) = tokio::select! {
             result = &mut worker => (Some(result), "worker"),
             _ = terminate.recv() => (None, "terminate"),

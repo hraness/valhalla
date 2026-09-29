@@ -4,6 +4,12 @@ name: Iroh independent runners
 # fails this evidence run without redefining the deterministic Rust Required gate.
 on:
   workflow_dispatch:
+    inputs:
+      algal_ref:
+        description: Exact ALGAL commit for Habitat Link; empty runs the mailbox profile
+        required: false
+        default: ""
+        type: string
   pull_request:
     paths:
       - crates/vhalla-private-native/src/relay/iroh.rs
@@ -32,7 +38,17 @@ env:
   RUST_BACKTRACE: short
 
 jobs:
+  habitat-link:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.algal_ref != '' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/habitat-link-qualification.yml
+    with:
+      algal_ref: ${{ inputs.algal_ref }}
+
   build:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.algal_ref == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -135,7 +151,7 @@ jobs:
 
   result:
     name: Qualification result
-    if: always()
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.algal_ref == '') }}
     needs: [build, host, client]
     runs-on: ubuntu-latest
     timeout-minutes: 2

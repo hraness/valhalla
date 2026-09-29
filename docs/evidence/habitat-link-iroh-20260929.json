@@ -1,0 +1,79 @@
+{
+  "qualification": "Habitat Link over Iroh on independent GitHub-hosted Ubuntu VMs",
+  "receipt_encoding": "UTF-8 json.dumps(sort_keys=True) plus newline",
+  "receipt_sha256": {
+    "client": "09d75df8db9c128e219597280b75cb82af4dc282d9db1c219cb11318a3b40792",
+    "host": "1db6017ef747682f04615d4eb7a9637995b8c26e9f8a5de05199b1d25e7de594"
+  },
+  "receipts": {
+    "client": {
+      "algal_lock_sha256": "2912e64ff6b0011d2cf65cb6ba25816c23bd36eac03a38febbd73a404e119d33",
+      "algal_sha": "19207705598309cfd9e075f69db795663ddf237f",
+      "binary_sha256": "6b615be7981910040272edb1298d798f95fa1bea50742e408665e0cd98062956",
+      "browser_qualified": false,
+      "bun_version": "1.3.14",
+      "cases": {
+        "caller_woke": true,
+        "exact_duplicate": true,
+        "forced_relay_paths_observed": true,
+        "grant_refused": true,
+        "host_machine": "4fff2d4b8aae876fd0b456e379da6e2b12bb45db024d59845b8cf6cb6884809a",
+        "remote_result": true
+      },
+      "cleanup_confirmed": true,
+      "finished_unix": 1790710419,
+      "fixture_exit_code": 0,
+      "fixture_forced_cleanup": false,
+      "independent_nat_qualified": false,
+      "lock_sha256": "78b25a10af1132b50f9a3f206c16d164b4095aad5d06cb775b43d846bfdfdc6f",
+      "machine": "7798ff9b87508510e3aeaf8e45efaa59cdeda6339a36a88bdc935a2ba18ccdce",
+      "nonce": "902e199781b00249e2e4638bccc09ac800e991050b18a51f36bf04a3af6ad695",
+      "passed": true,
+      "placement": "separate GitHub-hosted Ubuntu job VMs; NAT diversity unmeasured",
+      "role": "client",
+      "run_attempt": "1",
+      "run_id": "36619747947",
+      "schema": "valhalla.habitat-link-independent-runners.v1",
+      "source_sha": "da0dd161e3f000c2cbda6ded40c22043443ecf12",
+      "started_unix": 1790710410
+    },
+    "host": {
+      "algal_lock_sha256": "2912e64ff6b0011d2cf65cb6ba25816c23bd36eac03a38febbd73a404e119d33",
+      "algal_sha": "19207705598309cfd9e075f69db795663ddf237f",
+      "binary_sha256": "6b615be7981910040272edb1298d798f95fa1bea50742e408665e0cd98062956",
+      "browser_qualified": false,
+      "bun_version": "1.3.14",
+      "cases": {
+        "remote_process_completed": true,
+        "service_joined": true,
+        "stopped_on_request": true
+      },
+      "cleanup_confirmed": true,
+      "client_machine": "7798ff9b87508510e3aeaf8e45efaa59cdeda6339a36a88bdc935a2ba18ccdce",
+      "client_verified": true,
+      "finished_unix": 1790710423,
+      "fixture_exit_code": 0,
+      "fixture_forced_cleanup": false,
+      "independent_nat_qualified": false,
+      "lock_sha256": "78b25a10af1132b50f9a3f206c16d164b4095aad5d06cb775b43d846bfdfdc6f",
+      "machine": "4fff2d4b8aae876fd0b456e379da6e2b12bb45db024d59845b8cf6cb6884809a",
+      "nonce": "902e199781b00249e2e4638bccc09ac800e991050b18a51f36bf04a3af6ad695",
+      "passed": true,
+      "placement": "separate GitHub-hosted Ubuntu job VMs; NAT diversity unmeasured",
+      "role": "host",
+      "run_attempt": "1",
+      "run_id": "36619747947",
+      "schema": "valhalla.habitat-link-independent-runners.v1",
+      "source_sha": "da0dd161e3f000c2cbda6ded40c22043443ecf12",
+      "started_unix": 1790710410
+    }
+  },
+  "result": "success",
+  "run_url": "https://github.com/hraness/valhalla/actions/runs/36619747947",
+  "sources": {
+    "algal_sha": "19207705598309cfd9e075f69db795663ddf237f",
+    "algal_tree": "016931a1d54c321eb44cdbb5d0dd08d6e8d86562",
+    "valhalla_sha": "da0dd161e3f000c2cbda6ded40c22043443ecf12",
+    "valhalla_tree": "b47e239657d18258d7873d56a2b8d3e986cf3ed9"
+  }
+}

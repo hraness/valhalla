@@ -26,11 +26,13 @@ import zipfile
 
 TEST = "relay::iroh::tests::qualification::independent_runner_transport_qualification"
 SCHEMA = "valhalla.iroh-independent-runners.v1"
+CONTROLLER = Path(__file__).resolve()
 CLIENT_CASES = (
     "automatic_client_put_page", "exact_duplicate", "wrong_token_refused",
     "wrong_endpoint_refused", "wrong_namespace_refused", "fresh_client_reconnect",
     "raw_client_forced_relay_put_page", "forced_relay_paths_observed",
 )
+HOST_CASES = ("stopped_on_request", "service_joined", "exact_durable_records")
 MAX_JSON = 65536
 PHASES = frozenset(("descriptor", "automatic_put_page", "wrong_token", "wrong_endpoint",
                    "wrong_namespace", "fresh_client_reconnect", "forced_relay_put_page",
@@ -146,15 +148,44 @@ def child_env(config):
     return selected
 
 
+def group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def clear_owned_group(pgid):
+    """Bounded cleanup after the leader exits, including inherited children."""
+    if not group_alive(pgid):
+        return False, True
+    for selected, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, 10)):
+        try:
+            os.killpg(pgid, selected)
+        except ProcessLookupError:
+            return True, True
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            if not group_alive(pgid):
+                return True, True
+            time.sleep(0.05)
+    return True, not group_alive(pgid)
+
+
+def fixture_command(bundle, work):
+    return [str((bundle / "fixture").resolve()), TEST, "--exact", "--ignored", "--nocapture"]
+
+
 def run_child(bundle, work, timeout, stop_path=None):
     child = None
     code = None
     forced = False
     interrupted = False
+    group_cleared = False
     try:
         with (work / "private.log").open("wb") as log:
-            child = subprocess.Popen([str((bundle / "fixture").resolve()), TEST,
-                                      "--exact", "--ignored", "--nocapture"],
+            child = subprocess.Popen(fixture_command(bundle, work),
                                      stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                      env=child_env(work / "config.json"), start_new_session=True)
             try:
@@ -197,15 +228,21 @@ def run_child(bundle, work, timeout, stop_path=None):
                     except ProcessLookupError:
                         pass
                     child.wait(timeout=10)
+            # The Bun leader may have exited while its Rust probe survived.
+            # Its dedicated session/group remains ours until every member exits.
+            if child is not None:
+                descendants_forced, group_cleared = clear_owned_group(child.pid)
+                forced = forced or descendants_forced
         finally:
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
     return {"exit_code": code, "forced": forced,
-            "interrupted": interrupted, "child_reaped": child is not None and child.poll() is not None}
+            "interrupted": interrupted, "group_cleared": group_cleared,
+            "child_reaped": child is not None and child.poll() is not None}
 
 
 def supervise(bundle, work):
-    result = {"exit_code": None, "forced": True, "child_reaped": False}
+    result = {"exit_code": None, "forced": True, "child_reaped": False, "group_cleared": False}
     try:
         result = run_child(bundle, work, 660, stop_path=work / "stop")
     finally:
@@ -231,14 +268,14 @@ def start_host(bundle, work):
     manifest, config = setup(bundle, work, "host")
     write_json(work / "host-receipt.json", receipt(manifest, config, "host"))
     with (work / "supervisor-private.log").open("wb") as log:
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "supervise",
+        subprocess.Popen([sys.executable, str(CONTROLLER), "supervise",
                           "--bundle", str(bundle.resolve()), "--work", str(work.resolve())],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
     try:
         wait_local(work / "descriptor.json", time.monotonic() + 60, work / "supervisor.json")
     except BaseException:
         (work / "stop").touch(mode=0o600)
-        wait_local(work / "supervisor.json", time.monotonic() + 45)
+        wait_local(work / "supervisor.json", time.monotonic() + 75)
         raise
 
 
@@ -345,7 +382,7 @@ def run_client(bundle, work):
                     ("source_sha", "run_id", "run_attempt", "nonce")), "foreign host descriptor")
         write_json(work / "descriptor.json", descriptor)
         child = run_child(bundle, work, 180)
-        result["cleanup_confirmed"] = child["child_reaped"]
+        result["cleanup_confirmed"] = child["child_reaped"] and child["group_cleared"]
         result["fixture_exit_code"] = child["exit_code"]
         result["fixture_forced_cleanup"] = child["forced"]
         require(child["exit_code"] == 0 and not child["forced"], "client fixture failed")
@@ -375,8 +412,9 @@ def finish_host(work, wait):
     finally:
         (work / "stop").touch(mode=0o600)
         try:
-            supervisor = wait_local(work / "supervisor.json", time.monotonic() + 45)
-            result["cleanup_confirmed"] = supervisor.get("child_reaped") is True
+            supervisor = wait_local(work / "supervisor.json", time.monotonic() + 75)
+            result["cleanup_confirmed"] = (supervisor.get("child_reaped") is True
+                and supervisor.get("group_cleared") is True)
             result["fixture_exit_code"] = supervisor.get("exit_code")
             result["fixture_forced_cleanup"] = supervisor.get("forced")
             host = read_json(work / "host-result.json")
@@ -385,7 +423,7 @@ def finish_host(work, wait):
                 and result["cleanup_confirmed"] and supervisor.get("exit_code") == 0
                 and supervisor.get("forced") is False
                 and all(host.get(k) is True for k in
-                        ("stopped_on_request", "service_joined", "exact_durable_records")))
+                        HOST_CASES))
         except Exception as error:
             result["passed"] = False
             result["error_class"] = type(error).__name__

@@ -220,14 +220,48 @@ Two ways to serve it exist. `HabitatLinkService::serve` is an accept loop for
 an endpoint dedicated to Habitat Link, built with `habitat_link::endpoint_builder`
 (no discovery, no datagrams, explicit relay only). `Service::serve_iroh_with_habitat_link_until`
 serves the private-room mailbox and the Habitat Link service on one endpoint;
-only that entry point adds the ALPN, and the default `serve_iroh_until` and
-the CLI host are unchanged. The CLI has no `habitat_link` toggle because no
-habitat handler exists in this repository yet; the service is a library API
-until an integration owner supplies one. `send_envelope` and
+only that entry point adds the ALPN. The default `serve_iroh_until` remains
+mailbox-only. A CLI built with `experimental-private` enables the bridge with
+`vhalla private-host serve HOME --habitat-link-socket ABSOLUTE_SOCKET`. This
+option requires an Iroh host and applies to this foreground process only;
+`install` does not persist it. `send_envelope` and
 `send_envelope_until` are the client side: connect with the ALPN, write one
 frame, read one reply frame, close. A timeout after the frame was written
 leaves the habitat's outcome uncertain; the envelope's operation identity is
 what makes a retry safe.
+
+`UnixHabitatLinkHandler` connects to a persistent ALGAL socket adapter. Keep
+that socket in an owner-only directory. Each connection sends one length-prefixed
+JSON envelope and keeps its write side open while reading one reply frame and
+EOF. The adapter starts processing when the request frame is complete. The
+entire exchange, including connect and EOF, has a ten-second deadline;
+both frames retain the 262,144-byte limit. A timeout may follow acceptance, so
+retry the same operation identity. Grant verification, process execution, and
+result lookup belong to ALGAL's `LocalHabitatAcceptor`. The bridge sends no
+ambient tenant credential or Iroh identity as habitat authority.
+
+Invocations return acceptance records. An `algal.habitat-query.v1` envelope
+carries `operationId`, `grant`, and `sender: {habitat, principal}` to retrieve
+an authorized result. Messages return `algal.habitat-message-acceptance.v1`.
+The socket adapter closes the connection on invalid records or denied grants;
+the Iroh service resets that request stream.
+
+For a local cross-repository check, start the ALGAL socket adapter and build
+`cargo build -p vhalla-private-native --features habitat-link --example habitat-link-probe --locked`.
+Run `target/debug/examples/habitat-link-probe ABSOLUTE_SOCKET`. Write one
+canonical JSON envelope per stdin line and read one reply per stdout line.
+Every exchange uses a direct loopback Iroh endpoint and the Unix bridge. EOF
+stops the probe. This exercises the actual ALGAL adapter when it owns the
+selected socket. In an ALGAL checkout, set `ALGAL_IROH_PROBE` to the absolute
+probe path and run `bun test src/habitat-link-socket.test.ts` to include this
+transport in the signed-grant process test.
+
+On 2026-09-29 that cross-repository test passed all 20 assertions, including
+caller suspension and wake-up. A same-machine run of ALGAL's qualification
+fixture also passed every host/client case through the public relay, including
+duplicate invocation and grant refusal. These establish local integration and
+relay reachability. The independent-runner result below qualifies the live
+cross-machine relay path.
 
 Loopback tests under `--features habitat-link` bind direct-only endpoints on
 127.0.0.1 with no relay. They show an `algal.habitat-invocation.v1` envelope
@@ -237,6 +271,36 @@ any payload is sent, a truncated frame reset without a reply, a foreign-ALPN
 connection closed with code 1 and never reaching the handler, a handler
 refusal reset without a reply frame, and the mailbox listener refusing the
 ALPN at the handshake by default while serving both protocols on one endpoint
-when the service is passed in. These tests do not exercise a relay, a second
-machine, NAT traversal, or a real habitat; no live two-machine Habitat Link
-qualification has been run.
+when the service is passed in.
+
+The [Habitat Link independent runners workflow](../.github/workflows/habitat-link-qualification.yml)
+adds a live check using ALGAL's `scripts/habitat-link-iroh-qualification.ts`.
+Dispatch it with `gh workflow run habitat-link-qualification.yml --ref main -f algal_ref=FULL_ALGAL_COMMIT_SHA`.
+The source job requires a full lowercase commit SHA reachable from ALGAL main
+before any fixture dependency is installed or code is executed. Qualification
+jobs use disposable dependency and build directories without shared caches.
+For pre-merge qualification, the registered Iroh workflow also accepts
+`gh workflow run iroh-qualification.yml --ref HABITAT_LINK_BRANCH -f algal_ref=FULL_ALGAL_COMMIT_SHA`.
+That explicit input calls the same Habitat Link profile; omitting it keeps
+the private-mailbox profile, including its existing pull-request checks.
+It builds one probe, starts the ALGAL acceptor and Iroh service on one Ubuntu
+runner, and resumes a caller on another. The client disables UDP and requires
+every observed connection path to use the selected relay. It checks a signed
+grant refusal, duplicate invocation, remote result, and caller wake-up. Receipts
+bind both repository commits, both lockfiles, the probe executable, run and
+attempt, and distinct machine identities. Both process groups must be stopped
+and reaped before a run passes. Only a temporary grant and synthetic process
+records are exchanged. The workflow measures separate hosted machines and a
+relay path; their NAT diversity remains unmeasured.
+
+[Run 36619747947](https://github.com/hraness/valhalla/actions/runs/36619747947)
+passed on 2026-09-29 against Valhalla
+`da0dd161e3f000c2cbda6ded40c22043443ecf12` and merged ALGAL
+`19207705598309cfd9e075f69db795663ddf237f`.
+The [durable evidence](evidence/habitat-link-iroh-20260929.json) retains both
+original receipt values, their byte hashes, and the tested source tree hashes.
+Distinct machine identities observed the same probe binary and lockfiles;
+caller wake-up, remote result, duplicate invocation, grant refusal, and
+forced relay all passed. Both fixtures exited normally and both owned process
+groups were confirmed stopped without forced cleanup. Independent NAT diversity
+and browser qualification remain unperformed.
