@@ -4,7 +4,7 @@ import { docs, documentedRevision, latestRelease } from './pages.ts';
 import { compare, useCases } from './compare.ts';
 import { writing } from './writing.ts';
 import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from './docs.ts';
-import { articles, articleHref, indexableArticles } from './articles.ts';
+import { articles, articleHref, indexableArticles, isIndexable } from './articles.ts';
 import { articleEvidenceRevision } from './article-admissions.ts';
 import { renderLlms, renderSitemap } from './discovery.ts';
 import { renderHome } from './home.ts';
@@ -35,7 +35,7 @@ test('every local page destination and section resolves', () => {
   }
 });
 
-const quarantinedPaths = new Set(articles.filter(article => article.admission.lifecycle === 'quarantined').map(articleHref));
+const quarantinedPaths = new Set(articles.filter(article => !isIndexable(article)).map(articleHref));
 test('documentation and marketing pages are static, accessible and correctly canonicalized', () => {
   for (const [path, html] of pages) {
     if (path==='/') continue;

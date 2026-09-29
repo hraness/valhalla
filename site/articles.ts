@@ -5,7 +5,7 @@
 // Design Kit's static article renderer.
 import { readFileSync } from 'node:fs';
 import type { ArticleAdmission, ArticleIsoDate, ArticleSourceItem } from '@hraness/design-kit';
-import { articleAdmissions } from './article-admissions.ts';
+import { articleAdmissions, ownerIndexDecisions } from './article-admissions.ts';
 
 export type ArticleLink = { label: string; href: string; reason: string };
 export type Article = {
@@ -187,7 +187,9 @@ export const articles: Article[] = [
 ];
 
 export const articleHref = (article: Article) => `/writing/${article.slug}/`;
-export const isIndexable = (article: Article) => article.admission.lifecycle === 'indexable';
+const ownerIndexed = new Set(ownerIndexDecisions.map(decision => decision.href));
+/** Indexable when the review admits it, or when the owner decided to index it (see ownerIndexDecisions). */
+export const isIndexable = (article: Article) => article.admission.lifecycle === 'indexable' || ownerIndexed.has(articleHref(article));
 export const indexableArticles = articles.filter(isIndexable);
 
 export const articleSources = (article: Article): ArticleSourceItem[] =>

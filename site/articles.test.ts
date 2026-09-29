@@ -1,9 +1,9 @@
 import { expect, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
-import { ARTICLE_REASSESS_WINDOW, articleDaysBetween, articleProvenanceFromAdmission, articleProvenanceSentence, assertArticleAdmissions } from '@hraness/design-kit';
+import { ARTICLE_REASSESS_WINDOW, articleAdmissionPasses, articleDaysBetween, articleProvenanceFromAdmission, articleProvenanceSentence, assertArticleAdmissions } from '@hraness/design-kit';
 import { portfolioProducts } from '@hraness/design-kit/portfolio';
-import { articleAdmissions } from './article-admissions.ts';
-import { articleHref, articles, type Article } from './articles.ts';
+import { articleAdmissions, ownerIndexDecisions } from './article-admissions.ts';
+import { articleHref, articles, isIndexable, type Article } from './articles.ts';
 import { renderArticle, renderWriting } from './docs.ts';
 import { renderAtomFeed, renderLlms, renderSitemap } from './discovery.ts';
 import { writing } from './writing.ts';
@@ -77,11 +77,11 @@ test('indexable articles enter the index, sitemap, Atom feed and llms.txt', () =
   const sitemap = renderSitemap(staticSitemap);
   const feed = renderAtomFeed();
   const guide = renderLlms(staticGuide);
-  for (const article of articles.filter(item => item.admission.lifecycle === 'indexable')) {
+  for (const article of articles.filter(isIndexable)) {
     const url = `https://vhalla.com${articleHref(article)}`;
     expect(renderArticle(article, template)).not.toContain('name="robots"');
     expect(hub).toContain(`href="${articleHref(article)}"`);
-    expect(sitemap).toContain(`<loc>${url}</loc><lastmod>${article.published}</lastmod>`);
+    expect(sitemap).toContain(`<loc>${url}</loc><lastmod>${article.updated ?? article.published}</lastmod>`);
     expect(feed).toContain(`<id>${url}</id>`);
     expect(guide).toContain(url);
   }
@@ -101,4 +101,22 @@ test('a quarantined article is readable but noindex and absent from every discov
   expect(renderSitemap(staticSitemap, list)).not.toContain(href);
   expect(renderAtomFeed(list)).not.toContain(href);
   expect(renderLlms(staticGuide, list)).not.toContain(href);
+});
+
+test('owner index decisions keep the AI-only review on record', () => {
+  const hrefs = ownerIndexDecisions.map(decision => decision.href);
+  expect(new Set(hrefs).size).toBe(hrefs.length);
+  for (const decision of ownerIndexDecisions) {
+    const record = articleAdmissions.find(item => item.href === decision.href);
+    expect(record, decision.href).toBeDefined();
+    expect(decision.reviewBasis).toBe('ai-only');
+    expect(decision.decidedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(record!.review?.reviewerType, decision.href).toBe('ai');
+    expect(record!.humanReview, decision.href).toBeNull();
+    // A record that meets the rubric says so in its lifecycle; one that does not stays quarantined in the registry.
+    expect(record!.lifecycle, decision.href).toBe(articleAdmissionPasses(record!.scores) ? 'indexable' : 'quarantined');
+    const article = articles.find(item => articleHref(item) === decision.href)!;
+    expect(isIndexable(article), decision.href).toBe(true);
+    expect(renderArticle(article, template)).not.toContain('name="robots"');
+  }
 });
