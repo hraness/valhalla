@@ -5,6 +5,14 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
+## 0.2.10 - 2026-09-29
+
+Releases now include `vhalla` for x86-64 Windows, and every archive carries a build provenance attestation you can check with `gh attestation verify`.
+
+- The Windows archive, `valhalla-v0.2.10-x86_64-pc-windows-msvc.zip`, holds `vhalla.exe` with identity and the member side of private rooms. Commands that need macOS or Linux, such as `rooms`, `status` and `private-host`, say so and point to the Linux build inside WSL instead of printing identity usage.
+- `install.sh` now installs the static ARM64 Linux build on `aarch64` hosts and the static x86-64 build on musl systems such as Alpine. Unsupported hosts get the list of prebuilt platforms and the source build link.
+- Each release archive, including the browser bundle, has a signed provenance attestation from the release workflow, and the release page shows the `gh attestation verify` command.
+
 ## 0.2.9 - 2026-09-29
 
 The macOS menu bar is retired. Everything it showed and did is now a `vhalla` command that runs, answers and exits, so nothing keeps running in the background, and each one prints a single JSON envelope with `--json` for agents.

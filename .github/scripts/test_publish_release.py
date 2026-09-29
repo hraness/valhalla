@@ -120,7 +120,7 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.assets = Path(self.temporary.name)
         for name in asset_names(TAG):
-            if name.endswith(".tar.gz"):
+            if name.endswith((".tar.gz", ".zip")):
                 content = name.encode()
                 (self.assets / name).write_bytes(content)
                 (self.assets / (name + ".sha256")).write_text(
