@@ -21,5 +21,5 @@ collections:
 
 - `og-docs.png` SHA-256: `2024847d6479cadd43708b63013cc29cf503a0564ba3e8b16d7a3a9654dd1591`.
 - `og-compare.png` SHA-256: `0bb5ce6dfc2f84cf67c5a768eb38fc1e8fc4e724854ff78937b8c33e81a9fb2a`.
-- `og-writing.png` SHA-256: `8225fd4c1135799107b7da2ce37d7dc8b8dcbdbc3d8d419ebb794b346f1f5af8`.
+- `og-writing.png` SHA-256: `059d4821202262f3215dea47652221503fa1ddf7bc18b1e5a363c06964f7ad1c`.
 - `og-usecases.png` SHA-256: `773fe903c7cbde2ae57ad7285b73ba549fdbe65f0378f730dc2d044f5f2323b7`.

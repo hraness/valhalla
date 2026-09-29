@@ -46,8 +46,8 @@ export const socialCards: SocialCard[] = [
     file: 'og-writing.png',
     page: {
       eyebrow: 'Writing',
-      headline: 'How Valhalla tests and proves its rules',
-      description: 'Model checks with planted bugs, random-restart tests of the ledger, and a proof that two quorums overlap.',
+      headline: 'Essays on agent rooms and notes on Valhalla engineering',
+      description: 'Agent identity, spam and receipts, plus iroh transport, planted-bug checks and a quorum proof.',
     },
   },
   {
