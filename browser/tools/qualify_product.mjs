@@ -66,7 +66,10 @@ async function task(abortSignal){
     }catch{res.writeHead(500,{'content-type':'text/plain'});res.end('qualification request failed');}
   });
   signal.throwIfAborted();
-  await new Promise((r,j)=>{server.once('error',j);server.listen(8790,'127.0.0.1',r);});
+  // An ephemeral port keeps the journey runnable beside a gateway or another
+  // checkout; the qualification build accepts any exact loopback origin.
+  await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
+  const pagePort=server.address().port;
   signal.throwIfAborted();
   const chrome=start('chrome',chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank']);
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(logs.chrome)||childStopped(chrome),'Chrome');
@@ -78,7 +81,7 @@ async function task(abortSignal){
   const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
   await call('Page.enable',{},sessionId);
   await call('Runtime.enable',{},sessionId);
-  await call('Page.navigate',{url:'http://127.0.0.1:8790'},sessionId);
+  await call('Page.navigate',{url:'http://127.0.0.1:'+pagePort},sessionId);
   const evaluate=async(expression)=>{const r=await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},sessionId);if(r.exceptionDetails){const shot=await call('Page.captureScreenshot',{format:'png'},sessionId);await writeFile(join(output,'failure.png'),Buffer.from(shot.data,'base64'));throw Error(JSON.stringify(r.exceptionDetails));}return r.result.value;};
   await wait(()=>evaluate("!!document.getElementById('create') && !document.getElementById('create').disabled"),'app initialized');
   const setup=`window.qa={bootstrap:${JSON.stringify(bootstrap)},pin:${JSON.stringify(pin)},ads:${JSON.stringify(ads)},password:'Valhalla-synthetic-DOM-only-20260920',facts:[]};`;
@@ -124,7 +127,7 @@ async function task(abortSignal){
   const policy=await evaluate(`window.qa=${JSON.stringify({...saved,ads,facts:result.facts})};`+policyHelper);
   await evaluate("document.querySelector('.puzzles').open=true;document.querySelector('.puzzles').scrollIntoView();");
   const shot=await call('Page.captureScreenshot',{format:'png'},sessionId);await writeFile(join(output,'puzzle-preview.png'),Buffer.from(shot.data,'base64'));
-  const recovery = recoveryFlag ? await qualifyRecovery({call,targetId,sessionId,bootstrap,pin,ads,password:saved.password,author:saved.author,rooms:saved.rooms,postCount:()=>activityPosts}) : undefined;
+  const recovery = recoveryFlag ? await qualifyRecovery({call,targetId,sessionId,pagePort,bootstrap,pin,ads,password:saved.password,author:saved.author,rooms:saved.rooms,postCount:()=>activityPosts}) : undefined;
   return {passed:true,...result,...policy,...(recovery?{recovery}:{}),artifact,artifactManifestSha256:createHash("sha256").update(await readFile(join(artifact,"artifact.json"))).digest("hex"),profile,fixture};
 }
 await runQualification({

@@ -148,8 +148,9 @@ node browser/tools/qualify_product.mjs TEST_DIST FIXTURE_EXECUTABLE CHROMIUM_EXE
 ```
 
 Use absolute paths for the artifact, executables and new output directory. The
-harness binds only 127.0.0.1 ports 8790, 9781, 9782 and 9783, and refuses
-collisions. It creates a fresh profile and network, imports that network's
+harness serves the page from an ephemeral 127.0.0.1 port, so it runs beside a
+gateway on 8790 or another checkout. The fixture peers still bind 127.0.0.1
+ports 9781, 9782 and 9783 and refuse collisions. It creates a fresh profile and network, imports that network's
 public bootstrap and advertisements, creates a new synthetic identity through
 the real UI and stops its own children within 300 seconds. Existing test
 evidence is never replaced. Keep the local-qualification artifact out of
@@ -176,7 +177,7 @@ qualified public deployment.
 
 The optional `--recovery` extension creates encrypted key and multipart author
 backups from that synthetic identity and holds them only in test-driver memory.
-It stops the former author, restores into the separate `localhost:8790` origin,
+It stops the former author, restores into the separate `localhost` origin on the same port,
 and checks key-only, wrong-room, final-part-first and incomplete-backup refusals.
 A reload interrupts staged import; completing it must preserve the exact pending
 draft and both peer receipts. The next signature must use sequence four, and a
