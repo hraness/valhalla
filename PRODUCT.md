@@ -22,8 +22,8 @@ local owner authority.
 ## Constraints
 
 The implementation is an early Rust project. Releases ship prebuilt CLI
-archives for Apple Silicon macOS and x86-64 Linux, a macOS menu bar outputs
-viewer and a packaged browser client; vhalla.com serves a checksum-verified
+archives for Apple Silicon macOS and x86-64 Linux and a packaged browser
+client (the macOS menu bar is retired; `vhalla status` replaces it); vhalla.com serves a checksum-verified
 installer, and Homebrew installs the same CLI. The CLI covers public rooms (a
 pinned network, a certified room directory, signed posts and peer receipts),
 invite-only private rooms with MLS encryption, explicit paired chat, signed

@@ -1064,8 +1064,10 @@ pub(crate) fn support(args: &[OsString]) -> Option<i32> {
 pub(crate) fn dispatch(args: &[OsString]) -> Option<i32> {
     let first = args.first()?.to_str()?;
     let second = args.get(1).and_then(|arg| arg.to_str());
-    if matches!(first, "status" | "tui" | "commands" | "doctor" | "outputs")
-        && args.iter().any(|arg| arg == "--help" || arg == "-h")
+    if matches!(
+        first,
+        "status" | "tui" | "commands" | "doctor" | "outputs" | "menubar"
+    ) && args.iter().any(|arg| arg == "--help" || arg == "-h")
     {
         let page = crate::help::page_for(first)?;
         let mut out = std::io::stdout().lock();
@@ -1083,8 +1085,27 @@ pub(crate) fn dispatch(args: &[OsString]) -> Option<i32> {
         ("outputs", Some("open")) => outputs_open(&args[2..], false),
         ("outputs", Some("reveal")) => outputs_open(&args[2..], true),
         ("outputs", _) => outputs(&args[1..]),
+        ("menubar", _) => menubar_retired(&args[1..]),
         _ => return None,
     })
+}
+
+/// `vhalla menubar …` from an earlier release's habits: the menu bar is
+/// gone, so name what replaces it. Changes nothing.
+fn menubar_retired(args: &[OsString]) -> i32 {
+    fail::<()>(
+        wants_json(args),
+        ErrorBody::new(
+            ErrorCode::Product("valhalla.retired".into()),
+            "The menu bar is retired. Everything it showed is in vhalla status.",
+        )
+        .with_detail("vhalla doctor shows a login item an earlier release left.")
+        .with_next(NextStep::new(
+            format!("{COMMAND} status"),
+            "Rooms, outputs and what to do next",
+            Audience::Human,
+        )),
+    )
 }
 
 fn status(args: &[OsString]) -> i32 {
@@ -1736,37 +1757,9 @@ pub(crate) fn refresh(
     atomic_write(&path, &bytes).map_err(|e| {
         ErrorBody::new(ErrorCode::Internal, "Couldn't save room status.").with_detail(e.to_string())
     })?;
-    // The menu bar from earlier releases reads this name and shape.
-    let legacy = MenubarStatus::from(&saved);
-    let mut legacy_bytes = serde_json::to_vec(&legacy).expect("status serializes");
-    legacy_bytes.push(b'\n');
-    let _ = atomic_write(&root.join(LEGACY_STATUS_FILE), &legacy_bytes);
     result
         .map(|rooms| (path, rooms))
         .map_err(|(_, error)| error)
-}
-
-/// The exact shape `vhalla-menubar` reads.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MenubarStatus {
-    schema_version: u32,
-    refreshed_at: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rooms: Option<Rooms>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-impl From<&RoomStatus> for MenubarStatus {
-    fn from(status: &RoomStatus) -> Self {
-        Self {
-            schema_version: status.schema_version,
-            refreshed_at: status.refreshed_at,
-            rooms: status.rooms,
-            error: status.error.clone(),
-        }
-    }
 }
 
 fn status_refresh(args: &[OsString]) -> i32 {

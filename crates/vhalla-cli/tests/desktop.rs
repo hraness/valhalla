@@ -1,5 +1,6 @@
 #![cfg(unix)]
-//! Desktop companion command surface.
+//! This computer: the outputs folder, saved room status and the retired
+//! menu bar command.
 use std::process::Command;
 
 #[test]
@@ -23,57 +24,45 @@ fn outputs_creates_and_prints_the_directory() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// Every form of the retired `menubar` command names its replacement,
+/// exits non-zero and changes nothing on disk.
 #[test]
-fn menubar_reports_a_missing_binary() {
-    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
-        .env("HRANESS_SUPPORT", "off")
-        .arg("menubar")
-        .env("VHALLA_MENUBAR_PATH", "/definitely/missing/vhalla-menubar")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("doesn't name a usable menu bar"));
-}
-
-#[test]
-fn menubar_without_a_binary_points_to_the_installer() {
-    let home = std::env::temp_dir().join(format!("vhalla-menubar-none-{}", std::process::id()));
+fn menubar_is_retired_and_changes_nothing() {
+    let home = std::env::temp_dir().join(format!("vhalla-menubar-retired-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
+    for args in [
+        &["menubar"][..],
+        &["menubar", "install"],
+        &["menubar", "status"],
+        &["menubar", "refresh", "a", "b", "c", "d", "--config", "e"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+            .env("HRANESS_SUPPORT", "off")
+            .env("HOME", &home)
+            .env("XDG_DATA_HOME", home.join("data"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let text = String::from_utf8_lossy(&output.stderr);
+        assert!(text.contains("The menu bar is retired."), "{args:?} {text}");
+        assert!(text.contains("vhalla status"), "{args:?} {text}");
+    }
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
         .env("HRANESS_SUPPORT", "off")
-        .env("HRANESS_AUDIENCE", "human")
-        .env("LANG", "en_US.UTF-8")
-        .env_remove("VHALLA_MENUBAR_PATH")
-        .arg("menubar")
         .env("HOME", &home)
+        .args(["menubar", "--json"])
         .output()
         .unwrap();
-    let text = String::from_utf8_lossy(&output.stderr);
-    // A checkout with a release build finds it; otherwise the installer is next.
-    if !output.status.success() {
-        assert!(
-            text.starts_with("✗ The Valhalla menu bar isn't on this Mac yet."),
-            "{text}"
-        );
-        assert!(
-            text.contains("install.sh | sh -s -- --with-menubar"),
-            "{text}"
-        );
-        assert!(text.contains("→ vhalla menubar install"), "{text}");
-        assert!(!text.contains("cargo build"), "{text}");
-    }
+    let line = String::from_utf8(output.stdout).unwrap();
+    assert!(line.starts_with("{\"ok\":false,"), "{line}");
+    assert!(line.contains("\"code\":\"valhalla.retired\""), "{line}");
+    assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0);
     let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]
-fn menubar_and_outputs_reject_extra_arguments() {
-    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
-        .env("HRANESS_SUPPORT", "off")
-        .args(["menubar", "extra"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"));
+fn outputs_rejects_extra_arguments() {
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
         .env("HRANESS_SUPPORT", "off")
         .args(["outputs", "extra"])
@@ -83,71 +72,17 @@ fn menubar_and_outputs_reject_extra_arguments() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown outputs command extra."));
 }
 
+/// `status refresh` always leaves `status` an answer: counts, or a fixed
+/// code when room status can't be read. It writes only `room-status.json`:
+/// no file for the retired menu bar, nothing in the outputs folder.
 #[test]
-fn menubar_status_reports_an_uninstalled_companion() {
-    let home = std::env::temp_dir().join(format!("vhalla-menubar-test-{}", std::process::id()));
-    std::fs::create_dir_all(&home).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
-        .env("HRANESS_SUPPORT", "off")
-        .args(["menubar", "status"])
-        .env("HOME", &home)
-        .env("VHALLA_MENUBAR_PATH", "/definitely/missing/vhalla-menubar")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        text.starts_with("Valhalla's menu bar isn't installed."),
-        "{text}"
-    );
-    assert!(text.contains("vhalla menubar install"), "{text}");
-    let _ = std::fs::remove_dir_all(&home);
-}
-
-#[test]
-fn menubar_rejects_an_unknown_subcommand() {
-    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
-        .env("HRANESS_SUPPORT", "off")
-        .args(["menubar", "bogus"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"));
-}
-
-/// `install` with an unqualified override fails before touching launchd or
-/// the state directory — the failure path must be side-effect free.
-#[test]
-fn menubar_install_requires_a_qualified_binary() {
-    let home = std::env::temp_dir().join(format!("vhalla-install-test-{}", std::process::id()));
-    std::fs::create_dir_all(&home).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
-        .env("HRANESS_SUPPORT", "off")
-        .args(["menubar", "install"])
-        .env("HOME", &home)
-        .env("VHALLA_MENUBAR_PATH", "/definitely/missing/vhalla-menubar")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(!home.join("Library").exists());
-    let _ = std::fs::remove_dir_all(&home);
-}
-
-/// `refresh` always leaves the menu an answer: counts, or a fixed code
-/// when room status can't be read. It never writes into the outputs folder.
-#[test]
-fn menubar_refresh_saves_a_status_the_menu_can_read() {
+fn status_refresh_saves_only_room_status() {
     let home = std::env::temp_dir().join(format!("vhalla-refresh-test-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
         .env("HRANESS_SUPPORT", "off")
         .args([
-            "menubar",
+            "status",
             "refresh",
             "/missing/social",
             "/missing/replica",
@@ -166,13 +101,13 @@ fn menubar_refresh_saves_a_status_the_menu_can_read() {
     } else {
         home.join("data/valhalla")
     };
-    let saved = std::fs::read_to_string(root.join("menubar-status.json")).unwrap();
+    let saved = std::fs::read_to_string(root.join("room-status.json")).unwrap();
     assert!(
         saved.starts_with("{\"schemaVersion\":1,\"refreshedAt\":"),
         "{saved}"
     );
     assert!(saved.contains("\"error\":\""), "{saved}");
-    assert!(!saved.contains("/missing"), "{saved}");
-    assert!(!root.join("outputs/rooms-status.json").exists());
+    assert!(!root.join("menubar-status.json").exists());
+    assert!(!root.join("outputs").exists());
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -31,55 +31,44 @@ callers are agents even in a PTY; direct terminal invitations require
 `$XDG_STATE_HOME/hraness/support` or `~/.local/state/hraness/support`, separately
 from identity custody. This optional local state contains no keys or email.
 
-### Menu-bar companion
+### Status, outputs and doctor
 
-`vhalla menubar` opens the Valhalla menu bar on macOS. The menu shows how
-your rooms are doing (rooms in sync, sends waiting, sends that didn't go
-through) from the counts `vhalla menubar refresh` saves, and the newest files
-in the outputs folder (`vhalla outputs` creates and prints it). It never opens
-an identity or a store.
-
-The menu bar is a separate binary. `curl -fsSL https://vhalla.com/install.sh |
-sh -s -- --with-menubar` puts it next to `vhalla`; a checkout can build it with
-`cargo build --release --manifest-path desktop/Cargo.toml`, or point
-`VHALLA_MENUBAR_PATH` at a build.
+Each of these runs, answers and exits; nothing keeps running in the
+background. Every one prints the shared JSON envelope with `--json`
+(`{ok, schema, generatedAt, data, next}`, or `{ok:false, error}`), and
+`vhalla commands --json` lists them all with whether each reads or changes
+something.
 
 ```console
-vhalla menubar             # open it now
-vhalla menubar install     # copy it into the Valhalla folder and open it at login
-vhalla menubar status      # whether it opens at login and is running
-vhalla menubar uninstall   # stop opening it at login and remove the copy
+vhalla status              # rooms in sync, sends waiting or failed, newest outputs, next command
+vhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE
+vhalla tui                 # the same status as a screen (--snapshot, --json)
+vhalla outputs list        # files agents saved; open NAME, reveal NAME
+vhalla doctor              # the Valhalla folder, saved room status and old login items
+vhalla doctor retire       # set aside the login item the retired menu bar left
 ```
 
-`install` copies the newest build it finds (`VHALLA_MENUBAR_PATH`, a binary
-next to `vhalla`, the repository release build) into
-`~/Library/Application Support/Valhalla/bin/`, then hands over to that copy's
-own `install`, which writes the login item through desktop-foundation's shared
-LaunchAgent helper. macOS shows a notice that `vhalla-menubar` can open at
-login. The login item takes effect at the next login and `install` opens the
-menu bar now. It also removes the `com.hraness.valhalla.menubar` login item
-earlier releases wrote, when that file is exactly theirs. Menu bars from
-releases before this one have no `install` command of their own; `install`
-refuses them and points to the installer.
-
-A copy downloaded in a browser is quarantined, and macOS stops it because it
-isn't notarized. `vhalla menubar` then says so and names the fix: open System
-Settings › Privacy & Security and choose Open Anyway. It never removes the
-quarantine itself. The installer downloads with `curl`, which macOS doesn't
-quarantine.
+`status refresh` reads `rooms status` once and saves only the counts to
+`room-status.json` in the Valhalla folder; `status` never opens an identity or
+a store. The macOS menu bar these commands replace is retired: see
+[`docs/cli-parity.md`](../../docs/cli-parity.md) for the command behind each
+menu action. `doctor retire` renames a login item earlier releases wrote to
+`NAME.plist.retired-TIME` only when it is a regular file you own that starts
+`vhalla-menubar`; it never deletes a file or signals a process, and it prints
+the command that restores it.
 
 ### Releases
 
 Pushing a version tag such as `v0.1.7` runs the complete Rust, Kani,
-desktop, and site gates at that commit, then builds unbundled binaries:
+macOS, and site gates at that commit, then builds unbundled binaries:
 `vhalla` (`--release --locked --no-default-features --features
 experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private`)
-for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`, plus
-`vhalla-menubar` for `aarch64-apple-darwin` and the exact qualified production
-browser artifact, each as a tarball with a
+for `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and the two Linux musl
+targets, plus the exact qualified production browser artifact, each as a
+tarball with a
 `.sha256` sidecar. A single publisher requires that the tag still names
 the current `main` commit, that all five managed CodeQL analyses passed
-on that exact SHA, and that no CodeQL alerts remain open. It uploads all eight
+on that exact SHA, and that no CodeQL alerts remain open. It uploads all ten
 assets to a draft, verifies their
 downloaded bytes, then publishes the complete release. Failed uploads
 leave a draft; retries never overwrite an already published release.
@@ -95,8 +84,9 @@ a retry fails if the published page no longer matches. To render a page by
 hand, run `python3 .github/scripts/release_notes.py TAG --repo hraness/valhalla
 --commit SHA --assets DIR` over the downloaded release assets.
 
-The CLI and menubar archives have shipped in every published release since
-v0.1.0, the first tag, and the browser archive joined at v0.2.1. There is no
+The CLI archives have shipped in every published release since v0.1.0, the
+first tag, and the browser archive joined at v0.2.1. Releases up to v0.2.8
+also carried a `valhalla-menubar` archive; later releases do not. There is no
 Windows or Intel-Mac artifact.
 
 The release feature selection preserves paired networking, social sync, the
@@ -105,24 +95,21 @@ Platonik adapter and `game replay` command were removed from current source.
 Older archives keep the commands they were published with. The complete
 all-features checks and remaining protocol vectors still run before publication.
 
-Each archive has a different top-level directory. On Apple Silicon macOS,
-download both archives and their checksum sidecars from the same release,
-then verify and extract the binaries into one directory for sibling resolution:
+Each archive has its own top-level directory. On Apple Silicon macOS,
+download the archive and its checksum sidecar from the same release, then
+verify and extract it:
 
 ```console
 tag=v0.1.7 # replace with the downloaded release version
 shasum -a 256 -c "valhalla-${tag}-aarch64-apple-darwin.tar.gz.sha256"
-shasum -a 256 -c "valhalla-menubar-${tag}-aarch64-apple-darwin.tar.gz.sha256"
 mkdir -p "valhalla-${tag}/bin"
 tar -xzf "valhalla-${tag}-aarch64-apple-darwin.tar.gz" --strip-components 1 -C "valhalla-${tag}/bin"
-tar -xzf "valhalla-menubar-${tag}-aarch64-apple-darwin.tar.gz" --strip-components 1 -C "valhalla-${tag}/bin"
 "./valhalla-${tag}/bin/vhalla" --help
-"./valhalla-${tag}/bin/vhalla" menubar status
+"./valhalla-${tag}/bin/vhalla" status
 ```
 
-Run `./valhalla-${tag}/bin/vhalla menubar` to launch the companion, or add
-that `bin` directory to your `PATH`. The Linux release contains only the
-CLI; there is no menubar or Intel macOS release artifact.
+Add that `bin` directory to your `PATH`. There is no Intel macOS release
+artifact.
 
 See the [identity guide](../vhalla-identity/README.md) for storage behavior and
 the [local chat walkthrough](../vhalla-native/README.md) for the explicit
@@ -978,22 +965,22 @@ identity. Signed archives, spent invitation
 state and validator recovery have separate persistence requirements; do
 not interpret a restored signing key as complete network-state recovery.
 
-**9. Surface `rooms status` in the menu bar.**
+**9. Check rooms status from `vhalla status`.**
 
-The menu bar never opens an identity or store. `vhalla menubar refresh` runs
+`vhalla status` never opens an identity or store. `vhalla status refresh` runs
 `rooms status` with the same arguments and saves only counts (rooms, height,
 sends waiting, sends that didn't go through) and the time to
-`menubar-status.json` in the Valhalla folder:
+`room-status.json` in the Valhalla folder:
 
 ```console
-vhalla menubar refresh ./genesis-social ./replica 00000000000000000000000000000047 ./node \
+vhalla status refresh ./genesis-social ./replica 00000000000000000000000000000047 ./node \
   --config ./node/node.json
 ```
 
-The top of the menu then reads, for example, "4 rooms in sync" or "1 send
-didn't go through". A refresh that can't read room status saves that too, so
-the menu shows "Couldn't read your rooms" instead of old counts. After an
-hour the menu marks the counts out of date; re-run the refresh for a new view.
+`vhalla status` then reads, for example, "4 rooms in sync" or "1 send didn't
+go through". A refresh that can't read room status saves that too, so status
+shows "Couldn't read your rooms" instead of old counts. After an hour status
+marks the counts out of date and names the refresh command to run again.
 
 ### Executable local onboarding rehearsal
 

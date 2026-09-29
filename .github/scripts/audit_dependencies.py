@@ -18,7 +18,6 @@ import sys
 
 MANIFESTS = (
     "Cargo.toml",
-    "desktop/Cargo.toml",
     "vendor/libp2p-dns/Cargo.toml",
 )
 ARCHIVE = Path("prototypes/browser-records/interop/native-admission-reference")

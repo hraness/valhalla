@@ -4,7 +4,7 @@
 - `prototypes/` – bounded architecture and verification spikes kept outside the production dependency graph.
 - `kb/` – the Wordcell/Obsidian knowledge vault containing maintained notes, plans, source captures, riffs, and scoped context hubs.
 - `docs/` – operator, evidence, and architecture documentation that is not part of the knowledge vault.
-- `desktop/` and `site/` – desktop companion and web product surfaces.
+- `site/` – the vhalla.com web product surface.
 - `hraness/homebrew-tap` (separate repository) – the checksum-verified Homebrew formula and its generator (`tools/brew-formula.mjs`); kept out of this tree so the release security policy does not scan a Ruby surface.
 - `vectors/` – frozen cross-implementation and protocol test vectors.
 - `verify/` – repository verification support and proof-oriented checks.
