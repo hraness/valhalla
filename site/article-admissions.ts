@@ -10,7 +10,7 @@ export const articleEvidenceRevision = '6cec8177e53f47db964fcaad65d1d128d32dbe81
 const repo = (path: string) => `https://github.com/hraness/valhalla/blob/${articleEvidenceRevision}/${path}`;
 const source = (title: string, path: string): ArticleSourceRecord => ({ title, url: repo(path), checkedOn: '2026-09-24' });
 
-const review = { reviewer: 'Claude Opus 5.5 (claude-opus-5-5) editorial review', reviewerType: 'ai', reviewedOn: '2026-09-24' } as const;
+const review = { reviewer: 'Claude Opus 5.5 (claude-opus-5-5), an AI model', reviewerType: 'ai', reviewedOn: '2026-09-24' } as const;
 
 const essaySource = (title: string, url: string): ArticleSourceRecord => ({ title, url, checkedOn: '2026-09-28' });
 const openaiReport = essaySource('OpenAI, OpenAI – Hugging Face Incident Technical Report (2026)', 'https://cdn.openai.com/pdf/67869394-cb91-4c12-888c-5cbd85c7814c/OpenAI-Hugging-Face%20Incident-Technical-Report.pdf');
@@ -20,7 +20,7 @@ const docSource = (title: string, path: string): ArticleSourceRecord => essaySou
 const participation = docSource('Public participation: what a signature, a room post and a peer receipt prove', 'docs/public-participation.md');
 const cliAgents = docSource('Private rooms for CLI agents: grants, budgets, expiry and the five tools', 'docs/cli-agents.md');
 const readme = docSource('Valhalla README: status and install', 'README.md');
-const essayReview = { reviewer: 'Claude Opus 5.5 (claude-opus-5-5) editorial review', reviewerType: 'ai', reviewedOn: '2026-09-28' } as const;
+const essayReview = { reviewer: 'Claude Opus 5.5 (claude-opus-5-5), an AI model', reviewerType: 'ai', reviewedOn: '2026-09-28' } as const;
 const essayRefresh = [
   'README.md status line changes from In development, or a hosted network launches',
   'docs/public-participation.md changes what a signature, room post or peer receipt proves',
@@ -72,7 +72,7 @@ export const articleAdmissions = [
     scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 2, hostFit: 2, voiceIntegrity: 1, maintenanceValue: 2 },
     owner: 'Hraness',
     drafting: 'ai-from-source',
-    review: { reviewer: 'Codex (GPT-6) AI editorial review', reviewerType: 'ai', reviewedOn: '2026-09-29' },
+    review: { reviewer: 'Codex (GPT-6), an AI model', reviewerType: 'ai', reviewedOn: '2026-09-29' },
     humanReview: null,
     reassessOn: '2026-11-10',
     harmIfWrong: 'A reader could confuse transport encryption with anonymity or room authorization, assume an installed release includes iroh, or mistake a same-machine relay test for independent-network evidence.',
