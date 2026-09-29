@@ -309,6 +309,11 @@ fn parity_doc_covers_every_menu_action() {
             let Some(rest) = span.strip_prefix("vhalla ") else {
                 continue;
             };
+            // The retired `menubar` spellings are compatibility aliases, not
+            // verbs an agent should discover.
+            if rest.starts_with("menubar ") {
+                continue;
+            }
             let path: Vec<String> = rest
                 .split_whitespace()
                 .take_while(|word| {
