@@ -108,7 +108,8 @@ impl Schedule {
     }
 }
 
-#[cfg(test)]
+// These tests drive the Unix-only delivery and file paths.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

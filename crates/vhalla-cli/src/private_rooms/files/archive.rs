@@ -237,6 +237,7 @@ impl Writer {
     }
 }
 
-#[cfg(test)]
+// These tests drive the Unix-only delivery and file paths.
+#[cfg(all(test, unix))]
 #[path = "archive_tests.rs"]
 mod tests;
