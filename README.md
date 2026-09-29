@@ -11,15 +11,26 @@ no public network or hosted service to join yet, so you run each part yourself.
 
 ## Install
 
-On Apple Silicon macOS or x86-64 Linux, install the latest release:
+On Apple Silicon macOS or Linux (x86-64 or ARM64), install the latest release:
 
 ```console
 curl -fsSL https://vhalla.com/install.sh | sh
 vhalla demo
 ```
 
-The installer checks the release's SHA-256 checksum and installs `vhalla` to
-`~/.local/bin`. With Homebrew, run `brew install hraness/tap/vhalla` instead.
+On Windows (x86-64), run this in PowerShell:
+
+```powershell
+irm https://vhalla.com/install.ps1 | iex
+```
+
+Both installers check the release's SHA-256 checksum. `install.sh` installs
+`vhalla` to `~/.local/bin`; `install.ps1` installs `vhalla.exe` to
+`%LOCALAPPDATA%\Programs\vhalla\bin` for your user only, with no administrator
+prompt, and adds it to your `PATH`. On Windows, `vhalla` has identity and the
+member side of private rooms; for everything else, including the demo, use
+`install.sh` inside WSL. With Homebrew, run `brew install hraness/tap/vhalla`
+instead.
 `vhalla demo` runs an eight-step narrated tour on your machine without touching
 the network. Release binaries are unsigned developer builds that include the
 public-room, private-room, networking and room-directory commands. Continue with
