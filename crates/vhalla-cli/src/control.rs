@@ -1,5 +1,6 @@
 //! The agent-navigable surface: `status`, `status refresh`, `tui`,
-//! `commands`, `doctor`, `doctor retire` and `outputs [list|open|reveal]`.
+//! `commands`, `doctor`, `doctor retire`, `outputs [list|open|reveal]` and
+//! `support --json`.
 //!
 //! Valhalla has no long-running owner. Every command here runs in its own
 //! process, reads the Valhalla folder and answers. `--json` prints one
@@ -38,6 +39,9 @@ pub(crate) const DOCTOR_SCHEMA: &str = "valhalla.doctor/1";
 pub(crate) const RETIRE_SCHEMA: &str = "valhalla.doctor-retire/1";
 pub(crate) const OUTPUTS_SCHEMA: &str = "valhalla.outputs/1";
 pub(crate) const OUTPUTS_OPEN_SCHEMA: &str = "valhalla.outputs-open/1";
+/// `support --json`: `data` is the support-foundation offer
+/// (`hraness-support-offer-v1`) unchanged.
+pub(crate) const SUPPORT_SCHEMA: &str = "valhalla.support/1";
 
 /// Room counts saved by `status refresh`, read by `status` and `tui`.
 pub(crate) const STATUS_FILE: &str = "room-status.json";
@@ -129,6 +133,12 @@ pub(crate) fn registry() -> Registry {
             OpClass::Operate,
             OUTPUTS_OPEN_SCHEMA,
             "Show one output file in Finder",
+        ),
+        Verb::new(
+            &["support"],
+            OpClass::Read,
+            SUPPORT_SCHEMA,
+            "Optional ways to support Valhalla (the menu's Updates & support); protocol verbs: support protocol --json",
         ),
     ];
     for verb in verbs {
@@ -1033,6 +1043,20 @@ fn finish<T: Serialize>(
 
 fn fail<T: Serialize>(json: bool, error: ErrorBody) -> i32 {
     finish::<T>(json, Envelope::error(error), |_| String::new())
+}
+
+/// `vhalla support --json`: the support offer in the shared envelope. Every
+/// other `support` form (text, and the support protocol's own argv) returns
+/// `None` and stays with support-foundation.
+pub(crate) fn support(args: &[OsString]) -> Option<i32> {
+    if args.len() != 1 || args[0] != "--json" {
+        return None;
+    }
+    let envelope = match crate::support::offer() {
+        Ok(offer) => Envelope::ok(SUPPORT_SCHEMA, offer),
+        Err(message) => Envelope::error(ErrorBody::new(ErrorCode::Internal, message)),
+    };
+    Some(finish(true, envelope, |_| String::new()))
 }
 
 /// Runs `args` when it is one of this module's commands. `None` hands it
@@ -2057,6 +2081,7 @@ mod tests {
             "outputs list",
             "outputs open",
             "outputs reveal",
+            "support",
         ] {
             assert!(listed.iter().any(|c| c == command), "{command}");
         }

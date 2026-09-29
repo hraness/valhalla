@@ -164,6 +164,7 @@ fn commands_json_lists_every_verb_with_its_class() {
     assert_eq!(find(&["doctor"])["opClass"], "read");
     assert_eq!(find(&["doctor", "retire"])["opClass"], "operate");
     assert_eq!(find(&["outputs", "open"])["opClass"], "operate");
+    assert_eq!(find(&["support"])["opClass"], "read");
     for verb in verbs {
         let schema = verb["schema"].as_str().unwrap();
         assert!(schema.ends_with("/1"), "{schema}");
@@ -255,11 +256,39 @@ fn every_new_command_answers_help() {
     assert!(!home.0.join("Library").exists());
 }
 
-/// docs/cli-parity.md names a command for every action the menu bar had.
+/// `support --json` is the menu's "Updates & support" as one envelope; the
+/// support protocol's own argv keeps support-foundation's shape.
+#[test]
+fn support_json_is_an_envelope_and_the_protocol_is_unchanged() {
+    let home = Home::new("support");
+    let (code, value) = home.json(&["support", "--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["schema"], "valhalla.support/1");
+    assert!(value["generatedAt"].is_string(), "{value}");
+    assert_eq!(value["data"]["schemaVersion"], "hraness-support-offer-v1");
+    assert_eq!(value["data"]["product"]["id"], "valhalla");
+    let (code, protocol) = home.json(&["support", "protocol", "--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(protocol["schemaVersion"], "hraness-support-protocol-v1");
+    assert!(protocol.get("ok").is_none(), "{protocol}");
+}
+
+/// docs/cli-parity.md names a command for every action the menu bar had,
+/// and every `vhalla ...` it names is a verb `commands --json` lists, so an
+/// agent that only reads the registry finds each replacement.
 #[test]
 fn parity_doc_covers_every_menu_action() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let doc = std::fs::read_to_string(root.join("docs/cli-parity.md")).unwrap();
+    let home = Home::new("parity");
+    let (_, commands) = home.json(&["commands", "--json"]);
+    let registered: Vec<Vec<String>> = commands["data"]["verbs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|verb| serde_json::from_value(verb["path"].clone()).unwrap())
+        .collect();
     for action in [
         "`status`",
         "`outputs.open.<file>`",
@@ -275,6 +304,23 @@ fn parity_doc_covers_every_menu_action() {
             .find(|line| line.starts_with(&format!("| {action} ")))
             .unwrap_or_else(|| panic!("no row for {action}"));
         assert!(row.contains("vhalla ") || row.contains("n/a"), "{row}");
+        let replacement = row.rsplit(" | ").next().unwrap();
+        for span in replacement.split('`').skip(1).step_by(2) {
+            let Some(rest) = span.strip_prefix("vhalla ") else {
+                continue;
+            };
+            let path: Vec<String> = rest
+                .split_whitespace()
+                .take_while(|word| {
+                    !word.starts_with('-') && word.chars().all(|c| c.is_ascii_lowercase())
+                })
+                .map(str::to_owned)
+                .collect();
+            assert!(
+                registered.contains(&path),
+                "{action}: `{span}` is not a verb in commands --json"
+            );
+        }
     }
     for state in [
         "first-run",

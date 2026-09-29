@@ -13,7 +13,7 @@ This page maps every menu bar action and every state it could show to the comman
 | `outputs.reveal.<file>` | Showed that file in Finder | `vhalla outputs reveal NAME` |
 | `outputs.folder` | Opened the outputs folder ("Show all N outputs") | `vhalla outputs open`; `vhalla outputs list` lists every file |
 | `login` | "Open at login" | Nothing opens at login any more. `vhalla doctor` shows a login item an earlier release left, and `vhalla doctor retire` sets it aside |
-| `support` | "Updates & support" in the browser | `vhalla support` |
+| `support` | "Updates & support" in the browser | `vhalla support`; `vhalla support --json` prints the same links as one envelope |
 | `support.diagnostics` | "Copy diagnostics" | `vhalla doctor --json` |
 | `quit` | Quit the menu bar | n/a: no process stays running |
 

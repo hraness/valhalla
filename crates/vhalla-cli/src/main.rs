@@ -52,6 +52,10 @@ fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
     let help = help::resolve(&args);
     if help.is_none() && args.first().is_some_and(|arg| arg == "support") && args.len() <= 64 {
+        #[cfg(unix)]
+        if let Some(code) = control::support(&args[1..]) {
+            std::process::exit(code);
+        }
         std::process::exit(support::execute(&args[1..]));
     }
     match help {
