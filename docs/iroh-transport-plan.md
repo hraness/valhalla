@@ -112,8 +112,8 @@ its response instead of retaining its original long-poll deadline.
 The explicit public-relay test passed through Number 0's North America east
 relay with client UDP disabled and every observed connection path checked as
 relayed. It sent synthetic ciphertext between two endpoints on one machine.
-This establishes real public-relay operation, not independent-machine or
-multi-NAT qualification. Those deployment conditions remain untested.
+This run establishes public-relay operation between local endpoints. It did
+not test independent-machine or multi-NAT paths.
 
 The default non-private CLI and public consensus transport do not activate
 iroh. Adding the optional transport expands the private build's dependency
@@ -124,3 +124,52 @@ Drafted by Codex. Independently reviewed by Codex agent
 `/root/integration_review` (AI), with reciprocal host/client/native reviews.
 The review included implementation, operator documentation and test evidence;
 it did not qualify independent networks or publish a new binary release.
+
+## Robustness follow-up
+
+The follow-up review found three failures around the transport and invitation
+setup. A disconnected client or stopped response stream could retain a held
+PAGE request's slot for its entire wait. A panic while holding the mailbox
+mutex could deadlock the request guard during unwinding. Invalid invitation
+setup arguments could fail after creating member state.
+
+The transport cancels only the abandoned request's wait, wakes it without a
+lost notification, and joins its storage worker before releasing resources.
+The mutex guard drops before the request guard during unwinding. Invitation
+joins validate their operation, paths and output destination before committing
+member state. Final exclusive file creation still handles filesystem races;
+later storage failures retain the existing recovery behavior.
+
+Regression tests cover connection close and STOP_SENDING with a second reader
+left waiting, subsequent PUT/PAGE requests, panic recovery in a child process
+with a timeout, and corrected TLS and iroh invitation joins after invalid
+setup attempts. The architecture continues to use iroh for connectivity, MLS
+for room confidentiality and the durable mailbox for delivery. These findings
+do not require another transport or replication protocol.
+
+### Repeat independent-runner testing
+
+The advisory [Iroh independent runners workflow](../.github/workflows/iroh-qualification.yml)
+builds one native test executable and runs a temporary host and client in two
+GitHub-hosted Ubuntu jobs. It runs on relevant pull requests and can be invoked
+manually with `gh workflow run iroh-qualification.yml --ref main`.
+
+The production client checks PUT, PAGE, exact duplicate submission, refusal of
+wrong credentials, endpoint and namespace, and a fresh client connection.
+A separate raw iroh client disables UDP and verifies that its PUT/PAGE paths
+use the public relay. The host reopens its mailbox after shutdown and checks
+the two expected records. Automatic routing and forced relay are reported as
+separate cases.
+
+Artifacts bind the source SHA, lockfile, executable, run, attempt and temporary
+test identity. The two roles must report distinct machine hashes and completed
+child cleanup. Only synthetic data and a short-lived credential for that test
+mailbox are exchanged; no endpoint secret or production credential is uploaded.
+The host has a finite lifetime and storage limit. Its public relay dependency
+makes this an advisory network test, separate from the required local tests.
+
+A successful run establishes connectivity between two hosted machines. Their
+NAT diversity is not measured. Home/mobile networks, long-running relay
+availability and comparative performance need separate measurements. The
+hosted Railway service continues to use TLS, and this work does not publish
+a binary release or move that service to iroh.

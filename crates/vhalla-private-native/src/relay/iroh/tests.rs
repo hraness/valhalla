@@ -4,6 +4,9 @@ use crate::relay::{
     FileStore, Limits,
 };
 use vhalla_private_kernel::{OperationId, OutboxKind};
+#[cfg(feature = "agent-rpc")]
+#[path = "qualification.rs"]
+mod qualification;
 fn namespace() -> RelayNamespace {
     RelayNamespace::from_bytes([9; 32]).unwrap()
 }
@@ -43,6 +46,7 @@ struct Fixture {
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<Result<()>>>,
     endpoint: IrohEndpoint,
+    handler: Option<RequestHandler>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -68,6 +72,7 @@ impl Fixture {
         let store = FileStore::open(&path, namespace()).unwrap();
         let service =
             Service::new_iroh(store, vec![credential()], ServiceLimits::default()).unwrap();
+        let handler = service.request_handler();
         let listener = IrohListener::bind([2; 32], "127.0.0.1:0".parse().unwrap(), relay).unwrap();
         listener.set_namespace(namespace());
         let endpoint = listener.endpoint();
@@ -79,6 +84,7 @@ impl Fixture {
             stop,
             worker: Some(worker),
             endpoint,
+            handler: Some(handler),
         };
         // A bounded readiness probe avoids depending on thread scheduling.
         let client = fixture.client(7);
@@ -100,6 +106,7 @@ impl Fixture {
         if let Some(worker) = self.worker.take() {
             worker.join().unwrap().unwrap();
         }
+        self.handler.take();
     }
 }
 impl Drop for Fixture {
@@ -115,6 +122,7 @@ impl Drop for Fixture {
                     .and_then(|result| result)
             })
             .unwrap_or(Ok(()));
+        self.handler.take();
         if thread::panicking() || result.is_err() {
             eprintln!("iroh test evidence retained at {}", self.path.display());
             if !thread::panicking() {
@@ -381,4 +389,76 @@ fn shutdown_does_not_inherit_an_abandoned_page_wait_deadline() {
         elapsed < Duration::from_secs(15),
         "shutdown took {elapsed:?}"
     );
+}
+
+#[test]
+fn disconnected_held_pages_release_slots_without_draining_the_host() {
+    cancelled_held_pages_release_slots(true);
+}
+
+#[test]
+fn stopped_held_page_streams_release_slots_without_draining_the_host() {
+    cancelled_held_pages_release_slots(false);
+}
+
+fn cancelled_held_pages_release_slots(disconnect: bool) {
+    let fixture = Fixture::new();
+    runtime().unwrap().block_on(async {
+        let endpoint = builder(None).unwrap().bind().await.unwrap();
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let connection = endpoint
+                .connect(fixture.endpoint.address().unwrap(), &protocol(namespace()))
+                .await
+                .unwrap();
+            let (mut send, recv) = connection.open_bi().await.unwrap();
+            let mut request = token(7).as_bytes().to_vec();
+            request.extend_from_slice(&page_wait_request(0, 1, Duration::from_secs(60)).unwrap());
+            send.write_all(&frame(OP_PAGE, &request)).await.unwrap();
+            send.finish().unwrap();
+            requests.push((connection, send, recv));
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fixture.handler.as_ref().unwrap().inflight_for_test() != 2 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("both long polls must hold their credential slots before disconnect");
+        for index in 0..2 {
+            let (connection, _, recv) = &mut requests[index];
+            if disconnect {
+                connection.close(0u32.into(), b"cancelled");
+            } else {
+                recv.stop(0u32.into()).unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while fixture.handler.as_ref().unwrap().inflight_for_test() != 1 - index {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect(
+                "cancelled long poll must release only its own slot without the 60-second wait",
+            );
+            if index == 0 {
+                assert!(
+                    tokio::time::timeout(
+                        Duration::from_millis(100),
+                        requests[1].2.read_to_end(MAX_RESPONSE + 4),
+                    )
+                    .await
+                    .is_err(),
+                    "cancelling one request must not end the other request's hold"
+                );
+                assert_eq!(fixture.handler.as_ref().unwrap().inflight_for_test(), 1);
+            }
+        }
+        drop(requests);
+        endpoint.close().await;
+    });
+    assert!(!fixture.stop.load(Ordering::Acquire));
+    let client = fixture.client(7);
+    assert_eq!(client.submit(&item(1)).unwrap().position, 1);
+    assert_eq!(client.page(0, 1).unwrap().records[0].item, item(1));
 }

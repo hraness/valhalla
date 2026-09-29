@@ -229,6 +229,11 @@ pub(super) async fn join(args: &Args, identity: Identity) -> Result<(), String> 
     let parsed = decode(&args.input("invite", INVITE_LIMIT, true)?)?;
     let account = Key::from_bytes(identity.public_key()).map_err(|_| REFUSED)?;
     let owner = args.key("owner")?;
+    // A bad operation must not strand a newly committed member and delivery
+    // profile before the request is created. Parse all scalar inputs first.
+    let operation = args.operation()?;
+    let validity = args.validity()?;
+    let limits = args.limits()?;
     ContactBootstrap::inspect(&parsed.offer, owner, account, super::now()?).map_err(|_| REFUSED)?;
     let addr = match &parsed.transport {
         ParsedTransport::Iroh { .. } => {
@@ -254,25 +259,43 @@ pub(super) async fn join(args: &Args, identity: Identity) -> Result<(), String> 
             None => addresses[0],
         }),
     };
+    let store = super::agent_setup::canonical_new_path(args.store()?, "member store")?;
     let delivery_dir = super::agent_setup::canonical_new_path(
         Path::new(args.value("delivery-dir")?),
         "delivery directory",
     )?;
-    if delivery_dir.exists() {
-        return Err("delivery directory must be a new path".into());
+    if store == delivery_dir {
+        return Err("member store and delivery directory must use different new paths".into());
     }
-    let creation = RoomCreation::from_contact(identity, &parsed.offer, owner, args.validity()?)
+    match std::fs::symlink_metadata(&delivery_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        _ => return Err("delivery directory must be a new path".into()),
+    }
+    let output = super::agent_setup::canonical_new_path(
+        Path::new(args.value("out")?),
+        "admission request output",
+    )?;
+    if output == store || output == delivery_dir {
+        return Err(
+            "admission request output must differ from the member store and delivery directory"
+                .into(),
+        );
+    }
+    vhalla_custody::open_private_directory(output.parent().ok_or("output parent required")?)
+        .map_err(|_| "admission request output parent must be owner-private 0700")?;
+    match std::fs::symlink_metadata(&output) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        _ => return Err("admission request output must be a new path".into()),
+    }
+    let creation = RoomCreation::from_contact(identity, &parsed.offer, owner, validity)
         .map_err(|_| REFUSED)?;
-    creation
-        .commit(args.store()?, args.limits()?)
-        .await
-        .map_err(|_| REFUSED)?;
+    creation.commit(&store, limits).await.map_err(|_| REFUSED)?;
 
     let identity =
         Identity::open(&args.identity).map_err(|_| "existing identity custody unavailable")?;
-    let hint = NativePrivateStore::locate_context(args.store()?).map_err(|_| REFUSED)?;
+    let hint = NativePrivateStore::locate_context(&store).map_err(|_| REFUSED)?;
     let context = super::context(hint.as_bytes())?;
-    let mut room = RoomSession::open(identity, args.store()?, context)
+    let mut room = RoomSession::open(identity, &store, context)
         .await
         .map_err(|_| REFUSED)?;
 
@@ -324,8 +347,10 @@ pub(super) async fn join(args: &Args, identity: Identity) -> Result<(), String> 
     directory.sync_all().map_err(|_| REFUSED)?;
 
     let result = room
-        .contact_request(args.operation()?, &parsed.offer)
+        .contact_request(operation, &parsed.offer)
         .await
         .map_err(|_| REFUSED)?;
-    args.output(result.bytes())
+    // Recheck custody and use exclusive creation at publication; preflight
+    // cannot prevent a later filesystem race or I/O failure.
+    files::write(&output, result.bytes())
 }

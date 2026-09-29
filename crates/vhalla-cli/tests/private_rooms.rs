@@ -2324,6 +2324,111 @@ fn invite_bundle_journey(iroh: bool) {
     if !iroh {
         flags.push(("addr", addr.to_string()));
     }
+    // Pure option errors must leave these paths available for the corrected
+    // invocation, including both the iroh and TLS delivery profile variants.
+    for invalid in ["malformed".to_owned(), "00".repeat(16)] {
+        let mut invalid_flags = flags.clone();
+        invalid_flags
+            .iter_mut()
+            .find(|(name, _)| *name == "operation")
+            .unwrap()
+            .1 = invalid;
+        let result = f.run(
+            "join",
+            "member-key",
+            Some("member-room"),
+            &invalid_flags,
+            None,
+        );
+        assert!(!result.status.success());
+        assert!(!f.root.join("member-room").exists());
+        assert!(!delivery.exists());
+        assert!(!f.root.join("request").exists());
+    }
+    // A dangling leaf is still an occupied delivery path. Refuse before
+    // committing the member, and preserve the operator's link unchanged.
+    let absent_target = f.root.join("absent-delivery-target");
+    symlink(&absent_target, &delivery).unwrap();
+    let result = f.run("join", "member-key", Some("member-room"), &flags, None);
+    assert!(!result.status.success());
+    assert!(fs::symlink_metadata(&delivery).unwrap().is_symlink());
+    assert_eq!(fs::read_link(&delivery).unwrap(), absent_target);
+    assert!(!absent_target.exists());
+    assert!(!f.root.join("member-room").exists());
+    assert!(!f.root.join("request").exists());
+    fs::remove_file(&delivery).unwrap();
+
+    symlink(&f.root, f.root.join("setup-alias")).unwrap();
+    for (store, delivery_path) in [
+        ("member-room", "member-room"),
+        ("member-room", "./member-room"),
+        ("member-room", "setup-alias/member-room"),
+        ("member-room", "member-room/delivery"),
+        ("member-delivery/room", "member-delivery"),
+    ] {
+        let mut overlapping_flags = flags.clone();
+        overlapping_flags
+            .iter_mut()
+            .find(|(name, _)| *name == "delivery-dir")
+            .unwrap()
+            .1 = f.path(delivery_path);
+        let result = f.run("join", "member-key", Some(store), &overlapping_flags, None);
+        assert!(!result.status.success(), "accepted overlapping setup paths");
+        assert!(!f.root.join("member-room").exists());
+        assert!(!delivery.exists());
+        assert!(!f.root.join("request").exists());
+    }
+    f.write("existing-request", b"preserve this exact output");
+    let absent_output = f.root.join("absent-output-target");
+    symlink(&absent_output, f.root.join("dangling-request")).unwrap();
+    fs::create_dir(f.root.join("public-output")).unwrap();
+    fs::set_permissions(
+        f.root.join("public-output"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    for output in [
+        "existing-request",
+        "missing-output-parent/request",
+        "setup-alias/member-room",
+        "setup-alias/member-delivery",
+        "member-room/request",
+        "member-delivery/request",
+        "dangling-request",
+        "public-output/request",
+    ] {
+        let mut invalid_flags = flags.clone();
+        invalid_flags
+            .iter_mut()
+            .find(|(name, _)| *name == "out")
+            .unwrap()
+            .1 = f.path(output);
+        let result = f.run(
+            "join",
+            "member-key",
+            Some("member-room"),
+            &invalid_flags,
+            None,
+        );
+        assert!(
+            !result.status.success(),
+            "accepted invalid output: {output}"
+        );
+        assert!(!f.root.join("member-room").exists());
+        assert!(!delivery.exists());
+        assert!(!f.root.join("request").exists());
+        assert_eq!(
+            fs::read(f.root.join("existing-request")).unwrap(),
+            b"preserve this exact output"
+        );
+        assert_eq!(
+            fs::read_link(f.root.join("dangling-request")).unwrap(),
+            absent_output
+        );
+        assert!(!absent_output.exists());
+        assert!(!f.root.join("missing-output-parent").exists());
+        assert!(!f.root.join("public-output/request").exists());
+    }
     f.ok("join", "member-key", Some("member-room"), &flags);
     let profile: Value =
         serde_json::from_slice(&fs::read(delivery.join("delivery.json")).unwrap()).unwrap();
