@@ -62,6 +62,10 @@ await writeFile(resolve(output, "404.html"), notFoundHtml.replace(footerMarker, 
 await cp(fileURLToPath(import.meta.resolve("@hraness/site-footer/stylex.css")), resolve(output, "footer.css"));
 const files = ["typography.css", "reading.css", "paper-theme.css", "palette-bridge.css", "palette-system.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css", "plain-site.css", "plain-publication.css", "status-page.css", "site-shell.css"];
 for (const name of files) await cp(resolve(kit, name), resolve(output, "design", name));
+// Launch illustrations: the kit's mockup styles, Valhalla's own, and the launch film when it has been rendered.
+await cp(fileURLToPath(import.meta.resolve("@hraness/design-kit/mockups.css")), resolve(output, "design", "mockups.css"));
+await cp(resolve(root, "launch", "launch.css"), resolve(output, "launch.css"));
+if (await access(resolve(root, "media")).then(() => true, () => false)) await cp(resolve(root, "media"), resolve(output, "media"), { recursive: true });
 // Keep the exact web fonts and license/provenance files, not native OTF copies
 // or the embedded TypeScript font data used only by social-card generators.
 for (const family of ["nebula-sans", "instrument-serif", "geist-mono"]) {

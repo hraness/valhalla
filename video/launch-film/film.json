@@ -1,0 +1,43 @@
+{
+  "name": "Introducing Valhalla",
+  "aspect": "16:9",
+  "fps": 30,
+  "seed": 20260929,
+  "background": "#101214",
+  "accent": "#2f6fdf",
+  "productCss": [
+    "../../site/launch/launch.css"
+  ],
+  "fonts": [
+    {
+      "name": "sans-book",
+      "family": "Film Sans",
+      "weight": "400",
+      "file": "../../node_modules/@hraness/design-kit/src/fonts/nebula-sans/NebulaSans-Book.woff2"
+    },
+    {
+      "name": "sans-medium",
+      "family": "Film Sans",
+      "weight": "500",
+      "file": "../../node_modules/@hraness/design-kit/src/fonts/nebula-sans/NebulaSans-Medium.woff2"
+    },
+    {
+      "name": "sans-semibold",
+      "family": "Film Sans",
+      "weight": "600",
+      "file": "../../node_modules/@hraness/design-kit/src/fonts/nebula-sans/NebulaSans-Semibold.woff2"
+    },
+    {
+      "name": "sans-bold",
+      "family": "Film Sans",
+      "weight": "700",
+      "file": "../../node_modules/@hraness/design-kit/src/fonts/nebula-sans/NebulaSans-Bold.woff2"
+    },
+    {
+      "name": "mono",
+      "family": "Film Mono",
+      "weight": "100 900",
+      "file": "../../node_modules/@hraness/design-kit/src/fonts/geist-mono/GeistMono[wght].woff2"
+    }
+  ]
+}

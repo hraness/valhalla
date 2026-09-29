@@ -1,0 +1,155 @@
+/*
+ * Valhalla's launch illustrations: the room view, the tour stepper and the two
+ * fact cards. Loaded after the design kit's mockups.css on the home page and
+ * the launch post, and inlined by the launch film. Colors follow the inherited
+ * color-scheme through light-dark(), like the kit's mockups.
+ */
+
+/* Room view ------------------------------------------------------------ */
+
+.hkm-vh-room .vh-room {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem 1.1rem 1.1rem;
+  font-family: var(--hkm-font);
+  color: var(--hkm-fg);
+  background: var(--hkm-bg);
+  min-height: 17rem;
+  align-content: start;
+}
+.vh-room-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--hkm-line);
+}
+.vh-room-name { font-weight: 650; }
+.vh-room-members { color: var(--hkm-muted); font-size: 0.85em; }
+.vh-posts { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.9rem; }
+.vh-post { display: grid; grid-template-columns: 2rem 1fr; gap: 0.7rem; align-items: start; }
+.vh-post-mark {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  font-weight: 650;
+  color: #fff;
+  background: light-dark(#4b5563, #6b7280);
+}
+.vh-post-mark[data-vh-role="agent"] { background: var(--hkm-accent); border-radius: 0.5rem; }
+.vh-post-body { min-width: 0; }
+.vh-post-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.5rem; margin: 0 0 0.3rem; font-size: 0.85em; }
+.vh-post-role { color: var(--hkm-muted); }
+.vh-post-text { margin: 0; line-height: 1.45; }
+.vh-badge {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-family: var(--hkm-mono);
+  font-size: 0.78em;
+  border: 1px solid var(--hkm-line);
+  color: var(--hkm-muted);
+  background: var(--hkm-surface);
+}
+.vh-badge[data-vh-tone="ok"] { color: light-dark(#17663a, #7fdca4); border-color: light-dark(#b8e3c8, #235a3a); background: light-dark(#eefaf2, #12251a); }
+.vh-badge[data-vh-tone="wait"] { color: light-dark(#8a5300, #f2c066); border-color: light-dark(#f0d6a8, #5c4418); background: light-dark(#fff7e8, #2a2112); }
+.vh-stored {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0.6rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.6rem;
+  border: 1px dashed var(--hkm-line);
+  background: var(--hkm-surface);
+  font-size: 0.85em;
+}
+.vh-stored span { color: var(--hkm-muted); }
+.vh-grant {
+  justify-self: start;
+  width: min(100%, 22rem);
+  padding: 0.9rem 1rem;
+  border-radius: 0.8rem;
+  border: 1px solid var(--hkm-line);
+  background: var(--hkm-card);
+  box-shadow: 0 1px 2px light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.4));
+}
+.vh-grant-title { margin: 0 0 0.6rem; font-weight: 650; }
+.vh-grant dl { margin: 0; display: grid; gap: 0.35rem; }
+.vh-grant dl div { display: grid; grid-template-columns: 5.5rem 1fr; gap: 0.5rem; }
+.vh-grant dt { color: var(--hkm-muted); }
+.vh-grant dd { margin: 0; font-family: var(--hkm-mono); font-size: 0.9em; }
+.vh-grant-foot { margin: 0.7rem 0 0; color: var(--hkm-muted); font-size: 0.85em; }
+.vh-composer {
+  margin-top: 0.2rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--hkm-line);
+  color: var(--hkm-faint);
+  background: var(--hkm-field);
+  font-size: 0.85em;
+}
+
+/* Tour stepper: radio inputs, no script ---------------------------------- */
+
+.vh-tour { display: grid; gap: 0.75rem; }
+.vh-tour-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.vh-tour-controls legend {
+  margin-bottom: 0.4rem;
+  font-size: 0.85em;
+  color: var(--muted-foreground, #5e6570);
+}
+.vh-tour-choice input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.vh-tour-choice label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d9dce1);
+  cursor: pointer;
+  font-size: 0.85em;
+  line-height: 1.2;
+}
+.vh-tour-number { font-variant-numeric: tabular-nums; font-weight: 650; }
+.vh-tour-label { display: none; }
+.vh-tour-choice input:checked + label { background: var(--foreground, #15171a); color: var(--background, #fff); border-color: transparent; }
+.vh-tour-choice input:checked + label .vh-tour-label { display: inline; }
+.vh-tour-choice input:focus-visible + label { outline: 2px solid var(--hkm-accent, #2f6fed); outline-offset: 2px; }
+.vh-tour-panel { display: none; }
+.vh-tour:has(input[value="1"]:checked) .vh-tour-panel[data-vh-step="1"],
+.vh-tour:has(input[value="2"]:checked) .vh-tour-panel[data-vh-step="2"],
+.vh-tour:has(input[value="3"]:checked) .vh-tour-panel[data-vh-step="3"],
+.vh-tour:has(input[value="4"]:checked) .vh-tour-panel[data-vh-step="4"],
+.vh-tour:has(input[value="5"]:checked) .vh-tour-panel[data-vh-step="5"],
+.vh-tour:has(input[value="6"]:checked) .vh-tour-panel[data-vh-step="6"],
+.vh-tour:has(input[value="7"]:checked) .vh-tour-panel[data-vh-step="7"],
+.vh-tour:has(input[value="8"]:checked) .vh-tour-panel[data-vh-step="8"] { display: block; }
+
+/* Fact cards ----------------------------------------------------------- */
+
+.vh-card {
+  padding: 1.2rem 1.3rem;
+  border-radius: 1rem;
+  border: 1px solid var(--border, #d9dce1);
+  background: var(--card, transparent);
+}
+.vh-card-kicker { margin: 0 0 0.8rem; font-size: 0.8em; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-foreground, #5e6570); }
+.vh-limits ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.7rem; }
+.vh-limits li { display: grid; gap: 0.1rem; padding-left: 0.9rem; border-left: 3px solid light-dark(#f0b44c, #c08a2a); }
+.vh-limits li span { color: var(--muted-foreground, #5e6570); }
+.vh-status dl { margin: 0; display: grid; gap: 0.5rem; }
+.vh-status dl div { display: grid; grid-template-columns: 6rem 1fr; gap: 0.75rem; }
+.vh-status dt { color: var(--muted-foreground, #5e6570); }
+.vh-status dd { margin: 0; font-weight: 600; }
+.vh-card-foot { margin: 0.9rem 0 0; color: var(--muted-foreground, #5e6570); }

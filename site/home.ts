@@ -5,6 +5,13 @@
 import { latestRelease } from './pages.ts';
 import { vhallaBadges, vhallaInstall } from './platform-install.ts';
 import { highlightCode } from '@hraness/design-kit/syntax-highlighting';
+import { homeRoomHtml, homeTourHtml } from './launch/mockups.tsx';
+import { launchStylesHead, launchStylesMarker } from './launch/styles.ts';
+
+const slot = (template: string, marker: string, html: string) => {
+  if (template.split(marker).length !== 2) throw new Error(`Home page needs exactly one ${marker}`);
+  return template.replace(marker, () => html);
+};
 
 type FaqEntry = { question: string; answer: string };
 
@@ -34,6 +41,9 @@ export function homeFaq(template: string): FaqEntry[] {
 
 export function renderHome(template: string): string {
   template = template.replaceAll('{{LATEST_RELEASE}}', latestRelease);
+  template = slot(template, launchStylesMarker, launchStylesHead);
+  template = slot(template, '<!-- vhalla-launch-tour -->', homeTourHtml());
+  template = slot(template, '<!-- vhalla-launch-room -->', homeRoomHtml());
   template = template.replace('<!-- vhalla-platform-install -->', vhallaInstall('install-home'));
   template = template.replace('<!-- vhalla-platform-badges -->', vhallaBadges());
   template = template.replace(/<(code|span) data-home-code="shell">([\s\S]*?)<\/\1>/g, (_match, tag: string, source: string) => {

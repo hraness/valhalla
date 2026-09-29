@@ -1,0 +1,21 @@
+{
+  "name": "valhalla-launch-film",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "scripts": {
+    "build": "bun build.ts",
+    "build:portrait": "bun build.ts --aspect 9:16",
+    "draft": "bun build.ts --scale 0.5 --fps 15",
+    "still": "bun build.ts && slopcamera html still --input out/scene.json --at 3,7,11,15.5,19.5,24,28.5,33,37,41.5 --output out/stills",
+    "still:portrait": "bun build.ts --aspect 9:16 && slopcamera html still --input out/9x16/scene.json --at 3,7,11,15.5,19.5,24,28.5,33,37,41.5 --output out/9x16/stills",
+    "render": "bun build.ts && slopcamera html render --input out/scene.json --json > out/export.json",
+    "render:portrait": "bun build.ts --aspect 9:16 && slopcamera html render --input out/9x16/scene.json --json > out/9x16/export.json",
+    "deliver": "slopcamera html deliver out/export.json --basename introducing-valhalla --poster-at 24 --social-at 24 --cuts 1:1 --beats out/beats.json --per-beat-clips --output out/deliver",
+    "deliver:portrait": "slopcamera html deliver out/9x16/export.json --basename introducing-valhalla-vertical --poster-at 24 --social-at 24 --beats out/9x16/beats.json --per-beat-clips --output out/deliver-vertical",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hraness/slopcamera": "3.8.1"
+  }
+}

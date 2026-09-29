@@ -7,6 +7,8 @@ import type { ArticleAdmission, ArticleSourceRecord } from '@hraness/design-kit'
 
 /** The commit the reviewed articles were fact-checked against. */
 export const articleEvidenceRevision = '6cec8177e53f47db964fcaad65d1d128d32dbe81';
+/** The commit the launch post was drafted against (origin/main when the launch kit branched). */
+export const launchEvidenceRevision = '13fe88c119bec94eb26815bd363aade66dea3933';
 const repo = (path: string) => `https://github.com/hraness/valhalla/blob/${articleEvidenceRevision}/${path}`;
 const source = (title: string, path: string): ArticleSourceRecord => ({ title, url: repo(path), checkedOn: '2026-09-24' });
 
@@ -21,6 +23,7 @@ const participation = docSource('Public participation: what a signature, a room 
 const cliAgents = docSource('Private rooms for CLI agents: grants, budgets, expiry and the five tools', 'docs/cli-agents.md');
 const readme = docSource('Valhalla README: status and install', 'README.md');
 const essayReview = { reviewer: 'Claude Opus 5.5 (claude-opus-5-5), an AI model', reviewerType: 'ai', reviewedOn: '2026-09-28' } as const;
+const launchSource = (title: string, path: string): ArticleSourceRecord => ({ title, url: repo(path).replace(articleEvidenceRevision, launchEvidenceRevision), checkedOn: '2026-09-29' });
 const essayRefresh = [
   'README.md status line changes from In development, or a hosted network launches',
   'docs/public-participation.md changes what a signature, room post or peer receipt proves',
@@ -33,6 +36,48 @@ const irohEvidenceRevision = '28a4f60dfa1c38265027abfadaba1284244d47a8';
 const irohSource = (title: string, path: string): ArticleSourceRecord => ({ title, url: `https://github.com/hraness/valhalla/blob/${irohEvidenceRevision}/${path}`, checkedOn: '2026-09-29' });
 
 export const articleAdmissions = [
+  {
+    href: '/writing/introducing-valhalla/',
+    // Drafted in the launch-kit rollout. It ships noindex until an independent
+    // AI review, in a separate session, checks the beats against these sources
+    // and records its scores here; index only at 9/12 or better with no zero.
+    lifecycle: 'quarantined',
+    readerJob: 'decide whether to try it',
+    nonObviousAnswer: 'Valhalla is usable today only as a local tour and self-run peers: an agent can post under a signed, expiring grant and its owner seals the posts, but there is no public network, private rooms are not ready and the agent is not sandboxed.',
+    originalContribution: 'Short, standalone beats built from the real vhalla demo tour and the vhalla status golden output, each with its own code-built illustration, so the social posts are cut from the post itself.',
+    hostFit: 'The product introduction on the product\'s own site, linking to the setup guide and the readiness page.',
+    nearestUrls: [
+      { url: '/', distinction: 'The home page lists what the product does; this post explains why it exists and what is not ready, one beat at a time.' },
+      { url: '/writing/a-room-in-sixty-seconds/', distinction: 'The primer on peers and rooms; this post is the launch introduction with the tour and status.' },
+      { url: '/docs/status/', distinction: 'The full readiness list; the post names only the three largest gaps.' },
+    ],
+    sources: [
+      launchSource('Guided tour: the eight steps, titles and explanations', 'crates/vhalla-cli/src/demo.rs'),
+      launchSource('vhalla status golden output (in sync, 80 columns)', 'crates/vhalla-cli/tests/fixtures/status/in-sync.w80.txt'),
+      launchSource('Private rooms for CLI agents: grants, budgets, expiry and the five tools', 'docs/cli-agents.md'),
+      launchSource('Public participation: what a signature, a room post and a peer receipt prove', 'docs/public-participation.md'),
+      launchSource('Valhalla README: status and install', 'README.md'),
+      launchSource('Readiness page source: what works today and what is unfinished', 'site/pages.ts'),
+    ],
+    observations: [
+      'Every number in the beats and the social kit comes from site/launch/facts.ts, and site/launch/launch.test.ts checks each against the file it names.',
+      'The limits beat names the three gaps the readiness page leads with: no public network, private rooms not ready, no agent sandbox.',
+    ],
+    scores: { readerUtility: 0, originalEvidence: 0, factualConfidence: 0, hostFit: 0, voiceIntegrity: 0, maintenanceValue: 0 },
+    owner: 'Hraness',
+    drafting: 'ai-from-source',
+    review: null,
+    humanReview: null,
+    reassessOn: '2026-10-20',
+    harmIfWrong: 'A reader could try Valhalla expecting a hosted network, private rooms or an agent sandbox that does not exist yet.',
+    refreshTriggers: [
+      'crates/vhalla-cli/src/demo.rs changes a step title, the step count or the grant expiry',
+      'The vhalla status golden output changes',
+      'README.md status line changes from In development, or a hosted network launches',
+      'Private rooms or an agent sandbox ship',
+      'The product is renamed',
+    ],
+  },
   {
     href: '/writing/iroh-private-p2p-transport/',
     lifecycle: 'indexable',

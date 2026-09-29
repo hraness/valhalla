@@ -2,6 +2,8 @@ import { docs, docKindLabels, type DocPage, type DocKind } from './pages.ts';
 import { compare, useCases } from './compare.ts';
 import { writing } from './writing.ts';
 import { socialCardAlt } from './social-cards.ts';
+import { LAUNCH_SLUG } from './launch/beats.ts';
+import { launchStylesHead, launchStylesMarker } from './launch/styles.ts';
 import { articleProvenanceFromAdmission, renderArticleHtml, renderArticleIndexHtml, renderArticleRelatedHtml, renderArticleSourcesHtml, type ArticleRelatedLink } from '@hraness/design-kit';
 import { relatedFor } from '@hraness/design-kit/portfolio';
 import { articleJsonLd, blogJsonLd, serializeJsonLd, type ArticleDiscovery, type SearchSite } from '@hraness/web-discovery';
@@ -58,10 +60,11 @@ const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }
   ],
 });
 
-type HeadOptions = { url: string; title: string; description: string; shareTitle: string; ogImage: string; jsonLd: string; ogType?: string; robots?: string; extraHead?: string };
+type HeadOptions = { url: string; title: string; description: string; shareTitle: string; ogImage: string; jsonLd: string; ogType?: string; robots?: string; extraHead?: string; launchStyles?: boolean };
 
 export function renderHead(template: string, opts: HeadOptions): string {
   let head = template.slice(0, template.indexOf('  <body>'))
+    .replace(`\n  ${launchStylesMarker}`, opts.launchStyles ? `\n${launchStylesHead}` : '')
     .replace('data-hraness-pattern="cells"', 'data-hraness-pattern="none"')
     .replace(/<title>.*?<\/title>/, `<title>${escape(opts.title)}</title>`)
     .replace(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${escape(opts.description)}">`)
@@ -235,6 +238,7 @@ export function renderArticle(article: Article, template: string): string {
     jsonLd: graph,
     ogType: 'article',
     ...(indexable ? {} : { robots: 'noindex, follow' }),
+    launchStyles: article.slug === LAUNCH_SLUG,
     extraHead: `${articleHead}\n${feedLinks}\n    <meta property="article:published_time" content="${dayStart(article.published)}">`,
   });
   const toc = article.headings.length >= 4 ? article.headings.slice(0, 8).map(heading => ({ href: `#${heading.id}` as `#${string}`, label: heading.label })) : [];
