@@ -36,7 +36,7 @@ pub(crate) fn overview() -> String {
     #[cfg(all(unix, feature = "experimental-private"))]
     everyday.push_str("  vhalla private-host init HOME   Host private rooms on this computer\n");
     #[cfg(unix)]
-    everyday.push_str("  vhalla menubar                  Show Valhalla in the menu bar\n");
+    everyday.push_str("  vhalla status                   Rooms, outputs and what to do next\n");
     if !everyday.is_empty() {
         text.push_str("\nEveryday\n");
         text.push_str(&everyday);
@@ -65,7 +65,7 @@ fn topics() -> Vec<&'static str> {
     #[cfg(all(unix, feature = "experimental-network"))]
     topics.push("experimental");
     #[cfg(unix)]
-    topics.extend(["menubar", "outputs"]);
+    topics.extend(["status", "tui", "doctor", "commands", "outputs", "menubar"]);
     topics.extend(["support", "all"]);
     topics
 }
@@ -110,10 +110,13 @@ pub(crate) fn root() -> String {
     }
     #[cfg(unix)]
     text.push_str(
-        "\nMenu bar\n\
-         \x20 menubar               Show Valhalla in the menu bar\n\
-         \x20 menubar install       Start the menu bar when you log in\n\
-         \x20 outputs               Print the folder the menu bar lists\n",
+        "\nThis computer\n\
+         \x20 status                Rooms, outputs and what to do next (--json)\n\
+         \x20 tui                   The status screen (--snapshot, --json)\n\
+         \x20 outputs               Files agents saved: list, open, reveal\n\
+         \x20 doctor                Check the Valhalla folder and login items\n\
+         \x20 commands --json       Every command, for agents\n\
+         \x20 menubar               The menu bar (being retired; use status)\n",
     );
     text.push_str(
         "\nOptions\n\
@@ -207,10 +210,58 @@ Examples
 ";
 
 #[cfg(unix)]
-const OUTPUTS: &str = "Usage: vhalla outputs
+const OUTPUTS: &str = "Usage: vhalla outputs [--json]
+       vhalla outputs list [--json]
+       vhalla outputs open [NAME] [--json]
+       vhalla outputs reveal NAME [--json]
 
-Create the outputs folder if needed and print its path. Agents save finished
-files there, and the menu bar lists them newest first.
+Agents save finished files in the outputs folder.
+
+Commands
+  (none)    Create the folder if needed and print its path
+  list      The files in it, newest first
+  open      Open the folder, or one file in it
+  reveal    Show one file in Finder
+
+NAME is a file name inside the folder, not a path.
+
+Examples
+  vhalla outputs list --json
+  vhalla outputs open report.md
+";
+
+#[cfg(unix)]
+const CONTROL: &str = "Usage: vhalla status [--json]
+       vhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE [--json]
+       vhalla tui [--snapshot|--json] [--width N]
+       vhalla doctor [--json]
+       vhalla doctor retire [--json]
+       vhalla commands --json
+
+Each command runs, answers and exits. Nothing keeps running in the background.
+
+Commands
+  status          Whether your rooms are in sync, sends still waiting or
+                  that didn't go through, and the newest outputs
+  status refresh  Read room status from your node and save it
+  tui             The same status as a screen; q quits, r reloads.
+                  --snapshot prints it, --json prints what status --json does
+  doctor          Check the Valhalla folder, saved room status and login
+                  items the old menu bar left
+  doctor retire   Stop the old menu bar opening at login. The login item is
+                  renamed to NAME.retired-TIME, never deleted, and doctor
+                  prints the command that restores it
+  commands        Every command with whether it reads or changes something
+
+--json prints one line: {ok, schema, generatedAt, data, next} or
+{ok:false, error:{code, message, next}}. Exit status: 0 ok, 1 failed,
+2 usage, 3 needs a person.
+
+Examples
+  vhalla status --json
+  vhalla status refresh ~/valhalla/social ~/valhalla/replica REALM ~/valhalla/node --config node.toml
+  vhalla tui --snapshot --width 80
+  vhalla doctor retire
 ";
 
 #[cfg(all(unix, feature = "experimental-network"))]
@@ -222,7 +273,9 @@ fn all() -> String {
         "vhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla identity backup <existing-directory>\nvhalla identity restore <new-directory>   # phrase on stdin\n",
     );
     #[cfg(unix)]
-    text.push_str("vhalla menubar [run|install|uninstall|status]\nvhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE\nvhalla outputs\nvhalla support [--json|dismiss|snooze|enable|status --json]\n");
+    text.push_str("vhalla status [--json]\nvhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE [--json]\nvhalla tui [--snapshot|--json] [--width N]\nvhalla doctor [retire] [--json]\nvhalla commands --json\nvhalla outputs [list|open [NAME]|reveal NAME] [--json]\n");
+    #[cfg(unix)]
+    text.push_str("vhalla menubar [run|install|uninstall|status]\nvhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE\nvhalla support [--json|dismiss|snooze|enable|status --json]\n");
     #[cfg(all(unix, feature = "experimental-network"))]
     text.push_str(&format!("\n{EXPERIMENTAL}\n"));
     #[cfg(all(unix, feature = "experimental-social"))]
@@ -263,6 +316,8 @@ fn topic(name: &str) -> Option<String> {
         #[cfg(unix)]
         "outputs" => OUTPUTS.to_owned(),
         #[cfg(unix)]
+        "status" | "tui" | "doctor" | "commands" => CONTROL.to_owned(),
+        #[cfg(unix)]
         #[cfg(all(unix, feature = "experimental-network"))]
         "experimental" => EXPERIMENTAL.to_owned(),
         #[cfg(all(unix, feature = "experimental-social"))]
@@ -292,6 +347,13 @@ fn is_help_flag(arg: &std::ffi::OsString) -> bool {
 
 /// Resolve every help form. `None` means the arguments are not a help
 /// request and go to the ordinary command runners.
+/// The page `NAME --help` prints, for commands that take help anywhere in
+/// their arguments.
+#[cfg(unix)]
+pub(crate) fn page_for(name: &str) -> Option<String> {
+    topic(name)
+}
+
 pub(crate) fn resolve(args: &[std::ffi::OsString]) -> Option<Help> {
     match args {
         [] => Some(Help::Page(overview())),

@@ -1,0 +1,12 @@
+== Status ==
+Rooms     4 rooms in sync
+          Updated 5 min ago
+          height 42 · 0 waiting · 0 failed
+Outputs   1 file · newest first
+          summary 0.md · 2 KB · 20 min ago
+          /home/you/.local/share/valhalla/outputs
+Login     com.hraness.valhalla.menubar isn't Valhalla's, so it's left alone
+
+== Outputs ==
+/home/you/.local/share/valhalla/outputs
+summary 0.md · 2 KB · 20 min ago

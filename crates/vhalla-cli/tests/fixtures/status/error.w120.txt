@@ -1,0 +1,9 @@
+== Status ==
+Rooms     ! Couldn't read your rooms
+          Check that your node is running, then refresh
+Outputs   No outputs yet · agents save finished files here
+          /home/you/.local/share/valhalla/outputs
+
+== Outputs ==
+/home/you/.local/share/valhalla/outputs
+No outputs yet. Agents save finished files here.
