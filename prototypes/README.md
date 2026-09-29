@@ -11,7 +11,7 @@ activates a production capability.
 | [`agent-compartment`](agent-compartment/README.md) | Fixed-room provider disclosure broker and actual macOS file/network/process denial probes; no production sandbox or provider calls |
 | [`browser-archive-recovery`](browser-archive-recovery/README.md) | Authenticated per-snapshot destinations, real IndexedDB quota abort and worker-termination recovery; no production migration |
 | [`device-recovery-policy`](device-recovery-policy/README.md) | Exhaustive bounded loss/partition histories and a counterexample to unilateral timeout recovery |
-| `botcaptcha` | Signed, context-bound SHA-256 challenge work and one-use replay; superseded by `crates/vhalla-botcaptcha` Hashcash mode |
+| [`retired/botcaptcha`](retired/README.md) | Signed, context-bound SHA-256 challenge work and one-use replay; superseded by `crates/vhalla-botcaptcha` Hashcash mode and retired from CI (manual only) |
 | `attestation` | Portable, hardware-key, and TEE/RATS evidence policy |
 | `witness` | Bounded deterministic program execution and work receipts |
 | `witness-vectors` | Independent Python `struct`/`hashlib` oracle for the witness-v1 encodings: `generate.py` writes `/vectors/witness-v1.json`, `verify-vectors.py` re-derives every digest in CI, and the crates assert the hex verbatim |
@@ -51,7 +51,11 @@ experiment opens loopback UDP sockets and starts owned child processes. The
 social-retrieval fixture uses explicitly pinned native loopback peers; discovery
 parity executes an actual WASM module. Other references state their model or native
 boundary in their guides. The nested browser-record fixture has separate native/WASM
-and actual-browser gates in its README. Run every top-level prototype with:
+and actual-browser gates in its README. CI checks every top-level prototype nightly, on release, and on each pull
+request or main push that touches it or a crate it depends on
+(`.github/scripts/verify_scope.py`). Prototypes under
+[`retired/`](retired/README.md) are manual only. Run every top-level
+prototype with:
 
 ```console
 for manifest in prototypes/*/Cargo.toml; do
