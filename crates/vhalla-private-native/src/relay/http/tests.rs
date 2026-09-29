@@ -79,7 +79,13 @@ fn exchange_with_timeout(
     let mut socket = TcpStream::connect(address).unwrap();
     socket.set_read_timeout(Some(timeout)).unwrap();
     socket.write_all(raw).unwrap();
-    socket.shutdown(std::net::Shutdown::Write).unwrap();
+    if let Err(error) = socket.shutdown(std::net::Shutdown::Write) {
+        // A refused request can already be closed before this half-close.
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::NotConnected
+        ));
+    }
     let mut response = Vec::new();
     if let Err(error) = socket.read_to_end(&mut response) {
         // Refusal may close with unread hostile request bytes. macOS can reset

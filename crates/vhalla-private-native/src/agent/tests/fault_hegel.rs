@@ -38,8 +38,8 @@ struct Shadow {
     delivered: [BTreeMap<Vec<u8>, u64>; 2],
     /// Attempted bodies by operation, for uncertain-commit accounting.
     pending_body: BTreeMap<OperationId, Vec<u8>>,
-    /// Highest `sent` index ever admitted to each inbox; any lower index is
-    /// ratchet-past and rejects before publish.
+    /// Highest `sent` index ever admitted to each inbox. The kernel retains
+    /// four generations, including the latest, for out-of-order delivery.
     max_wire: [Option<usize>; 2],
     ops: u64,
     queued: u64,
@@ -165,7 +165,7 @@ async fn reopen_member(
 
 #[hegel::test(test_cases = 64)]
 fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
-    block_on(async {
+    async {
         let mut pair = Pair::fresh(100, 100).await;
         pair.join().await;
         let mut shadow = Shadow::new();
@@ -247,9 +247,9 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                     }
                 }
                 // Deliver a committed owner wire to the member, with a
-                // drawn storage fault on the member's disk. Delivery is
-                // epoch-ordered: indexes ahead of the delivered prefix are
-                // ratchet-rejected before the publish point.
+                // drawn storage fault on the member's disk. A later wire
+                // leaves a bounded window of skipped earlier wires available;
+                // retained retries resolve to their committed inbox position.
                 4..=6 => {
                     let incoming = &shadow.sent[0];
                     if incoming.is_empty() {
@@ -265,7 +265,8 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                         assert_eq!(message.body(), body.as_slice());
                         continue;
                     }
-                    if shadow.max_wire[1].is_some_and(|max| i < max) {
+                    // Kernel drafts/membership use SenderRatchetConfiguration::new(4, 32).
+                    if shadow.max_wire[1].is_some_and(|max| max.saturating_sub(i) >= 4) {
                         // Ratchet-past wire: refused before publish under
                         // any fault draw, so the op completes immediately.
                         assert!(pair.member.receive(&wire, now).await.is_err());
@@ -298,6 +299,10 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
                             assert_eq!(message.body(), body.as_slice());
                             let prior = shadow.delivered[1].insert(wire, message.sequence());
                             assert!(prior.is_none());
+                            // A live admission advances the ratchet too; resync
+                            // skips entries already recorded in this shadow.
+                            let high = shadow.max_wire[1].get_or_insert(i);
+                            *high = (*high).max(i);
                         }
                         _ => {
                             assert!(pair.member.receive(&wire, now).await.is_err());
@@ -399,7 +404,9 @@ fn crashes_and_uncertain_commits_preserve_queue_custody(tc: TestCase) {
             &mut shadow,
         )
         .await;
-    });
+    }
+    .now_or_never()
+    .expect("native scenario parked outside an explicitly injected crash");
 }
 
 /// Read back the committed artifact bytes at an exact outbox position —
