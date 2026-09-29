@@ -20,11 +20,60 @@ on:
 permissions:
   contents: read
 
+# Pull requests cancel their superseded runs. Main, dispatch and release runs
+# group by commit so a later merge never cancels an earlier commit's gate.
 concurrency:
-  group: rust-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: rust-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Default-to-run change filter. A pull request skips the Rust, browser and
+  # platform gates only when EVERY changed path is on the non-Rust allowlist
+  # below; any other path (including new top-level directories and vectors/)
+  # runs everything. Pushes to main, dispatches and release calls always run
+  # everything. `formal` also runs for docs/ because verify/cases.json binds
+  # model correspondence to documents there.
+  changes:
+    name: Change filter
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      formal: ${{ steps.filter.outputs.formal }}
+    steps:
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          set -euo pipefail
+          rust=true
+          formal=true
+          if [ "$EVENT" = pull_request ]; then
+            rows="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | [.filename, (.previous_filename // "")] | @tsv')"
+            count="$(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d ' ')"
+            paths="$(printf '%s\n' "$rows" | tr '\t' '\n' | sed '/^$/d')"
+            nonrust='^((site|docs|kb)/.+|bun\.lock|package\.json|vercel\.json|\.vercelignore|LICENSE|railway\.toml|[^/]+\.md)$'
+            # The files API lists at most 3,000 paths; anything incomplete runs everything.
+            if [ "$count" -gt 0 ] && [ "$count" = "$CHANGED_FILES" ] \
+              && ! printf '%s\n' "$paths" | grep -Evq "$nonrust" \
+              && ! printf '%s\n' "$paths" | grep -qx 'CHANGELOG.md'; then
+              rust=false
+              if ! printf '%s\n' "$paths" | grep -q '^docs/'; then
+                formal=false
+              fi
+            fi
+            printf 'Changed paths (%s):\n%s\n' "$count" "$paths"
+          fi
+          printf 'rust=%s formal=%s\n' "$rust" "$formal"
+          printf 'rust=%s\nformal=%s\n' "$rust" "$formal" >> "$GITHUB_OUTPUT"
+
   main-policy:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -37,6 +86,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
   formal:
+    needs: changes
+    if: needs.changes.outputs.formal == 'true'
     uses: ./.github/workflows/verification.yml
   quality:
     runs-on: ubuntu-latest
@@ -48,7 +99,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          shared-key: workspace
+          shared-key: quality
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -64,51 +116,83 @@ jobs:
 
   workspace-tests:
     name: Workspace tests (${{ matrix.name }})
-    needs: quality
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
+        # `cache` names the rust-cache key: lanes that compile the same
+        # package set share one. Lanes run under cargo-nextest (one process per
+        # test, all test binaries of a lane in parallel) unless `harness` is
+        # libtest: the vhalla-cli rooms_node suite serializes its four-process
+        # mesh tests with an in-process mutex that nextest would not honour.
         include:
           # vhalla-rooms-node is ~17min serial; the named long poles run in
           # dedicated lanes while the residual lane --skips them, so a new
           # test automatically lands in rooms-node and can never go uncovered.
           - name: rooms-node-heavy-a
+            cache: rooms-node
             packages: -p vhalla-rooms-node
             args: -- unix::tests::wal_tail_stays_bounded_over_long_run unix::tests::validator_set_rotates_at_activation_boundary
           - name: rooms-node-heavy-b
+            cache: rooms-node
             packages: -p vhalla-rooms-node
             args: -- unix::tests::decided_history_survives_interleaved_restarts unix::tests::sweep_decided_retires_exactly_dead_state unix::tests::tombstone_ids_stay_injected_across_drawn_slots unix::tests::wal_append_failure_safety_halts_then_recovers
           - name: rooms-node
+            cache: rooms-node
             packages: -p vhalla-rooms-node
             args: -- --skip wal_tail_stays_bounded_over_long_run --skip validator_set_rotates_at_activation_boundary --skip decided_history_survives_interleaved_restarts --skip sweep_decided_retires_exactly_dead_state --skip tombstone_ids_stay_injected_across_drawn_slots --skip wal_append_failure_safety_halts_then_recovers
           # The cli live-mesh suite spawns real `rooms node` subprocesses;
           # its longest poles run in a dedicated lane while the residual
           # lane --skips them, same split discipline as rooms-node above.
           - name: cli-heavy
+            cache: cli
+            harness: libtest
             packages: -p vhalla-cli
             args: -- enabled::live_mesh_soak_duplicate_churn_rotation_converges enabled::live_mesh_full_restart_resumes_mid_flight enabled::live_mesh_rotates_validator_set_mid_flight
           - name: cli
+            cache: cli
+            harness: libtest
             packages: -p vhalla-cli
             args: -- --skip enabled::live_mesh_soak_duplicate_churn_rotation_converges --skip enabled::live_mesh_full_restart_resumes_mid_flight --skip enabled::live_mesh_rotates_validator_set_mid_flight
           - name: stateful-storage
+            cache: stateful-storage
             packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
           - name: public-network
+            cache: public-network
             packages: -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
           - name: discovery-advertisements
+            cache: discovery-advertisements
             packages: -p arc-malachitebft-network -p arc-malachitebft-config -p arc-malachitebft-app
           - name: private-rooms
+            cache: private-rooms
             packages: -p vhalla-private-kernel -p vhalla-private-native -p vhalla-private-relay
           - name: remaining
+            cache: remaining
             packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          shared-key: workspace
-      - run: cargo test ${{ matrix.packages }} --all-targets --all-features --locked ${{ matrix.args }}
+          shared-key: tests-${{ matrix.cache }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        if: matrix.harness != 'libtest'
+        with:
+          tool: cargo-nextest@0.9.146
+      # Doctests are not run by nextest or `--all-targets`; workspace-aux runs
+      # `cargo test --workspace --doc`.
+      - name: Test (nextest)
+        if: matrix.harness != 'libtest'
+        run: cargo nextest run ${{ matrix.packages }} --all-targets --all-features --locked --no-fail-fast ${{ matrix.args }}
+        env:
+          TMPDIR: ${{ runner.temp }}
+      - name: Test (libtest)
+        if: matrix.harness == 'libtest'
+        run: cargo test ${{ matrix.packages }} --all-targets --all-features --locked ${{ matrix.args }}
         env:
           TMPDIR: ${{ runner.temp }}
       - name: Retain failed live-mesh soak diagnostics
@@ -133,7 +217,8 @@ jobs:
   # silently: only what this lane verifies belongs in it.
   windows-portable:
     name: Windows portable checks
-    needs: quality
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -144,6 +229,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: workspace-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Custody lint and tests
         run: |
           cargo clippy -p vhalla-custody --all-targets --all-features --locked -- -D warnings
@@ -157,7 +243,8 @@ jobs:
 
   workspace-aux:
     name: Workspace auxiliary checks
-    needs: quality
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -170,6 +257,7 @@ jobs:
         with:
           shared-key: workspace-aux
           cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Documentation and feature tests
         run: |
           cargo test --workspace --doc --all-features --locked
@@ -216,11 +304,15 @@ jobs:
       - name: DNS compatibility backport tests
         run: cargo test --locked --manifest-path vendor/libp2p-dns/Cargo.toml --features tokio -- backport_
 
+  # The browser qualification is four independent jobs. Only this one builds
+  # the production bundle, binds it to its delivery receipt, and uploads the
+  # `vhalla-browser` artifact that release.yml packages.
   browser-artifact:
     name: Browser production artifact
-    needs: quality
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 40
     outputs:
       manifest_sha256: ${{ steps.qualified-browser.outputs.manifest_sha256 }}
     steps:
@@ -233,6 +325,7 @@ jobs:
         with:
           shared-key: browser-artifact
           cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Browser and portable adapter lint
         run: cargo clippy --locked -p vhalla-browser -p vhalla-browser-storage -p vhalla-browser-vault --features vhalla-browser/private-rooms,vhalla-browser-storage/private-rooms,vhalla-browser-vault/private-storage --target wasm32-unknown-unknown -- -D warnings
       - name: Install pinned Trunk
@@ -259,8 +352,110 @@ jobs:
         run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-mixed-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)" --mixed-pilot
       - name: Exercise production private panel and archive recovery
         run: node browser/tools/qualify_private_panel.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-production-panel-results" --production
+      - name: Retain bounded browser runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vhalla-browser-runtime-evidence
+          path: |
+            ${{ runner.temp }}/vhalla-private-delivery-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-delivery-results/*.log
+            ${{ runner.temp }}/vhalla-private-delivery-results/*.png
+            ${{ runner.temp }}/vhalla-private-mixed-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-mixed-results/*.log
+            ${{ runner.temp }}/vhalla-private-mixed-results/*.png
+            ${{ runner.temp }}/vhalla-private-production-panel-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-production-panel-results/*.log
+            ${{ runner.temp }}/vhalla-private-production-panel-results/*.png
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Bind the upload to the successful production delivery receipt
+        id: qualified-browser
+        run: |
+          digest="$(python3 .github/scripts/verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-delivery-results/receipt.json")"
+          printf 'manifest_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vhalla-browser
+          path: browser/dist
+          if-no-files-found: error
+          retention-days: 14
+
+  browser-worker:
+    name: Browser private worker journey
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: browser-worker
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21.14
+      - name: Check optional private room worker and local qualification entry points
+        run: cargo clippy --locked -p vhalla-browser --features private-rooms,local-qualification --target wasm32-unknown-unknown -- -D warnings
+      - name: Build isolated private room worker journey
+        working-directory: browser
+        run: |
+          trunk --skip-version-check build --release --locked --features private-rooms,local-qualification --dist "$RUNNER_TEMP/vhalla-private-worker-runtime"
+          python3 tools/package.py "$RUNNER_TEMP/vhalla-private-worker-runtime" --allow-local-qualification
+        env:
+          NO_COLOR: "true"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Exercise private worker custody, cancellation and exact reopen
+        run: node browser/tools/qualify_private_session.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-worker-results"
+      - name: Exercise private room invitations, consent and file exchange through the UI
+        run: node browser/tools/qualify_private_panel.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-panel-results"
+      - name: Retain bounded browser runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vhalla-browser-worker-evidence
+          path: |
+            ${{ runner.temp }}/vhalla-private-worker-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-worker-results/*.log
+            ${{ runner.temp }}/vhalla-private-panel-results/receipt.json
+            ${{ runner.temp }}/vhalla-private-panel-results/*.log
+            ${{ runner.temp }}/vhalla-private-panel-results/*.png
+          if-no-files-found: warn
+          retention-days: 14
+
+  browser-storage:
+    name: Browser storage and MLS fixtures
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: browser-storage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: |
+            . -> target
+            prototypes/private-rooms-mls -> target
       - name: Install exact browser bindings for runtime qualification
-        run: cargo install wasm-bindgen-cli --version 0.2.108 --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.108
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Check archive and continuity receipt browser fixtures
         run: cargo clippy --locked -p vhalla-browser-storage --example private_archive_indexeddb --example private_archive_recovery --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown -- -D warnings
       - name: Build archive and continuity receipt browser fixtures
@@ -275,19 +470,6 @@ jobs:
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-archive-runtime" "$chrome"
           node prototypes/browser-archive-recovery/qualify.mjs "$RUNNER_TEMP/vhalla-archive-recovery-runtime" "$chrome" "$RUNNER_TEMP/vhalla-archive-recovery-results"
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-continuity-runtime" "$chrome"
-      - name: Check optional private room worker and local qualification entry points
-        run: cargo clippy --locked -p vhalla-browser --features private-rooms,local-qualification --target wasm32-unknown-unknown -- -D warnings
-      - name: Build isolated private room worker journey
-        working-directory: browser
-        run: |
-          trunk --skip-version-check build --release --locked --features private-rooms,local-qualification --dist "$RUNNER_TEMP/vhalla-private-worker-runtime"
-          python3 tools/package.py "$RUNNER_TEMP/vhalla-private-worker-runtime" --allow-local-qualification
-        env:
-          NO_COLOR: "true"
-      - name: Exercise private worker custody, cancellation and exact reopen
-        run: node browser/tools/qualify_private_session.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-worker-results"
-      - name: Exercise private room invitations, consent and file exchange through the UI
-        run: node browser/tools/qualify_private_panel.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-panel-results"
       - name: Check account-derived private browser custody fixture
         run: cargo clippy --locked -p vhalla-browser-storage --example private_custody_indexeddb --features private-custody-qualification --target wasm32-unknown-unknown -- -D warnings
       - name: Build account-derived private browser custody fixture
@@ -314,23 +496,11 @@ jobs:
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-store-runtime" "$chrome"
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-group-runtime" "$chrome"
           node prototypes/private-rooms-mls/tools/qualify_browser.mjs "$RUNNER_TEMP/vhalla-mls-runtime" "$chrome" "$RUNNER_TEMP/vhalla-mls-results"
-      - name: Build isolated public browser journey
-        run: |
-          # Real 20-bit discovery work keeps its fixed deadline; qualify the
-          # optimized fixture rather than debug SHA-256 throughput on CI hosts.
-          cargo build --release --locked -p vhalla-public-peer --example browser_fixture
-          cd browser
-          trunk --skip-version-check build --release --locked --features local-qualification --dist "$RUNNER_TEMP/vhalla-product-runtime"
-          python3 tools/package.py "$RUNNER_TEMP/vhalla-product-runtime" --allow-local-qualification
-        env:
-          NO_COLOR: "true"
-      - name: Exercise scope, interrupted signing, puzzle review and peer delivery
-        run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/release/examples/browser_fixture" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-product-results" --recovery
       - name: Retain bounded browser runtime evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: vhalla-browser-runtime-evidence
+          name: vhalla-browser-storage-evidence
           path: |
             ${{ runner.temp }}/vhalla-storage-runtime/indexeddb-receipt.json
             ${{ runner.temp }}/vhalla-storage-runtime/chromium.stderr.log
@@ -344,50 +514,76 @@ jobs:
             ${{ runner.temp }}/vhalla-private-archive-runtime/chromium.stderr.log
             ${{ runner.temp }}/vhalla-continuity-runtime/indexeddb-receipt.json
             ${{ runner.temp }}/vhalla-continuity-runtime/chromium.stderr.log
-            ${{ runner.temp }}/vhalla-private-worker-results/receipt.json
-            ${{ runner.temp }}/vhalla-private-worker-results/*.log
-            ${{ runner.temp }}/vhalla-private-panel-results/receipt.json
-            ${{ runner.temp }}/vhalla-private-panel-results/*.log
-            ${{ runner.temp }}/vhalla-private-panel-results/*.png
-            ${{ runner.temp }}/vhalla-private-delivery-results/receipt.json
-            ${{ runner.temp }}/vhalla-private-delivery-results/*.log
-            ${{ runner.temp }}/vhalla-private-delivery-results/*.png
-            ${{ runner.temp }}/vhalla-private-production-panel-results/receipt.json
-            ${{ runner.temp }}/vhalla-private-production-panel-results/*.log
-            ${{ runner.temp }}/vhalla-private-production-panel-results/*.png
             ${{ runner.temp }}/vhalla-mls-results/receipt.json
             ${{ runner.temp }}/vhalla-mls-results/chrome.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  browser-public:
+    name: Browser public journey
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: browser-public
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@0.21.14
+      - name: Build isolated public browser journey
+        run: |
+          # Real 20-bit discovery work keeps its fixed deadline; qualify the
+          # optimized fixture rather than debug SHA-256 throughput on CI hosts.
+          cargo build --release --locked -p vhalla-public-peer --example browser_fixture
+          cd browser
+          trunk --skip-version-check build --release --locked --features local-qualification --dist "$RUNNER_TEMP/vhalla-product-runtime"
+          python3 tools/package.py "$RUNNER_TEMP/vhalla-product-runtime" --allow-local-qualification
+        env:
+          NO_COLOR: "true"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Exercise scope, interrupted signing, puzzle review and peer delivery
+        run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/release/examples/browser_fixture" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-product-results" --recovery
+      - name: Retain bounded browser runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vhalla-browser-public-evidence
+          path: |
             ${{ runner.temp }}/vhalla-product-results/receipt.json
             ${{ runner.temp }}/vhalla-product-results/*.log
             ${{ runner.temp }}/vhalla-product-results/*.png
           if-no-files-found: warn
           retention-days: 14
-      - name: Bind the upload to the successful production delivery receipt
-        id: qualified-browser
-        run: |
-          digest="$(python3 .github/scripts/verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-delivery-results/receipt.json")"
-          printf 'manifest_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: vhalla-browser
-          path: browser/dist
-          if-no-files-found: error
-          retention-days: 14
 
   required:
     name: Required
     if: always()
-    needs: [quality, workspace-tests, windows-portable, workspace-aux, browser-artifact, prototype-checks, kani-spent, formal, main-policy, desktop, site, security]
+    needs: [changes, quality, workspace-tests, windows-portable, workspace-aux, browser-artifact, browser-worker, browser-storage, browser-public, prototype-checks, kani-spent, formal, main-policy, desktop, site, security]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every Rust gate
         env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST_CHANGED: ${{ needs.changes.outputs.rust }}
+          FORMAL_CHANGED: ${{ needs.changes.outputs.formal }}
           QUALITY: ${{ needs.quality.result }}
           WORKSPACE_TESTS: ${{ needs.workspace-tests.result }}
           WINDOWS_PORTABLE: ${{ needs.windows-portable.result }}
           WORKSPACE_AUX: ${{ needs.workspace-aux.result }}
           BROWSER: ${{ needs.browser-artifact.result }}
+          BROWSER_WORKER: ${{ needs.browser-worker.result }}
+          BROWSER_STORAGE: ${{ needs.browser-storage.result }}
+          BROWSER_PUBLIC: ${{ needs.browser-public.result }}
           PROTOTYPES: ${{ needs.prototype-checks.result }}
           KANI: ${{ needs.kani-spent.result }}
           DESKTOP: ${{ needs.desktop.result }}
@@ -396,18 +592,44 @@ jobs:
           FORMAL: ${{ needs.formal.result }}
           MAIN_POLICY: ${{ needs.main-policy.result }}
         run: |
-          test "$QUALITY" = success
-          test "$WORKSPACE_TESTS" = success
-          test "$WINDOWS_PORTABLE" = success
-          test "$WORKSPACE_AUX" = success
-          test "$BROWSER" = success
-          test "$PROTOTYPES" = success
-          test "$KANI" = success
-          test "$DESKTOP" = success
-          test "$SITE" = success
-          test "$SECURITY" = success
-          test "$FORMAL" = success
-          test "$MAIN_POLICY" = success
+          failed=0
+          # Unconditional gates must succeed.
+          must() {
+            if [ "$2" != success ]; then
+              echo "::error::$1 is $2"
+              failed=1
+            fi
+          }
+          # Filtered gates succeed, or skip only because the change filter
+          # (which itself succeeded) reported their inputs unchanged.
+          filtered() {
+            if [ "$2" = success ]; then
+              return
+            fi
+            if [ "$2" = skipped ] && [ "$CHANGES" = success ] && [ "$3" = false ]; then
+              echo "$1 skipped: no inputs changed"
+              return
+            fi
+            echo "::error::$1 is $2"
+            failed=1
+          }
+          must changes "$CHANGES"
+          must quality "$QUALITY"
+          must site "$SITE"
+          must main-policy "$MAIN_POLICY"
+          filtered workspace-tests "$WORKSPACE_TESTS" "$RUST_CHANGED"
+          filtered windows-portable "$WINDOWS_PORTABLE" "$RUST_CHANGED"
+          filtered workspace-aux "$WORKSPACE_AUX" "$RUST_CHANGED"
+          filtered browser-artifact "$BROWSER" "$RUST_CHANGED"
+          filtered browser-worker "$BROWSER_WORKER" "$RUST_CHANGED"
+          filtered browser-storage "$BROWSER_STORAGE" "$RUST_CHANGED"
+          filtered browser-public "$BROWSER_PUBLIC" "$RUST_CHANGED"
+          filtered prototype-checks "$PROTOTYPES" "$RUST_CHANGED"
+          filtered kani-spent "$KANI" "$RUST_CHANGED"
+          filtered desktop "$DESKTOP" "$RUST_CHANGED"
+          filtered security "$SECURITY" "$RUST_CHANGED"
+          filtered formal "$FORMAL" "$FORMAL_CHANGED"
+          exit "$failed"
   list-prototypes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -420,8 +642,8 @@ jobs:
           manifests=$(find prototypes -maxdepth 2 -name Cargo.toml | jq -R . | jq -cs .)
           echo "manifests=$manifests" >> "$GITHUB_OUTPUT"
   prototype-checks:
-    needs: list-prototypes
-    if: needs.list-prototypes.outputs.manifests != '[]'
+    needs: [changes, list-prototypes]
+    if: needs.changes.outputs.rust == 'true' && needs.list-prototypes.outputs.manifests != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -441,6 +663,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path "${{ matrix.manifest }}" --all-targets --locked -- -D warnings
   kani-spent:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -459,6 +683,8 @@ jobs:
           cargo kani -p vhalla-native --output-format terse -Z unstable-options --harness-timeout 300s
           git diff --exit-code -- Cargo.lock
   desktop:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -467,6 +693,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Menubar build
         run: cargo build --locked --manifest-path desktop/Cargo.toml
       - name: Menubar tests
@@ -518,6 +745,8 @@ jobs:
           retention-days: 14
 
   security:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -526,7 +755,9 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Install pinned advisory checker
-        run: cargo install --locked --version 0.22.2 cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2
       - name: Audit maintained graphs and retain raw lockfile findings
         run: python3 .github/scripts/audit_dependencies.py --output-dir "$RUNNER_TEMP/security-reports"
       - name: Retain complete security evidence

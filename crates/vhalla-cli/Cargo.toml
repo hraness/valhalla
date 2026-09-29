@@ -64,6 +64,7 @@ vhalla-retrieval = { path = "../vhalla-retrieval", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
+bip39 = { version = "2.2", default-features = false, features = ["std"] }
 rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"] }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
 getrandom = "0.3"
