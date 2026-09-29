@@ -26,6 +26,12 @@ jobs:
   # Builders only stage artifacts, so they start with validation instead of
   # after it; publish still needs validate and every builder.
   cli:
+    # Each archive gets a signed build provenance attestation
+    # (`gh attestation verify ARCHIVE --repo hraness/valhalla`).
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +51,13 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             tool: zigbuild
+          # Windows carries identity custody and the member side of private
+          # rooms; every Unix-only command names the Linux build (WSL).
+          # Not Authenticode-signed.
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            tool: build
+            features: experimental-private
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -70,7 +83,7 @@ jobs:
       - name: Build vhalla
         # Include the maintained public/private commands. The complete
         # all-features verification gate still runs above.
-        run: cargo ${{ matrix.tool }} --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "${{ matrix.target }}"
+        run: cargo ${{ matrix.tool }} --release --locked -p vhalla-cli --no-default-features --features ${{ matrix.features || 'experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private' }} --target "${{ matrix.target }}"
       - name: macOS host custody and lifecycle regressions
         if: runner.os == 'macOS'
         # Tests inject launchctl replies and use temporary custody only. They
@@ -88,7 +101,30 @@ jobs:
         # under qemu-user so the smoke assertions still cover the real binary.
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: sudo apt-get install -y --no-install-recommends qemu-user-static
+      - name: Smoke check (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          HRANESS_SUPPORT: "off"
+        run: |
+          set -euo pipefail
+          cli="./target/${{ matrix.target }}/release/vhalla.exe"
+          [[ "$("$cli" --help)" == *"Usage: vhalla <command>"* ]]
+          help="$("$cli" help all)"
+          printf '%s\n' "$help"
+          [[ "$help" == *"vhalla identity "* ]]
+          [[ "$help" == *"vhalla private "* ]]
+          [[ "$("$cli" --version)" == *"features=[experimental-private]"* ]]
+          dir="$RUNNER_TEMP/vhalla-smoke-identity"
+          "$cli" identity init "$dir" > init.txt
+          [[ "$("$cli" identity show "$dir")" == "$(cat init.txt)" ]]
+          if "$cli" rooms > rooms.txt 2>&1; then
+            cat rooms.txt
+            exit 1
+          fi
+          [[ "$(cat rooms.txt)" == *"runs only on macOS and Linux"* ]]
       - name: Smoke check
+        if: runner.os != 'Windows'
         shell: bash
         env:
           HRANESS_SUPPORT: "off"
@@ -123,6 +159,7 @@ jobs:
           fi
           [[ "$(cat game-disabled.txt)" == *'Unknown command "game"'* ]]
       - name: Package
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -131,12 +168,33 @@ jobs:
           cp "target/${{ matrix.target }}/release/vhalla" "$out/"
           tar -czf "${out}.tar.gz" "$out"
           shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
+      # The zip holds exactly one entry, vhalla.exe, which is what
+      # site/install.ps1 admits.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="valhalla-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          python -c "import sys, zipfile; z = zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED); z.write(sys.argv[2], 'vhalla.exe'); z.close()" "${out}.zip" "target/${{ matrix.target }}/release/vhalla.exe"
+          sha256sum "${out}.zip" > "${out}.zip.sha256"
+          cat "${out}.zip.sha256"
+      - name: Install the zip through site/install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/check_install_ps1.ps1 -Exe "target/${{ matrix.target }}/release/vhalla.exe" -Version $env:GITHUB_REF_NAME -Zip "valhalla-$($env:GITHUB_REF_NAME)-${{ matrix.target }}.zip"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ runner.os == 'Windows' && 'valhalla-*.zip' || 'valhalla-*.tar.gz' }}
       - uses: actions/upload-artifact@v7
         with:
           name: release-cli-${{ matrix.target }}
           path: |
             valhalla-*.tar.gz
             valhalla-*.tar.gz.sha256
+            valhalla-*.zip
+            valhalla-*.zip.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -144,6 +202,10 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -162,6 +224,10 @@ jobs:
           python3 .github/scripts/verify_browser_artifact.py "$out" --manifest-sha256 "$QUALIFIED_MANIFEST_SHA256"
           tar -czf "${out}.tar.gz" "$out"
           shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: valhalla-browser-*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
           name: release-browser

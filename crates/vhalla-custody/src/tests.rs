@@ -240,3 +240,15 @@ fn acquire_locks_roundtrip() {
     acquire_shared(&file).unwrap();
     file.unlock().unwrap();
 }
+
+#[test]
+fn sync_directory_flushes_an_ordinary_and_a_private_directory() {
+    let root = TempDir::new();
+    sync_directory(root.path()).unwrap();
+    let private = root.path().join("private");
+    create_private_directory(&private).unwrap();
+    create_private_file(&private.join("record")).unwrap();
+    sync_directory(&private).unwrap();
+    sync_directory(root.path()).unwrap();
+    assert!(sync_directory(&root.path().join("missing")).is_err());
+}

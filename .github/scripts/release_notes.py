@@ -29,7 +29,9 @@ TARGET_LABELS = {
     "x86_64-unknown-linux-gnu": "x86-64 Linux (glibc)",
     "x86_64-unknown-linux-musl": "x86-64 Linux (static musl)",
     "aarch64-unknown-linux-musl": "ARM64 Linux (static musl)",
+    "x86_64-pc-windows-msvc": "x86-64 Windows",
 }
+ARCHIVE_SUFFIXES = (".tar.gz", ".zip")
 _HEADING = re.compile(r"^## (?P<title>.*?)\s*$")
 _VERSION_HEADING = re.compile(
     r"^v?(?P<version>[0-9][A-Za-z0-9.+-]*)(?: - (?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2}))?$")
@@ -85,7 +87,9 @@ def changelog_section(text, tag):
 def _archive_label(name, tag):
     if name == f"valhalla-browser-{tag}.tar.gz":
         return "Browser bundle"
-    target = name.removeprefix(f"valhalla-{tag}-").removesuffix(".tar.gz")
+    target = name.removeprefix(f"valhalla-{tag}-")
+    for suffix in ARCHIVE_SUFFIXES:
+        target = target.removesuffix(suffix)
     return f"`vhalla` CLI, {TARGET_LABELS.get(target, target)}"
 
 
@@ -104,7 +108,7 @@ def render_notes(changelog_text, repo, tag, commit, assets):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("release commit must be a full 40-character SHA")
     summary, bullets = changelog_section(changelog_text, tag)
-    archives = sorted(name for name in assets if name.endswith(".tar.gz"))
+    archives = sorted(name for name in assets if name.endswith(ARCHIVE_SUFFIXES))
     cli = f"valhalla-{tag}-aarch64-apple-darwin.tar.gz"
     if cli not in archives or any(name + ".sha256" not in assets for name in archives):
         raise ValueError("release assets must include the Apple Silicon CLI and every checksum sidecar")
@@ -142,6 +146,12 @@ def render_notes(changelog_text, repo, tag, commit, assets):
         "",
         "```text",
         *(f"{assets[name]}  {name}" for name in archives),
+        "```",
+        "",
+        "Each archive also has a build provenance attestation from the release workflow:",
+        "",
+        "```console",
+        f"gh attestation verify {cli} --repo {repo}",
         "```",
         "",
         f"Built from commit `{commit}`. "
@@ -190,7 +200,8 @@ def verify_body(body, changelog_text, repo, tag, commit, assets):
 def _asset_hashes(directory):
     hashes = {}
     for path in sorted(Path(directory).iterdir()):
-        if path.is_file() and path.name.endswith((".tar.gz", ".tar.gz.sha256")):
+        if path.is_file() and path.name.endswith(
+                ARCHIVE_SUFFIXES + tuple(suffix + ".sha256" for suffix in ARCHIVE_SUFFIXES)):
             with path.open("rb") as source:
                 hashes[path.name] = hashlib.file_digest(source, "sha256").hexdigest()
     return hashes

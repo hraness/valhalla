@@ -22,12 +22,22 @@ INSTALL_DIR="${VHALLA_INSTALL_DIR:-$HOME/.local/bin}"
 
 os=$(uname -s)
 arch=$(uname -m)
+# x86-64 Linux gets the glibc build unless the C library is musl (Alpine and
+# similar), which gets the static build. ARM64 Linux only has the static build.
+libc=gnu
+if [ "$os" = Linux ] && ldd --version 2>&1 | grep -qi musl; then
+  libc=musl
+fi
 case "$os/$arch" in
-  Darwin/arm64)  asset="valhalla-$VERSION-aarch64-apple-darwin.tar.gz" ;;
-  Linux/x86_64)  asset="valhalla-$VERSION-x86_64-unknown-linux-gnu.tar.gz" ;;
+  Darwin/arm64)          asset="valhalla-$VERSION-aarch64-apple-darwin.tar.gz" ;;
+  Linux/x86_64|Linux/amd64)
+                         asset="valhalla-$VERSION-x86_64-unknown-linux-$libc.tar.gz" ;;
+  Linux/aarch64|Linux/arm64)
+                         asset="valhalla-$VERSION-aarch64-unknown-linux-musl.tar.gz" ;;
   *)
-    echo "vhalla install: no prebuilt release for $os/$arch." >&2
-    echo "Build from source instead: https://vhalla.com/docs/getting-started/" >&2
+    echo "vhalla install: there is no prebuilt vhalla for $os/$arch." >&2
+    echo "Prebuilt releases cover Apple Silicon macOS and x86-64 and ARM64 Linux." >&2
+    echo "Or build from source: https://vhalla.com/docs/getting-started/" >&2
     exit 1 ;;
 esac
 

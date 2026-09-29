@@ -226,10 +226,43 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         #[cfg(not(feature = "experimental-private"))]
         return Err("private room tools require --features experimental-private".into());
     }
+    if let Some(command) = args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .filter(|command| UNIX_ONLY_COMMANDS.contains(command))
+    {
+        return Err(unix_only(command));
+    }
     if args.len() != 3 || args[0] != "identity" {
         return Err(identity_usage());
     }
     identity(&args)
+}
+
+/// Commands this build knows but cannot run off Unix: they need Unix
+/// sockets, file locks, LaunchAgents or the node stores.
+#[cfg(not(unix))]
+const UNIX_ONLY_COMMANDS: &[&str] = &[
+    "commands",
+    "demo",
+    "doctor",
+    "experimental",
+    "menubar",
+    "outputs",
+    "private-gateway",
+    "private-host",
+    "public",
+    "rooms",
+    "social",
+    "status",
+    "tui",
+];
+
+#[cfg(not(unix))]
+fn unix_only(command: &str) -> String {
+    format!(
+        "\"vhalla {command}\" runs only on macOS and Linux. On Windows this build has \"identity\" and the member side of \"private\"\nFor every command, install the Linux build inside WSL: curl -fsSL https://vhalla.com/install.sh | sh\n→ vhalla --help"
+    )
 }
 
 fn version() {
@@ -801,6 +834,22 @@ mod identity_copy_tests {
             assert_eq!(rendered.matches("\n→ ").count(), 1, "{rendered}");
             assert!(!rendered.contains("Error"), "{rendered}");
         }
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn every_known_command_runs_here_or_names_the_unix_build() {
+        let portable = ["help", "identity", "private", "support"];
+        for command in cli::COMMANDS {
+            assert!(
+                portable.contains(command) ^ UNIX_ONLY_COMMANDS.contains(command),
+                "{command} must be portable or listed as Unix-only"
+            );
+        }
+        let rendered = cli::render_error(&unix_only("rooms"), cli::Audience::Human, PLAIN);
+        assert!(rendered.starts_with("✗ "), "{rendered}");
+        assert!(rendered.contains("WSL"), "{rendered}");
+        assert_eq!(rendered.matches("\n→ ").count(), 1, "{rendered}");
     }
 
     #[test]

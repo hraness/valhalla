@@ -64,11 +64,12 @@ macOS, and site gates at that commit, then builds unbundled binaries:
 `vhalla` (`--release --locked --no-default-features --features
 experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private`)
 for `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and the two Linux musl
-targets, plus the exact qualified production browser artifact, each as a
-tarball with a
-`.sha256` sidecar. A single publisher requires that the tag still names
+targets, `vhalla.exe` for `x86_64-pc-windows-msvc` (built with
+`--features experimental-private` only, as a zip), plus the exact qualified
+production browser artifact, each with a `.sha256` sidecar and a build
+provenance attestation (`gh attestation verify ARCHIVE --repo hraness/valhalla`). A single publisher requires that the tag still names
 the current `main` commit, that all five managed CodeQL analyses passed
-on that exact SHA, and that no CodeQL alerts remain open. It uploads all ten
+on that exact SHA, and that no CodeQL alerts remain open. It uploads all twelve
 assets to a draft, verifies their
 downloaded bytes, then publishes the complete release. Failed uploads
 leave a draft; retries never overwrite an already published release.
@@ -86,8 +87,10 @@ hand, run `python3 .github/scripts/release_notes.py TAG --repo hraness/valhalla
 
 The CLI archives have shipped in every published release since v0.1.0, the
 first tag, and the browser archive joined at v0.2.1. Releases up to v0.2.8
-also carried a `valhalla-menubar` archive; later releases do not. There is no
-Windows or Intel-Mac artifact.
+also carried a `valhalla-menubar` archive; later releases do not. The Windows
+zip joined at v0.2.10; on Windows, `vhalla` runs identity and the member side
+of private rooms, and every other command names the Linux build inside WSL.
+There is no Intel-Mac or Windows ARM64 artifact.
 
 The release feature selection preserves paired networking, social sync, the
 room-directory CLI/TUI, public-peer commands and private-room tooling. The

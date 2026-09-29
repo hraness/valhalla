@@ -293,8 +293,7 @@ impl NativePrivateStore {
             fs::rename(path.join("FORMAT.tmp"), path.join("FORMAT"))
                 .map_err(|_| Error::Uncertain)?;
             directory.sync_all().map_err(|_| Error::Uncertain)?;
-            File::open(path.parent().ok_or(Error::Uncertain)?)
-                .and_then(|f| f.sync_all())
+            custody::sync_directory(path.parent().ok_or(Error::Uncertain)?)
                 .map_err(|_| Error::Uncertain)?;
             let mut out = Self {
                 conn,
