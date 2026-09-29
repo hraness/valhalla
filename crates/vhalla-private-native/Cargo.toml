@@ -12,6 +12,7 @@ client = ["dep:vhalla-identity"]
 agent-rpc = ["client", "dep:serde_json"]
 relay-tls = ["dep:rustls"]
 relay-iroh = ["relay-tls", "dep:iroh", "dep:tokio", "dep:serde"]
+habitat-link = ["relay-iroh", "dep:serde_json"]
 
 [dependencies]
 vhalla-private-relay = { path = "../vhalla-private-relay" }

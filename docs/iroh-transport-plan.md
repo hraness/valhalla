@@ -173,3 +173,21 @@ NAT diversity is not measured. Home/mobile networks, long-running relay
 availability and comparative performance need separate measurements. The
 hosted Railway service continues to use TLS, and this work does not publish
 a binary release or move that service to iroh.
+
+## Habitat Link profile
+
+Valhalla now carries a small, opt-in framing adapter for `algal.habitat-link.v1`
+in `vhalla-private-native::habitat_link`. It negotiates `algal/habitat/1`,
+prefixes one bounded canonical JSON envelope with a four-byte network-order
+length, and refuses truncation, trailing bytes, invalid UTF-8/JSON, unsupported
+contracts, and malformed operation identities. `with_habitat_link_alpn` and
+`configure_iroh_endpoint` add the ALPN only when a caller explicitly enables
+a dedicated Habitat Link service; existing private-room listeners keep their
+current ALPN list until that service has a handler.
+
+The adapter is deliberately below authority. Iroh endpoint identity authenticates
+the connection, while Habitat Link grants, durable acceptance, mailbox policy,
+replay identity, and evidence remain habitat responsibilities. The feature is
+compiled with `--features habitat-link` (which enables the Iroh dependency). It
+does not turn a Valhalla room into an execution scheduler
+or promise exactly-once external effects.
