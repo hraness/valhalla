@@ -34,7 +34,6 @@ fn menubar_is_retired_and_changes_nothing() {
         &["menubar"][..],
         &["menubar", "install"],
         &["menubar", "status"],
-        &["menubar", "refresh", "a", "b", "c", "d", "--config", "e"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
             .env("HRANESS_SUPPORT", "off")
@@ -70,6 +69,55 @@ fn outputs_rejects_extra_arguments() {
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown outputs command extra."));
+}
+
+/// `menubar refresh` was a released verb: it still refreshes, as
+/// `status refresh` with the same arguments, and names the new spelling.
+#[test]
+fn menubar_refresh_still_refreshes_as_status_refresh() {
+    let home = std::env::temp_dir().join(format!("vhalla-menubar-refresh-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
+        .args([
+            "menubar",
+            "refresh",
+            "/missing/social",
+            "/missing/replica",
+            "realm",
+            "/missing/node",
+            "--config",
+            "/missing/node.toml",
+            "--json",
+        ])
+        .env("HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        text.contains("vhalla menubar refresh is now vhalla status refresh"),
+        "{text}"
+    );
+    let line = String::from_utf8(output.stdout).unwrap();
+    assert!(!line.contains("valhalla.retired"), "{line}");
+    let root = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/Valhalla")
+    } else {
+        home.join("data/valhalla")
+    };
+    assert!(root.join("room-status.json").is_file());
+    // Too few arguments is the same usage error `status refresh` gives.
+    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
+        .env("HOME", &home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .args(["menubar", "refresh", "a"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("status refresh needs"));
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// `status refresh` always leaves `status` an answer: counts, or a fixed

@@ -187,7 +187,8 @@ const MENUBAR: &str = "The macOS menu bar is retired. Every command it had is a 
 runs, answers and exits, so nothing keeps running in the background.
 
   status of your rooms       vhalla status (or vhalla tui)
-  save fresh room counts     vhalla status refresh
+  save fresh room counts     vhalla status refresh (vhalla menubar refresh
+                             still works and runs it)
   newest outputs             vhalla outputs list, open NAME, reveal NAME
   Open at login              vhalla doctor shows a login item an earlier
                              release left; vhalla doctor retire sets it aside

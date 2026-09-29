@@ -1085,9 +1085,23 @@ pub(crate) fn dispatch(args: &[OsString]) -> Option<i32> {
         ("outputs", Some("open")) => outputs_open(&args[2..], false),
         ("outputs", Some("reveal")) => outputs_open(&args[2..], true),
         ("outputs", _) => outputs(&args[1..]),
+        ("menubar", Some("refresh")) => menubar_refresh(&args[2..]),
         ("menubar", _) => menubar_retired(&args[1..]),
         _ => return None,
     })
+}
+
+/// `vhalla menubar refresh …` was a released verb that cron jobs and agent
+/// scripts run. It keeps working as `status refresh` with the same
+/// arguments, with a note on stderr naming the new spelling.
+fn menubar_refresh(args: &[OsString]) -> i32 {
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(
+        err,
+        "{COMMAND} menubar refresh is now {COMMAND} status refresh, which takes the same arguments."
+    );
+    drop(err);
+    status_refresh(args)
 }
 
 /// `vhalla menubar …` from an earlier release's habits: the menu bar is
