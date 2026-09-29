@@ -29,8 +29,8 @@ const essayRefresh = [
 ];
 
 // Reviewed source for the iroh integration, distinct from older articles' evidence.
-const irohEvidenceRevision = '9d99f2f1cd0bce7098def22b19e01b1f515335a7';
-const irohSource = (title: string, path: string): ArticleSourceRecord => essaySource(title, `https://github.com/hraness/valhalla/blob/${irohEvidenceRevision}/${path}`);
+const irohEvidenceRevision = '28a4f60dfa1c38265027abfadaba1284244d47a8';
+const irohSource = (title: string, path: string): ArticleSourceRecord => ({ title, url: `https://github.com/hraness/valhalla/blob/${irohEvidenceRevision}/${path}`, checkedOn: '2026-09-29' });
 
 export const articleAdmissions = [
   {
@@ -38,7 +38,7 @@ export const articleAdmissions = [
     lifecycle: 'indexable',
     readerJob: 'Choose a transport for a private peer-to-peer application and understand why Valhalla uses iroh for new private mailboxes.',
     nonObviousAnswer: 'A network relay and a durable mailbox solve different availability problems. Public-key connectivity removes address and certificate setup work, while room membership, offline storage, and uncertain-delivery retries remain application responsibilities.',
-    originalContribution: 'Connects the transport comparison to Valhalla’s implementation: pinned endpoint identity, queue identity that excludes routing hints, a native browser gateway, and a public-relay test that disables client UDP.',
+    originalContribution: 'Connects the transport comparison to Valhalla’s implementation: pinned endpoint identity, queue identity that excludes routing hints, a native browser gateway, a public-relay test that disables client UDP, and a bounded two-runner qualification.',
     hostFit: 'Explains the source implementation behind Valhalla’s private-room setup and distinguishes it from the public consensus network and the hosted TCP/TLS service.',
     nearestUrls: [
       { url: 'https://docs.rs/iroh/1.2.0/iroh/', distinction: 'The transport API and connection behavior; this article explains application responsibilities and the Valhalla integration.' },
@@ -60,26 +60,27 @@ export const articleAdmissions = [
       irohSource('Implementation plan and dated validation results', 'docs/iroh-transport-plan.md'),
       irohSource('Iroh adapter: endpoint validation, queue identity, and authenticated requests', 'crates/vhalla-private-native/src/relay/iroh.rs'),
       irohSource('Direct and public-relay tests, including client UDP disabled', 'crates/vhalla-private-native/src/relay/iroh/tests.rs'),
+      irohSource('Independent-runner qualification workflow and sanitized evidence contract', '.github/workflows/iroh-qualification.yml'),
       irohSource('Browser HTTP gateway test with a real iroh upstream', 'crates/vhalla-private-native/src/relay/http/tests.rs'),
       irohSource('TLS hosting and certificate maintenance', 'docs/local-host.md'),
       irohSource('Railway deployment: explicit TCP/TLS host selection', 'deploy/railway/start.sh'),
     ],
     observations: [
       'Binding queued work to a peer key and mailbox while excluding routing hints lets connectivity change without silently sending saved messages to another identity.',
-      'A relay-only test with client UDP disabled proves a relayed transport path; keeping both endpoints on one machine leaves independent-NAT behavior untested.',
+      'A relay-only test with client UDP disabled proves a relayed transport path; a separate two-runner qualification proves delivery between distinct hosted machines while leaving home/mobile NAT diversity untested.',
     ],
     scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 2, hostFit: 2, voiceIntegrity: 1, maintenanceValue: 2 },
     owner: 'Hraness',
     drafting: 'ai-from-source',
-    review: { reviewer: 'Codex (GPT-6) AI editorial review', reviewerType: 'ai', reviewedOn: '2026-09-28' },
+    review: { reviewer: 'Codex (GPT-6) AI editorial review', reviewerType: 'ai', reviewedOn: '2026-09-29' },
     humanReview: null,
-    reassessOn: '2026-11-09',
+    reassessOn: '2026-11-10',
     harmIfWrong: 'A reader could confuse transport encryption with anonymity or room authorization, assume an installed release includes iroh, or mistake a same-machine relay test for independent-network evidence.',
     refreshTriggers: [
       'The private host default, endpoint identity, relay discovery configuration, or queue identity changes',
       'A release packages the iroh implementation or the documented source revision advances',
       'The browser removes or changes its native gateway requirement',
-      'Independent-machine NAT tests or comparative performance measurements become available',
+      'Additional NAT, home/mobile, sleep/wake or comparative performance measurements become available',
       'The Railway host changes transport, or iroh gains generation maintenance operations',
       'Iroh, WebRTC, libp2p, or Tailscale change the documented connection behavior',
       'Valhalla is renamed or changes status',

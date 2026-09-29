@@ -1,6 +1,6 @@
 Iroh reduces the work of connecting a private-room client to a host behind a router. The client names the host by its public key; iroh establishes an authenticated connection, tries a direct network path, and can carry the connection through a relay. Valhalla uses that transport for new private hosts so an owner can start one without distributing a certificate authority or configuring a separate tunnel.
 
-**In development.** The implementation described here is in the [merged source](https://github.com/hraness/valhalla/commit/9d99f2f1cd0bce7098def22b19e01b1f515335a7). Use the [private-room source setup](/docs/private-rooms/) to try it. This article does not assume that an installed release includes it.
+**In development.** The implementation described here is in the [merged source](https://github.com/hraness/valhalla/commit/28a4f60dfa1c38265027abfadaba1284244d47a8). Use the [private-room source setup](/docs/private-rooms/) to try it. This article does not assume that an installed release includes it.
 
 ## Private P2P needs a reachable machine
 
@@ -37,7 +37,7 @@ These are architectural choices, not a comparative benchmark. The question for V
 
 ### Direct TLS and custom QUIC
 
-Valhalla's [TCP/TLS host](https://github.com/hraness/valhalla/blob/9d99f2f1cd0bce7098def22b19e01b1f515335a7/docs/local-host.md) is useful when a reachable TCP endpoint is already available. Its deployment on Railway uses that route. Adding a P2P layer there is an operating decision, not a prerequisite for encrypted rooms.
+Valhalla's [TCP/TLS host](https://github.com/hraness/valhalla/blob/28a4f60dfa1c38265027abfadaba1284244d47a8/docs/local-host.md) is useful when a reachable TCP endpoint is already available. Its deployment on Railway uses that route. Adding a P2P layer there is an operating decision, not a prerequisite for encrypted rooms.
 
 Using QUIC directly would provide its stream transport, but a QUIC connection alone does not give Valhalla a peer-address distribution service or a relayed route to an unreachable host. Those pieces would need implementation and operation around the transport. Iroh supplies them behind an endpoint API, so Valhalla does not implement its own NAT traversal and relay routing. The owner has fewer setup tasks, while the application adds dependencies and relies on the selected relay's availability.
 
@@ -76,15 +76,15 @@ Owner's mailbox stores the ciphertext
 Recipient checks and applies the message
 ```
 
-The browser adds a local step before the native connection: its worker talks to a loopback gateway using a browser capability. The gateway keeps the upstream mailbox credential separate and sends the request over iroh. The [gateway test](https://github.com/hraness/valhalla/blob/9d99f2f1cd0bce7098def22b19e01b1f515335a7/crates/vhalla-private-native/src/relay/http/tests.rs) exercises an actual HTTP-to-iroh exchange and rejects a wrong browser capability.
+The browser adds a local step before the native connection: its worker talks to a loopback gateway using a browser capability. The gateway keeps the upstream mailbox credential separate and sends the request over iroh. The [gateway test](https://github.com/hraness/valhalla/blob/28a4f60dfa1c38265027abfadaba1284244d47a8/crates/vhalla-private-native/src/relay/http/tests.rs) exercises an actual HTTP-to-iroh exchange and rejects a wrong browser capability.
 
-The [iroh adapter](https://github.com/hraness/valhalla/blob/9d99f2f1cd0bce7098def22b19e01b1f515335a7/crates/vhalla-private-native/src/relay/iroh.rs) uses the same mailbox permission and quota implementation as TCP/TLS. Limits cover connections, streams, request sizes, and deadlines. Changing transport therefore does not give a sender unlimited storage or permission to read another mailbox.
+The [iroh adapter](https://github.com/hraness/valhalla/blob/28a4f60dfa1c38265027abfadaba1284244d47a8/crates/vhalla-private-native/src/relay/iroh.rs) uses the same mailbox permission and quota implementation as TCP/TLS. Limits cover connections, streams, request sizes, and deadlines. Changing transport therefore does not give a sender unlimited storage or permission to read another mailbox.
 
 A successful network write also does not establish that a recipient applied the message. Valhalla tracks delivery separately and retries the same ciphertext after an uncertain result. Its [delivery rules and tests](/writing/delivery-specs-that-fail-on-purpose/) distinguish a mailbox storing a message from a recipient accepting it. This distinction matters when a host stores a request but the connection fails before the sender receives its response.
 
 ## Identity and authorization remain separate
 
-A [private invitation](https://github.com/hraness/valhalla/blob/9d99f2f1cd0bce7098def22b19e01b1f515335a7/docs/iroh-private-rooms.md) carries the selected endpoint identity, mailbox namespace, participant token, and room offer. The namespace identifies the mailbox. The token grants mailbox operations. Room membership and agent grants decide what the participant may do with room contents.
+A [private invitation](https://github.com/hraness/valhalla/blob/28a4f60dfa1c38265027abfadaba1284244d47a8/docs/iroh-private-rooms.md) carries the selected endpoint identity, mailbox namespace, participant token, and room offer. The namespace identifies the mailbox. The token grants mailbox operations. Room membership and agent grants decide what the participant may do with room contents.
 
 The connecting client authenticates the host's endpoint key before sending the bearer token. That is why substituting an IP address or relay hint must not substitute the host's identity. Valhalla also binds saved delivery work to the endpoint key and mailbox namespace. Moving the same endpoint to another route can preserve queued work; changing the endpoint key or mailbox refuses reuse of the old queue.
 
@@ -102,10 +102,10 @@ This architecture does not provide anonymity. Direct peers expose network addres
 
 ## What the implementation has tested
 
-The [implementation report](https://github.com/hraness/valhalla/blob/9d99f2f1cd0bce7098def22b19e01b1f515335a7/docs/iroh-transport-plan.md) records local direct connections, host restart, invitation and queued-delivery behavior, credential refusal, persistent quotas, and HTTP gateway forwarding. These tests check the application around iroh as well as the connection itself.
+The [implementation report](https://github.com/hraness/valhalla/blob/28a4f60dfa1c38265027abfadaba1284244d47a8/docs/iroh-transport-plan.md) records local direct connections, host restart, invitation and queued-delivery behavior, credential refusal, persistent quotas, and HTTP gateway forwarding. These tests check the application around iroh as well as the connection itself.
 
-An explicit [public-relay test](https://github.com/hraness/valhalla/blob/9d99f2f1cd0bce7098def22b19e01b1f515335a7/crates/vhalla-private-native/src/relay/iroh/tests.rs) disabled the client's UDP transport and checked that every observed path used a relay while sending and fetching synthetic ciphertext. That establishes a real public-relay path. Both endpoints ran on one machine, so it does not establish behavior between independent machines behind different NATs.
+An explicit [public-relay test](https://github.com/hraness/valhalla/blob/28a4f60dfa1c38265027abfadaba1284244d47a8/crates/vhalla-private-native/src/relay/iroh/tests.rs) disabled the client's UDP transport and checked that every observed path used a relay while sending and fetching synthetic ciphertext. That establishes a real public-relay path. A separate [two-runner qualification](https://github.com/hraness/valhalla/blob/28a4f60dfa1c38265027abfadaba1284244d47a8/.github/workflows/iroh-qualification.yml) then built one binary and exercised a host and client on distinct GitHub-hosted machines. It verified delivery, exact duplicates, wrong credentials and namespace refusal, fresh reconnect, forced-relay PUT/PAGE, durable reopen, and clean process exits.
 
-Independent-network testing, long-running relay availability, and comparative latency or throughput measurements remain open work. The hosted Railway service uses TCP/TLS; a successful deployment there is not evidence of production iroh traffic. Iroh hosts also refuse the certificate and mailbox-generation maintenance operations that currently belong to the TLS workflow.
+The two runners establish independent machine placement, but they do not measure home or mobile NAT diversity. Long-running relay availability, sleep/wake and comparative latency or throughput measurements remain open work. The hosted Railway service uses TCP/TLS; a successful deployment there is not evidence of production iroh traffic. Iroh hosts also refuse the certificate and mailbox-generation maintenance operations that currently belong to the TLS workflow.
 
 To run a new iroh host, follow the [source setup and host guide](/docs/private-rooms/). Preserve its endpoint private key across restarts and keep the mailbox running while members send or fetch. Choose explicit TLS when the deployment already provides a TCP listener or needs the TLS-specific maintenance tools.

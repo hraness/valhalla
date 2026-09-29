@@ -18,8 +18,10 @@ with `experimental-private`; published installers keep their release's behavior.
   [transport comparison](https://vhalla.com/writing/iroh-private-p2p-transport/):
   why private hosts use iroh and why public consensus uses Malachite/libp2p.
 
-Iroh's independent-machine and multiple-NAT testing is pending. The historical
-TLS measurements below describe a different transport. The
+An advisory two-runner iroh qualification now covers separate GitHub-hosted
+machines. Multiple-NAT, home/mobile-network, sleep/wake and long relay-outage
+testing remains. The historical TLS measurements below describe a different
+transport. The
 [mailbox generation guide](private-generations.md) applies to TLS hosts only.
 
 ## Implementation and test records

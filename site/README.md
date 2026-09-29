@@ -67,9 +67,11 @@ or recreate the project to repair a page.
   requirement separate from `latestRelease` and installer instructions. Public
   consensus still uses Malachite/libp2p, and browsers still use a native loopback
   gateway. TLS is explicit and remains the existing Railway recipe’s transport.
-  Local direct and real public-relay iroh tests passed; the earlier two-laptop
-  and hosted-container results used TLS. Independent-machine and multiple-NAT
-  iroh behavior remain untested.
+  Local direct and real public-relay iroh tests passed, as did an advisory
+  two-runner qualification on separate GitHub-hosted machines; the earlier
+  two-laptop and hosted-container results used TLS. Multiple-NAT,
+  home/mobile-network, sleep/wake and long relay-outage iroh behavior remain
+  untested.
 - Keep current CLI examples aligned with `public_activity`, `public_serve`,
   private archive and Clankdar command help. Native continuity has its own receipt
   session: temporary staging, terminal admission and the exact-source Evidence
