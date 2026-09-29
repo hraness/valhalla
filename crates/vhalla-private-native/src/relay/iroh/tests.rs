@@ -53,6 +53,19 @@ impl Fixture {
         Self::with_relay(None)
     }
     fn with_relay(relay: Option<&str>) -> Self {
+        Self::build(relay, None)
+    }
+    #[cfg(feature = "habitat-link")]
+    fn with_habitat_link(service: crate::habitat_link::HabitatLinkService) -> Self {
+        Self::build(None, Some(service))
+    }
+    fn build(
+        relay: Option<&str>,
+        #[cfg(feature = "habitat-link")] habitat_link: Option<
+            crate::habitat_link::HabitatLinkService,
+        >,
+        #[cfg(not(feature = "habitat-link"))] habitat_link: Option<()>,
+    ) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "vhalla-iroh-{}-{}",
@@ -78,7 +91,15 @@ impl Fixture {
         let endpoint = listener.endpoint();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
-        let worker = thread::spawn(move || service.serve_iroh_until(listener, None, stopped));
+        let worker = thread::spawn(move || match habitat_link {
+            #[cfg(feature = "habitat-link")]
+            Some(habitat_link) => {
+                service.serve_iroh_with_habitat_link_until(listener, None, stopped, habitat_link)
+            }
+            #[cfg(not(feature = "habitat-link"))]
+            Some(()) => unreachable!("habitat link is not compiled"),
+            None => service.serve_iroh_until(listener, None, stopped),
+        });
         let fixture = Self {
             path,
             stop,
@@ -460,5 +481,62 @@ fn cancelled_held_pages_release_slots(disconnect: bool) {
     assert!(!fixture.stop.load(Ordering::Acquire));
     let client = fixture.client(7);
     assert_eq!(client.submit(&item(1)).unwrap().position, 1);
+    assert_eq!(client.page(0, 1).unwrap().records[0].item, item(1));
+}
+
+/// The Habitat Link ALPN is served on the mailbox endpoint only when a
+/// service is passed in; the default listener refuses it at the handshake.
+#[cfg(feature = "habitat-link")]
+#[test]
+fn mailbox_listener_serves_habitat_link_only_when_explicitly_enabled() {
+    use crate::habitat_link::{
+        endpoint_builder, send_envelope, HabitatLinkError, HabitatLinkService,
+    };
+    let invocation = br#"{"contract":"algal.habitat-invocation.v1","operationId":"0123456789abcdef0123456789abcdef"}"#;
+    let fixture = Fixture::new();
+    let address = fixture.endpoint.address().unwrap();
+    runtime().unwrap().block_on(async {
+        let client = endpoint_builder(None).unwrap().bind().await.unwrap();
+        let refused = tokio::time::timeout(
+            Duration::from_secs(15),
+            send_envelope(&client, address, invocation),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                refused,
+                Err(HabitatLinkError::Connection | HabitatLinkError::Timeout)
+            ),
+            "{refused:?}"
+        );
+        client.close().await;
+    });
+    assert_eq!(fixture.client(7).page(0, 1).unwrap().head, 0);
+    drop(fixture);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = calls.clone();
+    let fixture = Fixture::with_habitat_link(HabitatLinkService::new(move |envelope: &[u8]| {
+        counted.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(envelope, invocation);
+        Ok(br#"{"contract":"algal.habitat-acceptance.v1","operationId":"0123456789abcdef0123456789abcdef"}"#.to_vec())
+    }));
+    let address = fixture.endpoint.address().unwrap();
+    let client = fixture.client(7);
+    assert_eq!(client.submit(&item(1)).unwrap().position, 1);
+    runtime().unwrap().block_on(async {
+        let peer = endpoint_builder(None).unwrap().bind().await.unwrap();
+        let reply = tokio::time::timeout(
+            Duration::from_secs(15),
+            send_envelope(&peer, address, invocation),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(reply.starts_with(br#"{"contract":"algal.habitat-acceptance.v1""#));
+        peer.close().await;
+    });
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    // The mailbox keeps its own request handler and durable state.
     assert_eq!(client.page(0, 1).unwrap().records[0].item, item(1));
 }
