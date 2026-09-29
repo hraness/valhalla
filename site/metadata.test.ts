@@ -49,7 +49,10 @@ test("structured data describes only what the page shows", () => {
   const heroFacts = home.match(/<p class="hero-facts">([^<]+)<\/p>/)?.[1] ?? "";
   expect(heroFacts).toContain(latestRelease);
   expect(app.softwareVersion).toBe(latestRelease.replace(/^v/, ""));
-  expect(heroFacts).toContain("Apple Silicon macOS, Linux and Windows");
+  // The "Runs on" row under the hero facts names the same platforms.
+  const badges = home.match(/<div class="hraness-platform-badges">([\s\S]*?)<\/ul><\/div>/)?.[1] ?? "";
+  expect([...badges.matchAll(/<span>([^<]+)<\/span>/g)].map(match => match[1])).toEqual(["macOS", "Linux", "Windows"]);
+  expect(badges).toContain('<span class="hraness-platform-badges__note">partial</span>');
   expect(app.operatingSystem).toBe("macOS (Apple Silicon), Linux (x86-64, ARM64), Windows (x86-64)");
   expect(homeFaq(index).some(({ answer }) => /\bfree\b/i.test(answer))).toBe(true);
   expect(app.offers).toEqual({ "@type": "Offer", price: "0", priceCurrency: "USD" });

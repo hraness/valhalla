@@ -1,4 +1,5 @@
 // Maintained static documentation. No visitor input, runtime fetches or analytics.
+import { vhallaInstall } from "./platform-install.ts";
 export type DocKind = 'tutorial' | 'how-to' | 'reference' | 'explanation';
 export type DocSource = { label: string; url: `https://${string}` };
 export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string; kind?: DocKind; metaTitle?: string; checkedOn?: string; sources?: DocSource[] };
@@ -47,12 +48,9 @@ ${note('Before using sensitive data', 'Public activity is signed plaintext. Invi
 {
 slug:'getting-started', title:'Install vhalla and try it locally.', kicker:'Getting started', kind:'tutorial',
 summary:'Install the vhalla CLI, run the local demo, then connect to a network you trust. Valhalla is in development, so use fresh test data before you expose a service.',
-content:`<h2 id="build">1. Install the CLI</h2><p>One command downloads the release, verifies its SHA-256 checksum and installs to <code>~/.local/bin</code> — no Rust toolchain required.</p>
-${code('curl -fsSL https://vhalla.com/install.sh | sh\nvhalla --help')}
-<p>On Windows, run this in PowerShell instead. It installs <code>vhalla.exe</code> for your user only, with no administrator prompt, and adds it to your <code>PATH</code>:</p>
-${code('irm https://vhalla.com/install.ps1 | iex')}
-<p>Homebrew installs the same checksum-verified binary. Use the full formula name, which adds the tap in the same step:</p>
-${code('brew install hraness/tap/vhalla')}
+content:`<h2 id="build">1. Install the CLI</h2><p>One command downloads the release, verifies its SHA-256 checksum and installs it — no Rust toolchain required. On macOS and Linux it goes to <code>~/.local/bin</code>; on Windows, <code>vhalla.exe</code> installs for your user only, with no administrator prompt, and is added to your <code>PATH</code>. Homebrew installs the same checksum-verified binary.</p>
+${vhallaInstall('install-getting-started')}
+${code('vhalla --help')}
 <p>Prebuilt binaries cover Apple&nbsp;Silicon macOS, x86-64 and ARM64 Linux, and x86-64 Windows. On Windows, <code>vhalla</code> has identity and the member side of private rooms; for everything else, including the demo, run <code>install.sh</code> inside WSL. Both installers are short and readable — inspect <a href="/install.sh">install.sh</a> or <a href="/install.ps1">install.ps1</a> before piping, or do the same steps by hand: download the archive and its <code>.sha256</code> sidecar from <a href="https://github.com/hraness/valhalla/releases/tag/${latestRelease}">release ${latestRelease}</a>, verify with <code>shasum -a 256 -c</code>, extract, run.</p>
 <p>Release binaries carry the public-room, private-room, networking and room-directory feature sets already enabled — no feature flags needed. These binaries aren't notarized: the installer path needs no macOS approval, while a copy downloaded in a browser needs Open Anyway in System Settings › Privacy &amp; Security. Examples below use <code>vhalla</code> as shorthand. Native persistence and peer serving currently target Unix. Prefer to delegate? <a href="/docs/agent-setup/">Your agent can run these steps for you</a>.</p>
 <h3>Or build from source</h3><p>To audit and build the exact maintained revision, use the supported Rust toolchain and committed lockfile. The public network commands live behind an explicit feature in source builds.</p>

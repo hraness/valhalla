@@ -1263,3 +1263,254 @@ table a {
 .hraness-status-page :is(h1, h2, p, a) {
   all:revert-layer;
 }
+
+/* Shared design-kit PlatformInstall and PlatformBadges (v0.29.2), rendered as
+ * static HTML by platform-install.ts. Values mirror the kit's StyleX source. */
+.hraness-platform-install {
+  --platform-ink: var(--hraness-marketing-ink, var(--foreground, CanvasText));
+  --platform-muted: var(--hraness-marketing-muted, var(--muted, GrayText));
+  --platform-surface: var(--hraness-marketing-surface, var(--surface, Canvas));
+  --platform-background: var(--hraness-marketing-background, var(--background, Canvas));
+  --platform-line: color-mix(in srgb, var(--platform-ink) 12%, transparent);
+  --platform-line-strong: color-mix(in srgb, var(--platform-ink) 22%, transparent);
+  --platform-focus: var(--hraness-marketing-accent, var(--focus, Highlight));
+  color: var(--platform-ink);
+  display: grid;
+  font-family: var(--hraness-marketing-text-font, var(--font-text, inherit));
+  gap: 0.75rem;
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+.hraness-platform-install__tabs {
+  align-items: stretch;
+  background-color: color-mix(in srgb, var(--platform-ink) 5%, var(--platform-background));
+  border: 1px solid var(--platform-line);
+  border-radius: 0.75rem;
+  box-sizing: border-box;
+  display: flex;
+  gap: 0.25rem;
+  justify-self: start;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  overflow-x: auto;
+  padding: 0.25rem;
+  scrollbar-width: none;
+}
+.hraness-platform-install__tabs[hidden],
+.hraness-platform-install__panel[hidden],
+.hraness-platform-install__copy[hidden] { display: none; }
+.hraness-platform-install__tab {
+  align-items: center;
+  appearance: none;
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+  color: var(--platform-muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  gap: 0.45rem;
+  justify-content: center;
+  line-height: 1.2;
+  margin: 0;
+  min-block-size: 2.25rem;
+  min-inline-size: 0;
+  outline: none;
+  outline-offset: 1px;
+  padding: 0.4rem 0.8rem;
+  transition: background-color 120ms, color 120ms, border-color 120ms;
+  white-space: nowrap;
+}
+.hraness-platform-install__tab-label { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Phones and narrow columns: the tab row spans the column and its tabs
+ * tighten so macOS, Linux, and Windows fit side by side at 320px. */
+@media (max-width: 30rem) {
+  .hraness-platform-install__tabs { gap: 0.125rem; justify-self: stretch; padding: 0.1875rem; }
+  .hraness-platform-install__tab { font-size: 0.8125rem; gap: 0.3rem; padding-inline: 0.45rem; }
+}
+.hraness-platform-install__marks { block-size: 0; inline-size: 0; overflow: hidden; position: absolute; }
+.hraness-platform-install__tab:hover { background-color: color-mix(in srgb, var(--platform-ink) 6%, transparent); color: var(--platform-ink); }
+.hraness-platform-install__tab:focus-visible,
+.hraness-platform-install__copy:focus-visible { outline: 2px solid var(--platform-focus); }
+.hraness-platform-install__tab[aria-selected="true"] {
+  background-color: var(--platform-surface);
+  border-color: var(--platform-line-strong);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--platform-ink) 10%, transparent);
+  color: var(--platform-ink);
+}
+.hraness-platform-install__panel,
+.hraness-platform-install__panel-body { min-inline-size: 0; }
+.hraness-platform-install__panel-body { display: grid; gap: 0.6rem; }
+.hraness-platform-install__panel-label {
+  align-items: center;
+  color: var(--platform-ink);
+  display: flex;
+  font-size: 0.875rem;
+  font-weight: 600;
+  gap: 0.45rem;
+  margin: 0;
+}
+.hraness-platform-install[data-enhanced="true"] .hraness-platform-install__panel-label { display: none; }
+.hraness-platform-install__command {
+  background-color: var(--platform-surface);
+  border: 1px solid var(--platform-line);
+  border-radius: 0.75rem;
+  box-sizing: border-box;
+  display: grid;
+  min-inline-size: 0;
+  overflow: hidden;
+}
+.hraness-platform-install__command-bar {
+  align-items: center;
+  border-block-end: 1px solid var(--platform-line);
+  color: var(--platform-muted);
+  display: flex;
+  font-size: 0.8125rem;
+  gap: 0.75rem;
+  justify-content: space-between;
+  line-height: 1.3;
+  min-block-size: 2.5rem;
+  min-inline-size: 0;
+  padding: 0.25rem 0.3rem 0.25rem 0.9rem;
+}
+.hraness-platform-install__shell { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hraness-platform-install .hraness-platform-install__pre {
+  background-color: transparent;
+  border: 0;
+  border-radius: 0;
+  box-sizing: border-box;
+  color: var(--platform-ink);
+  font-family: var(--hraness-marketing-mono-font, var(--font-mono, ui-monospace, monospace));
+  font-size: 0.875rem;
+  line-height: 1.6;
+  margin: 0;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  outline: none;
+  outline-offset: -2px;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  padding: 0.85rem 0.95rem;
+  tab-size: 2;
+  white-space: pre;
+  word-break: normal;
+}
+.hraness-platform-install .hraness-platform-install__pre:focus-visible { outline: 2px solid var(--platform-focus); }
+.hraness-platform-install .hraness-platform-install__code {
+  background-color: transparent;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+}
+.hraness-platform-install__copy {
+  align-items: center;
+  appearance: none;
+  background-color: color-mix(in srgb, var(--platform-ink) 4%, var(--platform-surface));
+  border: 1px solid var(--platform-line);
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+  color: var(--platform-ink);
+  cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  gap: 0.35rem;
+  line-height: 1;
+  margin: 0;
+  min-block-size: 2rem;
+  outline: none;
+  outline-offset: 1px;
+  padding: 0.35rem 0.65rem;
+}
+.hraness-platform-install__copy:hover { background-color: color-mix(in srgb, var(--platform-ink) 9%, var(--platform-surface)); }
+.hraness-platform-install__copy-icon { block-size: 0.95rem; flex-shrink: 0; inline-size: 0.95rem; }
+.hraness-platform-install__alternatives { display: grid; gap: 0.6rem; list-style: none; margin: 0; min-inline-size: 0; padding: 0; }
+.hraness-platform-install__note { color: var(--platform-muted); font-size: 0.875rem; line-height: 1.5; margin: 0; }
+.hraness-platform-install__unavailable {
+  border: 1px dashed var(--platform-line);
+  border-radius: 0.75rem;
+  color: var(--platform-ink);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0;
+  padding: 0.85rem 0.95rem;
+}
+.hraness-platform-install__status {
+  block-size: 1px;
+  border-width: 0;
+  clip-path: inset(50%);
+  inline-size: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+}
+.hraness-platform-icon {
+  block-size: var(--hraness-platform-icon-size, 1em);
+  display: inline-block;
+  fill: currentColor;
+  flex-shrink: 0;
+  inline-size: var(--hraness-platform-icon-size, 1em);
+  vertical-align: -0.125em;
+}
+.hraness-platform-badges {
+  align-items: center;
+  color: var(--hraness-marketing-muted, var(--muted, GrayText));
+  column-gap: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--hraness-marketing-text-font, var(--font-text, inherit));
+  font-size: 0.875rem;
+  line-height: 1.4;
+  margin: 0;
+  row-gap: 0.4rem;
+}
+.hraness-platform-badges__label { font-weight: 500; }
+.hraness-platform-badges__list {
+  align-items: center;
+  column-gap: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  row-gap: 0.4rem;
+}
+.hraness-platform-badges__item {
+  align-items: center;
+  color: var(--hraness-marketing-ink, var(--foreground, CanvasText));
+  display: inline-flex;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+.hraness-platform-badges__note { color: var(--hraness-marketing-muted, var(--muted, GrayText)); }
+@media (pointer: coarse) {
+  .hraness-platform-install__tab,
+  .hraness-platform-install__copy { min-block-size: 2.75rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hraness-platform-install__tab { transition-duration: 0s; }
+}
+@media (forced-colors: active) {
+  .hraness-platform-install__tabs,
+  .hraness-platform-install__command { background-color: Canvas; border-color: CanvasText; }
+  .hraness-platform-install__tab { color: ButtonText; }
+  /* Keep the paired system colors on descendants without automatic text backplates. */
+  .hraness-platform-install__tab[aria-selected="true"] { forced-color-adjust: none; background-color: Highlight; border-color: Highlight; box-shadow: none; color: HighlightText; }
+  .hraness-platform-install__copy { background-color: ButtonFace; border-color: ButtonText; color: ButtonText; }
+  .hraness-platform-install__note,
+  .hraness-platform-install__command-bar,
+  .hraness-platform-badges,
+  .hraness-platform-badges__item { color: CanvasText; }
+}
+.hero .hraness-platform-badges { margin-block-start: 0.75rem; }
+.steps .hraness-platform-install { margin-block: 0.75rem; }
