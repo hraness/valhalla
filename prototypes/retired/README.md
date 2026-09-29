@@ -22,3 +22,4 @@ cargo clippy --manifest-path "$manifest" --all-targets --locked -- -D warnings
 To bring one back into CI, move its directory back to `prototypes/<name>/`.
 The Rust workflow checks every `prototypes/*/Cargo.toml`, and
 `.github/scripts/verify_scope.py` selects it whenever its inputs change.
+
