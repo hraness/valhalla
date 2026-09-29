@@ -637,8 +637,7 @@ impl ScanDirectory {
         }
         dir.sync_all().map_err(|_| ScanFailure::Storage)?;
         if created {
-            File::open(path.parent().ok_or(ScanFailure::Storage)?)
-                .and_then(|parent| parent.sync_all())
+            custody::sync_directory(path.parent().ok_or(ScanFailure::Storage)?)
                 .map_err(|_| ScanFailure::Storage)?;
         }
         let cursor = read_cursor(&path, owner, initial_cursor)?;

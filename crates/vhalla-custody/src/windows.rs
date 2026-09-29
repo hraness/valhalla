@@ -326,6 +326,15 @@ fn handle_info(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION, Error> {
 /// `FILE_FLAG_BACKUP_SEMANTICS` is harmless on regular files and required on
 /// directories, so one flag set serves both the read-only query handle and the
 /// returned working handle.
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?
+        .sync_all()
+}
+
 fn query_open(path: &Path, write: bool) -> Result<File, Error> {
     Ok(OpenOptions::new()
         .read(true)

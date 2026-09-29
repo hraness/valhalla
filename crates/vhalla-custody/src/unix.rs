@@ -13,6 +13,10 @@ use crate::{absolute, Error, Owner};
 /// Open flags kept identical for every Unix custody open.
 const OPEN_FLAGS: i32 = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY;
 
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
 pub(crate) fn current_owner() -> Result<Owner, Error> {
     Ok(Owner {
         uid: rustix::process::geteuid().as_raw(),

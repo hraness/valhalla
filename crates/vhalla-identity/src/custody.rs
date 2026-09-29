@@ -87,7 +87,7 @@ impl Identity {
         directory.sync_all()?;
         fs::remove_file(absolute.join("identity.tmp"))?;
         directory.sync_all()?;
-        File::open(parent)?.sync_all()?;
+        custody::sync_directory(parent)?;
         Ok(Self {
             key: SigningKey::from_bytes(&seed),
             _lock: lock,
@@ -320,7 +320,7 @@ impl Identity {
         directory.sync_all()?;
         fs::remove_file(absolute.join("identity.tmp"))?;
         directory.sync_all()?;
-        File::open(parent)?.sync_all()?;
+        custody::sync_directory(parent)?;
         Ok(Self {
             key: SigningKey::from_bytes(&seed),
             _lock: lock,

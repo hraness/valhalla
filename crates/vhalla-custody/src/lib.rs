@@ -197,6 +197,20 @@ pub fn same_file(path: &Path, file: &File) -> Result<bool, Error> {
     platform::same_file(path, file)
 }
 
+/// Flush a directory so name changes inside it (create, link, rename, remove)
+/// are durable.
+///
+/// Unix opens the directory read-only and calls `fsync`. Windows cannot open a
+/// directory without `FILE_FLAG_BACKUP_SEMANTICS` (`File::open` there fails
+/// with "Access is denied"), and `FlushFileBuffers` needs a writable handle, so
+/// it opens the directory that way; NTFS journals directory metadata, so the
+/// flush commits pending name changes the way a Unix directory `fsync` does.
+/// The directory need not be private: this is how callers sync the ordinary
+/// parent of a private store after creating it.
+pub fn sync_directory(path: &Path) -> io::Result<()> {
+    platform::sync_directory(path)
+}
+
 /// Whether two open handles refer to the same filesystem object.
 ///
 /// Unix compares `dev`/`ino` of the handles' metadata; Windows compares the

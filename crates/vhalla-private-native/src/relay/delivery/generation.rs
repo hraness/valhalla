@@ -301,8 +301,7 @@ impl DeliveryStore {
         out.validate()?;
         out.sync()?;
         creation_point(6)?;
-        File::open(path.parent().ok_or(Error::Storage)?)
-            .and_then(|f| f.sync_all())
+        custody::sync_directory(path.parent().ok_or(Error::Storage)?)
             .map_err(|_| Error::Storage)?;
         Ok(out)
     }
