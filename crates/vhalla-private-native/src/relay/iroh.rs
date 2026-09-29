@@ -49,7 +49,7 @@ pub struct IrohEndpoint {
     /// Optional numeric direct UDP addresses; never wildcard addresses.
     pub addresses: Vec<SocketAddr>,
 }
-fn checked_relay(value: &str) -> Result<RelayUrl> {
+pub(crate) fn checked_relay(value: &str) -> Result<RelayUrl> {
     if value.len() > 2048 {
         return Err(NetError::Bounds);
     }
@@ -466,6 +466,8 @@ struct ServerJob {
     service: Service,
     limit: Option<u64>,
     stop: Arc<AtomicBool>,
+    #[cfg(feature = "habitat-link")]
+    habitat_link: Option<crate::habitat_link::HabitatLinkService>,
 }
 /// A bound endpoint with an owned runtime; dropping it closes and joins the worker.
 pub struct IrohListener {
@@ -578,27 +580,61 @@ impl Service {
     /// promptly, wakes waiting pages and joins all workers before releasing it.
     pub fn serve_iroh_until(
         self,
-        mut listener: IrohListener,
+        listener: IrohListener,
         limit: Option<u64>,
         stop: Arc<AtomicBool>,
     ) -> Result<()> {
-        listener
-            .sender
-            .take()
-            .ok_or(NetError::Unavailable)?
-            .send(ServerJob {
+        serve_iroh_job(
+            listener,
+            ServerJob {
                 service: self,
                 limit,
                 stop,
-            })
-            .map_err(|_| NetError::Unavailable)?;
-        listener
-            .join
-            .take()
-            .ok_or(NetError::Unavailable)?
-            .join()
-            .map_err(|_| NetError::Unavailable)?
+                #[cfg(feature = "habitat-link")]
+                habitat_link: None,
+            },
+        )
     }
+    /// Serve the mailbox and, on the same endpoint, an explicitly enabled
+    /// Habitat Link service. Only this entry point adds the Habitat Link ALPN;
+    /// connections negotiating it are handed to the service after the
+    /// listener's handshake, source, and per-peer connection budgets, and the
+    /// mailbox's own request handler never sees them. Such a connection holds
+    /// one of the listener's connection slots for the service's idle bound
+    /// rather than the mailbox request timeout; the listener's transport
+    /// config still caps it at one peer-opened stream at a time.
+    #[cfg(feature = "habitat-link")]
+    pub fn serve_iroh_with_habitat_link_until(
+        self,
+        listener: IrohListener,
+        limit: Option<u64>,
+        stop: Arc<AtomicBool>,
+        habitat_link: crate::habitat_link::HabitatLinkService,
+    ) -> Result<()> {
+        serve_iroh_job(
+            listener,
+            ServerJob {
+                service: self,
+                limit,
+                stop,
+                habitat_link: Some(habitat_link),
+            },
+        )
+    }
+}
+fn serve_iroh_job(mut listener: IrohListener, job: ServerJob) -> Result<()> {
+    listener
+        .sender
+        .take()
+        .ok_or(NetError::Unavailable)?
+        .send(job)
+        .map_err(|_| NetError::Unavailable)?;
+    listener
+        .join
+        .take()
+        .ok_or(NetError::Unavailable)?
+        .join()
+        .map_err(|_| NetError::Unavailable)?
 }
 /// Direct peers share the same IP(/64) budget as TCP. Relayed peers are
 /// keyed by their authenticated relay identity; neither grants mailbox access.
@@ -659,6 +695,12 @@ impl Drop for PeerGuard {
 }
 async fn serve(endpoint: &Endpoint, job: ServerJob) -> Result<()> {
     let (namespace, limits) = job.service.iroh_parameters()?;
+    #[cfg(feature = "habitat-link")]
+    endpoint.set_alpns(crate::habitat_link::with_habitat_link_alpn(
+        vec![protocol(namespace)],
+        job.habitat_link.is_some(),
+    ));
+    #[cfg(not(feature = "habitat-link"))]
     endpoint.set_alpns(vec![protocol(namespace)]);
     let draining = Arc::new(AtomicBool::new(false));
     let peers = Arc::new(Mutex::new(BTreeMap::new()));
@@ -730,6 +772,8 @@ async fn serve(endpoint: &Endpoint, job: ServerJob) -> Result<()> {
         let handler = job.service.request_handler();
         let draining = draining.clone();
         let peers = peers.clone();
+        #[cfg(feature = "habitat-link")]
+        let habitat_link = job.habitat_link.clone();
         tasks.spawn(async move {
             let _source_guard = source_guard;
             serve_one(
@@ -739,6 +783,8 @@ async fn serve(endpoint: &Endpoint, job: ServerJob) -> Result<()> {
                 peers,
                 limits.max_connections,
                 Instant::now() + limits.request_timeout,
+                #[cfg(feature = "habitat-link")]
+                habitat_link,
             )
             .await
         });
@@ -764,6 +810,7 @@ async fn serve_one(
     peers: Arc<Mutex<BTreeMap<::iroh::EndpointId, usize>>>,
     max: usize,
     deadline: Instant,
+    #[cfg(feature = "habitat-link")] habitat_link: Option<crate::habitat_link::HabitatLinkService>,
 ) -> Result<()> {
     let connection = tokio::time::timeout_at(
         deadline.min(Instant::now() + HANDSHAKE_TIMEOUT).into(),
@@ -786,6 +833,16 @@ async fn serve_one(
             id,
         }
     };
+    #[cfg(feature = "habitat-link")]
+    if let Some(service) =
+        habitat_link.filter(|_| connection.alpn() == crate::habitat_link::HABITAT_LINK_ALPN)
+    {
+        // Habitat Link owns its stream, read and reply bounds; the mailbox
+        // request handler is never consulted for this connection.
+        let result = service.serve_connection(connection).await;
+        drop(guard);
+        return result.map(|_| ()).map_err(|_| NetError::Malformed);
+    }
     let result = async {
         let (mut send, mut recv) = tokio::time::timeout_at(deadline.into(), connection.accept_bi())
             .await

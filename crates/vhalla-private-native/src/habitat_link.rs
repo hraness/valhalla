@@ -4,11 +4,24 @@
 //! deliberately transport-only: it authenticates an Iroh endpoint and adds an
 //! ALPN, but it does not grant mailbox authority, schedule work, or claim
 //! exactly-once effects. Those semantics remain in the habitat protocol. The
-//! existing private-room mailbox listener does not advertise this ALPN until a
-//! dedicated Habitat Link handler is installed.
+//! existing private-room mailbox listener advertises this ALPN only when a
+//! caller hands it a [`HabitatLinkService`] through
+//! `Service::serve_iroh_with_habitat_link_until`; the default listener and
+//! the CLI host are unchanged.
 
 #![cfg(feature = "habitat-link")]
 
+mod service;
+#[cfg(test)]
+mod service_tests;
+
+pub use service::{
+    endpoint_builder, send_envelope, send_envelope_until, HabitatLinkHandler, HabitatLinkService,
+    CLIENT_EXCHANGE_TIMEOUT, CLOSE_CAPACITY, CLOSE_WRONG_ALPN, FRAME_READ_TIMEOUT,
+    HANDSHAKE_TIMEOUT, MAX_CONNECTIONS_PER_SERVICE, MAX_STREAMS_PER_CONNECTION,
+    MAX_STREAMS_PER_SERVICE, REPLY_WRITE_TIMEOUT, RESET_HANDLER, STOP_CAPACITY,
+    STOP_FRAME_REJECTED, STOP_TIMEOUT, STREAM_IDLE_TIMEOUT,
+};
 use std::convert::TryFrom;
 
 /// Iroh ALPN negotiated only by an explicitly enabled Habitat Link service.
@@ -39,6 +52,14 @@ pub enum HabitatLinkError {
     UnsupportedContract,
     /// The operation or message id was not lowercase 32-hex.
     InvalidOperationId,
+    /// The connection negotiated an ALPN other than [`HABITAT_LINK_ALPN`].
+    WrongAlpn,
+    /// The connection or stream failed before the exchange completed.
+    Connection,
+    /// A handshake, read, write, or whole exchange exceeded its bound.
+    Timeout,
+    /// The habitat handler refused the envelope or failed while processing it.
+    Handler,
 }
 
 /// Verify a single bounded canonical-JSON frame and prepend its network-order

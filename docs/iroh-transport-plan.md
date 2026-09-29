@@ -191,3 +191,52 @@ replay identity, and evidence remain habitat responsibilities. The feature is
 compiled with `--features habitat-link` (which enables the Iroh dependency). It
 does not turn a Valhalla room into an execution scheduler
 or promise exactly-once external effects.
+
+### Dedicated handler and client
+
+`habitat_link::HabitatLinkService` is the dedicated handler for connections
+negotiated on `algal/habitat/1`. Each request is one bidirectional QUIC stream:
+the service reads the four-byte length prefix, refuses a declaration above
+262,144 bytes before requesting any payload byte, reads exactly that many
+bytes, refuses trailing bytes, validates the envelope with the shared frame
+decoder, and hands the bytes to the habitat's `HabitatLinkHandler`
+(`fn handle(&self, envelope: &[u8]) -> Result<Vec<u8>, HabitatLinkError>`).
+The handler returns one reply envelope, which the service frames, writes and
+finishes. A handler refusal or panic resets the stream without a reply frame.
+The transport never reads the envelope's meaning.
+
+Bounds are constants in `habitat_link`: four live request streams per
+connection, 64 per service, 32 live connections per dedicated accept loop,
+a four-second handshake, a ten-second request read, a ten-second reply write,
+and a thirty-second idle close per connection. A connection whose ALPN is not
+Habitat Link is closed with application code 1 before the handler is
+consulted. Refused frames stop the request stream and reset the reply stream
+with code 2 (frame), 3 (capacity) or 4 (read timeout); handler failures reset
+with code 5. The Iroh endpoint key authenticates the peer's transport only and
+grants no habitat authority; the grant inside the envelope does. The handler's
+own running time is the habitat's bound.
+
+Two ways to serve it exist. `HabitatLinkService::serve` is an accept loop for
+an endpoint dedicated to Habitat Link, built with `habitat_link::endpoint_builder`
+(no discovery, no datagrams, explicit relay only). `Service::serve_iroh_with_habitat_link_until`
+serves the private-room mailbox and the Habitat Link service on one endpoint;
+only that entry point adds the ALPN, and the default `serve_iroh_until` and
+the CLI host are unchanged. The CLI has no `habitat_link` toggle because no
+habitat handler exists in this repository yet; the service is a library API
+until an integration owner supplies one. `send_envelope` and
+`send_envelope_until` are the client side: connect with the ALPN, write one
+frame, read one reply frame, close. A timeout after the frame was written
+leaves the habitat's outcome uncertain; the envelope's operation identity is
+what makes a retry safe.
+
+Loopback tests under `--features habitat-link` bind direct-only endpoints on
+127.0.0.1 with no relay. They show an `algal.habitat-invocation.v1` envelope
+answered by an `algal.habitat-acceptance.v1` reply from an echo handler,
+an oversize declared length refused while the stream is still open and before
+any payload is sent, a truncated frame reset without a reply, a foreign-ALPN
+connection closed with code 1 and never reaching the handler, a handler
+refusal reset without a reply frame, and the mailbox listener refusing the
+ALPN at the handshake by default while serving both protocols on one endpoint
+when the service is passed in. These tests do not exercise a relay, a second
+machine, NAT traversal, or a real habitat; no live two-machine Habitat Link
+qualification has been run.
