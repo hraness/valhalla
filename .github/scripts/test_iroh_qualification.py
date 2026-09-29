@@ -157,6 +157,17 @@ class QualificationTests(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2"}):
             self.assertEqual(qualification.artifact_name("descriptor"), "iroh-descriptor-100-2")
 
+    def test_failure_phase_releases_only_known_case_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            self.assertEqual(qualification.safe_phase(work), "unreported")
+            for phase in ("host_service", "wrong_token", "forced_relay_put_page"):
+                qualification.write_json(work / "phase.json", phase)
+                self.assertEqual(qualification.safe_phase(work), phase)
+            for phase in ("synthetic-secret-material", "a" * 64, {"token": "private"}):
+                qualification.write_json(work / "phase.json", phase)
+                self.assertEqual(qualification.safe_phase(work), "unreported")
+
 
 if __name__ == "__main__":
     unittest.main()

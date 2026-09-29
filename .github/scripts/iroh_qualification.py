@@ -32,6 +32,10 @@ CLIENT_CASES = (
     "raw_client_forced_relay_put_page", "forced_relay_paths_observed",
 )
 MAX_JSON = 65536
+PHASES = frozenset(("descriptor", "automatic_put_page", "wrong_token", "wrong_endpoint",
+                   "wrong_namespace", "fresh_client_reconnect", "forced_relay_put_page",
+                   "host_identity", "host_storage", "host_service", "host_bind",
+                   "host_ready", "host_shutdown", "host_retention"))
 
 
 def require(condition, message):
@@ -55,6 +59,14 @@ def write_json(path, value):
     temporary.write_text(json.dumps(value, sort_keys=True) + "\n")
     temporary.chmod(0o600)
     temporary.replace(path)
+
+
+def safe_phase(work):
+    try:
+        phase = read_json(work / "phase.json")
+        return phase if isinstance(phase, str) and phase in PHASES else "unreported"
+    except (OSError, ValueError):
+        return "unreported"
 
 
 def context():
@@ -343,9 +355,7 @@ def run_client(bundle, work):
     except Exception as error:
         # No raw API, fixture assertion, token, namespace or URL in public evidence.
         result["error_class"] = type(error).__name__
-        phase = read_json(work / "phase.json") if (work / "phase.json").exists() else "descriptor"
-        if isinstance(phase, str) and re.fullmatch(r"[a-z_]{1,64}", phase):
-            result["failed_case"] = phase
+        result["failed_case"] = safe_phase(work)
     finally:
         result["finished_unix"] = int(time.time())
         write_json(work / "client-receipt.json", result)
@@ -367,6 +377,8 @@ def finish_host(work, wait):
         try:
             supervisor = wait_local(work / "supervisor.json", time.monotonic() + 45)
             result["cleanup_confirmed"] = supervisor.get("child_reaped") is True
+            result["fixture_exit_code"] = supervisor.get("exit_code")
+            result["fixture_forced_cleanup"] = supervisor.get("forced")
             host = read_json(work / "host-result.json")
             result["cases"] = host
             result["passed"] = (result.get("client_verified") is True
@@ -377,6 +389,7 @@ def finish_host(work, wait):
         except Exception as error:
             result["passed"] = False
             result["error_class"] = type(error).__name__
+            result["failed_case"] = safe_phase(work)
         result["finished_unix"] = int(time.time())
         write_json(work / "host-receipt.json", result)
     return result["passed"]

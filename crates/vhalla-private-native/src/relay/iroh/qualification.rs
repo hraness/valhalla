@@ -1,7 +1,10 @@
 //! Explicit, synthetic two-runner qualification. Never part of ordinary tests.
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,15 +54,19 @@ fn synthetic(namespace: RelayNamespace, sequence: u8) -> RelayItem {
     .unwrap()
 }
 
-fn host(config: &Config) {
-    let namespace = RelayNamespace::from_bytes(config.namespace.unwrap()).unwrap();
-    let token = RelayToken::from_bytes(config.token.unwrap()).unwrap();
-    let path = config.work.join("mailbox");
+fn fixture_service(
+    path: &Path,
+    namespace: RelayNamespace,
+    token: RelayToken,
+    progress: impl Fn(&str),
+) -> Service {
+    progress("host_storage");
     let limits = Limits {
-        max_items: 8,
-        max_bytes: 8192,
+        max_items: 16,
+        max_bytes: 16384,
     };
-    Service::initialize(FileStore::create_new(&path, namespace, limits).unwrap()).unwrap();
+    Service::initialize(FileStore::create_new(path, namespace, limits).unwrap()).unwrap();
+    progress("host_service");
     let credential = Credential {
         id: [1; 16],
         tokens: vec![token],
@@ -68,20 +75,48 @@ fn host(config: &Config) {
             put: true,
             page: true,
         },
-        storage: limits,
+        storage: Limits {
+            max_items: 8,
+            max_bytes: 8192,
+        },
         max_inflight: 4,
-        requests_per_window: 128,
+        requests_per_window: 64,
         bytes_per_window: 1024 * 1024,
     };
-    let service = Service::new_iroh(
-        FileStore::open(&path, namespace).unwrap(),
+    Service::new_iroh(
+        FileStore::open(path, namespace).unwrap(),
         vec![credential],
         ServiceLimits {
             max_connections: 16,
             ..ServiceLimits::default()
         },
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn synthetic_qualification_service_obeys_production_admission_bounds() {
+    let path = std::env::temp_dir().join(format!(
+        "vhalla-iroh-qualification-service-{}",
+        std::process::id()
+    ));
+    let service = fixture_service(&path, namespace(), token(7), |_| {});
+    drop(service);
+    let store = FileStore::open(&path, namespace()).unwrap();
+    assert_eq!(store.page(0, 8).unwrap().head, 0);
+    drop(store);
+    fs::remove_dir_all(path).unwrap();
+}
+
+fn host(config: &Config) {
+    write_json(config.work.join("phase.json"), &"host_identity");
+    let namespace = RelayNamespace::from_bytes(config.namespace.unwrap()).unwrap();
+    let token = RelayToken::from_bytes(config.token.unwrap()).unwrap();
+    let path = config.work.join("mailbox");
+    let service = fixture_service(&path, namespace, token, |phase| {
+        write_json(config.work.join("phase.json"), &phase);
+    });
+    write_json(config.work.join("phase.json"), &"host_bind");
     let listener = IrohListener::bind(
         config.secret.unwrap(),
         "0.0.0.0:0".parse().unwrap(),
@@ -106,14 +141,17 @@ fn host(config: &Config) {
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = stop.clone();
     let worker = thread::spawn(move || service.serve_iroh_until(listener, None, stopping));
+    write_json(config.work.join("phase.json"), &"host_ready");
     write_json(config.work.join("descriptor.json"), &descriptor);
     let deadline = Instant::now() + Duration::from_secs(600);
     while !config.work.join("stop").exists() && Instant::now() < deadline && !worker.is_finished() {
         thread::sleep(Duration::from_millis(100));
     }
     let requested = config.work.join("stop").exists();
+    write_json(config.work.join("phase.json"), &"host_shutdown");
     stop.store(true, Ordering::Release);
     worker.join().unwrap().unwrap();
+    write_json(config.work.join("phase.json"), &"host_retention");
     let store = FileStore::open(&path, namespace).unwrap();
     let page = store.page(0, 8).unwrap();
     let exact = page.records.len() == 2
