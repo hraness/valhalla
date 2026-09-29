@@ -77,17 +77,11 @@ async function task(abortSignal){
       res.end(await readFile(target));
     }catch{res.writeHead(500);res.end('qualification request refused');}
   });
-  // The opt-in qualification transport pins an exact local origin list
-  // (browser/src/qualification.rs); 8790 is also the maintained gateway's
-  // production port, so prefer the dedicated qualification port 8789 and only
-  // fall back through the remaining allowed origins when it is occupied.
-  let serverPort=0;
-  for(const port of [8789,8790]){
-    const taken=await new Promise(r=>{const probe=createServer();probe.once('error',()=>r(true));probe.listen(port,'127.0.0.1',()=>probe.close(()=>r(false)));});
-    if(!taken){serverPort=port;break;}
-  }
-  if(!serverPort)throw Error('no allowed loopback qualification port free');
-  await new Promise((r,j)=>{server.once('error',j);server.listen(serverPort,'127.0.0.1',r);});
+  // Bind an ephemeral loopback port so parallel checkouts and a running
+  // gateway never collide. The opt-in qualification transport accepts any
+  // exact http://127.0.0.1:<port> origin (browser/src/qualification.rs).
+  await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
+  const serverPort=server.address().port;
   signal.throwIfAborted();
   const chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
   children.push(chrome);chrome.stderr.on('data',c=>chromeLog+=c);

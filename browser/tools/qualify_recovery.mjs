@@ -12,7 +12,7 @@ window.qidle=()=>qwait(()=>!qid('show-outbox').disabled,'network idle');
 window.qinstrument=()=>{window.qwrites=[];for(const name of ['add','put','delete']){const original=IDBObjectStore.prototype[name];IDBObjectStore.prototype[name]=function(...args){qwrites.push({name,key:String(name==='delete'?args[0]:args[1])});return original.apply(this,args);};}};
 `;
 
-export async function qualifyRecovery({call, targetId, sessionId, bootstrap, pin, ads, password, author, rooms, postCount}) {
+export async function qualifyRecovery({call, targetId, sessionId, pagePort, bootstrap, pin, ads, password, author, rooms, postCount}) {
   const evaluateIn = async (session, expression) => {
     const result = await call('Runtime.evaluate', {expression, awaitPromise:true, returnByValue:true}, session);
     if(result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails));
@@ -69,9 +69,12 @@ export async function qualifyRecovery({call, targetId, sessionId, bootstrap, pin
   const next = await call('Target.createTarget',{url:'about:blank'});
   active = (await call('Target.attachToTarget',{targetId:next.targetId,flatten:true})).sessionId;
   await call('Page.enable',{},active);await call('Runtime.enable',{},active);
-  await call('Page.navigate',{url:'http://localhost:8790'},active);await ready();
-  await evaluate(helpers + `window.qa=${JSON.stringify({password,author,rooms,bootstrap,pin,ads,key,parts})};(async()=>{
-    qassert(location.origin==='http://localhost:8790','wrong recovery origin');
+  if(!Number.isInteger(pagePort)||pagePort<1||pagePort>65535)throw Error('recovery needs the source page port');
+  // Same port, different host: a separate browser origin with empty storage.
+  const recoveryOrigin='http://localhost:'+pagePort;
+  await call('Page.navigate',{url:recoveryOrigin},active);await ready();
+  await evaluate(helpers + `window.qa=${JSON.stringify({password,author,rooms,bootstrap,pin,ads,key,parts,recoveryOrigin})};(async()=>{
+    qassert(location.origin===qa.recoveryOrigin,'wrong recovery origin');
     qset('password',qa.password);qfile('restore-file',qa.key.base64,qa.key.name);await qclick('restore');
     await qwait(()=>qid('identity-state').textContent==='Unlocked','restored key');qassert(qid('public-key').textContent===qa.author,'restored wrong author');
     qfile('network-file',qa.bootstrap,'synthetic.vhbootstrap');qset('network-pin',qa.pin);await qclick('join-network');await qwait(()=>!qid('add-peer').disabled,'restored network');
@@ -119,7 +122,7 @@ export async function qualifyRecovery({call, targetId, sessionId, bootstrap, pin
   })()`);
   if(postCount()!==8)throw Error('final reopen retransmitted confirmed posts');
   await closeTargetChecked(call,next.targetId);
-  return {passed:true,sourceOrigin:'http://127.0.0.1:8790',recoveryOrigin:'http://localhost:8790',encryptedParts:parts.length,
+  return {passed:true,sourceOrigin:'http://127.0.0.1:'+pagePort,recoveryOrigin,encryptedParts:parts.length,
     finalSequence:4,activityPosts:postCount(),keyOnlyRefused:true,wrongRoomRefused:true,finalFirstRefused:true,
     partialRestoreReadOnly:true,stagedRestart:true,pendingExactRetry:true,peerReceiptsPreserved:true,formerWriterClosed:true};
 }
