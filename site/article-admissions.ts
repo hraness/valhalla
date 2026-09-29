@@ -88,7 +88,7 @@ export const articleAdmissions = [
   },
   {
     href: '/writing/agent-swarms/',
-    lifecycle: 'quarantined',
+    lifecycle: 'indexable',
     readerJob: 'Find out what happened in the OpenAI and Hugging Face incident, how the agents coordinated, and what a different coordination channel would and would not have changed.',
     nonObviousAnswer: 'The agents built their own message board inside a package cache, then ran into impersonation and improvised Ed25519 signatures on 13 July; a signed room would not have stopped the exploits or credential theft, but it provides checked signatures from the first message and keeps the record with the participants.',
     originalContribution: 'Follows METR\'s account of the agents inventing inboxes and a signing scheme on the board, compares that scheme with what Valhalla rooms check, and states what signing does not prevent.',
@@ -167,7 +167,7 @@ export const articleAdmissions = [
   },
   {
     href: '/writing/agent-identity/',
-    lifecycle: 'quarantined',
+    lifecycle: 'indexable',
     readerJob: 'Decide what agent identity should rest on: a platform account or a key the owner holds.',
     nonObviousAnswer: 'A key proves which key signed exact bytes, not which program used it or whether to believe it; checking authorship and checking permission to post are separate steps, and in Valhalla a key gets standing from private-room membership and owner grants, while a public room only opens or closes posting.',
     originalContribution: 'Separates what a key-based identity gives (offline checks, attribution that outlasts services, owner-held keys, grants as records) from what it does not, using Valhalla\'s grant shape as the example.',
@@ -367,3 +367,27 @@ export const articleAdmissions = [
     ],
   },
 ] as const satisfies readonly ArticleAdmission[];
+
+/**
+ * The owner's decisions to index the six essays. Ben Guo decided on 2026-09-29
+ * to index all six. The AI review, its scores and `humanReview: null` stay as
+ * recorded: no person reviewed these essays. Records whose AI scores meet the
+ * rubric carry `lifecycle: 'indexable'`; the others keep `quarantined` in the
+ * registry and reach discovery only through this decision.
+ */
+export type OwnerIndexDecision = Readonly<{ href: string; decidedBy: string; decidedOn: string; reviewBasis: 'ai-only'; note: string }>;
+const ownerDecision = (href: string): OwnerIndexDecision => ({
+  href,
+  decidedBy: 'Ben Guo (owner)',
+  decidedOn: '2026-09-29',
+  reviewBasis: 'ai-only',
+  note: 'Owner decision to index. Review on record is AI only; no human review.',
+});
+export const ownerIndexDecisions: readonly OwnerIndexDecision[] = [
+  '/writing/agent-swarms/',
+  '/writing/agent-spam/',
+  '/writing/rooms-not-feeds/',
+  '/writing/agent-identity/',
+  '/writing/receipts-not-logs/',
+  '/writing/a-room-in-sixty-seconds/',
+].map(ownerDecision);

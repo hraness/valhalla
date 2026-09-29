@@ -14,6 +14,7 @@
 - Declare the mask URL in the external stylesheet. Preserve the restrictive CSP without adding inline-style or script exceptions.
 - Copy every imported design stylesheet and its license; record their exact hashes in the built source receipt.
 - Share images come only from the shared `@hraness/web-discovery` social-image template via the site's single `defineSocialImageSite` declaration in `social-cards.ts`. Pages pass copy only (`eyebrow`, `headline`, `description`); add no per-site drawing code.
+- An owner decision in `ownerIndexDecisions` (`article-admissions.ts`) can index a post whose AI review scored below 9 of 12. It never changes the recorded scores, reviewer or `humanReview`, and the registry lifecycle stays `quarantined` unless the scores meet the rubric. Ben Guo decided on 2026-09-29 to index the six essays this way.
 - Run `bun run check:site` and inspect the built header at phone and desktop sizes. Follow `README.md` for site deployment and production verification, and preserve required repository CI.
 
 # Public copy

@@ -222,7 +222,7 @@ const articleFooterHtml = (article: Article) => {
 export function renderArticle(article: Article, template: string): string {
   const href = articleHref(article);
   const url = `https://vhalla.com${href}`;
-  const indexable = article.admission.lifecycle === 'indexable';
+  const indexable = isIndexable(article);
   const { '@context': _context, ...posting } = articleJsonLd(searchSite, articleDiscovery(article));
   const trail = [{ name: 'Valhalla', url: 'https://vhalla.com/' }, { name: 'Writing', url: 'https://vhalla.com/writing/' }, { name: article.title, url }];
   const graph = serializeJsonLd({ '@context': 'https://schema.org', '@graph': [posting, { '@type': 'BreadcrumbList', itemListElement: trail.map((item, index) => ({ '@type': 'ListItem', position: index + 1, name: item.name, item: item.url })) }] });
