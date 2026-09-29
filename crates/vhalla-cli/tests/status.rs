@@ -309,6 +309,11 @@ fn parity_doc_covers_every_menu_action() {
             let Some(rest) = span.strip_prefix("vhalla ") else {
                 continue;
             };
+            // The retired `menubar` spellings are compatibility aliases, not
+            // verbs an agent should discover.
+            if rest.starts_with("menubar ") {
+                continue;
+            }
             let path: Vec<String> = rest
                 .split_whitespace()
                 .take_while(|word| {
@@ -338,5 +343,35 @@ fn parity_doc_covers_every_menu_action() {
             "crates/vhalla-cli/tests/fixtures/status/{state}.json"
         ));
         assert!(golden.exists(), "{state}");
+    }
+}
+
+/// The menu bar's source, CI job and release archive are gone, and nothing
+/// that builds, tests or ships Valhalla names them again. `site/install.sh`
+/// serves the published release, which may still carry the menu bar, so
+/// `site/content.test.ts` checks it against `latestRelease` instead.
+#[test]
+fn no_menubar_paths_remain() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert!(!root.join("desktop").exists(), "desktop/ is back");
+    for file in [
+        ".github/workflows/rust.yml",
+        ".github/workflows/release.yml",
+        ".github/scripts/publish_release.py",
+        ".github/scripts/release_notes.py",
+        ".github/scripts/audit_dependencies.py",
+        "Cargo.toml",
+        "crates/vhalla-cli/Cargo.toml",
+        "crates/vhalla-cli/src/main.rs",
+    ] {
+        let text = std::fs::read_to_string(root.join(file)).unwrap();
+        for needle in [
+            "desktop/",
+            "valhalla-menubar-",
+            "VHALLA_MENUBAR_PATH",
+            "menubar-status.json",
+        ] {
+            assert!(!text.contains(needle), "{file} names {needle}");
+        }
     }
 }

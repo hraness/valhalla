@@ -111,7 +111,7 @@ credentials; damaged or missing credential files are preserved without repair.
 The complete host home remains. A launchd query error is not treated as an absent
 service: unexpected IPC, permission, domain or output failures preserve the
 installed plist and refuse removal, including after an uncertain stop.
-No command installs the menubar or changes another service.
+No command changes another service.
 
 On Linux the same three commands manage a per-user systemd unit named after
 the same label, `<label>.service`, in `$XDG_CONFIG_HOME/systemd/user` or

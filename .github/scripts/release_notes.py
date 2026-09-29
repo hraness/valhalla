@@ -85,10 +85,6 @@ def changelog_section(text, tag):
 def _archive_label(name, tag):
     if name == f"valhalla-browser-{tag}.tar.gz":
         return "Browser bundle"
-    menubar = f"valhalla-menubar-{tag}-"
-    if name.startswith(menubar):
-        target = name.removeprefix(menubar).removesuffix(".tar.gz")
-        return f"Menu-bar companion, {TARGET_LABELS.get(target, target)}"
     target = name.removeprefix(f"valhalla-{tag}-").removesuffix(".tar.gz")
     return f"`vhalla` CLI, {TARGET_LABELS.get(target, target)}"
 

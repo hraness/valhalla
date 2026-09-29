@@ -166,7 +166,7 @@ The production browser artifact now explicitly includes `private-rooms`; network
 activation still requires the user's selected profile/capability and Sync action.
 The real production browser→gateway→TLS journey is a required CI step. Release
 packaging takes that exact tested browser artifact and requires it alongside the
-two native CLI archives and macOS menubar (four archives and four checksums).
+native CLI archives (the macOS menubar archive was retired after v0.2.8).
 Missing browser output blocks release before network writes.
 The reusable validation workflow exposes the manifest hash from the successful
 production browser delivery receipt. Packaging requires that exact hash and

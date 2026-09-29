@@ -140,43 +140,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  menubar:
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-      - name: Build vhalla-menubar
-        run: cargo build --release --locked --manifest-path desktop/Cargo.toml --target aarch64-apple-darwin
-      - name: Smoke check
-        # The GUI cannot run --help headless; verify its executable format.
-        run: |
-          set -euo pipefail
-          bin=desktop/target/aarch64-apple-darwin/release/vhalla-menubar
-          test -s "$bin"
-          file "$bin" | grep -q "Mach-O 64-bit executable arm64"
-      - name: Package
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="valhalla-menubar-${GITHUB_REF_NAME}-aarch64-apple-darwin"
-          mkdir "$out"
-          cp desktop/target/aarch64-apple-darwin/release/vhalla-menubar "$out/"
-          tar -czf "${out}.tar.gz" "$out"
-          shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-menubar-aarch64-apple-darwin
-          path: |
-            valhalla-menubar-*.tar.gz
-            valhalla-menubar-*.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 7
-
   browser:
     needs: validate
     runs-on: ubuntu-latest
@@ -209,7 +172,7 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: [validate, cli, menubar, browser]
+    needs: [validate, cli, browser]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

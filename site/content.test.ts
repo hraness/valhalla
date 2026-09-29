@@ -148,6 +148,22 @@ test('the home page and Homebrew instructions name the current release and formu
   for (const [path, html] of pages) expect(html, path).not.toMatch(/brew install vhalla\b/);
 });
 
+test('install.sh --with-menubar matches the release it serves', async () => {
+  // The installer downloads latestRelease, not this revision. Releases before
+  // v0.2.9 ship the menu bar and have no top-level `vhalla status`, so the flag
+  // keeps installing it until latestRelease moves past the retirement.
+  const installer=await readFile(new URL('./install.sh', import.meta.url), 'utf8');
+  const [major, minor, patch]=latestRelease.slice(1).split('.').map(Number);
+  const retired=major>0 || minor>2 || (minor===2 && patch>=9);
+  if (retired) {
+    expect(installer).not.toContain('valhalla-menubar-');
+    expect(installer).toContain('vhalla status');
+  } else {
+    expect(installer).toContain('valhalla-menubar-$VERSION-aarch64-apple-darwin.tar.gz');
+    expect(installer).not.toContain('vhalla status');
+  }
+});
+
 test('install.sh serves the documented release and is wired into the build', async () => {
   const installer=await readFile(new URL('./install.sh', import.meta.url), 'utf8');
   const build=await readFile(new URL('./build.ts', import.meta.url), 'utf8');

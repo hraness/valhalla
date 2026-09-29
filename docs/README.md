@@ -64,9 +64,7 @@ bun install --frozen-lockfile --ignore-scripts
 bun run check:site
 ```
 
-The site checks require Bun 1.3.14. On macOS, also run
-`cargo test --locked --manifest-path desktop/Cargo.toml` for the separate
-menubar workspace. CI's aggregate Rust check includes these checks and the
+The site checks require Bun 1.3.14. CI's aggregate Rust check includes these checks and the
 pinned Kani spent-nonce proofs; the other formal checks are described below.
 
 The aggregate also checks dependency advisories across maintained Rust graphs

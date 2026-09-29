@@ -115,8 +115,7 @@ pub(crate) fn root() -> String {
          \x20 tui                   The status screen (--snapshot, --json)\n\
          \x20 outputs               Files agents saved: list, open, reveal\n\
          \x20 doctor                Check the Valhalla folder and login items\n\
-         \x20 commands --json       Every command, for agents\n\
-         \x20 menubar               The menu bar (being retired; use status)\n",
+         \x20 commands --json       Every command, for agents\n",
     );
     text.push_str(
         "\nOptions\n\
@@ -184,29 +183,18 @@ Example
 ";
 
 #[cfg(unix)]
-const MENUBAR: &str = "Usage: vhalla menubar [run|install|uninstall|status]
-       vhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE
+const MENUBAR: &str = "The macOS menu bar is retired. Every command it had is a vhalla command that
+runs, answers and exits, so nothing keeps running in the background.
 
-Show Valhalla in the macOS menu bar: whether your rooms are in sync, sends
-still waiting or that didn't go through, and the newest files in your outputs
-folder (vhalla outputs).
+  status of your rooms       vhalla status (or vhalla tui)
+  save fresh room counts     vhalla status refresh (vhalla menubar refresh
+                             still works and runs it)
+  newest outputs             vhalla outputs list, open NAME, reveal NAME
+  Open at login              vhalla doctor shows a login item an earlier
+                             release left; vhalla doctor retire sets it aside
+  Copy diagnostics           vhalla doctor --json
 
-Commands
-  run         Open the menu bar now (the default)
-  install     Open it now and every time you log in
-  uninstall   Stop opening it at login and delete the installed copy
-  status      Show whether it opens at login and is running
-  refresh     Read room status and save the counts the menu shows
-
-The menu bar is a separate download. The installer adds it next to vhalla:
-  curl -fsSL https://vhalla.com/install.sh | sh -s -- --with-menubar
-macOS shows a notice that vhalla-menubar can open at login. If macOS stops a
-copy you downloaded in a browser, open System Settings › Privacy & Security
-and choose Open Anyway. Set VHALLA_MENUBAR_PATH to use a build of your own.
-
-Examples
-  vhalla menubar install
-  vhalla menubar refresh ~/valhalla/social ~/valhalla/replica REALM ~/valhalla/node --config node.toml
+docs/cli-parity.md maps every menu action to its command.
 ";
 
 #[cfg(unix)]
@@ -275,7 +263,7 @@ fn all() -> String {
     #[cfg(unix)]
     text.push_str("vhalla status [--json]\nvhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE [--json]\nvhalla tui [--snapshot|--json] [--width N]\nvhalla doctor [retire] [--json]\nvhalla commands --json\nvhalla outputs [list|open [NAME]|reveal NAME] [--json]\n");
     #[cfg(unix)]
-    text.push_str("vhalla menubar [run|install|uninstall|status]\nvhalla menubar refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE\nvhalla support [--json|dismiss|snooze|enable|status --json]\n");
+    text.push_str("vhalla support [--json|dismiss|snooze|enable|status --json]\n");
     #[cfg(all(unix, feature = "experimental-network"))]
     text.push_str(&format!("\n{EXPERIMENTAL}\n"));
     #[cfg(all(unix, feature = "experimental-social"))]
@@ -317,7 +305,6 @@ fn topic(name: &str) -> Option<String> {
         "outputs" => OUTPUTS.to_owned(),
         #[cfg(unix)]
         "status" | "tui" | "doctor" | "commands" => CONTROL.to_owned(),
-        #[cfg(unix)]
         #[cfg(all(unix, feature = "experimental-network"))]
         "experimental" => EXPERIMENTAL.to_owned(),
         #[cfg(all(unix, feature = "experimental-social"))]

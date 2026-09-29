@@ -380,7 +380,7 @@ published release carrying each artifact:
 | --- | --- | --- |
 | `vhalla` CLI | `aarch64-apple-darwin` | v0.1.0 |
 | `vhalla` CLI | `x86_64-unknown-linux-gnu` | v0.1.0 |
-| `vhalla-menubar` | `aarch64-apple-darwin` | v0.1.0 |
+| `vhalla-menubar` | `aarch64-apple-darwin` | v0.1.0; last shipped in v0.2.8, retired for `vhalla status` |
 | `valhalla-browser` | browser bundle | v0.2.1 |
 | `vhalla` CLI | Windows | not shipped; no Windows target, CI job or artifact exists |
 

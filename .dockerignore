@@ -1,6 +1,5 @@
 .git/
 target/
-desktop/target/
 # The images build only the vhalla CLI from the Rust workspace; keep the
 # context small and the cargo layer independent of site, docs and notes.
 node_modules/
@@ -9,5 +8,4 @@ docs/
 kb/
 prototypes/
 verify/
-desktop/
 *.md

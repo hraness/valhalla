@@ -8,7 +8,7 @@ This page maps every menu bar action and every state it could show to the comman
 
 | Menu action | What it did | Command now |
 | --- | --- | --- |
-| `status` | The top row: rooms in sync, sends waiting or that didn't go through | `vhalla status` (or `vhalla tui` for a screen); save fresh counts with `vhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE` |
+| `status` | The top row: rooms in sync, sends waiting or that didn't go through | `vhalla status` (or `vhalla tui` for a screen); save fresh counts with `vhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE` (the released `vhalla menubar refresh` spelling still works and runs it, with a note on stderr) |
 | `outputs.open.<file>` | Opened one of the newest outputs | `vhalla outputs open NAME` |
 | `outputs.reveal.<file>` | Showed that file in Finder | `vhalla outputs reveal NAME` |
 | `outputs.folder` | Opened the outputs folder ("Show all N outputs") | `vhalla outputs open`; `vhalla outputs list` lists every file |
