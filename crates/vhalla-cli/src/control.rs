@@ -59,6 +59,11 @@ const SCAN_LIMIT: usize = 10_000;
 pub(crate) const LEGACY_LABELS: &[&str] = &["app.hraness.valhalla", "com.hraness.valhalla.menubar"];
 /// The program a login item must start to count as ours.
 const LEGACY_PROGRAM: &str = "vhalla-menubar";
+/// The local app `HRANESS_LOCAL_APP=1 vhalla menubar install` built in
+/// v0.2.8, under `~/Applications/Hraness`. Its login item starts
+/// `LEGACY_APP_PROGRAM` inside it instead of `vhalla-menubar`.
+const LEGACY_APP: &str = "Applications/Hraness/Valhalla.app";
+const LEGACY_APP_PROGRAM: &str = "Valhalla.app/Contents/MacOS/Valhalla";
 const MAX_LOGIN_ITEM_BYTES: u64 = 64 * 1024;
 
 /// Every verb this module answers, with its op class and schema.
@@ -348,7 +353,8 @@ pub(crate) fn size(bytes: u64) -> String {
 pub(crate) struct LoginItem {
     pub(crate) label: String,
     pub(crate) path: String,
-    /// It starts `vhalla-menubar` and this user owns it: `doctor retire`
+    /// It starts `vhalla-menubar` (or the v0.2.8 local `Valhalla.app`) and
+    /// this user owns it: `doctor retire`
     /// sets it aside. Anything else is left alone.
     pub(crate) ours: bool,
 }
@@ -360,11 +366,15 @@ fn plist_strings(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Whether a login item's text starts the menu bar.
+/// Whether a login item's text starts the menu bar: `vhalla-menubar`
+/// itself, or the executable inside the local `Valhalla.app` that v0.2.8
+/// built with `HRANESS_LOCAL_APP=1`.
 pub(crate) fn launches_menubar(text: &str) -> bool {
-    plist_strings(text)
-        .iter()
-        .any(|s| *s == LEGACY_PROGRAM || s.ends_with(&format!("/{LEGACY_PROGRAM}")))
+    plist_strings(text).iter().any(|s| {
+        *s == LEGACY_PROGRAM
+            || s.ends_with(&format!("/{LEGACY_PROGRAM}"))
+            || s.ends_with(&format!("/{LEGACY_APP_PROGRAM}"))
+    })
 }
 
 fn current_uid() -> Option<u32> {
@@ -379,10 +389,13 @@ fn current_uid() -> Option<u32> {
         .and_then(|text| text.trim().parse::<u32>().ok())
 }
 
+/// The text of a login item this account owns. Fails closed: when the
+/// account's uid is unknown, nothing is owned.
 fn owned_text(path: &Path, uid: Option<u32>) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
+    let uid = uid?;
     let meta = std::fs::symlink_metadata(path).ok()?;
-    if uid.is_some_and(|uid| meta.uid() != uid) {
+    if meta.uid() != uid {
         return None;
     }
     String::from_utf8(read_regular(path, MAX_LOGIN_ITEM_BYTES)?).ok()
@@ -417,16 +430,49 @@ pub(crate) struct Retired {
     pub(crate) restore: String,
 }
 
+/// Keeps the receipts of items already set aside when a later one fails:
+/// the detail lists each rename and every restore command is a next step.
+fn with_receipts(mut error: ErrorBody, retired: &[Retired]) -> ErrorBody {
+    if retired.is_empty() {
+        return error;
+    }
+    let receipts: Vec<String> = retired
+        .iter()
+        .map(|item| format!("Set aside {} as {}", item.from, item.to))
+        .collect();
+    let detail = match error.detail.take() {
+        Some(detail) => format!("{detail}\n{}", receipts.join("\n")),
+        None => receipts.join("\n"),
+    };
+    error = error.with_detail(detail);
+    for item in retired {
+        error = error.with_next(NextStep::new(
+            item.restore.clone(),
+            format!("Put back {}, set aside before the failure", item.label),
+            Audience::Human,
+        ));
+    }
+    error
+}
+
 /// Renames each login item that is ours to `<path>.retired-<ms>` after
 /// `bootout` unloads its label. Nothing is deleted; items that aren't ours,
 /// symlinks and files another user owns are left alone. The rules follow
-/// desktop-foundation's `retire` module.
+/// desktop-foundation's `retire` module. The target name is checked before
+/// the label is unloaded, and an error keeps the receipts of the items
+/// already set aside.
 pub(crate) fn retire_login_items(
     home: &Path,
     uid: Option<u32>,
     now_ms: u64,
     bootout: &dyn Fn(&str),
 ) -> Result<Vec<Retired>, ErrorBody> {
+    if uid.is_none() {
+        return Err(ErrorBody::new(
+            ErrorCode::Internal,
+            "Couldn't tell which account is running. Nothing was renamed.",
+        ));
+    }
     let mut retired = Vec::new();
     for item in find_login_items(home, uid) {
         if !item.ours {
@@ -437,21 +483,31 @@ pub(crate) fn retire_login_items(
         if !owned_text(&from, uid).is_some_and(|text| launches_menubar(&text)) {
             continue;
         }
-        bootout(&item.label);
         let to = PathBuf::from(format!("{}.retired-{now_ms}", item.path));
         if std::fs::symlink_metadata(&to).is_ok() {
-            return Err(ErrorBody::new(
-                ErrorCode::Conflict,
-                format!("{} already exists. Nothing was renamed.", to.display()),
+            return Err(with_receipts(
+                ErrorBody::new(
+                    ErrorCode::Conflict,
+                    format!(
+                        "{} already exists. {} was left in place.",
+                        to.display(),
+                        from.display()
+                    ),
+                ),
+                &retired,
             ));
         }
-        std::fs::rename(&from, &to).map_err(|error| {
-            ErrorBody::new(
-                ErrorCode::Internal,
-                format!("Couldn't set aside {}.", from.display()),
-            )
-            .with_detail(error.to_string())
-        })?;
+        bootout(&item.label);
+        if let Err(error) = std::fs::rename(&from, &to) {
+            return Err(with_receipts(
+                ErrorBody::new(
+                    ErrorCode::Internal,
+                    format!("Couldn't set aside {}.", from.display()),
+                )
+                .with_detail(error.to_string()),
+                &retired,
+            ));
+        }
         retired.push(Retired {
             restore: format!(
                 "mv {} {} && launchctl bootstrap gui/$(id -u) {}",
@@ -1097,6 +1153,9 @@ pub(crate) struct DoctorData {
     /// The copy of `vhalla-menubar` an earlier `vhalla menubar install`
     /// kept in the Valhalla folder. Left in place; remove it by hand.
     pub(crate) menubar_copy: Option<String>,
+    /// The local `Valhalla.app` that `HRANESS_LOCAL_APP=1 vhalla menubar
+    /// install` built in v0.2.8. Left in place; remove it by hand.
+    pub(crate) menubar_app: Option<String>,
     /// Login items set aside earlier, with the command that restores each.
     pub(crate) retired: Vec<String>,
     pub(crate) checks: Vec<Check>,
@@ -1147,6 +1206,10 @@ pub(crate) fn doctor_data(
     let menubar_copy = std::fs::symlink_metadata(&copy)
         .is_ok()
         .then(|| copy.display().to_string());
+    let app = home.join(LEGACY_APP);
+    let menubar_app = std::fs::symlink_metadata(&app)
+        .is_ok()
+        .then(|| app.display().to_string());
     let mut checks = vec![
         Check {
             name: "room-status",
@@ -1203,6 +1266,7 @@ pub(crate) fn doctor_data(
         room_status_readable: readable,
         login_items,
         menubar_copy,
+        menubar_app,
         retired: retired_items(home),
         checks,
     };
@@ -1254,6 +1318,11 @@ fn doctor(args: &[OsString]) -> i32 {
         if let Some(copy) = &data.menubar_copy {
             text.push_str(&format!(
                 "Old menu bar copy (safe to remove by hand): {copy}\n"
+            ));
+        }
+        if let Some(app) = &data.menubar_app {
+            text.push_str(&format!(
+                "Old menu bar app (safe to remove by hand): {app}\n"
             ));
         }
         for retired in &data.retired {
@@ -2207,13 +2276,109 @@ mod tests {
         let dir = agents(&home);
         std::fs::write(dir.join("app.hraness.valhalla.plist"), OURS).unwrap();
         std::fs::write(dir.join("app.hraness.valhalla.plist.retired-7"), "earlier").unwrap();
-        let error = retire_login_items(&home, my_uid(&home), 7, &|_| {}).unwrap_err();
+        let error =
+            retire_login_items(&home, my_uid(&home), 7, &|_| panic!("no bootout")).unwrap_err();
         assert_eq!(error.code, ErrorCode::Conflict);
         assert_eq!(
             std::fs::read_to_string(dir.join("app.hraness.valhalla.plist.retired-7")).unwrap(),
             "earlier"
         );
         assert!(dir.join("app.hraness.valhalla.plist").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The item foundation v0.8's service helper wrote for
+    /// `HRANESS_LOCAL_APP=1 vhalla menubar install` in v0.2.8.
+    const LOCAL_APP: &str = "<?xml version=\"1.0\"?>\n<plist><dict><key>Label</key><string>app.hraness.valhalla</string>\n<key>ProgramArguments</key><array><string>/Users/you/Applications/Hraness/Valhalla.app/Contents/MacOS/Valhalla</string></array>\n<key>AssociatedBundleIdentifiers</key><array><string>app.hraness.valhalla</string></array></dict></plist>\n";
+
+    #[test]
+    fn the_v028_local_app_item_is_ours_and_its_app_is_reported() {
+        assert!(launches_menubar(LOCAL_APP));
+        assert!(!launches_menubar(
+            "<string>/Applications/Other.app/Contents/MacOS/Valhalla</string>"
+        ));
+        let home = scratch("local-app");
+        let dir = agents(&home);
+        std::fs::write(dir.join("app.hraness.valhalla.plist"), LOCAL_APP).unwrap();
+        let app = home.join("Applications/Hraness/Valhalla.app/Contents/MacOS");
+        std::fs::create_dir_all(&app).unwrap();
+        let (doctor, next) = doctor_data(&home.join("state"), &home, my_uid(&home));
+        assert!(doctor.login_items[0].ours);
+        assert!(
+            !doctor
+                .checks
+                .iter()
+                .find(|c| c.name == "login-items")
+                .unwrap()
+                .ok
+        );
+        assert!(next.iter().any(|n| n.command == "vhalla doctor retire"));
+        assert_eq!(
+            doctor.menubar_app.as_deref(),
+            Some(
+                home.join("Applications/Hraness/Valhalla.app")
+                    .display()
+                    .to_string()
+                    .as_str()
+            )
+        );
+        let retired = retire_login_items(&home, my_uid(&home), 7, &|_| {}).unwrap();
+        assert_eq!(retired.len(), 1);
+        assert_eq!(names(&dir), ["app.hraness.valhalla.plist.retired-7"]);
+        // The app itself is never touched.
+        assert!(app.is_dir());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_unknown_account_owns_nothing_and_retires_nothing() {
+        let home = scratch("no-uid");
+        let dir = agents(&home);
+        std::fs::write(dir.join("app.hraness.valhalla.plist"), OURS).unwrap();
+        assert!(!find_login_items(&home, None)[0].ours);
+        let error = retire_login_items(&home, None, 7, &|_| panic!("no bootout")).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert_eq!(names(&dir), ["app.hraness.valhalla.plist"]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_later_clash_keeps_earlier_receipts_and_skips_its_bootout() {
+        let home = scratch("partial");
+        let dir = agents(&home);
+        std::fs::write(dir.join("app.hraness.valhalla.plist"), OURS).unwrap();
+        std::fs::write(dir.join("com.hraness.valhalla.menubar.plist"), OURS).unwrap();
+        std::fs::write(
+            dir.join("com.hraness.valhalla.menubar.plist.retired-7"),
+            "earlier",
+        )
+        .unwrap();
+        let booted = std::cell::RefCell::new(Vec::new());
+        let error = retire_login_items(&home, my_uid(&home), 7, &|label| {
+            booted.borrow_mut().push(label.to_owned())
+        })
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict);
+        // Only the item that was renamed was unloaded.
+        assert_eq!(*booted.borrow(), ["app.hraness.valhalla"]);
+        assert!(error
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("app.hraness.valhalla.plist.retired-7"));
+        assert_eq!(error.next.len(), 1);
+        assert!(error.next[0].command.starts_with("mv "));
+        assert!(error.next[0]
+            .command
+            .contains("app.hraness.valhalla.plist.retired-7"));
+        assert_eq!(
+            names(&dir),
+            [
+                "app.hraness.valhalla.plist.retired-7",
+                "com.hraness.valhalla.menubar.plist",
+                "com.hraness.valhalla.menubar.plist.retired-7",
+            ]
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

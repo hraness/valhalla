@@ -38,10 +38,10 @@ Each state the menu bar had a fixture for has a golden in `crates/vhalla-cli/tes
 `vhalla doctor retire` looks for the two login items earlier releases wrote, `~/Library/LaunchAgents/app.hraness.valhalla.plist` and `~/Library/LaunchAgents/com.hraness.valhalla.menubar.plist`. It sets one aside only when all of these hold:
 
 - it is a regular file, not a symlink;
-- your account owns it;
+- your account owns it (if `vhalla` can't tell which account is running, it renames nothing);
 - it is UTF-8 and at most 64 KiB;
-- it starts a program named `vhalla-menubar`.
+- it starts a program named `vhalla-menubar`, or `Valhalla.app/Contents/MacOS/Valhalla`, the local app that `HRANESS_LOCAL_APP=1 vhalla menubar install` built in v0.2.8.
 
-It asks launchd to unload that label, then renames the file to `NAME.plist.retired-TIME`. It never deletes the file and never signals a process. The output includes the command that puts the item back. Anything that fails a check is reported and left alone.
+It first checks that `NAME.plist.retired-TIME` is free, then asks launchd to unload that label and renames the file to that name. It never deletes the file and never signals a process. The output includes the command that puts the item back. Anything that fails a check is reported and left alone. If a later item can't be set aside, the error still lists the items already renamed and the command that puts each back.
 
-The copy of `vhalla-menubar` that `vhalla menubar install` kept in the Valhalla folder stays where it is. `vhalla doctor` shows its path so you can remove it yourself.
+The copy of `vhalla-menubar` that `vhalla menubar install` kept in the Valhalla folder stays where it is. So does `~/Applications/Hraness/Valhalla.app`, if v0.2.8 built one. `vhalla doctor` shows both paths so you can remove them yourself.
