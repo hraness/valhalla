@@ -1,0 +1,16 @@
+== Status ==
+Rooms     4 rooms in sync
+          Updated 5 min ago
+          height 42 · 0 waiting · 0 failed
+Outputs   5 files · newest first
+          summary 4.md · 2 KB · 20 min ago
+          summary 3.md · 2 KB · 40 min ago
+          summary 2.md · 2 KB · 1 hour ago
+          /home/you/.local/share/valhalla/outputs
+
+== Outputs ==
+/home/you/.local/share/valhalla/outputs
+summary 4.md · 2 KB · 20 min ago
+summary 3.md · 2 KB · 40 min ago
+summary 2.md · 2 KB · 1 hour ago
+and 2 more · vhalla outputs list

@@ -41,6 +41,24 @@ pub fn execute(args: &[OsString]) -> i32 {
     result.exit_code
 }
 
+/// The support offer that `vhalla support --json` wraps in the control-kit
+/// envelope. The support protocol's own argv (`support protocol --json`,
+/// `offer --json`, `status --json`, `shown`, `release`) stays byte-for-byte
+/// what support-foundation prints; only the bare offer read is a registry verb.
+#[cfg(unix)]
+pub fn offer() -> Result<serde_json::Value, String> {
+    let result = run_support_command(&profile(), &["--json".to_owned()], &options());
+    if result.exit_code != 0 {
+        let reason = result.stderr.trim();
+        return Err(if reason.is_empty() {
+            "Support options are unavailable.".to_owned()
+        } else {
+            reason.to_owned()
+        });
+    }
+    serde_json::from_str(&result.stdout).map_err(|_| "Support options are unavailable.".to_owned())
+}
+
 #[cfg(unix)]
 pub fn completed() {
     let _ = hraness_support_foundation::maybe_show_support_invitation(&profile(), true, &options());

@@ -1,0 +1,17 @@
+== Status ==
+Rooms     ! 1 send didn't go through
+          1 room · updated 1 min ago
+          height 42 · 0 waiting · 1 failed
+Outputs   5 files · newest first
+          summary 4.md · 2 KB · 20 min ago
+          summary 3.md · 2 KB · 40 min ago
+          summary 2.md · 2 KB · 1 hour ago
+          /home/you/.local/share/valhalla/outputs
+Login     app.hraness.valhalla from the retired menu bar · vhalla doctor retire
+
+== Outputs ==
+/home/you/.local/share/valhalla/outputs
+summary 4.md · 2 KB · 20 min ago
+summary 3.md · 2 KB · 40 min ago
+summary 2.md · 2 KB · 1 hour ago
+and 2 more · vhalla outputs list

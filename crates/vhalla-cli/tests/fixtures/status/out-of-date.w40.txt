@@ -1,0 +1,17 @@
+== Status ==
+Rooms     Room status is out of date
+          Last updated 3 hours ago
+          height 42 · 0 waiting · 0
+          failed
+Outputs   2 files · newest first
+          summary 1.md · 2 KB · 20 min
+          ago
+          summary 0.md · 2 KB · 40 min
+          ago
+          /home/you/.local/share/valhall
+          a/outputs
+
+== Outputs ==
+/home/you/.local/share/valhalla/outputs
+summary 1.md · 2 KB · 20 min ago
+summary 0.md · 2 KB · 40 min ago

@@ -1,0 +1,13 @@
+== Status ==
+Rooms     No rooms yet
+          Updated just now
+          height 42 · 0 waiting · 0
+          failed
+Outputs   No outputs yet · agents save
+          finished files here
+          /home/you/.local/share/valhall
+          a/outputs
+
+== Outputs ==
+/home/you/.local/share/valhalla/outputs
+No outputs yet. Agents save finished fil

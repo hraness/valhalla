@@ -1,0 +1,11 @@
+== Status ==
+Rooms     2 sends waiting
+          4 rooms · updated 1 min ago
+          height 42 · 2 waiting · 0 failed
+Outputs   1 file · newest first
+          summary 0.md · 2 KB · 20 min ago
+          /home/you/.local/share/valhalla/outputs
+
+== Outputs ==
+/home/you/.local/share/valhalla/outputs
+summary 0.md · 2 KB · 20 min ago

@@ -193,7 +193,9 @@ pub(crate) fn report_error(error: &str) {
 /// Commands `vhalla` knows by name in any build. Builds without a feature
 /// still answer its command with a pointer to the feature.
 pub(crate) const COMMANDS: &[&str] = &[
+    "commands",
     "demo",
+    "doctor",
     "experimental",
     "help",
     "identity",
@@ -205,7 +207,9 @@ pub(crate) const COMMANDS: &[&str] = &[
     "public",
     "rooms",
     "social",
+    "status",
     "support",
+    "tui",
 ];
 
 /// Optimal string alignment distance: edits plus adjacent transpositions.

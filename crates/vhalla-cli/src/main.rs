@@ -24,6 +24,8 @@ mod private_rooms;
 mod public_network;
 
 #[cfg(unix)]
+mod control;
+#[cfg(unix)]
 mod intro;
 
 #[cfg(all(unix, feature = "experimental-social"))]
@@ -50,6 +52,10 @@ fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
     let help = help::resolve(&args);
     if help.is_none() && args.first().is_some_and(|arg| arg == "support") && args.len() <= 64 {
+        #[cfg(unix)]
+        if let Some(code) = control::support(&args[1..]) {
+            std::process::exit(code);
+        }
         std::process::exit(support::execute(&args[1..]));
     }
     match help {
@@ -67,6 +73,10 @@ fn main() {
             cli::report_error(&cli::unknown_command(first));
             std::process::exit(2);
         }
+    }
+    #[cfg(unix)]
+    if let Some(code) = control::dispatch(&args) {
+        std::process::exit(code);
     }
     #[cfg(unix)]
     {
@@ -676,7 +686,7 @@ fn is_legacy_launch_agent(plist: &std::path::Path, installed: &std::path::Path) 
             .is_ok_and(|text| text == legacy_launch_agent_plist(installed))
 }
 
-/// Stops and removes the login item an earlier release wrote, when it is
+/// Stops and sets aside the login item an earlier release wrote, when it is
 /// exactly theirs. It unloads the old label so the old and new login items
 /// never both open the menu bar.
 #[cfg(unix)]
@@ -702,7 +712,15 @@ fn retire_legacy_launch_agent(installed: &std::path::Path) {
             .stderr(std::process::Stdio::null())
             .status();
     }
-    let _ = std::fs::remove_file(plist);
+    // Set aside, never delete: `vhalla doctor` lists it with a restore command.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let aside = std::path::PathBuf::from(format!("{}.retired-{stamp}", plist.display()));
+    if std::fs::symlink_metadata(&aside).is_err() {
+        let _ = std::fs::rename(&plist, aside);
+    }
 }
 
 /// Runs the installed menu bar's own lifecycle command with this terminal,

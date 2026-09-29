@@ -67,18 +67,20 @@ fn menubar_without_a_binary_points_to_the_installer() {
 
 #[test]
 fn menubar_and_outputs_reject_extra_arguments() {
-    for command in ["menubar", "outputs"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
-            .env("HRANESS_SUPPORT", "off")
-            .args([command, "extra"])
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("usage:"),
-            "{command}"
-        );
-    }
+    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
+        .args(["menubar", "extra"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"));
+    let output = Command::new(env!("CARGO_BIN_EXE_vhalla"))
+        .env("HRANESS_SUPPORT", "off")
+        .args(["outputs", "extra"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown outputs command extra."));
 }
 
 #[test]

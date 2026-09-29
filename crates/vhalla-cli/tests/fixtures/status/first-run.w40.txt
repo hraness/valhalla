@@ -1,0 +1,12 @@
+== Status ==
+Rooms     No room status yet
+          Run vhalla status refresh to
+          see your rooms
+Outputs   No outputs yet · agents save
+          finished files here
+          /home/you/.local/share/valhall
+          a/outputs
+
+== Outputs ==
+/home/you/.local/share/valhalla/outputs
+No outputs yet. Agents save finished fil
