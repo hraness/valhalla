@@ -15,7 +15,12 @@ import { BrowserWindow, MockupRoot, TerminalFrame, type MockupTheme, type Termin
 import { tourSteps, tourText, type TourStep } from './tour.ts';
 
 /** Where the status goldens live; the status mockup shows one verbatim. */
-export const statusGoldenPath = new URL('../../crates/vhalla-cli/tests/fixtures/status/in-sync.w80.txt', import.meta.url);
+/**
+ * A copy of crates/vhalla-cli/tests/fixtures/status/in-sync.w80.txt, kept in site/
+ * because the Vercel build uploads site/ without crates/. launch.test.ts fails
+ * when the copy drifts from the CLI golden.
+ */
+export const statusGoldenPath = new URL('./fixtures/status-in-sync.w80.txt', import.meta.url);
 
 export function tourLines(step: TourStep): TerminalLine[] {
   const lines: TerminalLine[] = [{ kind: 'comment', text: `${step.step}/${tourSteps.length} · ${step.title}`, beat: `step-${step.step}` }];

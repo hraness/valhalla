@@ -104,3 +104,7 @@ test('kb/launch/social-kit.md matches the beats and facts; run `bun run launch:k
   const text = await Bun.file(new URL('../../kb/launch/social-kit.md', import.meta.url)).text();
   expect(text).toBe(renderSocialKitMarkdown());
 });
+
+test('the site copy of the vhalla status golden matches the CLI golden', async () => {
+  expect(await readFile(statusGoldenPath, 'utf8')).toBe(await read('crates/vhalla-cli/tests/fixtures/status/in-sync.w80.txt'));
+});
