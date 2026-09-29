@@ -12,6 +12,11 @@ use std::{
 #[path = "ledger_tests.rs"]
 mod ledger_tests;
 
+#[cfg(test)]
+thread_local! {
+    static PANIC_AFTER_ADMISSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Transport permissions confer no private-room authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Permissions {
@@ -592,7 +597,7 @@ fn serve_one(
     socket.deadline = deadline;
     let mut tls = StreamOwned::new(connection, socket);
     let request = read_frame(&mut tls, MAX_REQUEST, deadline)?;
-    let reply = process_request(state, notify, draining, &request, deadline)?;
+    let reply = process_request(state, notify, draining, None, &request, deadline)?;
     tls.sock.deadline = reply.deadline;
     write_frame(&mut tls, reply.code, &reply.body, reply.deadline)
 }
@@ -609,14 +614,47 @@ impl RequestHandler {
         request: &[u8],
         deadline: Instant,
         draining: Arc<std::sync::atomic::AtomicBool>,
+        cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<Reply> {
         process_request(
             self.state.clone(),
             self.notify.clone(),
             draining,
+            Some(cancelled),
             request,
             deadline,
         )
+    }
+
+    /// Wake only the cancelled request out of its held-page wait. Acquire the
+    /// condition variable's mutex before notifying so cancellation cannot land
+    /// between the waiter's predicate check and its atomic unlock-and-wait.
+    /// The transport retries a busy mutex asynchronously; storage never blocks
+    /// a runtime worker and an admitted PUT still runs to completion.
+    pub(crate) fn cancel_wait(&self, cancelled: &std::sync::atomic::AtomicBool) -> bool {
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        match self.state.try_lock() {
+            Ok(_state) => {
+                self.notify.notify_all();
+                true
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                self.notify.notify_all();
+                true
+            }
+            Err(std::sync::TryLockError::WouldBlock) => false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inflight_for_test(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .keys
+            .values()
+            .map(|key| key.inflight)
+            .sum()
     }
 }
 /// Keeps the credential's in-flight slot until the transport finishes writing.
@@ -640,12 +678,17 @@ fn process_request(
     state: Arc<Mutex<State>>,
     notify: Arc<Condvar>,
     draining: Arc<std::sync::atomic::AtomicBool>,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
     request: &[u8],
     deadline: Instant,
 ) -> Result<Reply> {
     if request.len() < 33 {
         return Ok(Reply::refusal(STATUS_DENIED, deadline));
     }
+    // Drop the state guard first during unwinding. Admission::drop takes the
+    // same mutex, so declaring admission after the lock would self-deadlock on
+    // a handler panic instead of poisoning the service and releasing custody.
+    let admitted;
     let mut s = state.lock().map_err(|_| NetError::Unavailable)?;
     remaining(deadline).map_err(io)?;
     if s.poisoned {
@@ -701,10 +744,17 @@ fn process_request(
     key.bytes += bytes;
     s.global.requests += 1;
     s.global.bytes += bytes;
-    let admitted = Admission {
+    admitted = Admission {
         state: state.clone(),
         id,
     };
+    #[cfg(test)]
+    PANIC_AFTER_ADMISSION.with(|fault| {
+        assert!(
+            !fault.replace(false),
+            "injected panic after request admission"
+        );
+    });
     let mut reply_deadline = deadline;
     let response = if request[0] == OP_PUT {
         put(&mut s, id, &request[33..])
@@ -714,7 +764,7 @@ fn process_request(
         // because the original deadline may already have elapsed.
         let until =
             Instant::now() + Duration::from_millis(u64::from(wait_ms)).min(s.limits.max_wait);
-        let (guard, outcome) = waited_page(s, &notify, &draining, after, limit, until);
+        let (guard, outcome) = waited_page(s, &notify, &draining, cancelled, after, limit, until);
         s = guard;
         // A put or shutdown can end the hold early. Only the write reserve
         // remains after that wake; retaining the original wait deadline lets
@@ -785,6 +835,7 @@ fn waited_page<'a>(
     s: MutexGuard<'a, State>,
     notify: &Condvar,
     draining: &std::sync::atomic::AtomicBool,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
     after: u64,
     limit: usize,
     until: Instant,
@@ -803,6 +854,7 @@ fn waited_page<'a>(
                 if !page.records.is_empty()
                     || remaining.is_zero()
                     || draining.load(std::sync::atomic::Ordering::Acquire)
+                    || cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
                 {
                     return (s, encode_page(&page).map(|body| (STATUS_OK, body)));
                 }

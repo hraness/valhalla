@@ -425,3 +425,86 @@ fn read_only_inventory_includes_inactive_ids_without_migrating() {
         .unwrap();
     assert_eq!(format, 1);
 }
+
+#[test]
+fn request_panic_releases_state_before_admission_guard() {
+    const CHILD: &str = "VHALLA_REQUEST_PANIC_TEST_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let fixture = Fixture::new();
+        let service = service(fixture.old(), vec![credential(1, 7, ns(1))]);
+        let mut request = vec![OP_PUT];
+        request.extend_from_slice(RelayToken::from_bytes([7; 32]).unwrap().as_bytes());
+        request.extend_from_slice(&item(ns(1), 1).encode().unwrap());
+        let draining = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        PANIC_AFTER_ADMISSION.with(|fault| fault.set(true));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            process_request(
+                service.state.clone(),
+                service.notify.clone(),
+                draining.clone(),
+                None,
+                &request,
+                Instant::now() + Duration::from_secs(1),
+            )
+        }));
+        assert!(outcome.is_err());
+        assert!(service.unhealthy());
+        assert_eq!(
+            process_request(
+                service.state.clone(),
+                service.notify.clone(),
+                draining.clone(),
+                None,
+                &request,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .err(),
+            Some(NetError::Unavailable)
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        assert_eq!(
+            service.serve_until(listener, None, draining),
+            Err(NetError::Unavailable)
+        );
+        assert_eq!(fixture.old().page(0, 4).unwrap().head, 0);
+        return;
+    }
+
+    // The regressed implementation deadlocks during unwind. Isolate it so a
+    // failing regression cannot hang the test suite or retain a store writer.
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg(format!(
+            "{}::request_panic_releases_state_before_admission_guard",
+            module_path!().split_once("::").unwrap().1
+        ))
+        .arg("--nocapture")
+        .env(CHILD, "1")
+        .env("RUST_BACKTRACE", "0")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "panic recovery child failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "request unwind failed to release the mailbox within ten seconds: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}

@@ -797,11 +797,35 @@ async fn serve_one(
             .map_err(|_| NetError::Malformed)?;
         decode_frame(&raw, MAX_REQUEST)?;
         // SQLite synchronization and held-page condvars run on bounded blocking workers.
-        let reply = match tokio::task::spawn_blocking(move || {
-            handler.process(&raw[4..], deadline, draining)
-        })
-        .await
-        {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let processing_handler = handler.clone();
+        let processing_cancelled = cancelled.clone();
+        let mut processing = tokio::task::spawn_blocking(move || {
+            processing_handler.process(&raw[4..], deadline, draining, &processing_cancelled)
+        });
+        let outcome = tokio::select! {
+            outcome = &mut processing => outcome,
+            _ = async {
+                tokio::select! {
+                    _ = connection.closed() => {}
+                    _ = send.stopped() => {}
+                }
+            } => {
+                // A disconnected or cancelled PAGE no longer needs its wait. Keep the
+                // blocking operation joined: cancellation never abandons a PUT
+                // or releases its admission guard before storage completes.
+                loop {
+                    if handler.cancel_wait(&cancelled) {
+                        break processing.await;
+                    }
+                    tokio::select! {
+                        outcome = &mut processing => break outcome,
+                        _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                    }
+                }
+            }
+        };
+        let reply = match outcome {
             Ok(reply) => reply?,
             Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
             Err(_) => return Err(NetError::Unavailable),

@@ -125,6 +125,12 @@ relay with `init --relay-url https://your-relay.example`. The relay URL is part
 of the selected route and is never taken from a mailbox response. No public
 endpoint discovery service is enabled.
 
+A host configured with a relay waits for that relay to become reachable before
+reporting readiness. If the relay is unavailable, startup fails even when a
+direct bind address is configured. Select `--relay-url none` for a deliberate
+direct-only deployment; a saved relay configuration does not silently switch
+to that mode during an outage.
+
 For a local test or a directly reachable host, disable relay traffic and bind
 a fixed address:
 
