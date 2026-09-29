@@ -276,6 +276,9 @@ when the service is passed in.
 The [Habitat Link independent runners workflow](../.github/workflows/habitat-link-qualification.yml)
 adds a live check using ALGAL's `scripts/habitat-link-iroh-qualification.ts`.
 Dispatch it with `gh workflow run habitat-link-qualification.yml --ref main -f algal_ref=FULL_ALGAL_COMMIT_SHA`.
+The source job requires a full lowercase commit SHA reachable from ALGAL main
+before any fixture dependency is installed or code is executed. Qualification
+jobs use disposable dependency and build directories without shared caches.
 For pre-merge qualification, the registered Iroh workflow also accepts
 `gh workflow run iroh-qualification.yml --ref HABITAT_LINK_BRANCH -f algal_ref=FULL_ALGAL_COMMIT_SHA`.
 That explicit input calls the same Habitat Link profile; omitting it keeps
