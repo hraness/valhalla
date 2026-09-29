@@ -153,3 +153,7 @@
 .vh-status dt { color: var(--muted-foreground, #5e6570); }
 .vh-status dd { margin: 0; font-weight: 600; }
 .vh-card-foot { margin: 0.9rem 0 0; color: var(--muted-foreground, #5e6570); }
+
+/* Home room figure: keep the caption clear of the browser frame's shadow, as the tour caption is. */
+.home-room { margin: 1.75rem 0 0; }
+.home-room figcaption { margin-top: 14px; max-width: 44rem; font-size: 14px; line-height: 1.7; color: var(--muted); }
