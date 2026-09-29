@@ -10,7 +10,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'none'; script-src 'self' 'sha256-MWz/E82SDnIcijjRlvrQL1ALCyjT8nM5KCKjTXPtyiY=' 'sha256-5fYgzciJkjUaphMUznyNP0orOdCjU2yf6O0S2nBzhig=' 'sha256-2jBA/DUOwxAqWzuKDyGjUmfANGTMUZobf86kecpIfnc=' 'sha256-LDbP5f041PyPffUhxAMvLR11d0Kh/UKtkIm6owtVyWU=' 'sha256-Ng+NvTnlHLJn8c5LI+xqHqZbC22X8eeiV1M9/YONuBQ=' 'sha256-T5SBfvsormAnzOr3w7lcFWpQRMktl9t+PAs8Kf0ZqiA=' 'sha256-OfNX3PPlEtzXoMZ+25zLmP4k84uuqDtPDz+1EdHiP2w=' 'sha256-Xwf6V/58wGQEqBWlXMOw6RmKS3MZ8kv95HoMvlwf3oc=' 'sha256-y+Yp9T6UBRzqJsf1HPkV7iCmv8OLiG35CppLjDk/F+w=' 'sha256-Dp+/pcXaSVQyVoxpTmGCDKonTCS7aVmCxHi+XcXLvmA=' 'sha256-DjwS6U41nyoshSZnenJNMl96XTD8EAjjvxpcjp8kpgs=' 'sha256-Z+M7RMUOCt9iyCAmOF3BCqcj18EZ7eRs+onee/iJqeI=' 'sha256-bqfcMaeUo/V8lWNV7EvQFmse0TYTmkDbfTatmA0e5b0=' 'sha256-jO6PTq9XgmCHj5VHpcwS1H0BGl+/D3KuqvfOqZiQxcc=' 'sha256-6mdzwgnfedGW9gR56J3boyHjB6XHLDIBa+30pIyFvFk=' 'sha256-ta07OWfV7kmQ9tNyFyoDA/LuTgkOSM3vwq3Wt9B+qSE=' 'sha256-6JVTKm84B+WYQBDREhXpFLgQ3krdeYvaW2wIULzdLJ8=' 'sha256-BpWhIoFbXZT1mWr8murYIwIGfd27cdXmk1ZnDbzUB+8=' 'sha256-J19qvIzP2tjrssgkIwl8A5AUmkEhpwDQz1YMGNxucUg=' 'sha256-I1cM6tCDvHNYxHjLPzZUmT2omX8yz2ggLyJ443rAGE8=' 'sha256-SPh2NsccArDEfanipIqNIN38R+o2Wj9a8xkdoHkYXPA=' 'sha256-9MJu+P2XcqMLVX5VuBBtStE09/UOTqGjl7UGLR3rr18=' 'sha256-wxD8PUCxVYnEU8pLPNhAc3Drjtq9IGH7mKPKT5TJ0N4=' 'sha256-bmqhCsd0qh9r7zuKZN4Gt90G+2t98I0utFunavFYoUU=' 'sha256-s4pz9Z6yIb/ODBi1tfJfUG8bMSy7TDLwlZv+Mf/RQec=' 'sha256-C4zMC/njIG0Ev83vzW2lNFs04ypwDVegYtN3hx8nGok=' 'sha256-OI+s0z0kn4k2fPJVLsxTVu0R7pRJEVFIplviWFiWozQ=' 'sha256-twcNYxMheuV4HcwL5lX7kPi2wqPNDIPKPmGOfh4B36E=' 'sha256-yWzaqGd5b6f/FRn+1krG7x0cSAe60NiaXPbcMA5HfTU=' 'sha256-elicGNZg+I0mz6cFzF5VuQxxxxMiBgPWIOC+VPrgla8=' 'sha256-fVyQU2GqsQiqe0Q0a6xXnWFHUKpXRVcyzqN8bPjHBJQ=' 'sha256-GiE9iEd21xNd3SItR4VXzsixM7ngwBC1Rt/ltMyUz44=' 'sha256-OHM+lC1qfcO7LXLKzCEfuiKxU7EWewJnGYYxR0u5fW8='; style-src 'self'; font-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+          "value": "default-src 'none'; script-src 'self' 'sha256-8tZQw5PgTCtK/lZ0AobGIM7i4lgCs+HCNGL/sk3JEr8=' 'sha256-5fYgzciJkjUaphMUznyNP0orOdCjU2yf6O0S2nBzhig=' 'sha256-2jBA/DUOwxAqWzuKDyGjUmfANGTMUZobf86kecpIfnc=' 'sha256-LDbP5f041PyPffUhxAMvLR11d0Kh/UKtkIm6owtVyWU=' 'sha256-Ng+NvTnlHLJn8c5LI+xqHqZbC22X8eeiV1M9/YONuBQ=' 'sha256-T5SBfvsormAnzOr3w7lcFWpQRMktl9t+PAs8Kf0ZqiA=' 'sha256-OfNX3PPlEtzXoMZ+25zLmP4k84uuqDtPDz+1EdHiP2w=' 'sha256-Xwf6V/58wGQEqBWlXMOw6RmKS3MZ8kv95HoMvlwf3oc=' 'sha256-y+Yp9T6UBRzqJsf1HPkV7iCmv8OLiG35CppLjDk/F+w=' 'sha256-Dp+/pcXaSVQyVoxpTmGCDKonTCS7aVmCxHi+XcXLvmA=' 'sha256-DjwS6U41nyoshSZnenJNMl96XTD8EAjjvxpcjp8kpgs=' 'sha256-Z+M7RMUOCt9iyCAmOF3BCqcj18EZ7eRs+onee/iJqeI=' 'sha256-bqfcMaeUo/V8lWNV7EvQFmse0TYTmkDbfTatmA0e5b0=' 'sha256-jO6PTq9XgmCHj5VHpcwS1H0BGl+/D3KuqvfOqZiQxcc=' 'sha256-6mdzwgnfedGW9gR56J3boyHjB6XHLDIBa+30pIyFvFk=' 'sha256-ta07OWfV7kmQ9tNyFyoDA/LuTgkOSM3vwq3Wt9B+qSE=' 'sha256-6JVTKm84B+WYQBDREhXpFLgQ3krdeYvaW2wIULzdLJ8=' 'sha256-BpWhIoFbXZT1mWr8murYIwIGfd27cdXmk1ZnDbzUB+8=' 'sha256-J19qvIzP2tjrssgkIwl8A5AUmkEhpwDQz1YMGNxucUg=' 'sha256-I1cM6tCDvHNYxHjLPzZUmT2omX8yz2ggLyJ443rAGE8=' 'sha256-SPh2NsccArDEfanipIqNIN38R+o2Wj9a8xkdoHkYXPA=' 'sha256-9MJu+P2XcqMLVX5VuBBtStE09/UOTqGjl7UGLR3rr18=' 'sha256-wxD8PUCxVYnEU8pLPNhAc3Drjtq9IGH7mKPKT5TJ0N4=' 'sha256-bmqhCsd0qh9r7zuKZN4Gt90G+2t98I0utFunavFYoUU=' 'sha256-s4pz9Z6yIb/ODBi1tfJfUG8bMSy7TDLwlZv+Mf/RQec=' 'sha256-C4zMC/njIG0Ev83vzW2lNFs04ypwDVegYtN3hx8nGok=' 'sha256-OI+s0z0kn4k2fPJVLsxTVu0R7pRJEVFIplviWFiWozQ=' 'sha256-twcNYxMheuV4HcwL5lX7kPi2wqPNDIPKPmGOfh4B36E=' 'sha256-yWzaqGd5b6f/FRn+1krG7x0cSAe60NiaXPbcMA5HfTU=' 'sha256-elicGNZg+I0mz6cFzF5VuQxxxxMiBgPWIOC+VPrgla8=' 'sha256-fVyQU2GqsQiqe0Q0a6xXnWFHUKpXRVcyzqN8bPjHBJQ=' 'sha256-GiE9iEd21xNd3SItR4VXzsixM7ngwBC1Rt/ltMyUz44=' 'sha256-OHM+lC1qfcO7LXLKzCEfuiKxU7EWewJnGYYxR0u5fW8='; style-src 'self'; font-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
         },
         {
           "key": "X-Content-Type-Options",
@@ -23,6 +23,15 @@
         {
           "key": "Permissions-Policy",
           "value": "camera=(), microphone=(), geolocation=()"
+        }
+      ]
+    },
+    {
+      "source": "/install.ps1",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/plain; charset=utf-8"
         }
       ]
     },

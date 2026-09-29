@@ -171,3 +171,12 @@ test('install.sh serves the documented release and is wired into the build', asy
   expect(installer).toContain('sha256');
   expect(build).toContain('"install.sh"');
 });
+
+test('install.ps1 serves the documented release and is wired into the build', async () => {
+  const installer=await readFile(new URL('./install.ps1', import.meta.url), 'utf8');
+  const build=await readFile(new URL('./build.ts', import.meta.url), 'utf8');
+  expect(installer).toContain(`$Version = '${latestRelease}'`);
+  expect(installer).toContain('Get-FileHash');
+  expect(installer).toContain('x86_64-pc-windows-msvc.zip');
+  expect(build).toContain('"install.ps1"');
+});

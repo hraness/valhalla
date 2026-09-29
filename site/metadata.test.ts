@@ -48,8 +48,8 @@ test("structured data describes only what the page shows", () => {
   const heroFacts = home.match(/<p class="hero-facts">([^<]+)<\/p>/)?.[1] ?? "";
   expect(heroFacts).toContain(latestRelease);
   expect(app.softwareVersion).toBe(latestRelease.replace(/^v/, ""));
-  expect(heroFacts).toContain("Apple Silicon macOS and x86-64 Linux");
-  expect(app.operatingSystem).toBe("macOS (Apple Silicon), Linux (x86-64)");
+  expect(heroFacts).toContain("Apple Silicon macOS, Linux and Windows");
+  expect(app.operatingSystem).toBe("macOS (Apple Silicon), Linux (x86-64, ARM64), Windows (x86-64)");
   expect(homeFaq(index).some(({ answer }) => /\bfree\b/i.test(answer))).toBe(true);
   expect(app.offers).toEqual({ "@type": "Offer", price: "0", priceCurrency: "USD" });
   expect(heroFacts).toContain("MIT license");

@@ -16,7 +16,7 @@ for arg in "$@"; do
   esac
 done
 
-VERSION="v0.2.9"
+VERSION="v0.2.10"
 BASE="https://github.com/hraness/valhalla/releases/download/$VERSION"
 INSTALL_DIR="${VHALLA_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -36,7 +36,11 @@ case "$os/$arch" in
                          asset="valhalla-$VERSION-aarch64-unknown-linux-musl.tar.gz" ;;
   *)
     echo "vhalla install: there is no prebuilt vhalla for $os/$arch." >&2
-    echo "Prebuilt releases cover Apple Silicon macOS and x86-64 and ARM64 Linux." >&2
+    echo "Prebuilt releases cover Apple Silicon macOS, x86-64 and ARM64 Linux, and x86-64 Windows." >&2
+    case "$os" in
+      MINGW*|MSYS*|CYGWIN*)
+        echo "On Windows, run this in PowerShell instead: irm https://vhalla.com/install.ps1 | iex" >&2 ;;
+    esac
     echo "Or build from source: https://vhalla.com/docs/getting-started/" >&2
     exit 1 ;;
 esac
