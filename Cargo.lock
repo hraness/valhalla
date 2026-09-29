@@ -8027,7 +8027,7 @@ dependencies = [
 
 [[package]]
 name = "vhalla-cli"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "bip39",
  "ed25519-dalek 2.2.0",
