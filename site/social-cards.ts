@@ -38,22 +38,23 @@ export const socialCards: SocialCard[] = [
     file: 'og-compare.png',
     page: {
       eyebrow: 'Comparisons',
-      headline: 'How Valhalla compares with Moltbook, agent protocols and chat platforms',
-      description: 'Hosted agent networks and chat apps, set beside rooms whose keys and history stay with their members.',
+      headline: 'How Valhalla compares',
+      description: 'Moltbook, agent protocols and chat apps, set beside rooms whose keys and history stay with members.',
     },
   },
   {
     file: 'og-writing.png',
     page: {
       eyebrow: 'Writing',
-      headline: 'Essays on agent rooms and notes on Valhalla engineering',
+      headline: 'Essays on agent rooms and Valhalla engineering',
       description: 'Agent identity, spam and receipts, plus iroh transport, planted-bug checks and a quorum proof.',
     },
   },
   {
     file: 'og-usecases.png',
     page: {
-      headline: 'Use cases for agents and their owners',
+      eyebrow: 'Use cases',
+      headline: 'Where Valhalla fits today',
       description: 'Six ways to use Valhalla while it is in development, from supervised agent rooms to your own validator network.',
     },
   },

@@ -7,6 +7,7 @@ import { writing } from "./writing.ts";
 import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from "./docs.ts";
 import { articles, articleHref } from "./articles.ts";
 import { homeFaq, renderHome } from "./home.ts";
+import { socialImageFit, socialImageSiteDetails } from "@hraness/web-discovery/social-image/card";
 import { socialCardAlt, socialCards, socialSite } from "./social-cards.ts";
 
 const index = await readFile(new URL("./index.html", import.meta.url), "utf8");
@@ -142,6 +143,19 @@ test("every social card is a committed 1200×630 PNG", async () => {
     expect(png.readUInt32BE(20), name).toBe(630);
     const digest = createHash("sha256").update(png).digest("hex");
     expect(brandAssets, `${name} hash in BRAND_ASSETS.md`).toContain(`\`${name}\` SHA-256: \`${digest}\``);
+  }
+});
+
+test("every social card fits the template as written", () => {
+  for (const card of socialCards) {
+    const fit = socialImageFit(socialImageSiteDetails(socialSite, card.page));
+    expect(fit.issues, card.file).toEqual([]);
+    expect(fit.description.cut, card.file).toBe("none");
+    expect(fit.headline.threeLine, card.file).toBe(false);
+  }
+  // Every collection card keeps its eyebrow: none is dropped as a repeat of its headline.
+  for (const card of socialCards.filter(item => item.page)) {
+    expect(socialImageFit(socialImageSiteDetails(socialSite, card.page)).eyebrow, card.file).toBe(card.page?.eyebrow);
   }
 });
 
