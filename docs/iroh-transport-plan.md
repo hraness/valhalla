@@ -278,6 +278,10 @@ qualification has been run.
 The [Habitat Link independent runners workflow](../.github/workflows/habitat-link-qualification.yml)
 adds a live check using ALGAL's `scripts/habitat-link-iroh-qualification.ts`.
 Dispatch it with `gh workflow run habitat-link-qualification.yml --ref main -f algal_ref=FULL_ALGAL_COMMIT_SHA`.
+For pre-merge qualification, the registered Iroh workflow also accepts
+`gh workflow run iroh-qualification.yml --ref HABITAT_LINK_BRANCH -f algal_ref=FULL_ALGAL_COMMIT_SHA`.
+That explicit input calls the same Habitat Link profile; omitting it keeps
+the private-mailbox profile, including its existing pull-request checks.
 It builds one probe, starts the ALGAL acceptor and Iroh service on one Ubuntu
 runner, and resumes a caller on another. The client disables UDP and requires
 every observed connection path to use the selected relay. It checks a signed

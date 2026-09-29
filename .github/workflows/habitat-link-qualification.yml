@@ -3,6 +3,11 @@ name: Habitat Link independent runners
 # Qualification of disposable ALGAL processes. A public relay outage
 # fails this evidence run without redefining the deterministic Rust Required gate.
 on:
+  workflow_call:
+    inputs:
+      algal_ref:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       algal_ref:
