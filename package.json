@@ -12,17 +12,19 @@
   "scripts": {
     "check:site": "bun test site && bun run build:site",
     "build:site": "bun run site/build.ts",
-    "generate:og": "bun site/generate-og.tsx"
+    "generate:og": "bun site/generate-og.tsx",
+    "launch:kit": "bun site/scripts/write-social-kit.ts"
   },
   "dependencies": {
     "@hraness/design-kit": "github:hraness/design-kit#v0.30.2",
     "@hraness/site-footer": "github:hraness/site-footer#v0.20.1"
   },
   "devDependencies": {
+    "@hraness/ui": "github:hraness/ui#v0.5.18",
     "@hraness/web-discovery": "github:hraness/web-discovery#v0.11.0",
     "@resvg/resvg-js": "2.6.2",
     "react": "19.2.3",
-    "satori": "0.33.4",
-    "@hraness/ui": "github:hraness/ui#v0.5.18"
+    "react-dom": "19.2.3",
+    "satori": "0.33.4"
   }
 }

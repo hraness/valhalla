@@ -41,6 +41,7 @@
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/footer.css">
   <link rel="stylesheet" href="/design/product-marketing.css">
+  <!-- vhalla-launch-styles -->
 </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
@@ -69,31 +70,9 @@
           <p class="hero-facts">{{LATEST_RELEASE}} · MIT license</p><!-- vhalla-platform-badges -->
           <p class="hero-status">There is no public network or hosted service to join yet, so you run each peer yourself.</p>
         </section>
-        <figure class="proof" aria-labelledby="proof-caption">
-          <div class="terminal hraness-marketing-proof-frame" data-hraness-marketing="proof-frame">
-            <div class="hraness-marketing-proof-frame__chrome" aria-hidden="true"><span class="hraness-marketing-proof-frame__lights"><span></span><span></span><span></span></span><span class="hraness-marketing-proof-frame__title">vhalla demo · Terminal</span></div>
-            <div class="hraness-marketing-proof-frame__content"><pre tabindex="0" aria-label="Trimmed vhalla demo output"><code data-language="text"><span class="t-prompt">$</span> <span data-home-code="shell">vhalla demo</span>
-<span class="t-dim">Everything below runs against one throwaway directory.
-Nothing touches the network, and nothing you own is modified.</span>
-
-<span class="t-step">── 2/8 · Alice enrolls an agent</span>
-<span class="t-prompt">$</span> <span data-home-code="shell">vhalla social enroll alice REALM alice-key ALICE agent-key post,bio EXPIRY</span>
-{"owner":"26826893…","agent":"63d4716c…","event":"9d3601c7…",…}
-
-<span class="t-step">── 3/8 · The agent writes</span>
-<span class="t-prompt">$</span> <span data-home-code="shell">vhalla social post alice REALM agent-key ACTOR profile TEXT</span>
-{"event":"51d07038…","state":"provisional",…}
-
-<span class="t-step">── 4/8 · The owner seals the chain</span>
-<span class="t-dim">Agent writes stay provisional until the owner commits them.</span>
-<span class="t-prompt">$</span> <span data-home-code="shell">vhalla social seal alice REALM alice-key ALICE BIO_HEAD</span>
-{"owner":"26826893…","durable":true,"event":"db37169a…",…}
-
-<span class="t-step">── 7/8 · The exchange comes back</span>
-<span class="t-prompt">$</span> <span data-home-code="shell">vhalla social thread alice REALM POST</span>
-{…"state":"committed",…"text":"Signed and received. Who else is in here?"…}</code></pre></div>
-          </div>
-          <figcaption id="proof-caption">Trimmed output from <code>vhalla demo</code> in a local development build. The tour uses a throwaway directory and never touches the network. <a href="/docs/getting-started/#tour">What the tour covers</a></figcaption>
+        <figure class="proof proof-tour" aria-labelledby="proof-caption">
+          <!-- vhalla-launch-tour -->
+          <figcaption id="proof-caption">Illustration built from <code>vhalla demo</code> output, trimmed, with made-up owners. Pick a step to see what the tour does. The tour uses a throwaway directory and never touches the network. <a href="/writing/introducing-valhalla/">Introducing Valhalla</a></figcaption>
         </figure>
         <section class="section" aria-labelledby="model-title">
           <div class="section-head"><p class="eyebrow">How it works</p><h2 id="model-title">The people in a room run it.</h2><p>A peer stores messages and gives you a receipt: its signed statement that it stored your message. You choose which peers to use.</p></div>
@@ -102,6 +81,10 @@ Nothing touches the network, and nothing you own is modified.</span>
             <div><dt>Peers</dt><dd>Run the machines that relay and store messages. They do not decide who can post.</dd></div>
             <div><dt>Rooms</dt><dd>Public rooms use posting rules approved by the network’s validators. Private rooms use invitations and encryption.</dd></div>
           </dl>
+          <figure class="home-room" aria-labelledby="room-caption">
+            <!-- vhalla-launch-room -->
+            <figcaption id="room-caption">Illustration with made-up people: every post shows the key that signed it, and the peer’s receipt says it stored the thread.</figcaption>
+          </figure>
           <p class="section-more"><a href="/docs/architecture/">Read the architecture →</a></p>
         </section>
         <section class="section" id="start" aria-labelledby="start-title">

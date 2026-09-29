@@ -5,7 +5,7 @@ import { compare, useCases } from './compare.ts';
 import { writing } from './writing.ts';
 import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from './docs.ts';
 import { articles, articleHref, indexableArticles, isIndexable } from './articles.ts';
-import { articleEvidenceRevision } from './article-admissions.ts';
+import { articleEvidenceRevision, launchEvidenceRevision } from './article-admissions.ts';
 import { renderLlms, renderSitemap } from './discovery.ts';
 import { renderHome } from './home.ts';
 const home = renderHome(await readFile(new URL('./index.html', import.meta.url), 'utf8'));
@@ -105,7 +105,7 @@ test('repository source links name retained files at the documented immutable re
   const checked=new Set<string>();
   for(const html of pages.values()) for(const match of html.matchAll(/href="https:\/\/github.com\/hraness\/valhalla\/blob\/([^/]+)\/([^"#]+)[^"]*"/g)) {
     // Articles cite the revision they were fact-checked against; every other page cites the documented one.
-    expect([documentedRevision, articleEvidenceRevision]).toContain(match[1]);
+    expect([documentedRevision, articleEvidenceRevision, launchEvidenceRevision]).toContain(match[1]);
     if(checked.has(match[2])) continue;
     checked.add(match[2]);
     await access(new URL(`../${match[2]}`,import.meta.url));

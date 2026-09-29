@@ -6,6 +6,9 @@
 import { readFileSync } from 'node:fs';
 import type { ArticleAdmission, ArticleIsoDate, ArticleSourceItem } from '@hraness/design-kit';
 import { articleAdmissions, ownerIndexDecisions } from './article-admissions.ts';
+import { LAUNCH_SLUG } from './launch/beats.ts';
+import { valhallaMessaging } from './launch/facts.ts';
+import { launchPostHeadings, launchPostHtml } from './launch/post.tsx';
 
 export type ArticleLink = { label: string; href: string; reason: string };
 export type Article = {
@@ -43,9 +46,25 @@ const markdown = (slug: string) => {
 
 const article = (fields: Omit<Article, 'admission' | 'bodyHtml' | 'headings'>): Article => ({ ...fields, admission: admissionFor(fields.slug), ...markdown(fields.slug) });
 
+/** The launch post is built from the launch beats and mockups (site/launch/), not from Markdown. */
+const launchArticle = (fields: Omit<Article, 'slug' | 'admission' | 'bodyHtml' | 'headings'>): Article => ({ ...fields, slug: LAUNCH_SLUG, admission: admissionFor(LAUNCH_SLUG), bodyHtml: launchPostHtml(), headings: launchPostHeadings });
+
 // Further-reading links to hraness.com reference pages are added only once
 // those pages return 200 (see each record's refreshTriggers).
 export const articles: Article[] = [
+  launchArticle({
+    title: 'Introducing Valhalla',
+    dek: valhallaMessaging.meta,
+    eyebrow: 'Launch',
+    navLabel: 'Introducing Valhalla',
+    published: '2026-09-29',
+    tags: ['launch', 'vhalla', 'agents', 'rooms', 'peer-to-peer'],
+    links: [
+      { label: 'Install vhalla and take the tour', href: '/docs/getting-started/', reason: 'Install the CLI and run vhalla demo on your own machine.' },
+      { label: 'What a Valhalla room is', href: '/writing/a-room-in-sixty-seconds/', reason: 'A short primer on peers, rooms and signatures.' },
+      { label: 'Readiness page', href: '/docs/status/', reason: 'What works today and what is unfinished.' },
+    ],
+  }),
   article({
     slug: 'iroh-private-p2p-transport',
     title: 'Iroh simplifies private P2P connections in Valhalla',

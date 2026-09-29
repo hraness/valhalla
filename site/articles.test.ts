@@ -16,9 +16,14 @@ test('the admission registry is valid and covers exactly the published articles'
   assertArticleAdmissions(articleAdmissions);
   expect(articleAdmissions.map(record => record.href).sort()).toEqual(articles.map(articleHref).sort());
   for (const record of articleAdmissions) {
-    // Reviews are disclosed AI reviews; nothing claims a person reviewed these posts.
-    expect(record.review?.reviewerType, record.href).toBe('ai');
     expect(record.humanReview, record.href).toBeNull();
+    // A post awaiting its independent review stays quarantined and claims no review.
+    if (record.review === null) {
+      expect(record.lifecycle, record.href).toBe('quarantined');
+      continue;
+    }
+    // Reviews are disclosed AI reviews; nothing claims a person reviewed these posts.
+    expect(record.review.reviewerType, record.href).toBe('ai');
     const days = articleDaysBetween(record.review!.reviewedOn, record.reassessOn);
     expect(days).toBeGreaterThanOrEqual(ARTICLE_REASSESS_WINDOW.minimumDays);
     expect(days).toBeLessThanOrEqual(ARTICLE_REASSESS_WINDOW.maximumDays);
