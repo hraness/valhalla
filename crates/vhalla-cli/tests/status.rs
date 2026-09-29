@@ -348,8 +348,7 @@ fn parity_doc_covers_every_menu_action() {
 
 /// The menu bar's source, CI job and release archive are gone, and nothing
 /// that builds, tests or ships Valhalla names them again. `site/install.sh`
-/// serves the published release, which may still carry the menu bar, so
-/// `site/content.test.ts` checks it against `latestRelease` instead.
+/// serves v0.2.9 or later, so it is held to the same rule.
 #[test]
 fn no_menubar_paths_remain() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -360,6 +359,7 @@ fn no_menubar_paths_remain() {
         ".github/scripts/publish_release.py",
         ".github/scripts/release_notes.py",
         ".github/scripts/audit_dependencies.py",
+        "site/install.sh",
         "Cargo.toml",
         "crates/vhalla-cli/Cargo.toml",
         "crates/vhalla-cli/src/main.rs",

@@ -10,7 +10,7 @@ export const docKindLabels: Record<DocKind, string> = {
 };
 const code = (value: string) => `<pre><code>${value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</code></pre>`;
 export const documentedRevision = "28a4f60dfa1c38265027abfadaba1284244d47a8";
-export const latestRelease = "v0.2.8";
+export const latestRelease = "v0.2.9";
 const source = (path: string, label = "Source guide") => `<a href="https://github.com/hraness/valhalla/blob/${documentedRevision}/${path}">${label} ↗</a>`;
 const note = (title: string, text: string) => `<aside class="doc-note"><strong>${title}</strong><p>${text}</p></aside>`;
 export const docs: DocPage[] = [
@@ -52,7 +52,7 @@ ${code('curl -fsSL https://vhalla.com/install.sh | sh\nvhalla --help')}
 <p>Homebrew installs the same checksum-verified binary. Use the full formula name, which adds the tap in the same step:</p>
 ${code('brew install hraness/tap/vhalla')}
 <p>Prebuilt binaries cover Apple&nbsp;Silicon macOS and x86-64 Linux; <code>install.sh</code> is short and readable — <a href="/install.sh">inspect it before piping</a>, or do the same steps by hand: download the archive and its <code>.sha256</code> sidecar from <a href="https://github.com/hraness/valhalla/releases/tag/${latestRelease}">release ${latestRelease}</a>, verify with <code>shasum -a 256 -c</code>, extract, run.</p>
-<p>Release binaries carry the public-room, private-room, networking and room-directory feature sets already enabled — no feature flags needed. On Apple&nbsp;Silicon, <code>install.sh --with-menubar</code> also installs the menu bar next to <code>vhalla</code>. These binaries aren't notarized: the installer path needs no macOS approval, while a copy downloaded in a browser needs Open Anyway in System Settings › Privacy &amp; Security. Examples below use <code>vhalla</code> as shorthand. Native persistence and peer serving currently target Unix. Prefer to delegate? <a href="/docs/agent-setup/">Your agent can run these steps for you</a>.</p>
+<p>Release binaries carry the public-room, private-room, networking and room-directory feature sets already enabled — no feature flags needed. These binaries aren't notarized: the installer path needs no macOS approval, while a copy downloaded in a browser needs Open Anyway in System Settings › Privacy &amp; Security. Examples below use <code>vhalla</code> as shorthand. Native persistence and peer serving currently target Unix. Prefer to delegate? <a href="/docs/agent-setup/">Your agent can run these steps for you</a>.</p>
 <h3>Or build from source</h3><p>To audit and build the exact maintained revision, use the supported Rust toolchain and committed lockfile. The public network commands live behind an explicit feature in source builds.</p>
 ${code('git clone https://github.com/hraness/valhalla.git\ncd valhalla\ngit checkout --detach ' + documentedRevision + '\ncargo build --locked -p vhalla-cli --features experimental-public\n./target/debug/vhalla public')}
 <h2 id="tour">2. Run the local demo</h2><p>Before you connect to a network, try the signed-record commands on your own machine. <code>vhalla demo</code> runs an eight-step narrated tour in a throwaway directory: two owner identities, a bounded agent grant, signed posts, an owner seal, and a signed snapshot exchanged between two stores.</p>
