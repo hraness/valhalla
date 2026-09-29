@@ -6,12 +6,16 @@
 //! exactly-once effects. Those semantics remain in the habitat protocol. The
 //! existing private-room mailbox listener advertises this ALPN only when a
 //! caller hands it a [`HabitatLinkService`] through
-//! `Service::serve_iroh_with_habitat_link_until`; the default listener and
-//! the CLI host are unchanged.
+//! `Service::serve_iroh_with_habitat_link_until`. The default listener remains
+//! unchanged; the CLI enables it only with an explicit socket bridge option.
 
 #![cfg(feature = "habitat-link")]
 
 mod service;
+#[cfg(unix)]
+mod socket;
+#[cfg(unix)]
+pub use socket::UnixHabitatLinkHandler;
 #[cfg(test)]
 mod service_tests;
 
@@ -143,6 +147,8 @@ fn validate_envelope(bytes: &[u8]) -> Result<(), HabitatLinkError> {
             | "algal.habitat-acceptance.v1"
             | "algal.habitat-result.v1"
             | "algal.habitat-message.v1"
+            | "algal.habitat-query.v1"
+            | "algal.habitat-message-acceptance.v1"
     ) {
         return Err(HabitatLinkError::UnsupportedContract);
     }

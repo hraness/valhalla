@@ -82,7 +82,8 @@ class QualificationTests(unittest.TestCase):
             child.wait.side_effect = [subprocess.TimeoutExpired("fixture", 1), 143]
             child.poll.side_effect = [None, 143]
             with patch.object(qualification.subprocess, "Popen", return_value=child), \
-                    patch.object(qualification.os, "killpg") as terminate:
+                    patch.object(qualification.os, "killpg") as terminate, \
+                    patch.object(qualification, "clear_owned_group", return_value=(False, True)):
                 result = qualification.run_child(work, work, 1)
             self.assertTrue(result["forced"])
             self.assertTrue(result["child_reaped"])
@@ -97,7 +98,8 @@ class QualificationTests(unittest.TestCase):
             child.wait.side_effect = [InterruptedError("cancelled"), 143]
             child.poll.side_effect = [None, 143]
             with patch.object(qualification.subprocess, "Popen", return_value=child), \
-                    patch.object(qualification.os, "killpg") as terminate:
+                    patch.object(qualification.os, "killpg") as terminate, \
+                    patch.object(qualification, "clear_owned_group", return_value=(False, True)):
                 result = qualification.run_child(work, work, 180)
             self.assertTrue(result["interrupted"])
             self.assertTrue(result["forced"])
@@ -116,11 +118,39 @@ class QualificationTests(unittest.TestCase):
             # The first wait crosses the 20s graceful bound, not the 660s total.
             with patch.object(qualification.subprocess, "Popen", return_value=child), \
                     patch.object(qualification.time, "monotonic", side_effect=[0, 0, 0, 0, 21]), \
-                    patch.object(qualification.os, "killpg") as terminate:
+                    patch.object(qualification.os, "killpg") as terminate, \
+                    patch.object(qualification, "clear_owned_group", return_value=(False, True)):
                 result = qualification.run_child(work, work, 660, stop_path=stop)
             self.assertTrue(result["forced"])
             self.assertTrue(result["child_reaped"])
             terminate.assert_called_once_with(4567, qualification.signal.SIGTERM)
+
+    def test_exited_leader_cannot_hide_a_surviving_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            child = Mock(pid=8765)
+            child.wait.return_value = 0
+            child.poll.return_value = 0
+            with patch.object(qualification.subprocess, "Popen", return_value=child), \
+                    patch.object(qualification, "clear_owned_group", return_value=(True, True)) as cleanup:
+                result = qualification.run_child(work, work, 1)
+            cleanup.assert_called_once_with(8765)
+            self.assertTrue(result["child_reaped"])
+            self.assertTrue(result["group_cleared"])
+            self.assertTrue(result["forced"])
+            self.assertEqual(result["exit_code"], 0)
+
+    def test_group_cleanup_targets_only_owned_group_and_verifies_disappearance(self):
+        with patch.object(qualification, "group_alive", side_effect=[True, False]), \
+                patch.object(qualification.os, "killpg") as terminate:
+            self.assertEqual(qualification.clear_owned_group(8765), (True, True))
+        terminate.assert_called_once_with(8765, qualification.signal.SIGTERM)
+        with patch.object(qualification, "group_alive", return_value=True), \
+                patch.object(qualification.os, "killpg") as terminate, \
+                patch.object(qualification.time, "monotonic", side_effect=[0, 11, 11, 22]):
+            self.assertEqual(qualification.clear_owned_group(8765), (True, False))
+        self.assertEqual(terminate.call_args_list, [unittest.mock.call(8765, qualification.signal.SIGTERM),
+                                                  unittest.mock.call(8765, qualification.signal.SIGKILL)])
 
     def test_failed_client_receipt_still_stops_and_checks_host_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -132,7 +162,7 @@ class QualificationTests(unittest.TestCase):
             })
             with patch.object(qualification, "poll_document", return_value=self.client() | {"passed": False}), \
                     patch.object(qualification, "wait_local", return_value={
-                        "child_reaped": True, "exit_code": 0, "forced": False}):
+                        "child_reaped": True, "group_cleared": True, "exit_code": 0, "forced": False}):
                 self.assertFalse(qualification.finish_host(work, True))
             self.assertTrue((work / "stop").exists())
             evidence = qualification.read_json(work / "host-receipt.json")
@@ -140,9 +170,10 @@ class QualificationTests(unittest.TestCase):
             self.assertFalse(evidence["passed"])
 
     def test_uncertain_or_forced_host_cleanup_cannot_pass(self):
-        for supervisor in ({"child_reaped": False, "exit_code": 0, "forced": False},
-                           {"child_reaped": True, "exit_code": None, "forced": True},
-                           {"child_reaped": True, "exit_code": 101, "forced": False}):
+        for supervisor in ({"child_reaped": True, "group_cleared": False, "exit_code": 0, "forced": False},
+                           {"child_reaped": False, "exit_code": 0, "forced": False},
+                           {"child_reaped": True, "group_cleared": True, "exit_code": None, "forced": True},
+                           {"child_reaped": True, "group_cleared": True, "exit_code": 101, "forced": False}):
             with self.subTest(supervisor=supervisor), tempfile.TemporaryDirectory() as temporary:
                 work = Path(temporary)
                 qualification.write_json(work / "host-receipt.json", self.expected())

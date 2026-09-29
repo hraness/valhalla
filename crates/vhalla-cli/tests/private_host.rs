@@ -1242,3 +1242,17 @@ fn drained_generation_retains_old_tls_retries_and_carries_spend_to_successor() {
     assert_eq!(third.page(0, 4).unwrap().head, 1);
     server.stop();
 }
+
+#[test]
+fn habitat_link_socket_requires_absolute_path_and_iroh_host() {
+    let f = Fixture::new();
+    ok(&f.init());
+    let before = fs::read(f.home().join("config.json")).unwrap();
+    for path in ["relative.sock", "/tmp/algal-test-unused.sock"] {
+        let mut command = f.command("serve");
+        command.args(["--habitat-link-socket", path]);
+        let output = run(command);
+        assert!(!output.status.success());
+        assert_eq!(fs::read(f.home().join("config.json")).unwrap(), before);
+    }
+}

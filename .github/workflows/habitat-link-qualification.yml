@@ -1,0 +1,196 @@
+name: Habitat Link independent runners
+
+# Qualification of disposable ALGAL processes. A public relay outage
+# fails this evidence run without redefining the deterministic Rust Required gate.
+on:
+  workflow_dispatch:
+    inputs:
+      algal_ref:
+        description: Exact ALGAL commit containing the signed-grant fixture
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: habitat-link-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ALGAL_REF: ${{ inputs.algal_ref }}
+  ALGAL_SOURCE: ${{ github.workspace }}/algal-fixture
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: short
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: hraness/algal
+          ref: ${{ inputs.algal_ref }}
+          path: algal-fixture
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: habitat-link-bun-${{ runner.os }}-${{ hashFiles('algal-fixture/bun.lock') }}
+      - name: Install the pinned ALGAL fixture dependencies
+        working-directory: algal-fixture
+        run: bun install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: habitat-link-qualification
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Controller failure and evidence contracts
+        run: python3 -m unittest discover -s .github/scripts -p '*qualification.py'
+      - name: Compile the Iroh bridge probe once
+        run: |
+          cargo build --locked -p vhalla-private-native --features habitat-link --example habitat-link-probe --message-format=json > "$RUNNER_TEMP/iroh-build.jsonl"
+          python3 .github/scripts/habitat_link_qualification.py package --cargo-messages "$RUNNER_TEMP/iroh-build.jsonl" --bundle "$RUNNER_TEMP/iroh-bundle"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-bundle/
+          if-no-files-found: error
+          retention-days: 3
+
+  host:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: hraness/algal
+          ref: ${{ inputs.algal_ref }}
+          path: algal-fixture
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: habitat-link-bun-${{ runner.os }}-${{ hashFiles('algal-fixture/bun.lock') }}
+      - name: Install the pinned ALGAL fixture dependencies
+        working-directory: algal-fixture
+        run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v7
+        with:
+          name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-bundle
+      - name: Start the signed-grant ALGAL host fixture
+        run: python3 .github/scripts/habitat_link_qualification.py host-start --bundle "$RUNNER_TEMP/iroh-bundle" --work "$RUNNER_TEMP/iroh-host"
+      - name: Publish the short-lived synthetic descriptor while the host runs
+        uses: actions/upload-artifact@v7
+        with:
+          name: iroh-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+          # Public endpoint plus a short-lived signed grant for synthetic ALGAL work.
+          # No endpoint secret or provider credential is uploaded.
+          path: ${{ runner.temp }}/iroh-host/descriptor.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Await this run's client and verify durable host shutdown
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/habitat_link_qualification.py host-wait --work "$RUNNER_TEMP/iroh-host"
+      - name: Always stop and reap the exact owned fixture
+        if: always()
+        run: python3 .github/scripts/habitat_link_qualification.py host-stop --work "$RUNNER_TEMP/iroh-host"
+      - name: Retain sanitized host evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: iroh-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-host/host-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  client:
+    # Do not depend on host: its descriptor is available before its job exits.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: hraness/algal
+          ref: ${{ inputs.algal_ref }}
+          path: algal-fixture
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: habitat-link-bun-${{ runner.os }}-${{ hashFiles('algal-fixture/bun.lock') }}
+      - name: Install the pinned ALGAL fixture dependencies
+        working-directory: algal-fixture
+        run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v7
+        with:
+          name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-bundle
+      - name: Resume the ALGAL caller through an independently observed relay path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/habitat_link_qualification.py client --bundle "$RUNNER_TEMP/iroh-bundle" --work "$RUNNER_TEMP/iroh-client"
+      - name: Publish sanitized completion even after failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: iroh-client-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-client/client-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  result:
+    name: Required
+    if: always()
+    needs: [build, host, client]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require both independent roles and their cleanup to succeed
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          HOST_RESULT: ${{ needs.host.result }}
+          CLIENT_RESULT: ${{ needs.client.result }}
+        run: |
+          test "$BUILD_RESULT" = success
+          test "$HOST_RESULT" = success
+          test "$CLIENT_RESULT" = success
