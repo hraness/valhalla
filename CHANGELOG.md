@@ -5,6 +5,16 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
+## 0.2.9 - 2026-09-29
+
+The macOS menu bar is retired. Everything it showed and did is now a `vhalla` command that runs, answers and exits, so nothing keeps running in the background, and each one prints a single JSON envelope with `--json` for agents.
+
+- `vhalla status` shows whether your rooms are in sync, sends waiting or that didn't go through, the newest outputs and the one command to run next. `vhalla status refresh` saves fresh counts from your node. `vhalla tui` shows the same status as a screen; `--snapshot` prints it and `--json` prints what `status --json` does.
+- `vhalla outputs list|open|reveal` replace the menu's outputs rows. `vhalla commands --json` lists every command with whether it reads or changes something.
+- `vhalla doctor` checks the Valhalla folder, saved room status and the login items earlier releases wrote. `vhalla doctor retire` sets aside the menu bar's login item only when it is a regular file you own that starts `vhalla-menubar`: it renames the file to `NAME.plist.retired-TIME`, never deletes it or signals a process, and prints the command that restores it.
+- `vhalla menubar` now names its replacement and changes nothing. [docs/cli-parity.md](docs/cli-parity.md) maps every menu action to its command.
+- Releases no longer carry a `valhalla-menubar` archive, and `install.sh --with-menubar` installs only `vhalla`.
+
 ## 0.2.8 - 2026-09-27
 
 The menu bar now opens with how your rooms are doing — rooms in sync, sends waiting, sends that didn't go through — instead of a bare outputs list, and it installs through `install.sh --with-menubar` with plain macOS guidance when a browser download is stopped at launch.
