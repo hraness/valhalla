@@ -10,10 +10,10 @@ change that prepares the tag, and keep published sections as they shipped.
 The macOS menu bar is retired. Everything it showed and did is now a `vhalla` command that runs, answers and exits, so nothing keeps running in the background, and each one prints a single JSON envelope with `--json` for agents.
 
 - `vhalla status` shows whether your rooms are in sync, sends waiting or that didn't go through, the newest outputs and the one command to run next. `vhalla status refresh` saves fresh counts from your node. `vhalla tui` shows the same status as a screen; `--snapshot` prints it and `--json` prints what `status --json` does.
-- `vhalla outputs list|open|reveal` replace the menu's outputs rows. `vhalla commands --json` lists every command with whether it reads or changes something.
+- `vhalla outputs list|open|reveal` replace the menu's outputs rows. `vhalla commands --json` lists every command with whether it reads or changes something. `vhalla support --json` prints the menu's "Updates & support" links in the same envelope.
 - `vhalla doctor` checks the Valhalla folder, saved room status and the login items earlier releases wrote. `vhalla doctor retire` sets aside the menu bar's login item only when it is a regular file you own that starts `vhalla-menubar` or the local `Valhalla.app` v0.2.8 built with `HRANESS_LOCAL_APP=1`: it checks the new name is free, renames the file to `NAME.plist.retired-TIME`, never deletes it or signals a process, and prints the command that restores it.
 - `vhalla menubar refresh` keeps working and runs `vhalla status refresh` with the same arguments. Every other `vhalla menubar` form now names its replacement and changes nothing. [docs/cli-parity.md](docs/cli-parity.md) maps every menu action to its command.
-- Releases no longer carry a `valhalla-menubar` archive, and `install.sh --with-menubar` installs only `vhalla`.
+- Releases no longer carry a `valhalla-menubar` archive. Once vhalla.com's installer points at this release, `install.sh --with-menubar` installs only `vhalla`.
 
 ## 0.2.8 - 2026-09-27
 
