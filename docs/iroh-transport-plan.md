@@ -260,8 +260,8 @@ On 2026-09-29 that cross-repository test passed all 20 assertions, including
 caller suspension and wake-up. A same-machine run of ALGAL's qualification
 fixture also passed every host/client case through the public relay, including
 duplicate invocation and grant refusal. These establish local integration and
-relay reachability; independent-machine evidence remains pending and NAT
-traversal testing remains outstanding.
+relay reachability. The independent-runner result below qualifies the live
+cross-machine relay path.
 
 Loopback tests under `--features habitat-link` bind direct-only endpoints on
 127.0.0.1 with no relay. They show an `algal.habitat-invocation.v1` envelope
@@ -271,9 +271,7 @@ any payload is sent, a truncated frame reset without a reply, a foreign-ALPN
 connection closed with code 1 and never reaching the handler, a handler
 refusal reset without a reply frame, and the mailbox listener refusing the
 ALPN at the handshake by default while serving both protocols on one endpoint
-when the service is passed in. These tests do not exercise a relay, a second
-machine, NAT traversal, or a real habitat; no live two-machine Habitat Link
-qualification has been run.
+when the service is passed in.
 
 The [Habitat Link independent runners workflow](../.github/workflows/habitat-link-qualification.yml)
 adds a live check using ALGAL's `scripts/habitat-link-iroh-qualification.ts`.
@@ -290,5 +288,16 @@ bind both repository commits, both lockfiles, the probe executable, run and
 attempt, and distinct machine identities. Both process groups must be stopped
 and reaped before a run passes. Only a temporary grant and synthetic process
 records are exchanged. The workflow measures separate hosted machines and a
-relay path; their NAT diversity remains unmeasured. Record the successful run
-and receipt hashes here before claiming live qualification.
+relay path; their NAT diversity remains unmeasured.
+
+[Run 36619747947](https://github.com/hraness/valhalla/actions/runs/36619747947)
+passed on 2026-09-29 against Valhalla
+`da0dd161e3f000c2cbda6ded40c22043443ecf12` and merged ALGAL
+`19207705598309cfd9e075f69db795663ddf237f`.
+The [durable evidence](evidence/habitat-link-iroh-20260929.json) retains both
+original receipt values, their byte hashes, and the tested source tree hashes.
+Distinct machine identities observed the same probe binary and lockfiles;
+caller wake-up, remote result, duplicate invocation, grant refusal, and
+forced relay all passed. Both fixtures exited normally and both owned process
+groups were confirmed stopped without forced cleanup. Independent NAT diversity
+and browser qualification remain unperformed.
