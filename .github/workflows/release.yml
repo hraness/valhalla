@@ -1,7 +1,8 @@
 name: Release
 
 # Every tag reuses the complete Rust/site gate at that exact commit. Builders
-# stage all artifacts; only the publisher can write a GitHub release.
+# stage all artifacts in parallel with it; only the publisher, which needs the
+# gate and every builder, can write a GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -16,9 +17,15 @@ concurrency:
 jobs:
   validate:
     uses: ./.github/workflows/rust.yml
+    # A reusable workflow's jobs cannot exceed the caller's token scope; the
+    # Rust workflow's change-filter job requests pull-requests: read.
+    permissions:
+      contents: read
+      pull-requests: read
 
+  # Builders only stage artifacts, so they start with validation instead of
+  # after it; publish still needs validate and every builder.
   cli:
-    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -134,7 +141,6 @@ jobs:
           retention-days: 7
 
   menubar:
-    needs: validate
     runs-on: macos-latest
     timeout-minutes: 30
     steps:

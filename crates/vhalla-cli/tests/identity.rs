@@ -280,12 +280,22 @@ fn cli_restore_rejects_wrong_checksum() {
         .expect("backup prints a mnemonic line");
     let mut words: Vec<&str> = phrase.split_whitespace().collect();
     assert_eq!(words.len(), 24);
-    // Swap to a different valid BIP39 word so the checksum no longer matches.
-    words[23] = if words[23] == "abandon" {
-        "zoo"
-    } else {
-        "abandon"
-    };
+    // Swap the last word for a different valid BIP39 word whose checksum bits
+    // no longer match. A fixed replacement stays valid for 8 of every 2048
+    // phrases, so pick one the reference parser actually rejects.
+    let original = words[23];
+    words[23] = bip39::Language::English
+        .word_list()
+        .iter()
+        .copied()
+        .find(|candidate| {
+            let mut trial = words.clone();
+            trial[23] = candidate;
+            *candidate != original
+                && bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &trial.join(" "))
+                    .is_err()
+        })
+        .expect("some last word breaks the checksum");
     let bad_phrase = words.join(" ");
     let restored = run(
         "restore",

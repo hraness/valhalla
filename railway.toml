@@ -3,3 +3,16 @@
 # deploy/railway/Dockerfile and room validators deploy/rooms-seed/Dockerfile.
 [build]
 builder = "DOCKERFILE"
+# Rebuild and restart the host and validators only when an input of the
+# vhalla binary or its images changes; site, docs and notes commits skip them.
+watchPatterns = [
+  "crates/**",
+  "browser/**",
+  "vendor/**",
+  "vectors/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "deploy/**",
+  "railway.toml",
+  ".dockerignore",
+]
