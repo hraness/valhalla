@@ -3,6 +3,7 @@
 // answers. Each JSON-LD answer is the text of the first paragraph of the
 // visible answer; put "more" links in a later paragraph.
 import { latestRelease } from './pages.ts';
+import { highlightCode } from '@hraness/design-kit/syntax-highlighting';
 
 type FaqEntry = { question: string; answer: string };
 
@@ -31,6 +32,11 @@ export function homeFaq(template: string): FaqEntry[] {
 }
 
 export function renderHome(template: string): string {
+  template = template.replaceAll('{{LATEST_RELEASE}}', latestRelease);
+  template = template.replace(/<(code|span) data-home-code="shell">([\s\S]*?)<\/\1>/g, (_match, tag: string, source: string) => {
+    const code = highlightCode(decode(source), 'shell', { styles: 'classes' });
+    return `<${tag} class="${code.className}" data-language="${code.language}">${code.html}</${tag}>`;
+  });
   const faq = homeFaq(template);
   const visible = template.match(/<details class="hraness-marketing-question">/g)?.length ?? 0;
   if (!faq.length || faq.length !== visible) throw new Error(`Home FAQ: parsed ${faq.length} of ${visible} visible questions`);

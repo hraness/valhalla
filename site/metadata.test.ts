@@ -44,13 +44,13 @@ test("structured data describes only what the page shows", () => {
   const app = graph["@graph"][2];
   expect(app.description).toContain("in development");
   expect(app.applicationCategory).toBe("CommunicationApplication");
-  // Platform, price, license and version repeat the visible hero facts.
-  const heroFacts = index.match(/<p class="hero-facts">([^<]+)<\/p>/)?.[1] ?? "";
+  // Platform, license, and version match the hero; price matches the visible FAQ.
+  const heroFacts = home.match(/<p class="hero-facts">([^<]+)<\/p>/)?.[1] ?? "";
   expect(heroFacts).toContain(latestRelease);
   expect(app.softwareVersion).toBe(latestRelease.replace(/^v/, ""));
   expect(heroFacts).toContain("Apple Silicon macOS and x86-64 Linux");
   expect(app.operatingSystem).toBe("macOS (Apple Silicon), Linux (x86-64)");
-  expect(heroFacts).toContain("nothing to pay");
+  expect(homeFaq(index).some(({ answer }) => /\bfree\b/i.test(answer))).toBe(true);
   expect(app.offers).toEqual({ "@type": "Offer", price: "0", priceCurrency: "USD" });
   expect(heroFacts).toContain("MIT license");
   expect(app.license).toBe("https://opensource.org/licenses/MIT");
