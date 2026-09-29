@@ -11,4 +11,4 @@ that the subject is trusted. Work can be outsourced, and proof-of-work only
 adds a marginal cost per identity. Passing it must never grant host/tool
 authority; it is a narrowly scoped admission or rate-limit signal.
 
-Run with `cargo test --manifest-path prototypes/botcaptcha/Cargo.toml`.
+Run with `cargo test --manifest-path prototypes/retired/botcaptcha/Cargo.toml`.

@@ -30,9 +30,17 @@ jobs:
   # Default-to-run change filter. A pull request skips the Rust, browser and
   # platform gates only when EVERY changed path is on the non-Rust allowlist
   # below; any other path (including new top-level directories and vectors/)
-  # runs everything. Pushes to main, dispatches and release calls always run
-  # everything. `formal` also runs for docs/ because verify/cases.json binds
-  # model correspondence to documents there.
+  # runs everything. Pushes to main, dispatches, the nightly and release calls
+  # run every one of those gates.
+  #
+  # Within that, .github/scripts/verify_scope.py narrows the four expensive
+  # verification groups to the packages a change can reach: prototype-checks
+  # (one entry per touched prototype crate and every prototype that depends on
+  # a touched crate), kani-spent, the four browser journeys, and formal. It
+  # scopes pull requests and pushes to main only, and fails closed: a missing
+  # or incomplete change list, a CI/selector/Cargo/vendor/vectors change, an
+  # unmapped path or any selector error runs every group in full. The nightly
+  # (nightly.yml), dispatch and release (release.yml) always run everything.
   changes:
     name: Change filter
     runs-on: ubuntu-latest
@@ -43,18 +51,27 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       formal: ${{ steps.filter.outputs.formal }}
+      prototypes: ${{ steps.filter.outputs.prototypes }}
+      kani: ${{ steps.filter.outputs.kani }}
+      browser: ${{ steps.filter.outputs.browser }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - id: filter
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           rust=true
-          formal=true
+          changed="$RUNNER_TEMP/changed-paths.txt"
+          complete=false
           if [ "$EVENT" = pull_request ]; then
             rows="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | [.filename, (.previous_filename // "")] | @tsv')"
             count="$(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d ' ')"
@@ -64,19 +81,48 @@ jobs:
             # Here-strings, not `printf | grep -q`: under pipefail an early
             # grep -q match SIGPIPEs printf on lists over the 64 KiB pipe
             # buffer, and the `!` would turn that into a false skip.
-            if [ "$count" -gt 0 ] && [ "$count" = "$CHANGED_FILES" ] \
-              && ! grep -Evq "$nonrust" <<<"$paths" \
-              && ! grep -qx 'CHANGELOG.md' <<<"$paths" \
-              && ! grep -qx 'site/install.ps1' <<<"$paths"; then
-              rust=false
-              if ! grep -q '^docs/' <<<"$paths"; then
-                formal=false
+            if [ "$count" -gt 0 ] && [ "$count" = "$CHANGED_FILES" ]; then
+              printf '%s\n' "$paths" > "$changed"
+              complete=true
+              if ! grep -Evq "$nonrust" <<<"$paths" \
+                && ! grep -qx 'CHANGELOG.md' <<<"$paths" \
+                && ! grep -qx 'site/install.ps1' <<<"$paths"; then
+                rust=false
               fi
             fi
             printf 'Changed paths (%s):\n%s\n' "$count" "$paths"
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then
+            # Diff the pushed range. An unknown or unreachable base (new
+            # branch, force push) leaves the list incomplete: run everything.
+            if [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+              && git fetch --no-tags --depth=1 origin "$BEFORE" \
+              && git diff --name-only --no-renames "$BEFORE" "$GITHUB_SHA" > "$changed"; then
+              complete=true
+              printf 'Changed paths since %s:\n' "$BEFORE"
+              cat "$changed"
+            fi
           fi
-          printf 'rust=%s formal=%s\n' "$rust" "$formal"
-          printf 'rust=%s\nformal=%s\n' "$rust" "$formal" >> "$GITHUB_OUTPUT"
+          args=(--event "$EVENT" --ref "$REF" --rust "$rust" --output "$RUNNER_TEMP/scope.txt")
+          if [ "$complete" = true ]; then
+            args+=(--changed-files "$changed")
+          fi
+          if ! python3 .github/scripts/verify_scope.py "${args[@]}"; then
+            # The selector itself failed: run every group.
+            echo "::warning::verification selector failed; running every group"
+            manifests="$(find prototypes -mindepth 2 -maxdepth 2 -name Cargo.toml | sort | jq -R . | jq -cs .)"
+            printf 'scope=full\nprototypes=%s\nkani=true\nbrowser=true\nformal=true\n' "$manifests" > "$RUNNER_TEMP/scope.txt"
+            if [ "$rust" = false ]; then
+              printf 'prototypes=[]\nkani=false\nbrowser=false\n' >> "$RUNNER_TEMP/scope.txt"
+            fi
+          fi
+          printf 'rust=%s\n' "$rust" | tee -a "$GITHUB_OUTPUT"
+          # Later duplicate keys win, so the fallback above can override.
+          tee -a "$GITHUB_OUTPUT" < "$RUNNER_TEMP/scope.txt"
+          {
+            echo '### Verification scope'
+            echo
+            sed 's/^/- /' "$RUNNER_TEMP/scope.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   main-policy:
     runs-on: ubuntu-latest
@@ -338,7 +384,7 @@ jobs:
   browser-artifact:
     name: Browser production artifact
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     outputs:
@@ -416,7 +462,7 @@ jobs:
   browser-worker:
     name: Browser private worker journey
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -465,7 +511,7 @@ jobs:
   browser-storage:
     name: Browser storage and MLS fixtures
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -554,7 +600,7 @@ jobs:
   browser-public:
     name: Browser public journey
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -608,6 +654,9 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           RUST_CHANGED: ${{ needs.changes.outputs.rust }}
           FORMAL_CHANGED: ${{ needs.changes.outputs.formal }}
+          PROTOTYPE_LIST: ${{ needs.changes.outputs.prototypes }}
+          KANI_SELECTED: ${{ needs.changes.outputs.kani }}
+          BROWSER_SELECTED: ${{ needs.changes.outputs.browser }}
           QUALITY: ${{ needs.quality.result }}
           WORKSPACE_TESTS: ${{ needs.workspace-tests.result }}
           WINDOWS_PORTABLE: ${{ needs.windows-portable.result }}
@@ -646,43 +695,39 @@ jobs:
             failed=1
           }
           must changes "$CHANGES"
+          PROTOTYPES_SELECTED=true
+          if [ "$PROTOTYPE_LIST" = '[]' ]; then
+            PROTOTYPES_SELECTED=false
+          fi
           must quality "$QUALITY"
           must site "$SITE"
           must main-policy "$MAIN_POLICY"
           filtered workspace-tests "$WORKSPACE_TESTS" "$RUST_CHANGED"
           filtered windows-portable "$WINDOWS_PORTABLE" "$RUST_CHANGED"
           filtered workspace-aux "$WORKSPACE_AUX" "$RUST_CHANGED"
-          filtered browser-artifact "$BROWSER" "$RUST_CHANGED"
-          filtered browser-worker "$BROWSER_WORKER" "$RUST_CHANGED"
-          filtered browser-storage "$BROWSER_STORAGE" "$RUST_CHANGED"
-          filtered browser-public "$BROWSER_PUBLIC" "$RUST_CHANGED"
-          filtered prototype-checks "$PROTOTYPES" "$RUST_CHANGED"
-          filtered kani-spent "$KANI" "$RUST_CHANGED"
+          filtered browser-artifact "$BROWSER" "$BROWSER_SELECTED"
+          filtered browser-worker "$BROWSER_WORKER" "$BROWSER_SELECTED"
+          filtered browser-storage "$BROWSER_STORAGE" "$BROWSER_SELECTED"
+          filtered browser-public "$BROWSER_PUBLIC" "$BROWSER_SELECTED"
+          filtered prototype-checks "$PROTOTYPES" "$PROTOTYPES_SELECTED"
+          filtered kani-spent "$KANI" "$KANI_SELECTED"
           filtered desktop "$DESKTOP" "$RUST_CHANGED"
           filtered security "$SECURITY" "$RUST_CHANGED"
           filtered formal "$FORMAL" "$FORMAL_CHANGED"
           exit "$failed"
-  list-prototypes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      manifests: ${{ steps.find.outputs.manifests }}
-    steps:
-      - uses: actions/checkout@v7
-      - id: find
-        run: |
-          manifests=$(find prototypes -maxdepth 2 -name Cargo.toml | jq -R . | jq -cs .)
-          echo "manifests=$manifests" >> "$GITHUB_OUTPUT"
   prototype-checks:
-    needs: [changes, list-prototypes]
-    if: needs.changes.outputs.rust == 'true' && needs.list-prototypes.outputs.manifests != '[]'
+    # Only the prototype crates the change can reach (see verify_scope.py);
+    # every top-level prototype on nightly, dispatch and release runs.
+    # prototypes/retired/ is manual-only.
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.prototypes != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       max-parallel: 12
       matrix:
-        manifest: ${{ fromJSON(needs.list-prototypes.outputs.manifests) }}
+        manifest: ${{ fromJSON(needs.changes.outputs.prototypes) }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -696,16 +741,38 @@ jobs:
         run: cargo clippy --manifest-path "${{ matrix.manifest }}" --all-targets --locked -- -D warnings
   kani-spent:
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.kani == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      # The kani/cargo-kani launchers are keyed by their exact version and
+      # saved from main only; `cargo kani setup` still installs the bundle.
+      - name: Restore pinned Kani launchers
+        id: kani-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/bin/kani
+            ~/.cargo/bin/cargo-kani
+          key: kani-verifier-0.68.0-${{ runner.os }}-${{ runner.arch }}
       - name: Install pinned Kani
+        env:
+          CACHE_HIT: ${{ steps.kani-cache.outputs.cache-hit }}
         run: |
-          cargo install --locked --version 0.68.0 kani-verifier
+          if [ "$CACHE_HIT" != true ]; then
+            cargo install --locked --version 0.68.0 kani-verifier
+          fi
           cargo kani setup
+      - name: Save pinned Kani launchers
+        if: github.ref == 'refs/heads/main' && steps.kani-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/bin/kani
+            ~/.cargo/bin/cargo-kani
+          key: kani-verifier-0.68.0-${{ runner.os }}-${{ runner.arch }}
       - name: Fetch locked dependencies
         run: cargo fetch --locked
       - name: Verify bounded spent-nonce core
