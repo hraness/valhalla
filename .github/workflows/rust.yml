@@ -66,7 +66,8 @@ jobs:
             # buffer, and the `!` would turn that into a false skip.
             if [ "$count" -gt 0 ] && [ "$count" = "$CHANGED_FILES" ] \
               && ! grep -Evq "$nonrust" <<<"$paths" \
-              && ! grep -qx 'CHANGELOG.md' <<<"$paths"; then
+              && ! grep -qx 'CHANGELOG.md' <<<"$paths" \
+              && ! grep -qx 'site/install.ps1' <<<"$paths"; then
               rust=false
               if ! grep -q '^docs/' <<<"$paths"; then
                 formal=false
@@ -262,6 +263,9 @@ jobs:
         run: |
           cargo test --locked -p vhalla-identity
           cargo test --locked -p vhalla-cli --no-default-features --features experimental-private --bin vhalla --test windows
+      - name: site/install.ps1 installs the built vhalla.exe
+        shell: pwsh
+        run: ./.github/scripts/check_install_ps1.ps1 -Exe target/debug/vhalla.exe -Version v0.0.0
       - name: Portable core test-code compile coverage
         run: cargo check -p vhalla-wire -p vhalla-policy -p vhalla-witness -p vhalla-botcaptcha -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-room-activity -p vhalla-private-relay -p vhalla-rooms-app --all-targets --locked
 

@@ -9,7 +9,7 @@ change that prepares the tag, and keep published sections as they shipped.
 
 Releases now include `vhalla` for x86-64 Windows, and every archive carries a build provenance attestation you can check with `gh attestation verify`.
 
-- The Windows archive, `valhalla-v0.2.10-x86_64-pc-windows-msvc.zip`, holds `vhalla.exe` with identity and the member side of private rooms. Commands that need macOS or Linux, such as `rooms`, `status` and `private-host`, say so and point to the Linux build inside WSL instead of printing identity usage.
+- The Windows archive, `valhalla-v0.2.10-x86_64-pc-windows-msvc.zip`, holds `vhalla.exe` with identity and the member side of private rooms. In PowerShell, `irm https://vhalla.com/install.ps1 | iex` checks its SHA-256 and installs it for your user only, with no administrator prompt. Commands that need macOS or Linux, such as `rooms`, `status` and `private-host`, say so and point to the Linux build inside WSL instead of printing identity usage.
 - `install.sh` now installs the static ARM64 Linux build on `aarch64` hosts and the static x86-64 build on musl systems such as Alpine. Unsupported hosts get the list of prebuilt platforms and the source build link.
 - Each release archive, including the browser bundle, has a signed provenance attestation from the release workflow, and the release page shows the `gh attestation verify` command.
 

@@ -1,6 +1,6 @@
-#![cfg(windows)]
 //! The Windows release binary: help, version, identity custody and a clear
 //! refusal for the commands that run only on macOS and Linux.
+#![cfg(windows)]
 use std::{
     fs,
     path::PathBuf,
