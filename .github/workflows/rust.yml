@@ -359,7 +359,7 @@ jobs:
           python3 -m unittest discover -s tools -p 'test_*.py'
         env:
           NO_COLOR: "true"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Qualification process cleanup regressions
@@ -430,7 +430,7 @@ jobs:
           python3 tools/package.py "$RUNNER_TEMP/vhalla-private-worker-runtime" --allow-local-qualification
         env:
           NO_COLOR: "true"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Exercise private worker custody, cancellation and exact reopen
@@ -474,7 +474,7 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: wasm-bindgen@0.2.108
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Check archive and continuity receipt browser fixtures
@@ -568,7 +568,7 @@ jobs:
           python3 tools/package.py "$RUNNER_TEMP/vhalla-product-runtime" --allow-local-qualification
         env:
           NO_COLOR: "true"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Exercise scope, interrupted signing, puzzle review and peer delivery
@@ -739,7 +739,7 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Site tests and production build
         run: bun run check:site
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Static site responsive, keyboard and CSP qualification
