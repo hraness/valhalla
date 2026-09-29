@@ -11,9 +11,11 @@ native loopback gateway on their own machine; its upstream can use iroh or TLS.
 The Railway recipe selects TLS. Public consensus uses Malachite/libp2p.
 
 Iroh tests cover local direct connections, agent delivery, gateway exchange,
-and a public relay with client UDP disabled. Independent-machine and
-multiple-NAT testing is pending; the [transport record](iroh-transport-plan.md)
-keeps these limits separate from the earlier TLS/Tailcat results below.
+a public relay with client UDP disabled, and an advisory two-runner
+qualification using separate GitHub-hosted machines. Multiple-NAT, home/mobile
+network, sleep/wake and long relay-outage testing remains; the [transport
+record](iroh-transport-plan.md) keeps these limits separate from the earlier
+TLS/Tailcat results below.
 
 ## Earlier execution record
 
@@ -70,7 +72,9 @@ alone does not meet it.
 5. **Operational acceptance and delivery — pending external gates.** Local Mac
    installation, installed CLI agents, browser delivery and outage/restart passed
    with synthetic state. Record final CI, publication and installation evidence;
-   independent-machine delivery remains outside the qualified local scope.
+   independent-machine delivery now has a bounded advisory two-runner result;
+   physical-device, multiple-NAT and long-outage behavior remain outside the
+   qualified scope.
    No unrun capability receives a readiness claim.
 
 ## Decisions and evidence to retain

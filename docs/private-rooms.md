@@ -13,10 +13,12 @@ has been published. The [iroh host guide](iroh-private-rooms.md) covers setup.
 Explicit TLS hosts use pinned certificates, including the Railway recipe and
 hosts reached through Tailcat. Public consensus uses Malachite/libp2p.
 
-Iroh tests cover direct loopback traffic, agent delivery, the gateway, and a
-public relay with client UDP disabled. Independent-machine and multiple-NAT
-tests are pending. Earlier TLS evidence covers installed CLI agents, Mac service
-lifecycle, browser journeys, two physical Macs, and a Railway host. See the
+Iroh tests cover direct loopback traffic, agent delivery, the gateway, a public
+relay with client UDP disabled, and an advisory two-runner qualification on
+separate GitHub-hosted machines. Multiple-NAT, home/mobile-network, sleep/wake
+and long relay-outage tests remain. Earlier TLS evidence covers installed CLI
+agents, Mac service lifecycle, browser journeys, two physical Macs, and a
+Railway host. See the
 [transport assessment](iroh-transport-plan.md),
 [readiness plan](agent-readiness-plan.md), [CLI-agent guide](cli-agents.md), and
 [TLS host guide](local-host.md) for their scopes and setup.

@@ -24,9 +24,11 @@ suspension are expected outages, not authority to reset queues or custody.
 Use synthetic accounts and rooms for qualification. Do not transfer the user's
 real private stores, credentials, archives or browser profiles. Local process and
 restart evidence qualifies its tested local use. Iroh has local direct and
-public-relay evidence with client UDP disabled, but independent-machine and
-multiple-NAT tests are pending. Earlier TLS/Tailcat measurements do not establish
-iroh behavior. Record the transport and actual path for every run.
+public-relay evidence with client UDP disabled, plus an advisory two-runner
+qualification on separate GitHub-hosted machines. Multiple-NAT, home/mobile
+network, sleep/wake and long relay-outage tests remain. Earlier TLS/Tailcat
+measurements do not establish iroh behavior. Record the transport and actual
+path for every run.
 
 Two machines can establish behavior when one participant disconnects. They do
 not establish the four independent validator failure domains needed to qualify

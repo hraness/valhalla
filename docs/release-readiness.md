@@ -8,9 +8,10 @@ published. Installer and Homebrew releases keep their release's transport
 behavior. The [iroh host guide](iroh-private-rooms.md) gives the source commands.
 
 Native host/client tests, agent delivery, browser-gateway exchange, and a public
-relay test with client UDP disabled passed. The public-relay test used two
-endpoints on one machine; independent-machine and multiple-NAT testing is
-pending. [The implementation record](iroh-transport-plan.md) gives the scope.
+relay test with client UDP disabled passed. An advisory two-runner qualification
+also passed between separate GitHub-hosted machines. Multiple-NAT,
+home/mobile-network, sleep/wake and long relay-outage testing remains pending.
+[The implementation record](iroh-transport-plan.md) gives the scope.
 The Railway recipe selects TLS, and its deployment or earlier measurements do
 not establish a production iroh delivery path. Public consensus uses
 Malachite/libp2p. Iroh hosts do not support TLS certificate maintenance,

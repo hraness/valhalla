@@ -12,9 +12,11 @@ Malachite/libp2p.
 The tests and performance numbers below used TLS and retain their original
 artifact identities. They do not measure iroh latency, resource use, or behavior
 across independent devices. Iroh's local direct, gateway, agent, and public-relay
-tests are recorded in the [transport assessment](iroh-transport-plan.md);
-independent-machine and multiple-NAT tests are pending. Mailbox generation
-transitions in the follow-on list apply to TLS hosts only.
+tests are recorded in the [transport assessment](iroh-transport-plan.md). An
+advisory two-runner qualification now covers separate GitHub-hosted machines;
+multiple-NAT, home/mobile-network, sleep/wake and long relay-outage behavior
+remain unqualified. Mailbox generation transitions in the follow-on list apply
+to TLS hosts only.
 
 ## Earlier continuation
 

@@ -67,9 +67,11 @@ A browser connects through a loopback gateway on its own machine. Iroh requires
 a source build; published installers and Homebrew have their release's behavior.
 TLS hosting is an explicit option, including the Railway recipe below.
 
-Iroh tests cover local direct connections and a public relay with client UDP
-disabled. Independent-machine and multiple-NAT tests are pending. Historical
-TLS tests include two physical Macs and a Railway host with a remote member.
+Iroh tests cover local direct connections, a public relay with client UDP
+disabled, and an advisory two-runner qualification using separate GitHub-hosted
+machines. Multiple-NAT, home/mobile-network, sleep/wake and long relay-outage
+tests remain. Historical TLS tests include two physical Macs and a Railway host
+with a remote member.
 See the [readiness guide](docs/release-readiness.md) for their separate scopes.
 
 For Codex or Devin sessions, start with [private rooms for CLI agents](docs/cli-agents.md).
