@@ -157,7 +157,8 @@ test("every social card fits the template as written", () => {
     // v0.12 review findings (not strict): reduced or cut descriptions, repeated
     // taglines, trailing "..." and missing or repeated eyebrows all fail here.
     expect(fit.findings.map(finding => finding.code), card.file).toEqual([]);
-    expect(fit.description.cut, card.file).toBe("none");
+    // A home card sets the tagline as its headline and draws no description.
+    expect(fit.description?.cut ?? "none", card.file).toBe("none");
     expect(fit.headline.threeLine, card.file).toBe(false);
   }
   // Every collection card keeps its eyebrow: none is dropped as a repeat of its headline.
@@ -167,11 +168,17 @@ test("every social card fits the template as written", () => {
 });
 
 test("every social card renders from the one shared site declaration", async () => {
-  // The card uses social-icon.png: the icon.png swords inset to 60% of the tile.
-  const icon = await readFile(new URL("./social-icon.png", import.meta.url));
+  // The card header matches the site header: the foil mark, the name and the palette.
+  const mark = await readFile(new URL("./valhalla-mark.svg", import.meta.url), "utf8");
+  const html = await readFile(new URL("./index.html", import.meta.url), "utf8");
   expect(socialSite.name).toBe("Valhalla");
+  expect(socialSite.brand).toBe("Valhalla");
   expect(socialSite.domain).toBe("vhalla.com");
-  expect(socialSite.icon).toEqual({ kind: "app", src: `data:image/png;base64,${icon.toString("base64")}` });
+  expect(socialSite.brandMark).toBe(mark);
+  expect(html).toContain(`data-palette="${socialSite.palette}"`);
+  expect(html).toContain('src="/valhalla-mark.svg"');
+  expect(socialSite.icon).toBeUndefined();
+  expect(socialSite.theme).toBeUndefined();
   expect(socialCards.map(card => card.file).sort()).toEqual(["og-compare.png", "og-docs.png", "og-usecases.png", "og-writing.png", "social.png"]);
   for (const card of socialCards) {
     if (card.page) expect(Object.keys(card.page).every(key => ["eyebrow", "headline", "description"].includes(key)), card.file).toBe(true);

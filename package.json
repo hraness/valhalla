@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "@hraness/ui": "github:hraness/ui#v0.5.18",
-    "@hraness/web-discovery": "github:hraness/web-discovery#v0.12.0",
+    "@hraness/web-discovery": "github:hraness/web-discovery#v0.13.0",
     "@resvg/resvg-js": "2.6.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",

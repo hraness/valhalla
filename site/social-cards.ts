@@ -12,15 +12,18 @@ import {
   type SocialImagePage,
 } from '@hraness/web-discovery/social-image/card';
 
-const icon = readFileSync(new URL('./social-icon.png', import.meta.url)).toString('base64');
+// The header's foil mark: the same monochrome glyph index.html and styles.css paint.
+const brandMark = readFileSync(new URL('./valhalla-mark.svg', import.meta.url), 'utf8');
 
 export const socialSite = defineSocialImageSite({
   name: marketing.names.name,
-  description: marketing.short,
+  // The home card sets the tagline as its headline, as the hero does.
+  description: marketing.tagline,
   domain: 'vhalla.com',
-  icon: { kind: 'app', src: `data:image/png;base64,${icon}` },
-  // Rose Pine Dawn, the site's light palette (index.html data-palette="rose-pine").
-  theme: { accent: '#907aa9', background: '#faf4ed', foreground: '#575279', muted: '#797593' },
+  brand: marketing.names.name,
+  brandMark,
+  // The site's Design Kit palette (index.html data-palette="rose-pine").
+  palette: 'rose-pine',
 });
 
 export type SocialCard = { file: string; page?: SocialImagePage };
