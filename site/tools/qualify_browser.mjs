@@ -1,5 +1,6 @@
 // Static-site responsive/CSP/navigation smoke, isolated browser only.
 import {spawnOwned, cleanupOwned, runQualification} from '../../browser/tools/qualification_lifecycle.mjs';
+import {consentRegionResponse, consentRegionUrl} from './consent-fixture.mjs';
 import {qualifyAppearance} from './qualify_appearance.mjs';
 import {qualifyAgentSetups} from './qualify_agent_setup.mjs';
 import {assertBrowserArgs, assertBrowserVersion, requiredBrowserArgs, resolvePinnedBrowser} from './browser-contract.mjs';
@@ -15,7 +16,7 @@ await mkdir(out,{recursive:false});const profile=await mkdtemp(join(out,'profile
 const headers=JSON.parse(await readFile(headersArg,'utf8')).headers[0].headers;
 const server=createServer(async(req,res)=>{try{let path=decodeURIComponent(new URL(req.url,'http://127.0.0.1').pathname);if(path.endsWith('/'))path+='index.html';const f=resolve(root,'.'+path);if(!f.startsWith(root+sep))throw Error('nonlocal');for(const h of headers)res.setHeader(h.key,h.value);res.setHeader('Content-Type',f.endsWith('.html')?'text/html':f.endsWith('.css')?'text/css':f.endsWith('.js')?'text/javascript':f.endsWith('.png')?'image/png':f.endsWith('.svg')?'image/svg+xml':f.endsWith('.woff2')?'font/woff2':'application/octet-stream');res.end(await readFile(f));}catch{res.writeHead(404);res.end();}});
 await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
-let log='',socket,seq=0,browserVersion,browserArgs;const pending=new Map();
+let log='',socket,seq=0,browserVersion,browserArgs,consentRegionRequests=0;const pending=new Map();
 // Match Playwright's headless desktop input configuration. A Linux runner may
 // have no physical pointer; this configures native Blink media, never matchMedia.
 // https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/chromium/chromium.ts
@@ -26,13 +27,15 @@ async function work(){
  const ws=await new Promise((r,j)=>{chrome.once('error',j);chrome.once('exit',c=>j(Error('Chrome exit '+c)));chrome.stderr.on('data',c=>{log+=c;const m=log.match(/DevTools listening on (ws:\/\/\S+)/);if(m)r(m[1]);});});
  socket=new WebSocket(ws);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
  const errors=[];
- socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const p=pending.get(v.id);pending.delete(v.id);v.error?p?.reject(Error(JSON.stringify(v.error))):p?.resolve(v.result);}else if(v.method==='Runtime.exceptionThrown'||v.method==='Log.entryAdded'&&v.params.entry.level==='error'){errors.push(v.params);}};
+ socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const p=pending.get(v.id);pending.delete(v.id);v.error?p?.reject(Error(JSON.stringify(v.error))):p?.resolve(v.result);}else if(v.method==='Fetch.requestPaused'){void (async()=>{await call('Fetch.fulfillRequest',{requestId:v.params.requestId,...consentRegionResponse(v.params.request)},v.sessionId);consentRegionRequests++;})().catch(error=>errors.push({fixtureError:String(error)}));}else if(v.method==='Runtime.exceptionThrown'||v.method==='Log.entryAdded'&&v.params.entry.level==='error'){errors.push(v.params);}};
+ const prepareSession=async sessionId=>{await call('Fetch.enable',{patterns:[{urlPattern:consentRegionUrl,requestStage:'Request'}]},sessionId);};
  const version=await call('Browser.getVersion');
  browserVersion=assertBrowserVersion(version.product,browser.expectedVersion);
  browserArgs=(await call('Browser.getBrowserCommandLine')).arguments;
  assertBrowserArgs(browserArgs,profile);
  console.log(JSON.stringify({browser:{...browser,version:browserVersion,args:browserArgs}}));
  const {targetId}=await call('Target.createTarget',{url:'about:blank'}),{sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
+ await prepareSession(sessionId);
  await call('Page.enable',{},sessionId);await call('Runtime.enable',{},sessionId);await call('Log.enable',{},sessionId);
  await call('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'light'}]},sessionId);
  const evaluate=async expression=>{const r=await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},sessionId);if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;};
@@ -74,7 +77,7 @@ async function work(){
   if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
   return {passed:true,mode,origin:base,source:process.env.GITHUB_SHA??null,pages:paths,results,consoleErrors:errors,root,profile};
  }
- const appearance=await qualifyAppearance({call,evaluate,navigate,sessionId});
+ const appearance=await qualifyAppearance({call,evaluate,navigate,sessionId,prepareSession});
  if(mode==='--appearance-only'){
   if(errors.length)throw Error('browser console/CSP failures '+JSON.stringify(errors));
   return {passed:true,appearance,consoleErrors:errors,root,profile};
@@ -150,7 +153,7 @@ await runQualification({
   },
   publish: async (receipt,cleanup) => {
     if(!cleanup.browserClosedGracefully)throw Error('successful qualification requires graceful browser closure');
-    const complete={...receipt,browser:{...browser,version:browserVersion,args:browserArgs},cleanup};
+    const complete={...receipt,consentRegion:{source:'fixture',required:true,requests:consentRegionRequests},browser:{...browser,version:browserVersion,args:browserArgs},cleanup};
     await writeFile(join(out,'receipt.json'),JSON.stringify(complete,null,2)+'\n');
     console.log(JSON.stringify(complete));
   },

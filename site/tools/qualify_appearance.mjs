@@ -2,7 +2,7 @@
 // qualify_browser.mjs. No synthetic page lifecycle events or mocked media APIs.
 import {closeTargetChecked} from '../../browser/tools/qualification_lifecycle.mjs';
 
-export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
+export async function qualifyAppearance({call, evaluate, navigate, sessionId, prepareSession = async () => {}}) {
   const key = 'hraness-design-theme-v1';
   const expected = {light: 'rgb(250, 244, 237)', dark: 'rgb(25, 23, 36)'};
   const state = () => evaluate(`({
@@ -131,6 +131,7 @@ export async function qualifyAppearance({call, evaluate, navigate, sessionId}) {
   const {targetId} = await call('Target.createTarget',{url:'about:blank'});
   try {
     const {sessionId:coarseSession} = await call('Target.attachToTarget',{targetId,flatten:true});
+    await prepareSession(coarseSession);
     const coarseEvaluate = async expression => {
       const value = await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true},coarseSession);
       if (value.exceptionDetails) throw Error(JSON.stringify(value.exceptionDetails));

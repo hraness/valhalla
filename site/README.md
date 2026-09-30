@@ -21,12 +21,12 @@ Serif fonts. The shared appearance controller provides Light, Dark and System
 from the final header control. Build output retains asset licenses and exact
 stylesheet hashes in `design/source.json`. Deployment includes the referenced web
 fonts and their licenses, excluding duplicate native-font files and generator-only
-TypeScript font data. The build checks every shared font URL resolves. Product content and layout stay here. `pages.ts` owns the maintained static documentation with each page's Diátaxis kind, `compare.ts` owns the comparison and use-cases pages, `writing.ts` owns the notes, `articles.ts` owns the reviewed technique posts (Markdown bodies in `articles/`, review records in `article-admissions.ts`), `discovery.ts` adds indexable posts to the sitemap, `llms.txt` and the Atom feed, `docs.ts` renders the shared grouped navigation and per-page metadata, `home.ts` builds the home FAQ's structured data from the visible FAQ, and `build.ts` writes ordinary HTML paths under `/docs/`, `/compare/`, `/writing/` and `/use-cases/`. No framework, analytics, external scripts or runtime content fetching are added. Navigation and code examples remain usable without JavaScript.
+TypeScript font data. The build checks every shared font URL resolves. Product content and layout stay here. `pages.ts` owns the maintained static documentation with each page's Diátaxis kind, `compare.ts` owns the comparison and use-cases pages, `writing.ts` owns the notes, `articles.ts` owns the reviewed technique posts (Markdown bodies in `articles/`, review records in `article-admissions.ts`), `discovery.ts` adds indexable posts to the sitemap, `llms.txt` and the Atom feed, `docs.ts` renders the shared grouped navigation and per-page metadata, `home.ts` builds the home FAQ's structured data from the visible FAQ, and `build.ts` writes ordinary HTML paths under `/docs/`, `/compare/`, `/writing/` and `/use-cases/`. No framework or remote executable script is added. The locally bundled shared analytics client waits for the regional consent policy and the visitor’s choice. Navigation and code examples remain usable without JavaScript.
 The header title and transparent catalog mark use the shared metallic foil
 recipe. The original SVG remains the fallback for unsupported masks and forced
 colors; mask configuration stays in the external stylesheet under the same CSP.
 The pinned shared footer renders an optional paid-support link for Valhalla,
-without a newsletter form or client runtime. `bun run check:site` checks that
+with an analytics-choice control and no newsletter form. `bun run check:site` checks that
 boundary, validates documentation links/security disclosures, and builds every page; `/llms.txt` points agents to the installed CLI's optional
 support protocol. The CSP still allows no executable inline script;
 it admits each page's checked JSON-LD block by exact SHA-256 hash.
@@ -92,6 +92,7 @@ It serves the exact static build and deployment CSP on loopback in a fresh
 profile, checks all documentation paths, desktop/mobile overflow, keyboard
 navigation, appearance modes and reading with JavaScript disabled, then writes
 screenshots and a receipt. CI retains those outputs without the browser profile.
+The layout gate keeps external hosts blocked and supplies an exact regional-consent GET fixture requiring opt-in. Its receipt labels this fixture; verify the live regional endpoint separately when checking production.
 The same gate checks first-visit System appearance, live OS preference changes,
 saved Light/Dark choices and actual back/forward-cache restoration of the hero
 controller. Append `--appearance-only` to run only those focused checks against
