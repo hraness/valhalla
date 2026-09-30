@@ -36,9 +36,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            tool: build
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             tool: build
@@ -84,18 +81,6 @@ jobs:
         # Include the maintained public/private commands. The complete
         # all-features verification gate still runs above.
         run: cargo ${{ matrix.tool }} --release --locked -p vhalla-cli --no-default-features --features ${{ matrix.features || 'experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private' }} --target "${{ matrix.target }}"
-      - name: macOS host custody and lifecycle regressions
-        if: runner.os == 'macOS'
-        # Tests inject launchctl replies and use temporary custody only. They
-        # never install or activate a LaunchAgent or require a GUI login.
-        run: |
-          cargo test --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "${{ matrix.target }}" --bin vhalla private_host::
-      - name: macOS browser gateway socket regressions
-        if: runner.os == 'macOS'
-        # macOS inherits listener descriptor flags on accepted sockets. Exercise
-        # real server acceptance and complete large-asset writes on this platform.
-        run: |
-          cargo test --release --locked -p vhalla-private-native --features agent-rpc,relay-tls --target "${{ matrix.target }}" --lib relay::http::tests::
       - name: Install qemu for the cross-arch smoke check
         # The aarch64-musl artifact cannot exec on the x86_64 runner; run it
         # under qemu-user so the smoke assertions still cover the real binary.
@@ -202,6 +187,165 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+
+  macos_build:
+    name: Build unsigned macOS executable without Apple credentials
+    runs-on: macos-14
+    timeout-minutes: 40
+    outputs:
+      artifact_id: ${{ steps.unsigned.outputs.artifact-id }}
+      artifact_digest: ${{ steps.unsigned.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Build vhalla
+        run: cargo build --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target aarch64-apple-darwin
+      - name: macOS host custody and lifecycle regressions
+        # Tests inject launchctl replies and use temporary custody only. They
+        # never install or activate a LaunchAgent or require a GUI login.
+        run: |
+          cargo test --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "aarch64-apple-darwin" --bin vhalla private_host::
+      - name: macOS browser gateway socket regressions
+        # macOS inherits listener descriptor flags on accepted sockets. Exercise
+        # real server acceptance and complete large-asset writes on this platform.
+        run: |
+          cargo test --release --locked -p vhalla-private-native --features agent-rpc,relay-tls --target "aarch64-apple-darwin" --lib relay::http::tests::
+      - name: Prepare bounded Mach-O signing input
+        run: python3 -I .github/scripts/sign_macos_release.py prepare target/aarch64-apple-darwin/release/vhalla "$GITHUB_REF_NAME" "$RUNNER_TEMP/vhalla-unsigned"
+      - uses: actions/upload-artifact@v7
+        id: unsigned
+        with:
+          name: vhalla-unsigned-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vhalla-unsigned/*
+          if-no-files-found: error
+          retention-days: 14
+
+  macos_sign:
+    name: Sign and notarize without executing the payload
+    needs: [validate, macos_build]
+    environment: hraness-apple-release
+    runs-on: macos-14
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      attestations: write
+      id-token: write
+    outputs:
+      artifact_id: ${{ steps.signed.outputs.artifact-id }}
+      artifact_digest: ${{ steps.signed.outputs.artifact-digest }}
+      archive_sha256: ${{ steps.identity.outputs.archive_sha256 }}
+      checksum_sha256: ${{ steps.identity.outputs.checksum_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Require the exact version tag at verified main source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --no-tags --depth=1 origin refs/heads/main
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+          git fetch --no-tags --depth=1 origin "refs/tags/$GITHUB_REF_NAME"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+      - name: Download exact same-run unsigned bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.macos_build.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.macos_build.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
+          jq -e --arg id "$ARTIFACT_ID" --arg digest "sha256:$ARTIFACT_DIGEST" --arg run "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" --arg name "vhalla-unsigned-$GITHUB_RUN_ATTEMPT" '
+            (.id | tostring) == $id and .digest == $digest and .expired == false and
+            (.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha and
+            .name == $name and .size_in_bytes > 0 and .size_in_bytes <= 134217728
+          ' "$RUNNER_TEMP/artifact.json" > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/unsigned.zip"
+          python3 -I .github/scripts/sign_macos_release.py extract-artifact "$RUNNER_TEMP/unsigned.zip" "$ARTIFACT_DIGEST" "$GITHUB_REF_NAME" "$RUNNER_TEMP/unsigned-input"
+      - name: Sign with Developer ID and require Apple Accepted
+        env:
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: python3 -I .github/scripts/sign_macos_release.py sign "$RUNNER_TEMP/unsigned-input/valhalla-$GITHUB_REF_NAME-aarch64-apple-darwin.unsigned.tar.gz" "$GITHUB_REF_NAME" "$RUNNER_TEMP/signed-output" "$RUNNER_TEMP/vhalla-apple-signing"
+      - name: Remove temporary credentials after failure or cancellation
+        if: always()
+        run: python3 -I .github/scripts/sign_macos_release.py cleanup "$RUNNER_TEMP/vhalla-apple-signing"
+      - name: Record exact signed archive before any execution
+        id: identity
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/signed-output/valhalla-$GITHUB_REF_NAME-aarch64-apple-darwin.tar.gz"
+          printf 'archive_sha256=%s\n' "$(shasum -a 256 "$archive" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'checksum_sha256=%s\n' "$(shasum -a 256 "$archive.sha256" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ runner.temp }}/signed-output/*.tar.gz
+      - uses: actions/upload-artifact@v7
+        id: signed
+        with:
+          name: release-cli-aarch64-apple-darwin
+          path: ${{ runner.temp }}/signed-output/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve non-secret submission UUID and hashes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vhalla-apple-notarization-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vhalla-apple-notarization.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  macos_smoke:
+    name: Verify and execute signed archive on a fresh runner
+    needs: macos_sign
+    runs-on: macos-14
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download and verify exact signed intermediate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.macos_sign.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.macos_sign.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/signed.zip"
+          python3 -I .github/scripts/sign_macos_release.py extract-artifact "$RUNNER_TEMP/signed.zip" "$ARTIFACT_DIGEST" "$GITHUB_REF_NAME" "$RUNNER_TEMP/signed-input" --signed
+          python3 -I .github/scripts/sign_macos_release.py extract-signed "$RUNNER_TEMP/signed-input/valhalla-$GITHUB_REF_NAME-aarch64-apple-darwin.tar.gz" "$GITHUB_REF_NAME" "$RUNNER_TEMP/vhalla"
+      - name: Smoke check signed macOS release
+        env:
+          HRANESS_SUPPORT: "off"
+        run: |
+          set -euo pipefail
+          cli="$RUNNER_TEMP/vhalla"
+          [[ "$("$cli" --help)" == *"Usage: vhalla <command>"* ]] || exit 1
+          help="$("$cli" help all)"
+          for command in experimental social rooms public private private-host private-gateway; do
+            [[ "$help" == *"vhalla $command "* ]] || exit 1
+          done
+          [[ "$help" != *"vhalla game replay "* ]] || exit 1
+          if "$cli" game --help > "$RUNNER_TEMP/game-disabled.txt" 2>&1; then exit 1; fi
+          [[ "$(cat "$RUNNER_TEMP/game-disabled.txt")" == *'Unknown command "game"'* ]] || exit 1
+
   browser:
     needs: validate
     runs-on: ubuntu-latest
@@ -242,7 +386,7 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: [validate, cli, browser]
+    needs: [validate, cli, browser, macos_sign, macos_smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -262,6 +406,8 @@ jobs:
       # CHANGELOG.md section plus generated install/verify text and identity.
       - name: Verify gates, stage draft, and publish complete release
         env:
+          MACOS_ARCHIVE_SHA256: ${{ needs.macos_sign.outputs.archive_sha256 }}
+          MACOS_CHECKSUM_SHA256: ${{ needs.macos_sign.outputs.checksum_sha256 }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: python3 .github/scripts/publish_release.py release-assets

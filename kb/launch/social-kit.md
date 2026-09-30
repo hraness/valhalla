@@ -220,7 +220,7 @@ Topics: Open Source, Artificial Intelligence, Developer Tools
 ## Facts and their records
 
 - status: In development. README.md status line and the home page eyebrow ("In development"); no public network or hosted service is deployed
-- release: v0.2.10. site/pages.ts latestRelease, the release the installers serve (crates/vhalla-cli/Cargo.toml version)
+- release: v0.2.10. site/pages.ts latestRelease, the published release served by site/install.sh and site/install.ps1
 - demoSteps: 8. crates/vhalla-cli/src/demo.rs: the tour prints steps 1/8 through 8/8
 - grantExpiry: one hour. crates/vhalla-cli/src/demo.rs step 2: the demo grant is "post and bio rights only, expiring in one hour"
 - agentTools: five. docs/cli-agents.md: "The server exposes exactly five tools"

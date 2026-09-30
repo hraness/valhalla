@@ -34,8 +34,11 @@ test('the tour fixture matches every step vhalla demo prints', () => {
 
 test('every launch fact matches the record it names', async () => {
   expect(launchFacts.release.value).toBe(latestRelease);
-  const cargo = await read('crates/vhalla-cli/Cargo.toml');
-  expect(latestRelease).toBe(`v${cargo.match(/^version = "([^"]+)"/m)![1]}`);
+  // Source can prepare the next version before its archives are published.
+  // The launch names the version both installers currently serve.
+  expect(await read('site/install.sh')).toContain(`VERSION="${latestRelease}"`);
+  expect(await read('site/install.ps1')).toContain(`$Version = '${latestRelease}'`);
+  expect(await read('CHANGELOG.md')).toContain(`## ${latestRelease.slice(1)} - `);
   expect(demo).toContain('expiring in one\\nhour');
   expect(launchFacts.grantExpiry.value).toBe('one hour');
   expect(await read('docs/cli-agents.md')).toContain(`exposes exactly ${launchFacts.agentTools.value} tools`);

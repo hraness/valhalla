@@ -17,6 +17,10 @@ for arg in "$@"; do
 done
 
 VERSION="v0.2.10"
+VERSION="${VHALLA_VERSION:-$VERSION}"
+printf '%s\n' "$VERSION" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+  echo "vhalla install: VHALLA_VERSION must be an exact version tag." >&2; exit 1;
+}
 BASE="https://github.com/hraness/valhalla/releases/download/$VERSION"
 INSTALL_DIR="${VHALLA_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -52,27 +56,56 @@ echo "→ Downloading $asset"
 curl -fsSL "$BASE/$asset"        -o "$tmp/$asset"
 curl -fsSL "$BASE/$asset.sha256" -o "$tmp/$asset.sha256"
 
-verify() {
+hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$tmp" && sha256sum -c "$1.sha256")
+    sha256sum "$1" | cut -d ' ' -f 1
   else
-    (cd "$tmp" && shasum -a 256 -c "$1.sha256")
+    shasum -a 256 "$1" | cut -d ' ' -f 1
   fi
 }
+fail() { printf 'vhalla install: %s\n' "$*" >&2; exit 1; }
 
 echo "→ Verifying SHA-256"
-verify "$asset"
-
+[ "$(cat "$tmp/$asset.sha256")" = "$(hash_file "$tmp/$asset")  $asset" ] \
+  || fail "checksum mismatch; nothing was installed"
+prefix=${asset%.tar.gz}
+listing=$(tar -tzf "$tmp/$asset" | LC_ALL=C sort | tr '\n' ' ')
+case "$listing" in
+  "$prefix/vhalla "|"$prefix/ $prefix/vhalla ") ;;
+  *) fail "unexpected archive entries; nothing was installed" ;;
+esac
+# Extract only a verified regular-file member, never a directory link.
+kind=$(tar -tvzf "$tmp/$asset" "$prefix/vhalla" | cut -c 1)
+[ "$kind" = - ] || fail "release executable is not a regular file"
+mkdir "$tmp/out"
+tar -xzf "$tmp/$asset" -C "$tmp/out" "$prefix/vhalla"
+staged="$tmp/out/$prefix/vhalla"
+[ -f "$staged" ] && [ ! -L "$staged" ] || fail "invalid release executable"
+if [ "$os" = Darwin ]; then
+  historical=false
+  case "$VERSION" in v0.0.*|v0.1.*|v0.2.[0-9]|v0.2.10) historical=true ;; esac
+  if [ "$historical" = false ]; then
+    requirement='identifier "dev.hraness.vhalla" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "8AAP53VTW3"'
+    /usr/bin/codesign --verify --strict --check-notarization --test-requirement "$requirement" "$staged" \
+      || fail "Developer ID or Apple notarization verification failed; nothing was installed"
+    signature=$(/usr/bin/codesign --display --verbose=4 "$staged" 2>&1) || fail "signature inspection failed"
+    printf '%s\n' "$signature" | grep -Eq '^CodeDirectory .*flags=.*\(.*runtime.*\)' || fail "release lacks hardened runtime"
+    printf '%s\n' "$signature" | grep -Eq '^Timestamp=.+' || fail "release lacks a secure timestamp"
+  fi
+fi
+chmod 755 "$staged"
+"$staged" --help >/dev/null 2>&1 || fail "release smoke failed; nothing was installed"
+[ ! -L "$INSTALL_DIR" ] && [ ! -L "$INSTALL_DIR/vhalla" ] || fail "installation target must not be a symlink"
+[ ! -e "$INSTALL_DIR/vhalla" ] || [ -f "$INSTALL_DIR/vhalla" ] || fail "installation target must be a regular file"
 echo "→ Installing to $INSTALL_DIR"
-mkdir -p "$INSTALL_DIR" "$tmp/out"
-tar -xzf "$tmp/$asset" --strip-components 1 -C "$tmp/out"
-cp "$tmp/out/vhalla" "$INSTALL_DIR/vhalla"
-chmod 755 "$INSTALL_DIR/vhalla"
-
-"$INSTALL_DIR/vhalla" --help >/dev/null 2>&1 || {
-  echo "vhalla install: the binary was installed but \`vhalla --help\` failed. Please report it at https://github.com/hraness/valhalla/issues" >&2
-  exit 1
-}
+mkdir -p "$INSTALL_DIR"
+# Rename complete bytes on the destination filesystem; failed verification
+# leaves the previous executable intact.
+staging=$(mktemp "$INSTALL_DIR/.vhalla-install.XXXXXX")
+trap 'rm -rf "$tmp"; rm -f "$staging"' EXIT
+cp "$staged" "$staging"
+chmod 755 "$staging"
+mv -f "$staging" "$INSTALL_DIR/vhalla"
 
 echo ""
 echo "✓ vhalla $VERSION installed at $INSTALL_DIR/vhalla"

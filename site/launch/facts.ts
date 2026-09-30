@@ -16,7 +16,7 @@ export const launchFacts = {
   },
   release: {
     value: latestRelease,
-    source: 'site/pages.ts latestRelease, the release the installers serve (crates/vhalla-cli/Cargo.toml version)',
+    source: 'site/pages.ts latestRelease, the published release served by site/install.sh and site/install.ps1',
   },
   demoSteps: {
     value: '8',
