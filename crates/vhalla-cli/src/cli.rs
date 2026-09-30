@@ -203,6 +203,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "status",
     "support",
     "tui",
+    "update",
 ];
 
 /// Optimal string alignment distance: edits plus adjacent transpositions.

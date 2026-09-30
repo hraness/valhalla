@@ -72,6 +72,13 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.marker.exists())
 
+    def test_historical_installer_cannot_overwrite_managed_installation(self):
+        (self.install / ".hraness-cli-update-valhalla").mkdir()
+        result = self.run_install(version="v0.2.10", os_name="Linux")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native update coordination", result.stderr)
+        self.assertEqual((self.install / "vhalla").read_bytes(), b"previous executable")
+
     def test_bad_checksum_and_archive_links_never_execute(self):
         for options in ({"corrupt": True}, {"link": True}):
             with self.subTest(options=options):

@@ -1,0 +1,78 @@
+[
+  {
+    "tag": "v0.2.10",
+    "releaseId": 399339457,
+    "platform": "aarch64-apple-darwin",
+    "archive": {
+      "id": 598698609,
+      "name": "valhalla-v0.2.10-aarch64-apple-darwin.tar.gz",
+      "size": 16419427,
+      "sha256": "8bd7bcf895fe87b74fd711634e6ee8172881b0366ab31cddc3d9f0fa65affd06"
+    },
+    "checksum": {
+      "id": 598698600,
+      "name": "valhalla-v0.2.10-aarch64-apple-darwin.tar.gz.sha256",
+      "size": 111,
+      "sha256": "fcba7fffda0ee03a1ccd4338aae8450b0bd886d315994c8e373809b4c7206d7e"
+    },
+    "binarySize": 41289600,
+    "binarySha256": "bddecbbd17a862967140d99859eca1cada9fa7675c4307e03471fbac0e30dc4b"
+  },
+  {
+    "tag": "v0.2.10",
+    "releaseId": 399339457,
+    "platform": "aarch64-unknown-linux-musl",
+    "archive": {
+      "id": 598698604,
+      "name": "valhalla-v0.2.10-aarch64-unknown-linux-musl.tar.gz",
+      "size": 16823817,
+      "sha256": "452b337274002da987d501ffd30eb07ec616c25783f2c11a9c3400910bb661c4"
+    },
+    "checksum": {
+      "id": 598698630,
+      "name": "valhalla-v0.2.10-aarch64-unknown-linux-musl.tar.gz.sha256",
+      "size": 117,
+      "sha256": "afef6c5da2975792d8c0f6494b42672448a676924550bf955d81eddd52001c5b"
+    },
+    "binarySize": 37338352,
+    "binarySha256": "6e685d90a9bc69a58e101e6c327029a968ad7d5a32f71d38304ff6530613f83d"
+  },
+  {
+    "tag": "v0.2.10",
+    "releaseId": 399339457,
+    "platform": "x86_64-unknown-linux-gnu",
+    "archive": {
+      "id": 598698652,
+      "name": "valhalla-v0.2.10-x86_64-unknown-linux-gnu.tar.gz",
+      "size": 19763916,
+      "sha256": "74bdc766f6b3f229d01c61bbd918370355cd928ae54fcf239f900660839701f9"
+    },
+    "checksum": {
+      "id": 598698651,
+      "name": "valhalla-v0.2.10-x86_64-unknown-linux-gnu.tar.gz.sha256",
+      "size": 115,
+      "sha256": "064f989b86c9d82f689824521269fc8e2b0460044b32afb55ef14b8b440540f6"
+    },
+    "binarySize": 54783800,
+    "binarySha256": "888e320ebe00e790282182eab513d78bc67351a976f30a18353361adb4400f01"
+  },
+  {
+    "tag": "v0.2.10",
+    "releaseId": 399339457,
+    "platform": "x86_64-unknown-linux-musl",
+    "archive": {
+      "id": 598698654,
+      "name": "valhalla-v0.2.10-x86_64-unknown-linux-musl.tar.gz",
+      "size": 18065252,
+      "sha256": "741b68c273f1a44b33b865df5531c6e891f3f3f0dc59a71900d632f3b6302b4d"
+    },
+    "checksum": {
+      "id": 598698665,
+      "name": "valhalla-v0.2.10-x86_64-unknown-linux-musl.tar.gz.sha256",
+      "size": 116,
+      "sha256": "75264fd5e8ef9fd91cca288cb9006b59c7d6ef0aa9dcdcb1a5d64d3cb5ccb6b2"
+    },
+    "binarySize": 43076512,
+    "binarySha256": "b8e2fe73dddbf64f16da69416c2b8cbfdf8558e380cf5bbbc0f6e48a459c3ec4"
+  }
+]
