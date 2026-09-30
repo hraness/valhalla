@@ -248,7 +248,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git fetch --no-tags --depth=1 origin refs/heads/main
@@ -262,7 +262,7 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.macos_build.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
           jq -e --arg id "$ARTIFACT_ID" --arg digest "sha256:$ARTIFACT_DIGEST" --arg run "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" --arg name "vhalla-unsigned-$GITHUB_RUN_ATTEMPT" '
             (.id | tostring) == $id and .digest == $digest and .expired == false and
@@ -327,7 +327,7 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.macos_sign.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/signed.zip"
           python3 -I .github/scripts/sign_macos_release.py extract-artifact "$RUNNER_TEMP/signed.zip" "$ARTIFACT_DIGEST" "$GITHUB_REF_NAME" "$RUNNER_TEMP/signed-input" --signed
           python3 -I .github/scripts/sign_macos_release.py extract-signed "$RUNNER_TEMP/signed-input/valhalla-$GITHUB_REF_NAME-aarch64-apple-darwin.tar.gz" "$GITHUB_REF_NAME" "$RUNNER_TEMP/vhalla"
@@ -337,14 +337,14 @@ jobs:
         run: |
           set -euo pipefail
           cli="$RUNNER_TEMP/vhalla"
-          [[ "$("$cli" --help)" == *"Usage: vhalla <command>"* ]]
+          [[ "$("$cli" --help)" == *"Usage: vhalla <command>"* ]] || exit 1
           help="$("$cli" help all)"
           for command in experimental social rooms public private private-host private-gateway; do
-            [[ "$help" == *"vhalla $command "* ]]
+            [[ "$help" == *"vhalla $command "* ]] || exit 1
           done
-          [[ "$help" != *"vhalla game replay "* ]]
+          [[ "$help" != *"vhalla game replay "* ]] || exit 1
           if "$cli" game --help > "$RUNNER_TEMP/game-disabled.txt" 2>&1; then exit 1; fi
-          [[ "$(cat "$RUNNER_TEMP/game-disabled.txt")" == *'Unknown command "game"'* ]]
+          [[ "$(cat "$RUNNER_TEMP/game-disabled.txt")" == *'Unknown command "game"'* ]] || exit 1
 
   browser:
     needs: validate
