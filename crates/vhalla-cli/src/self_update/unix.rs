@@ -17,6 +17,9 @@ mod files;
 mod legacy;
 use files::{digest, read_path, Directory, Stage};
 
+#[cfg(target_os = "macos")]
+const MACOS_REQUIREMENT: &str = "=anchor apple generic and identifier \"dev.hraness.vhalla\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"8AAP53VTW3\"";
+
 const ARCHIVE_LIMIT: usize = 128 * 1024 * 1024;
 const BINARY_LIMIT: usize = 256 * 1024 * 1024;
 const CHECKSUM_LIMIT: usize = 1024;
@@ -331,7 +334,6 @@ fn verify_candidate(stage: &Stage<'_>, tag: &str) -> Result<()> {
     let candidate = stage.directory.path.join("vhalla");
     #[cfg(target_os = "macos")]
     {
-        const REQUIREMENT: &str = "anchor apple generic and identifier \"dev.hraness.vhalla\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"8AAP53VTW3\"";
         let mut command = Command::new("/usr/bin/codesign");
         command
             .args([
@@ -339,7 +341,7 @@ fn verify_candidate(stage: &Stage<'_>, tag: &str) -> Result<()> {
                 "--strict",
                 "--check-notarization",
                 "--test-requirement",
-                REQUIREMENT,
+                MACOS_REQUIREMENT,
             ])
             .arg(&candidate);
         ensure!(
@@ -724,6 +726,19 @@ fn enroll_verified(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_requirement_is_compilable_inline_source() {
+        let mut command = Command::new("/usr/bin/csreq");
+        command.args(["-r", MACOS_REQUIREMENT, "-t"]);
+        let output = run_bounded(&mut command, 8192, 8192, Duration::from_secs(10)).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     use super::*;
     use hraness_cli_update::{
         ReleaseSource, RunningIdentity, StartupContext, StartupOutcome, Updater,
