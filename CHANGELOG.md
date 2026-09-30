@@ -5,6 +5,17 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
+## 0.2.11 - 2026-09-30
+
+macOS releases keep one Developer ID identity across upgrades so system
+permissions can recognize the same publisher and executable identifier.
+
+- Sign the Apple silicon CLI with team `8AAP53VTW3`, identifier `dev.hraness.vhalla`, hardened runtime, and a secure timestamp before packaging and provenance.
+- Require Apple's `Accepted` result and online notarization verification. Keep submission UUID and hash diagnostics when review times out, without automatically resubmitting.
+- Separate builds, credentialed signing, and executable smoke checks. Delete the temporary signing keychain and credentials before another runner executes the release.
+- Check Developer ID and notarization before installing or executing new Mac releases, and preserve the old executable when verification fails.
+- Keep Linux, Windows, and explicit historical Mac release installation available. `VHALLA_VERSION=v0.2.10` selects the earlier checksum-verified release.
+
 ## 0.2.10 - 2026-09-29
 
 Releases now include `vhalla` for x86-64 Windows, and every archive carries a build provenance attestation you can check with `gh attestation verify`.

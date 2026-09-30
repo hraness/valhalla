@@ -5,6 +5,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -15,7 +16,7 @@ from unittest import mock
 import release_notes
 from publish_release import (
     CODEQL_ANALYSIS_KEY, CODEQL_CHECKS, CODEQL_CATEGORIES, MAX_ANALYSIS_PAGES,
-    asset_names, publish,
+    asset_names, publish, require_signed_macos,
 )
 from release_notes import render_body
 
@@ -126,6 +127,13 @@ class ReleaseTests(unittest.TestCase):
                 (self.assets / (name + ".sha256")).write_text(
                     f"{hashlib.sha256(content).hexdigest()}  {name}\n")
         self.gh = FakeGitHub(self.assets)
+        archive = self.assets / f"valhalla-{TAG}-aarch64-apple-darwin.tar.gz"
+        identity = mock.patch.dict(os.environ, {
+            "MACOS_ARCHIVE_SHA256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "MACOS_CHECKSUM_SHA256": hashlib.sha256(Path(str(archive) + ".sha256").read_bytes()).hexdigest(),
+        })
+        identity.start()
+        self.addCleanup(identity.stop)
         notes = tempfile.TemporaryDirectory()
         self.addCleanup(notes.cleanup)
         self.changelog = Path(notes.name) / "CHANGELOG.md"
@@ -152,6 +160,21 @@ class ReleaseTests(unittest.TestCase):
         commands = [args[:2] for args in self.gh.calls]
         self.assertLess(commands.index(("release", "download")), commands.index(("release", "edit")))
         self.assertIn("--draft", next(args for args in self.gh.calls if args[:2] == ("release", "create")))
+
+    def test_signed_job_hashes_bind_both_macos_assets_before_network(self):
+        archive = f"valhalla-{TAG}-aarch64-apple-darwin.tar.gz"
+        hashes = {name: hashlib.sha256((self.assets / name).read_bytes()).hexdigest()
+                  for name in asset_names(TAG)}
+        identity = {"MACOS_ARCHIVE_SHA256": hashes[archive],
+                    "MACOS_CHECKSUM_SHA256": hashes[archive + ".sha256"]}
+        require_signed_macos(hashes, TAG, identity)
+        for key in identity:
+            for value in ("", "0" * 64):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaisesRegex(ValueError, "signed and notarized"):
+                        publish(self.assets, TAG, SHA, REPO, self.gh,
+                                signing_identity={**identity, key: value})
+                    self.assertEqual(self.gh.calls, [])
 
     def test_missing_artifact_blocks_all_network_access(self):
         next(self.assets.glob("*.tar.gz")).unlink()

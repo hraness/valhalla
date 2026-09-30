@@ -78,6 +78,15 @@ def validate_assets(directory, tag):
     return hashes
 
 
+def require_signed_macos(hashes, tag, identity):
+    """Bind publication to the signing job, not a wildcard artifact name."""
+    for suffix, key in ((".tar.gz", "MACOS_ARCHIVE_SHA256"), (".tar.gz.sha256", "MACOS_CHECKSUM_SHA256")):
+        expected = identity.get(key, "")
+        name = f"valhalla-{tag}-aarch64-apple-darwin{suffix}"
+        if not re.fullmatch(r"[0-9a-f]{64}", expected) or hashes.get(name) != expected:
+            raise ValueError("macOS assets differ from the exact signed and notarized job output")
+
+
 def require_release_gates(gh, repo, tag, sha):
     def api(path):
         return json.loads(gh("api", f"repos/{repo}/{path}"))
@@ -192,8 +201,9 @@ def require_page(name, body, changelog_text, repo, tag, sha, expected):
     verify_body(body, changelog_text, repo, tag, sha, expected)
 
 
-def publish(directory, tag, sha, repo, gh=run_gh, changelog=None):
+def publish(directory, tag, sha, repo, gh=run_gh, changelog=None, signing_identity=None):
     expected = validate_assets(directory, tag)
+    require_signed_macos(expected, tag, os.environ if signing_identity is None else signing_identity)
     # The page comes from CHANGELOG.md at the tagged commit. A missing, empty or
     # Unreleased section stops here, before any network access.
     changelog_text = Path(changelog or release_notes.CHANGELOG).read_text(encoding="utf-8")
@@ -236,7 +246,7 @@ def publish(directory, tag, sha, repo, gh=run_gh, changelog=None):
 if __name__ == "__main__":
     try:
         publish(Path(sys.argv[1]), os.environ["GITHUB_REF_NAME"],
-                os.environ["GITHUB_SHA"], os.environ["GH_REPO"])
+                os.environ["GITHUB_SHA"], os.environ["GH_REPO"], signing_identity=os.environ)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         # Do not dump subprocess environments or credentials into workflow logs.
         sys.exit(f"Release blocked: {error}")
