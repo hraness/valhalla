@@ -74,6 +74,11 @@ const MAX_LOGIN_ITEM_BYTES: u64 = 64 * 1024;
 pub(crate) fn registry() -> Registry {
     let mut registry = Registry::new(PRODUCT);
     let verbs = [
+        Verb::new(&["update"], OpClass::Operate, crate::self_update::SCHEMA, "Install a newer verified native release"),
+        Verb::new(&["update", "check"], OpClass::Read, crate::self_update::SCHEMA, "Check for a newer release without installing"),
+        Verb::new(&["update", "status"], OpClass::Read, crate::self_update::SCHEMA, "Show installation support and automatic-update policy"),
+        Verb::new(&["update", "enable"], OpClass::Operate, crate::self_update::SCHEMA, "Enable automatic updates for supported installations"),
+        Verb::new(&["update", "disable"], OpClass::Operate, crate::self_update::SCHEMA, "Disable automatic updates"),
         Verb::new(
             &["status"],
             OpClass::Read,

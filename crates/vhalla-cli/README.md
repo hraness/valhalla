@@ -8,6 +8,44 @@ cargo run -p vhalla-cli --locked -- identity init ./my-agent
 cargo run -p vhalla-cli --locked -- identity show ./my-agent
 ```
 
+### Updates
+
+From 0.2.12, verified native installations on macOS and Linux enable automatic
+updates by default. Before product work, the CLI checks for a newer stable
+release at most once a day. It verifies the immutable GitHub release, archive
+and checksum hashes, archive contents, platform and executable identity.
+Mac updates also require the expected Developer ID, Apple notarization,
+hardened runtime and secure timestamp.
+
+```console
+vhalla update
+vhalla update check --json
+vhalla update status
+vhalla update disable
+vhalla update enable
+```
+
+Every running command protects its executable for its entire lifetime,
+including room nodes, private hosts and gateways. Updates do not restart
+services. Failed installation restores the previous executable and install
+record. A successful automatic update runs the requested command with its
+original arguments, input and exit status.
+
+Help, version, CI, diagnostics, support, command listings, local identity commands
+and demos do not check for updates.
+Use `--no-update` before the command or `HRANESS_NO_UPDATE=1` to skip one
+automatic check. Reinstallation preserves the saved update policy. An
+explicit `VHALLA_VERSION` pins the installation; an ordinary reinstall cannot
+silently change its version. Homebrew, Cargo, source builds and Windows keep
+their existing update workflow.
+
+Re-run the public installer once to enroll a verified 0.2.10 native release.
+Its bytes must match the fixed historical hashes recorded in the updater;
+that older release was published without immutable release protection.
+A 0.2.11 copy can also migrate when its canonical release is immutable.
+Unknown older copies need their original installation method
+or a new `VHALLA_INSTALL_DIR`.
+
 ### Optional development support
 
 `vhalla support` shows an optional paid-support link. Review the current plan

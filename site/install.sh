@@ -50,6 +50,7 @@ case "$os/$arch" in
 esac
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/vhalla-install.XXXXXX")
+tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "→ Downloading $asset"
@@ -99,13 +100,23 @@ chmod 755 "$staged"
 [ ! -e "$INSTALL_DIR/vhalla" ] || [ -f "$INSTALL_DIR/vhalla" ] || fail "installation target must be a regular file"
 echo "→ Installing to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-# Rename complete bytes on the destination filesystem; failed verification
-# leaves the previous executable intact.
-staging=$(mktemp "$INSTALL_DIR/.vhalla-install.XXXXXX")
-trap 'rm -rf "$tmp"; rm -f "$staging"' EXIT
-cp "$staged" "$staging"
-chmod 755 "$staging"
-mv -f "$staging" "$INSTALL_DIR/vhalla"
+modern=$(printf '%s\n' "${VERSION#v}" | awk -F . '{ print ($1 > 0 || $2 > 2 || ($2 == 2 && $3 >= 12)) ? "yes" : "no" }')
+if [ "$modern" = yes ]; then
+  # The verified binary independently checks canonical release hashes, then
+  # owns replacement, rollback and its install record under one activity lock.
+  if [ -n "${VHALLA_VERSION:-}" ]; then
+    "$staged" __install-release --archive "$tmp/$asset" --checksum "$tmp/$asset.sha256" --install-dir "$INSTALL_DIR" --pinned
+  else
+    "$staged" __install-release --archive "$tmp/$asset" --checksum "$tmp/$asset.sha256" --install-dir "$INSTALL_DIR"
+  fi
+else
+  [ ! -e "$INSTALL_DIR/.hraness-cli-update-valhalla" ] || fail "this installation uses native update coordination; use vhalla update or install a modern release"
+  staging=$(mktemp "$INSTALL_DIR/.vhalla-install.XXXXXX")
+  trap 'rm -rf "$tmp"; rm -f "$staging"' EXIT
+  cp "$staged" "$staging"
+  chmod 755 "$staging"
+  mv -f "$staging" "$INSTALL_DIR/vhalla"
+fi
 
 echo ""
 echo "✓ vhalla $VERSION installed at $INSTALL_DIR/vhalla"

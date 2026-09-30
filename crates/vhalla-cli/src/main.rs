@@ -3,6 +3,7 @@
 
 mod cli;
 mod help;
+mod self_update;
 mod support;
 
 #[cfg(feature = "experimental-private")]
@@ -49,15 +50,16 @@ mod rooms_tailcat;
 mod rooms_tui;
 
 fn main() {
-    let args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
-    let help = help::resolve(&args);
-    if help.is_none() && args.first().is_some_and(|arg| arg == "support") && args.len() <= 64 {
-        #[cfg(unix)]
-        if let Some(code) = control::support(&args[1..]) {
-            std::process::exit(code);
-        }
-        std::process::exit(support::execute(&args[1..]));
+    let mut args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
+    if args.len() > 64 {
+        cli::report_error("too many arguments (maximum 64)");
+        std::process::exit(2);
     }
+    let no_update = args.first().is_some_and(|arg| arg == "--no-update");
+    if no_update {
+        args.remove(0);
+    }
+    let help = help::resolve(&args);
     match help {
         Some(help::Help::Page(page)) => write_help(&args, &page),
         Some(help::Help::UnknownTopic(topic)) => {
@@ -68,11 +70,40 @@ fn main() {
         }
         None => {}
     }
+    if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
+        version();
+        return;
+    }
+    if let Some(result) = self_update::maintenance(&args) {
+        if let Err(error) = result {
+            if args.iter().any(|arg| arg == "--json") {
+                self_update::report_error(&error);
+            } else {
+                cli::report_error(&format!("{error:#}"));
+            }
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(first) = args.first().and_then(|arg| arg.to_str()) {
         if !first.starts_with('-') && !cli::COMMANDS.contains(&first) {
             cli::report_error(&cli::unknown_command(first));
             std::process::exit(2);
         }
+    }
+    let _update_lease = match self_update::startup(no_update, &args) {
+        Ok(lease) => lease,
+        Err(error) => {
+            cli::report_error(&format!("{error:#}"));
+            std::process::exit(1);
+        }
+    };
+    if args.first().is_some_and(|arg| arg == "support") {
+        #[cfg(unix)]
+        if let Some(code) = control::support(&args[1..]) {
+            std::process::exit(code);
+        }
+        std::process::exit(support::execute(&args[1..]));
     }
     #[cfg(unix)]
     if let Some(code) = control::dispatch(&args) {
@@ -839,7 +870,7 @@ mod identity_copy_tests {
     #[cfg(not(unix))]
     #[test]
     fn every_known_command_runs_here_or_names_the_unix_build() {
-        let portable = ["help", "identity", "private", "support"];
+        let portable = ["help", "identity", "private", "support", "update"];
         for command in cli::COMMANDS {
             assert!(
                 portable.contains(command) ^ UNIX_ONLY_COMMANDS.contains(command),

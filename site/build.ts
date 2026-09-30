@@ -1,3 +1,4 @@
+import { withAnalytics } from "./analytics-site";
 import { renderMarketingCopy } from "./portfolio-copy";
 import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -20,7 +21,7 @@ await mkdir(resolve(output, "design"), { recursive: true });
 for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "og-docs.png", "og-compare.png", "og-writing.png", "og-usecases.png", "robots.txt", "install.sh", "install.ps1", "valhalla-mark.svg"]) await cp(resolve(root, name), resolve(output, name));
 await writeFile(resolve(output, "sitemap.xml"), renderSitemap(await readFile(resolve(root, "sitemap.xml"), "utf8")));
 await writeFile(resolve(output, "llms.txt"), renderLlms(await readFile(resolve(root, "llms.txt"), "utf8")));
-const html = renderMarketingCopy(await readFile(resolve(root, "index.html"), "utf8"));
+const html = withAnalytics(renderMarketingCopy(await readFile(resolve(root, "index.html"), "utf8")));
 const footerMarker = "<!-- hraness-site-footer -->";
 if (html.split(footerMarker).length !== 2) throw new Error("Expected one shared footer slot.");
 await writeFile(resolve(output, "index.html"), renderHome(html).replace(footerMarker, supportFooter()));
@@ -57,7 +58,7 @@ await mkdir(resolve(output, "use-cases"), { recursive: true });
 const useCasesHtml = renderUseCases(html);
 if (useCasesHtml.split(footerMarker).length !== 2) throw new Error("Expected one footer slot: use-cases");
 await writeFile(resolve(output, "use-cases", "index.html"), useCasesHtml.replace(footerMarker, supportFooter()));
-const notFoundHtml = renderNotFound(html);
+const notFoundHtml = renderNotFound(html).replace("</head>", '<meta data-analytics-not-found="true"></head>');
 if (notFoundHtml.split(footerMarker).length !== 2) throw new Error("Expected one footer slot: 404");
 await writeFile(resolve(output, "404.html"), notFoundHtml.replace(footerMarker, supportFooter()));
 await cp(fileURLToPath(import.meta.resolve("@hraness/site-footer/stylex.css")), resolve(output, "footer.css"));
@@ -83,7 +84,7 @@ for (const match of fontCSS.matchAll(/url\(["']?(\.\/fonts\/[^"')]+)["']?\)/g)) 
 }
 await cp(resolve(kit, "marketing-assets"), resolve(output, "design/marketing-assets"), { recursive: true });
 await cp(resolve(kit, "../LICENSE"), resolve(output, "design/LICENSE"));
-const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts"), resolve(root, "status-page.ts"), resolve(root, "platform-install-client.ts")], outdir: output, naming: "[name].js", target: "browser", format: "iife", minify: true });
+const result = await Bun.build({ entrypoints: [resolve(root, "analytics.ts"), resolve(root, "appearance.ts"), resolve(root, "status-page.ts"), resolve(root, "platform-install-client.ts")], outdir: output, naming: "[name].js", target: "browser", format: "iife", minify: true, define: { "process.env.NODE_ENV": '"production"' } });
 if (!result.success) throw new AggregateError(result.logs, "Script bundle failed");
 const pkg = JSON.parse(await readFile(resolve(kit, "../package.json"), "utf8"));
 const copiedDesignFiles = [...files, "mockups.css", "stylex.css"];

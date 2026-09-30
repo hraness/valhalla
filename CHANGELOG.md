@@ -5,6 +5,16 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
+## 0.2.12 - 2026-09-30
+
+Supported macOS and Linux release installations update automatically before a
+command when a newer verified stable release is available.
+
+- `vhalla update` installs a newer release. `update check`, `status`, `enable`, and `disable` inspect or change automatic updates; supported installations check at most once a day by default.
+- Updates keep the platform archive checks, Developer ID and Apple notarization verification. Replacement and restoration happen in one process while every running Valhalla command keeps its executable protected.
+- Re-running the public installer can enroll a 0.2.10 copy whose bytes match the recorded historical hashes, or a verified immutable 0.2.11 release. Versions selected with `VHALLA_VERSION`, Homebrew, Cargo, source builds and Windows keep their original update workflow.
+- CI, diagnostics, support, command listings, local identity commands and demos skip automatic checks. Use `--no-update` before a command or `HRANESS_NO_UPDATE=1` to skip one invocation. Reinstallation preserves saved automatic-update preferences.
+
 ## 0.2.11 - 2026-09-30
 
 macOS releases keep one Developer ID identity across upgrades so system

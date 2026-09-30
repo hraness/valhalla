@@ -89,6 +89,8 @@ jobs:
       - name: Build vhalla
         # Include the maintained public/private commands. The complete
         # all-features verification gate still runs above.
+        env:
+          VHALLA_BUILD_RELEASE_TAG: ${{ github.ref_name }}
         run: cargo ${{ matrix.tool }} --release --locked -p vhalla-cli --no-default-features --features ${{ matrix.features || 'experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private' }} --target "${{ matrix.target }}"
       - name: Install qemu for the cross-arch smoke check
         # The aarch64-musl artifact cannot exec on the x86_64 runner; run it
@@ -231,6 +233,8 @@ jobs:
         with:
           targets: aarch64-apple-darwin
       - name: Build vhalla
+        env:
+          VHALLA_BUILD_RELEASE_TAG: ${{ github.ref_name }}
         run: cargo build --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target aarch64-apple-darwin
       - name: macOS host custody and lifecycle regressions
         # Tests inject launchctl replies and use temporary custody only. They
