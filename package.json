@@ -20,6 +20,7 @@
     "@hraness/site-footer": "github:hraness/site-footer#v0.20.1"
   },
   "devDependencies": {
+    "@hraness/posthog": "github:hraness/posthog#f0e9f89bcca2b8f4536d6bec2eef8762a688502c",
     "@hraness/ui": "github:hraness/ui#v0.5.18",
     "@hraness/web-discovery": "github:hraness/web-discovery#v0.13.0",
     "@resvg/resvg-js": "2.6.2",

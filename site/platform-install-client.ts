@@ -69,6 +69,7 @@ export function initializePlatformInstalls(documentValue: Document, navigatorVal
           clipboard = undefined;
         }
         const ok = await copyText(commandText, clipboard, () => code.isConnected && code.textContent === commandText && legacyCopyText(commandText, documentValue));
+        if (ok) documentValue.dispatchEvent(new CustomEvent("analytics-install-copied", { detail: /\bbrew\b/.test(commandText) ? "brew" : /\birm\b|powershell/.test(commandText) ? "other" : "curl" }));
         if (!ok) selectContents(code, documentValue);
         for (const other of root.querySelectorAll<HTMLElement>("[data-copy-state]")) other.dataset.copyState = "idle";
         for (const other of root.querySelectorAll<HTMLElement>("[data-platform-install-copy-label]")) other.textContent = "Copy";
