@@ -153,6 +153,9 @@ test("every social card fits the template as written", () => {
   for (const card of socialCards) {
     const fit = socialImageFit(socialImageSiteDetails(socialSite, card.page));
     expect(fit.issues, card.file).toEqual([]);
+    // v0.12 review findings (not strict): reduced or cut descriptions, repeated
+    // taglines, trailing "..." and missing or repeated eyebrows all fail here.
+    expect(fit.findings.map(finding => finding.code), card.file).toEqual([]);
     expect(fit.description.cut, card.file).toBe("none");
     expect(fit.headline.threeLine, card.file).toBe(false);
   }
@@ -163,7 +166,8 @@ test("every social card fits the template as written", () => {
 });
 
 test("every social card renders from the one shared site declaration", async () => {
-  const icon = await readFile(new URL("./icon.png", import.meta.url));
+  // The card uses social-icon.png: the icon.png swords inset to 60% of the tile.
+  const icon = await readFile(new URL("./social-icon.png", import.meta.url));
   expect(socialSite.name).toBe("Valhalla");
   expect(socialSite.domain).toBe("vhalla.com");
   expect(socialSite.icon).toEqual({ kind: "app", src: `data:image/png;base64,${icon.toString("base64")}` });
