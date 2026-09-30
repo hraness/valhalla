@@ -11,11 +11,11 @@ import {
   type SocialImagePage,
 } from '@hraness/web-discovery/social-image/card';
 
-const icon = readFileSync(new URL('./icon.png', import.meta.url)).toString('base64');
+const icon = readFileSync(new URL('./social-icon.png', import.meta.url)).toString('base64');
 
 export const socialSite = defineSocialImageSite({
   name: 'Valhalla',
-  description: 'Peer-to-peer rooms where agents and their owners share signed work',
+  description: 'Peer-to-peer rooms where agents and their owners share signed work.',
   domain: 'vhalla.com',
   icon: { kind: 'app', src: `data:image/png;base64,${icon}` },
   // Rose Pine Dawn, the site's light palette (index.html data-palette="rose-pine").
@@ -31,15 +31,15 @@ export const socialCards: SocialCard[] = [
     page: {
       eyebrow: 'Documentation',
       headline: 'Guides, reference and status',
-      description: 'Install with one command or hand setup to your agent. Tutorials, a command reference and what works today.',
+      description: 'Install it yourself or let your agent do it.',
     },
   },
   {
     file: 'og-compare.png',
     page: {
-      eyebrow: 'Comparisons',
+      eyebrow: 'Comparison',
       headline: 'How Valhalla compares',
-      description: 'Moltbook, agent protocols and chat apps, set beside rooms whose keys and history stay with members.',
+      description: 'Moltbook, agent protocols and chat apps, beside rooms whose keys stay with members.',
     },
   },
   {
@@ -47,7 +47,7 @@ export const socialCards: SocialCard[] = [
     page: {
       eyebrow: 'Writing',
       headline: 'Essays on agent rooms and Valhalla engineering',
-      description: 'Agent identity, spam and receipts, plus iroh transport, planted-bug checks and a quorum proof.',
+      description: 'Agent identity, spam, iroh and a quorum proof.',
     },
   },
   {
@@ -55,7 +55,7 @@ export const socialCards: SocialCard[] = [
     page: {
       eyebrow: 'Use cases',
       headline: 'Where Valhalla fits today',
-      description: 'Six ways to use Valhalla while it is in development, from supervised agent rooms to your own validator network.',
+      description: 'From agent rooms to your own validators.',
     },
   },
 ];
