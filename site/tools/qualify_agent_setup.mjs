@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {agentSetupTargets} from '@hraness/design-kit';
 import {vhallaBootstrapPrompt, vhallaInstallPrompt} from '../agent-setup-prompts.ts';
+import {javascriptLiteral} from './javascript-literal.mjs';
 
 const prompts = [vhallaInstallPrompt, vhallaBootstrapPrompt];
 const selector = '[data-hraness-agent-setup-prompt]';
@@ -76,7 +77,7 @@ export async function qualifyAgentSetups({call, evaluate, navigate, sessionId}) 
   for (const theme of ['light', 'dark']) for (const width of [390, 1440]) {
     await call('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: theme}, {name: 'forced-colors', value: 'none'}]}, sessionId);
     await navigate('/docs/agent-setup/', width, 900);
-    const state = await evaluate('(' + inspect.toString() + ')(' + JSON.stringify(expected) + ')');
+    const state = await evaluate('(' + inspect.toString() + ')(' + javascriptLiteral(expected) + ')');
     assert.equal(state.width, width);
     assert.ok(state.overflow <= width, 'Setup prompts must not overflow the viewport.');
     assert.equal(state.theme, theme);
@@ -126,7 +127,7 @@ export async function qualifyAgentSetups({call, evaluate, navigate, sessionId}) 
   })()`);
   try {
     for (const [index, prompt] of prompts.entries()) {
-      const root = `document.querySelectorAll(${JSON.stringify(selector)})[${index}]`;
+      const root = `document.querySelectorAll(${javascriptLiteral(selector)})[${index}]`;
       await evaluate(`(() => {window.__agentSetupQualification.mode = 'success';${root}.querySelector('button').click();})()`);
       await waitFor(() => evaluate(`${root}.querySelector('button').dataset.copyState === 'copied'`), 'complete-source clipboard copy');
       assert.equal(await evaluate('window.__agentSetupQualification.written.at(-1)'), prompt);
@@ -165,7 +166,7 @@ export async function qualifyAgentSetups({call, evaluate, navigate, sessionId}) 
       await evaluate(`(() => {window.__agentSetupQualification.mode = 'pending';${root}.querySelector('[data-agent-target-mode="copy-and-open"]').click();${root}.querySelector('.hraness-agent-setup__full').textContent='changed during copying';window.__agentSetupQualification.finish();})()`);
       await waitFor(() => evaluate('window.__agentSetupQualification.tabs.at(-1).closed'), 'stale source closes its reserved tab');
       assert.equal(await evaluate('window.__agentSetupQualification.tabs.at(-1).destination ?? null'), null);
-      await evaluate(`${root}.querySelector('.hraness-agent-setup__full').textContent=${JSON.stringify(prompt)}`);
+      await evaluate(`${root}.querySelector('.hraness-agent-setup__full').textContent=${javascriptLiteral(prompt)}`);
 
       await evaluate(`(() => {window.__agentSetupQualification.mode = 'blocked';${root}.querySelector('[data-agent-target-mode="copy-and-open"]').click();})()`);
       await waitFor(() => evaluate(`${root}.querySelector('[role=status]').textContent.includes("link's menu")`), 'blocked reservation offers native manual opening');
@@ -180,7 +181,7 @@ export async function qualifyAgentSetups({call, evaluate, navigate, sessionId}) 
   await call('Emulation.setScriptExecutionDisabled', {value: true}, sessionId);
   try {
     await navigate('/docs/agent-setup/', 390, 900);
-    const native = await evaluate(`(() => {const roots=[...document.querySelectorAll(${JSON.stringify(selector)})];
+    const native = await evaluate(`(() => {const roots=[...document.querySelectorAll(${javascriptLiteral(selector)})];
       for(const root of roots)root.querySelector('summary').click();
       return roots.map(root=>({copyHidden:root.querySelector('button').hidden,open:root.querySelector('details').open,
         preview:getComputedStyle(root.querySelector('.hraness-agent-setup__preview')).display,
