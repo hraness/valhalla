@@ -5,7 +5,7 @@ export function renderPortfolioCopy(source: string, snapshot: { canonicalUrl?: s
   const copy = snapshot.messaging;
   const words = copy.hero.heading.split(" ");
   const fields: Readonly<Record<string, string | undefined>> = {
-    NAME: copy.names.name, TITLE: `${copy.names.name} · ${copy.tagline}`, SOCIAL_ALT: `${copy.names.name}: ${copy.short}`,
+    NAME: copy.names.name, TITLE: `${copy.names.name} · ${copy.tagline}`, SOCIAL_ALT: `${copy.names.name}: ${copy.tagline}`,
     META: copy.meta, SHORT: copy.short, TAGLINE: copy.tagline, CATEGORY: copy.category,
     NAME_LOWER: copy.names.name.toLowerCase(),
     HERO_HEADING: copy.hero.heading, HERO_SUMMARY: copy.hero.summary,
