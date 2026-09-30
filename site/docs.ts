@@ -259,7 +259,7 @@ export function renderArticle(article: Article, template: string): string {
   return `${head}  <body class="docs-page article-page"><a class="skip-link" href="#main">Skip to content</a>${masthead(template)}<div class="page">
   <details class="mobile-doc-nav"><summary>Writing · ${escape(article.navLabel)}</summary>${nav}</details>
   <div class="docs-layout article-layout"><aside class="doc-sidebar">${nav}</aside><main id="main" class="doc-main">${main}
-  <p class="doc-updated">Technique post · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main></div>
+  <p class="doc-updated">${article.eyebrow === 'Launch' ? 'Launch post' : 'Technique post'} · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main></div>
   <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 

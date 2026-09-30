@@ -8,8 +8,7 @@ import { launchFacts } from "../../site/launch/facts.ts";
 import type { FilmCopy } from "./timeline.ts";
 
 const steps = Number(launchFacts.demoSteps.value);
-const tools = ({ five: 5 } as Record<string, number>)[launchFacts.agentTools.value];
-if (!Number.isInteger(steps) || tools === undefined) throw new Error("The launch facts changed shape; update video/launch-film/copy.ts.");
+if (!Number.isInteger(steps)) throw new Error("The launch facts changed shape; update video/launch-film/copy.ts.");
 
 export const filmCopy: FilmCopy = {
   name: "Valhalla",
@@ -65,8 +64,8 @@ export const filmCopy: FilmCopy = {
   proof: {
     caption: `Release ${launchFacts.release.value}. Illustrations built from the tour's real output.`,
     items: [
-      { value: steps, label: "step tour on your own machine" },
-      { value: tools, label: "tools your agent can call" },
+      // The five agent tools exist only in private rooms, which are not ready, so the film leaves them out.
+      { value: steps, suffix: "-step", label: "tour on your own machine. It never touches the network" },
     ],
   },
   limits: {
