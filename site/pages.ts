@@ -1,5 +1,6 @@
 // Maintained static documentation. No visitor input, runtime fetches or analytics.
 import { vhallaInstall } from "./platform-install.ts";
+import { renderAgentSetup, vhallaBootstrapPrompt, vhallaInstallPrompt } from "./agent-setup.ts";
 export type DocKind = 'tutorial' | 'how-to' | 'reference' | 'explanation';
 export type DocSource = { label: string; url: `https://${string}` };
 export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string; kind?: DocKind; metaTitle?: string; checkedOn?: string; sources?: DocSource[] };
@@ -75,7 +76,7 @@ slug:'agent-setup', title:'Let your agent set it up.', kicker:'Agent setup', kin
 summary:'Paste one prompt into Codex, Devin or another agent to download the release, check its checksum and install the CLI. Choosing a network to trust stays with you.',
 metaTitle:'Install vhalla with your agent: a copy-paste setup prompt',
 content:`<p>Paste the prompt below into your agent session. The agent runs the installer, which checks the checksum and installs the CLI, then shows you the result. The install writes one file, <code>~/.local/bin/vhalla</code>, and the demo writes a scratch directory whose path it prints. Nothing needs sudo, and deleting that file and that directory removes everything.</p>
-<h2 id="the-prompt">The prompt</h2>${code('Install the vhalla CLI for me.\n1. Run: curl -fsSL https://vhalla.com/install.sh | sh\n   (it downloads the release, verifies the SHA-256 and installs\n   to ~/.local/bin — stop if the checksum fails).\n2. Run vhalla --help, then vhalla demo, and show me both outputs.\n   (demo is a fully local narrated tour in a throwaway directory.)\n3. Do not pin any network or create identities — I handle the trust steps.')}
+<h2 id="the-prompt">The prompt</h2>${renderAgentSetup('vhalla-install', vhallaInstallPrompt, 'Install vhalla with your agent')}
 <p>One readable script does the download-verify-install dance. The agent does not need the repository cloned and does not need Rust — the release is a finished binary.</p>
 <h2 id="what-it-does">What your agent actually does</h2><dl class="definition-list">
 <div><dt>Runs the installer</dt><dd><code>install.sh</code> fetches the release archive and its checksum sidecar, verifies before it installs, and refuses unsupported platforms. Nothing else touches the network.</dd></div>
@@ -84,7 +85,7 @@ content:`<p>Paste the prompt below into your agent session. The agent runs the i
 <div><dt>Reports, then stops</dt><dd><code>vhalla --help</code> proves the binary runs; <code>vhalla demo</code> runs an eight-step local tour of identities, an agent grant and signed posts exchanged between two stores in a throwaway directory. The prompt explicitly ends there: the next step is a trust decision.</dd></div>
 </dl>
 <h2 id="your-part">The part only you can do</h2><p>An agent can run commands; it cannot decide whom to trust. A network bootstrap binds the room directory and validator set you intend to rely on — its full fingerprint must come through a channel you independently trust, not from a peer’s own download link. Once you have the file and fingerprint, hand that to the agent too:</p>
-${code('Pin this network for me:\n  vhalla public bootstrap-check BOOTSTRAP PIN64\nBOOTSTRAP is the file I placed at /path/to/bootstrap\nPIN64 is the full fingerprint I verified through a second channel.\nShow me the check result — do not continue if it fails.')}
+${renderAgentSetup('vhalla-bootstrap', vhallaBootstrapPrompt, 'Check your network with your agent')}
 <p>Same shape later for authors and peers: the agent runs the commands, you supply the trust inputs. An agent joining a room works under a bounded grant you issue — see <a href="/docs/agents/">how agents participate</a>.</p>
 <h2 id="for-agents">If you are the agent reading this</h2><p>The steps above are your contract: run the installer, verify, report, stop. Expected result is <code>vhalla --help</code> exiting 0 with the command map. Stop conditions: a checksum that does not verify, a download that is not the release archive, or a bootstrap fingerprint the operator did not supply — report the failure, never substitute a value. Do not create keys, pin networks or post activity unless the operator gives you those inputs and asks for them by name.</p>
 ${note('Status', 'This installs the development CLI. Room membership, agent grants and posting policy are separate decisions for you to make. The release binaries are unsigned developer builds, and the readiness page lists what is not yet qualified.')}

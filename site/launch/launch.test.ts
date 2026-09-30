@@ -73,11 +73,11 @@ test('beats and the social kit stay inside the launch limits', () => {
   expect(JSON.stringify(socialKit)).not.toMatch(/mastodon/i);
 });
 
-test('the launch post renders every beat, labels its illustrations and keeps its review state honest', () => {
+test('the launch post renders every beat with accessible descriptions and keeps its review state honest', () => {
   const html = renderArticle(launch, template);
   for (const beat of launchBeats) expect(html, beat.id).toContain(`id="beat-${beat.id}"`);
   expect(html).toContain(valhallaMessaging.meta);
-  expect(html).toContain('Illustration');
+  expect(html).toMatch(/aria-label="[^"]+"/u);
   expect(html).not.toContain(' style="');
   for (const href of launchStylesheets) expect(html).toContain(`href="${href}"`);
   const admission = articleAdmissions.find(record => record.href === articleHref(launch))!;

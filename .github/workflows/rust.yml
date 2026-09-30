@@ -809,13 +809,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - name: Provision the site qualifier's pinned Chromium
+        run: bunx --no-install playwright-core install --with-deps chromium
       - name: Static site responsive, keyboard and CSP qualification
-        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" --pinned "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
       - name: Every public page at phone and desktop sizes in both themes
-        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-public-site-results" "$GITHUB_WORKSPACE/vercel.json" --public-pages
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" --pinned "$RUNNER_TEMP/vhalla-public-site-results" "$GITHUB_WORKSPACE/vercel.json" --public-pages
       - name: Fixed production public-page verification
         if: github.event_name == 'workflow_dispatch' && inputs.production
-        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-production-site-results" "$GITHUB_WORKSPACE/vercel.json" --production
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" --pinned "$RUNNER_TEMP/vhalla-production-site-results" "$GITHUB_WORKSPACE/vercel.json" --production
       - name: Retain site visual evidence
         if: always()
         uses: actions/upload-artifact@v7
