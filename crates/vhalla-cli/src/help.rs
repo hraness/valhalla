@@ -66,7 +66,7 @@ fn topics() -> Vec<&'static str> {
     topics.push("experimental");
     #[cfg(unix)]
     topics.extend(["status", "tui", "doctor", "commands", "outputs", "menubar"]);
-    topics.extend(["support", "all"]);
+    topics.extend(["support", "update", "all"]);
     topics
 }
 
@@ -118,9 +118,13 @@ pub(crate) fn root() -> String {
          \x20 commands --json       Every command, for agents\n",
     );
     text.push_str(
+        "\nUpdates\n  update                Update vhalla or change automatic-update settings\n",
+    );
+    text.push_str(
         "\nOptions\n\
          \x20 -h, --help            Show help (also: vhalla help <topic>)\n\
-         \x20 -V, --version         Show the version\n",
+         \x20 -V, --version         Show the version\n\
+         \x20 --no-update           Skip automatic checks (before the command)\n",
     );
     text.push_str(&topic_line());
     #[cfg(unix)]
@@ -163,6 +167,22 @@ Optional ways to support Valhalla. No feature needs payment.
   vhalla support enable   Show support notices again
 
 Turn off notices and discovery: HRANESS_SUPPORT=off
+";
+
+const UPDATE: &str = "Usage: vhalla update [check|status|enable|disable] [--json]
+
+Supported macOS and Linux release installs update automatically before a command,
+at most once a day, when no other vhalla command is running.
+
+  vhalla update          Install a newer verified stable release
+  vhalla update check    Check without installing
+  vhalla update status   Show installation support and saved policy
+  vhalla update disable  Turn automatic updates off
+  vhalla update enable   Restore automatic updates
+
+CI, local identity commands, demos and pinned versions do not auto-update.
+Use --no-update before a command or HRANESS_NO_UPDATE=1 to skip one check.
+Homebrew, Cargo, source builds and Windows keep their original update workflow.
 ";
 
 const IDENTITY: &str = "Usage: vhalla identity <init|show|backup|restore> DIR
@@ -264,6 +284,7 @@ fn all() -> String {
     text.push_str("vhalla status [--json]\nvhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE [--json]\nvhalla tui [--snapshot|--json] [--width N]\nvhalla doctor [retire] [--json]\nvhalla commands --json\nvhalla outputs [list|open [NAME]|reveal NAME] [--json]\n");
     #[cfg(unix)]
     text.push_str("vhalla support [--json|dismiss|snooze|enable|status --json]\n");
+    text.push_str("vhalla update [check|status|enable|disable] [--json]\n");
     #[cfg(all(unix, feature = "experimental-network"))]
     text.push_str(&format!("\n{EXPERIMENTAL}\n"));
     #[cfg(all(unix, feature = "experimental-social"))]
@@ -323,6 +344,7 @@ fn topic(name: &str) -> Option<String> {
         "public" => crate::public_network::HELP.to_owned(),
         "all" => all(),
         "support" => SUPPORT.to_owned(),
+        "update" => UPDATE.to_owned(),
         _ => return None,
     };
     Some(with_newline(&page))

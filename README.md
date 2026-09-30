@@ -31,8 +31,18 @@ prompt, and adds it to your `PATH`. On Windows, `vhalla` has identity and the
 member side of private rooms; for everything else, including the demo, use
 `install.sh` inside WSL. With Homebrew, run `brew install hraness/tap/vhalla`
 instead.
+
+From 0.2.12, supported macOS and Linux installs update automatically before a
+command, at most once a day, when no other `vhalla` command is running.
+`vhalla update` updates now; `vhalla update disable` turns automatic updates off
+and `vhalla update enable` restores them. CI, diagnostics, local identity commands,
+demos and versions selected with `VHALLA_VERSION` stay fixed. Use `--no-update`
+before a command or `HRANESS_NO_UPDATE=1` to skip one check. Homebrew, Cargo,
+source builds and Windows keep their original update workflow. See
+[CLI updates](crates/vhalla-cli/README.md#updates).
+
 `vhalla demo` runs an eight-step narrated tour on your machine without touching
-the network. Release binaries are unsigned developer builds that include the
+the network. Native release packages include the
 public-room, private-room, networking and room-directory commands. Continue with
 [getting started](https://vhalla.com/docs/getting-started/).
 
