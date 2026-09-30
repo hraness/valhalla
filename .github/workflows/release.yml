@@ -57,6 +57,15 @@ jobs:
             features: experimental-private
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
+    outputs:
+      linux_gnu_artifact_id: ${{ steps.producer.outputs.linux_gnu_artifact_id }}
+      linux_gnu_artifact_digest: ${{ steps.producer.outputs.linux_gnu_artifact_digest }}
+      linux_musl_artifact_id: ${{ steps.producer.outputs.linux_musl_artifact_id }}
+      linux_musl_artifact_digest: ${{ steps.producer.outputs.linux_musl_artifact_digest }}
+      linux_arm64_artifact_id: ${{ steps.producer.outputs.linux_arm64_artifact_id }}
+      linux_arm64_artifact_digest: ${{ steps.producer.outputs.linux_arm64_artifact_digest }}
+      windows_artifact_id: ${{ steps.producer.outputs.windows_artifact_id }}
+      windows_artifact_digest: ${{ steps.producer.outputs.windows_artifact_digest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -177,8 +186,9 @@ jobs:
         with:
           subject-path: ${{ runner.os == 'Windows' && 'valhalla-*.zip' || 'valhalla-*.tar.gz' }}
       - uses: actions/upload-artifact@v7
+        id: native
         with:
-          name: release-cli-${{ matrix.target }}
+          name: release-cli-${{ matrix.target }}-${{ github.run_attempt }}
           path: |
             valhalla-*.tar.gz
             valhalla-*.tar.gz.sha256
@@ -186,6 +196,24 @@ jobs:
             valhalla-*.zip.sha256
           if-no-files-found: error
           retention-days: 7
+      - name: Preserve this target's immutable producer identity
+        id: producer
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ARTIFACT_ID: ${{ steps.native.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.native.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            x86_64-unknown-linux-gnu) key=linux_gnu ;;
+            x86_64-unknown-linux-musl) key=linux_musl ;;
+            aarch64-unknown-linux-musl) key=linux_arm64 ;;
+            x86_64-pc-windows-msvc) key=windows ;;
+            *) exit 1 ;;
+          esac
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          printf '%s_artifact_id=%s\n%s_artifact_digest=%s\n' "$key" "$ARTIFACT_ID" "$key" "$ARTIFACT_DIGEST" >> "$GITHUB_OUTPUT"
 
 
   macos_build:
@@ -262,14 +290,7 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.macos_build.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
-          jq -e --arg id "$ARTIFACT_ID" --arg digest "sha256:$ARTIFACT_DIGEST" --arg run "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" --arg name "vhalla-unsigned-$GITHUB_RUN_ATTEMPT" '
-            (.id | tostring) == $id and .digest == $digest and .expired == false and
-            (.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha and
-            .name == $name and .size_in_bytes > 0 and .size_in_bytes <= 134217728
-          ' "$RUNNER_TEMP/artifact.json" > /dev/null
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/unsigned.zip"
+          python3 -I .github/scripts/release_artifacts.py fetch-zip vhalla-unsigned "$RUNNER_TEMP/unsigned.zip"
           python3 -I .github/scripts/sign_macos_release.py extract-artifact "$RUNNER_TEMP/unsigned.zip" "$ARTIFACT_DIGEST" "$GITHUB_REF_NAME" "$RUNNER_TEMP/unsigned-input"
       - name: Sign with Developer ID and require Apple Accepted
         env:
@@ -295,7 +316,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         id: signed
         with:
-          name: release-cli-aarch64-apple-darwin
+          name: release-cli-aarch64-apple-darwin-${{ github.run_attempt }}
           path: ${{ runner.temp }}/signed-output/*
           if-no-files-found: error
           retention-days: 14
@@ -327,8 +348,7 @@ jobs:
           ARTIFACT_DIGEST: ${{ needs.macos_sign.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/signed.zip"
+          python3 -I .github/scripts/release_artifacts.py fetch-zip release-cli-aarch64-apple-darwin "$RUNNER_TEMP/signed.zip"
           python3 -I .github/scripts/sign_macos_release.py extract-artifact "$RUNNER_TEMP/signed.zip" "$ARTIFACT_DIGEST" "$GITHUB_REF_NAME" "$RUNNER_TEMP/signed-input" --signed
           python3 -I .github/scripts/sign_macos_release.py extract-signed "$RUNNER_TEMP/signed-input/valhalla-$GITHUB_REF_NAME-aarch64-apple-darwin.tar.gz" "$GITHUB_REF_NAME" "$RUNNER_TEMP/vhalla"
       - name: Smoke check signed macOS release
@@ -353,15 +373,21 @@ jobs:
     permissions:
       attestations: write
       contents: read
+      actions: read
       id-token: write
+    outputs:
+      artifact_id: ${{ steps.package.outputs.artifact-id }}
+      artifact_digest: ${{ steps.package.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          name: vhalla-browser
-          path: valhalla-browser-${{ github.ref_name }}
+      - name: Download exact qualified browser producer output
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.validate.outputs.browser_artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.validate.outputs.browser_artifact_digest }}
+        run: python3 -I .github/scripts/release_artifacts.py fetch-browser "valhalla-browser-$GITHUB_REF_NAME"
       - name: Package the exact production artifact exercised by validation
         shell: bash
         env:
@@ -377,8 +403,9 @@ jobs:
         with:
           subject-path: valhalla-browser-*.tar.gz
       - uses: actions/upload-artifact@v7
+        id: package
         with:
-          name: release-browser
+          name: release-browser-${{ github.run_attempt }}
           path: |
             valhalla-browser-*.tar.gz
             valhalla-browser-*.tar.gz.sha256
@@ -391,17 +418,29 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
       checks: read
       security-events: read
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: release-*
-          path: release-assets
-          merge-multiple: true
+      - name: Download exact successful producer outputs for every target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINUX_GNU_ARTIFACT_ID: ${{ needs.cli.outputs.linux_gnu_artifact_id }}
+          LINUX_GNU_ARTIFACT_DIGEST: ${{ needs.cli.outputs.linux_gnu_artifact_digest }}
+          LINUX_MUSL_ARTIFACT_ID: ${{ needs.cli.outputs.linux_musl_artifact_id }}
+          LINUX_MUSL_ARTIFACT_DIGEST: ${{ needs.cli.outputs.linux_musl_artifact_digest }}
+          LINUX_ARM64_ARTIFACT_ID: ${{ needs.cli.outputs.linux_arm64_artifact_id }}
+          LINUX_ARM64_ARTIFACT_DIGEST: ${{ needs.cli.outputs.linux_arm64_artifact_digest }}
+          WINDOWS_ARTIFACT_ID: ${{ needs.cli.outputs.windows_artifact_id }}
+          WINDOWS_ARTIFACT_DIGEST: ${{ needs.cli.outputs.windows_artifact_digest }}
+          MACOS_ARTIFACT_ID: ${{ needs.macos_sign.outputs.artifact_id }}
+          MACOS_ARTIFACT_DIGEST: ${{ needs.macos_sign.outputs.artifact_digest }}
+          BROWSER_ARTIFACT_ID: ${{ needs.browser.outputs.artifact_id }}
+          BROWSER_ARTIFACT_DIGEST: ${{ needs.browser.outputs.artifact_digest }}
+        run: python3 -I .github/scripts/release_artifacts.py fetch-release release-assets
       # The page title is "Valhalla <tag>" and its notes are the tag's
       # CHANGELOG.md section plus generated install/verify text and identity.
       - name: Verify gates, stage draft, and publish complete release
