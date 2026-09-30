@@ -34,7 +34,7 @@ export const heroEyebrow = `${marketing.category} · In development`;
 export const socialCards: SocialCard[] = [
   // The home card mirrors the hero: its eyebrow over the tagline, which is
   // also the hero heading, in the default product layout.
-  { file: 'social.png', page: { eyebrow: heroEyebrow } },
+  { file: 'social.png', page: { eyebrow: heroEyebrow.toUpperCase() } },
   {
     file: 'og-docs.png',
     page: {
