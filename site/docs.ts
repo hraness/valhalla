@@ -127,6 +127,7 @@ export function renderDoc(page: DocPage, template: string): string {
     siblingHref: docHref,
     updatedLabel: 'Development documentation',
     ogImage: collection.ogImage,
+    ...(page.content.includes('data-hraness-agent-setup-prompt') ? { extraHead: '    <link rel="stylesheet" href="/design/stylex.css">' } : {}),
   });
 }
 

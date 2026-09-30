@@ -65,6 +65,7 @@ const files = ["typography.css", "reading.css", "paper-theme.css", "palette-brid
 for (const name of files) await cp(resolve(kit, name), resolve(output, "design", name));
 // Launch illustrations: the kit's mockup styles, Valhalla's own, and the launch film when it has been rendered.
 await cp(fileURLToPath(import.meta.resolve("@hraness/design-kit/mockups.css")), resolve(output, "design", "mockups.css"));
+await cp(fileURLToPath(import.meta.resolve("@hraness/design-kit/stylex.css")), resolve(output, "design", "stylex.css"));
 await cp(resolve(root, "launch", "launch.css"), resolve(output, "launch.css"));
 if (await access(resolve(root, "media")).then(() => true, () => false)) await cp(resolve(root, "media"), resolve(output, "media"), { recursive: true });
 // Keep the exact web fonts and license/provenance files, not native OTF copies
@@ -85,5 +86,6 @@ await cp(resolve(kit, "../LICENSE"), resolve(output, "design/LICENSE"));
 const result = await Bun.build({ entrypoints: [resolve(root, "appearance.ts"), resolve(root, "status-page.ts"), resolve(root, "platform-install-client.ts")], outdir: output, naming: "[name].js", target: "browser", format: "iife", minify: true });
 if (!result.success) throw new AggregateError(result.logs, "Script bundle failed");
 const pkg = JSON.parse(await readFile(resolve(kit, "../package.json"), "utf8"));
-await writeFile(resolve(output, "design/source.json"), JSON.stringify({ package: pkg.name, version: pkg.version, files: Object.fromEntries(await Promise.all(files.map(async name => [name, createHash("sha256").update(await readFile(resolve(output, "design", name))).digest("hex")]))) }, null, 2));
+const copiedDesignFiles = [...files, "mockups.css", "stylex.css"];
+await writeFile(resolve(output, "design/source.json"), JSON.stringify({ package: pkg.name, version: pkg.version, files: Object.fromEntries(await Promise.all(copiedDesignFiles.map(async name => [name, createHash("sha256").update(await readFile(resolve(output, "design", name))).digest("hex")]))) }, null, 2));
 console.log(`Built Vhalla home, ${docs.length} documentation pages, ${compare.length} comparisons, ${writing.length} writing pages, ${articles.length} articles, use cases and the 404 page with ${pkg.name}@${pkg.version}.`);

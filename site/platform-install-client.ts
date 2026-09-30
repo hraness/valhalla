@@ -2,39 +2,10 @@
 // reveals the tab row and Copy buttons, selects the visitor's operating
 // system, and announces copy results. Mirrors the design-kit React component.
 import { detectPlatform, matchDetectedPlatform } from "@hraness/design-kit";
-
-type ClipboardWriter = Readonly<{ writeText: (value: string) => Promise<void> }>;
-
-async function copyText(value: string, clipboard: ClipboardWriter | undefined, fallback: () => boolean): Promise<boolean> {
-  if (clipboard !== undefined) {
-    try {
-      await clipboard.writeText(value);
-      return true;
-    } catch {
-      // A denied or unavailable async clipboard falls through to selection-based copy.
-    }
-  }
-  try {
-    return fallback();
-  } catch {
-    return false;
-  }
-}
+import { copyText, legacyCopyText, selectContents, type ClipboardWriter } from "./clipboard.ts";
+import { initializeAgentSetups } from "./agent-setup-client.ts";
 
 const COPY_RESET_MS = 2000;
-
-function selectContents(element: HTMLElement, documentValue: Document): void {
-  try {
-    const selection = documentValue.getSelection();
-    if (selection === null) return;
-    const range = documentValue.createRange();
-    range.selectNodeContents(element);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  } catch {
-    // Selection is a convenience; the failure is still announced.
-  }
-}
 
 export function initializePlatformInstalls(documentValue: Document, navigatorValue: Navigator): void {
   for (const root of documentValue.querySelectorAll<HTMLElement>("[data-hraness-platform-install]")) {
@@ -97,14 +68,7 @@ export function initializePlatformInstalls(documentValue: Document, navigatorVal
         } catch {
           clipboard = undefined;
         }
-        const ok = await copyText(commandText, clipboard, () => {
-          selectContents(code, documentValue);
-          try {
-            return documentValue.execCommand("copy");
-          } catch {
-            return false;
-          }
-        });
+        const ok = await copyText(commandText, clipboard, () => code.isConnected && code.textContent === commandText && legacyCopyText(commandText, documentValue));
         if (!ok) selectContents(code, documentValue);
         for (const other of root.querySelectorAll<HTMLElement>("[data-copy-state]")) other.dataset.copyState = "idle";
         for (const other of root.querySelectorAll<HTMLElement>("[data-platform-install-copy-label]")) other.textContent = "Copy";
@@ -134,4 +98,5 @@ export function initializePlatformInstalls(documentValue: Document, navigatorVal
 
 if (typeof window !== "undefined" && typeof document !== "undefined") {
   initializePlatformInstalls(document, navigator);
+  initializeAgentSetups(document, navigator);
 }

@@ -53,7 +53,7 @@ p,h1,h2,h3,dl,dd,figure {
   margin:0;
 }
 
-button,summary {
+button:not(.hraness-agent-setup__copy),summary:not(.hraness-agent-setup__summary) {
   font:inherit;
 }
 
@@ -621,7 +621,7 @@ h1 {
   gap:0 24px;
 }
 
-/* Static docs remain usable without JavaScript. Only the shared theme menu runs. */
+/* Static docs remain usable without JavaScript; controls opt into enhancement. */
 .docs-page .mobile-doc-nav {
   margin-top:4px;
 }
@@ -750,16 +750,16 @@ h1 {
   font-weight:var(--hraness-type-h3-weight);
 }
 
-.doc-content p {
+.doc-content p:where(:not([data-hraness-agent-setup-prompt] *)) {
   margin:16px 0;
 }
 
-.doc-content ul {
+.doc-content ul:where(:not([data-hraness-agent-setup-prompt] *)) {
   padding-left:21px;
   margin:18px 0;
 }
 
-.doc-content li {
+.doc-content li:where(:not([data-hraness-agent-setup-prompt] *)) {
   padding-left:3px;
   margin:8px 0;
 }
@@ -795,7 +795,7 @@ h1 {
   background:color-mix(in srgb,var(--selected) 26%,transparent);
 }
 
-pre {
+pre:not(.hraness-agent-setup__pre) {
   font:13px/1.75 var(--mono);
   max-width:100%;
   tab-size:2;
@@ -811,6 +811,16 @@ pre {
 
 pre code {
   font:inherit;
+}
+
+/* Fixed inherited mark size from the shared static setup composition. */
+[data-hraness-agent-setup-prompt] .hraness-provider-mark__inherit {
+  --_mark-size:20px;
+}
+
+/* Native disclosure also replaces the preview when JavaScript is unavailable. */
+[data-hraness-agent-setup-prompt]:has(details[open]) .hraness-agent-setup__preview {
+  display:none;
 }
 
 .doc-note {

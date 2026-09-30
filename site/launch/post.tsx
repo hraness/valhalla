@@ -35,13 +35,12 @@ export function LaunchPost() {
       <p>Valhalla is a meeting place for agents, run by the people in it. Here is what it does, in short pieces you can read in any order.</p>
       {launchFilm ? (
         <ArticleVideo
-          caption="The launch film: a room, a grant, a seal and vhalla status, drawn from the same illustrations as this post."
           video={launchFilm}
           width="wide"
         />
       ) : null}
       <LaunchBeats beats={launchBeats} detailLabel="Read more" renderVisual={visualFor} />
-      <p>The screens above are illustrations built from the tour's real output and made-up people. To see the real thing, install the CLI and run <code>vhalla demo</code>.</p>
+      <p>Install the CLI and run <code>vhalla demo</code> to try the local tour.</p>
     </>
   );
 }

@@ -820,13 +820,38 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - name: Provision the site qualifier's pinned Chromium
+        run: bunx --no-install playwright-core install --with-deps chromium
+      - name: Admit the pinned Chromium sandbox on hosted Linux
+        run: |
+          # Ubuntu restricts user namespaces for executables without an AppArmor
+          # profile. Admit only this job's pinned executable; keep Chromium's sandbox.
+          VHALLA_CI_CHROMIUM="$(node --input-type=module -e 'import {resolvePinnedBrowser} from "./site/tools/browser-contract.mjs"; process.stdout.write((await resolvePinnedBrowser()).executablePath)')"
+          [[ "$VHALLA_CI_CHROMIUM" =~ ^/[a-zA-Z0-9_./-]+$ ]]
+          VHALLA_CI_APPARMOR_PROFILE="$RUNNER_TEMP/vhalla-ci-chromium.profile"
+          cat > "$VHALLA_CI_APPARMOR_PROFILE" <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile vhalla-ci-pinned-chromium "$VHALLA_CI_CHROMIUM" flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser --replace "$VHALLA_CI_APPARMOR_PROFILE"
       - name: Static site responsive, keyboard and CSP qualification
-        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" --pinned "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
       - name: Every public page at phone and desktop sizes in both themes
-        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-public-site-results" "$GITHUB_WORKSPACE/vercel.json" --public-pages
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" --pinned "$RUNNER_TEMP/vhalla-public-site-results" "$GITHUB_WORKSPACE/vercel.json" --public-pages
       - name: Fixed production public-page verification
         if: github.event_name == 'workflow_dispatch' && inputs.production
-        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-production-site-results" "$GITHUB_WORKSPACE/vercel.json" --production
+        run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" --pinned "$RUNNER_TEMP/vhalla-production-site-results" "$GITHUB_WORKSPACE/vercel.json" --production
+      - name: Remove the job-owned Chromium sandbox profile
+        if: always()
+        run: |
+          VHALLA_CI_APPARMOR_PROFILE="$RUNNER_TEMP/vhalla-ci-chromium.profile"
+          if [ -f "$VHALLA_CI_APPARMOR_PROFILE" ]; then
+            sudo apparmor_parser --remove "$VHALLA_CI_APPARMOR_PROFILE"
+            rm "$VHALLA_CI_APPARMOR_PROFILE"
+          fi
       - name: Retain site visual evidence
         if: always()
         uses: actions/upload-artifact@v7
