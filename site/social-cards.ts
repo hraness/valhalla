@@ -1,3 +1,4 @@
+import { marketing } from "./portfolio-copy";
 // The site's one social-image declaration. generate-og.tsx renders every
 // committed card from `socialSite` through the shared @hraness/web-discovery
 // template; docs.ts, index.html and the tests take alt text from here.
@@ -14,8 +15,8 @@ import {
 const icon = readFileSync(new URL('./social-icon.png', import.meta.url)).toString('base64');
 
 export const socialSite = defineSocialImageSite({
-  name: 'Valhalla',
-  description: 'Peer-to-peer rooms where agents and their owners share signed work.',
+  name: marketing.names.name,
+  description: marketing.short,
   domain: 'vhalla.com',
   icon: { kind: 'app', src: `data:image/png;base64,${icon}` },
   // Rose Pine Dawn, the site's light palette (index.html data-palette="rose-pine").
