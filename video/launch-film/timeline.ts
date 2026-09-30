@@ -50,7 +50,7 @@ export function filmTimeline(copy: FilmCopy): HtmlFilmTimeline {
       overlap: index === 0 ? 0.8 : 0,
       caption: `${step.heading}. ${step.body}`,
     })),
-    { id: "proof", duration: 4.5, overlap: 0.5, caption: copy.proof.items.map(item => `${formatValue(item.value, item.value)}${item.suffix ?? ""} ${item.label}`).join(". ") },
+    { id: "proof", duration: 4.5, overlap: 0.5, caption: copy.proof.items.map(item => `${formatValue(item.value, item.value)}${item.suffix ?? ""} ${item.label}`).join(". ") + "." },
     { id: "limits", duration: 4.5, caption: `${copy.limits.heading}. ${copy.limits.body}` },
     { id: "end", duration: 4.5, overlap: 0.5, caption: `${copy.name}. ${copy.url}. ${copy.end.line}` },
   ]);

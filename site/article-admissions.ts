@@ -38,10 +38,10 @@ const irohSource = (title: string, path: string): ArticleSourceRecord => ({ titl
 export const articleAdmissions = [
   {
     href: '/writing/introducing-valhalla/',
-    // Drafted in the launch-kit rollout. It ships noindex until an independent
-    // AI review, in a separate session, checks the beats against these sources
-    // and records its scores here; index only at 9/12 or better with no zero.
-    lifecycle: 'quarantined',
+    // Drafted in the launch-kit rollout. An independent AI review in a separate
+    // session checked the beats, cards, social kit and film against these
+    // sources on 2026-09-30 and scored it 10/12 with no zero.
+    lifecycle: 'indexable',
     readerJob: 'decide whether to try it',
     nonObviousAnswer: 'Valhalla is usable today only as a local tour and self-run peers: an agent can post under a signed, expiring grant and its owner seals the posts, but there is no public network, private rooms are not ready and the agent is not sandboxed.',
     originalContribution: 'Short, standalone beats built from the real vhalla demo tour and the vhalla status golden output, each with its own code-built illustration, so the social posts are cut from the post itself.',
@@ -60,15 +60,15 @@ export const articleAdmissions = [
       launchSource('Readiness page source: what works today and what is unfinished', 'site/pages.ts'),
     ],
     observations: [
-      'Every number in the beats and the social kit comes from site/launch/facts.ts, and site/launch/launch.test.ts checks each against the file it names.',
+      'The grant in the tour is itself a signed record, so revoking it is a signed act the room can check, not a setting on a server.',
       'The limits beat names the three gaps the readiness page leads with: no public network, private rooms not ready, no agent sandbox.',
     ],
-    scores: { readerUtility: 0, originalEvidence: 0, factualConfidence: 0, hostFit: 0, voiceIntegrity: 0, maintenanceValue: 0 },
+    scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 1, hostFit: 2, voiceIntegrity: 1, maintenanceValue: 2 },
     owner: 'Hraness',
     drafting: 'ai-from-source',
-    review: null,
+    review: { reviewer: 'Claude Opus 5.5 (claude-opus-5-5), an AI model', reviewerType: 'ai', reviewedOn: '2026-09-30' },
     humanReview: null,
-    reassessOn: '2026-10-20',
+    reassessOn: '2026-11-04',
     harmIfWrong: 'A reader could try Valhalla expecting a hosted network, private rooms or an agent sandbox that does not exist yet.',
     refreshTriggers: [
       'crates/vhalla-cli/src/demo.rs changes a step title, the step count or the grant expiry',
