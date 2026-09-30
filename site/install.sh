@@ -3,6 +3,7 @@
 # Usage:  curl -fsSL https://vhalla.com/install.sh | sh
 #         (--with-menubar is still accepted; the menu bar is retired and
 #         `vhalla status` replaces it, so the flag installs only vhalla.)
+# Update-enabled releases require authenticated GitHub CLI (gh).
 # Source: https://github.com/hraness/valhalla
 set -eu
 
