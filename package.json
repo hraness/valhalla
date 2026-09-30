@@ -16,8 +16,8 @@
     "launch:kit": "bun site/scripts/write-social-kit.ts"
   },
   "dependencies": {
-    "@hraness/design-kit": "github:hraness/design-kit#v0.32.0",
-    "@hraness/site-footer": "github:hraness/site-footer#v0.20.1"
+    "@hraness/design-kit": "github:hraness/design-kit#v0.35.0",
+    "@hraness/site-footer": "github:hraness/site-footer#v0.20.4"
   },
   "devDependencies": {
     "@hraness/ui": "github:hraness/ui#v0.5.18",

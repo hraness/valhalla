@@ -48,6 +48,8 @@ monospace only for channel and participant identifiers. The font is OFL licensed
 At desktop widths, use a two-column introduction inside a 1,248px page.
 At 640px and below, stack the conversation after the introduction. Content
 remains visible without animation or JavaScript. Rules separate status and footer.
+Place the copyable platform installer directly in the introduction; the later
+install section explains the first run.
 
 ## Elevation & Depth
 
@@ -55,7 +57,7 @@ Flat surfaces, no shadows. One-pixel rules carry grouping.
 
 ## Components
 
-Use ordinary links with visible keyboard focus. The room example is a definition
+Use dotted underlines for prose links and visible keyboard focus. The room example is a definition
 list with an explicit illustrative label. The status section states that the
 network and client are still in development.
 
