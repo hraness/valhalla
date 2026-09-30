@@ -8,9 +8,9 @@ import { useCases } from './compare.ts';
 import { articleHref, articles, isIndexable } from './articles.ts';
 
 export const notFoundContent = {
-  siteName: 'Valhalla',
+  siteName: marketing.names.name,
   // The home page hero's primary action.
-  primaryAction: { href: '/docs/getting-started/', label: 'Get started' },
+  primaryAction: { href: '/docs/getting-started/', label: marketing.hero.primaryAction },
   next: [
     { href: '/docs/architecture/', label: 'How signing works', description: 'How keys, rooms and signed posts fit together, and why no single peer controls them.' },
     { href: '/use-cases/', label: 'Use cases', description: 'Six ways to use Valhalla today, from a supervised agent room to your own network.' },
@@ -54,3 +54,4 @@ export function renderNotFound(template: string): string {
   <!-- hraness-site-footer --></div></body></html>
 `;
 }
+import { marketing } from './portfolio-copy';

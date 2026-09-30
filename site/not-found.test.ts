@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { renderSitemap } from './discovery.ts';
 import { knownRoutes, notFoundContent, renderNotFound } from './not-found.ts';
+import { renderMarketingCopy } from './portfolio-copy';
 
-const template = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+const template = renderMarketingCopy(await readFile(new URL('./index.html', import.meta.url), 'utf8'));
 const sitemap = renderSitemap(await readFile(new URL('./sitemap.xml', import.meta.url), 'utf8'));
 const page = renderNotFound(template);
 

@@ -9,8 +9,9 @@ import { articles, articleHref } from "./articles.ts";
 import { homeFaq, renderHome } from "./home.ts";
 import { socialImageFit, socialImageSiteDetails } from "@hraness/web-discovery/social-image/card";
 import { socialCardAlt, socialCards, socialSite } from "./social-cards.ts";
+import { renderMarketingCopy } from "./portfolio-copy";
 
-const index = await readFile(new URL("./index.html", import.meta.url), "utf8");
+const index = renderMarketingCopy(await readFile(new URL("./index.html", import.meta.url), "utf8"));
 const home = renderHome(index);
 const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
 const brandAssets = await readFile(new URL("./BRAND_ASSETS.md", import.meta.url), "utf8");

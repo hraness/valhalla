@@ -7,6 +7,10 @@ import { vhallaBadges, vhallaInstall } from './platform-install.ts';
 import { highlightCode } from '@hraness/design-kit/syntax-highlighting';
 import { homeRoomHtml, homeTourHtml } from './launch/mockups.tsx';
 import { launchStylesHead, launchStylesMarker } from './launch/styles.ts';
+import { marketing } from './portfolio-copy.ts';
+
+// Release status stays local; the product description is authored in Jungle.
+const developmentStatus = 'The client and network are in development.';
 
 const slot = (template: string, marker: string, html: string) => {
   if (template.split(marker).length !== 2) throw new Error(`Home page needs exactly one ${marker}`);
@@ -60,6 +64,7 @@ export function renderHome(template: string): string {
   if (!node) throw new Error('Home JSON-LD has no FAQPage node');
   const software = graph['@graph']?.find((item: { '@type'?: string }) => item['@type'] === 'SoftwareApplication');
   if (!software) throw new Error('Home JSON-LD has no SoftwareApplication node');
+  software.description = `${marketing.meta} ${developmentStatus}`;
   software.softwareVersion = latestRelease.replace(/^v/, '');
   node.mainEntity = faq.map(({ question, answer }) => ({ '@type': 'Question', name: question, acceptedAnswer: { '@type': 'Answer', text: answer } }));
   const json = JSON.stringify(graph).replaceAll('<', '\\u003c');
