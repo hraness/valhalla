@@ -1,3 +1,4 @@
+import { renderMarketingCopy } from "./portfolio-copy";
 import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -19,7 +20,7 @@ await mkdir(resolve(output, "design"), { recursive: true });
 for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "og-docs.png", "og-compare.png", "og-writing.png", "og-usecases.png", "robots.txt", "install.sh", "install.ps1", "valhalla-mark.svg"]) await cp(resolve(root, name), resolve(output, name));
 await writeFile(resolve(output, "sitemap.xml"), renderSitemap(await readFile(resolve(root, "sitemap.xml"), "utf8")));
 await writeFile(resolve(output, "llms.txt"), renderLlms(await readFile(resolve(root, "llms.txt"), "utf8")));
-const html = await readFile(resolve(root, "index.html"), "utf8");
+const html = renderMarketingCopy(await readFile(resolve(root, "index.html"), "utf8"));
 const footerMarker = "<!-- hraness-site-footer -->";
 if (html.split(footerMarker).length !== 2) throw new Error("Expected one shared footer slot.");
 await writeFile(resolve(output, "index.html"), renderHome(html).replace(footerMarker, supportFooter()));

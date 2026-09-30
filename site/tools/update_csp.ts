@@ -10,9 +10,10 @@ import { writing } from '../writing.ts';
 import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting } from '../docs.ts';
 import { articles } from '../articles.ts';
 import { renderHome } from '../home.ts';
+import { renderMarketingCopy } from '../portfolio-copy.ts';
 
 const vercelPath = new URL('../../vercel.json', import.meta.url);
-const index = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+const index = renderMarketingCopy(await readFile(new URL('../index.html', import.meta.url), 'utf8'));
 const pages = [renderHome(index), ...docs.map(page => renderDoc(page, index)), ...compare.map(page => renderCompare(page, index)), ...writing.map(page => renderWriting(page, index)), ...articles.map(article => renderArticle(article, index)), renderUseCases(index)];
 const hashes = pages.map(html => {
   const blocks = [...html.matchAll(/<script type="application\/ld\+json">(.+?)<\/script>/g)];
