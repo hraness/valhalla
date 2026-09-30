@@ -6,9 +6,13 @@ import io
 import json
 import os
 from pathlib import Path
+import re
+import shlex
+import shutil
 import stat
 import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -34,6 +38,8 @@ class SigningTests(unittest.TestCase):
         self.binary = struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 0, 0, 0, 0) + b"not executable"
         self.native_archive()
         self.calls = []
+        self.original_search_list = [str(self.root / "login.keychain-db"), str(self.root / "Other User.keychain-db")]
+        self.search_list = list(self.original_search_list)
         self.status = "Accepted"
         self.wait_id = UUID
         self.metadata = ("Identifier=dev.hraness.vhalla\nTeamIdentifier=" + TEAM + "\n"
@@ -77,7 +83,14 @@ class SigningTests(unittest.TestCase):
             Path(args[-1]).touch(mode=0o600)
             for path in (self.work / "credentials").iterdir():
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        if "list-keychains" in args:
+            if "-s" in args:
+                self.search_list = args[args.index("-s") + 1:]
+            return "\n".join(shlex.quote(path) for path in self.search_list)
+        if "delete-keychain" in args:
+            self.search_list = [path for path in self.search_list if path != args[-1]]
         if "find-identity" in args:
+            self.assertEqual(self.search_list, self.original_search_list + [str(self.work / "credentials/signing.keychain-db")])
             return f'  1) {"A" * 40} "Developer ID Application: Example ({self.identity_team})"\n'
         if "--display" in args:
             return self.metadata
@@ -108,11 +121,16 @@ class SigningTests(unittest.TestCase):
         self.assertIn("runtime", codesign)
         self.assertIn("--timestamp", codesign)
         self.assertIn("dev.hraness.vhalla", codesign)
+        self.assertEqual(codesign[codesign.index("--requirements") + 1], "=designated => " + signing.apple_requirement())
+        for args in self.calls:
+            if "--test-requirement" in args:
+                self.assertEqual(args[args.index("--test-requirement") + 1], "=" + signing.apple_requirement())
         self.assertIn("certificate leaf[field.1.2.840.113635.100.6.1.13] exists", codesign[-2])
         notarized = next(i for i, args in enumerate(self.calls) if "--check-notarization" in args)
         removed = next(i for i, args in enumerate(self.calls) if "delete-keychain" in args)
         self.assertLess(notarized, removed)
         self.assertFalse(self.work.exists())
+        self.assertEqual(self.search_list, self.original_search_list)
         self.assertTrue(all(args[0] in ("/usr/bin/security", "/usr/bin/codesign", "/usr/bin/xcrun") for args in self.calls))
         receipt = json.loads((self.root / "vhalla-apple-notarization.json").read_text())
         self.assertEqual(receipt["submissionId"], UUID)
@@ -127,6 +145,7 @@ class SigningTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertFalse(self.work.exists())
         self.assertTrue(any("delete-keychain" in args for args in self.calls))
+        self.assertEqual(self.search_list, self.original_search_list)
         receipt = json.loads((self.root / "vhalla-apple-notarization.json").read_text())
         self.assertEqual(receipt["submissionId"], UUID)
         self.assertEqual(receipt["status"], "Invalid")
@@ -245,6 +264,32 @@ class SigningTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertFalse(self.work.exists())
 
+    def test_search_list_registration_failure_cleans_up_before_signing(self):
+        self.tool_failure = "list-keychains"
+        with self.assertRaises(signing.SigningError):
+            self.sign()
+        self.assertFalse(any("find-identity" in args or "--sign" in args for args in self.calls))
+        self.assertTrue(any("delete-keychain" in args for args in self.calls))
+        self.assertFalse(self.work.exists())
+
+    def test_cleanup_preserves_keychains_added_during_signing(self):
+        added = str(self.root / "new-unrelated.keychain-db")
+        def changing_list(args, timeout=60):
+            if "notarytool" in args and "submit" in args:
+                self.search_list.append(added)
+            return self.tool(args, timeout)
+        with patch.object(signing, "run", changing_list):
+            self.sign()
+        self.assertEqual(self.search_list, self.original_search_list + [added])
+
+    def test_runtime_signature_verifier_uses_literal_requirement(self):
+        # Runtime/package verification runs without the signer's step secrets.
+        environment = {key: value for key, value in os.environ.items() if key not in signing.SECRET_NAMES}
+        with patch.dict(os.environ, environment, clear=True):
+            signing.verify_signature(self.root / "fixture")
+        verification = next(args for args in self.calls if "--test-requirement" in args)
+        self.assertEqual(verification[verification.index("--test-requirement") + 1], "=" + signing.apple_requirement())
+
     def test_extra_tar_member_rejected_before_apple_tools(self):
         self.native_archive(extra=True)
         with self.assertRaisesRegex(signing.SigningError, "extra members"):
@@ -316,6 +361,33 @@ class SigningTests(unittest.TestCase):
         with self.assertRaisesRegex(signing.SigningError, "dedicated runner"):
             signing.cleanup(self.root)
         self.assertTrue(self.root.exists())
+
+
+@unittest.skipUnless(sys.platform == "darwin", "native codesign parser requires macOS")
+class NativeRequirementTests(unittest.TestCase):
+    def test_codesign_parses_inline_requirements_without_private_credentials(self):
+        with tempfile.TemporaryDirectory(prefix="vhalla-codesign-literal-") as directory:
+            binary = Path(directory) / "fixture"
+            shutil.copyfile("/usr/bin/true", binary)
+            binary.chmod(0o700)
+            identifier = f'identifier "{signing.IDENTIFIER}"'
+            signing.run(["/usr/bin/codesign", "--force", "--sign", "-", "--identifier", signing.IDENTIFIER,
+                         "--requirements", "=designated => " + identifier, binary])
+            signing.run(["/usr/bin/codesign", "--verify", "--strict", "--test-requirement", "=" + identifier, binary])
+            # The production expression must parse and fail for its missing
+            # Developer ID certificate, rather than be treated as a filename.
+            result = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "--test-requirement",
+                                     "=" + signing.apple_requirement(), str(binary)], capture_output=True,
+                                    text=True, timeout=30, env={"PATH": "/usr/bin:/bin", "HOME": directory, "LC_ALL": "C"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("code failed to satisfy specified code requirement", result.stderr)
+            signing.run(["/usr/bin/codesign", "--force", "--sign", "-", "--identifier", signing.IDENTIFIER,
+                         "--requirements", "=designated => " + signing.apple_requirement(), binary])
+            installer = (Path(__file__).resolve().parents[2] / "site/install.sh").read_text()
+            requirement = re.search(r"^    requirement='([^']+)'$", installer, re.M)
+            self.assertIsNotNone(requirement)
+            self.assertEqual(requirement[1], signing.apple_requirement())
+            self.assertIn('--test-requirement "=$requirement"', installer)
 
 
 class ToolBoundaryTests(unittest.TestCase):

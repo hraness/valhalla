@@ -62,7 +62,7 @@ class SigningSourceTests(unittest.TestCase):
         for forbidden in ("cargo", '"$cli"', "--help", "--version"):
             self.assertNotIn(forbidden, SIGNER)
         self.assertIn("if: always()", SIGNER)
-        self.assertIn(".workflow_run.head_sha == $sha", SIGNER)
+        self.assertIn("release_artifacts.py fetch-zip vhalla-unsigned", SIGNER)
         smoke = WORKFLOW.split("\n  macos_smoke:", 1)[1].split("\n  browser:", 1)[0]
         self.assertNotIn("secrets.", smoke)
         self.assertNotIn("environment:", smoke)

@@ -16,6 +16,12 @@ on:
       browser_manifest_sha256:
         description: Manifest commitment from the successful production delivery journey
         value: ${{ jobs.browser-artifact.outputs.manifest_sha256 }}
+      browser_artifact_id:
+        description: Immutable artifact selected by the successful browser producer
+        value: ${{ jobs.browser-artifact.outputs.artifact_id }}
+      browser_artifact_digest:
+        description: SHA-256 of the successful browser producer's artifact ZIP
+        value: ${{ jobs.browser-artifact.outputs.artifact_digest }}
 
 permissions:
   contents: read
@@ -263,7 +269,7 @@ jobs:
         if: failure() && matrix.name == 'cli-heavy'
         uses: actions/upload-artifact@v7
         with:
-          name: cli-heavy-soak-diagnostics
+          name: cli-heavy-soak-diagnostics-${{ github.run_attempt }}
           path: ${{ runner.temp }}/vhalla-cli-node-soak-*
           include-hidden-files: true
           if-no-files-found: warn
@@ -380,7 +386,7 @@ jobs:
 
   # The browser qualification is four independent jobs. Only this one builds
   # the production bundle, binds it to its delivery receipt, and uploads the
-  # `vhalla-browser` artifact that release.yml packages.
+  # immutable browser artifact that release.yml packages by ID and digest.
   browser-artifact:
     name: Browser production artifact
     needs: changes
@@ -389,6 +395,8 @@ jobs:
     timeout-minutes: 40
     outputs:
       manifest_sha256: ${{ steps.qualified-browser.outputs.manifest_sha256 }}
+      artifact_id: ${{ steps.browser-upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.browser-upload.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -434,7 +442,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: vhalla-browser-runtime-evidence
+          name: vhalla-browser-runtime-evidence-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/vhalla-private-delivery-results/receipt.json
             ${{ runner.temp }}/vhalla-private-delivery-results/*.log
@@ -453,8 +461,9 @@ jobs:
           digest="$(python3 .github/scripts/verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-delivery-results/receipt.json")"
           printf 'manifest_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
+        id: browser-upload
         with:
-          name: vhalla-browser
+          name: vhalla-browser-${{ github.run_attempt }}
           path: browser/dist
           if-no-files-found: error
           retention-days: 14
@@ -498,7 +507,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: vhalla-browser-worker-evidence
+          name: vhalla-browser-worker-evidence-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/vhalla-private-worker-results/receipt.json
             ${{ runner.temp }}/vhalla-private-worker-results/*.log
@@ -578,7 +587,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: vhalla-browser-storage-evidence
+          name: vhalla-browser-storage-evidence-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/vhalla-storage-runtime/indexeddb-receipt.json
             ${{ runner.temp }}/vhalla-storage-runtime/chromium.stderr.log
@@ -634,7 +643,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: vhalla-browser-public-evidence
+          name: vhalla-browser-public-evidence-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/vhalla-product-results/receipt.json
             ${{ runner.temp }}/vhalla-product-results/*.log
@@ -793,6 +802,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Synthetic macOS agent compartment denial probes
         run: python3 prototypes/agent-compartment/qualify_macos.py
+      - name: Native codesign requirement parsing without private credentials
+        run: python3 .github/scripts/test_sign_macos_release.py NativeRequirementTests
 
   site:
     runs-on: ubuntu-latest
@@ -820,7 +831,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: vhalla-site-visual-evidence
+          name: vhalla-site-visual-evidence-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/vhalla-site-results/receipt.json
             ${{ runner.temp }}/vhalla-site-results/chrome.log
@@ -852,7 +863,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: security-reports
+          name: security-reports-${{ github.run_attempt }}
           path: ${{ runner.temp }}/security-reports
           if-no-files-found: error
           retention-days: 14

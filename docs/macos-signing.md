@@ -10,6 +10,11 @@ without required reviewers or a wait timer. Its secrets are
 `APPLE_DEVELOPER_ID_P12_BASE64`, `APPLE_DEVELOPER_ID_P12_PASSWORD`,
 `APPLE_NOTARY_KEY_P8_BASE64`, `APPLE_NOTARY_KEY_ID`, and
 `APPLE_NOTARY_ISSUER_ID`. Build and smoke jobs receive no Apple credentials.
+The PKCS#12 bundle must include the Developer ID Application certificate, its
+private key, and its issuing Developer ID intermediate certificate (Apple G2
+for current certificates). The clean temporary keychain needs that intermediate
+to resolve the signing identity. The helper appends its keychain to the user's
+existing search list, then deletes only that keychain during cleanup.
 
 The release tag must name the verified main commit. Signing waits for the
 complete existing validation workflow. It downloads the unsigned artifact by
@@ -20,6 +25,12 @@ requires `codesign --check-notarization` before creating the final archive and
 checksum. Provenance covers those final signed bytes. A separate runner verifies
 and smoke-tests the release. The publisher checks both Mac assets against hashes
 exported by the signing job before writing a release.
+
+Each uploaded artifact includes its producer's attempt number. A failed job can
+reuse a successful producer from an earlier attempt of the same run and source:
+its exact ID and digest still select the bytes. Native targets export separate
+identities, and the browser also retains its verified manifest hash. Rerunning
+all jobs creates new artifacts without replacing earlier evidence.
 
 A timeout, rejection, or interruption stops publication. The
 `vhalla-apple-notarization-*` artifact keeps the submission UUID and input,
