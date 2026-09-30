@@ -8,8 +8,8 @@ import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting,
 import { articles, articleHref } from "./articles.ts";
 import { homeFaq, renderHome } from "./home.ts";
 import { socialImageFit, socialImageSiteDetails } from "@hraness/web-discovery/social-image/card";
-import { socialCardAlt, socialCards, socialSite } from "./social-cards.ts";
-import { renderMarketingCopy } from "./portfolio-copy";
+import { heroEyebrow, socialCardAlt, socialCards, socialSite } from "./social-cards.ts";
+import { marketing, renderMarketingCopy } from "./portfolio-copy";
 
 const index = renderMarketingCopy(await readFile(new URL("./index.html", import.meta.url), "utf8"));
 const home = renderHome(index);
@@ -161,6 +161,12 @@ test("every social card fits the template as written", () => {
     expect(fit.description?.cut ?? "none", card.file).toBe("none");
     expect(fit.headline.threeLine, card.file).toBe(false);
   }
+  // The home card carries the hero's eyebrow over the hero heading.
+  const homeCard = socialImageFit(socialImageSiteDetails(socialSite, socialCards.find(card => card.file === "social.png")?.page));
+  expect(homeCard.layout).toBe("product");
+  expect(homeCard.eyebrow).toBe(heroEyebrow);
+  expect(homeCard.headline.lines.join(" ")).toBe(marketing.hero.heading);
+  expect(pages.get("/")).toContain(`<p class="eyebrow">${heroEyebrow}</p>`);
   // Every collection card keeps its eyebrow: none is dropped as a repeat of its headline.
   for (const card of socialCards.filter(item => item.page)) {
     expect(socialImageFit(socialImageSiteDetails(socialSite, card.page)).eyebrow, card.file).toBe(card.page?.eyebrow);

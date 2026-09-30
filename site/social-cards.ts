@@ -28,8 +28,13 @@ export const socialSite = defineSocialImageSite({
 
 export type SocialCard = { file: string; page?: SocialImagePage };
 
+// The hero's eyebrow (index.html renders {{PORTFOLIO_CATEGORY}} · In development).
+export const heroEyebrow = `${marketing.category} · In development`;
+
 export const socialCards: SocialCard[] = [
-  { file: 'social.png' },
+  // The home card mirrors the hero: its eyebrow over the tagline, which is
+  // also the hero heading, in the default product layout.
+  { file: 'social.png', page: { eyebrow: heroEyebrow } },
   {
     file: 'og-docs.png',
     page: {
