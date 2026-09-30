@@ -41,6 +41,7 @@ export function initializeAgentSetups(documentValue: Document, navigatorValue: N
       if (busy) return false;
       const prompt = source.textContent ?? "";
       if (!prompt.trim()) return false;
+      const focusBeforeCopy = documentValue.activeElement as HTMLElement | null;
       busy = true;
       const request = ++generation;
       if (timer !== undefined) clearTimeout(timer);
@@ -66,6 +67,9 @@ export function initializeAgentSetups(documentValue: Document, navigatorValue: N
       state(ok ? "copied" : "failed", ok ? "Copied setup prompt." : selected
         ? "Copy failed. The setup prompt is selected; copy it with your keyboard."
         : "Copy failed. Select the setup prompt and copy it with your keyboard.");
+      if (ok && documentValue.activeElement === documentValue.body && focusBeforeCopy?.isConnected) {
+        try { focusBeforeCopy.focus({ preventScroll: true }); } catch { /* The source control may have disappeared. */ }
+      }
       timer = setTimeout(() => state("idle"), 2000);
       return ok;
     };

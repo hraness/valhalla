@@ -813,6 +813,11 @@ pre code {
   font:inherit;
 }
 
+/* Fixed inherited mark size from the shared static setup composition. */
+[data-hraness-agent-setup-prompt] .hraness-provider-mark__inherit {
+  --_mark-size:20px;
+}
+
 /* Native disclosure also replaces the preview when JavaScript is unavailable. */
 [data-hraness-agent-setup-prompt]:has(details[open]) .hraness-agent-setup__preview {
   display:none;

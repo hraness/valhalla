@@ -42,4 +42,5 @@ test("server rendering has distinct accessible IDs, native full-source disclosur
   expect(setup).toContain('<link rel="stylesheet" href="/design/stylex.css">');
   expect(setup).toContain('<script src="/platform-install-client.js" defer></script>');
   expect(setup).not.toMatch(/\son(?:click|load|error)=/u);
+  expect(setup).not.toMatch(/\sstyle=/u);
 });
