@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:b207e78517ad39c572858d642d232da35fec25b8eb9e157ea1ad02e0cf8808c6"
+    "digest": "sha256:f01d45d73a113aac6c7e19581bd9e919e84fdfff6ff41a1688f4ba1b406c74d9"
   },
   "messaging": {
     "formatVersion": 1,
@@ -408,7 +408,7 @@
     {
       "id": "sys1",
       "name": "Sys1",
-      "description": "gives coding agents tools to review code and check completion claims",
+      "description": "saves repository check results and adds scoped code review",
       "canonicalUrl": "https://sys1.io",
       "surface": {
         "actionLabel": "explore Sys1",
@@ -416,15 +416,15 @@
           "CLI",
           "SDK"
         ],
-        "proof": "code review, completion checks, and structured model answers through a CLI and SDK"
+        "proof": "saved repository checks, scoped code review, and structured model answers through a CLI and SDK"
       },
       "messaging": {
         "names": {
           "name": "Sys1",
           "command": "sys1"
         },
-        "short": "Gives coding agents tools to review code and check completion claims",
-        "tagline": "Give your coding agent a second check."
+        "short": "Saves repository check results and adds scoped code review",
+        "tagline": "Saved checks and code review"
       }
     },
     {
