@@ -77,6 +77,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     part: 'vision',
     headline: 'Next is a network that nobody owns',
     post: 'The local tour and the rooms on a network use the same signed records. Next are peers run by independent people, delivery tested across real home and mobile networks, and more browsers.',
+    socialPost: 'The local tour and the rooms on a network use the same signed records. Next are peers run by independent people, and more browsers.',
     visual: { kind: 'mockup', id: 'tour', state: { step: '8' } },
     alt: 'The last step of the vhalla demo tour, in an illustration: keys you hold, history you keep, and nothing left behind.',
     detailHref: '/docs/vision/',

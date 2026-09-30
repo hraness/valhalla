@@ -99,6 +99,15 @@ test('the home page shows the tour and room illustrations with no inline styles'
   for (const href of launchStylesheets) expect(html).toContain(`href="${href}"`);
 });
 
+test('social posts carry claims only: no limits beat and no untested-network line', () => {
+  const limits = launchBeats.find(beat => beat.part === 'limits');
+  expect(limits).toBeDefined();
+  const all = [...socialKit.x, ...socialKit.bluesky, ...socialKit.threads, socialKit.linkedin, ...socialKit.showHnFacts].join('\n');
+  expect(all).not.toContain(limits?.post ?? 'missing');
+  expect(all).not.toMatch(/not ready|sandbox|tested across/i);
+  expect(socialKit.x.length).toBe(launchBeats.length - 1);
+});
+
 test('kb/launch/social-kit.md matches the beats and facts; run `bun run launch:kit` after changing them', async () => {
   const { renderSocialKitMarkdown } = await import('./social-kit-markdown.ts');
   const text = await Bun.file(new URL('../../kb/launch/social-kit.md', import.meta.url)).text();
