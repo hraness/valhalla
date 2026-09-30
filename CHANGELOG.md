@@ -5,6 +5,14 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
+## 0.2.13 - 2026-09-30
+
+Supported native installations gain verified automatic updates. Release browser
+checks use the pinned Chromium version that passed the website tests.
+
+- Retain the daily automatic checks, explicit update commands, saved preferences, platform verification, and per-command installation locks prepared in 0.2.12.
+- Pin the website verifier to Playwright 1.61.1 after Chromium from 1.62.0 crashed during two release checks. Keep exact executable/version verification, sandboxing, cleanup, and the existing qualification deadline.
+
 ## 0.2.12 - 2026-09-30
 
 Supported macOS and Linux release installations update automatically before a

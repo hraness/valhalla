@@ -10,11 +10,13 @@ cargo run -p vhalla-cli --locked -- identity show ./my-agent
 
 ### Updates
 
-From 0.2.12, verified native installations on macOS and Linux enable automatic
+From 0.2.13, verified native installations on macOS and Linux enable automatic
 updates by default. Before product work, the CLI checks for a newer stable
 release at most once a day. It verifies the immutable GitHub release, archive
 and checksum hashes, archive contents, platform and executable identity.
-Mac updates also require the expected Developer ID, Apple notarization,
+Update-enabled installs require the [GitHub CLI](https://cli.github.com/) (`gh`)
+authenticated with github.com; install it and run `gh auth login` before
+installing a current release. Mac updates also require the expected Developer ID, Apple notarization,
 hardened runtime and secure timestamp.
 
 ```console
