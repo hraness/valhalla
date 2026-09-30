@@ -61,7 +61,14 @@ test('every article shows the Hraness byline, the provenance note and dated sour
 const reviewedRoutes = new Set([
   'https://hraness.com/reference/peer-to-peer-systems/room-scale-consensus',
 ]);
-const productHosts = new Set([...Object.values(portfolioProducts).map(product => new URL(product.canonicalUrl).host), 'hraness.com']);
+// Products hosted on github.com (ghostget-skills, pattern-language) share a host with every
+// repository link, so github.com is not a product site here.
+const productHosts = new Set([
+  ...Object.values(portfolioProducts)
+    .map(product => new URL(product.canonicalUrl).host)
+    .filter(host => host !== 'github.com'),
+  'hraness.com',
+]);
 
 test('article links to other Hraness sites use absolute URLs to reviewed posts or product home pages', () => {
   for (const article of articles) {
