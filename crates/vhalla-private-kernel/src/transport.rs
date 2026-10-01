@@ -21,6 +21,14 @@ const RECORD: &[u8] = b"VHPKCTRLREC\x01";
 const LABEL: &str = "vhalla/private/control-envelope/v1";
 const HEADER: usize = MAGIC.len() + 1 + 8 + 8 + 24 + 4;
 
+/// Parse canonical bounded envelope framing and return its untrusted sequence.
+/// This does not decrypt, authenticate an owner, consult retained history, or
+/// authorize any operation. A caller may use it only as a lookup hint; native
+/// custody must independently verify the complete original envelope.
+pub fn control_sequence_hint(raw: &[u8]) -> Result<u64> {
+    Ok(Envelope::decode(raw)?.sequence)
+}
+
 /// Exact encrypted control read from authenticated committed history. It proves
 /// local publication, not relay receipt, current membership or global freshness.
 ///
@@ -274,5 +282,29 @@ impl RetainedControl {
         };
         r.end()?;
         Self::new(control, envelope)
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+
+    #[test]
+    fn sequence_hint_checks_framing_without_authenticating_ciphertext() {
+        let mut raw = MAGIC.to_vec();
+        raw.push(1);
+        raw.extend(0u64.to_be_bytes());
+        raw.extend(1u64.to_be_bytes());
+        raw.extend([0; 24]);
+        raw.extend(16u32.to_be_bytes());
+        raw.extend([0; 16]);
+        assert_eq!(control_sequence_hint(&raw), Ok(1));
+        *raw.last_mut().unwrap() = 255;
+        assert_eq!(control_sequence_hint(&raw), Ok(1));
+        assert!(control_sequence_hint(&raw[..raw.len() - 1]).is_err());
+        let sequence = MAGIC.len() + 1 + 8;
+        raw[sequence..sequence + 8].copy_from_slice(&2u64.to_be_bytes());
+        assert!(control_sequence_hint(&raw).is_err());
+        assert!(control_sequence_hint(b"untrusted malformed control").is_err());
     }
 }

@@ -23,7 +23,7 @@ use vhalla_private_native::{
 
 #[cfg(unix)]
 mod agent;
-mod agent_delivery;
+pub(crate) mod agent_delivery;
 mod agent_setup;
 mod archive;
 mod delivery_resume;

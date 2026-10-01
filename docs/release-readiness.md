@@ -1,5 +1,24 @@
 # Current release readiness
 
+## Headless MVP source status, 1 October 2026
+
+The current source build enables a local daemon, owner JSON commands, scoped
+MCP, signed direct public rooms, and encrypted private rooms. The Unix release
+configuration for this source build omits browser assets and the social and
+room-directory experiments. Existing source and recovery tools remain available. Start with
+the [daemon guide](headless-daemon.md).
+
+This build is not launch-ready. The converged Rust tests, actual managed-service
+lifecycle, private process qualification, workload measurements, independent
+runner evidence, and final packaging checks are still being completed. Earlier
+browser and public-consensus evidence below does not qualify this daemon.
+
+Public synchronization verifies histories from explicitly selected peers and
+reports each frozen checkpoint's coverage. Private mailboxes retain encrypted
+messages; device acceptance is reported separately from mailbox retention.
+An Iroh relay supplies connectivity and does not store the public room history.
+No AT Protocol integration is included.
+
 ## Iroh source status, 28 September 2026
 
 New private hosts in the source tree use iroh. This feature requires a source

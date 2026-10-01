@@ -6,6 +6,9 @@ mod help;
 mod self_update;
 mod support;
 
+#[cfg(all(unix, feature = "headless"))]
+mod headless;
+
 #[cfg(feature = "experimental-private")]
 mod endpoint;
 
@@ -98,6 +101,15 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if args.first().is_some_and(|arg| arg == "daemon") {
+        #[cfg(all(unix, feature = "headless"))]
+        std::process::exit(headless::run(&args[1..]));
+        #[cfg(not(all(unix, feature = "headless")))]
+        {
+            cli::report_error("Daemon support requires a Unix build with the headless feature.");
+            std::process::exit(2);
+        }
+    }
     if args.first().is_some_and(|arg| arg == "support") {
         #[cfg(unix)]
         if let Some(code) = control::support(&args[1..]) {

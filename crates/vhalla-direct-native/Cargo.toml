@@ -1,0 +1,23 @@
+[package]
+name = "vhalla-direct-native"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Custodied native controllers for owner-authorized direct public rooms."
+
+[dependencies]
+vhalla-direct-room = { path = "../vhalla-direct-room" }
+vhalla-direct-store = { path = "../vhalla-direct-store" }
+vhalla-direct-sync = { path = "../vhalla-direct-sync" }
+vhalla-identity = { path = "../vhalla-identity", features = ["direct-room"] }
+vhalla-custody = { path = "../vhalla-custody" }
+getrandom = "0.3"
+sha2 = "0.10"
+
+[dev-dependencies]
+hegeltest = "0.46.0"
+tempfile = "3"
+
+[lints]
+workspace = true

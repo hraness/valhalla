@@ -7,7 +7,8 @@ publish.workspace = true
 description = "Valhalla command line entry point."
 
 [features]
-default = []
+default = ["headless"]
+headless = ["experimental-private", "tokio/net", "tokio/io-util", "tokio/io-std", "tokio/sync", "dep:base64", "dep:vhalla-direct-room", "dep:vhalla-direct-store", "dep:vhalla-direct-native", "dep:vhalla-direct-sync", "vhalla-private-native/direct-rooms", "dep:iroh"]
 experimental-network = ["dep:vhalla-native", "dep:vhalla-session", "dep:tokio", "dep:vhalla-core", "dep:getrandom"]
 experimental-social = ["vhalla-identity/social", "dep:vhalla-social", "dep:vhalla-social-store", "dep:vhalla-core", "dep:getrandom", "dep:libc", "dep:vhalla-discovery", "dep:vhalla-attention", "dep:vhalla-discovery-store"]
 experimental-rooms = ["experimental-social", "vhalla-identity/rooms", "dep:vhalla-rooms", "dep:vhalla-rooms-store"]
@@ -21,6 +22,7 @@ experimental-private = ["dep:vhalla-private-native", "vhalla-private-native/rela
 
 [dependencies]
 anyhow = "1"
+base64 = { version = "0.22.1", optional = true }
 hraness-cli-update = { git = "https://github.com/hraness/cli-update", tag = "v0.1.0", version = "=0.1.0" }
 hraness-control-kit = { git = "https://github.com/hraness/desktop-foundation", tag = "v0.9.0", default-features = false }
 hraness-support-foundation = { git = "https://github.com/hraness/support-foundation", rev = "b32c1c81bb2444f50509ed54388758ecfab1f1c0" }
@@ -43,6 +45,11 @@ serde_json = "1"
 # `private` commands while host, gateway and agent serving stay Unix-gated.
 vhalla-private-native = { path = "../vhalla-private-native", features = ["client"], optional = true }
 vhalla-private-kernel = { path = "../vhalla-private-kernel", optional = true }
+vhalla-direct-room = { path = "../vhalla-direct-room", optional = true }
+vhalla-direct-store = { path = "../vhalla-direct-store", optional = true }
+vhalla-direct-native = { path = "../vhalla-direct-native", optional = true }
+vhalla-direct-sync = { path = "../vhalla-direct-sync", optional = true }
+iroh = { version = "=1.2.0", default-features = false, features = ["tls-ring"], optional = true }
 vhalla-custody = { path = "../vhalla-custody", optional = true }
 zeroize = { version = "1", optional = true }
 tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "time", "signal", "macros"], optional = true }
@@ -70,6 +77,7 @@ vhalla-retrieval = { path = "../vhalla-retrieval", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
+tempfile = "3"
 bip39 = { version = "2.2", default-features = false, features = ["std"] }
 rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"] }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc"] }
@@ -85,6 +93,68 @@ hegeltest = "0.46.0"
 [[bin]]
 name = "vhalla"
 path = "src/main.rs"
+
+# These journeys exercise optional legacy commands. Keep them in the matching
+# feature builds instead of compiling empty test crates in the headless build.
+[[test]]
+name = "network"
+required-features = ["experimental-network"]
+
+[[test]]
+name = "social_sync"
+required-features = ["experimental-sync"]
+
+[[test]]
+name = "rooms_tailcat"
+required-features = ["experimental-rooms-node"]
+
+[[test]]
+name = "rooms_overlay"
+required-features = ["experimental-rooms-node"]
+
+[[test]]
+name = "public_serve"
+required-features = ["experimental-public"]
+
+[[test]]
+name = "public_network"
+required-features = ["experimental-public"]
+
+[[test]]
+name = "public_activity_network"
+required-features = ["experimental-public"]
+
+[[test]]
+name = "public_discovery"
+required-features = ["experimental-public"]
+
+[[test]]
+name = "public_activity"
+required-features = ["experimental-public"]
+
+[[test]]
+name = "private_iroh"
+required-features = ["experimental-private"]
+
+[[test]]
+name = "private_agent"
+required-features = ["experimental-private"]
+
+[[test]]
+name = "private_host"
+required-features = ["experimental-private"]
+
+[[test]]
+name = "private_steel_thread"
+required-features = ["experimental-private"]
+
+[[test]]
+name = "private_agent_delivery"
+required-features = ["experimental-private"]
+
+[[test]]
+name = "private_rooms"
+required-features = ["experimental-private"]
 
 [lints]
 workspace = true

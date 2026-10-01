@@ -11,6 +11,32 @@ use crate::{
 };
 
 impl<S: Store> Kernel<S> {
+    /// Reconcile one exact application send using its original disclosure
+    /// binding. This only authenticates retained state and the existing
+    /// operation index; it never prepares a historical draft, encrypts, or
+    /// advances a ratchet. An absent result is not permission to send under a
+    /// changed roster. Completed sends remain readable after membership changes.
+    /// Canceling this read performs no publication and does not fence the room.
+    pub async fn retained_send(
+        &mut self,
+        operation: OperationId,
+        epoch: u64,
+        roster: [u8; 32],
+        body: &[u8],
+    ) -> Result<Option<CommittedOutbox>> {
+        if body.is_empty() || body.len() > MAX_BODY_BYTES {
+            return Err(Error::Bounds);
+        }
+        let request = packets::request(
+            self.context,
+            OutboxKind::Application,
+            &[&epoch.to_be_bytes(), &roster, body],
+        )?;
+        let state = self.begin_state().await?;
+        self.retained(operation, request, OutboxKind::Application, state.outbox)
+            .await
+    }
+
     /// Read authenticated reception evidence for exact bytes without receiving
     /// again. Recovery markers cannot create plaintext or advance a ratchet.
     pub async fn retained_received(&mut self, raw: &[u8]) -> Result<Option<ReceivedMessage>> {

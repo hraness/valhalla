@@ -8,13 +8,24 @@ on:
         type: boolean
         required: false
         default: false
+      legacy_browser:
+        description: Also build and exercise the retained browser app (not a release artifact)
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [main]
   pull_request:
   workflow_call:
+    inputs:
+      legacy_browser:
+        description: Also build and exercise the retained browser app (not a release artifact)
+        type: boolean
+        required: false
+        default: false
     outputs:
       browser_manifest_sha256:
-        description: Manifest commitment from the successful production delivery journey
+        description: Manifest commitment when legacy browser verification was requested
         value: ${{ jobs.browser-artifact.outputs.manifest_sha256 }}
       browser_artifact_id:
         description: Immutable artifact selected by the successful browser producer
@@ -33,11 +44,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Default-to-run change filter. A pull request skips the Rust, browser and
+  # Default-to-run change filter. A pull request skips the Rust and
   # platform gates only when EVERY changed path is on the non-Rust allowlist
   # below; any other path (including new top-level directories and vectors/)
-  # runs everything. Pushes to main, dispatches, the nightly and release calls
-  # run every one of those gates.
+  # runs all native gates. Pushes to main, dispatches, the nightly and release
+  # calls run every native gate. Browser app qualification is opt-in through
+  # legacy_browser on dispatch or workflow_call; it is not a headless release
+  # dependency. Retained browser/shared crates still receive workspace checks.
   #
   # Within that, .github/scripts/verify_scope.py narrows the four expensive
   # verification groups to the packages a change can reach: prototype-checks
@@ -46,7 +59,8 @@ jobs:
   # scopes pull requests and pushes to main only, and fails closed: a missing
   # or incomplete change list, a CI/selector/Cargo/vendor/vectors change, an
   # unmapped path or any selector error runs every group in full. The nightly
-  # (nightly.yml), dispatch and release (release.yml) always run everything.
+  # (nightly.yml), dispatch and release (release.yml) select every native group.
+  # An opted-in browser run still uses the browser reachability result.
   changes:
     name: Change filter
     runs-on: ubuntu-latest
@@ -59,7 +73,7 @@ jobs:
       formal: ${{ steps.filter.outputs.formal }}
       prototypes: ${{ steps.filter.outputs.prototypes }}
       kani: ${{ steps.filter.outputs.kani }}
-      browser: ${{ steps.filter.outputs.browser }}
+      browser: ${{ steps.legacy-browser.outputs.selected }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -129,6 +143,20 @@ jobs:
             echo
             sed 's/^/- /' "$RUNNER_TEMP/scope.txt"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Select legacy browser verification
+        id: legacy-browser
+        env:
+          LEGACY_BROWSER: ${{ inputs.legacy_browser }}
+          RUST_CHANGED: ${{ steps.filter.outputs.rust }}
+          BROWSER_CHANGED: ${{ steps.filter.outputs.browser }}
+        run: |
+          set -euo pipefail
+          browser=false
+          if [ "$LEGACY_BROWSER" = true ] && [ "$RUST_CHANGED" = true ] && [ "$BROWSER_CHANGED" = true ]; then
+            browser=true
+          fi
+          printf 'selected=%s\n' "$browser" >> "$GITHUB_OUTPUT"
+          printf '\nLegacy browser verification selected: %s\n' "$browser" >> "$GITHUB_STEP_SUMMARY"
 
   main-policy:
     runs-on: ubuntu-latest
@@ -217,6 +245,10 @@ jobs:
           - name: stateful-storage
             cache: stateful-storage
             packages: -p vhalla-rooms-consensus -p vhalla-rooms-store -p vhalla-social-store -p vhalla-discovery-store -p vhalla-identity -p vhalla-native -p vhalla-ledger
+          - name: headless-storage
+            cache: headless-storage
+            harness: libtest
+            packages: -p vhalla-direct-store -p vhalla-direct-native -p vhalla-direct-sync
           # One room-activity-store test runs ~7.5 min on its own; it gets a
           # lane that compiles only its crate, and public-network --skips it.
           - name: public-network-heavy
@@ -241,7 +273,7 @@ jobs:
             packages: -p vhalla-private-kernel -p vhalla-private-native -p vhalla-private-relay
           - name: remaining
             cache: remaining
-            packages: -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
+            packages: -p vhalla-direct-room -p vhalla-core -p vhalla-wire -p vhalla-crypto -p vhalla-policy -p vhalla-host -p vhalla-steel-thread -p vhalla-botcaptcha -p vhalla-witness -p vhalla-rooms -p vhalla-social -p vhalla-journal -p vhalla-custody -p vhalla-transport -p vhalla-attention -p vhalla-discovery -p vhalla-session -p vhalla-retrieval -p vhalla-rooms-app -p vhalla-rooms-tui
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -384,9 +416,9 @@ jobs:
       - name: DNS compatibility backport tests
         run: cargo test --locked --manifest-path vendor/libp2p-dns/Cargo.toml --features tokio -- backport_
 
-  # The browser qualification is four independent jobs. Only this one builds
-  # the production bundle, binds it to its delivery receipt, and uploads the
-  # immutable browser artifact that release.yml packages by ID and digest.
+  # Opt-in legacy browser qualification is four independent jobs. Only this
+  # one builds the production bundle, binds it to its delivery receipt, and
+  # uploads immutable bytes for inspection. Native releases do not consume it.
   browser-artifact:
     name: Browser production artifact
     needs: changes
@@ -690,14 +722,15 @@ jobs:
               failed=1
             fi
           }
-          # Filtered gates succeed, or skip only because the change filter
-          # (which itself succeeded) reported their inputs unchanged.
+          # Filtered gates succeed, or skip only when the successful selection
+          # job reports unchanged inputs or legacy browser verification was not
+          # requested. A failed or cancelled selected job never counts as a skip.
           filtered() {
             if [ "$2" = success ]; then
               return
             fi
             if [ "$2" = skipped ] && [ "$CHANGES" = success ] && [ "$3" = false ]; then
-              echo "$1 skipped: no inputs changed"
+              echo "$1 skipped: not selected for this run"
               return
             fi
             echo "::error::$1 is $2"

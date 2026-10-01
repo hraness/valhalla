@@ -276,6 +276,107 @@ fn client_construction_is_pure_and_scope_refusals_do_not_start_network() {
     assert!(client.worker.lock().unwrap().is_none());
 }
 
+#[test]
+fn relay_only_requires_https_and_discards_direct_hints_without_starting_network() {
+    let mut endpoint = IrohEndpoint {
+        endpoint_id: endpoint_id_from_secret(&[2; 32]),
+        relay_url: None,
+        addresses: vec!["127.0.0.1:1234".parse().unwrap()],
+    };
+    let automatic = IrohRelay::new(endpoint.clone(), token(7), namespace()).unwrap();
+    assert!(!automatic.relay_only());
+    assert_eq!(automatic.address.ip_addrs().count(), 1);
+    assert_eq!(
+        IrohRelay::new_relay_only(endpoint.clone(), token(7), namespace()).err(),
+        Some(NetError::Bounds)
+    );
+    endpoint.relay_url = Some("http://example.invalid".into());
+    assert_eq!(
+        IrohRelay::new_relay_only(endpoint.clone(), token(7), namespace()).err(),
+        Some(NetError::Bounds)
+    );
+    endpoint.relay_url = Some(DEFAULT_RELAY_URL.into());
+    let selected = IrohRelay::new_relay_only(endpoint, token(7), namespace()).unwrap();
+    assert!(selected.relay_only());
+    assert_eq!(selected.address.ip_addrs().count(), 0);
+    assert!(selected.worker.lock().unwrap().is_none());
+    assert_eq!(selected.last_successful_observation(), None);
+    assert!(selected.clone().relay_only());
+    assert_eq!(selected.endpoint_id(), automatic.endpoint_id());
+}
+
+#[test]
+fn path_snapshots_do_not_infer_a_route_from_empty_or_ambiguous_flags() {
+    let empty = PathSnapshot::from_flags([].into_iter());
+    assert_eq!(empty.selected, SelectedPath::Unknown);
+    assert!(!empty.nonempty && !empty.all_relay);
+    let relay = PathSnapshot::from_flags([(true, false, true)].into_iter());
+    assert_eq!(relay.selected, SelectedPath::Relay);
+    assert!(relay.nonempty && relay.all_relay);
+    let mixed = PathSnapshot::from_flags([(true, false, true), (false, true, false)].into_iter());
+    assert_eq!(mixed.selected, SelectedPath::Relay);
+    assert!(mixed.nonempty && !mixed.all_relay);
+    let ambiguous =
+        PathSnapshot::from_flags([(true, false, true), (true, false, true)].into_iter());
+    assert_eq!(ambiguous.selected, SelectedPath::Unknown);
+    assert!(ambiguous.nonempty && ambiguous.all_relay);
+}
+
+#[test]
+fn successful_direct_reply_observations_survive_failures_and_reset_on_fresh_clients() {
+    let fixture = Fixture::new();
+    let client = fixture.client(7);
+    let shared = client.clone();
+    assert_eq!(client.last_successful_observation(), None);
+    client.submit(&item(1)).unwrap();
+    let put = client.last_successful_observation().unwrap();
+    assert_eq!(put.operation, ObservedOperation::Put);
+    for snapshot in [put.before, put.after] {
+        assert_eq!(snapshot.selected, SelectedPath::Direct);
+        assert!(snapshot.nonempty && !snapshot.all_relay);
+    }
+    assert_eq!(shared.last_successful_observation(), Some(put));
+    client.submit(&item(2)).unwrap();
+    assert_eq!(client.page(0, 2).unwrap().records.len(), 2);
+    let previous = client.last_successful_observation().unwrap();
+    assert_eq!(previous.operation, ObservedOperation::Page);
+    assert_eq!(client.submit(&item(3)), Err(NetError::Capacity));
+    assert_eq!(client.last_successful_observation(), Some(previous));
+    assert_eq!(
+        client.page_until(0, 1, Instant::now()).err(),
+        Some(NetError::Timeout)
+    );
+    assert_eq!(client.last_successful_observation(), Some(previous));
+    let rejected = fixture.client(8);
+    assert_eq!(rejected.page(0, 1).err(), Some(NetError::Denied));
+    assert_eq!(rejected.last_successful_observation(), None);
+
+    // The authenticated exchange only creates a candidate. A malformed typed
+    // receipt cannot publish its different route or overwrite a prior success.
+    let different = PathSnapshot::from_flags([(true, false, true)].into_iter());
+    let malformed = ExchangeReply {
+        body: vec![0],
+        before: different,
+        after: different,
+    };
+    assert!(client
+        .validated_reply(ObservedOperation::Put, malformed, |body| {
+            decode_receipt(body, &item(1))
+        })
+        .is_err());
+    assert_eq!(client.last_successful_observation(), Some(previous));
+    #[cfg(any(feature = "agent-rpc", feature = "habitat-link"))]
+    {
+        let serialized = serde_json::to_value(previous).unwrap();
+        assert_eq!(serialized.as_object().unwrap().len(), 3);
+        assert_eq!(serialized["before"].as_object().unwrap().len(), 3);
+        assert_eq!(serialized["after"].as_object().unwrap().len(), 3);
+        assert_eq!(serialized["before"]["selected"], "direct");
+        assert!(serialized.to_string().len() < 256);
+    }
+    assert_eq!(fixture.client(7).last_successful_observation(), None);
+}
+
 /// Explicit network qualification: only synthetic ciphertext leaves this host.
 /// Two local endpoints exercise the public relay, not independent NAT networks.
 #[test]

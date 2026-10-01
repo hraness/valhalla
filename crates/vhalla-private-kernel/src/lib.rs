@@ -30,7 +30,7 @@ pub use contact::{
     ConfidentialContactOffer, ContactBootstrap, MAX_CONTACT_OFFERS, MAX_CONTACT_TTL,
     MAX_OFFER_BYTES,
 };
-pub use transport::{CommittedEncryptedControl, EncryptedControlPage};
+pub use transport::{control_sequence_hint, CommittedEncryptedControl, EncryptedControlPage};
 
 pub use engine::acceptance::MemberAcceptance;
 pub use engine::{

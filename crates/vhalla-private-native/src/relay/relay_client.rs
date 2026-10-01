@@ -1,7 +1,7 @@
 //! A caller-selected authenticated transport sharing one mailbox protocol.
 use super::{
     delivery,
-    iroh::IrohRelay,
+    iroh::{IrohRelay, TransportObservation},
     net::{NetError, PageSource, ScanFailure},
     tls::TlsRelay,
     RelayItem, RelayNamespace, RelayPage, RelayReceipt,
@@ -35,6 +35,21 @@ impl RelayClient {
     /// Nonsecret transport trust commitment for retained delivery jobs.
     pub fn endpoint_id(&self) -> delivery::EndpointId {
         selected!(self, endpoint_id)
+    }
+    /// Last successful validated Iroh reply in this client lifetime. TLS has
+    /// no Iroh path observation; configured addresses are not observations.
+    pub fn last_successful_observation(&self) -> Option<TransportObservation> {
+        match self {
+            Self::Tls(_) => None,
+            Self::Iroh(client) => client.last_successful_observation(),
+        }
+    }
+    /// Clear diagnostic history after the owner completes all outstanding
+    /// calls. This does not alter transport selection, jobs or room authority.
+    pub fn clear_observation(&mut self) {
+        if let Self::Iroh(client) = self {
+            client.clear_observation();
+        }
     }
     /// Submit already-encrypted immutable bytes.
     pub fn submit(&self, item: &RelayItem) -> Result<RelayReceipt> {

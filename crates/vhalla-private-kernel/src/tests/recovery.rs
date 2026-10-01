@@ -578,6 +578,78 @@ impl ArchiveStore for BudgetStore {
 }
 
 #[test]
+fn storage_accounting_reports_exact_local_usage_without_writing() {
+    block_on(async {
+        let mut pair = rich().await;
+        let retained = pair.owner_disk.snapshot();
+        let usage = pair.owner.storage_accounting().await.unwrap();
+        assert_eq!(usage.records, retained.1.len() as u64);
+        assert_eq!(
+            usage.bytes,
+            retained
+                .1
+                .values()
+                .map(|record| record.as_bytes().len() as u64)
+                .sum::<u64>()
+        );
+        assert_eq!(usage.max_records, 1_000_000);
+        assert_eq!(usage.max_bytes, 1 << 30);
+        assert!(!pair.owner.needs_reopen());
+        assert!(pair.owner_disk.snapshot() == retained);
+    });
+}
+
+#[test]
+fn storage_accounting_refuses_stale_images_and_invalid_counters_until_reopen() {
+    block_on(async {
+        let mut pair = rich().await;
+        let context = pair.owner.status().context;
+        let mut stale = Kernel::open(pair.owner_disk.clone(), &pair.owner_key, context)
+            .await
+            .unwrap();
+        pair.owner
+            .test_send(op(40), b"advance retained image", pair.now)
+            .await
+            .unwrap();
+        let retained = pair.owner_disk.snapshot();
+        assert_eq!(stale.storage_accounting().await, Err(Error::Conflict));
+        assert!(stale.needs_reopen());
+        assert_eq!(stale.storage_accounting().await, Err(Error::NeedsReopen));
+        for (records, bytes) in [(0, 1 << 30), (1_000_000, 0)] {
+            let store = BudgetStore::new(pair.owner_disk.clone(), records, bytes);
+            let mut kernel = Kernel::open(store, &pair.owner_key, context).await.unwrap();
+            assert_eq!(kernel.storage_accounting().await, Err(Error::Conflict));
+            assert!(kernel.needs_reopen());
+        }
+        assert!(pair.owner_disk.snapshot() == retained);
+        let mut reopened = Kernel::open(pair.owner_disk.clone(), &pair.owner_key, context)
+            .await
+            .unwrap();
+        assert!(reopened.storage_accounting().await.is_ok());
+    });
+}
+
+#[test]
+fn canceled_storage_accounting_latches_the_session_and_preserves_records() {
+    block_on(async {
+        let pair = rich().await;
+        let context = pair.owner.status().context;
+        let retained = pair.owner_disk.snapshot();
+        let store = BudgetStore::new(pair.owner_disk.clone(), 1_000_000, 1 << 30);
+        store.block_accounting.set(true);
+        let mut kernel = Kernel::open(store, &pair.owner_key, context).await.unwrap();
+        {
+            let mut pending = Box::pin(kernel.storage_accounting());
+            let mut task = TaskContext::from_waker(std::task::Waker::noop());
+            assert!(matches!(pending.as_mut().poll(&mut task), Poll::Pending));
+        }
+        assert!(kernel.needs_reopen());
+        assert_eq!(kernel.storage_accounting().await, Err(Error::NeedsReopen));
+        assert!(pair.owner_disk.snapshot() == retained);
+    });
+}
+
+#[test]
 fn recovery_capacity_is_checked_before_destination_write_and_orphans_never_reset() {
     block_on(async {
         let pair = rich().await;

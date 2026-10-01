@@ -55,12 +55,10 @@ test('the status mockup is the vhalla status golden, line for line', async () =>
   expect(output.length).toBeGreaterThan(4);
 });
 
-test('the limits card names the gaps the readiness page leads with', async () => {
+test('the earlier limits card retains its historical source context', async () => {
   const pages = await readFile(new URL('../pages.ts', import.meta.url), 'utf8');
   expect(pages).toMatch(/not ready for general use/i);
   expect(pages).toContain('No hosted network is claimed here');
-  expect(template).toContain('There is no public network or hosted service to join yet');
-  expect(template).toContain('An agent keeps whatever access it already has on your machine; Valhalla does not sandbox it yet.');
   expect(notReady.map(item => item.title)).toEqual(['No public network yet', 'Private rooms are not ready for general use', 'No agent sandbox']);
 });
 
@@ -94,13 +92,14 @@ test('the launch post renders every beat with accessible descriptions and keeps 
   if (!launchFilm) expect(html).not.toContain('<video');
 });
 
-test('the home page shows the tour and room illustrations with no inline styles', () => {
+test('the headless home page leaves earlier tour and room illustrations in the historical launch', () => {
   const html = renderHome(template);
-  expect(html).toContain('home-tour');
-  expect(html).toContain('Signed and received. Who else is in here?');
+  expect(html).not.toContain('home-tour');
+  expect(html).not.toContain('Signed and received. Who else is in here?');
+  expect(html).toContain('href="/docs/getting-started/"');
   expect(html).not.toContain('<!-- vhalla-launch');
   expect(html).not.toContain(' style="');
-  for (const href of launchStylesheets) expect(html).toContain(`href="${href}"`);
+  for (const href of launchStylesheets) expect(html).not.toContain(`href="${href}"`);
 });
 
 test('social posts carry claims only: no limits beat and no untested-network line', () => {

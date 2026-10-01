@@ -343,10 +343,6 @@ pub(crate) fn install_with(
                 .into(),
         );
     }
-    println!(
-        "{}",
-        serde_json::json!({"status":"installed","supervisor":"systemd","label":spec.label,"health":"not yet qualified; check TLS and durable retention separately"})
-    );
     Ok(())
 }
 
@@ -399,10 +395,6 @@ fn uninstall_bounded(
             );
         }
     }
-    println!(
-        "{}",
-        serde_json::json!({"status":"uninstalled","supervisor":"systemd","label":spec.label,"home_preserved":true})
-    );
     Ok(())
 }
 
@@ -582,9 +574,25 @@ pub(crate) mod linux {
         }
     }
     pub(crate) fn agent_install(spec: &UnitSpec) -> Result<(), String> {
+        agent_install_quiet(spec)?;
+        println!(
+            "{}",
+            serde_json::json!({"status":"installed","supervisor":"systemd","label":spec.label,"health":"not yet qualified; check TLS and durable retention separately"})
+        );
+        Ok(())
+    }
+    pub(crate) fn agent_install_quiet(spec: &UnitSpec) -> Result<(), String> {
         install_with(spec, || destination(spec, true), command)
     }
     pub(crate) fn agent_uninstall(spec: &UnitSpec) -> Result<(), String> {
+        agent_uninstall_quiet(spec)?;
+        println!(
+            "{}",
+            serde_json::json!({"status":"uninstalled","supervisor":"systemd","label":spec.label,"home_preserved":true})
+        );
+        Ok(())
+    }
+    pub(crate) fn agent_uninstall_quiet(spec: &UnitSpec) -> Result<(), String> {
         uninstall_with(spec, &destination(spec, false)?, command)
     }
 }

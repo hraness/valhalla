@@ -1,0 +1,329 @@
+name: Headless independent runners
+
+# Advisory live evidence. Provider availability does not redefine the
+# deterministic Required gate. Each room mode uses its own pair of runners.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: headless-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: short
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: headless-qualification
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check controller failure and evidence contracts
+        run: |
+          python3 -m unittest discover -s .github/scripts -p '*qualification.py'
+          python3 -m unittest discover -s .github/scripts -p 'test_headless_measurement.py'
+      - name: Compile the actual headless CLI once
+        run: |
+          cargo build --locked -p vhalla-cli --bin vhalla --no-default-features --features headless --message-format=json > "$RUNNER_TEMP/headless-build.jsonl"
+          python3 .github/scripts/headless_qualification.py package --cargo-messages "$RUNNER_TEMP/headless-build.jsonl" --bundle "$RUNNER_TEMP/headless-bundle"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-bundle/
+          if-no-files-found: error
+          retention-days: 3
+
+  host:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-bundle
+      - name: Start the synthetic public room owner
+        run: python3 .github/scripts/headless_qualification.py host-start --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-host"
+      - name: Publish the public room link
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-host/descriptor.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Admit this run's member and wait for its offline transition
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 .github/scripts/headless_qualification.py host-admit --work "$RUNNER_TEMP/headless-host"
+          python3 .github/scripts/headless_qualification.py host-offline --work "$RUNNER_TEMP/headless-host"
+      - name: Publish the replacement peer after stopping the owner
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-host-offline-ready-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-host/host-offline-ready.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Await the member's verified catch-up and stop the replacement
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_qualification.py host-wait --work "$RUNNER_TEMP/headless-host"
+      - name: Always join the exact owned host processes
+        if: always()
+        run: python3 .github/scripts/headless_qualification.py host-stop --work "$RUNNER_TEMP/headless-host"
+      - name: Retain sanitized host evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-host/host-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  client:
+    # Descriptor exchange happens while both independent jobs are running.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-bundle
+      - name: Verify the room link and join without writer authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_qualification.py client-start --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-client"
+      - name: Publish the member's public identity and peer link
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-client-offer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-client/client-offer.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Exchange signed messages and stop the member
+        run: python3 .github/scripts/headless_qualification.py client-offline --work "$RUNNER_TEMP/headless-client"
+      - name: Publish the offline transition
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-client-offline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-client/client-offline.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Restart retained state and catch up from the replacement peer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_qualification.py client-wait --work "$RUNNER_TEMP/headless-client"
+      - name: Always join the exact owned member processes
+        if: always()
+        run: python3 .github/scripts/headless_qualification.py client-stop --work "$RUNNER_TEMP/headless-client"
+      - name: Retain sanitized member evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-client-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-client/client-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  private-host:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-bundle
+      - name: Start a disposable private mailbox and room owner
+        run: python3 .github/scripts/headless_private_qualification.py host-start --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-private-host"
+      # These short-retention handoffs contain fresh synthetic bootstrap data.
+      # Tokens have no cryptographic expiry; always-stop closes their mailbox.
+      - name: Share this run's mailbox setup
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-host/descriptor.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Offer membership to both synthetic clients
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_private_qualification.py host-offers --work "$RUNNER_TEMP/headless-private-host"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-host-offers-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-host/host-offers.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Accept this run's membership requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_private_qualification.py host-admit --work "$RUNNER_TEMP/headless-private-host"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-host-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-host/host-admission.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Verify acceptance and send while the member is offline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_private_qualification.py host-offline --work "$RUNNER_TEMP/headless-private-host"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-host-offline-ready-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-host/host-offline-ready.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Remove the caught-up member and prove delivery after rekey
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 .github/scripts/headless_private_qualification.py host-remove --work "$RUNNER_TEMP/headless-private-host"
+          python3 .github/scripts/headless_private_qualification.py host-wait --work "$RUNNER_TEMP/headless-private-host"
+      - name: Always join the exact owned private host processes
+        if: always()
+        run: python3 .github/scripts/headless_private_qualification.py host-stop --work "$RUNNER_TEMP/headless-private-host"
+      - name: Retain sanitized private host evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-host/host-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  private-client:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-bundle
+      - name: Create two clients for this run's private host
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_private_qualification.py client-start --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-private-client"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-client-hello-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-client/client-hello.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Request membership using the pinned owner offers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_private_qualification.py client-requests --work "$RUNNER_TEMP/headless-private-client"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-client-requests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-client/client-requests.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Exchange private messages and stop one member
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_private_qualification.py client-offline --work "$RUNNER_TEMP/headless-private-client"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-client-offline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-client/client-offline.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Restart the member and verify catch-up without duplicate messages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_private_qualification.py client-restart --work "$RUNNER_TEMP/headless-private-client"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-client-caught-up-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-client/client-caught-up.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Verify removal survives restart and the remaining member decrypts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/headless_private_qualification.py client-wait --work "$RUNNER_TEMP/headless-private-client"
+      - name: Always join the exact owned private client processes
+        if: always()
+        run: python3 .github/scripts/headless_private_qualification.py client-stop --work "$RUNNER_TEMP/headless-private-client"
+      - name: Retain sanitized private client evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-private-client-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-private-client/client-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  result:
+    name: Headless qualification result
+    if: always()
+    needs: [build, host, client, private-host, private-client]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require both roles and their cleanup to succeed
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          HOST_RESULT: ${{ needs.host.result }}
+          CLIENT_RESULT: ${{ needs.client.result }}
+          PRIVATE_HOST_RESULT: ${{ needs.private-host.result }}
+          PRIVATE_CLIENT_RESULT: ${{ needs.private-client.result }}
+        run: |
+          test "$BUILD_RESULT" = success
+          test "$HOST_RESULT" = success
+          test "$CLIENT_RESULT" = success
+          test "$PRIVATE_HOST_RESULT" = success
+          test "$PRIVATE_CLIENT_RESULT" = success

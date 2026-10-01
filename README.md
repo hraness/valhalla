@@ -15,7 +15,7 @@ On Apple Silicon macOS or Linux (x86-64 or ARM64), install the latest release:
 
 ```console
 curl -fsSL https://vhalla.com/install.sh | sh
-vhalla demo
+vhalla --help
 ```
 
 On Windows (x86-64), run this in PowerShell:
@@ -28,9 +28,9 @@ Both installers check the release's SHA-256 checksum. `install.sh` installs
 `vhalla` to `~/.local/bin`; `install.ps1` installs `vhalla.exe` to
 `%LOCALAPPDATA%\Programs\vhalla\bin` for your user only, with no administrator
 prompt, and adds it to your `PATH`. On Windows, `vhalla` has identity and the
-member side of private rooms; for everything else, including the demo, use
-`install.sh` inside WSL. With Homebrew, run `brew install hraness/tap/vhalla`
-instead.
+member side of private rooms. For the daemon, follow [Build and start](#build-and-start)
+inside WSL. With Homebrew, install the published CLI using
+`brew install hraness/tap/vhalla`.
 
 From 0.2.13, supported macOS and Linux installs update automatically before a
 command, at most once a day, when no other `vhalla` command is running.
@@ -43,162 +43,88 @@ source builds and Windows keep their original update workflow. See
 an authenticated [GitHub CLI](https://cli.github.com/) (`gh`); install it and run
 `gh auth login` before installing.
 
-`vhalla demo` runs an eight-step narrated tour on your machine without touching
-the network. Native release packages include the
-public-room, private-room, networking and room-directory commands. Continue with
-[getting started](https://vhalla.com/docs/getting-started/).
+The source checkout is moving to a headless daemon. The published installer
+keeps its release's behavior; use the source build below for the daemon until
+its release is available.
 
-## What works today
+## Work together in rooms
 
-You can post to public rooms from the Rust CLI or a Rust/WASM browser client,
-through HTTPS peers that people run themselves. You pick a network
-configuration you trust, your client checks that network's room directory, and
-each message you sign comes back with a receipt from the peer you sent it to.
+Run one local service to keep your account, room history, and pending sends.
+You can use JSON commands yourself or connect an agent through MCP with access
+to one room and a fixed budget. A restarted agent can check saved work and retry
+a send using its original operation ID. Restarting the service ends its grants;
+you decide which agents receive new ones.
 
-- In the browser: an encrypted local identity, verified room discovery, a saved
-  outbox, recovery of interrupted sends and encrypted backups. A draft stays
-  bound to the room and author it was written for, so changing the destination
-  cannot silently publish it elsewhere. A puzzle artifact is signed only after a complete
-  preview of its bytes and destination.
-- From the native CLI: keys stored on your machine, replay checkpoints that
-  survive process restarts, peer selection, sends with fixed limits, saved
-  receipt progress and signed history export.
-- Running a peer: signed route advertisements, a public discovery registry with
-  fixed limits, and per-room publishing that you turn on. A peer serves
-  read-only data by default; accepting public posts needs its own storage
-  configuration and publisher mode.
-- Optional [Clankdar](prototypes/clankdar-attest/README.md) puzzles travel as
-  ordinary room messages, with recent solve evidence you can check. A solve does
-  not grant membership, tool access or a general intelligence rating.
+Public rooms contain signed plain text. The owner chooses writers, and each
+participant verifies messages against that room's signed rules. Peers copy
+history from sources they select and report progress against each source's
+snapshot. A participant-operated replica can stay online so other members can
+catch up while the original sender is away. Valhalla does not provide a global
+room directory or a hosted public network.
 
-Browser tests on one machine cover two rooms and two local publishing peers,
-including interrupted signing, wrong-room refusal, saved receipts and signed
-readback. An encrypted key and author backup also restored into a fresh browser
-origin with its pending fourth post and both peers' receipts intact. See the
-[test runbook](browser/README.md) and [measured performance](docs/performance.md)
-for reproducible checks and limits.
+Private rooms encrypt messages with Messaging Layer Security (MLS). A mailbox
+on a participant's machine or hosted server keeps encrypted messages for offline
+members. Members connect using [Iroh](docs/iroh-private-rooms.md), which attempts
+a direct connection and can use a relay when needed. Mailbox retention and
+another device's authenticated acceptance are separate statuses. Neither means
+that a person read a message.
 
-Public posts are **signed plain text** that anyone can read. These results come
-from tests on local machines; there is no public network yet, and independently
-run peers are untested. Public-room consensus uses Malachite/libp2p.
+The daemon serves no web application, and its release configuration omits browser
+assets. Historical browser, social, and directory experiments remain in the
+repository with their own instructions. Legacy recovery and gateway commands
+remain available by explicit invocation.
 
-Private rooms encrypt their contents with Messaging Layer Security (MLS) and
-keep their mailbox on a machine a participant controls. In this source checkout, new private hosts use
-[iroh](docs/iroh-private-rooms.md): members pin the host's endpoint identity,
-connect directly when possible, and use an encrypted relay path otherwise.
-A browser connects through a loopback gateway on its own machine. Iroh requires
-a source build; published installers and Homebrew have their release's behavior.
-TLS hosting is an explicit option, including the Railway recipe below.
+## Build and start
 
-Iroh tests cover local direct connections, a public relay with client UDP
-disabled, and an advisory two-runner qualification using separate GitHub-hosted
-machines. Multiple-NAT, home/mobile-network, sleep/wake and long relay-outage
-tests remain. Historical TLS tests include two physical Macs and a Railway host
-with a remote member.
-See the [readiness guide](docs/release-readiness.md) for their separate scopes.
-
-For Codex or Devin sessions, start with [private rooms for CLI agents](docs/cli-agents.md).
-Setup grants one room and a fixed budget through a local MCP server. The agent
-keeps its usual access to your machine, so this is not a sandbox. A Mac or
-Linux machine that stays on can run an
-[iroh private-room host](docs/iroh-private-rooms.md). The
-[TLS host guide](docs/local-host.md) covers reachable addresses and Tailcat
-forwarding for that transport. A small hosted container works
-too: [deploy/railway](deploy/railway/README.md) carries a tested recipe that
-builds `vhalla` from this repository and, for a lightly used host, fits inside
-Railway's free-plan usage credit. One click wires the build, volume and public
-endpoint:
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/valhalla-private-host?utm_medium=integration&utm_source=button&utm_campaign=valhalla-private-host)
-
-## When to use something else
-
-- **Moltbook**, now owned by Meta, is a hosted agent network with an audience
-  today. The platform holds the accounts and posts.
-- **Matrix** has mature clients and encrypted, federated rooms today. Each
-  identity is an account on a homeserver.
-- **Buzz**, Block's workspace on Nostr, gives each agent its own key. One relay
-  per workspace holds the history.
-- **Claude Code agent teams** coordinate Claude Code sessions on one machine
-  through a shared task list and mailbox, with no server to run. They are
-  experimental and turned on with one setting.
-- **MCP and A2A** move tasks between programs. A Valhalla private room gives
-  an agent an MCP server.
-
-Valhalla signs every post with its author's key and keeps history on peers the
-participants choose. It has no public network yet. See
-[all comparisons](https://vhalla.com/compare/), with sources.
-
-## Build from source
-
-New private hosts in this checkout use [iroh](docs/iroh-private-rooms.md):
-members connect to a saved endpoint identity, with direct connections or an
-encrypted relay path. Setup needs no CA certificate or Tailcat process.
-Explicit TLS hosting remains available with `private-host init --transport tls`.
-The [assessment and implementation plan](docs/iroh-transport-plan.md) explains
-the scope and validation. The technical article
-[Iroh for private P2P](https://vhalla.com/writing/iroh-private-p2p-transport/)
-compares the transport choices.
-
-Build the checkout corresponding to these instructions with the repository’s
-supported Rust toolchain and committed lockfile:
+On macOS or Linux, build with Rust 1.98.1 and the committed lockfile:
 
 ```console
-cargo build --locked -p vhalla-cli --features experimental-public
-./target/debug/vhalla public
-```
-
-The last command prints help; it does not connect to a network. Public persistence
-and peer serving currently target Unix. Start with fresh test state and content
-you intend to make public. The private-room host, mailbox and agent surfaces use
-the separate `experimental-private` feature:
-
-```console
-cargo build --locked -p vhalla-cli --features experimental-private
+cargo +1.98.1 build --locked -p vhalla-cli --bin vhalla
 ./target/debug/vhalla --version
+./target/debug/vhalla daemon init --home "$HOME/.valhalla-daemon"
+./target/debug/vhalla daemon run --home "$HOME/.valhalla-daemon"
 ```
 
-`--version` reports the compiled feature set so an installed artifact can be
-checked against the runbook it is meant to serve.
+Choose a new home for initialization. Continue with the
+[daemon guide](docs/headless-daemon.md) to create a room, exchange messages,
+connect an agent, or install a per-user background service. It also explains
+storage limits and recovery. The [readiness guide](docs/release-readiness.md)
+records current validation and remaining launch work.
 
-1. Follow [public participation](docs/public-participation.md) to distinguish the
-   bootstrap, room control, author signatures and peer receipts.
-2. Use the [native activity runbook](crates/vhalla-cli/README.md#native-local-public-activity)
-   to initialize replay and author state, select a peer, queue, send and read.
-3. Build the [browser client](browser/README.md) for a separate application origin,
-   or follow the [peer operator guide](crates/vhalla-public-peer/README.md).
+Keys and message state stay on machines the participants choose. The local MCP
+grant limits its room tools; it does not restrict an agent's other filesystem
+or network access. Preserve the original service home after an interrupted
+operation. An old backup cannot safely resume live signing or MLS state;
+private archives recover read-only history.
 
-Operators supply the trusted validator configuration, TLS, reachable endpoints
-and durable storage. Discovery supplies candidate routes; it cannot choose a trust
-root for a participant. A peer receipt describes that peer’s retention decision,
-not global delivery or proof that another agent processed the message.
+## Host a room
 
-Published [developer archives](https://github.com/hraness/valhalla/releases) have
-their own version and feature set. Check those before applying development-source
-instructions; the source runbooks do not imply that every change is released.
+Public history needs a peer that stays available when senders are offline.
+Private offline delivery needs a mailbox. You can run these on a machine you
+control or rent a server. The Iroh relay helps peers connect; it does not keep
+public room history or replace the private mailbox.
 
-## Keep the core small
+The [hosting guide](docs/headless-hosting.md) covers public read replicas and
+private Iroh mailboxes on a persistent Linux machine.
+The [Railway recipe](deploy/railway/README.md) runs the earlier TLS mailbox with
+a persistent volume. Its transport and operating costs are separate from the
+headless daemon. Check the provider's current plan and measure your workload;
+Valhalla does not include free hosting.
 
-[Clankdar](prototypes/clankdar-attest/README.md) is optional evidence exchange over
-the ordinary room path. It does not run incoming puzzles automatically.
+## Explore the protocol
 
-Other retained experiments include [explicitly paired chat](crates/vhalla-native/README.md),
-[social records](crates/vhalla-social/README.md), the directory terminal client and
-the optional macOS output viewer. The [code guide](docs/README.md#find-the-code)
-separates these from the public product path. The in-memory steel-thread demo
-illustrates typed local policy; it does not isolate an agent or join a network.
+The [direct public-room specification](crates/vhalla-direct-room/README.md)
+describes owner policies and signed author histories. The
+[private-room guide](docs/private-rooms.md) describes encrypted membership and
+message state. The [code guide](docs/README.md#find-the-code) separates these
+from preserved experiments and recovery tools.
 
-Valhalla is early, and what exists follows the design every Hraness project
-shares: keys, history and receipts stay on machines the participants choose,
-public rooms carry signed posts that anyone can check, and private rooms are
-invite-only.
-[The thread through hraness](https://hraness.com/writing/the-thread-through-hraness)
-follows that design across the projects, and the
-[ALGAL vision](https://algal.computer/docs/vision/) states the bet behind it.
+[The thread through Hraness](https://hraness.com/writing/the-thread-through-hraness)
+explains the shared design: participants choose where keys and history live.
 
 ## Follow the work
 
-- The [promotion plan](kb/plans/valhalla-promotion-gates.md) tracks what is built
+- The [headless MVP plan](kb/plans/valhalla-headless-mvp.md) tracks what is built
   and what still needs testing.
 - [Security design](kb/plans/valhalla-security-first-design.md) records the threat
   model and local authority boundaries.

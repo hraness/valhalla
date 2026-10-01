@@ -1,7 +1,7 @@
 name: Nightly
 
-# The complete Rust/site gate on main every night, including every prototype,
-# Kani, browser journey and formal model that pull requests and main pushes
+# The complete native Rust/site gate on main every night, including every prototype,
+# Kani proof and formal model that pull requests and main pushes
 # skip when their inputs did not change (.github/scripts/verify_scope.py).
 # A failure keeps the run red and opens, or comments on, one tracking issue;
 # the next green night closes it. A scheduled night whose main head already
@@ -12,6 +12,12 @@ on:
   schedule:
     - cron: "37 6 * * *"
   workflow_dispatch:
+    inputs:
+      legacy_browser:
+        description: Also build and exercise the retained browser app
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -55,6 +61,8 @@ jobs:
     needs: freshness
     if: always() && needs.freshness.outputs.fresh != 'true'
     uses: ./.github/workflows/rust.yml
+    with:
+      legacy_browser: ${{ github.event_name == 'workflow_dispatch' && inputs.legacy_browser }}
     # A reusable workflow's jobs cannot exceed the caller's token scope; the
     # Rust workflow's change-filter job requests pull-requests: read.
     permissions:
@@ -92,7 +100,7 @@ jobs:
           if [ "$RESULT" = cancelled ]; then verb="was cancelled"; fi
           body="The nightly full gate $verb on ${SHA::12}: $RUN_URL
 
-          Pull requests run only the prototypes, Kani proofs, browser journeys and formal models their changes reach, so this may be the first run to see the failure. Fix forward on main; the next green nightly closes this issue."
+          Pull requests run only the prototypes, Kani proofs and formal models their changes reach, so this may be the first run to see the failure. The retained browser app is an explicit manual option. Fix forward on main; the next green nightly closes this issue."
           if [ -n "$number" ]; then
             gh issue comment "$number" --repo "$REPO" --body "Still failing ($RESULT) on ${SHA::12}: $RUN_URL"
           else

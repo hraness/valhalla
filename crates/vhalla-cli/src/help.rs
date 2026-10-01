@@ -23,6 +23,10 @@ fn version() -> &'static str {
 
 pub(crate) fn overview() -> String {
     let mut text = format!("{TAGLINE}\n\nStart here\n");
+    #[cfg(all(unix, feature = "headless"))]
+    text.push_str(
+        "  vhalla daemon init --home DIR   Create a headless service in a private folder\n",
+    );
     #[cfg(all(unix, feature = "experimental-social"))]
     text.push_str("  vhalla demo                     Take a local tour in a throwaway folder\n");
     text.push_str(
@@ -52,6 +56,8 @@ pub(crate) fn overview() -> String {
 fn topics() -> Vec<&'static str> {
     #[allow(unused_mut)]
     let mut topics = vec!["identity"];
+    #[cfg(all(unix, feature = "headless"))]
+    topics.insert(0, "daemon");
     #[cfg(feature = "experimental-private")]
     topics.push("private");
     #[cfg(all(unix, feature = "experimental-private"))]
@@ -72,6 +78,8 @@ fn topics() -> Vec<&'static str> {
 
 pub(crate) fn root() -> String {
     let mut text = format!("Usage: vhalla <command> [options]\n\n{TAGLINE}\n\nStart here\n");
+    #[cfg(all(unix, feature = "headless"))]
+    text.push_str("  daemon                Run the service and use JSON or MCP clients\n");
     #[cfg(all(unix, feature = "experimental-social"))]
     text.push_str("  demo                  Take a local tour in a throwaway folder\n");
     text.push_str(
@@ -319,6 +327,8 @@ fn with_newline(text: &str) -> String {
 /// The page for one topic, when this build has it.
 fn topic(name: &str) -> Option<String> {
     let page: String = match name {
+        #[cfg(all(unix, feature = "headless"))]
+        "daemon" => DAEMON.to_owned(),
         "identity" => IDENTITY.to_owned(),
         #[cfg(unix)]
         "menubar" => MENUBAR.to_owned(),
@@ -349,6 +359,28 @@ fn topic(name: &str) -> Option<String> {
     };
     Some(with_newline(&page))
 }
+
+#[cfg(all(unix, feature = "headless"))]
+const DAEMON: &str = "Headless service\n\n\
+  vhalla daemon init --home ABSOLUTE_PATH\n\
+  vhalla daemon run --home ABSOLUTE_PATH [--bind IP:PORT] [--relay-url HTTPS_URL] [--relay-only]\n\
+  vhalla daemon status --home ABSOLUTE_PATH\n\
+  vhalla daemon stop --home ABSOLUTE_PATH\n\
+  vhalla daemon call --home ABSOLUTE_PATH\n\
+  vhalla daemon mcp --home ABSOLUTE_PATH --grant ABSOLUTE_FILE\n\
+  vhalla daemon managed install --home ABSOLUTE_PATH [--bind IP:PORT] [--relay-url HTTPS_URL] [--relay-only]\n\
+  vhalla daemon managed status --home ABSOLUTE_PATH\n\
+  vhalla daemon managed uninstall --home ABSOLUTE_PATH\n\n\
+Init creates new service state. Run opens existing state and stays in the foreground.\n\
+Stop, SIGINT, and SIGTERM wait for accepted room work to finish.\n\n\
+Managed install opens existing, stopped service state before registering this executable.\n\
+Managed status and uninstall preserve the home, configuration, room data, and logs.\n\
+Relay-only requires an explicit HTTPS relay URL and disables direct IP transports.\n\n\
+Pipe one JSON request object into call, then close its input. It prints one JSON result.\n\
+Keep an operation's ID when checking or retrying an uncertain result.\n\n\
+MCP uses a grant.issue result saved in a file you own with mode 0600.\n\
+Connect both MCP streams through pipes or sockets. The client can use only that grant.\n\
+Restarting the daemon ends its grants; reconnecting does not renew their allowance.\n";
 
 fn is_help_flag(arg: &std::ffi::OsString) -> bool {
     arg == "--help" || arg == "-h"

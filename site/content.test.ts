@@ -55,23 +55,36 @@ test('documentation and marketing pages are static, accessible and correctly can
 test('readiness and privacy limitations stay discoverable from the home page', () => {
   expect(home).toContain('href="/docs/status/"');
   expect(home).toContain('Private rooms');
-  expect(home).toContain('Not ready');
-  expect(home).toContain('never touches the network');
-  expect(home).toContain('There is no public network or hosted service to join yet');
+  expect(home).toContain('headless daemon');
+  expect(home).toContain('source build');
   expect(home).not.toContain('href="https://app.vhalla.com');
   const status=pages.get('/docs/status/')!;
-  for(const phrase of ['4,096', '30 seconds', '512', 'Incremental finalization', 'Status/Stage hints never advance permanent retention', 'independent-machine']) {
+  for(const phrase of ['CLI/JSON', 'MCP', 'separate runners', 'pending', 'AT Protocol']) {
     expect(status).toContain(phrase);
   }
-  const privateRooms=pages.get('/docs/private-rooms/')!;
-  expect(privateRooms).toContain('experimental-private');
-  expect(privateRooms).toContain('The offer itself is secret');
-  expect(privateRooms).toContain('account-key backup cannot reconstruct');
-  expect(privateRooms).toContain('nothing is hosted');
-  const security=pages.get('/docs/security/')!;
-  expect(security).toContain('not ready');
-  expect(security).toContain('Cloud inference is a disclosure');
-  expect(security).toContain('Previously authorized readers can retain old messages');
+  const daemon=pages.get('/docs/headless-daemon/')!;
+  for (const operation of ['agent.status', 'agent.messages', 'agent.send', 'agent.outbox_status', 'public.sync_status', 'private.delivery_status']) expect(daemon).toContain(`<code>${operation}</code>`);
+  expect(daemon).toContain('read-only history');
+  expect(daemon).toContain('cloud model');
+  expect(daemon).toContain('64-room limit');
+  expect(daemon).toContain('eight selected sources');
+});
+
+test('earlier guides stay available with historical context outside primary navigation', () => {
+  for (const page of docs.filter(page => page.historical)) {
+    const html = pages.get(docHref(page))!;
+    expect(html, page.slug).toContain('data-historical-documentation');
+    expect(html, page.slug).toContain('href="/docs/headless-daemon/"');
+  }
+  expect(docs.find(page => page.slug === 'public-rooms')?.historical).toBe(true);
+  expect(docs.find(page => page.slug === 'private-rooms')?.historical).toBe(true);
+  expect(pages.get('/docs/historical-getting-started/')).toContain(`git checkout --detach ${documentedRevision}`);
+  expect(pages.get('/docs/historical-agent-setup/')).toContain('bootstrap-check');
+  expect(pages.get('/docs/historical-status/')).toContain('Incremental finalization');
+  const overview = docs.find(page => page.slug === '')!.content;
+  expect(overview).toContain('/docs/headless-daemon/');
+  expect(overview).not.toContain('/docs/public-rooms/');
+  expect(overview).not.toContain('/docs/clankdar/');
 });
 
 test('comparisons state custody and status', () => {
@@ -100,18 +113,21 @@ test('comparisons and use cases retain source-check dates in metadata', () => {
   }
 });
 
-test('repository source links name retained files at the documented immutable revision', async () => {
+test('historical source links keep immutable revisions and current guides name existing source files', async () => {
   expect(documentedRevision).toMatch(/^[0-9a-f]{40}$/);
   const checked=new Set<string>();
   for(const html of pages.values()) for(const match of html.matchAll(/href="https:\/\/github.com\/hraness\/valhalla\/blob\/([^/]+)\/([^"#]+)[^"]*"/g)) {
-    // Articles cite the revision they were fact-checked against; every other page cites the documented one.
-    expect([documentedRevision, articleEvidenceRevision, launchEvidenceRevision, irohEvidenceRevision]).toContain(match[1]);
+    if (match[1] === 'main') {
+      expect(['docs/headless-daemon.md', 'docs/headless-api.md', 'docs/iroh-private-rooms.md', 'docs/release-readiness.md', 'crates/vhalla-direct-room/README.md']).toContain(match[2]);
+    } else {
+      expect([documentedRevision, articleEvidenceRevision, launchEvidenceRevision, irohEvidenceRevision]).toContain(match[1]);
+    }
     if(checked.has(match[2])) continue;
     checked.add(match[2]);
     await access(new URL(`../${match[2]}`,import.meta.url));
   }
   expect(checked.size).toBeGreaterThan(0);
-  expect(pages.get('/docs/getting-started/')).toContain(`git checkout --detach ${documentedRevision}`);
+  expect(pages.get('/docs/getting-started/')).toContain('cargo +1.98.1 build --locked -p vhalla-cli --bin vhalla');
 });
 
 

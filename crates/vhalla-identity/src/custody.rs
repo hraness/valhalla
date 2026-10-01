@@ -127,6 +127,37 @@ impl Identity {
         self.key.verifying_key().to_bytes()
     }
 
+    /// Sign a checked direct-room genesis with this exact owner key. Creation
+    /// still requires controller authorization and durable room-state storage.
+    #[cfg(feature = "direct-room")]
+    pub fn sign_direct_genesis(
+        &self,
+        request: vhalla_direct_room::UnsignedGenesis,
+    ) -> Result<vhalla_direct_room::SignedGenesis, vhalla_direct_room::Error> {
+        request.sign_with_key(&self.key)
+    }
+
+    /// Sign a checked owner policy without exposing key bytes. The controller
+    /// must reserve its revision and preserve the full signed policy history.
+    #[cfg(feature = "direct-room")]
+    pub fn sign_direct_policy(
+        &self,
+        request: vhalla_direct_room::UnsignedPolicy,
+    ) -> Result<vhalla_direct_room::SignedPolicy, vhalla_direct_room::Error> {
+        request.sign_with_key(&self.key)
+    }
+
+    /// Sign a typed direct-room message. The caller must durably reserve these
+    /// exact unsigned bytes before signing and atomically retain the outbox and
+    /// chain position afterward. A restored key alone cannot reset that chain.
+    #[cfg(feature = "direct-room")]
+    pub fn sign_direct_event(
+        &self,
+        request: vhalla_direct_room::UnsignedEvent,
+    ) -> Result<vhalla_direct_room::SignedEvent, vhalla_direct_room::Error> {
+        request.sign_with_key(&self.key)
+    }
+
     /// Derive opaque private storage custody for this exact account and context.
     /// No seed or derived bytes are exported. This does not initialize or restore
     /// room state. Lock must drop every owned kernel as well as this identity;

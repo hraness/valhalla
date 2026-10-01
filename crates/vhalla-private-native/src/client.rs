@@ -8,6 +8,7 @@
 use crate::{bridge::KernelStore, private_rooms::Limits};
 use std::{
     path::Path,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use vhalla_identity::Identity;
@@ -25,6 +26,12 @@ use vhalla_private_kernel::{
 #[cfg(feature = "client")]
 pub mod agent;
 
+mod archive;
+mod delivery;
+
+#[cfg(feature = "direct-rooms")]
+mod direct;
+
 /// Private drained mailbox-generation evidence and controller maintenance.
 pub mod generation;
 
@@ -35,7 +42,7 @@ pub mod agent_rpc;
 /// Closed local failures; errors contain no key, password, message or path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
-    /// Lock destroyed both account and room custody. Open explicitly to continue.
+    /// This session released room custody and its account hold. Open to continue.
     Locked,
     /// No valid system clock. Never substitute a caller or peer supplied clock.
     Clock,
@@ -82,6 +89,96 @@ fn now() -> Result<u64> {
         .map_err(|_| Error::Clock)
 }
 
+/// Trusted local account custody shared by independently locked private rooms.
+///
+/// Consume one already-open [`Identity`] instead of opening the account once per
+/// room. The account key and exclusive file lock remain alive until this
+/// controller and every creation, room, agent, archive or maintenance handle are
+/// dropped or locked. Dropping this controller does not revoke existing sessions.
+/// A host-wide lock must first stop operations and drop/lock all those handles.
+///
+/// This move-only controller exposes no private key, generic signer, identity
+/// accessor or agent tool surface. Room operations still require exclusive mutable
+/// access to their own [`RoomSession`]; sharing an account never shares a room writer.
+pub struct AccountController {
+    identity: Arc<Identity>,
+}
+
+impl AccountController {
+    /// Retain the exact account and its existing exclusive custody lock.
+    pub fn new(identity: Identity) -> Self {
+        Self {
+            identity: Arc::new(identity),
+        }
+    }
+
+    /// Full account public key, not a signing capability or room permission.
+    #[must_use]
+    pub fn public_key(&self) -> [u8; 32] {
+        self.identity.public_key()
+    }
+
+    /// Prepare a fresh owner device and room; commit its never-used store
+    /// explicitly before treating it as a live room.
+    pub fn prepare_owner(&self, validity: Validity) -> Result<RoomCreation> {
+        RoomCreation::owner_shared(Arc::clone(&self.identity), validity)
+    }
+
+    /// Prepare an invited fresh member under an independently selected anchor.
+    /// Preparation and commit do not prove that the owner admitted this device.
+    pub fn prepare_member(
+        &self,
+        scope: PrivateRoomScope,
+        anchor: SignedRoomAnchor,
+        owner: SignedDeviceEnrollment,
+        validity: Validity,
+    ) -> Result<RoomCreation> {
+        RoomCreation::member_shared(Arc::clone(&self.identity), scope, anchor, owner, validity)
+    }
+
+    /// Prepare a fresh member only after proving the current owner's handoff
+    /// chain against the independently selected original anchor.
+    pub fn prepare_succeeded_member(
+        &self,
+        scope: PrivateRoomScope,
+        anchor: SignedRoomAnchor,
+        owner: SignedDeviceEnrollment,
+        successions: Vec<OwnerSuccessionProof>,
+        validity: Validity,
+    ) -> Result<RoomCreation> {
+        RoomCreation::member_succeeded_shared(
+            Arc::clone(&self.identity),
+            scope,
+            anchor,
+            owner,
+            successions,
+            validity,
+        )
+    }
+
+    /// Inspect one confidential owner-signed offer bound to this account and
+    /// prepare a fresh member. This neither contacts a relay nor joins the room.
+    pub fn prepare_contact_member(
+        &self,
+        offer: &[u8],
+        expected_owner: Key,
+        validity: Validity,
+    ) -> Result<RoomCreation> {
+        RoomCreation::from_contact_shared(
+            Arc::clone(&self.identity),
+            offer,
+            expected_owner,
+            validity,
+        )
+    }
+
+    /// Open the exact existing account/room/device context with an independent
+    /// room writer lock. Missing state never creates or replaces a room.
+    pub async fn open_room(&self, path: impl AsRef<Path>, context: Context) -> Result<RoomSession> {
+        RoomSession::open_shared(Arc::clone(&self.identity), path, context).await
+    }
+}
+
 enum Draft {
     Owner(Box<OwnerDraft>),
     Member(Box<MemberDraft>),
@@ -89,18 +186,23 @@ enum Draft {
 
 /// Unpublished, move-only creation. Inspect and retain its exact context before
 /// commit. Consuming it never means recovery of a previous device or ratchet.
-/// Dropping it destroys unpublished device and account custody.
+/// Dropping it destroys the unpublished device and releases its account hold.
 pub struct RoomCreation {
-    identity: Identity,
     draft: Draft,
     context: Context,
     enrollment: SignedDeviceEnrollment,
     anchor: SignedRoomAnchor,
+    // Drop unpublished device custody before the last account lock can release.
+    identity: Arc<Identity>,
 }
 impl RoomCreation {
     /// Prepare a fresh random owner device and room under this exact account.
     /// The caller authorizes creation and selects the half-open validity interval.
     pub fn owner(identity: Identity, validity: Validity) -> Result<Self> {
+        Self::owner_shared(Arc::new(identity), validity)
+    }
+
+    fn owner_shared(identity: Arc<Identity>, validity: Validity) -> Result<Self> {
         validity.check_at(now()?)?;
         let draft = OwnerDraft::new(Key::from_bytes(identity.public_key())?, validity)?;
         let enrollment = identity.sign_private_enrollment(draft.enrollment_request())?;
@@ -119,6 +221,16 @@ impl RoomCreation {
     /// full room anchor. Restoring an account never recreates an old device.
     pub fn member(
         identity: Identity,
+        scope: PrivateRoomScope,
+        anchor: SignedRoomAnchor,
+        owner: SignedDeviceEnrollment,
+        validity: Validity,
+    ) -> Result<Self> {
+        Self::member_shared(Arc::new(identity), scope, anchor, owner, validity)
+    }
+
+    fn member_shared(
+        identity: Arc<Identity>,
         scope: PrivateRoomScope,
         anchor: SignedRoomAnchor,
         owner: SignedDeviceEnrollment,
@@ -146,6 +258,24 @@ impl RoomCreation {
         successions: Vec<OwnerSuccessionProof>,
         validity: Validity,
     ) -> Result<Self> {
+        Self::member_succeeded_shared(
+            Arc::new(identity),
+            scope,
+            anchor,
+            owner,
+            successions,
+            validity,
+        )
+    }
+
+    fn member_succeeded_shared(
+        identity: Arc<Identity>,
+        scope: PrivateRoomScope,
+        anchor: SignedRoomAnchor,
+        owner: SignedDeviceEnrollment,
+        successions: Vec<OwnerSuccessionProof>,
+        validity: Validity,
+    ) -> Result<Self> {
         let draft = MemberDraft::new_succeeded(
             scope,
             anchor.clone(),
@@ -159,7 +289,7 @@ impl RoomCreation {
     }
 
     fn member_checked(
-        identity: Identity,
+        identity: Arc<Identity>,
         anchor: SignedRoomAnchor,
         draft: MemberDraft,
     ) -> Result<Self> {
@@ -183,6 +313,15 @@ impl RoomCreation {
         expected_owner: Key,
         validity: Validity,
     ) -> Result<Self> {
+        Self::from_contact_shared(Arc::new(identity), offer, expected_owner, validity)
+    }
+
+    fn from_contact_shared(
+        identity: Arc<Identity>,
+        offer: &[u8],
+        expected_owner: Key,
+        validity: Validity,
+    ) -> Result<Self> {
         let bootstrap = ContactBootstrap::inspect(
             offer,
             expected_owner,
@@ -191,7 +330,7 @@ impl RoomCreation {
         )?;
         let successions = bootstrap.successions();
         if successions.is_empty() {
-            Self::member(
+            Self::member_shared(
                 identity,
                 bootstrap.scope(),
                 bootstrap.anchor().clone(),
@@ -199,7 +338,7 @@ impl RoomCreation {
                 validity,
             )
         } else {
-            Self::member_succeeded(
+            Self::member_succeeded_shared(
                 identity,
                 bootstrap.scope(),
                 bootstrap.anchor().clone(),
@@ -256,13 +395,14 @@ impl RoomCreation {
 struct Custody {
     // Drop the room key/state/store before releasing the account custody lock.
     kernel: Kernel<KernelStore>,
-    identity: Identity,
+    identity: Arc<Identity>,
     delivery_paused: bool,
 }
 
 /// One exact room/device with account and kernel custody owned together.
 /// There is no raw key, generic signer, kernel accessor, clone or state-import API.
-/// Lock/drop destroys both handles; account-only lock cannot leave this kernel live.
+/// Lock/drop destroys this room and releases its shared account hold. Other rooms
+/// remain independent; the account lock is held until its last custodian drops.
 pub struct RoomSession {
     custody: Option<Custody>,
 }
@@ -271,6 +411,14 @@ impl RoomSession {
     /// before opening the backend. Missing state never falls back to creation.
     pub async fn open(
         identity: Identity,
+        path: impl AsRef<Path>,
+        context: Context,
+    ) -> Result<Self> {
+        Self::open_shared(Arc::new(identity), path, context).await
+    }
+
+    async fn open_shared(
+        identity: Arc<Identity>,
         path: impl AsRef<Path>,
         context: Context,
     ) -> Result<Self> {
@@ -287,14 +435,15 @@ impl RoomSession {
         })
     }
 
-    /// Destroy account and room custody together. Previously returned plaintext
-    /// cannot be retracted; the client must clear its own views and draft buffers.
+    /// Destroy room custody and release this session's account hold. Other rooms
+    /// and their controller keep their custody. Previously returned plaintext
+    /// cannot be retracted; clear the client's own views and draft buffers.
     /// Cancel/drop an outstanding borrowed operation before calling lock.
     pub fn lock(&mut self) {
         drop(self.custody.take());
     }
 
-    /// Whether this controller has destroyed its entire custody lifetime.
+    /// Whether this room session has released its entire custody lifetime.
     pub fn is_locked(&self) -> bool {
         self.custody.is_none()
     }
@@ -318,6 +467,15 @@ impl RoomSession {
     /// Reauthenticate complete recipient/account/device metadata before display.
     pub async fn membership(&mut self) -> Result<MembershipSnapshot> {
         Ok(self.live_mut()?.kernel.membership().await?)
+    }
+
+    /// Retained encrypted-record usage and immutable limits under this session's
+    /// existing custody. Failed/canceled reads require exact-store reopen; no
+    /// second writer, encrypted image, MLS state or recovery authority is exposed.
+    pub async fn storage_accounting(
+        &mut self,
+    ) -> Result<vhalla_private_kernel::storage::StorageUsage> {
+        Ok(self.live_mut()?.kernel.storage_accounting().await?)
     }
 
     /// Prepare the exact user-selected content for the current room and roster.

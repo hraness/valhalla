@@ -63,7 +63,7 @@ class SigningSourceTests(unittest.TestCase):
             self.assertNotIn(forbidden, SIGNER)
         self.assertIn("if: always()", SIGNER)
         self.assertIn("release_artifacts.py fetch-zip vhalla-unsigned", SIGNER)
-        smoke = WORKFLOW.split("\n  macos_smoke:", 1)[1].split("\n  browser:", 1)[0]
+        smoke = WORKFLOW.split("\n  macos_smoke:", 1)[1].split("\n  publish:", 1)[0]
         self.assertNotIn("secrets.", smoke)
         self.assertNotIn("environment:", smoke)
         self.assertIn("extract-signed", smoke)
