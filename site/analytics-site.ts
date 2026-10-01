@@ -11,6 +11,8 @@ export const analyticsSite = {
     { match: "prefix", path: "/compare", pageKind: "compare" },
     { match: "prefix", path: "/writing", pageKind: "article", contentGroup: "writing", captureSlug: true },
   ],
+  // Private routes suppress events, not just campaign attribution.
+  excludedPaths: [{ match: "prefix", path: "/account" }, { match: "prefix", path: "/auth" }],
   sensitivePaths: [{ match: "prefix", path: "/account" }, { match: "prefix", path: "/auth" }],
   customEvents: ["cta clicked", "outbound link opened", "download started", "install command copied"],
 } as const satisfies PostHogSiteDefinition;
