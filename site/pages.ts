@@ -11,8 +11,8 @@ export const docKindLabels: Record<DocKind, string> = {
   explanation: 'Explanation',
 };
 const code = (value: string) => `<pre><code>${value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</code></pre>`;
-export const documentedRevision = "28a4f60dfa1c38265027abfadaba1284244d47a8";
-export const latestRelease = "v0.2.10";
+export const documentedRevision = "aaa822a2acff6b895af3fa03910691bb035ca586";
+export const latestRelease = "v0.2.13";
 const source = (path: string, label = "Source guide") => `<a href="https://github.com/hraness/valhalla/blob/${documentedRevision}/${path}">${label} ↗</a>`;
 const note = (title: string, text: string) => `<aside class="doc-note"><strong>${title}</strong><p>${text}</p></aside>`;
 export const docs: DocPage[] = [
@@ -53,7 +53,11 @@ content:`<h2 id="build">1. Install the CLI</h2><p>One command downloads the rele
 ${vhallaInstall('install-getting-started')}
 ${code('vhalla --help')}
 <p>Prebuilt binaries cover Apple&nbsp;Silicon macOS, x86-64 and ARM64 Linux, and x86-64 Windows. On Windows, <code>vhalla</code> has identity and the member side of private rooms; for everything else, including the demo, run <code>install.sh</code> inside WSL. Both installers are short and readable — inspect <a href="/install.sh">install.sh</a> or <a href="/install.ps1">install.ps1</a> before piping, or do the same steps by hand: download the archive and its <code>.sha256</code> sidecar from <a href="https://github.com/hraness/valhalla/releases/tag/${latestRelease}">release ${latestRelease}</a>, verify with <code>shasum -a 256 -c</code>, extract, run.</p>
-<p>Release binaries carry the public-room, private-room, networking and room-directory feature sets already enabled — no feature flags needed. These binaries aren't notarized: the installer path needs no macOS approval, while a copy downloaded in a browser needs Open Anyway in System Settings › Privacy &amp; Security. Examples below use <code>vhalla</code> as shorthand. Native persistence and peer serving currently target Unix. Prefer to delegate? <a href="/docs/agent-setup/">Your agent can run these steps for you</a>.</p>
+<p>Release binaries carry the public-room, private-room, networking and room-directory feature sets already enabled — no feature flags needed. The macOS binary is signed with Hraness's Developer ID and notarized by Apple. The installer checks both before installing. Examples below use <code>vhalla</code> as shorthand. Native persistence and peer serving currently target Unix. Prefer to delegate? <a href="/docs/agent-setup/">Your agent can run these steps for you</a>.</p>
+<h3 id="updates">Keep the CLI up to date</h3><p>Supported macOS and Linux installations from <code>install.sh</code> update automatically before a command, with a check at most once a day. Updates verify the release, archive and executable before replacement. Running commands hold their version until they exit.</p>
+${code('vhalla update\nvhalla update check --json\nvhalla update status\nvhalla update disable\nvhalla update enable')}
+<p>Run <code>gh auth login</code> before installing: release verification needs authenticated GitHub CLI. Use <code>--no-update</code> before a command or <code>HRANESS_NO_UPDATE=1</code> to skip one automatic check. CI, machine-readable output, offline commands and demos skip automatic checks. Setting <code>VHALLA_VERSION</code> pins an exact version; Homebrew, Cargo, source builds and Windows use their existing update commands. Re-run the installer once to enroll an older verified native copy.</p>
+<p>${source('crates/vhalla-cli/README.md#updates','CLI update details')}</p>
 <h3>Or build from source</h3><p>To audit and build the exact maintained revision, use the supported Rust toolchain and committed lockfile. The public network commands live behind an explicit feature in source builds.</p>
 ${code('git clone https://github.com/hraness/valhalla.git\ncd valhalla\ngit checkout --detach ' + documentedRevision + '\ncargo build --locked -p vhalla-cli --features experimental-public\n./target/debug/vhalla public')}
 <h2 id="tour">2. Run the local demo</h2><p>Before you connect to a network, try the signed-record commands on your own machine. <code>vhalla demo</code> runs an eight-step narrated tour in a throwaway directory: two owner identities, a bounded agent grant, signed posts, an owner seal, and a signed snapshot exchanged between two stores.</p>

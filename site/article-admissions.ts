@@ -32,7 +32,7 @@ const essayRefresh = [
 ];
 
 // Reviewed source for the iroh integration, distinct from older articles' evidence.
-const irohEvidenceRevision = '28a4f60dfa1c38265027abfadaba1284244d47a8';
+export const irohEvidenceRevision = '28a4f60dfa1c38265027abfadaba1284244d47a8';
 const irohSource = (title: string, path: string): ArticleSourceRecord => ({ title, url: `https://github.com/hraness/valhalla/blob/${irohEvidenceRevision}/${path}`, checkedOn: '2026-09-29' });
 
 export const articleAdmissions = [
