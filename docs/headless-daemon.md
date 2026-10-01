@@ -189,6 +189,42 @@ selected sources per public room. Preserve full stores at their limit. Private
 history can be exported with the archive commands after stopping the daemon;
 continue new work in a new room instead of deleting retained records.
 
+### Measured local workload
+
+The 1 October 2026 optimized source build at `962db9e8` completed a sequential exchange
+between two participants in each room mode. Each scenario sent 48 live messages
+and eight while the receiver was stopped, all with 4,096-byte bodies, plus a
+warmup and final message. Exact retries and sender/receiver restarts preserved
+all 58 messages without duplicates.
+
+The run used direct loopback on an Apple M4 Max with 128 GiB RAM and 16 logical
+CPUs, running macOS 26.5.2. Other work shared the machine. Timings include CLI
+startup, polling, verification and measurement overhead.
+
+| Measurement | Public room | Private room |
+| --- | --- | --- |
+| Queue locally, median / 95th percentile | 50.9 / 64.0 ms | 26.8 / 288.3 ms |
+| Verified visibility, median / 95th percentile | 4.57 / 4.95 s | 0.29 / 1.59 s |
+| All eight offline messages visible after receiver restart | 7.62 s | 0.91 s |
+| Largest observed process RSS | 20.25 MiB | 22.97 MiB |
+| Final allocated space for the whole scenario | 1.97 MiB | 4.50 MiB |
+
+These results support a small sequential agent-conversation pilot. Public
+updates can take several seconds; check synchronization status when an agent
+needs a peer's latest message. This run does not establish Internet latency,
+concurrent-room throughput, sustained capacity, or a hosting bill. RSS is a
+sampled maximum, not true peak memory. Disk totals include both participants
+and, for private rooms, the mailbox, profiles and diagnostics; they are final
+allocations rather than measured growth.
+
+Both native stores were configured for 2,048 records and 8 MiB of retained
+payload. Private delivery queues allowed 64 jobs and 8 MiB each. Storage records
+include protocol metadata, so a record allowance is not a message allowance.
+The [measurement data](measurements/headless-2026-10-01.json) includes the binary
+hash, compiler profile, latency samples and before/after storage counters.
+
+### Preserve history and signing state
+
 Reopening the original intact home preserves signing and delivery state. Keep
 its entire contents and any separately selected profiles, tokens, certificates,
 and queue folders. A private archive provides an encrypted historical copy;

@@ -5,6 +5,19 @@ section whose heading matches the tag onto the GitHub Release page and refuses
 to publish when that section is missing or empty. Write the section in the
 change that prepares the tag, and keep published sections as they shipped.
 
+## 0.3.0 - 2026-10-01
+
+Valhalla adds a local daemon for public and private rooms, with JSON commands
+and room-scoped MCP clients for agents.
+
+- Create, join, send, read and inspect rooms through `vhalla daemon`. Install a per-user background service on macOS or Linux. The daemon serves no web application.
+- Public rooms use signed owner policy and author histories. Select peers explicitly, verify their saved history, and replace a read replica while keeping the room's pinned identity.
+- Private rooms retain MLS encryption, membership removal and rekeying. Queued sends survive restart; exact retries preserve their original bytes. Status distinguishes local storage, mailbox retention and authenticated device acceptance.
+- Give an MCP client access to one room with finite permissions and allowances. Revocation, expiry and daemon restart end access; reconnecting does not replenish it.
+- Inspect storage use and increase public-room, synchronization-store and service-catalog allowances without discarding history. Private archives remain read-only; recovery does not recreate a lost signing sequence or MLS device.
+- Unix release packages select the headless workflow and omit the browser application, social experiments and global room-directory requirement. Retained source features and historical readers preserve access to earlier formats. Windows keeps identity and member-side private commands.
+- Resume a cleanly stopped macOS service through launchd's restart throttle while preserving its selected home and service definition.
+
 ## 0.2.13 - 2026-09-30
 
 Supported native installations gain verified automatic updates. Release browser

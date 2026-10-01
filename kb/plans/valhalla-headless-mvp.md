@@ -173,12 +173,74 @@ candidate. No release or deployment has been made.
   passed the updated independent-runner workflow, which now builds `--release`.
   Documentation deployment and new-candidate readback remain pending.
 
-Next: resolve managed reinstall; validate the converged repairs; integrate the
-latest governed main; commit a fresh candidate; run independent public/private
-journeys with an optimized release build. Measure 48 sequential live messages
-and eight offline messages at 4,096 bytes in each mode on a clean release build,
-reporting the one-host scope and configured limits separately. Final native
-packaging, signing, installation/upgrade, release and launch review remain open.
+The repair commit is `48993c4c`; clean integration with governed main
+`dfc63402` produced `962db9e88c3253580e647b3c03e72957faac11ca`, now pushed to
+the same draft PR. Required CI
+[36884330556](https://github.com/hraness/valhalla/actions/runs/36884330556)
+passed all 67 executed jobs, with four intentional skips. Windows and Rust
+1.99 compatibility failures are resolved. Runtime was 698 seconds; this is one
+successful candidate sample, not a multi-run median. The unchanged
+`decided_history_survives_interleaved_restarts` test dominated the critical
+path: 609.570 seconds, compared with 495.730 seconds in the preceding run.
+Headless jobs did not determine completion time. Use the next planned candidate
+run for another successful timing sample before settling the 627-second
+baseline comparison.
+
+- A clean optimized build on Rust 1.98.1 completed in 2m22s. Immutable binary:
+  `/private/tmp/vhr-wttf8tnn/vhalla`; SHA-256:
+  `12e14d4109ba2a471ba15b3c55ce3175c4bf8041aaf7302b27ae1524100a3ada`.
+  The directory contains build/lock/profile/source evidence and frozen controller
+  copies. All ten managed macOS lifecycle cases passed in 32 seconds, with
+  ordinary cleanup and preserved history/configuration/logs.
+- The same optimized binary passed the local 48-live/eight-offline workload
+  with 4,096-byte messages in both modes, including exact retries and both
+  process restarts. Each mode verified 58 messages. Total elapsed time was
+  286.712 seconds and cleanup completed. The sanitized data is retained at
+  `docs/measurements/headless-2026-10-01.json`; SHA-256:
+  `002116c328d2a0aa8aca4609fad14a69bfc2a0ce218dea37c82fa52bc5eaa8fd`.
+  The daemon guide reports median/p95 latency, sampled RSS and final allocated
+  disk with the direct-loopback and sequential scope. Hardware: Apple M4 Max,
+  128 GiB RAM, 16 logical CPUs, macOS 26.5.2, with other machine work present.
+  Independent review confirmed every reported rounded number against the JSON.
+- A fresh isolated v0.2.13 installation passed canonical release and Apple
+  signature/notarization checks. The fixture at `/private/tmp/vhu-8x9vvj8o`
+  retains two accounts, bidirectional authenticated messages and inert archives.
+  The optimized new binary passed all 14 legacy read-only commands with matching
+  authenticated output; all 43 private state files retained their contents,
+  modes, inodes and inventory. This is source compatibility, not an installed
+  upgrade. Keep the fixture for the final published-tag upgrade.
+- The Linux systemd-user adapter and workflow passed independent review and 20
+  focused mocked tests. The job reuses the optimized binary and requires exact
+  unit/process identity, retained history after stop/resume, and owned cleanup.
+  Its live Linux evidence remains pending. Review also confirmed the new MCP
+  workflow job's source/lock/profile/hash checks and receipt-only publication.
+- The actual MCP pipe adapter passed nine focused tests and all 12 live cases
+  against the same optimized binary. It checked initialization, the binary's
+  reported version, four-tool discovery, fixed-room operations, exact retry,
+  and allowance refusal after reconnect. Cleanup succeeded without fallback.
+  Receipt: `/private/tmp/vhr-wttf8tnn/mcp-initialize2/receipt.json`. Preserve the
+  earlier parser-failure and successful pre-handshake fixtures separately.
+- A retained mailbox restart is being added to the private process journey:
+  after the mailbox saves a message while B is offline, restart the same host
+  selection before B catches up. This closes the hosted-data restart check
+  without changing the production protocol or its delivery mapping.
+- Source version and changelog are prepared for 0.3.0. Published installer/site
+  pins remain v0.2.13 until the new signed release succeeds. The CLI manifest and
+  lockfile agree, and the release-note section parser accepts the entry.
+- Final bounded independent public-protocol review found no blocker in pinned
+  authority, author continuity, persisted signing reservations, restart replay,
+  or terminal source-checkpoint verification. It covered all four direct-room
+  crates and the CLI sync integration. This was source review, not another test
+  run, and does not qualify whole-home rollback or compromised signing keys.
+- The new private restart controller passed 29 focused tests. Its actual local
+  three-participant run and the root aggregate Python gate are queued through
+  the host scheduler. All controller inputs are frozen; the next draft-PR push
+  starts remote validation while those local checks wait for admitted work to
+  finish. Neither pending local result is represented as a pass.
+
+Next: complete the Linux service check and optimized independent public/private
+journeys. Final native packaging, signing, installation/upgrade, release,
+documentation deployment/readback and launch review remain open.
 
 Initial audit confirms that the existing public activity format, NativeOutbox and
 continuity records bind the consensus/social directory. A direct owner-managed

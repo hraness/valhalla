@@ -354,6 +354,156 @@ class PrivateQualificationTests(unittest.TestCase):
             mailbox.stop()
         self.assertTrue(mailbox.forced)
 
+    @staticmethod
+    def mailbox_child(pid):
+        child = Mock(pid=pid)
+        child.poll.return_value = None
+        child.wait.return_value = 0
+        child.terminate.side_effect = lambda: setattr(child.poll, "return_value", 0)
+        return child
+
+    def retained_mailbox(self, directory, relay=qualification.RELAY):
+        work = Path(directory).resolve()
+        mailbox = qualification.Mailbox(self.config(relay=relay) | {"work": str(work)})
+        mailbox.home.mkdir(mode=0o700)
+        (mailbox.home / "mailbox").mkdir(mode=0o700)
+        endpoint = dict(endpoint_id="5" * 64, relay_url=relay,
+                        addresses=[] if relay else ["127.0.0.1:32123"])
+        connection = dict(version=2, transport="iroh", endpoint=endpoint, namespace="6" * 64,
+                          mailbox="mailbox", client_tokens="not included")
+        files = {"config.json": b"synthetic sealed selection", "complete": b"7" * 64,
+                 "endpoint.key": b"a" * 32, "connection.json": json.dumps(connection).encode(),
+                 "launch-agent.plist": b"synthetic selected executable", "maintenance.lock": b"",
+                 "mailbox/lock": b"", "mailbox/relay.db": b"synthetic opaque retained ciphertext"}
+        files.update({f"client-{index}.token": str(index).encode() * 64 for index in range(1, 4)})
+        for name, content in files.items():
+            path = mailbox.home / name
+            path.write_bytes(content)
+            path.chmod(0o600)
+        mailbox.child = self.mailbox_child(101)
+        return mailbox, connection
+
+    def test_mailbox_start_preserves_init_enrollment_and_initial_serve_order(self):
+        mailbox = qualification.Mailbox(self.config())
+        with patch.object(mailbox, "invoke", side_effect=[dict(status="initialized", transport="iroh"),
+                                                          dict(credential_index=3)]) as invoked, \
+                patch.object(mailbox, "serve", return_value={"connection": "initial"}) as served:
+            self.assertEqual(mailbox.start(), {"connection": "initial"})
+        self.assertEqual([call.args[0] for call in invoked.call_args_list], ["init", "add-credential"])
+        self.assertIn("0.0.0.0:0", invoked.call_args_list[0].args)
+        served.assert_called_once_with("mailbox-private.log")
+
+    def test_mailbox_restart_only_serves_same_home_and_retains_both_logs(self):
+        for relay in (None, qualification.RELAY):
+            with self.subTest(relay=relay), tempfile.TemporaryDirectory() as directory:
+                mailbox, connection = self.retained_mailbox(directory, relay)
+                initial = Path(directory) / "mailbox-private.log"
+                initial.write_bytes(b"retained initial startup diagnostics\n")
+                old = mailbox.child
+                new = self.mailbox_child(102)
+
+                def spawn(argv, **options):
+                    self.assertEqual(argv, mailbox.argv + ["serve", str(mailbox.home)])
+                    options["stdout"].write(json.dumps(dict(status="listening", transport="iroh",
+                                                         endpoint=connection["endpoint"])).encode() + b"\n")
+                    options["stdout"].flush()
+                    return new
+
+                with patch.object(mailbox, "invoke") as invoked, \
+                        patch.object(qualification.subprocess, "Popen", side_effect=spawn) as spawned:
+                    try:
+                        self.assertEqual(mailbox.restart(connection), connection)
+                        self.assertEqual(initial.read_bytes(), b"retained initial startup diagnostics\n")
+                        self.assertTrue((Path(directory) / "mailbox-restarted-private.log").is_file())
+                        evidence = qualification.read_json(Path(directory) / "mailbox-restart-private.json")
+                        self.assertTrue(evidence["stopped"] and evidence["resumed"])
+                        self.assertEqual((evidence["old_pid"], evidence["new_pid"]), (101, 102))
+                        old.terminate.assert_called_once()
+                        invoked.assert_not_called()
+                        spawned.assert_called_once()
+                    finally:
+                        mailbox.stop()
+                self.assertFalse(mailbox.forced)
+                self.assertIsNone(mailbox.child)
+
+    def test_restart_preserves_database_identity_while_allowing_sqlite_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mailbox, connection = self.retained_mailbox(directory)
+            before = mailbox.retained_selection()
+
+            def resume(*_args, **_kwargs):
+                with (mailbox.home / "mailbox/relay.db").open("ab") as database:
+                    database.write(b"normal SQLite drain/checkpoint writes")
+                mailbox.child = self.mailbox_child(102)
+                return connection
+
+            with patch.object(mailbox, "serve", side_effect=resume):
+                self.assertEqual(mailbox.restart(connection), connection)
+            self.assertEqual(mailbox.retained_selection(), before)
+            mailbox.stop()
+
+    def test_restart_refuses_selection_drift_before_resuming(self):
+        for name in ("config.json", "endpoint.key", "connection.json", "client-2.token", "mailbox/relay.db"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                mailbox, connection = self.retained_mailbox(directory)
+                stop = mailbox.stop
+
+                def changed():
+                    stop()
+                    path = mailbox.home / name
+                    if name == "mailbox/relay.db":
+                        raw = path.read_bytes()
+                        path.rename(path.with_suffix(".retained"))
+                        path.write_bytes(raw)
+                        path.chmod(0o600)
+                    else:
+                        path.write_bytes(b"changed retained selection")
+
+                with patch.object(mailbox, "stop", side_effect=changed), patch.object(mailbox, "serve") as served:
+                    with self.assertRaises(ValueError):
+                        mailbox.restart(connection)
+                    served.assert_not_called()
+                self.assertIsNone(mailbox.child)
+
+    def test_restart_refuses_identity_change_after_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mailbox, connection = self.retained_mailbox(directory)
+
+            def changed(*_args, **_kwargs):
+                (mailbox.home / "client-3.token").write_bytes(b"changed credential")
+                mailbox.child = self.mailbox_child(102)
+                return connection
+
+            with patch.object(mailbox, "serve", side_effect=changed):
+                with self.assertRaises(ValueError):
+                    mailbox.restart(connection)
+            evidence = qualification.read_json(Path(directory) / "mailbox-restart-private.json")
+            self.assertTrue(evidence["stopped"])
+            self.assertFalse(evidence["resumed"])
+            mailbox.stop()
+
+    def test_mailbox_readiness_timeout_leaves_owned_child_available_for_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mailbox = qualification.Mailbox(self.config() | {"work": directory})
+            child = self.mailbox_child(102)
+            with patch.object(qualification.subprocess, "Popen", return_value=child), \
+                    patch.object(qualification.time, "monotonic", side_effect=[0, 46]):
+                with self.assertRaises(TimeoutError):
+                    mailbox.serve("mailbox-restarted-private.log", exclusive=True)
+            self.assertIs(mailbox.child, child)
+            mailbox.stop()
+            child.terminate.assert_called_once()
+            child.kill.assert_not_called()
+            self.assertIsNone(mailbox.child)
+            self.assertIsNone(mailbox.log)
+
+    def test_host_evidence_requires_retained_mailbox_restart_and_selection(self):
+        value = dict(cases={name: True for name in qualification.HOST_CASES}, remote_machine="f" * 64)
+        qualification.validate_result(value, "host")
+        for name in ("mailbox_same_home_restarted", "mailbox_selection_unchanged"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                qualification.validate_result(value | {"cases": value["cases"] | {name: False}}, "host")
+
     def test_candidate_mismatch_is_refused_before_launching_a_role(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory).resolve()

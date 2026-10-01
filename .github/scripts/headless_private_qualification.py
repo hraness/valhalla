@@ -27,6 +27,7 @@ import re
 import secrets
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -42,7 +43,8 @@ LIMITS = public.LIMITS
 MAX_JSON = shared.MAX_JSON
 HOST_CASES = ("mailbox_iroh_started", "explicit_member_admission", "current_roster_verified",
               "member_b_reply_verified", "member_c_reply_verified", "signed_acceptances_verified",
-              "exact_retry", "offline_retained_without_b_acceptance", "offline_b_acceptance_verified",
+              "exact_retry", "offline_retained_without_b_acceptance", "mailbox_same_home_restarted",
+              "mailbox_selection_unchanged", "offline_b_acceptance_verified",
               "removal_rekeyed", "surviving_member_after_rekey", "service_joined", "mailbox_joined")
 CLIENT_CASES = ("owner_pin_verified", "preadmission_send_refused", "both_members_joined",
                 "owner_message_verified", "signed_acceptances_verified", "exact_retry",
@@ -420,11 +422,15 @@ class Mailbox:
                             "--relay-url", self.config["relay"] or "none", "--executable", self.config["binary"])
         require(value.get("status") == "initialized" and value.get("transport") == "iroh", "wrong mailbox transport")
         require(self.invoke("add-credential").get("credential_index") == 3, "third credential missing")
-        self.log = (Path(self.config["work"]) / "mailbox-private.log").open("wb")
+        return self.serve("mailbox-private.log")
+
+    def serve(self, log_name, *, exclusive=False):
+        require(self.child is None and self.log is None, "mailbox process is already selected")
+        path = Path(self.config["work"]) / log_name
+        self.log = path.open("xb" if exclusive else "wb")
         self.child = subprocess.Popen(self.argv + ["serve", str(self.home)], stdin=subprocess.DEVNULL,
                                       stdout=self.log, stderr=self.log, env=self.env)
         deadline = time.monotonic() + 45
-        path = Path(self.config["work"]) / "mailbox-private.log"
         while time.monotonic() < deadline:
             require(self.child.poll() is None, "mailbox exited before readiness")
             require(path.stat().st_size <= 16384, "mailbox readiness output exceeds bound")
@@ -438,6 +444,75 @@ class Mailbox:
                 return connection
             time.sleep(0.1)
         raise TimeoutError("mailbox readiness deadline")
+
+    def retained_selection(self):
+        """Commit selected identity files; inspect no live SQLite content."""
+        def identity(info):
+            return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink)
+
+        result = {}
+        for name, files in (("home", ("config.json", "complete", "endpoint.key", "connection.json",
+                                     "launch-agent.plist", "maintenance.lock", "client-1.token",
+                                     "client-2.token", "client-3.token")), ("mailbox", ("lock",))):
+            path = self.home if name == "home" else self.home / "mailbox"
+            directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                info = os.fstat(directory)
+                require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                        and info.st_mode & 0o7777 == 0o700, "unsafe retained mailbox directory")
+                result[name] = identity(info)
+                for filename in files:
+                    descriptor = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                    try:
+                        before = os.fstat(descriptor)
+                        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
+                                and before.st_nlink == 1 and before.st_mode & 0o7777 == 0o600
+                                and before.st_size <= 65536, "unsafe retained mailbox identity file")
+                        with os.fdopen(os.dup(descriptor), "rb") as source:
+                            raw = source.read(65537)
+                        after = os.fstat(descriptor)
+                        named = os.stat(filename, dir_fd=directory, follow_symlinks=False)
+                        require(len(raw) == before.st_size and identity(before) == identity(after) == identity(named)
+                                and before.st_mtime_ns == after.st_mtime_ns == named.st_mtime_ns
+                                and before.st_ctime_ns == after.st_ctime_ns == named.st_ctime_ns,
+                                "mailbox identity changed while reading")
+                        result[f"{name}/{filename}"] = dict(identity=identity(before),
+                            bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                    finally:
+                        os.close(descriptor)
+                if name == "mailbox":
+                    # SQLite may write while the old host drains and after the
+                    # retained host resumes. Bind its file, not mutable bytes.
+                    database = os.stat("relay.db", dir_fd=directory, follow_symlinks=False)
+                    require(stat.S_ISREG(database.st_mode) and database.st_uid == os.geteuid()
+                            and database.st_nlink == 1 and database.st_mode & 0o7777 == 0o600,
+                            "unsafe retained mailbox database")
+                    result["mailbox/relay.db"] = identity(database)
+                require(identity(path.lstat()) == identity(info), "mailbox directory changed while reading")
+            finally:
+                os.close(directory)
+        return result
+
+    def restart(self, connection):
+        require(self.child is not None and not self.forced, "no healthy mailbox process to restart")
+        old_pid = self.child.pid
+        before = self.retained_selection()
+        require(read_json(self.home / "connection.json") == connection, "selected mailbox connection changed")
+        evidence = dict(before=before, old_pid=old_pid, stopped=False, resumed=False)
+        path = Path(self.config["work"]) / "mailbox-restart-private.json"
+        write_json(path, evidence)
+        self.stop()
+        require(not self.forced and self.retained_selection() == before,
+                "mailbox selection changed while draining")
+        evidence["stopped"] = True
+        write_json(path, evidence)
+        # No init, enrollment, replacement endpoint, or new listener selection.
+        resumed = self.serve("mailbox-restarted-private.log", exclusive=True)
+        require(self.child.pid != old_pid and resumed == connection and self.retained_selection() == before,
+                "restarted mailbox changed its retained identity or selection")
+        evidence.update(resumed=True, new_pid=self.child.pid)
+        write_json(path, evidence)
+        return resumed
 
     def stop(self):
         try:
@@ -669,6 +744,11 @@ class Journey:
         self.wait(lambda: self.accepted(owner, sent_offline["sequence"], [requests["devices"]["c"]]))
         self.cases["offline_retained_without_b_acceptance"] = True
         self.observe(owner, "owner_offline")
+        self.phase("restart")
+        self.mailbox.restart(connection)
+        self.cases["mailbox_same_home_restarted"] = True
+        self.cases["mailbox_selection_unchanged"] = True
+        self.phase("catch_up")
         self.publish("host-offline-ready", client_machine=self.remote_machine, sequence=sent_offline["sequence"])
         caught = self.incoming("client-caught-up")
         require(caught["member_device"] == requests["devices"]["b"], "another member restarted")

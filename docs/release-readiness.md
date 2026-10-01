@@ -8,10 +8,16 @@ configuration for this source build omits browser assets and the social and
 room-directory experiments. Existing source and recovery tools remain available. Start with
 the [daemon guide](headless-daemon.md).
 
-This build is not launch-ready. The converged Rust tests, actual managed-service
-lifecycle, private process qualification, workload measurements, independent
-runner evidence, and final packaging checks are still being completed. Earlier
-browser and public-consensus evidence below does not qualify this daemon.
+This build is not launch-ready. Required CI, local public/private exchanges,
+macOS service installation and restart, and a measured sequential workload have
+passed. The [daemon guide](headless-daemon.md#measured-local-workload) gives the
+workload and timing limits. The new binary also reads the earlier release's
+private histories and archives without changing their saved files.
+
+Linux service lifecycle, optimized independent-machine exchanges, signed
+platform packages, installed upgrades, and published documentation checks remain
+unfinished. Earlier browser and public-consensus evidence below does not qualify
+this daemon.
 
 Public synchronization verifies histories from explicitly selected peers and
 reports each frozen checkpoint's coverage. Private mailboxes retain encrypted

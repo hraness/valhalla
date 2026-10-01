@@ -307,23 +307,111 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  linux-managed:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-bundle
+      - name: Prepare this disposable runner's real systemd user manager
+        run: |
+          test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = Linux
+          runner_user_id="$(id -u)"
+          test "$runner_user_id" -ne 0
+          timeout 20s sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR="/run/user/$runner_user_id"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          for ((attempt=0; attempt<40; attempt++)); do
+            if timeout 2s systemctl --user show-environment >/dev/null 2>&1; then
+              printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "The runner's user manager did not become ready." >&2
+          exit 1
+      - name: Exercise the actual release daemon as a managed Linux service
+        run: python3 .github/scripts/headless_linux_managed_qualification.py run --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-linux-managed"
+      - name: Always remove only this run's exact managed unit
+        if: always()
+        run: python3 .github/scripts/headless_linux_managed_qualification.py cleanup --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-linux-managed"
+      - name: Retain sanitized Linux managed evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-linux-managed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/headless-linux-managed/receipt.json
+            ${{ runner.temp }}/headless-linux-managed/cleanup-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  mcp:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-bundle
+      - name: Verify this run's release bundle and exercise the MCP process
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, '.github/scripts')
+          from headless_linux_managed_qualification import bundle_identity
+          root = Path(os.environ['RUNNER_TEMP'])
+          binary, manifest, _ = bundle_identity(root / 'headless-bundle', seal=True)
+          os.execv(sys.executable, [sys.executable, '.github/scripts/headless_mcp_qualification.py',
+              '--binary', str(binary), '--binary-sha256', manifest['binary_sha256'],
+              '--source-sha', manifest['source_sha'], '--work', str(root / 'headless-mcp')])
+          PY
+      - name: Retain sanitized MCP process evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-mcp/receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
   result:
     name: Headless qualification result
     if: always()
-    needs: [build, host, client, private-host, private-client]
+    needs: [build, host, client, private-host, private-client, linux-managed, mcp]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require both roles and their cleanup to succeed
+      - name: Require every role and its cleanup to succeed
         env:
           BUILD_RESULT: ${{ needs.build.result }}
           HOST_RESULT: ${{ needs.host.result }}
           CLIENT_RESULT: ${{ needs.client.result }}
           PRIVATE_HOST_RESULT: ${{ needs.private-host.result }}
           PRIVATE_CLIENT_RESULT: ${{ needs.private-client.result }}
+          LINUX_MANAGED_RESULT: ${{ needs.linux-managed.result }}
+          MCP_RESULT: ${{ needs.mcp.result }}
         run: |
           test "$BUILD_RESULT" = success
           test "$HOST_RESULT" = success
           test "$CLIENT_RESULT" = success
           test "$PRIVATE_HOST_RESULT" = success
           test "$PRIVATE_CLIENT_RESULT" = success
+          test "$LINUX_MANAGED_RESULT" = success
+          test "$MCP_RESULT" = success
