@@ -12,13 +12,15 @@ const EPOCH: [u8; 32] = [8; 32];
 fn key(n: u8) -> SigningKey {
     SigningKey::from_bytes(&[n; 32])
 }
-fn genesis(nonce: u8) -> PinnedGenesis {
+fn genesis() -> PinnedGenesis {
+    let mut nonce = [0; 32];
+    getrandom::fill(&mut nonce).expect("room nonce entropy");
     let owner = key(1).verifying_key().to_bytes();
     let mut writers = vec![owner, key(2).verifying_key().to_bytes()];
     writers.sort_unstable();
     let signed = UnsignedGenesis::new(GenesisClaims {
         owner,
-        nonce: [nonce; 32],
+        nonce,
         writers,
     })
     .unwrap()
@@ -81,7 +83,7 @@ fn receive(room: PinnedGenesis, target: Checkpoint) -> Receiver {
 
 #[test]
 fn exact_pages_own_verified_frames_and_only_final_hash_grants_coverage() {
-    let room = genesis(9);
+    let room = genesis();
     let genesis = room.encode();
     let event = event(&room, 2, "hello");
     let policy = policy(&room, 1);
@@ -122,7 +124,7 @@ fn exact_pages_own_verified_frames_and_only_final_hash_grants_coverage() {
 
 #[test]
 fn page_positions_omissions_reorder_and_invalid_frames_never_advance_on_refusal() {
-    let room = genesis(9);
+    let room = genesis();
     let genesis = room.encode();
     let one = event(&room, 2, "one");
     let two = event(&room, 2, "two");
@@ -197,7 +199,7 @@ fn page_positions_omissions_reorder_and_invalid_frames_never_advance_on_refusal(
 
 #[test]
 fn valid_but_wrong_partial_prefix_stays_pending_and_cannot_excuse_terminal_mismatch() {
-    let room = genesis(9);
+    let room = genesis();
     let genesis = room.encode();
     let one = event(&room, 2, "one");
     let two = event(&room, 2, "two");
@@ -230,8 +232,8 @@ fn valid_but_wrong_partial_prefix_stays_pending_and_cannot_excuse_terminal_misma
 
 #[test]
 fn source_and_receiver_require_exact_genesis_room_owner_and_canonical_types() {
-    let room = genesis(9);
-    let foreign = genesis(10);
+    let room = genesis();
+    let foreign = genesis();
     let raw_genesis = room.encode();
     let foreign_genesis = foreign.encode();
     let foreign_event = event(&foreign, 2, "foreign");
@@ -290,7 +292,7 @@ fn source_and_receiver_require_exact_genesis_room_owner_and_canonical_types() {
 
 #[test]
 fn sync_preserves_forks_and_unadmitted_events_for_native_classification() {
-    let room = genesis(9);
+    let room = genesis();
     let genesis = room.encode();
     let one = event(&room, 2, "fork A");
     let two = event(&room, 2, "fork B");
@@ -313,7 +315,7 @@ fn sync_preserves_forks_and_unadmitted_events_for_native_classification() {
 
 #[test]
 fn configured_source_authentication_epoch_room_and_shape_are_required() {
-    let room = genesis(9);
+    let room = genesis();
     let genesis = room.encode();
     let target = snapshot(&room, &[frame(FrameKind::Genesis, &genesis)]);
     assert!(matches!(
@@ -405,7 +407,7 @@ fn configured_source_authentication_epoch_room_and_shape_are_required() {
 
 #[test]
 fn page_and_frame_bounds_are_enforced_before_progress() {
-    let room = genesis(9);
+    let room = genesis();
     let genesis = room.encode();
     let message = event(&room, 2, "bounded");
     let mut source = SourceAccumulator::new(SOURCE, room.clone(), EPOCH).unwrap();
@@ -470,7 +472,7 @@ fn page_and_frame_bounds_are_enforced_before_progress() {
 
 #[test]
 fn prepared_tokens_require_the_exact_unchanged_receiver_base_and_target() {
-    let room = genesis(9);
+    let room = genesis();
     let genesis = room.encode();
     let message = event(&room, 2, "later");
     let frames = [
@@ -511,7 +513,7 @@ fn prepared_tokens_require_the_exact_unchanged_receiver_base_and_target() {
 
 #[test]
 fn extension_requires_completion_and_same_identity_and_never_rolls_back() {
-    let room = genesis(9);
+    let room = genesis();
     let genesis = room.encode();
     let message = event(&room, 2, "extension");
     let frames = [
