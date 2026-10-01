@@ -62,3 +62,25 @@ test("real SDK redacts encoded identifiers before sending paths and exceptions",
   expect(JSON.stringify(result.sent)).not.toContain("+@a.aa");
   expect(JSON.stringify(result.sent)).not.toContain("%2B%40a.aa");
 });
+
+
+test("private navigation is excluded after public analytics initialization", () => {
+  const origin = `https://${analyticsSite.canonicalDomain}`;
+  const privatePaths = ["/account", "/%61ccount", "/auth", "/%61uth"];
+  for (const path of privatePaths) {
+    expect(classifyAnalyticsRoute(analyticsSite, `${origin}${path}/private-route-canary`)).toBeNull();
+  }
+  const result = runPostHogHarness({
+    site: analyticsSite,
+    scenarios: [
+      { href: `${origin}/`, referrer: "", captures: [{ event: "$pageview" }] },
+      ...privatePaths.map((path) => ({
+        href: `${origin}${path}/private-route-canary`,
+        referrer: "",
+        captures: [{ event: "$pageview" }, { event: "$pageleave" }, { event: "$exception", error: { name: "Error", message: "private-route-canary" } }],
+      })),
+    ],
+  });
+  expect(result.sent.some((event) => event.event === "$pageview")).toBe(true);
+  expect(JSON.stringify(result.sent)).not.toContain("private-route-canary");
+});
