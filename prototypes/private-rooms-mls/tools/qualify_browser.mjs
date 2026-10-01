@@ -1,12 +1,14 @@
 // Execute only the isolated synthetic MLS qualification, in dedicated workers.
-import {trackChild, cleanupOwned, runQualification} from '../../../browser/tools/qualification_lifecycle.mjs';
+import {trackChild, runQualification} from '../../../browser/tools/qualification_lifecycle.mjs';
+import {resolvePinnedBrowser, requiredBrowserArgs, verifyPinnedBrowser, cleanupPinnedBrowser} from '../../../browser/tools/pinned_browser.mjs';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {readFile,writeFile,mkdir,mkdtemp,readdir} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 import {createHash} from 'node:crypto';
-const [rootArg,chromePath,outArg,moduleName='private_rooms_mls.js']=process.argv.slice(2);
-if(!rootArg||!chromePath||!outArg||!/^[a-zA-Z0-9_]+\.js$/.test(moduleName))throw Error('requires generated directory, Chrome, new output and optional module name');
+const [rootArg,browserArg,outArg,moduleName='private_rooms_mls.js']=process.argv.slice(2);
+if(!rootArg||!browserArg||!outArg||!/^[a-zA-Z0-9_]+\.js$/.test(moduleName))throw Error('requires generated directory, --pinned or its pinned Chromium executable, new output and optional module name');
+const browser=await resolvePinnedBrowser(browserArg==='--pinned'?undefined:browserArg);
 const root=resolve(rootArg),out=resolve(outArg);await mkdir(out,{recursive:false});
 const profile=await mkdtemp(join(out,'profile-'));
 const hashes={};for(const name of await readdir(root)){if(/\.(js|wasm)$/.test(name))hashes[name]=createHash('sha256').update(await readFile(join(root,name))).digest('hex');}
@@ -39,13 +41,14 @@ const server=createServer(async(req,res)=>{try{
  res.setHeader('Content-Type',target.endsWith('.wasm')?'application/wasm':'text/javascript');res.end(await readFile(target));
 }catch{res.writeHead(404);res.end();}});
 await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
-const chrome=trackChild(spawn(chromePath,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
-let log='',socket,seq=0;const pending=new Map(),events=new Map();
+const chrome=trackChild(spawn(browser.executablePath,requiredBrowserArgs(['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank']),{stdio:['ignore','ignore','pipe']}));
+let log='',socket,seq=0,browserIdentity;const pending=new Map(),events=new Map();
 const call=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id=++seq;pending.set(id,{resolve,reject});socket.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));});
 async function work(){
  const ws=await new Promise((r,j)=>{chrome.once('error',j);chrome.once('exit',c=>j(Error('Chrome exit '+c)));chrome.stderr.on('data',c=>{log+=c;const m=log.match(/DevTools listening on (ws:\/\/\S+)/);if(m)r(m[1]);});});
  socket=new WebSocket(ws);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
  socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const pendingCall=pending.get(v.id);pending.delete(v.id);if(pendingCall){if(v.error)pendingCall.reject(Error(JSON.stringify(v.error)));else pendingCall.resolve(v.result);}}else{const key=(v.sessionId||'')+':'+v.method;const eventCall=events.get(key);if(eventCall){events.delete(key);eventCall.resolve(v.params);}}};
+ browserIdentity=await verifyPinnedBrowser(call,browser,profile);
  const {targetId}=await call('Target.createTarget',{url:'about:blank'}),{sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
  await call('Page.enable',{},sessionId);const loaded=new Promise(resolve=>events.set(sessionId+':Page.loadEventFired',{resolve}));
  await call('Page.navigate',{url:'http://127.0.0.1:'+server.address().port+'/'},sessionId);await loaded;
@@ -58,11 +61,13 @@ async function work(){
 await runQualification({
   work, timeoutMs: 90000,
   cleanup: async () => {
-    try { await cleanupOwned({children:[chrome], server, socket, pending}); }
+    try { return await cleanupPinnedBrowser({browserChild:chrome, profile, children:[chrome], server, socket, pending}); }
     finally { await writeFile(join(out,'chrome.log'),log); }
   },
-  publish: async receipt => {
-    await writeFile(join(out,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
-    console.log(JSON.stringify(receipt));
+  publish: async (receipt, cleanup) => {
+    if(!cleanup.browserClosedGracefully||!cleanup.profileRemoved)throw Error('successful qualification requires graceful browser and profile cleanup');
+    const complete={...receipt,browser:browserIdentity,cleanup};
+    await writeFile(join(out,'receipt.json'),JSON.stringify(complete,null,2)+'\n');
+    console.log(JSON.stringify(complete));
   },
 });

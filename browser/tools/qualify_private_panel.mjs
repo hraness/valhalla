@@ -1,6 +1,7 @@
+import {resolvePinnedBrowser, requiredBrowserArgs, verifyPinnedBrowser, cleanupPinnedBrowser} from './pinned_browser.mjs';
 // Actual private DOM, two isolated synthetic account contexts, file exchange only.
 // No account seeds, production signer calls, external routes or fixture KDF changes.
-import {trackChild, childStopped, cleanupOwned, runQualification} from './qualification_lifecycle.mjs';
+import {trackChild, childStopped, runQualification} from './qualification_lifecycle.mjs';
 import {qualifyArchives} from './qualify_private_archives.mjs';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
@@ -8,10 +9,12 @@ import {createHash} from 'node:crypto';
 import {readFile, writeFile, mkdir, mkdtemp, chmod, open} from 'node:fs/promises';
 import {resolve, join, sep} from 'node:path';
 
-const [artifactArg, chromeExecutable, outputArg, mode] = process.argv.slice(2);
+const [artifactArg, browserArg, outputArg, mode] = process.argv.slice(2);
+const browser = await resolvePinnedBrowser(browserArg === '--pinned' ? undefined : browserArg);
+let browserChild, browserIdentity;
 if (mode !== undefined && mode !== '--production') throw Error('unknown qualification mode');
 const production = mode === '--production';
-if (!artifactArg || !chromeExecutable || !outputArg) throw Error('requires qualification artifact, Chromium, new output directory');
+if (!artifactArg || !browserArg || !outputArg) throw Error('requires qualification artifact, Chromium, new output directory');
 const artifact = resolve(artifactArg), output = resolve(outputArg);
 await mkdir(output, {recursive:false, mode:0o700});
 const profile = await mkdtemp(join(output,'profile-'));
@@ -294,9 +297,9 @@ async function task(abortSignal) {
   const chromeLogPath=join(output,'chrome.log');
   const chromeLogFile=await open(chromeLogPath,'wx',0o600);
   let chrome;
-  try{chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-background-timer-throttling','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore',chromeLogFile.fd,chromeLogFile.fd]}));}
+  try{chrome=trackChild(spawn(browser.executablePath,requiredBrowserArgs(['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-background-timer-throttling','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank']),{stdio:['ignore',chromeLogFile.fd,chromeLogFile.fd]}));}
   finally{await chromeLogFile.close();}
-  children.push(chrome);
+  children.push(chrome);browserChild=chrome;
   await wait(async()=>{chromeLog=(await readFile(chromeLogPath,'utf8').catch(()=>'')).slice(-131072);return /DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome);},'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);
@@ -314,6 +317,7 @@ async function task(abortSignal) {
       if(!url.startsWith(serverOrigin+'/')&&!url.startsWith('blob:'+serverOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;
     }
   };
+  browserIdentity=await verifyPinnedBrowser(call,browser,profile);
   const owner=await account('owner'), member=await account('member');
   if(owner.publicKey===member.publicKey)throw Error('accounts were not independent');
   // Keep the encrypted identity backup for the same-account fresh device below.
@@ -516,6 +520,6 @@ async function task(abortSignal) {
 }
 
 await runQualification({work:task,timeoutMs:300000,
-  cleanup:async()=>cleanupOwned({children,server,socket,pending}),
-  publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));},
+  cleanup:async()=>cleanupPinnedBrowser({browserChild,profile,children,server,socket,pending}),
+  publish:async(receipt,cleanup)=>{receipt.browser=browserIdentity;receipt.cleanup=cleanup;await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));},
 });

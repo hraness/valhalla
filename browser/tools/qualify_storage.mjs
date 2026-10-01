@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // Real Chromium/IndexedDB regression of the Rust example, isolated from all user profiles.
-// Usage: node qualify_storage.mjs GENERATED_WASM_DIRECTORY CHROMIUM_EXECUTABLE
-import {trackChild, cleanupOwned, runQualification} from './qualification_lifecycle.mjs';
+// Usage: node qualify_storage.mjs GENERATED_WASM_DIRECTORY --pinned|PINNED_EXECUTABLE
+import {trackChild, runQualification} from './qualification_lifecycle.mjs';
+import {resolvePinnedBrowser, requiredBrowserArgs, verifyPinnedBrowser, cleanupPinnedBrowser} from './pinned_browser.mjs';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 
-const [directory, executable] = process.argv.slice(2);
-if (!directory || !executable) throw new Error('requires generated WASM directory and Chromium executable');
+const [directory, browserArg] = process.argv.slice(2);
+if (!directory || !browserArg) throw new Error('requires generated WASM directory and --pinned or its pinned Chromium executable');
+const browser = await resolvePinnedBrowser(browserArg === '--pinned' ? undefined : browserArg);
 const root = resolve(directory);
 const profile = await mkdtemp(join(root, 'chromium-profile-'));
 const runner = `import * as wasm from './indexeddb_qualification.js';
@@ -184,15 +186,15 @@ const server = createServer(async (request, response) => {
   } catch { response.writeHead(404); response.end(); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const chrome = trackChild(spawn(executable, [
+const chrome = trackChild(spawn(browser.executablePath, requiredBrowserArgs([
   '--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
   '--disable-background-networking', '--disable-component-update', '--disable-default-apps',
   '--disable-extensions', '--disable-sync', '--metrics-recording-only', '--no-proxy-server',
   '--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1',
   '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
   '--user-data-dir=' + profile, 'about:blank',
-], {stdio: ['ignore', 'ignore', 'pipe']}));
-let stderr = '', socket;
+]), {stdio: ['ignore', 'ignore', 'pipe']}));
+let stderr = '', socket, browserIdentity;
 const pending = new Map();
 let loadSession, resolveLoaded;
 let sequence = 0;
@@ -223,6 +225,7 @@ const task = async () => {
     const id = ++sequence; pending.set(id, {resolve, reject});
     socket.send(JSON.stringify({id, method, params, ...(sessionId ? {sessionId} : {})}));
   });
+  browserIdentity = await verifyPinnedBrowser(call, browser, profile);
   const {targetId} = await call('Target.createTarget', {url: 'about:blank'});
   const {sessionId} = await call('Target.attachToTarget', {targetId, flatten: true});
   await call('Page.enable', {}, sessionId);
@@ -239,11 +242,13 @@ const task = async () => {
 await runQualification({
   work: task, timeoutMs: 45000,
   cleanup: async () => {
-    try { await cleanupOwned({children:[chrome], server, socket, pending}); }
+    try { return await cleanupPinnedBrowser({browserChild:chrome, profile, children:[chrome], server, socket, pending}); }
     finally { await writeFile(join(root, 'chromium.stderr.log'), stderr); }
   },
-  publish: async receipt => {
-    await writeFile(join(root, 'indexeddb-receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
-    console.log(JSON.stringify(receipt));
+  publish: async (receipt, cleanup) => {
+    if (!cleanup.browserClosedGracefully || !cleanup.profileRemoved) throw Error('successful qualification requires graceful browser and profile cleanup');
+    const complete = {...receipt, browser:browserIdentity, cleanup};
+    await writeFile(join(root, 'indexeddb-receipt.json'), JSON.stringify(complete, null, 2) + '\n');
+    console.log(JSON.stringify(complete));
   },
 });

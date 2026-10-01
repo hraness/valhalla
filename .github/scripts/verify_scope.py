@@ -76,6 +76,10 @@ BROWSER_PACKAGES = (
 BROWSER_EXTRA = (
     "prototypes/browser-archive-recovery",
     ".github/scripts/verify_browser_artifact.py",
+    ".github/scripts/pinned_chromium.sh",
+    "site/tools/browser-contract.mjs",
+    "package.json",
+    "bun.lock",
 )
 FORMAL_MANIFESTS = ("verify/cases.json", "verify/lean/claims.json")
 
