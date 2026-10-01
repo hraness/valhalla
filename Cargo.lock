@@ -8054,7 +8054,7 @@ dependencies = [
 
 [[package]]
 name = "vhalla-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -8177,6 +8177,7 @@ name = "vhalla-direct-sync"
 version = "0.0.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
+ "getrandom 0.3.4",
  "sha2 0.10.9",
  "vhalla-direct-room",
 ]

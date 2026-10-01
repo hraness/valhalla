@@ -22,7 +22,7 @@ impl Fixture {
         let root = TempDir::new().unwrap();
         let owner = Identity::create_new(root.path().join("owner")).unwrap();
         let author = Identity::create_new(root.path().join("author")).unwrap();
-        let genesis = pinned(&owner, 1);
+        let genesis = pinned(&owner);
         Self {
             root,
             owner,
@@ -95,12 +95,14 @@ impl Fixture {
     }
 }
 
-fn pinned(owner: &Identity, nonce: u8) -> PinnedGenesis {
+fn pinned(owner: &Identity) -> PinnedGenesis {
+    let mut nonce = [0; 32];
+    getrandom::fill(&mut nonce).expect("room nonce entropy");
     let signed = owner
         .sign_direct_genesis(
             UnsignedGenesis::new(GenesisClaims {
                 owner: owner.public_key(),
-                nonce: [nonce; 32],
+                nonce,
                 writers: vec![owner.public_key()],
             })
             .unwrap(),
@@ -173,7 +175,7 @@ fn creation_pins_genesis_source_and_random_epoch_without_signing_keys() {
     drop(replica);
     let before = files(&fixture.path());
     assert!(Replica::open(fixture.path(), fixture.genesis.clone(), [42; 32]).is_err());
-    assert!(Replica::open(fixture.path(), pinned(&fixture.owner, 2), SOURCE).is_err());
+    assert!(Replica::open(fixture.path(), pinned(&fixture.owner), SOURCE).is_err());
     assert!(
         Replica::create_new(fixture.path(), fixture.genesis.clone(), SOURCE, limits()).is_err()
     );
@@ -264,7 +266,8 @@ fn invalid_or_oversized_batches_publish_nothing() {
         replica.append(&[valid.as_frame(); 9]),
         Err(vhalla_direct_sync::Error::Bounds.into())
     );
-    let foreign_genesis = pinned(&fixture.owner, 2).encode();
+    let foreign = pinned(&fixture.owner);
+    let foreign_genesis = foreign.encode();
     assert!(replica
         .append(&[Frame {
             kind: FrameKind::Genesis,
@@ -275,8 +278,8 @@ fn invalid_or_oversized_batches_publish_nothing() {
         .author
         .sign_direct_event(
             UnsignedEvent::new(EventClaims {
-                room: pinned(&fixture.owner, 2).id(),
-                policy: pinned(&fixture.owner, 2).id().initial_policy(),
+                room: foreign.id(),
+                policy: foreign.id().initial_policy(),
                 author: fixture.author.public_key(),
                 sequence: 1,
                 previous: EventId::ZERO,
