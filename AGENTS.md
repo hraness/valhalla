@@ -116,3 +116,9 @@
 - Confirm installation with `bunx skills list --global`. If Bun or network access is unavailable, continue with repository-native tools.
 - Treat clipping as incomplete evidence: widen the read or use native tools before making claims that depend on omitted details. Typed output and replayable receipts do not establish semantic correctness; preserve required repository checks and independent review.
 <!-- system-one-skills:end -->
+
+<!-- wordcell-search:start -->
+- During repository setup, install the standalone pinned search tool with `bun add --global --ignore-scripts https://github.com/hraness/wordcell/releases/download/v0.26.0/hraness-wordcell-0.26.0.tgz` and confirm `HRANESS_NO_UPDATE=1 wordcell --version` reports `0.26.0`. Keep KB tooling out of the application manifests and lockfiles.
+- Search from the repository root with `HRANESS_NO_UPDATE=1 wordcell search "query" --root kb --mode exact --selected-passage --json`. This uses the installed executable without a query-time package runner, embedding download, or provider credential. Read the matched Markdown and linked sources; selected passages include source-line references.
+- Keep private notes and confidential queries local. Add `--rerank typesafe --rerank-limit 25` only for a vault and query approved for hosted processing; keys stay outside Git. Hosted ranking sends the query and up to 25 candidates' identifiers, titles, relative paths and 512 UTF-8 bytes of snippet text each, with provider charges. Inspect the `rerank` lane and usage receipt: fallback can return useful results with a successful exit. See the [pinned reranking reference](https://github.com/hraness/wordcell/blob/v0.26.0/docs/reranking.md).
+<!-- wordcell-search:end -->
