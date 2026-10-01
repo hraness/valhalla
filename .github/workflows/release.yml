@@ -1,8 +1,9 @@
 name: Release
 
-# Every tag reuses the complete Rust/site gate at that exact commit. Builders
-# stage all artifacts in parallel with it; only the publisher, which needs the
-# gate and every builder, can write a GitHub release.
+# Every tag reuses the native Rust/site gate at that exact commit. Builders
+# stage the five native archives in parallel with it; only the publisher,
+# which needs the gate and every native builder, can write a GitHub release.
+# The retained browser app has explicit opt-in verification in rust.yml.
 on:
   push:
     tags: ["v*"]
@@ -13,6 +14,13 @@ permissions:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: short
 
 jobs:
   validate:
@@ -72,7 +80,12 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2
         if: matrix.tool == 'zigbuild'
         with:
@@ -87,11 +100,11 @@ jobs:
           sudo tar -xJf /tmp/zig.tar.xz -C /opt
           echo "/opt/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
       - name: Build vhalla
-        # Include the maintained public/private commands. The complete
+        # Ship the daemon and its native clients. The complete
         # all-features verification gate still runs above.
         env:
           VHALLA_BUILD_RELEASE_TAG: ${{ github.ref_name }}
-        run: cargo ${{ matrix.tool }} --release --locked -p vhalla-cli --no-default-features --features ${{ matrix.features || 'experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private' }} --target "${{ matrix.target }}"
+        run: cargo ${{ matrix.tool }} --release --locked -p vhalla-cli --no-default-features --features ${{ matrix.features || 'headless' }} --target "${{ matrix.target }}"
       - name: Install qemu for the cross-arch smoke check
         # The aarch64-musl artifact cannot exec on the x86_64 runner; run it
         # under qemu-user so the smoke assertions still cover the real binary.
@@ -141,10 +154,11 @@ jobs:
           [[ "$short_help" == *"private-host "* ]]
           help="$($run_prefix "$cli" help all)"
           printf '%s\n' "$help"
-          [[ "$help" == *"vhalla experimental "* ]]
-          [[ "$help" == *"vhalla social "* ]]
-          [[ "$help" == *"vhalla rooms "* ]]
-          [[ "$help" == *"vhalla public "* ]]
+          [[ "$help" == *"vhalla daemon "* ]]
+          [[ "$help" != *"vhalla experimental "* ]]
+          [[ "$help" != *"vhalla social "* ]]
+          [[ "$help" != *"vhalla rooms "* ]]
+          [[ "$help" != *"vhalla public "* ]]
           [[ "$help" == *"vhalla private "* ]]
           [[ "$help" == *"vhalla private-host "* ]]
           [[ "$help" == *"vhalla private-gateway "* ]]
@@ -231,16 +245,21 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.98.1
           targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-aarch64-apple-darwin
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build vhalla
         env:
           VHALLA_BUILD_RELEASE_TAG: ${{ github.ref_name }}
-        run: cargo build --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target aarch64-apple-darwin
+        run: cargo build --release --locked -p vhalla-cli --no-default-features --features headless --target aarch64-apple-darwin
       - name: macOS host custody and lifecycle regressions
         # Tests inject launchctl replies and use temporary custody only. They
         # never install or activate a LaunchAgent or require a GUI login.
         run: |
-          cargo test --release --locked -p vhalla-cli --no-default-features --features experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private --target "aarch64-apple-darwin" --bin vhalla private_host::
+          cargo test --release --locked -p vhalla-cli --no-default-features --features headless --target "aarch64-apple-darwin" --bin vhalla private_host::
       - name: macOS browser gateway socket regressions
         # macOS inherits listener descriptor flags on accepted sockets. Exercise
         # real server acceptance and complete large-asset writes on this platform.
@@ -363,61 +382,18 @@ jobs:
           cli="$RUNNER_TEMP/vhalla"
           [[ "$("$cli" --help)" == *"Usage: vhalla <command>"* ]] || exit 1
           help="$("$cli" help all)"
-          for command in experimental social rooms public private private-host private-gateway; do
+          for command in daemon private private-host private-gateway; do
             [[ "$help" == *"vhalla $command "* ]] || exit 1
+          done
+          for command in experimental social rooms public; do
+            [[ "$help" != *"vhalla $command "* ]] || exit 1
           done
           [[ "$help" != *"vhalla game replay "* ]] || exit 1
           if "$cli" game --help > "$RUNNER_TEMP/game-disabled.txt" 2>&1; then exit 1; fi
           [[ "$(cat "$RUNNER_TEMP/game-disabled.txt")" == *'Unknown command "game"'* ]] || exit 1
 
-  browser:
-    needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      attestations: write
-      contents: read
-      actions: read
-      id-token: write
-    outputs:
-      artifact_id: ${{ steps.package.outputs.artifact-id }}
-      artifact_digest: ${{ steps.package.outputs.artifact-digest }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Download exact qualified browser producer output
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID: ${{ needs.validate.outputs.browser_artifact_id }}
-          ARTIFACT_DIGEST: ${{ needs.validate.outputs.browser_artifact_digest }}
-        run: python3 -I .github/scripts/release_artifacts.py fetch-browser "valhalla-browser-$GITHUB_REF_NAME"
-      - name: Package the exact production artifact exercised by validation
-        shell: bash
-        env:
-          QUALIFIED_MANIFEST_SHA256: ${{ needs.validate.outputs.browser_manifest_sha256 }}
-        run: |
-          set -euo pipefail
-          out="valhalla-browser-${GITHUB_REF_NAME}"
-          python3 .github/scripts/verify_browser_artifact.py "$out" --manifest-sha256 "$QUALIFIED_MANIFEST_SHA256"
-          tar -czf "${out}.tar.gz" "$out"
-          shasum -a 256 "${out}.tar.gz" > "${out}.tar.gz.sha256"
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: valhalla-browser-*.tar.gz
-      - uses: actions/upload-artifact@v7
-        id: package
-        with:
-          name: release-browser-${{ github.run_attempt }}
-          path: |
-            valhalla-browser-*.tar.gz
-            valhalla-browser-*.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 7
-
   publish:
-    needs: [validate, cli, browser, macos_sign, macos_smoke]
+    needs: [validate, cli, macos_sign, macos_smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -442,8 +418,6 @@ jobs:
           WINDOWS_ARTIFACT_DIGEST: ${{ needs.cli.outputs.windows_artifact_digest }}
           MACOS_ARTIFACT_ID: ${{ needs.macos_sign.outputs.artifact_id }}
           MACOS_ARTIFACT_DIGEST: ${{ needs.macos_sign.outputs.artifact_digest }}
-          BROWSER_ARTIFACT_ID: ${{ needs.browser.outputs.artifact_id }}
-          BROWSER_ARTIFACT_DIGEST: ${{ needs.browser.outputs.artifact_digest }}
         run: python3 -I .github/scripts/release_artifacts.py fetch-release release-assets
       # The page title is "Valhalla <tag>" and its notes are the tag's
       # CHANGELOG.md section plus generated install/verify text and identity.

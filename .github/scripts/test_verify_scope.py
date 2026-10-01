@@ -261,6 +261,14 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("uses: ./.github/workflows/rust.yml", nightly)
         self.assertIn("issues: write", nightly)
         self.assertIn("cancel-in-progress: false", nightly)
+        dispatch = nightly.split("  workflow_dispatch:", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("legacy_browser:", dispatch)
+        self.assertIn("type: boolean", dispatch)
+        self.assertIn("default: false", dispatch)
+        self.assertIn(
+            "legacy_browser: ${{ github.event_name == 'workflow_dispatch' && inputs.legacy_browser }}",
+            nightly,
+        )
 
 
 if __name__ == "__main__":

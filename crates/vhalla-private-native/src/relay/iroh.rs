@@ -49,6 +49,95 @@ pub struct IrohEndpoint {
     /// Optional numeric direct UDP addresses; never wildcard addresses.
     pub addresses: Vec<SocketAddr>,
 }
+
+/// Selected outgoing path at one local observation point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectedPath {
+    /// A direct IP path was selected.
+    Direct,
+    /// A relay path was selected.
+    Relay,
+    /// No single unambiguous selected path was observed.
+    Unknown,
+}
+
+/// Local open-path metadata. Addresses and path identifiers are never retained.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct PathSnapshot {
+    /// Selected outgoing path at this instant; not per-byte route accounting.
+    pub selected: SelectedPath,
+    /// Whether at least one path was visible.
+    pub nonempty: bool,
+    /// Whether every visible path was exclusively a relay path.
+    pub all_relay: bool,
+}
+impl PathSnapshot {
+    fn capture(connection: &::iroh::endpoint::Connection) -> Self {
+        let paths = connection.paths();
+        Self::from_flags(
+            paths
+                .iter()
+                .map(|path| (path.is_selected(), path.is_ip(), path.is_relay())),
+        )
+    }
+    fn from_flags(paths: impl Iterator<Item = (bool, bool, bool)>) -> Self {
+        let mut selected = SelectedPath::Unknown;
+        let mut selected_count = 0usize;
+        let mut nonempty = false;
+        let mut all_relay = true;
+        for (is_selected, is_ip, is_relay) in paths {
+            nonempty = true;
+            all_relay &= is_relay && !is_ip;
+            if is_selected {
+                selected_count += 1;
+                selected = match (is_ip, is_relay) {
+                    (true, false) => SelectedPath::Direct,
+                    (false, true) => SelectedPath::Relay,
+                    _ => SelectedPath::Unknown,
+                };
+            }
+        }
+        Self {
+            selected: if selected_count == 1 {
+                selected
+            } else {
+                SelectedPath::Unknown
+            },
+            nonempty,
+            all_relay: nonempty && all_relay,
+        }
+    }
+}
+
+/// The validated mailbox operation to which an observation belongs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedOperation {
+    /// An exact ciphertext retention receipt was checked.
+    Put,
+    /// A bounded canonical page and its mailbox namespace were checked.
+    Page,
+}
+
+/// Before/after snapshots for the last successful validated mailbox reply.
+/// They do not prove which path carried each byte. No wait, observer task,
+/// retry or extra connection hold is added to obtain these snapshots.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct TransportObservation {
+    /// Successful operation whose reply was validated.
+    pub operation: ObservedOperation,
+    /// Paths after the pinned handshake, before sending the request.
+    pub before: PathSnapshot,
+    /// Paths after the reply frame arrived, before closing the connection.
+    pub after: PathSnapshot,
+}
+
+struct ExchangeReply {
+    body: Vec<u8>,
+    before: PathSnapshot,
+    after: PathSnapshot,
+}
 pub(crate) fn checked_relay(value: &str) -> Result<RelayUrl> {
     if value.len() > 2048 {
         return Err(NetError::Bounds);
@@ -165,7 +254,7 @@ struct Exchange {
     op: u8,
     body: Vec<u8>,
     deadline: Instant,
-    reply: sync_mpsc::SyncSender<Result<Vec<u8>>>,
+    reply: sync_mpsc::SyncSender<Result<ExchangeReply>>,
 }
 struct ClientWorker {
     sender: Option<mpsc::Sender<Exchange>>,
@@ -183,12 +272,17 @@ impl ClientWorker {
     fn start(
         addr: EndpointAddr,
         relay_url: Option<&str>,
+        relay_only: bool,
         token: RelayToken,
         namespace: RelayNamespace,
         deadline: Instant,
     ) -> Result<Self> {
         let deadline = deadline.min(Instant::now() + STARTUP_TIMEOUT);
-        let configured = builder(relay_url)?;
+        let mut configured = builder(relay_url)?;
+        if relay_only {
+            relay_url.ok_or(NetError::Bounds)?;
+            configured = configured.clear_ip_transports();
+        }
         let (sender, mut receiver) = mpsc::channel::<Exchange>(MAX_CLIENT_WORKERS);
         let (ready_tx, ready_rx) = sync_mpsc::sync_channel(1);
         let worker_token = token;
@@ -237,8 +331,10 @@ impl ClientWorker {
 #[derive(Clone)]
 pub struct IrohRelay {
     worker: Arc<Mutex<Option<Arc<ClientWorker>>>>,
+    observation: Arc<Mutex<Option<TransportObservation>>>,
     address: EndpointAddr,
     relay_url: Option<String>,
+    relay_only: bool,
     token: RelayToken,
     namespace: RelayNamespace,
     identity: delivery::EndpointId,
@@ -251,18 +347,41 @@ impl IrohRelay {
         token: RelayToken,
         namespace: RelayNamespace,
     ) -> Result<Self> {
-        let address = endpoint.address()?;
+        Self::new_inner(endpoint, token, namespace, false)
+    }
+    /// Explicitly disable IP transports. A validated HTTPS relay is required;
+    /// target IP hints are discarded. Construction performs no network work.
+    pub fn new_relay_only(
+        endpoint: IrohEndpoint,
+        token: RelayToken,
+        namespace: RelayNamespace,
+    ) -> Result<Self> {
+        Self::new_inner(endpoint, token, namespace, true)
+    }
+    fn new_inner(
+        endpoint: IrohEndpoint,
+        token: RelayToken,
+        namespace: RelayNamespace,
+        relay_only: bool,
+    ) -> Result<Self> {
+        let mut address = endpoint.address()?;
+        if relay_only {
+            let relay = endpoint.relay_url.as_deref().ok_or(NetError::Bounds)?;
+            address = EndpointAddr::new(address.id).with_relay_url(checked_relay(relay)?);
+        }
         let identity = endpoint.delivery_endpoint_id(namespace)?;
         Ok(Self {
             worker: Arc::new(Mutex::new(None)),
+            observation: Arc::new(Mutex::new(None)),
             address,
             relay_url: endpoint.relay_url,
+            relay_only,
             token,
             namespace,
             identity,
         })
     }
-    fn exchange(&self, op: u8, body: &[u8], deadline: Instant) -> Result<Vec<u8>> {
+    fn exchange(&self, op: u8, body: &[u8], deadline: Instant) -> Result<ExchangeReply> {
         if Instant::now() >= deadline {
             return Err(NetError::Timeout);
         }
@@ -273,6 +392,7 @@ impl IrohRelay {
                         *selected = Some(Arc::new(ClientWorker::start(
                             self.address.clone(),
                             self.relay_url.as_deref(),
+                            self.relay_only,
                             self.token,
                             self.namespace,
                             deadline,
@@ -326,6 +446,37 @@ impl IrohRelay {
     pub fn endpoint_id(&self) -> delivery::EndpointId {
         self.identity
     }
+    /// Whether this client explicitly disables all direct IP transports.
+    pub fn relay_only(&self) -> bool {
+        self.relay_only
+    }
+    /// Last successful validated reply for this client lifetime. Clones share
+    /// the observation; failed replies leave it intact and fresh clients reset it.
+    pub fn last_successful_observation(&self) -> Option<TransportObservation> {
+        self.observation.lock().ok().and_then(|value| *value)
+    }
+    pub(super) fn clear_observation(&mut self) {
+        if let Ok(mut observation) = self.observation.lock() {
+            *observation = None;
+        }
+    }
+    fn validated_reply<T>(
+        &self,
+        operation: ObservedOperation,
+        reply: ExchangeReply,
+        validate: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<T> {
+        let value = validate(&reply.body)?;
+        // Auxiliary metadata cannot make a valid mailbox operation fail.
+        if let Ok(mut observation) = self.observation.lock() {
+            *observation = Some(TransportObservation {
+                operation,
+                before: reply.before,
+                after: reply.after,
+            });
+        }
+        Ok(value)
+    }
     pub(super) fn token_matches(&self, candidate: &[u8; 32]) -> bool {
         self.token
             .as_bytes()
@@ -344,13 +495,14 @@ impl IrohRelay {
             return Err(NetError::Scope);
         }
         let encoded = item.encode().map_err(|_| NetError::Bounds)?;
-        decode_receipt(
-            &self.exchange(
+        self.validated_reply(
+            ObservedOperation::Put,
+            self.exchange(
                 OP_PUT,
                 &encoded,
                 deadline.min(Instant::now() + MAX_EXCHANGE),
             )?,
-            item,
+            |body| decode_receipt(body, item),
         )
     }
     /// Read one bounded canonical page.
@@ -388,15 +540,21 @@ impl IrohRelay {
         request: Vec<u8>,
         deadline: Instant,
     ) -> Result<RelayPage> {
-        let page = decode_page(&self.exchange(OP_PAGE, &request, deadline)?, after, limit)?;
-        if page
-            .records
-            .iter()
-            .any(|r| r.item.namespace() != self.namespace)
-        {
-            return Err(NetError::Scope);
-        }
-        Ok(page)
+        self.validated_reply(
+            ObservedOperation::Page,
+            self.exchange(OP_PAGE, &request, deadline)?,
+            |body| {
+                let page = decode_page(body, after, limit)?;
+                if page
+                    .records
+                    .iter()
+                    .any(|r| r.item.namespace() != self.namespace)
+                {
+                    return Err(NetError::Scope);
+                }
+                Ok(page)
+            },
+        )
     }
 }
 impl PageSource for IrohRelay {
@@ -429,7 +587,7 @@ async fn exchange(
     op: u8,
     body: &[u8],
     deadline: Instant,
-) -> Result<Vec<u8>> {
+) -> Result<ExchangeReply> {
     if Instant::now() >= deadline {
         return Err(NetError::Timeout);
     }
@@ -440,6 +598,7 @@ async fn exchange(
     .await
     .map_err(|_| NetError::Connect)?
     .map_err(|_| NetError::Connect)?;
+    let before = PathSnapshot::capture(&connection);
     let result = tokio::time::timeout_at(deadline.into(), async {
         let (mut send, mut recv) = connection.open_bi().await.map_err(|_| NetError::Connect)?;
         // The token is materialized only after the pinned host handshake succeeds.
@@ -459,6 +618,11 @@ async fn exchange(
     .await
     .map_err(|_| NetError::Timeout)
     .and_then(|result| result);
+    let result = result.map(|body| ExchangeReply {
+        body,
+        before,
+        after: PathSnapshot::capture(&connection),
+    });
     connection.close(0u32.into(), b"done");
     result
 }

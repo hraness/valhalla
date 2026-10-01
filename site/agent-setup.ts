@@ -3,7 +3,7 @@ import { AgentSetupPrompt } from "@hraness/design-kit/react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-export { vhallaBootstrapPrompt, vhallaInstallPrompt } from "./agent-setup-prompts.ts";
+export { vhallaBootstrapPrompt, vhallaDaemonPrompt, vhallaInstallPrompt } from "./agent-setup-prompts.ts";
 
 export function renderAgentSetup(id: string, prompt: string, label: string): string {
   if (!/^[a-z][a-z0-9-]*$/u.test(id)) throw new RangeError("Static agent setup needs a unique HTML prefix.");

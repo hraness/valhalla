@@ -202,6 +202,22 @@ pub struct Accounting {
     /// Immutable encrypted-payload byte capacity.
     pub max_bytes: u64,
 }
+
+/// Retained local usage after comparison with the authenticated session image.
+/// Counters are backend metadata, not proof of archive completeness or remote
+/// delivery. Limits are immutable; this does not authorize pruning or growth.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StorageUsage {
+    /// Number of retained immutable records, including indexes and controls.
+    pub records: u64,
+    /// Exact encrypted record payload bytes; not total filesystem allocation.
+    pub bytes: u64,
+    /// Immutable retained-record capacity.
+    pub max_records: u64,
+    /// Immutable encrypted-payload byte capacity.
+    pub max_bytes: u64,
+}
+
 /// Optional bounded recovery accounting. Ordinary Store implementations and
 /// normal kernel operations do not acquire a new requirement. A failed or
 /// canceled read obeys the same poison/reopen contract as load/read.

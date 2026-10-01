@@ -324,7 +324,7 @@ impl ControllerPauseReceipt {
 /// store. This value cannot author messages or return a live kernel handle.
 pub struct ControllerMaintenance {
     store: crate::bridge::KernelStore,
-    _identity: vhalla_identity::Identity,
+    _identity: std::sync::Arc<vhalla_identity::Identity>,
     status: vhalla_private_kernel::Status,
 }
 

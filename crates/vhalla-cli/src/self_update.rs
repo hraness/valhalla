@@ -228,7 +228,12 @@ pub(crate) fn startup(no_update: bool, args: &[OsString]) -> Result<Option<Activ
 fn offline_command(args: &[OsString]) -> bool {
     args.first()
         .and_then(|arg| arg.to_str())
-        .is_some_and(|arg| matches!(arg, "demo" | "identity" | "doctor" | "support" | "commands"))
+        .is_some_and(|arg| {
+            matches!(
+                arg,
+                "daemon" | "demo" | "identity" | "doctor" | "support" | "commands"
+            )
+        })
 }
 
 #[cfg(unix)]
@@ -247,7 +252,9 @@ mod tests {
 
     #[test]
     fn diagnostics_and_local_commands_skip_automatic_network_access() {
-        for command in ["demo", "identity", "doctor", "support", "commands"] {
+        for command in [
+            "daemon", "demo", "identity", "doctor", "support", "commands",
+        ] {
             assert!(offline_command(&[command.into()]));
         }
         assert!(!offline_command(&["private".into(), "serve".into()]));

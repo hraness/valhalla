@@ -1,11 +1,16 @@
-error[E0423]: cannot initialize a tuple struct which contains private fields
- --> tests/ui/cannot_fabricate_envelope.rs:4:19
+error[E0603]: tuple struct constructor `UntrustedEnvelope` is private
+ --> tests/ui/cannot_fabricate_envelope.rs:2:32
   |
-4 |     let _forged = UntrustedEnvelope(vec![1, 2, 3]);
-  |                   ^^^^^^^^^^^^^^^^^
+2 |     let _forged = vhalla_core::UntrustedEnvelope(vec![1, 2, 3]);
+  |                                ^^^^^^^^^^^^^^^^^ private tuple struct constructor
   |
-note: constructor is not visible here due to private fields
+ ::: src/lib.rs
+  |
+  | pub struct UntrustedEnvelope(Vec<u8>);
+  |                              ------- a constructor is private if any of the fields is private
+  |
+note: the tuple struct constructor `UntrustedEnvelope` is defined here
  --> src/lib.rs
   |
   | pub struct UntrustedEnvelope(Vec<u8>);
-  |                              ^^^^^^^ private field
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

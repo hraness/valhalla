@@ -5,12 +5,11 @@
 import { latestRelease } from './pages.ts';
 import { vhallaBadges, vhallaInstall } from './platform-install.ts';
 import { highlightCode } from '@hraness/design-kit/syntax-highlighting';
-import { homeRoomHtml, homeTourHtml } from './launch/mockups.tsx';
-import { launchStylesHead, launchStylesMarker } from './launch/styles.ts';
+import { launchStylesMarker } from './launch/styles.ts';
 import { marketing } from './portfolio-copy.ts';
 
 // Release status stays local; the product description is authored in Jungle.
-const developmentStatus = 'The client and network are in development.';
+const developmentStatus = 'The headless daemon is in development and requires a source build.';
 
 const slot = (template: string, marker: string, html: string) => {
   if (template.split(marker).length !== 2) throw new Error(`Home page needs exactly one ${marker}`);
@@ -45,9 +44,7 @@ export function homeFaq(template: string): FaqEntry[] {
 
 export function renderHome(template: string): string {
   template = template.replaceAll('{{LATEST_RELEASE}}', latestRelease);
-  template = slot(template, launchStylesMarker, launchStylesHead);
-  template = slot(template, '<!-- vhalla-launch-tour -->', homeTourHtml());
-  template = slot(template, '<!-- vhalla-launch-room -->', homeRoomHtml());
+  template = slot(template, launchStylesMarker, '');
   template = template.replace('<!-- vhalla-platform-install -->', vhallaInstall('install-home'));
   template = template.replace('<!-- vhalla-platform-badges -->', vhallaBadges());
   template = template.replace(/<(code|span) data-home-code="shell">([\s\S]*?)<\/\1>/g, (_match, tag: string, source: string) => {

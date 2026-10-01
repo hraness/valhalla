@@ -50,6 +50,7 @@ pub(crate) const LOG_NAME: &str = "events.log";
 /// rotates it at startup once it exceeds its bound, keeping one generation, so
 /// arbitrary supervisor output can never fill the event log or wedge startup.
 pub(crate) const SUPERVISOR_LOG_NAME: &str = "supervisor.log";
+pub(crate) const THROTTLE_INTERVAL_SECONDS: u64 = 30;
 fn plist_v1(home: &Path, c: &Config) -> Result<String, String> {
     plist_shape(home, c, "/dev/null")
 }
@@ -74,7 +75,7 @@ fn plist_shape(home: &Path, c: &Config, out: &str) -> Result<String, String> {
 <key>ProgramArguments</key><array><string>{executable}</string><string>private-host</string><string>serve</string><string>{home}</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-<key>ThrottleInterval</key><integer>30</integer>
+<key>ThrottleInterval</key><integer>{throttle}</integer>
 <key>ExitTimeOut</key><integer>15</integer>
 <key>Umask</key><integer>63</integer>
 <key>ProcessType</key><string>Background</string>
@@ -82,7 +83,8 @@ fn plist_shape(home: &Path, c: &Config, out: &str) -> Result<String, String> {
 <key>StandardOutPath</key><string>{out}</string>
 <key>StandardErrorPath</key><string>{out}</string>
 </dict></plist>
-"#
+"#,
+        throttle = THROTTLE_INTERVAL_SECONDS,
     ))
 }
 /// Earlier homes were sealed with launchd output discarded or sent into the
@@ -265,6 +267,14 @@ pub(crate) fn agent_install(_: &AgentSpec) -> Result<(), String> {
 pub(crate) fn agent_uninstall(_: &AgentSpec) -> Result<(), String> {
     Err("LaunchAgent removal requires macOS".into())
 }
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn agent_install_quiet(spec: &AgentSpec) -> Result<(), String> {
+    agent_install(spec)
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn agent_uninstall_quiet(spec: &AgentSpec) -> Result<(), String> {
+    agent_uninstall(spec)
+}
 // Linux hosts are supervised by a per-user systemd unit through the same
 // exact-identity custody rules; see `systemd.rs`.
 #[cfg(target_os = "linux")]
@@ -325,6 +335,17 @@ mod mac {
         stdout: String,
         stderr: String,
     }
+    fn command_timeout(args: &[OsString]) -> Duration {
+        // Even a clean stopped job can make kickstart wait for its configured
+        // throttle. The exact no-flags resume must outlast that interval. Other
+        // command shapes retain the shorter probe/mutation deadline.
+        match args {
+            [verb, _target] if verb == "kickstart" => {
+                Duration::from_secs(THROTTLE_INTERVAL_SECONDS + 5)
+            }
+            _ => Duration::from_secs(10),
+        }
+    }
     fn command(args: &[OsString]) -> Result<Reply, String> {
         let mut child = Command::new("/bin/launchctl")
             .args(args)
@@ -346,7 +367,7 @@ mod mac {
         };
         let out = read(Box::new(stdout));
         let err = read(Box::new(stderr));
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + command_timeout(args);
         let result = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -496,18 +517,39 @@ mod mac {
         )
     }
     pub(crate) fn agent_install(spec: &AgentSpec) -> Result<(), String> {
-        install_selected(spec, || destination(spec, true), command)
+        install_selected(spec, || destination(spec, true), command)?;
+        println!(
+            "{}",
+            serde_json::json!({"status":"installed","label":spec.label,"health":"not yet qualified; check TLS and durable retention separately"})
+        );
+        Ok(())
+    }
+    #[cfg(feature = "headless")]
+    pub(crate) fn agent_install_quiet(spec: &AgentSpec) -> Result<(), String> {
+        install_or_resume_selected(spec, || destination(spec, true), command, true)
     }
     fn install_selected(
         spec: &AgentSpec,
         destination: impl FnOnce() -> Result<PathBuf, String>,
+        run: impl FnMut(&[OsString]) -> Result<Reply, String>,
+    ) -> Result<(), String> {
+        install_or_resume_selected(spec, destination, run, false)
+    }
+    fn install_or_resume_selected(
+        spec: &AgentSpec,
+        destination: impl FnOnce() -> Result<PathBuf, String>,
         mut run: impl FnMut(&[OsString]) -> Result<Reply, String>,
+        resume: bool,
     ) -> Result<(), String> {
         // The exact service probe also proves that this GUI domain exists.
         // Never list the entire domain: a user's unrelated services can exceed
         // the bounded output and are outside this command's selection.
         let probe = ["print".into(), target(spec).into()];
-        if classify_service(spec, run(&probe)?)?.success {
+        let before = classify_service(spec, run(&probe)?)?;
+        if before.success {
+            if resume {
+                return resume_selected(spec, &destination()?, before, run);
+            }
             return Err(
                 "this exact label is already loaded; inspect status before changing it".into(),
             );
@@ -553,13 +595,60 @@ mod mac {
         if !classify_service(spec, run(&probe)?)?.success {
             return Err("bootstrap returned without a verifiable loaded service; preserve exact home and plist".into());
         }
+        Ok(())
+    }
+    fn resume_selected(
+        spec: &AgentSpec,
+        path: &Path,
+        before: Reply,
+        mut run: impl FnMut(&[OsString]) -> Result<Reply, String>,
+    ) -> Result<(), String> {
+        // A clean control.stop leaves the job loaded because this template
+        // restarts only failed exits. Resume just that exact successful stop;
+        // never kill a live process or interrupt launchd's failure backoff.
+        if field(&before.stdout, "path") != path.to_str()
+            || field(&before.stdout, "state") != Some("not running")
+            || field(&before.stdout, "pid").is_some()
+            || field(&before.stdout, "last exit code") != Some("0")
+        {
+            return Err("the loaded service is not a verified successful stop of this exact LaunchAgent; inspect status before reinstalling".into());
+        }
+        let owner = Owner::current().map_err(|_| REFUSED)?;
+        let selected = custody::open_private_file(path, owner, 65536).map_err(|_| REFUSED)?;
+        let check = || -> Result<(), String> {
+            if !exact(spec, path)? || !custody::same_file(path, &selected).map_err(|_| REFUSED)? {
+                return Err("the selected LaunchAgent changed; preserve its plist and home".into());
+            }
+            Ok(())
+        };
+        check()?;
+        // No -k: if another actor starts it after the probe, this command
+        // cannot terminate that process to force a restart.
+        if !run(&["kickstart".into(), target(spec).into()])?.success {
+            return Err(
+                "LaunchAgent resume refused; exact plist and home were preserved for inspection"
+                    .into(),
+            );
+        }
+        check()?;
+        let after = classify_service(spec, run(&["print".into(), target(spec).into()])?)?;
+        if !after.success || field(&after.stdout, "path") != path.to_str() {
+            return Err(
+                "resume returned without the exact loaded LaunchAgent; preserve its plist and home"
+                    .into(),
+            );
+        }
+        check()
+    }
+    pub(crate) fn agent_uninstall(spec: &AgentSpec) -> Result<(), String> {
+        agent_uninstall_quiet(spec)?;
         println!(
             "{}",
-            serde_json::json!({"status":"installed","label":spec.label,"health":"not yet qualified; check TLS and durable retention separately"})
+            serde_json::json!({"status":"uninstalled","label":spec.label,"home_preserved":true})
         );
         Ok(())
     }
-    pub(crate) fn agent_uninstall(spec: &AgentSpec) -> Result<(), String> {
+    pub(crate) fn agent_uninstall_quiet(spec: &AgentSpec) -> Result<(), String> {
         let path = destination(spec, false)?;
         uninstall_at(spec, &path, command)
     }
@@ -600,10 +689,6 @@ mod mac {
                 .and_then(|f| f.sync_all())
                 .map_err(|_| REFUSED)?;
         }
-        println!(
-            "{}",
-            serde_json::json!({"status":"uninstalled","label":spec.label,"home_preserved":true})
-        );
         Ok(())
     }
     pub(in crate::private_host) fn status(loaded: &Loaded) -> Result<serde_json::Value, String> {
@@ -626,6 +711,220 @@ mod mac {
     mod tests {
         use super::*;
         use std::os::unix::fs::PermissionsExt;
+
+        fn resume_fixture() -> (tempfile::TempDir, AgentSpec, PathBuf) {
+            let temp = tempfile::TempDir::new().unwrap();
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let agent = spec(temp.path(), &test_config("me.vhalla.daemon.resume-test")).unwrap();
+            let path = temp.path().join("selected.plist");
+            fs::write(&path, &agent.plist).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            (temp, agent, path)
+        }
+        fn stopped_reply(path: &Path) -> Reply {
+            Reply {
+                success: true,
+                code: Some(0),
+                stdout: format!(
+                    "path = {}\nstate = not running\nlast exit code = 0\n",
+                    path.display()
+                ),
+                stderr: String::new(),
+            }
+        }
+
+        #[test]
+        fn exact_resume_deadline_covers_the_template_throttle_without_widening_other_commands() {
+            let (_temp, agent, path) = resume_fixture();
+            let throttle: u64 = agent
+                .plist
+                .split_once("<key>ThrottleInterval</key><integer>")
+                .unwrap()
+                .1
+                .split_once("</integer>")
+                .unwrap()
+                .0
+                .parse()
+                .unwrap();
+            let resume = [OsString::from("kickstart"), target(&agent).into()];
+            assert_eq!(command_timeout(&resume), Duration::from_secs(35));
+            assert!(command_timeout(&resume) > Duration::from_secs(throttle));
+            for args in [
+                vec!["print".into(), target(&agent).into()],
+                vec!["bootout".into(), target(&agent).into()],
+                vec!["bootstrap".into(), domain().into(), path.into_os_string()],
+                vec!["kickstart".into()],
+                vec!["kickstart".into(), "-k".into(), target(&agent).into()],
+                vec!["kickstart".into(), "-p".into(), target(&agent).into()],
+                vec!["kickstart".into(), target(&agent).into(), "extra".into()],
+            ] {
+                assert_eq!(command_timeout(&args), Duration::from_secs(10), "{args:?}");
+            }
+        }
+
+        #[test]
+        fn managed_install_resumes_an_exact_cleanly_stopped_job_without_replacing_its_plist() {
+            let (_temp, agent, path) = resume_fixture();
+            let retained =
+                custody::open_private_file(&path, Owner::current().unwrap(), 65536).unwrap();
+            let mut calls = 0;
+            install_or_resume_selected(
+                &agent,
+                || Ok(path.clone()),
+                |args| {
+                    calls += 1;
+                    match calls {
+                        1 => {
+                            assert_eq!(args, [OsString::from("print"), target(&agent).into()]);
+                            Ok(stopped_reply(&path))
+                        }
+                        2 => {
+                            assert_eq!(args, [OsString::from("kickstart"), target(&agent).into()]);
+                            Ok(stopped_reply(&path))
+                        }
+                        3 => {
+                            assert_eq!(args, [OsString::from("print"), target(&agent).into()]);
+                            let mut reply = stopped_reply(&path);
+                            reply.stdout =
+                                format!("path = {}\nstate = running\npid = 123\n", path.display());
+                            Ok(reply)
+                        }
+                        _ => panic!("unexpected supervisor call"),
+                    }
+                },
+                true,
+            )
+            .unwrap();
+            assert_eq!(calls, 3);
+            assert!(custody::same_file(&path, &retained).unwrap());
+            assert_eq!(fs::read_to_string(&path).unwrap(), agent.plist);
+        }
+
+        #[test]
+        fn managed_resume_refuses_running_backoff_unknown_and_foreign_jobs() {
+            let (_temp, agent, path) = resume_fixture();
+            let clean = stopped_reply(&path).stdout;
+            for stdout in [
+                clean.replace("not running", "running") + "pid = 123\n",
+                clean.clone() + "pid = 123\n",
+                clean.replace("last exit code = 0", "last exit code = 1"),
+                clean.replace("last exit code = 0\n", ""),
+                clean.replace("not running", "waiting"),
+                clean.replace(path.to_str().unwrap(), "/foreign/selected.plist"),
+            ] {
+                let mut calls = 0;
+                assert!(install_or_resume_selected(
+                    &agent,
+                    || Ok(path.clone()),
+                    |args| {
+                        calls += 1;
+                        assert_eq!(args[0], "print");
+                        let mut reply = stopped_reply(&path);
+                        reply.stdout = stdout.clone();
+                        Ok(reply)
+                    },
+                    true,
+                )
+                .is_err());
+                assert_eq!(calls, 1);
+                assert_eq!(fs::read_to_string(&path).unwrap(), agent.plist);
+            }
+            fs::write(&path, b"foreign plist").unwrap();
+            let mut calls = 0;
+            assert!(install_or_resume_selected(
+                &agent,
+                || Ok(path.clone()),
+                |_| {
+                    calls += 1;
+                    Ok(stopped_reply(&path))
+                },
+                true,
+            )
+            .is_err());
+            assert_eq!(calls, 1);
+            assert_eq!(fs::read(&path).unwrap(), b"foreign plist");
+        }
+
+        #[test]
+        fn managed_resume_preserves_evidence_after_refusal_replacement_or_identity_drift() {
+            for fault in 0..3 {
+                let (temp, agent, path) = resume_fixture();
+                let retained = temp.path().join("retained.plist");
+                let mut calls = 0;
+                assert!(install_or_resume_selected(
+                    &agent,
+                    || Ok(path.clone()),
+                    |args| {
+                        calls += 1;
+                        let mut reply = stopped_reply(&path);
+                        match calls {
+                            1 => assert_eq!(args[0], "print"),
+                            2 => {
+                                assert_eq!(
+                                    args,
+                                    [OsString::from("kickstart"), target(&agent).into()]
+                                );
+                                if fault == 0 {
+                                    reply.success = false;
+                                    reply.code = Some(5);
+                                } else if fault == 1 {
+                                    fs::rename(&path, &retained).unwrap();
+                                    fs::write(&path, &agent.plist).unwrap();
+                                    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                                        .unwrap();
+                                }
+                            }
+                            3 if fault == 2 => {
+                                assert_eq!(args[0], "print");
+                                reply.stdout =
+                                    "path = /foreign/selected.plist\nstate = running\npid = 123\n"
+                                        .to_owned();
+                            }
+                            _ => panic!("unexpected supervisor call"),
+                        }
+                        Ok(reply)
+                    },
+                    true,
+                )
+                .is_err());
+                assert_eq!(calls, if fault == 2 { 3 } else { 2 });
+                assert_eq!(fs::read_to_string(&path).unwrap(), agent.plist);
+                if fault == 1 {
+                    assert_eq!(fs::read_to_string(retained).unwrap(), agent.plist);
+                }
+            }
+        }
+
+        #[test]
+        fn managed_install_bootstraps_an_unloaded_job_without_kickstart() {
+            let (_temp, agent, path) = resume_fixture();
+            let mut calls = 0;
+            install_or_resume_selected(
+                &agent,
+                || Ok(path.clone()),
+                |args| {
+                    calls += 1;
+                    if calls == 1 {
+                        assert_eq!(args[0], "print");
+                        Ok(Reply {
+                            success: false,
+                            code: Some(113),
+                            stdout: String::new(),
+                            stderr: format!("Bad request.\nCould not find service \"{}\" in domain for user gui: {}\n", agent.label, rustix::process::geteuid().as_raw()),
+                        })
+                    } else {
+                        assert_eq!(args[0], if calls == 2 { "bootstrap" } else { "print" });
+                        assert!(calls <= 3);
+                        Ok(stopped_reply(&path))
+                    }
+                },
+                true,
+            )
+            .unwrap();
+            assert_eq!(calls, 3);
+            assert_eq!(fs::read_to_string(path).unwrap(), agent.plist);
+        }
+
         #[test]
         fn install_probes_only_exact_service_and_never_lists_the_gui_domain() {
             let home = std::env::temp_dir().join(format!(
@@ -992,6 +1291,8 @@ mod mac {
 }
 #[cfg(target_os = "macos")]
 pub(crate) use mac::{agent_install, agent_status, agent_uninstall};
+#[cfg(all(target_os = "macos", feature = "headless"))]
+pub(crate) use mac::{agent_install_quiet, agent_uninstall_quiet};
 #[cfg(target_os = "macos")]
 pub(super) use mac::{install, status, uninstall};
 

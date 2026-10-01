@@ -1,5 +1,3 @@
-use vhalla_core::UntrustedEnvelope;
-
 fn main() {
-    let _forged = UntrustedEnvelope(vec![1, 2, 3]);
+    let _forged = vhalla_core::UntrustedEnvelope(vec![1, 2, 3]);
 }

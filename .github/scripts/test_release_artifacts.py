@@ -116,7 +116,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ZIP digest or size"):
             artifacts.fetch("vhalla-unsigned")
 
-    def test_mixed_attempt_native_and_browser_outputs_stage_exact_six_pairs(self):
+    def test_mixed_attempt_native_outputs_stage_exact_five_pairs(self):
         expected = {}
         for identity, (key, target) in enumerate(artifacts.RELEASE_TARGETS.items(), 100):
             extension = ".zip" if key == "WINDOWS" else ".tar.gz"
@@ -126,12 +126,13 @@ class ReleaseArtifactTests(unittest.TestCase):
             self.producer("release-cli-" + target, 1 + identity % 2, identity, bundle(pair), key)
         name = "valhalla-browser-v0.2.11.tar.gz"
         pair = [(name, b"browser"), (name + ".sha256", b"checksum")]
-        expected.update(pair)
+        # A stale browser producer cannot add an unrequested release asset.
         self.producer("release-browser", 1, 105, bundle(pair), "BROWSER")
         destination = self.root / "assets"
         artifacts.fetch_release(destination)
         self.assertEqual({path.name: path.read_bytes() for path in destination.iterdir()}, expected)
-        self.assertEqual(self.calls, [path for identity in range(100, 106)
+        self.assertEqual(len(expected), 10)
+        self.assertEqual(self.calls, [path for identity in range(100, 105)
                                      for path in (f"actions/artifacts/{identity}", f"actions/artifacts/{identity}/zip")])
 
     def test_zip_inventory_rejects_duplicate_traversal_symlink_and_existing_output(self):
@@ -212,14 +213,103 @@ class WorkflowBindingsTests(unittest.TestCase):
         self.assertIn("release_artifacts.py fetch-release release-assets", WORKFLOW)
         self.assertIn("release_artifacts.py fetch-zip release-cli-aarch64-apple-darwin", WORKFLOW)
 
-    def test_browser_exact_outputs_survive_workflow_call_with_manifest_binding(self):
+    def test_optional_browser_outputs_keep_manifest_binding_without_release_dependency(self):
         for field in ("id", "digest"):
             self.assertIn(f"value: ${{{{ jobs.browser-artifact.outputs.artifact_{field} }}}}", RUST)
             self.assertIn(f"artifact_{field}: ${{{{ steps.browser-upload.outputs.artifact-{field} }}}}", RUST)
-            self.assertIn(f"ARTIFACT_{field.upper()}: ${{{{ needs.validate.outputs.browser_artifact_{field} }}}}", WORKFLOW)
-            self.assertIn(f"BROWSER_ARTIFACT_{field.upper()}: ${{{{ needs.browser.outputs.artifact_{field} }}}}", WORKFLOW)
-        self.assertIn("QUALIFIED_MANIFEST_SHA256: ${{ needs.validate.outputs.browser_manifest_sha256 }}", WORKFLOW)
-        self.assertIn('verify_browser_artifact.py "$out" --manifest-sha256 "$QUALIFIED_MANIFEST_SHA256"', WORKFLOW)
+            self.assertNotIn(f"BROWSER_ARTIFACT_{field.upper()}", WORKFLOW)
+        self.assertIn('verify_browser_artifact.py browser/dist --receipt "$RUNNER_TEMP/vhalla-private-delivery-results/receipt.json"', RUST)
+        self.assertIn("value: ${{ jobs.browser-artifact.outputs.manifest_sha256 }}", RUST)
+        self.assertNotIn("\n  browser:", WORKFLOW)
+        self.assertNotIn("valhalla-browser-", WORKFLOW)
+        self.assertNotIn("needs.validate.outputs.browser_", WORKFLOW)
+
+    def test_native_release_still_requires_validation_signing_and_fresh_runner_smoke(self):
+        self.assertIn("uses: ./.github/workflows/rust.yml", WORKFLOW)
+        self.assertIn("needs: [validate, cli, macos_sign, macos_smoke]", WORKFLOW)
+        self.assertIn("needs: [validate, macos_build]", WORKFLOW)
+        self.assertIn("needs: macos_sign", WORKFLOW)
+        self.assertEqual(WORKFLOW.count("uses: actions/attest-build-provenance@"), 2)
+
+    def test_native_release_uses_headless_features_and_preserves_windows_member_tools(self):
+        self.assertIn("matrix.features || 'headless'", WORKFLOW)
+        self.assertIn("--features headless --target aarch64-apple-darwin", WORKFLOW)
+        self.assertIn("features: experimental-private", WORKFLOW)
+        self.assertNotIn("experimental-network,experimental-sync,experimental-rooms-tui", WORKFLOW)
+        self.assertIn("for command in daemon private private-host private-gateway", WORKFLOW)
+
+
+class HeadlessValidationPolicyTests(unittest.TestCase):
+    @staticmethod
+    def job(name):
+        return re.search(rf"^  {name}:\n(.*?)(?=^  \S|\Z)", RUST,
+                         re.MULTILINE | re.DOTALL).group(1)
+
+    @staticmethod
+    def script(step):
+        return textwrap.dedent(step.split("        run: |\n", 1)[1])
+
+    def test_browser_input_defaults_off_for_dispatch_and_reuse(self):
+        header = RUST.split("\npermissions:\n", 1)[0]
+        for event in ("workflow_dispatch", "workflow_call"):
+            block = re.search(rf"^  {event}:\n(.*?)(?=^  \S|\Z)", header,
+                              re.MULTILINE | re.DOTALL).group(1)
+            declaration = block.split("      legacy_browser:\n", 1)[1].split("\n    outputs:", 1)[0]
+            self.assertIn("type: boolean", declaration)
+            self.assertIn("default: false", declaration)
+        self.assertIn("browser: ${{ steps.legacy-browser.outputs.selected }}", self.job("changes"))
+
+    def test_browser_is_selected_only_for_an_explicit_relevant_run(self):
+        selector = self.job("changes").split("      - name: Select legacy browser verification\n", 1)[1]
+        script = self.script(selector)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            for requested in ("", "false", "true"):
+                for rust in ("false", "true"):
+                    for browser in ("false", "true"):
+                        with self.subTest(requested=requested, rust=rust, browser=browser):
+                            output.write_text("")
+                            result = subprocess.run(["bash", "-c", script], env={**os.environ,
+                                "LEGACY_BROWSER": requested, "RUST_CHANGED": rust, "BROWSER_CHANGED": browser,
+                                "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(Path(directory) / "summary")},
+                                capture_output=True, text=True, timeout=10)
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            selected = requested == rust == browser == "true"
+                            self.assertEqual(output.read_text(), f"selected={str(selected).lower()}\n")
+
+    def required(self, **changes):
+        states = {name: "success" for name in (
+            "CHANGES", "QUALITY", "WORKSPACE_TESTS", "WINDOWS_PORTABLE", "WORKSPACE_AUX",
+            "PROTOTYPES", "KANI", "DESKTOP", "SITE", "SECURITY", "FORMAL", "MAIN_POLICY",
+        )}
+        states.update({name: "skipped" for name in (
+            "BROWSER", "BROWSER_WORKER", "BROWSER_STORAGE", "BROWSER_PUBLIC",
+        )})
+        states.update(RUST_CHANGED="true", FORMAL_CHANGED="true", KANI_SELECTED="true",
+                      PROTOTYPE_LIST='["prototypes/fixture/Cargo.toml"]', BROWSER_SELECTED="false")
+        return subprocess.run(["bash", "-c", self.script(self.job("required"))],
+                              env={**os.environ, **states, **changes},
+                              capture_output=True, text=True, timeout=10)
+
+    def test_headless_required_accepts_unrequested_browser_but_keeps_all_native_gates(self):
+        result = self.required()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for gate in ("CHANGES", "QUALITY", "WORKSPACE_TESTS", "WINDOWS_PORTABLE", "WORKSPACE_AUX",
+                     "PROTOTYPES", "KANI", "DESKTOP", "SITE", "SECURITY", "FORMAL", "MAIN_POLICY"):
+            for state in ("skipped", "failure", "cancelled"):
+                with self.subTest(gate=gate, state=state):
+                    self.assertNotEqual(self.required(**{gate: state}).returncode, 0)
+
+    def test_requested_browser_jobs_must_all_succeed(self):
+        states = {name: "success" for name in (
+            "BROWSER", "BROWSER_WORKER", "BROWSER_STORAGE", "BROWSER_PUBLIC",
+        )}
+        self.assertEqual(self.required(BROWSER_SELECTED="true", **states).returncode, 0)
+        for gate in states:
+            for state in ("skipped", "failure", "cancelled"):
+                with self.subTest(gate=gate, state=state):
+                    self.assertNotEqual(self.required(BROWSER_SELECTED="true",
+                                                     **{**states, gate: state}).returncode, 0)
 
 
 if __name__ == "__main__":

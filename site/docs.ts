@@ -11,7 +11,7 @@ import { articleHref, articles, articleSources, isIndexable, type Article } from
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const KIND_ORDER: DocKind[] = ['tutorial', 'how-to', 'reference', 'explanation'];
 const docHub = docs.find(page => !page.slug)!;
-export const orderedDocs = [docHub, ...KIND_ORDER.flatMap(kind => docs.filter(page => page.kind === kind))];
+export const orderedDocs = [docHub, ...KIND_ORDER.flatMap(kind => docs.filter(page => !page.historical && page.kind === kind)), ...docs.filter(page => page.historical)];
 export const docHref = (page: DocPage) => `/docs/${page.slug ? `${page.slug}/` : ''}`;
 export const compareHref = (page: DocPage) => `/compare/${page.slug ? `${page.slug}/` : ''}`;
 export const writingHref = (page: DocPage) => `/writing/${page.slug ? `${page.slug}/` : ''}`;
@@ -35,11 +35,13 @@ export const collections: Record<string, Collection> = {
 const docsNav = (current: DocPage) => {
   const link = (item: DocPage, label = item.kicker) => `<a href="${docHref(item)}"${item.slug === current.slug ? ' aria-current="page"' : ''}>${escape(label)}</a>`;
   const groups = KIND_ORDER.map(kind => {
-    const members = docs.filter(page => page.kind === kind);
+    const members = docs.filter(page => !page.historical && page.kind === kind);
     if (!members.length) return '';
     return `<p class="nav-label nav-group">${escape(docKindLabels[kind])}</p>${members.map(page => link(page)).join('')}`;
   }).join('');
-  return `<nav aria-label="Documentation"><p class="nav-label">Documentation</p>${link(docHub, 'Overview')}${groups}<a class="nav-source" href="https://github.com/hraness/valhalla">View source ↗</a></nav>`;
+  const historical = docs.filter(page => page.historical);
+  const archive = `<p class="nav-label nav-group">Historical documentation</p>${historical.map(page => link(page)).join('')}`;
+  return `<nav aria-label="Documentation"><p class="nav-label">Documentation</p>${link(docHub, 'Overview')}${groups}${archive}<a class="nav-source" href="https://github.com/hraness/valhalla">View source ↗</a></nav>`;
 };
 
 const flatNav = (collection: Collection, current: DocPage) =>
@@ -95,11 +97,13 @@ export const masthead = (template: string) => {
 const sourcesHtml = (sources: readonly { label: string; url: string }[]) =>
   `<h2 id="sources">Sources</h2><ul class="doc-sources">${sources.map(source => `<li><a href="${escape(source.url)}">${escape(source.label)} ↗</a></li>`).join('')}</ul>`;
 
-function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string; ogImage: string; extraGraph?: object[]; extraHead?: string; contentAfter?: string; dateModified?: string }) {
+function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string; ogImage: string; extraGraph?: object[]; extraHead?: string; contentAfter?: string; dateModified?: string; historical?: boolean }) {
   const url = opts.url;
   const head = renderHead(template, { url, title: opts.title, description: page.summary, shareTitle: shareTitle(page), ogImage: opts.ogImage, jsonLd: jsonLd(page, url, opts.trail, opts.articleType, opts.extraGraph, opts.dateModified), extraHead: opts.extraHead });
   const header = masthead(template);
-  const withSources = page.sources?.length ? `${page.content}\n${sourcesHtml(page.sources)}` : page.content;
+  const historical = page.historical || opts.historical;
+  const context = historical ? '<aside class="doc-note" data-historical-documentation><strong>Historical documentation</strong><p>This page describes earlier Valhalla clients and experiments. For the current headless MVP, start with the <a href="/docs/getting-started/">daemon tutorial</a> and <a href="/docs/headless-daemon/">daemon reference</a>.</p></aside>' : '';
+  const withSources = context + (page.sources?.length ? `${page.content}\n${sourcesHtml(page.sources)}` : page.content);
   const body = opts.contentAfter ? withSources.replace('<h2 id="further">', `${opts.contentAfter}<h2 id="further">`) : withSources;
   const headings = [...body.matchAll(/<h2 id="([^"]+)">([^<]+)<\/h2>/g)];
   const toc = headings.length >= 3 ? `<aside class="doc-toc"><nav aria-label="On this page"><p class="nav-label">On this page</p>${headings.map(m=>`<a href="#${m[1]}">${m[2]}</a>`).join('')}</nav></aside>` : '';
@@ -125,7 +129,7 @@ export function renderDoc(page: DocPage, template: string): string {
     navTitle: 'Documentation',
     siblings: collection.pages,
     siblingHref: docHref,
-    updatedLabel: 'Development documentation',
+    updatedLabel: page.historical ? 'Historical documentation' : 'Headless source documentation',
     ogImage: collection.ogImage,
     ...(page.content.includes('data-hraness-agent-setup-prompt') ? { extraHead: '    <link rel="stylesheet" href="/design/stylex.css">' } : {}),
   });
@@ -134,6 +138,7 @@ export function renderDoc(page: DocPage, template: string): string {
 export function renderCompare(page: DocPage, template: string): string {
   const collection = collections.compare;
   return render(page, template, {
+    historical: true,
     url: `https://vhalla.com${compareHref(page)}`,
     title: page.metaTitle ?? `${page.kicker}${collection.titleSuffix}`,
     articleType: page.slug ? collection.articleType : 'CollectionPage',
@@ -268,6 +273,7 @@ export function renderArticle(article: Article, template: string): string {
 
 export function renderUseCases(template: string): string {
   return render(useCases, template, {
+    historical: true,
     url: 'https://vhalla.com/use-cases/',
     title: useCases.metaTitle ?? `${useCases.kicker} · Valhalla`,
     articleType: 'Article',

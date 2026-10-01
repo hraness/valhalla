@@ -8054,9 +8054,10 @@ dependencies = [
 
 [[package]]
 name = "vhalla-cli"
-version = "0.2.13"
+version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bip39",
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
@@ -8064,12 +8065,14 @@ dependencies = [
  "hraness-cli-update",
  "hraness-control-kit",
  "hraness-support-foundation",
+ "iroh",
  "libc",
  "rcgen",
  "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "time",
  "tokio",
  "tracing-subscriber",
@@ -8077,6 +8080,10 @@ dependencies = [
  "vhalla-browser-storage",
  "vhalla-core",
  "vhalla-custody",
+ "vhalla-direct-native",
+ "vhalla-direct-room",
+ "vhalla-direct-store",
+ "vhalla-direct-sync",
  "vhalla-discovery",
  "vhalla-discovery-store",
  "vhalla-identity",
@@ -8129,6 +8136,49 @@ dependencies = [
  "libc",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "vhalla-direct-native"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "hegeltest",
+ "sha2 0.10.9",
+ "tempfile",
+ "vhalla-custody",
+ "vhalla-direct-room",
+ "vhalla-direct-store",
+ "vhalla-direct-sync",
+ "vhalla-identity",
+]
+
+[[package]]
+name = "vhalla-direct-room"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "hegeltest",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "vhalla-direct-store"
+version = "0.0.0"
+dependencies = [
+ "hegeltest",
+ "rusqlite",
+ "sha2 0.10.9",
+ "vhalla-custody",
+]
+
+[[package]]
+name = "vhalla-direct-sync"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "sha2 0.10.9",
+ "vhalla-direct-room",
 ]
 
 [[package]]
@@ -8187,6 +8237,7 @@ dependencies = [
  "vhalla-core",
  "vhalla-crypto",
  "vhalla-custody",
+ "vhalla-direct-room",
  "vhalla-private-kernel",
  "vhalla-private-protocol",
  "vhalla-public-protocol",
@@ -8281,6 +8332,8 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "vhalla-custody",
+ "vhalla-direct-native",
+ "vhalla-direct-room",
  "vhalla-identity",
  "vhalla-private-kernel",
  "vhalla-private-relay",
