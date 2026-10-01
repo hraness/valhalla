@@ -128,7 +128,7 @@
       Write-Host "    [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';$dir', 'User')"
     }
     Write-Host '  On Windows, vhalla runs identity and the member side of private rooms.'
-    Write-Host '  For rooms, status, the demo and hosting, install the Linux build inside WSL:'
+    Write-Host '  To host rooms, install the Linux build inside WSL:'
     Write-Host '    curl -fsSL https://vhalla.com/install.sh | sh'
     Write-Host "  Try it: vhalla identity init $env:USERPROFILE\valhalla\identity"
     Write-Host "  Next: $Guide"

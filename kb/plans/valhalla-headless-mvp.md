@@ -232,11 +232,30 @@ baseline comparison.
   or terminal source-checkpoint verification. It covered all four direct-room
   crates and the CLI sync integration. This was source review, not another test
   run, and does not qualify whole-home rollback or compromised signing keys.
-- The new private restart controller passed 29 focused tests. Its actual local
-  three-participant run and the root aggregate Python gate are queued through
-  the host scheduler. All controller inputs are frozen; the next draft-PR push
-  starts remote validation while those local checks wait for admitted work to
-  finish. Neither pending local result is represented as a pass.
+- The new private restart controller passed 29 focused tests and all 31 actual
+  local host/client cases. Same-home mailbox restart retained its selection and
+  delivered B's saved message after reconnect; removal, rekey and cleanup also
+  passed. Receipt: `/private/tmp/vhpr-wr6gt9wf/journey/local-receipt.json`.
+  Its private execution manifest binds the same immutable optimized binary to
+  controller SHA-256 `58f020661475c5f87bac79ccf103a8431d8f1bf3567024474de78272223a36ff`.
+  Local evidence remains direct-path, not independent-machine or source-attested
+  in the receipt itself. Original fixtures and both mailbox logs remain intact.
+- The integrated Python gate passed all 296 tests in 9.868 seconds after host
+  admission. It included the installer guidance repair below. The frozen
+  controller/version/measurement changes are committed and pushed as
+  `2e6437dacc10e491d75e747a53e8253835fa5b78`; exact Required CI
+  [36890628764](https://github.com/hraness/valhalla/actions/runs/36890628764)
+  is in progress. The optimized independent-machine dispatch waits for the
+  installer copy repair to converge.
+- Release audit found obsolete demo instructions in both installers. Completion
+  guidance now uses portable help/setup instructions without changing the
+  published v0.2.13 default. Five installer safety tests, 14 site contract tests,
+  shell syntax and the integrated Python suite passed on these exact edits.
+  The audit also confirmed publication requires the tag to remain current main
+  until signing and the final public flip complete. Defer the documentation pin
+  promotion until after successful signed release and installed upgrade checks.
+  The separate Homebrew tap still selects v0.2.10 and needs post-release
+  promotion through its own generator and checks.
 
 Next: complete the Linux service check and optimized independent public/private
 journeys. Final native packaging, signing, installation/upgrade, release,

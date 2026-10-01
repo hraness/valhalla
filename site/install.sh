@@ -131,6 +131,6 @@ case ":$PATH:" in
     echo "    export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 echo ""
-echo "  Try it: vhalla demo, a narrated eight-step tour that runs only on this machine."
-echo "  Next: choose a network you trust"
+echo "  Try it: vhalla --help"
+echo "  Setup guides:"
 echo "    https://vhalla.com/docs/getting-started/"
