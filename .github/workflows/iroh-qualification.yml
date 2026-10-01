@@ -5,6 +5,11 @@ name: Iroh independent runners
 on:
   workflow_dispatch:
     inputs:
+      headless:
+        description: Qualify headless CLI public and private rooms
+        required: false
+        default: false
+        type: boolean
       algal_ref:
         description: Exact ALGAL commit for Habitat Link; empty runs the mailbox profile
         required: false
@@ -38,8 +43,15 @@ env:
   RUST_BACKTRACE: short
 
 jobs:
+  headless:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.headless }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/headless-qualification.yml
+
   habitat-link:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.algal_ref != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.headless && inputs.algal_ref != '' }}
     permissions:
       contents: read
       actions: read
@@ -48,7 +60,7 @@ jobs:
       algal_ref: ${{ inputs.algal_ref }}
 
   build:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.algal_ref == '' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.headless && inputs.algal_ref == '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -151,7 +163,7 @@ jobs:
 
   result:
     name: Qualification result
-    if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.algal_ref == '') }}
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || (!inputs.headless && inputs.algal_ref == '')) }}
     needs: [build, host, client]
     runs-on: ubuntu-latest
     timeout-minutes: 2

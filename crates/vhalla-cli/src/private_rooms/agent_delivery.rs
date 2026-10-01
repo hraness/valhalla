@@ -41,14 +41,35 @@ use vhalla_private_native::{
     relay::delivery::TickBudget,
     relay::net::ScanFailure,
 };
+#[cfg(all(unix, any(test, feature = "headless")))]
+use vhalla_private_native::{client::RoomSession, relay::delivery::JobStatus};
 
 pub(super) const REFUSED: &str = "host delivery refused; preserve the exact room, queue, scan and applied evidence; reconcile before another explicitly granted launch";
+const INIT_VERSION: &str = "new daemon delivery setup requires a tagged version 4 profile";
+const INIT_NUMERIC_TLS: &str =
+    "local delivery setup requires a numeric TLS address or Iroh endpoint";
+
+#[cfg(feature = "headless")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InitializeBoundError {
+    Version,
+    NamedTls,
+    Refused,
+}
 /// Fresh staged work per tick for scan and apply alike; a page that still has
 /// results repolls immediately instead of waiting out the idle interval.
 const PAGE: usize = MAX_RELAY_PAGE;
 /// The kernel's own record bound is smaller than a relay page: outbox drains
 /// loop until an empty page, so catch-up still converges in one tick budget.
 const OUTBOX_PAGE: usize = vhalla_private_kernel::MAX_PAGE_RECORDS;
+/// Keep native custody failures distinct from the selected relay/profile so
+/// the daemon can revoke room grants without fencing rooms for peer input.
+#[cfg(all(unix, any(test, feature = "headless")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoomTickError {
+    Refused,
+    NativeUnavailable,
+}
 #[cfg(unix)]
 const TICK: Duration = Duration::from_secs(2);
 /// Relay job attempts per tick, within the store's byte and deadline budget.
@@ -171,7 +192,15 @@ impl Drop for Watch {
 
 mod applied;
 pub(super) mod generation;
+#[cfg(unix)]
+mod host;
 mod polling;
+#[cfg(all(unix, any(test, feature = "headless")))]
+use host::RoomHost;
+#[cfg(unix)]
+use host::{Host, RpcHost};
+#[cfg(all(test, unix))]
+mod borrowed_tests;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -213,6 +242,8 @@ struct Config {
 enum SelectedTransport {
     Iroh {
         endpoint: IrohEndpoint,
+        #[serde(default)]
+        relay_only: bool,
     },
     Tls {
         addr: Endpoint,
@@ -231,8 +262,45 @@ struct ContextConfig {
 }
 impl Config {
     fn load(path: &Path, context: Context) -> Result<(Self, RelayNamespace, RelayClient), String> {
+        Self::load_selected(path, context, None)
+    }
+
+    fn load_selected(
+        path: &Path,
+        context: Context,
+        expected_hash: Option<[u8; 32]>,
+    ) -> Result<(Self, RelayNamespace, RelayClient), String> {
+        Self::load_mode(path, context, expected_hash, false)
+    }
+
+    #[cfg(feature = "headless")]
+    fn load_initialization(
+        path: &Path,
+        context: Context,
+        expected_hash: [u8; 32],
+    ) -> Result<(Self, RelayNamespace, RelayClient), String> {
+        Self::load_mode(path, context, Some(expected_hash), true)
+    }
+
+    fn load_mode(
+        path: &Path,
+        context: Context,
+        expected_hash: Option<[u8; 32]>,
+        new_only: bool,
+    ) -> Result<(Self, RelayNamespace, RelayClient), String> {
         let bytes = files::read(path, 16384, false)?;
+        // Check the bytes actually parsed, before constructing any transport.
+        // A pre/post filesystem check alone cannot exclude an ABA replacement
+        // that supplied a different host profile only during this read.
+        if expected_hash
+            .is_some_and(|expected| <[u8; 32]>::from(Sha256::digest(bytes.as_slice())) != expected)
+        {
+            return Err(REFUSED.into());
+        }
         let mut c: Self = serde_json::from_slice(&bytes).map_err(|_| REFUSED)?;
+        if new_only && c.version != 4 {
+            return Err(INIT_VERSION.into());
+        }
         if ![1, 2, 3, 4].contains(&c.version) || (c.version == 3) != c.lineage.is_some() {
             return Err(REFUSED.into());
         }
@@ -259,6 +327,14 @@ impl Config {
         if selected != context || !c.state.is_absolute() || !c.token.is_absolute() {
             return Err(REFUSED.into());
         }
+        if expected_hash.is_some()
+            && !new_only
+            && c.state.canonicalize().map_err(|_| REFUSED)?.as_os_str() != c.state.as_os_str()
+        {
+            // A daemon selection may not follow a stable profile through a
+            // changed directory symlink into another initialized retry queue.
+            return Err(REFUSED.into());
+        }
         let parent = c
             .state
             .parent()
@@ -266,7 +342,32 @@ impl Config {
             .canonicalize()
             .map_err(|_| REFUSED)?;
         custody::open_private_directory(&parent).map_err(|_| REFUSED)?;
-        c.state = parent.join(c.state.file_name().ok_or(REFUSED)?);
+        let state = parent.join(c.state.file_name().ok_or(REFUSED)?);
+        if new_only {
+            if state.as_os_str() != c.state.as_os_str() {
+                return Err(REFUSED.into());
+            }
+            match state.symlink_metadata() {
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                _ => return Err(REFUSED.into()),
+            }
+        }
+        // Daemon initialization and bound opens run under local custody. A
+        // named TLS endpoint would resolve synchronously during construction,
+        // so reject both tagged and legacy names before any transport work.
+        // Standalone profiles retain their existing named-endpoint support.
+        if (new_only || expected_hash.is_some())
+            && (matches!(
+                &c.transport,
+                Some(SelectedTransport::Tls {
+                    addr: Endpoint::Named(..),
+                    ..
+                })
+            ) || matches!(&c.addr, Some(Endpoint::Named(..))))
+        {
+            return Err(INIT_NUMERIC_TLS.into());
+        }
+        c.state = state;
         let namespace = RelayNamespace::from_bytes(unhex(&c.namespace)?).map_err(|_| REFUSED)?;
         let token = files::read(&c.token, 65, false)?;
         let token = std::str::from_utf8(&token).map_err(|_| REFUSED)?;
@@ -291,11 +392,18 @@ impl Config {
         {
             return Err("delivery profile must select exactly one complete transport".into());
         }
-        if let Some(SelectedTransport::Iroh { endpoint }) = &self.transport {
+        if let Some(SelectedTransport::Iroh {
+            endpoint,
+            relay_only,
+        }) = &self.transport
+        {
             endpoint.validate().map_err(|_| REFUSED)?;
-            return IrohRelay::new(endpoint.clone(), token, namespace)
-                .map(Into::into)
-                .map_err(|_| REFUSED.into());
+            let relay = if *relay_only {
+                IrohRelay::new_relay_only(endpoint.clone(), token, namespace)
+            } else {
+                IrohRelay::new(endpoint.clone(), token, namespace)
+            };
+            return relay.map(Into::into).map_err(|_| REFUSED.into());
         }
         let (addr, tls_name, ca) = self.tls_fields()?;
         if !ca.is_absolute() {
@@ -493,8 +601,55 @@ pub(super) fn open_queue(
     }
     Ok((stream, queue))
 }
-pub(super) fn initialize(path: &Path, context: Context) -> Result<(), String> {
+pub(crate) fn initialize(path: &Path, context: Context) -> Result<(), String> {
     let (c, ns, relay) = Config::load(path, context)?;
+    initialize_queues(&c, context, ns, &relay, || {
+        publish_control_version(path, &c.encoded)
+    })
+}
+
+/// New-only initialization for an independently authorized daemon profile.
+/// The hash binds the bytes actually parsed, including their version, before
+/// any queue name is created. Version 4 is never rewritten or upgraded here.
+/// The caller retains and rechecks profile file/directory custody around this
+/// call. Neither relay transport makes an exchange during initialization.
+#[cfg(feature = "headless")]
+pub(crate) fn initialize_bound(
+    path: &Path,
+    context: Context,
+    expected_hash: [u8; 32],
+) -> Result<(), InitializeBoundError> {
+    let (c, ns, relay) =
+        Config::load_initialization(path, context, expected_hash).map_err(|error| {
+            match error.as_str() {
+                INIT_VERSION => InitializeBoundError::Version,
+                INIT_NUMERIC_TLS => InitializeBoundError::NamedTls,
+                _ => InitializeBoundError::Refused,
+            }
+        })?;
+    if files::read(path, 16384, false)
+        .map_err(|_| InitializeBoundError::Refused)?
+        .as_slice()
+        != c.encoded
+    {
+        return Err(InitializeBoundError::Refused);
+    }
+    initialize_queues(&c, context, ns, &relay, || {
+        if files::read(path, 16384, false)?.as_slice() != c.encoded {
+            return Err(REFUSED.into());
+        }
+        Ok(())
+    })
+    .map_err(|_| InitializeBoundError::Refused)
+}
+
+fn initialize_queues(
+    c: &Config,
+    context: Context,
+    ns: RelayNamespace,
+    relay: &RelayClient,
+    finish: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     // Validate policy before creating any names. Actual queue creation performs
     // the authoritative validation; partial initialization is never auto-reset.
     if c.initial_cursor > MAX_RELAY_ITEMS as u64
@@ -509,7 +664,12 @@ pub(super) fn initialize(path: &Path, context: Context) -> Result<(), String> {
     {
         return Err(REFUSED.into());
     }
+    let (parent, _) =
+        custody::open_private_directory(c.state.parent().ok_or(REFUSED)?).map_err(|_| REFUSED)?;
     let (directory, _) = custody::create_private_directory(&c.state).map_err(|_| REFUSED)?;
+    // Retain the new-only reservation even if initialization stops before its
+    // first child is complete. A present partial directory is never reset.
+    parent.sync_all().map_err(|_| REFUSED)?;
     let lock = custody::create_private_file(&c.state.join("lock")).map_err(|_| REFUSED)?;
     custody::acquire_exclusive(&lock).map_err(|_| REFUSED)?;
     let _queue = DeliveryStore::create_new(
@@ -524,10 +684,12 @@ pub(super) fn initialize(path: &Path, context: Context) -> Result<(), String> {
     let _scan = ScanDirectory::open_from(&c.state.join("scan"), ns, c.initial_cursor)
         .map_err(|_| REFUSED)?;
     custody::create_private_directory(&c.state.join("applied")).map_err(|_| REFUSED)?;
-    files::write(&c.state.join("binding"), &binding(context, ns, &relay, &c))?;
-    enable_controls(&c, context, ns, &relay, true)?;
+    files::write(&c.state.join("binding"), &binding(context, ns, relay, c))?;
+    enable_controls(c, context, ns, relay, true)?;
     directory.sync_all().map_err(|_| REFUSED)?;
-    publish_control_version(path, &c.encoded)?;
+    // Keep the initializer's queue and lock custody through the final profile
+    // check/publication, exactly as in the standalone initialization flow.
+    finish()?;
     Ok(())
 }
 
@@ -701,10 +863,12 @@ fn enable_controls(
 /// Lifetime queue custody is separate from a finite, one-use agent grant.
 /// The driving loop runs inside agent serving, a Unix-only lane today.
 #[cfg(unix)]
-pub(super) struct Driver {
+pub(crate) struct Driver {
     config: Config,
     context: Context,
     namespace: RelayNamespace,
+    // With finite polling there are no surviving client clones. Dropping the
+    // client joins its owned runtime before queue, scan or lock custody drops.
     relay: RelayClient,
     queue: DeliveryStore,
     controls: DeliveryStore,
@@ -738,6 +902,9 @@ pub(super) struct Driver {
     boundary_checked: bool,
     polling: polling::Schedule,
     scan_full: bool,
+    /// Legacy launches may hold a mailbox watch. Daemon ownership always uses
+    /// finite polling and never creates or rearms this separate worker.
+    watch_enabled: bool,
     /// Held-page mailbox watch on its own connection. `None` only before the
     /// first poll; a dead entry stays as the re-arm decision record.
     watch: Option<Watch>,
@@ -747,7 +914,75 @@ pub(super) struct Driver {
 #[cfg(unix)]
 impl Driver {
     pub(super) fn open(path: &Path, context: Context) -> Result<Self, String> {
-        let (config, namespace, relay) = Config::load(path, context)?;
+        Self::open_mode(path, context, true)
+    }
+
+    /// Open an independently authorized, already initialized admin delivery
+    /// profile. This mode owns only finite transactions; it never starts Watch.
+    #[cfg(test)]
+    pub(crate) fn open_polling(path: &Path, context: Context) -> Result<Self, String> {
+        Self::open_mode(path, context, false)
+    }
+
+    /// Open only the exact independently selected profile bytes. The daemon
+    /// retains file/path custody around this call and every subsequent tick.
+    #[cfg(feature = "headless")]
+    pub(crate) fn open_polling_bound(
+        path: &Path,
+        context: Context,
+        expected_hash: [u8; 32],
+    ) -> Result<Self, String> {
+        Self::open_selected(path, context, false, Some(expected_hash))
+    }
+
+    /// Recheck the selected immutable configuration and live queue-directory
+    /// custody without reopening a queue or constructing another transport.
+    #[cfg(feature = "headless")]
+    pub(crate) fn check_bound_profile(
+        &self,
+        path: &Path,
+        expected_hash: [u8; 32],
+    ) -> Result<(), String> {
+        if self.watch_enabled
+            || self.watch.is_some()
+            || <[u8; 32]>::from(Sha256::digest(&self.config.encoded)) != expected_hash
+            || self
+                .config
+                .state
+                .canonicalize()
+                .map_err(|_| REFUSED)?
+                .as_os_str()
+                != self.config.state.as_os_str()
+        {
+            return Err(REFUSED.into());
+        }
+        generation::check_selection(path, &self.config)?;
+        generation::check_active(&self.config)?;
+        let (directory, owner) =
+            custody::open_private_directory(&self.config.state).map_err(|_| REFUSED)?;
+        let lock = custody::open_private_file(&self.config.state.join("lock"), owner, 0)
+            .map_err(|_| REFUSED)?;
+        if !custody::same_open_file(&directory, &self._directory).map_err(|_| REFUSED)?
+            || !custody::same_open_file(&lock, &self._lock).map_err(|_| REFUSED)?
+            || *files::read(&self.config.state.join("binding"), 1024, false)?
+                != binding(self.context, self.namespace, &self.relay, &self.config)
+        {
+            return Err(REFUSED.into());
+        }
+        Ok(())
+    }
+
+    fn open_mode(path: &Path, context: Context, watch_enabled: bool) -> Result<Self, String> {
+        Self::open_selected(path, context, watch_enabled, None)
+    }
+
+    fn open_selected(
+        path: &Path,
+        context: Context,
+        watch_enabled: bool,
+        expected_hash: Option<[u8; 32]>,
+    ) -> Result<Self, String> {
+        let (config, namespace, relay) = Config::load_selected(path, context, expected_hash)?;
         generation::check_active(&config)?;
         if ![2, 3, 4].contains(&config.version) {
             return Err("legacy delivery profile requires delivery-upgrade before another agent-serve launch".into());
@@ -787,7 +1022,9 @@ impl Driver {
             relay.endpoint_id(),
         )
         .map_err(|_| REFUSED)?;
-        if controls.policy() != (config.limits(), config.retry()) {
+        if queue.policy() != (config.limits(), config.retry())
+            || controls.policy() != (config.limits(), config.retry())
+        {
             return Err(REFUSED.into());
         }
         generation::verify_baselines(&config, context, &queue, &controls)?;
@@ -820,6 +1057,7 @@ impl Driver {
             boundary_checked: cp_outgoing == 0,
             polling,
             scan_full: false,
+            watch_enabled,
             watch: None,
             watch_dead: false,
         })
@@ -829,24 +1067,119 @@ impl Driver {
     /// Each stage resumes from durable or staged positions, so a partial pass
     /// loses no work; relaunch reauthenticates completed stages read-only.
     pub(super) async fn tick(&mut self, rpc: &mut RpcSession) -> Result<(), String> {
-        // A configured driver performs grant-scoped work from the first tick,
-        // so the one-use claim is reserved before the first effect rather than
-        // waiting for a client tool call.
-        rpc.ensure_claimed().map_err(|_| REFUSED)?;
-        rpc.check_release().map_err(|_| REFUSED)?;
+        self.tick_host(&mut RpcHost::new(rpc), None).await
+    }
+
+    /// One finite step under the daemon's independently persisted admin profile.
+    /// This borrows existing room custody and never creates an agent grant or
+    /// new application send. The caller must retain room custody until this
+    /// driver and its joined network worker have been dropped.
+    #[cfg(any(test, feature = "headless"))]
+    pub(crate) async fn tick_room(
+        &mut self,
+        room: &mut RoomSession,
+        deadline: Instant,
+    ) -> Result<(), RoomTickError> {
+        if self.watch_enabled || self.watch.is_some() {
+            return Err(RoomTickError::Refused);
+        }
+        let mut host = RoomHost::new(room);
+        let result = self.tick_host(&mut host, Some(deadline)).await;
+        // Audit after errors too. A retained authentication failure can leave
+        // cached status usable or be reduced to a skippable peer-like error.
+        let release = host.check_release();
+        if host.native_unavailable() {
+            return Err(RoomTickError::NativeUnavailable);
+        }
+        result.and(release).map_err(|_| RoomTickError::Refused)
+    }
+
+    /// Bounded local relay evidence, distinct from verified member reception.
+    #[cfg(any(test, feature = "headless"))]
+    pub(crate) fn outbox_jobs(&self, after: u64, limit: usize) -> Result<Vec<JobStatus>, String> {
+        if limit == 0 || limit > PAGE {
+            return Err(REFUSED.into());
+        }
+        self.queue
+            .statuses(after, limit)
+            .map_err(|_| REFUSED.into())
+    }
+
+    /// Bounded encrypted-control delivery metadata, separate from application jobs.
+    #[cfg(feature = "headless")]
+    pub(crate) fn control_jobs(&self, after: u64, limit: usize) -> Result<Vec<JobStatus>, String> {
+        if limit == 0 || limit > PAGE {
+            return Err(REFUSED.into());
+        }
+        self.controls
+            .statuses(after, limit)
+            .map_err(|_| REFUSED.into())
+    }
+
+    /// Live jobs, job allowance, retained bytes, and byte allowance. Reporting
+    /// capacity never rearms stopped attempts or prunes retained evidence.
+    #[cfg(feature = "headless")]
+    pub(crate) fn queue_capacity(
+        &self,
+        controls: bool,
+    ) -> Result<(usize, usize, usize, usize), String> {
+        if controls {
+            &self.controls
+        } else {
+            &self.queue
+        }
+        .capacity()
+        .map_err(|_| REFUSED.into())
+    }
+
+    /// Current selection metadata and last successful validated relay reply.
+    /// This is diagnostic evidence only, never delivery or room authority.
+    #[cfg(feature = "headless")]
+    pub(crate) fn transport_status(&self) -> serde_json::Value {
+        let transport = match &self.relay {
+            RelayClient::Tls(_) => json!({"kind":"tls"}),
+            RelayClient::Iroh(client) => json!({"kind":"iroh","relay_only":client.relay_only()}),
+        };
+        json!({
+            "transport":transport,
+            "last_transport_observation":self.relay.last_successful_observation(),
+        })
+    }
+    /// The headless actor calls this only between finite polling ticks, with
+    /// no surviving relay clones or requests from the previous selection.
+    #[cfg(feature = "headless")]
+    pub(crate) fn clear_transport_observation(&mut self) {
+        self.relay.clear_observation();
+    }
+
+    async fn tick_host(
+        &mut self,
+        host: &mut impl Host,
+        caller_deadline: Option<Instant>,
+    ) -> Result<(), String> {
+        // The legacy adapter claims its one-use launch before the first effect;
+        // the borrowed adapter checks the exact independently selected room.
+        let authority_deadline = host.begin(self.context)?;
         self.scan.reset_deadline();
-        let deadline = (Instant::now() + TICK).min(rpc.deadline());
+        let mut deadline = Instant::now() + TICK;
+        if let Some(bound) = authority_deadline {
+            deadline = deadline.min(bound);
+        }
+        if let Some(bound) = caller_deadline {
+            deadline = deadline.min(bound);
+        }
         // Feed durable job rows first: catch-up marks `fed` as it delivers new
         // jobs, and rows enqueued before the durable watermark only reach the
         // session view through this pass.
-        self.feed(rpc, deadline).await?;
-        self.catch_up_controls(rpc, deadline).await?;
-        self.catch_up(rpc, deadline).await?;
-        self.deliver_ordered(rpc, deadline).await?;
+        self.feed(host, deadline).await?;
+        self.catch_up_controls(host, deadline).await?;
+        self.catch_up(host, deadline).await?;
+        self.deliver_ordered(host, deadline).await?;
         self.poll(deadline)?;
-        self.apply(rpc, deadline).await?;
+        self.apply(host, deadline).await?;
+        host.check_release().map_err(|_| REFUSED.to_string())?;
         self.save()?;
-        rpc.check_release().map_err(|_| REFUSED.to_string())
+        host.check_release().map_err(|_| REFUSED.to_string())
     }
 
     /// Retain exact encrypted owner controls in their own sequence domain.
@@ -854,15 +1187,14 @@ impl Driver {
     /// deduplication makes every forwarder publish identical bytes only once.
     async fn catch_up_controls(
         &mut self,
-        rpc: &mut RpcSession,
+        host: &mut impl Host,
         deadline: Instant,
     ) -> Result<(), String> {
         loop {
             if Instant::now() >= deadline {
                 return Ok(());
             }
-            let page = rpc
-                .host()
+            let page = host
                 .encrypted_controls(
                     (self.control_outgoing != 0).then_some(self.control_outgoing),
                     OUTBOX_PAGE,
@@ -880,8 +1212,7 @@ impl Driver {
                         .map_err(|_| REFUSED)?
                         .is_some_and(|(head, _)| self.control_outgoing == head)
                 {
-                    let boundary = rpc
-                        .host()
+                    let boundary = host
                         .encrypted_controls(Some(self.control_outgoing - 1), 1)
                         .await
                         .map_err(|_| REFUSED)?;
@@ -930,17 +1261,16 @@ impl Driver {
     /// Drain the kernel outbox into the durable queue. Inbound staging never
     /// waits on this watermark: own echoes are still recognized by the durable
     /// job table and the kernel sent-index below.
-    async fn catch_up(&mut self, rpc: &mut RpcSession, deadline: Instant) -> Result<(), String> {
+    async fn catch_up(&mut self, host: &mut impl Host, deadline: Instant) -> Result<(), String> {
         if !self.boundary_checked {
-            self.boundary(rpc).await?;
+            self.boundary(host).await?;
             self.boundary_checked = true;
         }
         loop {
             if Instant::now() >= deadline {
                 return Ok(());
             }
-            let page = rpc
-                .host()
+            let page = host
                 .outbox(self.outgoing, OUTBOX_PAGE)
                 .await
                 .map_err(|_| REFUSED)?;
@@ -963,7 +1293,7 @@ impl Driver {
                         }
                         Err(_) => return Err(REFUSED.into()),
                     };
-                    rpc.update_delivery(self.namespace, &status)
+                    host.update_delivery(self.namespace, &status)
                         .await
                         .map_err(|_| REFUSED)?;
                     self.polling.activity(Instant::now());
@@ -983,7 +1313,7 @@ impl Driver {
     /// One-time boundary check: a relay-kind record at the durable `outgoing`
     /// watermark must already have a durable job. The queue publishes jobs
     /// before the checkpoint advances, so a gap means torn or foreign state.
-    async fn boundary(&mut self, rpc: &mut RpcSession) -> Result<(), String> {
+    async fn boundary(&mut self, host: &mut impl Host) -> Result<(), String> {
         if self.outgoing == 0
             || self
                 .queue
@@ -993,8 +1323,7 @@ impl Driver {
         {
             return Ok(());
         }
-        let page = rpc
-            .host()
+        let page = host
             .outbox(self.outgoing - 1, 1)
             .await
             .map_err(|_| REFUSED)?;
@@ -1019,7 +1348,7 @@ impl Driver {
 
     /// Feed durable job rows the RPC view has not seen yet, so a relaunched
     /// session reports the same delivery evidence without re-attempting work.
-    async fn feed(&mut self, rpc: &mut RpcSession, deadline: Instant) -> Result<(), String> {
+    async fn feed(&mut self, host: &mut impl Host, deadline: Instant) -> Result<(), String> {
         loop {
             if Instant::now() >= deadline {
                 return Ok(());
@@ -1029,7 +1358,7 @@ impl Driver {
                 return Ok(());
             }
             for status in &jobs {
-                rpc.update_delivery(self.namespace, status)
+                host.update_delivery(self.namespace, status)
                     .await
                     .map_err(|_| REFUSED)?;
                 self.fed = self.fed.max(status.sequence);
@@ -1042,7 +1371,7 @@ impl Driver {
     /// follow it. A stopped or uncertain predecessor never gets leapfrogged.
     async fn deliver_ordered(
         &mut self,
-        rpc: &mut RpcSession,
+        host: &mut impl Host,
         deadline: Instant,
     ) -> Result<(), String> {
         let mut bytes = 0usize;
@@ -1052,8 +1381,8 @@ impl Driver {
             }
             // Retention frees finite live-job capacity. Refill before choosing
             // the next cross-stream dependency, including max_jobs=1 queues.
-            self.catch_up_controls(rpc, deadline).await?;
-            self.catch_up(rpc, deadline).await?;
+            self.catch_up_controls(host, deadline).await?;
+            self.catch_up(host, deadline).await?;
             if Instant::now() >= deadline {
                 break;
             }
@@ -1070,7 +1399,7 @@ impl Driver {
                 return Err(REFUSED.into());
             }
             let control = self.controls.first_unretained().map_err(|_| REFUSED)?;
-            let accepted = rpc.host().agent().status().map_err(|_| REFUSED)?.accepted;
+            let accepted = host.status().map_err(|_| REFUSED)?;
             let use_control = match (&normal, &control) {
                 (None, None) => break,
                 (None, Some(_)) => {
@@ -1088,8 +1417,7 @@ impl Driver {
                     false
                 }
                 (Some(job), Some(next)) => {
-                    let page = rpc
-                        .host()
+                    let page = host
                         .outbox(job.sequence - 1, 1)
                         .await
                         .map_err(|_| REFUSED)?;
@@ -1105,8 +1433,7 @@ impl Driver {
                     {
                         return Err(REFUSED.into());
                     }
-                    let page = rpc
-                        .host()
+                    let page = host
                         .encrypted_controls(Some(next.sequence - 1), 1)
                         .await
                         .map_err(|_| REFUSED)?;
@@ -1161,7 +1488,7 @@ impl Driver {
             }
             for status in &report.jobs {
                 if !use_control {
-                    rpc.update_delivery(self.namespace, status)
+                    host.update_delivery(self.namespace, status)
                         .await
                         .map_err(|_| REFUSED)?;
                 }
@@ -1183,6 +1510,12 @@ impl Driver {
     /// a transiently dead watch re-arms on the next proven scan.
     fn poll(&mut self, deadline: Instant) -> Result<(), String> {
         if self.scan_full {
+            return Ok(());
+        }
+        if !self.watch_enabled {
+            if self.polling.due(Instant::now()) && Instant::now() < deadline {
+                self.scan_page(deadline)?;
+            }
             return Ok(());
         }
         if self.watch.is_none() {
@@ -1219,10 +1552,11 @@ impl Driver {
                     Instant::now(),
                     report.scanned > 0 || self.staged_head < report.head,
                 );
-                if self
-                    .watch
-                    .as_ref()
-                    .is_some_and(|watch| !watch.live() && watch.rearmable())
+                if self.watch_enabled
+                    && self
+                        .watch
+                        .as_ref()
+                        .is_some_and(|watch| !watch.live() && watch.rearmable())
                 {
                     self.watch = Some(Watch::spawn(self.relay.clone(), self.staged_head));
                     self.watch_dead = false;
@@ -1272,7 +1606,7 @@ impl Driver {
     /// custody. The durable job table answers first; application items also
     /// consult the kernel sent-index, so an echo is recognized even before the
     /// outbox catch-up reaches it.
-    async fn own_echo(&mut self, rpc: &mut RpcSession, item: &RelayItem) -> Result<bool, String> {
+    async fn own_echo(&mut self, host: &mut impl Host, item: &RelayItem) -> Result<bool, String> {
         if item.kind() == RelayKind::Control
             && self
                 .controls
@@ -1291,8 +1625,7 @@ impl Driver {
             return Ok(true);
         }
         if item.kind() == OutboxKind::Application
-            && rpc
-                .host()
+            && host
                 .original(&MemberAcceptance::ciphertext_commitment(item.payload()))
                 .await
                 .map_err(|_| REFUSED)?
@@ -1308,7 +1641,7 @@ impl Driver {
     /// so no directory listing is needed per tick. Positions already holding
     /// a valid marker complete without re-running the kernel; markers that
     /// carry kernel authority are recomputed and must match byte-for-byte.
-    async fn apply(&mut self, rpc: &mut RpcSession, deadline: Instant) -> Result<(), String> {
+    async fn apply(&mut self, host: &mut impl Host, deadline: Instant) -> Result<(), String> {
         let dir = self.config.state.join("applied");
         let mut done = 0usize;
         let candidates = round_robin(self.applied, self.staged_head, self.apply_next, PAGE);
@@ -1328,9 +1661,9 @@ impl Driver {
                 Err(e) if e.kind() == ErrorKind::NotFound => None,
                 Err(_) => return Err(REFUSED.into()),
             };
-            let own_echo = self.own_echo(rpc, &item).await?;
+            let own_echo = self.own_echo(host, &item).await?;
             if let Some(bytes) = &existing {
-                let status = rpc.host().agent().status().map_err(|_| REFUSED)?.accepted;
+                let status = host.status().map_err(|_| REFUSED)?;
                 let reauth = applied::validate(
                     bytes,
                     &item,
@@ -1345,15 +1678,21 @@ impl Driver {
                 }
                 // Read-only evidence lookups cannot mint a receipt, receive a
                 // forged marked item or apply a new control during recovery.
-                self.restore_marker(rpc, &item, bytes).await?;
+                self.restore_marker(host, &item, bytes).await?;
                 self.complete(position);
                 continue;
             }
-            match self.process(rpc, &item, position, own_echo).await? {
+            match self.process(host, &item, position, own_echo).await? {
                 Some(marker) => {
+                    // A borrowed native read can have failed while the shared
+                    // classifier produced a peer-rejection marker. Preserve
+                    // the pending item and stop before any marker publication.
+                    // A healthy accepted control can independently close the
+                    // legacy grant; the post-marker release check ends it.
+                    host.check_marker().map_err(|_| REFUSED)?;
                     applied::publish(&path, &marker)?;
                     self.complete(position);
-                    rpc.check_release().map_err(|_| REFUSED)?;
+                    host.check_release().map_err(|_| REFUSED)?;
                 }
                 None => self.defer(position)?,
             }
@@ -1363,15 +1702,14 @@ impl Driver {
 
     async fn restore_marker(
         &mut self,
-        rpc: &mut RpcSession,
+        host: &mut impl Host,
         item: &RelayItem,
         bytes: &[u8],
     ) -> Result<(), String> {
         let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| REFUSED)?;
         let state = value["state"].as_str().ok_or(REFUSED)?;
         if state == "locally-applied-control" {
-            if !rpc
-                .host()
+            if !host
                 .retained_control(item.payload())
                 .await
                 .map_err(|_| REFUSED)?
@@ -1380,8 +1718,7 @@ impl Driver {
             }
             return Ok(());
         }
-        let received = rpc
-            .host()
+        let received = host
             .retained_received(item.payload())
             .await
             .map_err(|_| REFUSED)?
@@ -1391,7 +1728,7 @@ impl Driver {
         }
         let mut verified = None;
         if let Some(hash) = MemberAcceptance::claimed_ciphertext(received.body()) {
-            if let Some(original) = rpc.host().original(&hash).await.map_err(|_| REFUSED)? {
+            if let Some(original) = host.original(&hash).await.map_err(|_| REFUSED)? {
                 if let Ok(Some(claim)) =
                     MemberAcceptance::verify(self.context, &original, &received)
                 {
@@ -1407,11 +1744,7 @@ impl Driver {
                         .ok_or(REFUSED)?
                         .parse::<u64>()
                         .map_err(|_| REFUSED)?;
-                    let page = rpc
-                        .host()
-                        .outbox(sequence - 1, 1)
-                        .await
-                        .map_err(|_| REFUSED)?;
+                    let page = host.outbox(sequence - 1, 1).await.map_err(|_| REFUSED)?;
                     let receipt = page
                         .records
                         .first()
@@ -1437,7 +1770,7 @@ impl Driver {
                 {
                     return Err(REFUSED.into());
                 }
-                rpc.record_member_acceptance(sequence, claim)
+                host.record_member_acceptance(sequence, claim)
                     .await
                     .map_err(|_| REFUSED)?;
             }
@@ -1450,7 +1783,7 @@ impl Driver {
     /// or `None` when a typed transient gap defers it to a later pass.
     async fn process(
         &mut self,
-        rpc: &mut RpcSession,
+        host: &mut impl Host,
         item: &RelayItem,
         position: u64,
         own_echo: bool,
@@ -1461,74 +1794,80 @@ impl Driver {
             return Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?));
         }
         match item.kind() {
-            RelayKind::Outbox(OutboxKind::Application) => match rpc
-                .host()
-                .receive(item.payload())
-                .await
-            {
-                Ok(received) => {
-                    result["state"] = json!("locally-received");
-                    result["inbox_sequence"] = json!(received.sequence().to_string());
-                    if MemberAcceptance::is_receipt(received.body()) {
-                        result["state"] = json!("unmatched-receipt-content");
-                        if let Some(hash) = MemberAcceptance::claimed_ciphertext(received.body()) {
-                            if let Some(original) =
-                                rpc.host().original(&hash).await.map_err(|_| REFUSED)?
+            RelayKind::Outbox(OutboxKind::Application) => {
+                match host.receive(item.payload()).await {
+                    Ok(received) => {
+                        result["state"] = json!("locally-received");
+                        result["inbox_sequence"] = json!(received.sequence().to_string());
+                        if MemberAcceptance::is_receipt(received.body()) {
+                            result["state"] = json!("unmatched-receipt-content");
+                            if let Some(hash) =
+                                MemberAcceptance::claimed_ciphertext(received.body())
                             {
-                                // An invalid inner claim remains inert received
-                                // content; it cannot promote delivery or
-                                // acknowledge another ACK.
-                                if let Ok(Some(claim)) =
-                                    MemberAcceptance::verify(self.context, &original, &received)
+                                if let Some(original) =
+                                    host.original(&hash).await.map_err(|_| REFUSED)?
                                 {
-                                    let sequence = original.sequence();
-                                    result["state"] = json!("recipient-device-claim");
-                                    result["outbox_sequence"] = json!(sequence.to_string());
-                                    result["recipient"] = json!(hex(claim.recipient().as_bytes()));
-                                    result["recipient_inbox_sequence"] =
-                                        json!(claim.received_sequence().to_string());
-                                    rpc.record_member_acceptance(sequence, claim)
-                                        .await
-                                        .map_err(|_| REFUSED)?;
+                                    // An invalid inner claim remains inert received
+                                    // content; it cannot promote delivery or
+                                    // acknowledge another ACK.
+                                    if let Ok(Some(claim)) =
+                                        MemberAcceptance::verify(self.context, &original, &received)
+                                    {
+                                        let sequence = original.sequence();
+                                        result["state"] = json!("recipient-device-claim");
+                                        result["outbox_sequence"] = json!(sequence.to_string());
+                                        result["recipient"] =
+                                            json!(hex(claim.recipient().as_bytes()));
+                                        result["recipient_inbox_sequence"] =
+                                            json!(claim.received_sequence().to_string());
+                                        host.record_member_acceptance(sequence, claim)
+                                            .await
+                                            .map_err(|_| REFUSED)?;
+                                    }
                                 }
                             }
+                        } else if self.config.emit_acceptance {
+                            let operation = acceptance_operation(self.context, item.payload())?;
+                            let receipt =
+                                match host.issue_acceptance(operation, item.payload()).await {
+                                    Ok(receipt) => receipt,
+                                    // Only wall-clock conditions defer; every other
+                                    // failure surfaces rather than publishing a marker
+                                    // that claims a receipt the kernel never issued.
+                                    Err(ClientError::Agent(AgentError::Kernel(
+                                        KernelError::ClockRegressed | KernelError::Time,
+                                    )))
+                                    | Err(ClientError::Kernel(
+                                        KernelError::ClockRegressed | KernelError::Time,
+                                    ))
+                                    | Err(ClientError::Agent(AgentError::Clock))
+                                    | Err(ClientError::Clock) => return Ok(None),
+                                    Err(_) => return Err(REFUSED.into()),
+                                };
+                            // The exact receipt is already durable in the kernel.
+                            // Only monotone outbox catch-up may enqueue it: a tail
+                            // fast path could fill a finite queue while older local
+                            // applications remain unstaged and make them leapfrog.
+                            result["receipt_outbox_sequence"] =
+                                json!(receipt.sequence().to_string());
                         }
-                    } else if self.config.emit_acceptance {
-                        let operation = acceptance_operation(self.context, item.payload())?;
-                        let receipt =
-                            match rpc.host().issue_acceptance(operation, item.payload()).await {
-                                Ok(receipt) => receipt,
-                                // Only wall-clock conditions defer; every other
-                                // failure surfaces rather than publishing a marker
-                                // that claims a receipt the kernel never issued.
-                                Err(ClientError::Agent(AgentError::Kernel(
-                                    KernelError::ClockRegressed | KernelError::Time,
-                                )))
-                                | Err(ClientError::Agent(AgentError::Clock)) => return Ok(None),
-                                Err(_) => return Err(REFUSED.into()),
-                            };
-                        // The exact receipt is already durable in the kernel.
-                        // Only monotone outbox catch-up may enqueue it: a tail
-                        // fast path could fill a finite queue while older local
-                        // applications remain unstaged and make them leapfrog.
-                        result["receipt_outbox_sequence"] = json!(receipt.sequence().to_string());
-                    }
-                    Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
-                }
-                Err(e) => match host_outcome(e, application_outcome) {
-                    Outcome::Skip(reason) => {
-                        result["state"] = json!("undecryptable-foreign-or-stale");
-                        result["error"] = json!(reason);
                         Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
                     }
-                    Outcome::Retry => Ok(None),
-                    Outcome::Fatal => Err(REFUSED.into()),
-                },
-            },
+                    Err(e) => match host_outcome(e, application_outcome) {
+                        Outcome::Skip(reason) => {
+                            result["state"] = json!("undecryptable-foreign-or-stale");
+                            result["error"] = json!(reason);
+                            Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
+                        }
+                        Outcome::Retry => Ok(None),
+                        Outcome::Fatal => Err(REFUSED.into()),
+                    },
+                }
+            }
             RelayKind::Control
             | RelayKind::Outbox(
                 OutboxKind::Removal | OutboxKind::OwnerUpdate | OutboxKind::Succession,
-            ) => match rpc.host().apply_control(item.payload()).await {
+            ) => match host.apply_control(item.payload()).await {
                 Ok(_) => {
                     result["state"] = json!("locally-applied-control");
                     Ok(Some(serde_json::to_vec(&result).map_err(|_| REFUSED)?))
@@ -1609,8 +1948,8 @@ fn round_robin(applied: u64, head: u64, next: u64, limit: usize) -> Vec<u64> {
 #[cfg(unix)]
 fn host_outcome(e: ClientError, classify: fn(KernelError) -> Outcome) -> Outcome {
     match e {
-        ClientError::Agent(AgentError::Kernel(ke)) => classify(ke),
-        ClientError::Agent(AgentError::Clock) => Outcome::Retry,
+        ClientError::Agent(AgentError::Kernel(ke)) | ClientError::Kernel(ke) => classify(ke),
+        ClientError::Agent(AgentError::Clock) | ClientError::Clock => Outcome::Retry,
         _ => Outcome::Fatal,
     }
 }

@@ -9,6 +9,7 @@ use crate::{
 };
 
 pub mod acceptance;
+mod accounting;
 mod contact;
 mod controls;
 mod drafts;

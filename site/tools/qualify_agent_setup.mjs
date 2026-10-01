@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import {agentSetupTargets} from '@hraness/design-kit';
-import {vhallaBootstrapPrompt, vhallaInstallPrompt} from '../agent-setup-prompts.ts';
+import {vhallaDaemonPrompt, vhallaInstallPrompt} from '../agent-setup-prompts.ts';
 import {javascriptLiteral} from './javascript-literal.mjs';
 
-const prompts = [vhallaInstallPrompt, vhallaBootstrapPrompt];
+const prompts = [vhallaDaemonPrompt, vhallaInstallPrompt];
 const selector = '[data-hraness-agent-setup-prompt]';
 
 // This function runs in the real page, using its compiled stylesheet and palette.

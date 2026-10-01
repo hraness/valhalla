@@ -6,18 +6,22 @@
 
 use super::{Error, Result, RoomSession};
 use crate::{
-    agent::{AgentRoomSession, AgentStatus, DraftRef, LocalGrant, OutboxStatusPage, QueuedStatus},
+    agent::{
+        AgentAccess, AgentRoomSession, AgentStatus, DraftRef, LocalGrant, OutboxStatusPage,
+        QueuedStatus,
+    },
     bridge::KernelStore,
 };
+use std::sync::Arc;
 use vhalla_identity::Identity;
 use vhalla_private_kernel::{
-    CommittedOutbox, InboxPage, OperationId, OutboxPage, ReceivedMessage, Status,
+    CommittedOutbox, InboxPage, Kernel, OperationId, OutboxPage, ReceivedMessage, Status,
 };
 
 struct AgentCustody {
     // Room state and keys are dropped before account custody is released.
     session: AgentRoomSession<KernelStore>,
-    _identity: Identity,
+    _identity: Arc<Identity>,
 }
 
 /// One account-owned fixed-room agent session.
@@ -31,6 +35,42 @@ pub struct OwnedAgentRoomSession {
 }
 
 impl RoomSession {
+    /// Install one fixed-roster grant without transferring the room's custody.
+    ///
+    /// Keep the returned access for the entire authorized agent launch. Creating
+    /// another access is a new trusted authorization, never a reconnect/reset.
+    /// The access owns no room or account hold; the daemon retains this session
+    /// and can continue separately authorized ciphertext delivery between calls.
+    pub fn agent_access(&self, grant: LocalGrant) -> Result<AgentAccess> {
+        let custody = self.live()?;
+        if custody.delivery_paused {
+            return Err(vhalla_private_kernel::storage::StoreError::Refused.into());
+        }
+        AgentAccess::new(&custody.kernel, grant).map_err(Error::Agent)
+    }
+
+    /// Temporarily borrow this room under an existing agent access.
+    ///
+    /// Both values stay exclusively borrowed until the adapter and its operation
+    /// futures drop. Rebinding never refreshes budgets, drafts, clocks or latches.
+    /// Changed authority and shared kernel uncertainty refuse before any output;
+    /// a failed/cancelled read can independently latch only this grant when the
+    /// kernel has no potentially published state requiring reconciliation.
+    pub fn scoped_agent<'a>(
+        &'a mut self,
+        access: &'a mut AgentAccess,
+    ) -> Result<ScopedAgentRoomSession<'a>> {
+        let custody = self.live_mut()?;
+        if custody.delivery_paused {
+            return Err(vhalla_private_kernel::storage::StoreError::Refused.into());
+        }
+        access.check(&custody.kernel).map_err(Error::Agent)?;
+        Ok(ScopedAgentRoomSession {
+            kernel: &mut custody.kernel,
+            access,
+        })
+    }
+
     /// Construct the trusted host's delivery facet before narrowing agent access.
     /// This is not an agent tool constructor and grants no network destination.
     pub fn into_agent_host(self, grant: LocalGrant) -> Result<AgentHostSession> {
@@ -41,8 +81,9 @@ impl RoomSession {
     /// Consume this exact client and its account custody under an explicit grant.
     ///
     /// Locked, uncertain, expired, revoked or mismatched custody is refused.
-    /// A failed conversion consumes the client and releases both handles; the
-    /// host must explicitly reopen the retained identity and room state.
+    /// A failed conversion consumes the client and releases its room and account
+    /// hold; the host must explicitly reopen the retained room state. Other
+    /// sessions and the account controller retain their independent custody.
     pub fn into_agent(mut self, grant: LocalGrant) -> Result<OwnedAgentRoomSession> {
         self.status()?;
         if self.live()?.delivery_paused {
@@ -56,6 +97,58 @@ impl RoomSession {
                 _identity: custody.identity,
             }),
         })
+    }
+}
+
+/// A temporary capability adapter over a daemon-owned native room.
+///
+/// It exports only the five agent operations and a latch diagnostic. It cannot
+/// lock, extract or replace room custody, inspect keys, alter membership, or
+/// broaden the retained grant. Each operation uses the same implementation as
+/// [`OwnedAgentRoomSession`], including charges before I/O and authority checks
+/// before releasing results. Dropping this view preserves the access state.
+pub struct ScopedAgentRoomSession<'a> {
+    kernel: &'a mut Kernel<KernelStore>,
+    access: &'a mut AgentAccess,
+}
+impl ScopedAgentRoomSession<'_> {
+    /// Whether this access or the shared kernel requires reconciliation.
+    pub fn latched(&self) -> bool {
+        self.access.latched(self.kernel)
+    }
+
+    /// Read bounded locally authenticated status under the retained grant.
+    pub fn status(&mut self) -> Result<AgentStatus> {
+        self.access.status(self.kernel).map_err(Error::Agent)
+    }
+
+    /// Prepare inert bytes for the fixed room, author, epoch and roster.
+    pub fn prepare(&mut self, body: &[u8]) -> Result<DraftRef> {
+        self.access.prepare(self.kernel, body).map_err(Error::Agent)
+    }
+
+    /// Queue the one retained draft, returning only durable local metadata.
+    pub async fn queue(&mut self, operation: OperationId, draft: DraftRef) -> Result<QueuedStatus> {
+        self.access
+            .queue(self.kernel, operation, draft)
+            .await
+            .map_err(Error::Agent)
+    }
+
+    /// Read bounded inert plaintext, withholding results after authority loss.
+    pub async fn inbox(&mut self, after: u64, limit: usize) -> Result<InboxPage> {
+        self.access
+            .inbox(self.kernel, after, limit)
+            .await
+            .map_err(Error::Agent)
+    }
+
+    /// Read bounded local outbox metadata without exporting any ciphertext.
+    pub async fn outbox_status(&mut self, after: u64, limit: usize) -> Result<OutboxStatusPage> {
+        self.access
+            .outbox_status(self.kernel, after, limit)
+            .await
+            .map_err(Error::Agent)
     }
 }
 
@@ -177,7 +270,8 @@ impl OwnedAgentRoomSession {
         Ok(&mut self.custody.as_mut().ok_or(Error::Locked)?.session)
     }
 
-    /// Destroy room and account custody together. Previously returned plaintext
+    /// Destroy room custody and release this session's account hold. Other rooms
+    /// and their controller keep their custody. Previously returned plaintext
     /// cannot be retracted; the host must clear its own agent views as well.
     pub fn lock(&mut self) {
         drop(self.custody.take());

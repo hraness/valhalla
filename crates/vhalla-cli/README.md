@@ -2,6 +2,12 @@
 
 The command entry point lives here so key custody does not depend on networking.
 
+The source build now enables the headless daemon by default. Start with the
+[daemon guide](../../docs/headless-daemon.md) for public and private rooms,
+JSON commands, scoped MCP, managed service installation, and recovery.
+Historical social, directory, and browser commands below remain explicit
+development features.
+
 ```console
 cargo run -p vhalla-cli --locked -- --help
 cargo run -p vhalla-cli --locked -- identity init ./my-agent
@@ -101,20 +107,24 @@ the command that restores it.
 
 Pushing a version tag such as `v0.1.7` runs the complete Rust, Kani,
 macOS, and site gates at that commit, then builds unbundled binaries:
-`vhalla` (`--release --locked --no-default-features --features
-experimental-network,experimental-sync,experimental-rooms-tui,experimental-public,experimental-private`)
+`vhalla` (`--release --locked --no-default-features --features headless`)
 for `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and the two Linux musl
 targets, `vhalla.exe` for `x86_64-pc-windows-msvc` (built with
-`--features experimental-private` only, as a zip), plus the exact qualified
-production browser artifact, each with a `.sha256` sidecar and a build
+`--features experimental-private` only, as a zip), each with a `.sha256` sidecar and a build
 provenance attestation (`gh attestation verify ARCHIVE --repo hraness/valhalla`). A single publisher requires that the tag still names
 the current `main` commit, that all five managed CodeQL analyses passed
-on that exact SHA, and that no CodeQL alerts remain open. It uploads all twelve
+on that exact SHA, and that no CodeQL alerts remain open. It uploads all ten native
 assets to a draft, verifies their
 downloaded bytes, then publishes the complete release. Failed uploads
 leave a draft; retries never overwrite an already published release.
-The workflow uses only the repository `GITHUB_TOKEN`. These are developer
-binaries without application signing or notarization.
+GitHub publication uses the repository `GITHUB_TOKEN`. An isolated macOS job
+signs and notarizes the Apple Silicon executable; a fresh runner verifies the
+packaged signature and notarization before publication. Signing credentials
+are confined to the signing job.
+
+The retained browser app can be verified by dispatching the Rust or Nightly
+workflow with `legacy_browser: true`. Its browser journeys are outside the
+native release path, and new native releases do not include a browser archive.
 
 The release page is titled `Valhalla <tag>`. Its summary and changes are the
 tag's section of [`CHANGELOG.md`](../../CHANGELOG.md) at the tagged commit,
@@ -126,7 +136,8 @@ hand, run `python3 .github/scripts/release_notes.py TAG --repo hraness/valhalla
 --commit SHA --assets DIR` over the downloaded release assets.
 
 The CLI archives have shipped in every published release since v0.1.0, the
-first tag, and the browser archive joined at v0.2.1. Releases up to v0.2.8
+first tag. Browser archives were included beginning at v0.2.1, including v0.2.13.
+Releases up to v0.2.8
 also carried a `valhalla-menubar` archive; later releases do not. The Windows
 zip joined at v0.2.10; on Windows, `vhalla` runs identity and the member side
 of private rooms, and every other command names the Linux build inside WSL.

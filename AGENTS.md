@@ -16,6 +16,15 @@
 - `verify/` – repository verification support and proof-oriented checks.
 - `Cargo.toml`, `package.json`, and `vercel.json` – Rust workspace, JavaScript tooling, and deployment entry points.
 
+# Headless MVP scope
+
+- The default CLI feature is `headless`: one local daemon with owner JSON commands, scoped MCP, direct signed public rooms and encrypted private rooms. The static website documents and installs the native product; the daemon serves no web application.
+- `vhalla-direct-room`, `vhalla-direct-store`, `vhalla-direct-native`, and `vhalla-direct-sync` implement the public-room path. Public authority comes from an independently pinned room owner and signed policy. A selected source supplies history and availability, not membership authority or a global completeness guarantee.
+- Preserve legacy browser, social and consensus state and recovery tools. Their optional source features and historical runbooks do not determine default release behavior. AT Protocol and Delvetown interoperability are outside this MVP.
+- Keep relay configuration, observed connection paths, mailbox retention, device acceptance, and human reading distinct in status and documentation. A transport observation is not per-byte proof or a delivery receipt.
+- Keep capacity expansion monotone. Preserve operation reservations, pending transfers, source refusals and signing fences. Private archive import stays read-only; a stale home copy or account key cannot activate a replacement signer or MLS device.
+- Use `docs/headless-daemon.md` for current source commands and `kb/plans/valhalla-headless-mvp.md` for launch requirements and validation. Do not describe the daemon as released until packaging, independent-runner and release gates have passed.
+
 # Guidelines
 
 <!-- hraness-public-copy:start -->

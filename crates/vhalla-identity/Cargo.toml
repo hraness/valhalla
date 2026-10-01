@@ -14,8 +14,10 @@ social = ["dep:vhalla-social"]
 rooms = ["dep:vhalla-rooms"]
 room-activity = ["dep:vhalla-room-activity"]
 public-peer = ["dep:vhalla-public-protocol"]
+direct-room = ["dep:vhalla-direct-room"]
 
 [dependencies]
+vhalla-direct-room = { path = "../vhalla-direct-room", optional = true }
 vhalla-private-protocol = { path = "../vhalla-private-protocol", optional = true }
 vhalla-private-kernel = { path = "../vhalla-private-kernel", optional = true }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "zeroize"] }

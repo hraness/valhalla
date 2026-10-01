@@ -342,6 +342,13 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if thread::panicking() {
+            eprintln!(
+                "preserved synthetic private-delivery evidence: {}",
+                self.path.display()
+            );
+            return;
+        }
         let _ = fs::remove_dir_all(&self.path);
     }
 }
@@ -1444,17 +1451,9 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
     owner.close();
     let mut member = f.host(MEMBER, "before-admission", MEMBER);
     member.refused();
-    assert!(f
-        .applied(MEMBER)
-        .iter()
-        .any(|v| v["state"] == "locally-applied-control"));
-    assert!(
-        !f.applied(MEMBER)
-            .iter()
-            .any(|v| v["state"] == "locally-received"),
-        "changed roster must end the previous disclosure grant before plaintext release"
-    );
-    runtime().block_on(async {
+    let markers = f.applied(MEMBER);
+    let stderr = member.stderr();
+    let native_status = runtime().block_on(async {
         let room = RoomSession::open(
             Identity::open(f.p("1-id")).unwrap(),
             f.p("1-room"),
@@ -1462,9 +1461,24 @@ fn third_member_control_unblocks_more_than_one_page_after_restart_and_explicit_r
         )
         .await
         .unwrap();
-        assert_eq!(room.status().unwrap().members, 3);
-        assert_eq!(room.status().unwrap().inbox_head, 0);
+        room.status().unwrap()
     });
+    assert!(
+        markers
+            .iter()
+            .any(|v| v["state"] == "locally-applied-control"),
+        "accepted control marker missing: marker_count={}; marker_sample={:?}; \
+         native_status={native_status:?}; host_stderr={}",
+        markers.len(),
+        markers.iter().take(8).collect::<Vec<_>>(),
+        stderr.chars().take(4096).collect::<String>()
+    );
+    assert!(
+        !markers.iter().any(|v| v["state"] == "locally-received"),
+        "changed roster must end the previous disclosure grant before plaintext release"
+    );
+    assert_eq!(native_status.members, 3);
+    assert_eq!(native_status.inbox_head, 0);
     let second = f.grant(MEMBER, "after-admission", 128);
     let mut member = f.host(MEMBER, "after-admission", MEMBER);
     // Receiving and signing each acceptance requires durable writes, while

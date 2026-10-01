@@ -28,6 +28,7 @@ struct Backing {
     fault: Fault,
     effect: Option<Box<dyn FnOnce()>>,
     read_effect: Option<Box<dyn FnOnce()>>,
+    read_pause: Option<Rc<Cell<bool>>>,
     pause: Option<Rc<Cell<bool>>>,
 }
 /// Test-only sequential logical clients share one physical lifetime custody lock.
@@ -41,6 +42,7 @@ impl Disk {
             fault: Fault::None,
             effect: None,
             read_effect: None,
+            read_pause: None,
             pause: None,
         })))
     }
@@ -81,6 +83,17 @@ impl Store for Disk {
         };
         if let Some(effect) = effect {
             effect();
+        }
+        let pause = self.0.borrow_mut().read_pause.take();
+        if let Some(pause) = pause {
+            futures::future::poll_fn(|_| {
+                if pause.get() {
+                    std::task::Poll::Ready(())
+                } else {
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
         }
         result
     }
@@ -281,7 +294,7 @@ fn session(kernel: Kernel<Disk>) -> (AgentRoomSession<Disk>, RevocationHandle) {
 }
 fn fake_tick(session: &mut AgentRoomSession<Disk>) -> Rc<Cell<Instant>> {
     let tick = Rc::new(Cell::new(Instant::now()));
-    session.test_tick = Some(tick.clone());
+    session.access.test_tick = Some(tick.clone());
     tick
 }
 
@@ -339,20 +352,20 @@ fn agent_drafts_permissions_bounds_and_finite_budgets() {
         ));
         let old = agent.prepare(b"old").unwrap();
         let current = agent.prepare(b"new").unwrap();
-        let before = agent.grant.budget;
+        let before = agent.access.grant.budget;
         assert!(matches!(
             agent.queue(op(2), old).await,
             Err(Error::StaleDraft)
         ));
-        assert_eq!(agent.grant.budget, before);
+        assert_eq!(agent.access.grant.budget, before);
         let (mut other, _other_authority) = session(pair.member);
         other.prepare(b"same text is still another draft").unwrap();
         assert!(matches!(
             other.queue(op(2), current).await,
             Err(Error::StaleDraft)
         ));
-        agent.grant.budget.messages = 1;
-        agent.grant.budget.body_bytes = 3;
+        agent.access.grant.budget.messages = 1;
+        agent.access.grant.budget.body_bytes = 3;
         agent.queue(op(2), current).await.unwrap();
         let next = agent.prepare(b"later").unwrap();
         let image = pair.owner_disk.image(agent.kernel.status().context);
@@ -362,7 +375,7 @@ fn agent_drafts_permissions_bounds_and_finite_budgets() {
             agent.inbox(0, MAX_PAGE_RECORDS + 1).await,
             Err(Error::Bounds)
         ));
-        agent.grant.budget.read_records = 0;
+        agent.access.grant.budget.read_records = 0;
         assert!(matches!(agent.inbox(0, 1).await, Err(Error::Quota)));
         // Trusted construction of a read-only grant never authorizes prepare.
         let status = other.kernel.status();
@@ -391,19 +404,19 @@ fn outbox_metadata_polls_charge_fixed_bytes_and_no_read_slots() {
         let mut pair = Pair::fresh(100, 100).await;
         pair.join().await;
         let (mut agent, _authority) = session(pair.owner);
-        let before = agent.grant.budget;
+        let before = agent.access.grant.budget;
         for _ in 0..1000 {
             let page = agent.outbox_status(0, 1).await.unwrap();
             assert_eq!(page.records.len(), 1);
         }
-        let after = agent.grant.budget;
+        let after = agent.access.grant.budget;
         assert_eq!(after.read_records, before.read_records);
         assert_eq!(
             before.read_bytes - after.read_bytes,
             1000 * OUTBOX_STATUS_BYTES
         );
         // Inbox pages still charge slots and plaintext bytes ahead of I/O.
-        agent.grant.budget.read_bytes = OUTBOX_STATUS_BYTES - 1;
+        agent.access.grant.budget.read_bytes = OUTBOX_STATUS_BYTES - 1;
         assert!(matches!(agent.outbox_status(0, 1).await, Err(Error::Quota)));
         assert!(matches!(agent.inbox(0, 1).await, Err(Error::Quota)));
         assert!(!agent.latched());
@@ -465,7 +478,7 @@ fn agent_grant_binding_drop_revocation_and_expiry_refuse_before_writes() {
         let (mut expiring, _authority) = session(kernel);
         let id = expiring.prepare(b"expired").unwrap();
         let tick = fake_tick(&mut expiring);
-        tick.set(expiring.grant.deadline);
+        tick.set(expiring.access.grant.deadline);
         assert!(matches!(
             expiring.queue(op(2), id).await,
             Err(Error::Expired)
@@ -483,7 +496,7 @@ fn agent_revocation_or_expiry_after_actual_commit_withholds_confirmation() {
             let context = pair.owner.status().context;
             let (mut agent, authority) = session(pair.owner);
             let tick = fake_tick(&mut agent);
-            let deadline = agent.grant.deadline;
+            let deadline = agent.access.grant.deadline;
             let revoke = authority.0.clone();
             pair.owner_disk.0.borrow_mut().effect = Some(Box::new(move || {
                 if expire {
@@ -493,15 +506,15 @@ fn agent_revocation_or_expiry_after_actual_commit_withholds_confirmation() {
                 }
             }));
             let id = agent.prepare(b"durable but unreleased").unwrap();
-            let before = agent.grant.budget;
+            let before = agent.access.grant.budget;
             let result = agent.queue(op(2), id).await;
             assert!(matches!(
                 (expire, result),
                 (true, Err(Error::Expired)) | (false, Err(Error::Revoked))
             ));
-            assert!(agent.failed);
-            assert_eq!(agent.grant.budget.messages, before.messages - 1);
-            assert_eq!(agent.grant.budget.body_bytes, before.body_bytes - 22);
+            assert!(agent.access.failed);
+            assert_eq!(agent.access.grant.budget.messages, before.messages - 1);
+            assert_eq!(agent.access.grant.budget.body_bytes, before.body_bytes - 22);
             assert!(matches!(
                 agent.outbox_status(1, 1).await,
                 Err(Error::NeedsReopen)
@@ -533,7 +546,7 @@ fn agent_pending_cancellation_and_uncertain_commit_conserve_charges() {
             let before_image = pair.owner_disk.image(context);
             let (mut agent, authority) = session(pair.owner);
             let id = agent.prepare(b"charged").unwrap();
-            let before = agent.grant.budget;
+            let before = agent.access.grant.budget;
             pair.owner_disk.fault(fault);
             let result = agent.queue(op(2), id).now_or_never();
             match fault {
@@ -551,9 +564,9 @@ fn agent_pending_cancellation_and_uncertain_commit_conserve_charges() {
                 Fault::None => unreachable!(),
             }
             authority.revoke();
-            assert!(agent.failed);
-            assert_eq!(agent.grant.budget.messages, before.messages - 1);
-            assert_eq!(agent.grant.budget.body_bytes, before.body_bytes - 7);
+            assert!(agent.access.failed);
+            assert_eq!(agent.access.grant.budget.messages, before.messages - 1);
+            assert_eq!(agent.access.grant.budget.body_bytes, before.body_bytes - 7);
             assert!(matches!(agent.status(), Err(Error::NeedsReopen)));
             assert!(matches!(
                 agent.queue(op(2), id).await,
@@ -576,7 +589,7 @@ fn agent_authority_expires_or_is_revoked_while_publication_is_pending() {
             pair.join().await;
             let (mut agent, authority) = session(pair.owner);
             let tick = fake_tick(&mut agent);
-            let deadline = agent.grant.deadline;
+            let deadline = agent.access.grant.deadline;
             let id = agent.prepare(b"pending").unwrap();
             let gate = Rc::new(Cell::new(false));
             pair.owner_disk.0.borrow_mut().pause = Some(gate.clone());
@@ -593,8 +606,11 @@ fn agent_authority_expires_or_is_revoked_while_publication_is_pending() {
                 (expire, result),
                 (true, Err(Error::Expired)) | (false, Err(Error::Revoked))
             ));
-            assert_eq!(agent.grant.budget.messages, budget().messages - 1);
-            assert_eq!(agent.grant.budget.body_bytes, budget().body_bytes - 7);
+            assert_eq!(agent.access.grant.budget.messages, budget().messages - 1);
+            assert_eq!(
+                agent.access.grant.budget.body_bytes,
+                budget().body_bytes - 7
+            );
             assert!(matches!(agent.status(), Err(Error::NeedsReopen)));
         }
     });
@@ -614,7 +630,7 @@ fn agent_expiry_or_revocation_during_read_withholds_plaintext_and_metadata() {
             pair.member.receive(wire.bytes(), pair.now).await.unwrap();
             let (mut reader, authority) = session(pair.member);
             let tick = fake_tick(&mut reader);
-            let deadline = reader.grant.deadline;
+            let deadline = reader.access.grant.deadline;
             let revoke = authority.0.clone();
             pair.member_disk.0.borrow_mut().read_effect = Some(Box::new(move || {
                 if expire {
@@ -628,9 +644,12 @@ fn agent_expiry_or_revocation_during_read_withholds_plaintext_and_metadata() {
                 (expire, result),
                 (true, Err(Error::Expired)) | (false, Err(Error::Revoked))
             ));
-            assert_eq!(reader.grant.budget.read_records, budget().read_records - 1);
             assert_eq!(
-                reader.grant.budget.read_bytes,
+                reader.access.grant.budget.read_records,
+                budget().read_records - 1
+            );
+            assert_eq!(
+                reader.access.grant.budget.read_bytes,
                 budget().read_bytes - MAX_BODY_BYTES as u64
             );
             assert!(matches!(reader.status(), Err(Error::NeedsReopen)));
@@ -665,7 +684,7 @@ fn agent_stale_storage_and_changed_membership_do_not_inherit_authority() {
             .unwrap()
             .is_none());
         // No host grant automatically follows a roster transition, even after reopen.
-        let old_grant = agent.grant;
+        let old_grant = agent.access.grant;
         let kernel = Kernel::open(pair.owner_disk.clone(), &pair.owner_key, context)
             .await
             .unwrap();
@@ -692,7 +711,8 @@ fn agent_removed_member_retained_ciphertext_is_not_a_renewed_grant() {
             .prepare_message(b"original authorized bytes")
             .unwrap();
         let AgentRoomSession {
-            mut kernel, grant, ..
+            mut kernel,
+            access: AgentAccess { grant, .. },
         } = agent;
         let original = kernel.outbox(1, 1).await.unwrap().records.remove(0);
         let now = wall_time().unwrap();
@@ -751,4 +771,5 @@ fn secret_offer_issuance_has_only_metadata_in_agent_outbox() {
     });
 }
 
+mod borrowed;
 mod fault_hegel;

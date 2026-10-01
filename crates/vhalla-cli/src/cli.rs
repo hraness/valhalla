@@ -187,6 +187,7 @@ pub(crate) fn report_error(error: &str) {
 /// still answer its command with a pointer to the feature.
 pub(crate) const COMMANDS: &[&str] = &[
     "commands",
+    "daemon",
     "demo",
     "doctor",
     "experimental",

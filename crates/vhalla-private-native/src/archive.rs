@@ -5,7 +5,7 @@
 //! worker. Explicit native open retains its SQLite recovery/sync behavior.
 //! Archive reads themselves never publish, reset or activate a device.
 use crate::{bridge::KernelStore, client::Error, private_rooms::Limits};
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 use vhalla_identity::Identity;
 use vhalla_private_kernel::{
     recovery::{
@@ -21,7 +21,7 @@ type Result<T> = std::result::Result<T, Error>;
 struct Owned<T> {
     // Destroy state/key/backend before releasing the account lock.
     value: T,
-    identity: Identity,
+    identity: Arc<Identity>,
 }
 
 /// One read-only source export with account and exact room custody held together.
@@ -37,6 +37,13 @@ impl ArchiveExporter {
     /// Missing/corrupt state never initializes a replacement device.
     pub async fn open(
         identity: Identity,
+        path: impl AsRef<Path>,
+        context: Context,
+    ) -> Result<Self> {
+        Self::open_shared(Arc::new(identity), path, context).await
+    }
+    pub(crate) async fn open_shared(
+        identity: Arc<Identity>,
         path: impl AsRef<Path>,
         context: Context,
     ) -> Result<Self> {
@@ -83,7 +90,8 @@ impl ArchiveExporter {
             .as_ref()
             .is_none_or(|owner| owner.value.needs_reopen())
     }
-    /// Destroy the exporter/store and then release the account lock.
+    /// Destroy the exporter/store and release its account hold. Other shared
+    /// account handles keep their custody until they are dropped or locked.
     pub fn lock(&mut self) {
         drop(self.owned.take());
     }
@@ -95,12 +103,20 @@ impl ArchiveExporter {
 pub struct ArchiveInput {
     reader: ArchiveSourceReader,
     key: StorageKey,
-    identity: Identity,
+    // Drop the source reader and key before the last account hold can release.
+    identity: Arc<Identity>,
 }
 impl ArchiveInput {
     /// Take existing account custody and pin the requested context/stream ID.
     /// Wrong account refuses before opening any source/destination backend.
     pub fn new(identity: Identity, context: Context, archive_id: [u8; 32]) -> Result<Self> {
+        Self::new_shared(Arc::new(identity), context, archive_id)
+    }
+    pub(crate) fn new_shared(
+        identity: Arc<Identity>,
+        context: Context,
+        archive_id: [u8; 32],
+    ) -> Result<Self> {
         let key = identity.private_storage_key(context)?;
         let reader = ArchiveSourceReader::new(&key, context, archive_id)?;
         Ok(Self {
@@ -201,6 +217,15 @@ impl ArchiveSession {
         archive_id: [u8; 32],
         final_page: &[u8],
     ) -> Result<Self> {
+        Self::open_shared(Arc::new(identity), path, context, archive_id, final_page).await
+    }
+    pub(crate) async fn open_shared(
+        identity: Arc<Identity>,
+        path: impl AsRef<Path>,
+        context: Context,
+        archive_id: [u8; 32],
+        final_page: &[u8],
+    ) -> Result<Self> {
         let key = identity.private_storage_key(context)?;
         // Authenticate the requested final seal before native recovery effects.
         let seal = ArchiveSeal::from_final_page(&key, context, archive_id, final_page)?;
@@ -251,7 +276,8 @@ impl ArchiveSession {
             .as_ref()
             .is_none_or(|owner| owner.value.needs_reopen())
     }
-    /// Destroy archive state/store and account custody together.
+    /// Destroy archive state/store and release this view's account hold. Other
+    /// shared account handles retain their independent custody.
     pub fn lock(&mut self) {
         drop(self.owned.take());
     }

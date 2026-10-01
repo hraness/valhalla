@@ -129,8 +129,6 @@ def fetch_release(destination):
         extension = ".zip" if key == "WINDOWS" else ".tar.gz"
         name = f"valhalla-{tag}-{target}{extension}"
         unpack(fetch("release-cli-" + target, key), destination, {name, name + ".sha256"})
-    name = f"valhalla-browser-{tag}.tar.gz"
-    unpack(fetch("release-browser", "BROWSER"), destination, {name, name + ".sha256"})
 
 
 def main():

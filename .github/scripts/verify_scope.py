@@ -4,7 +4,7 @@ The Rust workflow runs four groups only when their inputs change:
 
 - ``prototypes``: one matrix entry per ``prototypes/*/Cargo.toml``;
 - ``kani``: the bounded ``vhalla-native`` spent-nonce proofs;
-- ``browser``: the four browser qualification jobs;
+- ``browser``: reachability for the four optional legacy browser jobs;
 - ``formal``: TLC, Lean and Verus through ``verification.yml``.
 
 A group's inputs are its Cargo packages, every local path dependency reachable
@@ -15,7 +15,8 @@ named by ``verify/cases.json`` and ``verify/lean/claims.json``.
 The selector fails closed. Every group runs in full when:
 
 - the event is not a pull request or a push to main (nightly, dispatch and the
-  release call always run everything);
+  release call always select every group; the workflow separately requires an
+  explicit ``legacy_browser`` request before running the browser jobs);
 - the change list is missing, incomplete or empty;
 - a changed path touches CI, this selector, the Cargo workspace or lockfile,
   vendored crates, shared vectors or the toolchain;

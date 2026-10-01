@@ -210,10 +210,15 @@ pub struct OutboxStatusPage {
     pub records: Vec<QueuedStatus>,
 }
 
-/// The agent-facing surface. No method imports files, changes grants or members,
-/// exports artifacts, executes content, signs arbitrary data, or contacts peers.
-pub struct AgentRoomSession<S: Store> {
-    kernel: Kernel<S>,
+/// Per-grant, process-lifetime agent authority independent of room custody.
+///
+/// A trusted room controller constructs this move-only value and retains it
+/// between requests. It owns spent allowances, the one pending draft, clocks and
+/// the cancellation latch; dropping a temporary scoped adapter never resets them.
+/// It has no kernel, key, store, renewal, clone or serialization interface. The
+/// revocation handle remains with the trusted host. Rebinding to another room or
+/// a changed epoch/roster is refused before disclosure or publication.
+pub struct AgentAccess {
     grant: LocalGrant,
     pending: Option<(DraftRef, MessageDraft)>,
     failed: bool,
@@ -222,6 +227,15 @@ pub struct AgentRoomSession<S: Store> {
     #[cfg(test)]
     test_tick: Option<std::rc::Rc<std::cell::Cell<Instant>>>,
 }
+
+/// The owning agent-facing surface. Existing clients keep exclusive kernel
+/// custody while sharing the same per-grant implementation as scoped adapters.
+/// No agent method imports files, changes grants or members, exports artifacts,
+/// executes content, signs arbitrary data, or contacts peers.
+pub struct AgentRoomSession<S: Store> {
+    kernel: Kernel<S>,
+    access: AgentAccess,
+}
 impl<S: Store> AgentRoomSession<S> {
     #[cfg(feature = "client")]
     pub(crate) async fn host_retained_received(
@@ -229,19 +243,19 @@ impl<S: Store> AgentRoomSession<S> {
         raw: &[u8],
     ) -> Result<Option<vhalla_private_kernel::ReceivedMessage>> {
         self.host_ready()?;
-        self.failed = true;
+        self.access.failed = true;
         let result = self.kernel.retained_received(raw).await;
-        let result = self.settle(result)?;
-        self.failed = false;
+        let result = self.access.settle(&self.kernel, result)?;
+        self.access.failed = false;
         Ok(result)
     }
     #[cfg(feature = "client")]
     pub(crate) async fn host_retained_control(&mut self, raw: &[u8]) -> Result<bool> {
         self.host_ready()?;
-        self.failed = true;
+        self.access.failed = true;
         let result = self.kernel.retained_control(raw).await;
-        let result = self.settle(result)?;
-        self.failed = false;
+        let result = self.access.settle(&self.kernel, result)?;
+        self.access.failed = false;
         Ok(result)
     }
     #[cfg(feature = "client")]
@@ -251,10 +265,10 @@ impl<S: Store> AgentRoomSession<S> {
         limit: usize,
     ) -> Result<vhalla_private_kernel::EncryptedControlPage> {
         self.host_ready()?;
-        self.failed = true;
+        self.access.failed = true;
         let page = self.kernel.encrypted_controls_from(after, limit).await;
-        let page = self.settle(page)?;
-        self.failed = false;
+        let page = self.access.settle(&self.kernel, page)?;
+        self.access.failed = false;
         Ok(page)
     }
 
@@ -267,10 +281,10 @@ impl<S: Store> AgentRoomSession<S> {
         limit: usize,
     ) -> Result<vhalla_private_kernel::OutboxPage> {
         self.host_ready()?;
-        self.failed = true;
+        self.access.failed = true;
         let page = self.kernel.outbox(after, limit).await;
-        let page = self.settle(page)?;
-        self.failed = false;
+        let page = self.access.settle(&self.kernel, page)?;
+        self.access.failed = false;
         Ok(page)
     }
 
@@ -280,11 +294,11 @@ impl<S: Store> AgentRoomSession<S> {
         raw: &[u8],
     ) -> Result<vhalla_private_kernel::ReceivedMessage> {
         self.host_ready()?;
-        let now = self.host_time()?;
-        self.failed = true;
+        let now = self.access.host_time()?;
+        self.access.failed = true;
         let received = self.kernel.receive(raw, now).await;
-        let received = self.settle(received)?;
-        self.failed = false;
+        let received = self.access.settle(&self.kernel, received)?;
+        self.access.failed = false;
         Ok(received)
     }
 
@@ -295,36 +309,36 @@ impl<S: Store> AgentRoomSession<S> {
         original_ciphertext: &[u8],
     ) -> Result<CommittedOutbox> {
         self.host_ready()?;
-        let now = self.host_time()?;
-        self.failed = true;
+        let now = self.access.host_time()?;
+        self.access.failed = true;
         let receipt = self
             .kernel
             .issue_acceptance(operation, original_ciphertext, now)
             .await;
-        let receipt = self.settle(receipt)?;
-        self.failed = false;
+        let receipt = self.access.settle(&self.kernel, receipt)?;
+        self.access.failed = false;
         Ok(receipt)
     }
 
     #[cfg(feature = "client")]
     pub(crate) async fn host_apply_control(&mut self, raw: &[u8]) -> Result<Status> {
         self.host_ready()?;
-        let now = self.host_time()?;
-        self.failed = true;
+        let now = self.access.host_time()?;
+        self.access.failed = true;
         let status = self.kernel.apply_control(raw, now).await;
-        let status = self.settle(status)?;
-        if status.context != self.grant.context
-            || status.epoch != self.grant.epoch
-            || status.roster != self.grant.roster
+        let status = self.access.settle(&self.kernel, status)?;
+        if status.context != self.access.grant.context
+            || status.epoch != self.access.grant.epoch
+            || status.roster != self.access.grant.roster
             || status.quarantined
             || matches!(status.phase, Phase::AwaitingWelcome | Phase::Removed)
         {
-            if let Some(authority) = self.grant.authority.upgrade() {
+            if let Some(authority) = self.access.grant.authority.upgrade() {
                 authority.store(true, Ordering::Release);
             }
-            self.pending = None;
+            self.access.pending = None;
         }
-        self.failed = false;
+        self.access.failed = false;
         Ok(status)
     }
 
@@ -337,10 +351,10 @@ impl<S: Store> AgentRoomSession<S> {
         ciphertext_hash: &[u8; 32],
     ) -> Result<Option<CommittedOutbox>> {
         self.host_ready()?;
-        self.failed = true;
+        self.access.failed = true;
         let original = self.kernel.original(ciphertext_hash).await;
-        let original = self.settle(original)?;
-        self.failed = false;
+        let original = self.access.settle(&self.kernel, original)?;
+        self.access.failed = false;
         Ok(original)
     }
 
@@ -352,10 +366,10 @@ impl<S: Store> AgentRoomSession<S> {
         outbox_sequence: u64,
     ) -> Result<Vec<MemberAcceptance>> {
         self.host_ready()?;
-        self.failed = true;
+        self.access.failed = true;
         let acceptances = self.kernel.acceptances(outbox_sequence).await;
-        let acceptances = self.settle(acceptances)?;
-        self.failed = false;
+        let acceptances = self.access.settle(&self.kernel, acceptances)?;
+        self.access.failed = false;
         Ok(acceptances)
     }
 
@@ -367,25 +381,66 @@ impl<S: Store> AgentRoomSession<S> {
         Ok(())
     }
 
+    /// Whether this grant or its owned kernel requires trusted reconciliation.
+    pub fn latched(&self) -> bool {
+        self.access.latched(&self.kernel)
+    }
+
+    /// Host-only installation retaining one room kernel and one standing grant.
+    pub fn new(kernel: Kernel<S>, grant: LocalGrant) -> Result<Self> {
+        let access = AgentAccess::new(&kernel, grant)?;
+        Ok(Self { kernel, access })
+    }
+
+    /// Return bounded cached local status under the existing standing grant.
+    pub fn status(&mut self) -> Result<AgentStatus> {
+        self.access.status(&self.kernel)
+    }
+
+    /// Retain one inert draft bound to the current authorized room and roster.
+    pub fn prepare(&mut self, body: &[u8]) -> Result<DraftRef> {
+        self.access.prepare(&self.kernel, body)
+    }
+
+    /// Durably queue the retained draft, charging before any I/O.
+    pub async fn queue(&mut self, operation: OperationId, draft: DraftRef) -> Result<QueuedStatus> {
+        self.access.queue(&mut self.kernel, operation, draft).await
+    }
+
+    /// Read bounded inert plaintext, rechecking authority before releasing it.
+    pub async fn inbox(&mut self, after: u64, limit: usize) -> Result<InboxPage> {
+        self.access.inbox(&mut self.kernel, after, limit).await
+    }
+
+    /// Read bounded outbox metadata without exporting ciphertext.
+    pub async fn outbox_status(&mut self, after: u64, limit: usize) -> Result<OutboxStatusPage> {
+        self.access
+            .outbox_status(&mut self.kernel, after, limit)
+            .await
+    }
+}
+
+impl AgentAccess {
     /// Whether a failed or uncertain operation latched this session. The kernel
     /// is the authority: a refusal it reports as needing no reopen (an explicit
     /// pre-write bound or scope refusal) does not latch, so one bad argument or
     /// one undecryptable input cannot end every later call.
-    pub fn latched(&self) -> bool {
-        self.failed || self.kernel.needs_reopen()
+    pub(crate) fn latched<S: Store>(&self, kernel: &Kernel<S>) -> bool {
+        self.failed || kernel.needs_reopen()
     }
 
     /// Map one kernel outcome onto the latch. Success keeps `failed` set until
     /// the caller has rechecked authority; an error latches exactly when the
     /// kernel itself requires reopening, never for refusals it settled cleanly.
-    fn settle<T>(
+    fn settle<S: Store, T>(
         &mut self,
+        kernel: &Kernel<S>,
         result: std::result::Result<T, vhalla_private_kernel::Error>,
     ) -> Result<T> {
         match result {
             Ok(value) => Ok(value),
             Err(error) => {
-                self.failed = self.kernel.needs_reopen();
+                self.failed = kernel.needs_reopen();
                 Err(Error::Kernel(error))
             }
         }
@@ -403,9 +458,8 @@ impl<S: Store> AgentRoomSession<S> {
 
     /// Host-only installation. The host retains revocation authority separately
     /// and exposes only status/inbox/prepare/queue/outbox_status to its agent.
-    pub fn new(kernel: Kernel<S>, grant: LocalGrant) -> Result<Self> {
+    pub(crate) fn new<S: Store>(kernel: &Kernel<S>, grant: LocalGrant) -> Result<Self> {
         let mut session = Self {
-            kernel,
             grant,
             pending: None,
             failed: false,
@@ -414,13 +468,13 @@ impl<S: Store> AgentRoomSession<S> {
             #[cfg(test)]
             test_tick: None,
         };
-        session.check()?;
+        session.check(kernel)?;
         Ok(session)
     }
 
     /// Return bounded cached local status only while the standing grant is live.
-    pub fn status(&mut self) -> Result<AgentStatus> {
-        let accepted = self.check()?;
+    pub(crate) fn status<S: Store>(&mut self, kernel: &Kernel<S>) -> Result<AgentStatus> {
+        let accepted = self.check(kernel)?;
         Ok(AgentStatus {
             accepted,
             remaining: self.grant.budget,
@@ -430,8 +484,12 @@ impl<S: Store> AgentRoomSession<S> {
 
     /// Replace the one draft with these explicit inert bytes, bound by the kernel
     /// to the complete current room/author/epoch/roster. No publication occurs.
-    pub fn prepare(&mut self, body: &[u8]) -> Result<DraftRef> {
-        self.check()?;
+    pub(crate) fn prepare<S: Store>(
+        &mut self,
+        kernel: &Kernel<S>,
+        body: &[u8],
+    ) -> Result<DraftRef> {
+        self.check(kernel)?;
         if !self.grant.permissions.queue {
             return Err(Error::Denied);
         }
@@ -442,12 +500,16 @@ impl<S: Store> AgentRoomSession<S> {
             return Err(Error::Quota);
         }
         self.grant.budget.preparations -= 1;
-        let draft = self.kernel.prepare_message(body).map_err(Error::Kernel)?;
+        let draft = kernel.prepare_message(body).map_err(Error::Kernel)?;
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let id = DraftRef(
-            NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-                .map_err(|_| Error::Bounds)?,
-        );
+        let mut current = NEXT.load(Ordering::Relaxed);
+        let id = loop {
+            let next = current.checked_add(1).ok_or(Error::Bounds)?;
+            match NEXT.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break DraftRef(current),
+                Err(observed) => current = observed,
+            }
+        };
         self.pending = Some((id, draft));
         Ok(id)
     }
@@ -455,8 +517,13 @@ impl<S: Store> AgentRoomSession<S> {
     /// Queue only the retained exact draft. Charges precede the first await;
     /// cancellation/uncertainty permanently latches this session. A revoked call
     /// can leave durable bytes for trusted recovery, but cannot return output.
-    pub async fn queue(&mut self, operation: OperationId, draft: DraftRef) -> Result<QueuedStatus> {
-        self.check()?;
+    pub(crate) async fn queue<S: Store>(
+        &mut self,
+        kernel: &mut Kernel<S>,
+        operation: OperationId,
+        draft: DraftRef,
+    ) -> Result<QueuedStatus> {
+        self.check(kernel)?;
         if !self.grant.permissions.queue {
             return Err(Error::Denied);
         }
@@ -476,9 +543,9 @@ impl<S: Store> AgentRoomSession<S> {
         self.grant.budget.messages -= 1;
         self.grant.budget.body_bytes -= bytes;
         self.failed = true;
-        let record = self.kernel.send(operation, retained, now).await;
-        let record = self.settle(record)?;
-        self.authority()?;
+        let record = kernel.send(operation, retained, now).await;
+        let record = self.settle(kernel, record)?;
+        self.authority(kernel)?;
         let status = QueuedStatus::from_committed(&record);
         self.pending = None;
         self.failed = false;
@@ -488,16 +555,21 @@ impl<S: Store> AgentRoomSession<S> {
     /// Read a bounded committed plaintext page as inert content. Expiry or
     /// revocation during the read withholds the entire page. This does not grant
     /// permission to act on instructions contained in any message.
-    pub async fn inbox(&mut self, after: u64, limit: usize) -> Result<InboxPage> {
-        self.check()?;
+    pub(crate) async fn inbox<S: Store>(
+        &mut self,
+        kernel: &mut Kernel<S>,
+        after: u64,
+        limit: usize,
+    ) -> Result<InboxPage> {
+        self.check(kernel)?;
         if !self.grant.permissions.inbox {
             return Err(Error::Denied);
         }
         let charged = self.charge_page(limit, MAX_BODY_BYTES)?;
         self.failed = true;
-        let page = self.kernel.inbox(after, limit).await;
-        let page = self.settle(page)?;
-        self.authority()?;
+        let page = kernel.inbox(after, limit).await;
+        let page = self.settle(kernel, page)?;
+        self.authority(kernel)?;
         // Device-to-device acceptance receipts occupy inbox positions but carry
         // no agent-usable plaintext; the agent only sees them through
         // `private_outbox_status.member_acceptances`. A successful page returns
@@ -522,16 +594,21 @@ impl<S: Store> AgentRoomSession<S> {
     /// through the kernel's checked page API, then discarded without export.
     /// Charged at [`OUTBOX_STATUS_BYTES`] per requested record and no slots, so
     /// polling for delivery evidence does not starve inbox reads.
-    pub async fn outbox_status(&mut self, after: u64, limit: usize) -> Result<OutboxStatusPage> {
-        self.check()?;
+    pub(crate) async fn outbox_status<S: Store>(
+        &mut self,
+        kernel: &mut Kernel<S>,
+        after: u64,
+        limit: usize,
+    ) -> Result<OutboxStatusPage> {
+        self.check(kernel)?;
         if !self.grant.permissions.outbox_status {
             return Err(Error::Denied);
         }
         self.charge_metadata(limit)?;
         self.failed = true;
-        let page = self.kernel.outbox(after, limit).await;
-        let page = self.settle(page)?;
-        self.authority()?;
+        let page = kernel.outbox(after, limit).await;
+        let page = self.settle(kernel, page)?;
+        self.authority(kernel)?;
         let result = OutboxStatusPage {
             head: page.head,
             next: page.next,
@@ -571,14 +648,14 @@ impl<S: Store> AgentRoomSession<S> {
         self.grant.budget.read_bytes -= bytes;
         Ok(bytes)
     }
-    fn check(&mut self) -> Result<Status> {
+    pub(crate) fn check<S: Store>(&mut self, kernel: &Kernel<S>) -> Result<Status> {
         if self.failed {
             return Err(Error::NeedsReopen);
         }
-        self.authority()
+        self.authority(kernel)
     }
-    fn authority(&mut self) -> Result<Status> {
-        if self.kernel.needs_reopen() {
+    fn authority<S: Store>(&mut self, kernel: &Kernel<S>) -> Result<Status> {
+        if kernel.needs_reopen() {
             return Err(Error::NeedsReopen);
         }
         let authority = self.grant.authority.upgrade().ok_or(Error::Revoked)?;
@@ -593,7 +670,7 @@ impl<S: Store> AgentRoomSession<S> {
         if tick >= self.grant.deadline {
             return Err(Error::Expired);
         }
-        let status = self.kernel.status();
+        let status = kernel.status();
         if status.context != self.grant.context
             || status.epoch != self.grant.epoch
             || status.roster != self.grant.roster

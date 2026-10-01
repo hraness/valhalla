@@ -1,5 +1,14 @@
 # Valhalla docs
 
+## Run the headless daemon
+
+The [daemon guide](headless-daemon.md) describes the current source build: a
+local service, JSON commands, scoped MCP, and direct public or private rooms.
+It includes service installation, storage limits, and supported recovery.
+The [API reference](headless-api.md) covers owner requests, private delivery
+profiles, grant creation, and MCP tools.
+For an always-on peer, follow [participant-operated hosting](headless-hosting.md).
+
 ## Set up private rooms
 
 New private hosts in this source checkout use iroh, with a saved endpoint

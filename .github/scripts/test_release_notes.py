@@ -89,7 +89,7 @@ class RenderedPageTests(unittest.TestCase):
         self.assertEqual(headings, ["## Changes", "## Install", "## Verify"])
         self.assertTrue(body.startswith("Rooms rotate their validator set in protocol.\n\n## Changes\n\n- "))
         self.assertIn(f"/releases/download/{TAG}/valhalla-{TAG}-aarch64-apple-darwin.tar.gz\n", body)
-        self.assertIn(f"`valhalla-browser-{TAG}.tar.gz`", body)
+        self.assertNotIn("valhalla-browser-", body)
         self.assertIn(f"- `vhalla` CLI, x86-64 Windows: `valhalla-{TAG}-x86_64-pc-windows-msvc.zip`", body)
         self.assertIn(f"  valhalla-{TAG}-x86_64-pc-windows-msvc.zip\n", body)
         self.assertIn(f"gh attestation verify valhalla-{TAG}-aarch64-apple-darwin.tar.gz --repo {REPO}", body)
@@ -101,6 +101,19 @@ class RenderedPageTests(unittest.TestCase):
             self.assertNotIn(banned, body)
         self.assertTrue(body.endswith("-->"))
         self.assertEqual(body.count("<!--"), 1)
+
+    def test_historical_browser_bearing_release_notes_remain_verifiable(self):
+        browser = f"valhalla-browser-{TAG}.tar.gz"
+        historical = {**ASSETS, browser: "a" * 64, browser + ".sha256": "b" * 64}
+        body = render_body(TEXT, REPO, TAG, SHA, historical)
+        self.assertIn(f"- Browser bundle: `{browser}`", body)
+        self.assertEqual(parse_identity(body)[1]["assets"], historical)
+        verify_body(body, TEXT, REPO, TAG, SHA, historical)
+        with self.assertRaises(ValueError):
+            verify_body(body, TEXT, REPO, TAG, SHA, ASSETS)
+        with self.assertRaises(ValueError):
+            render_body(TEXT, REPO, TAG, SHA,
+                        {name: digest for name, digest in historical.items() if name != browser + ".sha256"})
 
     def test_identity_parses_from_the_end(self):
         body = render_body(TEXT, REPO, TAG, SHA, ASSETS)
@@ -143,7 +156,7 @@ class RenderedPageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             render_body(TEXT, REPO, TAG, "abc1234", ASSETS)
         partial = {name: digest for name, digest in ASSETS.items()
-                   if name != f"valhalla-browser-{TAG}.tar.gz.sha256"}
+                   if name != f"valhalla-{TAG}-aarch64-apple-darwin.tar.gz.sha256"}
         with self.assertRaises(ValueError):
             render_body(TEXT, REPO, TAG, SHA, partial)
 

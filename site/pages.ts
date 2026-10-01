@@ -1,9 +1,10 @@
 // Maintained static documentation. No visitor input, runtime fetches or analytics.
 import { vhallaInstall } from "./platform-install.ts";
 import { renderAgentSetup, vhallaBootstrapPrompt, vhallaInstallPrompt } from "./agent-setup.ts";
+import { headlessDocs } from './headless-pages.ts';
 export type DocKind = 'tutorial' | 'how-to' | 'reference' | 'explanation';
 export type DocSource = { label: string; url: `https://${string}` };
-export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string; kind?: DocKind; metaTitle?: string; checkedOn?: string; sources?: DocSource[] };
+export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string; kind?: DocKind; metaTitle?: string; checkedOn?: string; sources?: DocSource[]; historical?: boolean };
 export const docKindLabels: Record<DocKind, string> = {
   tutorial: 'Tutorials',
   'how-to': 'How-to guides',
@@ -15,7 +16,7 @@ export const documentedRevision = "aaa822a2acff6b895af3fa03910691bb035ca586";
 export const latestRelease = "v0.2.13";
 const source = (path: string, label = "Source guide") => `<a href="https://github.com/hraness/valhalla/blob/${documentedRevision}/${path}">${label} ↗</a>`;
 const note = (title: string, text: string) => `<aside class="doc-note"><strong>${title}</strong><p>${text}</p></aside>`;
-export const docs: DocPage[] = [
+const earlierDocs: DocPage[] = [
 {
 slug: '', title: 'Valhalla documentation', kicker: 'Documentation', metaTitle: 'Documentation · Valhalla',
 summary: 'Tutorials and how-to guides for the vhalla CLI and browser client, a command reference, and explanations of how Valhalla rooms work.',
@@ -343,4 +344,23 @@ content:`<h2 id="claim">The bet</h2><p>A shared patch review or handoff needs ex
 <h2 id="principles">The principles underneath</h2><p>Local-first custody. Explicit trust over ambient trust. Bounded resources everywhere, because refusing work beats losing evidence. Verification over reputation — a signature proves bytes, not worthiness. Portability: a <code>no_std</code> core that runs the same on a laptop and in a browser worker. Written in Rust, developed in the open, with formal checks on the parts that are modeled and labels on the parts that are not.</p>
 <h2 id="roadmap">Between here and there</h2><p>Work toward broader use includes: independently operated validators and peers, qualified public-network delivery, broader network testing, safe live-device recovery, enforced agent compartments and broader browser coverage. <a href="/docs/status/">Readiness</a> tracks each one, and the ${source('kb/plans/valhalla-promotion-gates.md','promotion gates')} define the evidence each claim requires. </p>`
 }
+];
+
+const historicalSlugs: Record<string, string> = {
+  '': 'historical-overview',
+  'getting-started': 'historical-getting-started',
+  'agent-setup': 'historical-agent-setup',
+  status: 'historical-status',
+};
+
+export const docs: DocPage[] = [
+  ...headlessDocs(latestRelease),
+  ...earlierDocs.map(page => ({
+    ...page,
+    slug: historicalSlugs[page.slug] ?? page.slug,
+    historical: true,
+    metaTitle: `${page.kicker} · Valhalla historical documentation`,
+    content: page.content.replace(/href="\/docs\/(getting-started|agent-setup|status)\//gu,
+      (_match, slug: string) => `href="/docs/${historicalSlugs[slug]}/`),
+  })),
 ];

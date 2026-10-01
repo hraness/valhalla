@@ -160,6 +160,16 @@ class ReleaseTests(unittest.TestCase):
         commands = [args[:2] for args in self.gh.calls]
         self.assertLess(commands.index(("release", "download")), commands.index(("release", "edit")))
         self.assertIn("--draft", next(args for args in self.gh.calls if args[:2] == ("release", "create")))
+        upload = next(args for args in self.gh.calls if args[:2] == ("release", "upload"))
+        paths = {Path(value).name for value in upload if value.startswith(str(self.assets) + os.sep)}
+        native = {
+            f"valhalla-{TAG}-aarch64-apple-darwin.tar.gz",
+            f"valhalla-{TAG}-x86_64-unknown-linux-gnu.tar.gz",
+            f"valhalla-{TAG}-x86_64-unknown-linux-musl.tar.gz",
+            f"valhalla-{TAG}-aarch64-unknown-linux-musl.tar.gz",
+            f"valhalla-{TAG}-x86_64-pc-windows-msvc.zip",
+        }
+        self.assertEqual(paths, native | {name + ".sha256" for name in native})
 
     def test_signed_job_hashes_bind_both_macos_assets_before_network(self):
         archive = f"valhalla-{TAG}-aarch64-apple-darwin.tar.gz"
@@ -177,15 +187,22 @@ class ReleaseTests(unittest.TestCase):
                     self.assertEqual(self.gh.calls, [])
 
     def test_missing_artifact_blocks_all_network_access(self):
-        next(self.assets.glob("*.tar.gz")).unlink()
-        with self.assertRaises(ValueError):
-            self.run_publish()
-        self.assertEqual(self.gh.calls, [])
+        for path in self.assets.iterdir():
+            with self.subTest(asset=path.name):
+                original = path.read_bytes()
+                path.unlink()
+                with self.assertRaises(ValueError):
+                    self.run_publish()
+                self.assertEqual(self.gh.calls, [])
+                path.write_bytes(original)
 
-    def test_native_only_release_cannot_omit_the_qualified_browser(self):
-        for suffix in (".tar.gz", ".tar.gz.sha256"):
-            (self.assets / f"valhalla-browser-{TAG}{suffix}").unlink()
-        with self.assertRaises(ValueError):
+    def test_browser_bundle_is_not_admitted_to_a_headless_release(self):
+        name = f"valhalla-browser-{TAG}.tar.gz"
+        content = b"historical browser bytes"
+        (self.assets / name).write_bytes(content)
+        (self.assets / (name + ".sha256")).write_text(
+            f"{hashlib.sha256(content).hexdigest()}  {name}\n")
+        with self.assertRaisesRegex(ValueError, "five native archives"):
             self.run_publish()
         self.assertEqual(self.gh.calls, [])
 
