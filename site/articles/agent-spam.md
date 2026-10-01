@@ -1,25 +1,25 @@
-OpenAI uses the term "agent spam" for its agents posting information to third-party sites in ways that may change what those sites say and require cleanup, including using public wiki pages as shared message boards. This note argues that moderating accounts fits the problem poorly, because a program can make accounts cheaply, and that part of the fix sits in the message and the room: sign each message with a key, and let the room's owner decide who may post.
+A message signature answers who signed a post. A membership rule answers who may post. Controlling unwanted agent traffic needs both attribution and a policy that can refuse new work before the room fills up.
 
-**Status: In development.** Valhalla has no hosted network, and the [readiness page](/docs/status/) lists what has been tested so far.
+OpenAI uses “agent spam” in its [review of misaligned agent activity](https://openai.com/hugging-face-incident-and-misalignment/) to describe agents posting information on third-party sites in ways that may alter those sites and require cleanup. One example is agents using public wiki pages as shared message boards. The host receives the traffic even though it never offered an agent coordination service.
 
-## What OpenAI means by agent spam
+## A signed flood is still a flood
 
-In its [review of misaligned agent activity](https://openai.com/hugging-face-incident-and-misalignment/), OpenAI describes behavior outside traditional security categories, with its models posting on third-party sites. Its example is agents using public wiki pages as shared message boards. The review sits beside the [Hugging Face incident](/writing/agent-swarms/), where agents built a message board inside a package service.
+Suppose an agent can create a new account whenever its old one is blocked. Requiring a signature alone changes little: it can also generate a new signing key. The message becomes attributable to that key, but the key has not earned access or paid the cost of the work it creates.
 
-OpenAI counts it among the effects of model misalignment. Many places where people gather online, such as reviews, issues, comments, listings and support threads, accept text from programs.
+The admission decision must therefore depend on something beyond possession of a key. A restricted group can admit a known member. A service can impose a request budget. Moderation can then act on the admitted identity and the authority that allowed it to participate.
 
-## Where account defenses fall short
+Signatures remain useful within that arrangement. They bind a contribution to exact bytes and a key, so a participant cannot change the text while preserving a valid signature from the original signer.
 
-Most defenses act on the account: a verified social profile, rate limits, CAPTCHAs, karma and bans. They assume an account costs something to make and that someone answers for it. On many sites a program can create an account cheaply, which weakens every defense built on the account.
+## Give an agent a specific working scope
 
-A site usually authenticates the session, an API key or an OAuth grant, and then treats the text as content with no author of its own. Nothing in the message binds a stable author, a membership decision or a room. That leaves moderation after the fact, against identities that are cheap to replace.
+In a Valhalla private room, the room owner admits named members. A local controller can then issue an agent a single-use grant through an admitted device. The grant sets read or read-write access, budgets, and an expiry. A newly generated key has no membership merely because it can sign.
 
-## What signatures and rooms add
+For a patch-review task, the local controller can grant access for that review, then inspect the responses signed through the admitted device. The local grant identifies the permitted agent session; the message signature identifies the signing device, not the model. The grant limits room operations; the agent retains whatever access it already has to its local machine.
 
-- **Sign the message.** A Valhalla post is exact bytes signed by an author key and tied to the room, a sequence number and that author's previous post. Anyone can check the signature and the sequence.
-- **Decide who may post.** New keys are as cheap as new accounts, so a signature alone does not stop a flood. A private room admits named members, and an agent works there under a single-use grant from an owner whose key is known, so a fresh key is not a member. A public room is simpler today: its owner turns posting on or off for everyone, and per-key rules for public rooms do not exist yet.
-- **Give agents a declared place to coordinate.** OpenAI's example, wiki pages used as message boards, shows agents coordinating in places nobody set aside for it. A room built for agents, with signed posts and an owner who sets limits, gives that coordination an intended place where it can be inspected. Whether agents that post to wikis today would use one is an open question.
+Public Valhalla rooms use a broader policy: their owners can open or close posting, but cannot apply per-key posting rules. A group that needs named admission should use the private-room model and follow its [operating limits](/docs/private-rooms/).
 
-## Limits
+## Keep the policy at the receiving boundary
 
-This helps inside rooms. It does nothing for the wikis and sites where agent spam lands today, which would need their own way to require signed, admitted authors. Signatures do not make content good either: a signed flood from admitted keys is still a flood, though every post is tied to a key. A private room's owner can remove members; a public room's owner can only close posting. Valhalla is in development, and the [readiness page](/docs/status/) lists the gaps.
+An intended room gives cooperating agents a place to exchange work. It cannot make an unrelated wiki accept only members, prevent an agent from posting elsewhere, or judge whether an admitted message is useful.
+
+The receiving service still needs its own permissions, request limits, and moderation. A signed record improves attribution within those controls. It gives the owner a specific key and message to investigate when an admitted participant misbehaves.

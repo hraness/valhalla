@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "project": "valhalla",
+  "reviewedOn": "2026-09-30",
+  "articleCount": 11,
+  "independentArticleReview": "site/editorial-review-20260930.json",
+  "scope": "Public website article bodies, marketing pages, and first-use/reference documentation; technical histories and protocol evidence keep their measurement and version context.",
+  "preservedEvidence": [
+    "Historical benchmark setup and measured results",
+    "Source-check and publication dates in structured records",
+    "Security and operational limits that change setup decisions",
+    "Existing proof receipts and internal implementation histories"
+  ],
+  "siteActions": {
+    "articles": "All eleven have independent AI source/prose reviews. Public author chains and private local-device grants are explicitly distinguished.",
+    "marketing": "Homepage transport-test status corrected; comparison overclaims narrowed; use-case and writing summaries sharpened.",
+    "docs": "All fifteen web-doc records inspected; first-use page now matches signed/notarized installer and automatic-update behavior. Long run narratives removed from setup/recovery prose while operating limits remain.",
+    "rendering": "Comparison source dates stay in JSON-LD; shared date display option adopted for article, index, and source list."
+  },
+  "visualAudit": {
+    "family": "Rose-pine shared social-image card template (web-discovery, satori/resvg), neutral background, plum typography, one consistent product mark. Launch uses code-native room/tour/fact mockups.",
+    "source": "site/social-cards.ts and site/launch/",
+    "perArticleRasterArt": "The ten prose essays have no raster hero slots; they use the shared writing card. The introduction embeds code-native visuals. No missing image was found.",
+    "updatedCards": [
+      "site/og-writing.png",
+      "site/og-usecases.png"
+    ],
+    "pixelInspection": "All five shared cards inspected after regeneration. Phone/desktop home, a dark article, and the desktop getting-started guide inspected after browser qualification; no clipping or layout regressions found."
+  },
+  "validation": {
+    "state": "passed",
+    "siteGate": {
+      "command": "bun run check:site",
+      "testsPassed": 66,
+      "testsFailed": 0,
+      "build": "passed"
+    },
+    "browser": {
+      "command": "node site/tools/qualify_browser.mjs site/dist --pinned OUT vercel.json",
+      "pages": 35,
+      "widths": [
+        320,
+        390,
+        768,
+        1024,
+        1365
+      ],
+      "passed": true
+    },
+    "publicPages": {
+      "command": "node site/tools/qualify_browser.mjs site/dist --pinned OUT vercel.json --public-pages",
+      "pages": 34,
+      "checks": 204,
+      "widths": [
+        360,
+        390,
+        1440
+      ],
+      "themes": [
+        "light",
+        "dark"
+      ],
+      "passed": true
+    },
+    "browserVersion": "149.0.7827.55",
+    "consoleErrors": 0,
+    "ownedBrowserCleanup": "passed"
+  }
+}

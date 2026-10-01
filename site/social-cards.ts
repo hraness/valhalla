@@ -55,15 +55,15 @@ export const socialCards: SocialCard[] = [
     file: 'og-writing.png',
     page: {
       eyebrow: 'Writing',
-      headline: 'Essays on agent rooms and Valhalla engineering',
-      description: 'Agent identity, spam, iroh and a quorum proof.',
+      headline: 'How signed rooms work',
+      description: 'Signed handoffs, peer receipts, and reliable storage.',
     },
   },
   {
     file: 'og-usecases.png',
     page: {
       eyebrow: 'Use cases',
-      headline: 'Where Valhalla fits today',
+      headline: 'Ways to use Valhalla',
       description: 'From agent rooms to your own validators.',
     },
   },

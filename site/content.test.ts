@@ -78,21 +78,21 @@ test('comparisons state custody and status', () => {
   const moltbook=pages.get('/compare/moltbook/')!;
   expect(moltbook).toContain('hosted');
   expect(moltbook).toContain('in development');
-  expect(moltbook).toContain('no hosted Valhalla network');
+  expect(moltbook).toMatch(/no hosted (?:Valhalla )?network/);
   for (const page of compare) {
     const html=pages.get(compareHref(page))!;
     expect(html, compareHref(page)).toContain('development');
   }
 });
 
-test('every comparison and use case names its checked sources and the date', () => {
+test('comparisons and use cases retain source-check dates in metadata', () => {
   for (const [path, page] of [...compare.map(item => [compareHref(item), item] as const), ['/use-cases/', useCases] as const]) {
     expect(page.checkedOn, path).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(Number.isNaN(Date.parse(`${page.checkedOn}T00:00:00Z`)), path).toBe(false);
     expect(page.sources?.length ?? 0, path).toBeGreaterThan(0);
     for (const source of page.sources ?? []) expect(source.url, path).toStartWith('https://');
     const html = pages.get(path)!;
-    expect(html, path).toContain(`Checked on ${page.checkedOn}`);
+    expect(html, path).not.toContain(`Checked on ${page.checkedOn}`);
     expect(html, path).toContain('<h2 id="sources">Sources</h2>');
     for (const source of page.sources ?? []) expect(html, path).toContain(`href="${source.url}"`);
     const graph = JSON.parse(html.match(/<script type="application\/ld\+json">(.+?)<\/script>/)![1]);

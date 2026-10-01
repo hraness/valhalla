@@ -30,7 +30,7 @@ test('the admission registry is valid and covers exactly the published articles'
   }
 });
 
-test('every article shows the Hraness byline, the provenance note and dated sources', () => {
+test('every article shows its byline and provenance while retaining dates in metadata', () => {
   for (const article of articles) {
     const html = renderArticle(article, template);
     const sentence = articleProvenanceSentence(articleProvenanceFromAdmission(article.admission));
@@ -40,7 +40,8 @@ test('every article shows the Hraness byline, the provenance note and dated sour
     expect(sentence.startsWith(`${drafted} `) || sentence.startsWith(`${drafted}.`), article.slug).toBe(true);
     if (article.admission.review) expect(sentence, article.slug).toBe(`${drafted} and reviewed by ${article.admission.review.reviewer}.`);
     expect(html, article.slug).toContain(sentence);
-    expect(html, article.slug).not.toMatch(/human/i);
+    expect(sentence, article.slug).not.toMatch(/human/i);
+    expect(html, article.slug).not.toContain('<time');
     expect(html, article.slug).toContain('By <a href="https://hraness.com" rel="author">Hraness</a>');
     expect(html, article.slug).toContain('<section aria-labelledby="article-sources" class="plain-publication__sources">');
     expect(html, article.slug).toContain('<meta property="og:type" content="article">');
@@ -51,6 +52,7 @@ test('every article shows the Hraness byline, the provenance note and dated sour
     expect(posting['@type']).toBe('BlogPosting');
     expect(posting.author).toEqual([{ '@type': 'Organization', name: 'Hraness' }]);
     expect(posting.datePublished).toBe(`${article.published}T00:00:00.000Z`);
+    expect(posting.dateModified).toBe(`${article.updated ?? article.published}T00:00:00.000Z`);
     expect(posting.isPartOf['@id']).toBe('https://vhalla.com/writing/#blog');
   }
 });
