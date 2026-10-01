@@ -545,7 +545,12 @@ fn contact_cipher_uses_separate_keys_and_binds_full_metadata() {
         let raw = offer.seal(None, b"opaque request").unwrap();
         assert_eq!(Frame::decode(&raw).unwrap().id, offer.id);
         assert_ne!(offer.id, [0; 32]);
-        assert!(!raw.windows(16).any(|part| part == op(100).as_bytes()));
+        // Search the encrypted body, not the public framing. The zero-filled
+        // request hash followed by a nonce starting with 0x64 can spell op(100).
+        let ciphertext = &raw[raw.len() - b"opaque request".len() - 16..];
+        assert!(!ciphertext
+            .windows(16)
+            .any(|part| part == op(100).as_bytes()));
         assert_eq!(
             &*offer.open(&Frame::decode(&raw).unwrap(), None).unwrap(),
             b"opaque request"
