@@ -445,7 +445,7 @@ impl<S: Store> AgentRoomSession<S> {
         let draft = self.kernel.prepare_message(body).map_err(Error::Kernel)?;
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = DraftRef(
-            NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
                 .map_err(|_| Error::Bounds)?,
         );
         self.pending = Some((id, draft));
