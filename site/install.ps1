@@ -1,7 +1,7 @@
 # vhalla installer for Windows: download, verify (SHA-256), install, report.
 # Usage (PowerShell):  irm https://vhalla.com/install.ps1 | iex
 # Installs vhalla.exe for this user only; nothing runs as administrator.
-# Options (environment): VHALLA_VERSION (one exact release, such as v0.2.10),
+# Options (environment): VHALLA_VERSION (one exact release, such as v0.2.13),
 # VHALLA_INSTALL_DIR (default %LOCALAPPDATA%\Programs\vhalla\bin),
 # VHALLA_NO_MODIFY_PATH=1 (leave the user PATH alone).
 # On Windows, vhalla runs identity and the member side of private rooms. For
@@ -15,10 +15,10 @@
   $ErrorActionPreference = 'Stop'
   $ProgressPreference = 'SilentlyContinue'
 
-  $Version = 'v0.2.10'
+  $Version = 'v0.2.13'
   if ($env:VHALLA_VERSION) { $Version = $env:VHALLA_VERSION }
   if ($Version -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-    throw "vhalla install: VHALLA_VERSION must be an exact release such as v0.2.10 (got '$Version')"
+    throw "vhalla install: VHALLA_VERSION must be an exact release such as v0.2.13 (got '$Version')"
   }
   $Base = "https://github.com/hraness/valhalla/releases/download/$Version"
   # The release workflow serves the archive it just built from loopback;

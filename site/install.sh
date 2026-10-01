@@ -17,7 +17,7 @@ for arg in "$@"; do
   esac
 done
 
-VERSION="v0.2.10"
+VERSION="v0.2.13"
 VERSION="${VHALLA_VERSION:-$VERSION}"
 printf '%s\n' "$VERSION" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
   echo "vhalla install: VHALLA_VERSION must be an exact version tag." >&2; exit 1;
