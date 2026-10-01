@@ -83,11 +83,19 @@ class RealRepositoryTests(unittest.TestCase):
         self.assertFalse(pr("crates/vhalla-policy/src/lib.rs").formal)
 
     def test_unrelated_changes_skip_every_group(self):
-        selection = pr("site/index.html", "kb/notes/x.md", "README.md", "package.json", ".github/dependabot.yml",
+        selection = pr("site/index.html", "kb/notes/x.md", "README.md", ".github/dependabot.yml",
                        "prototypes/agent-compartment/broker.py")
         self.assertFalse(selection.full)
         self.assertEqual(selection.prototypes, [])
         self.assertFalse(selection.kani or selection.browser or selection.formal)
+
+    def test_pinned_browser_inputs_select_runtime_qualification(self):
+        for path in ("package.json", "bun.lock", "site/tools/browser-contract.mjs",
+                     ".github/scripts/pinned_chromium.sh", "browser/tools/pinned_browser.mjs"):
+            with self.subTest(path=path):
+                selection = pr(path)
+                self.assertTrue(selection.browser)
+                self.assertFalse(selection.full or selection.kani or selection.formal or selection.prototypes)
 
     def test_retired_prototypes_are_manual_only(self):
         self.assertNotIn("prototypes/retired/botcaptcha/Cargo.toml", ALL_PROTOTYPES)

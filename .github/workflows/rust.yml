@@ -96,7 +96,7 @@ jobs:
             rows="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | [.filename, (.previous_filename // "")] | @tsv')"
             count="$(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d ' ')"
             paths="$(printf '%s\n' "$rows" | tr '\t' '\n' | sed '/^$/d')"
-            nonrust='^((site|docs|kb)/.+|bun\.lock|package\.json|vercel\.json|\.vercelignore|LICENSE|railway\.toml|[^/]+\.md)$'
+            nonrust='^((site|docs|kb)/.+|vercel\.json|\.vercelignore|LICENSE|railway\.toml|[^/]+\.md)$'
             # The files API lists at most 3,000 paths; anything incomplete runs everything.
             # Here-strings, not `printf | grep -q`: under pipefail an early
             # grep -q match SIGPIPEs printf on lists over the 64 KiB pipe
@@ -106,7 +106,8 @@ jobs:
               complete=true
               if ! grep -Evq "$nonrust" <<<"$paths" \
                 && ! grep -qx 'CHANGELOG.md' <<<"$paths" \
-                && ! grep -qx 'site/install.ps1' <<<"$paths"; then
+                && ! grep -qx 'site/install.ps1' <<<"$paths" \
+                && ! grep -qx 'site/tools/browser-contract.mjs' <<<"$paths"; then
                 rust=false
               fi
             fi
@@ -459,17 +460,22 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Provision the repository's pinned Chromium and sandbox
+        run: bash .github/scripts/pinned_chromium.sh setup
       - name: Qualification process cleanup regressions
-        run: node --test browser/tools/qualification_lifecycle.test.mjs browser/tools/qualification_process_guardian.test.mjs browser/tools/private_mixed_pilot.test.mjs browser/tools/private_generation_pilot.test.mjs
+        run: node --test browser/tools/qualification_lifecycle.test.mjs browser/tools/qualification_process_guardian.test.mjs browser/tools/pinned_browser.test.mjs browser/tools/private_mixed_pilot.test.mjs browser/tools/private_generation_pilot.test.mjs
       - name: Build maintained local private host and browser gateway
         run: cargo build --locked -p vhalla-cli --features experimental-private
       - name: Exercise production browser delivery, outage and exact restart
         timeout-minutes: 8
-        run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-delivery-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)"
+        run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" --pinned "$RUNNER_TEMP/vhalla-private-delivery-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)"
       - name: Complete private work with a browser and two native agents
-        run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-mixed-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)" --mixed-pilot
+        run: node browser/tools/qualify_private_delivery.mjs "$GITHUB_WORKSPACE/browser/dist" --pinned "$RUNNER_TEMP/vhalla-private-mixed-results" "$GITHUB_WORKSPACE/target/debug/vhalla" "$(command -v openssl)" --mixed-pilot
       - name: Exercise production private panel and archive recovery
-        run: node browser/tools/qualify_private_panel.mjs "$GITHUB_WORKSPACE/browser/dist" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-production-panel-results" --production
+        run: node browser/tools/qualify_private_panel.mjs "$GITHUB_WORKSPACE/browser/dist" --pinned "$RUNNER_TEMP/vhalla-private-production-panel-results" --production
       - name: Retain bounded browser runtime evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -499,6 +505,9 @@ jobs:
           path: browser/dist
           if-no-files-found: error
           retention-days: 14
+      - name: Remove the job-owned Chromium sandbox profile
+        if: always()
+        run: bash .github/scripts/pinned_chromium.sh cleanup
 
   browser-worker:
     name: Browser private worker journey
@@ -531,10 +540,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Provision the repository's pinned Chromium and sandbox
+        run: bash .github/scripts/pinned_chromium.sh setup
       - name: Exercise private worker custody, cancellation and exact reopen
-        run: node browser/tools/qualify_private_session.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-worker-results"
+        run: node browser/tools/qualify_private_session.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" --pinned "$RUNNER_TEMP/vhalla-private-worker-results"
       - name: Exercise private room invitations, consent and file exchange through the UI
-        run: node browser/tools/qualify_private_panel.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-private-panel-results"
+        run: node browser/tools/qualify_private_panel.mjs "$RUNNER_TEMP/vhalla-private-worker-runtime" --pinned "$RUNNER_TEMP/vhalla-private-panel-results"
       - name: Retain bounded browser runtime evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -548,6 +562,9 @@ jobs:
             ${{ runner.temp }}/vhalla-private-panel-results/*.png
           if-no-files-found: warn
           retention-days: 14
+      - name: Remove the job-owned Chromium sandbox profile
+        if: always()
+        run: bash .github/scripts/pinned_chromium.sh cleanup
 
   browser-storage:
     name: Browser storage and MLS fixtures
@@ -575,6 +592,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Provision the repository's pinned Chromium and sandbox
+        run: bash .github/scripts/pinned_chromium.sh setup
       - name: Check archive and continuity receipt browser fixtures
         run: cargo clippy --locked -p vhalla-browser-storage --example private_archive_indexeddb --example private_archive_recovery --example continuity_indexeddb --features private-archive-qualification,continuity-qualification --target wasm32-unknown-unknown -- -D warnings
       - name: Build archive and continuity receipt browser fixtures
@@ -585,7 +607,7 @@ jobs:
           wasm-bindgen target/wasm32-unknown-unknown/debug/examples/continuity_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-continuity-runtime"
       - name: Exercise archive and receipt recovery in Window and dedicated worker
         run: |
-          chrome=$(command -v google-chrome)
+          chrome=--pinned
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-archive-runtime" "$chrome"
           node prototypes/browser-archive-recovery/qualify.mjs "$RUNNER_TEMP/vhalla-archive-recovery-runtime" "$chrome" "$RUNNER_TEMP/vhalla-archive-recovery-results"
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-continuity-runtime" "$chrome"
@@ -597,7 +619,7 @@ jobs:
           wasm-bindgen target/wasm32-unknown-unknown/debug/examples/private_custody_indexeddb.wasm --target web --out-name indexeddb_qualification --out-dir "$RUNNER_TEMP/vhalla-private-custody-runtime"
       - name: Exercise account-derived custody in Window and dedicated worker
         run: |
-          chrome=$(command -v google-chrome)
+          chrome=--pinned
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-custody-runtime" "$chrome"
       - name: Build isolated storage and MLS worker fixtures
         run: |
@@ -610,7 +632,7 @@ jobs:
           wasm-bindgen prototypes/private-rooms-mls/target/wasm32-unknown-unknown/debug/valhalla_private_rooms_mls_qualification.wasm --target web --out-name private_rooms_mls --out-dir "$RUNNER_TEMP/vhalla-mls-runtime"
       - name: Exercise real IndexedDB and MLS in dedicated workers
         run: |
-          chrome=$(command -v google-chrome)
+          chrome=--pinned
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-storage-runtime" "$chrome"
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-store-runtime" "$chrome"
           node browser/tools/qualify_storage.mjs "$RUNNER_TEMP/vhalla-private-group-runtime" "$chrome"
@@ -637,6 +659,9 @@ jobs:
             ${{ runner.temp }}/vhalla-mls-results/chrome.log
           if-no-files-found: warn
           retention-days: 14
+      - name: Remove the job-owned Chromium sandbox profile
+        if: always()
+        run: bash .github/scripts/pinned_chromium.sh cleanup
 
   browser-public:
     name: Browser public journey
@@ -669,8 +694,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Provision the repository's pinned Chromium and sandbox
+        run: bash .github/scripts/pinned_chromium.sh setup
       - name: Exercise scope, interrupted signing, puzzle review and peer delivery
-        run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/release/examples/browser_fixture" "$(command -v google-chrome)" "$RUNNER_TEMP/vhalla-product-results" --recovery
+        run: node browser/tools/qualify_product.mjs "$RUNNER_TEMP/vhalla-product-runtime" "$GITHUB_WORKSPACE/target/release/examples/browser_fixture" --pinned "$RUNNER_TEMP/vhalla-product-results" --recovery
       - name: Retain bounded browser runtime evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -682,6 +712,9 @@ jobs:
             ${{ runner.temp }}/vhalla-product-results/*.png
           if-no-files-found: warn
           retention-days: 14
+      - name: Remove the job-owned Chromium sandbox profile
+        if: always()
+        run: bash .github/scripts/pinned_chromium.sh cleanup
 
   required:
     name: Required

@@ -1,14 +1,17 @@
+import {resolvePinnedBrowser, requiredBrowserArgs, verifyPinnedBrowser, cleanupPinnedBrowser} from './pinned_browser.mjs';
 // Actual account UI + existing emitted worker, isolated synthetic profile only.
 // Build BOTH local-qualification and private-rooms. Never a deployment artifact.
-import {trackChild, childStopped, cleanupOwned, runQualification} from './qualification_lifecycle.mjs';
+import {trackChild, childStopped, runQualification} from './qualification_lifecycle.mjs';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {readFile, writeFile, mkdir, mkdtemp, open} from 'node:fs/promises';
 import {resolve, join, sep} from 'node:path';
 
-const [artifactArg, chromeExecutable, outputArg] = process.argv.slice(2);
-if (!artifactArg || !chromeExecutable || !outputArg) throw Error('requires artifact, Chromium, new output directory');
+const [artifactArg, browserArg, outputArg] = process.argv.slice(2);
+const browser = await resolvePinnedBrowser(browserArg === '--pinned' ? undefined : browserArg);
+let browserChild, browserIdentity;
+if (!artifactArg || !browserArg || !outputArg) throw Error('requires artifact, Chromium, new output directory');
 const artifact=resolve(artifactArg), output=resolve(outputArg);
 await mkdir(output,{recursive:false});
 const profile=await mkdtemp(join(output,'profile-'));
@@ -83,13 +86,14 @@ async function task(abortSignal){
   await new Promise((r,j)=>{server.once('error',j);server.listen(0,'127.0.0.1',r);});
   const serverPort=server.address().port;
   signal.throwIfAborted();
-  const chrome=trackChild(spawn(chromeExecutable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{stdio:['ignore','ignore','pipe']}));
-  children.push(chrome);chrome.stderr.on('data',c=>chromeLog+=c);
+  const chrome=trackChild(spawn(browser.executablePath,requiredBrowserArgs(['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--host-resolver-rules=MAP * 0.0.0.0, EXCLUDE 127.0.0.1, EXCLUDE localhost','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank']),{stdio:['ignore','ignore','pipe']}));
+  children.push(chrome);browserChild=chrome;chrome.stderr.on('data',c=>chromeLog+=c);
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome),'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);
   await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
   socket.onmessage=({data})=>{const v=JSON.parse(data);if(v.id){const w=pending.get(v.id);pending.delete(v.id);v.error?w?.reject(Error(JSON.stringify(v.error))):w?.resolve(v.result);}};
+  browserIdentity=await verifyPinnedBrowser(call,browser,profile);
   const {targetId}=await call('Target.createTarget',{url:'about:blank'});
   const {sessionId}=await call('Target.attachToTarget',{targetId,flatten:true});
   await call('Page.enable',{},sessionId);await call('Runtime.enable',{},sessionId);
@@ -194,6 +198,6 @@ async function task(abortSignal){
 }
 
 await runQualification({work:task,timeoutMs:300000,
-  cleanup:async()=>{try{await cleanupOwned({children,server,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);}},
-  publish:async receipt=>{await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));},
+  cleanup:async()=>{try{return await cleanupPinnedBrowser({browserChild,profile,children,server,socket,pending});}finally{await writeFile(join(output,'chrome.log'),chromeLog);}},
+  publish:async(receipt,cleanup)=>{receipt.browser=browserIdentity;receipt.cleanup=cleanup;await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');console.log(JSON.stringify(receipt));},
 });

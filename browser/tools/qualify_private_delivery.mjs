@@ -1,6 +1,7 @@
+import {resolvePinnedBrowser, requiredBrowserArgs, verifyPinnedBrowser, cleanupPinnedBrowser} from './pinned_browser.mjs';
 // Production private DOM through the actual loopback HTTP gateway and TLS relay.
 // No account seeds, production signer calls, external routes or fixture KDF changes.
-import {spawnOwned, childStopped, cleanupOwned, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
+import {spawnOwned, childStopped, runQualification, closeTargetChecked} from './qualification_lifecycle.mjs';
 import {stopChild, stopServer} from './qualification_lifecycle.mjs';
 import {createServer} from 'node:http';
 import {runMixedPilot} from './private_mixed_pilot.mjs';
@@ -11,8 +12,10 @@ import {readFile, writeFile, mkdir, mkdtemp, chmod, open, access, stat} from 'no
 import {constants as fsConstants} from 'node:fs';
 import {resolve, join, isAbsolute} from 'node:path';
 
-const [artifactArg, chromeExecutable, outputArg, cliArg, opensslArg, ...flags] = process.argv.slice(2);
-if (!artifactArg || !chromeExecutable || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M] [--parent-stdin] [--mixed-pilot] [--generation-pilot --sqlite3 ABSOLUTE_PATH]');
+const [artifactArg, browserArg, outputArg, cliArg, opensslArg, ...flags] = process.argv.slice(2);
+const browser = await resolvePinnedBrowser(browserArg === '--pinned' ? undefined : browserArg);
+let browserChild, browserIdentity;
+if (!artifactArg || !browserArg || !outputArg || !cliArg || !opensslArg) throw Error('requires production private artifact, Chromium, new output directory, vhalla CLI, OpenSSL [--gateway-port N] [--tls-port M] [--parent-stdin] [--mixed-pilot] [--generation-pilot --sqlite3 ABSOLUTE_PATH]');
 process.umask(0o077);
 const options={};
 for(let i=0;i<flags.length;i++){
@@ -596,11 +599,12 @@ async function task(abortSignal) {
   // owned group by design and can outlive the browser, so an inherited pipe
   // would withhold the closure evidence the guardian's receipt requires.
   const chromeLogPath=join(output,'chrome.log');
-  const chrome=spawnOwned(chromeExecutable,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank'],{role:'chrome',outputPath:chromeLogPath});children.push(chrome);chrome.stdout.resume();chrome.stderr.resume();
+  const chrome=spawnOwned(browser.executablePath,requiredBrowserArgs(['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-renderer-backgrounding','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank']),{role:'chrome',outputPath:chromeLogPath});children.push(chrome);browserChild=chrome;chrome.stdout.resume();chrome.stderr.resume();
   await wait(async()=>{chromeLog=(await readFile(chromeLogPath,'utf8').catch(()=>'')).slice(-131072);return /DevTools listening on (ws:\/\/[^\s]+)/.test(chromeLog)||childStopped(chrome);},'Chrome');
   if(childStopped(chrome))throw Error('Chrome exited');
   signal.throwIfAborted();socket=new WebSocket(chromeLog.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]);await new Promise((r,j)=>{socket.onopen=r;socket.onerror=j;});
   socket.onmessage=({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);pending.delete(m.id);m.error?p?.reject(Error(JSON.stringify(m.error))):p?.resolve(m.result);return;}if(m.method==='Browser.downloadWillBegin'){const p=m.params;downloads.set(p.guid,{guid:p.guid,frameId:p.frameId,at:Date.now(),filename:p.suggestedFilename,state:'begun'});}else if(m.method==='Browser.downloadProgress'){const p=m.params,item=downloads.get(p.guid);if(item)item.state=p.state;}else if(m.method==='Network.requestWillBeSent'){const url=m.params.request.url;if(!url.startsWith(gatewayOrigin+'/')&&!url.startsWith('blob:'+gatewayOrigin+'/')&&url!=='about:blank')unexpectedNetwork=true;}else if(m.method==='Network.loadingFailed'&&m.params.errorText==='net::ERR_CONTENT_LENGTH_MISMATCH'){fatalNetwork='gateway response truncated: '+m.params.errorText;}};
+  browserIdentity=await verifyPinnedBrowser(call,browser,profile);
   if(options.mixedPilot) {
     const result=await runMixedPilot({account,enter,evaluate,invoke,setFile,download,retainCreation,
       connect,profileFile,sync,head,command,privateFile,send,reload,leave,wait,removeMember,captureReview,
@@ -800,7 +804,7 @@ await runQualification({
     let receipt;
     try{
       for(const socket of blackholeSockets)socket.destroy();
-      receipt=await cleanupOwned({children,servers:[blackhole,hostile],socket,pending});
+      receipt=await cleanupPinnedBrowser({browserChild,profile,children,servers:[blackhole,hostile],socket,pending});
       return receipt;
     }catch(error){receipt=error.cleanupReceipt;throw error;}
     finally{
@@ -814,6 +818,7 @@ await runQualification({
   },
   publish:async(receipt,cleanup)=>{
     receipt.cleanup=cleanup;
+    receipt.browser=browserIdentity;
     await writeFile(join(output,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
     console.log(JSON.stringify(receipt));
   },
