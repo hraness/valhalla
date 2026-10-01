@@ -146,15 +146,19 @@ def package(messages, out):
                     and value.get("target", {}).get("name") == "vhalla"
                     and value["target"].get("kind") == ["bin"]
                     and value.get("profile", {}).get("test") is False):
-                candidates.append(Path(value["executable"]))
+                candidates.append((Path(value["executable"]), value["profile"]))
     require(len(candidates) == 1, "expected exactly one actual vhalla CLI executable")
+    executable, profile = candidates[0]
+    require(profile.get("opt_level") == "3" and profile.get("debug_assertions") is False,
+            "independent runners require the optimized release CLI")
     out.mkdir(mode=0o700)
-    shutil.copyfile(candidates[0], out / "fixture")
+    shutil.copyfile(executable, out / "fixture")
     (out / "fixture").chmod(0o700)
     write_json(out / "build.json", dict(controller.context(), schema=SCHEMA,
         binary_sha256=controller.digest(out / "fixture"),
         lock_sha256=controller.digest(Path("Cargo.lock")), nonce=secrets.token_hex(32),
-        toolchain="1.98.1", features="headless", target="x86_64-unknown-linux-gnu"))
+        toolchain="1.98.1", features="headless", target="x86_64-unknown-linux-gnu",
+        build_profile="release", cargo_profile=profile))
 
 
 def setup(bundle, work, role):

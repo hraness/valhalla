@@ -488,6 +488,7 @@ impl Spec {
         let log_path = selection.home.join(launchd::SUPERVISOR_LOG_NAME);
         match platform {
             Platform::Mac => {
+                let throttle = launchd::THROTTLE_INTERVAL_SECONDS;
                 let arguments = std::iter::once(executable)
                     .chain(arguments.iter().map(String::as_str))
                     .map(|arg| launchd::xml(arg).map(|arg| format!("<string>{arg}</string>")))
@@ -497,7 +498,7 @@ impl Spec {
                 let label = launchd::xml(&selection.label).map_err(|_| refused())?;
                 let log = launchd::xml(path_text(&log_path)?).map_err(|_| refused())?;
                 Ok(Self::Mac(launchd::AgentSpec { label: selection.label.clone(), alternates: Vec::new(), plist: format!(
-                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{label}</string>\n<key>ProgramArguments</key><array>{arguments}</array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>30</integer>\n<key>ExitTimeOut</key><integer>15</integer>\n<key>Umask</key><integer>63</integer>\n<key>ProcessType</key><string>Background</string>\n<key>AbandonProcessGroup</key><false/>\n<key>StandardOutPath</key><string>{log}</string>\n<key>StandardErrorPath</key><string>{log}</string>\n</dict></plist>\n") }))
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{label}</string>\n<key>ProgramArguments</key><array>{arguments}</array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>{throttle}</integer>\n<key>ExitTimeOut</key><integer>15</integer>\n<key>Umask</key><integer>63</integer>\n<key>ProcessType</key><string>Background</string>\n<key>AbandonProcessGroup</key><false/>\n<key>StandardOutPath</key><string>{log}</string>\n<key>StandardErrorPath</key><string>{log}</string>\n</dict></plist>\n") }))
             }
             Platform::Linux => {
                 let args: Vec<_> = arguments.iter().map(String::as_str).collect();

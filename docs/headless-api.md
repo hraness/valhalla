@@ -38,9 +38,16 @@ required unless marked optional.
 | `after`, `limit` | Unsigned cursor and positive page size. Start with `after:0`; use the returned `next` when non-null. A null `next` ends that local page sequence, not future arrivals. |
 | Text | Owner sends use `body`; MCP sends use `text`. Both accept 1–4096 UTF-8 bytes. Public text and all scoped-agent sends reject control characters except tab and newline. |
 
-Keep every operation ID with its original request. Generate a new ID for a new
-intent, for example with `openssl rand -hex 16`. Examples containing uppercase
-placeholder names require replacement with the values described here.
+Keep every operation ID with its original request. Generate a fresh random ID
+for each new intent, for example with `openssl rand -hex 16`. Examples containing
+uppercase placeholder names require replacement with the values described here.
+
+Private mailbox delivery compares operation IDs across every participant in the
+same mailbox namespace. Use independently generated random 128-bit IDs for
+private joins and sends; separate participants must not share counters or copy
+example IDs. Retrying an existing operation must retain its original ID and
+input. A mailbox conflict stops that delivery job; it does not authorize changing
+the saved operation or recreating the queue.
 
 ## Owner commands
 

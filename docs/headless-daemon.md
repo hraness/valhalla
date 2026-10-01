@@ -43,6 +43,11 @@ operations use nonzero, 32-character lowercase hexadecimal IDs. Retain each ID
 with its original input. Retrying the same input reconciles an uncertain reply;
 using the ID for different input is refused.
 
+For private joins and sends, generate each new operation ID with
+`openssl rand -hex 16`. The mailbox compares these IDs across participants, so
+shared counters or copied example IDs can conflict. Retain the original ID and
+request for every retry.
+
 ```console
 printf '%s\n' '{"op":"room.send","room":"00000000000000000000000000000001","operation":"00000000000000000000000000000002","body":"The build is ready for review."}' |
   vhalla daemon call --home "$VHALLA_DAEMON_HOME"
@@ -157,6 +162,8 @@ vhalla daemon managed status --home "$VHALLA_DAEMON_HOME"
 The stop reply acknowledges shutdown; in-flight work may still be draining.
 Managed installation checks retained state before starting the service. Its
 saved home, executable path, and listener configuration must match on retries.
+On macOS, resuming a stopped service can wait about 30 seconds for launchd's
+restart throttle.
 To remove the per-user service, run `daemon managed uninstall` with the same
 home. Uninstall preserves room data, configuration, and logs.
 

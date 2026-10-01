@@ -46,6 +46,12 @@ fn help_and_version_answer() {
     let page = String::from_utf8(help.stdout).unwrap();
     assert!(page.contains("Usage: vhalla <command>"), "{page}");
     assert!(page.contains("identity"), "{page}");
+    assert!(!page.contains("daemon"), "{page}");
+
+    let all = text(&["help", "all"]);
+    assert!(all.status.success());
+    let reference = String::from_utf8(all.stdout).unwrap();
+    assert!(!reference.contains("vhalla daemon "), "{reference}");
 
     let version = text(&["--version"]);
     assert!(version.status.success());
@@ -94,7 +100,14 @@ fn identity_initializes_once_and_shows_the_same_key() {
 
 #[test]
 fn unix_only_commands_name_the_linux_build() {
-    for command in ["rooms", "status", "demo", "private-host", "public"] {
+    for command in [
+        "daemon",
+        "rooms",
+        "status",
+        "demo",
+        "private-host",
+        "public",
+    ] {
         let output = text(&[command]);
         assert_eq!(output.status.code(), Some(1), "{command}");
         let error = String::from_utf8_lossy(&output.stderr);

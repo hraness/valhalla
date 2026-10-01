@@ -36,7 +36,7 @@ write_json = public.write_json
 def manifest(path, binary):
     value = public.read_json(path)
     required = {"binary_sha256", "source_sha", "dirty_source", "toolchain"}
-    require(isinstance(value, dict) and required <= set(value) <= required | {"lock_sha256"},
+    require(isinstance(value, dict) and required <= set(value) <= required | {"lock_sha256", "build_profile"},
             "build manifest fields are missing or unsupported")
     private.hex_value(value["binary_sha256"])
     private.hex_value(value["source_sha"], 40)
@@ -45,8 +45,12 @@ def manifest(path, binary):
     require(type(value["dirty_source"]) is bool, "manifest must state whether build source was dirty")
     require(isinstance(value["toolchain"], str) and 0 < len(value["toolchain"]) <= 256
             and all(32 <= ord(c) < 127 for c in value["toolchain"]), "invalid toolchain declaration")
+    if "build_profile" in value:
+        require(type(value["build_profile"]) is str and value["build_profile"] in ("dev", "release"),
+                "build profile must be declared as dev or release")
     require(public.controller.digest(binary) == value["binary_sha256"], "binary differs from build manifest")
-    return dict(value, manifest_sha256=public.controller.digest(path),
+    return dict(value, build_profile=value.get("build_profile", "unspecified"),
+                manifest_sha256=public.controller.digest(path),
                 provenance="root-supplied build manifest; binary digest verified by this runner",
                 exact_committed_source=value["dirty_source"] is False,
                 source_scope=("declared clean committed candidate" if not value["dirty_source"]

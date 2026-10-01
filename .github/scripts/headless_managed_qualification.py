@@ -13,7 +13,7 @@ Example (the parent directory must already exist):
     --source-sha HEX40 --work /private/tmp/vhm-UNIQUE
 
 Retain the work directory privately. Only receipt.json is suitable for sharing;
-home, ownership.json, keys, managed selection and supervisor logs are private.
+home, ownership.json, diagnostic.json, keys, managed selection and supervisor logs are private.
 No relay, external peer, existing daemon home, or unrelated launchd job is used.
 """
 
@@ -179,6 +179,8 @@ class ManagedRun:
         self.plist_stamp = None
         self.plist_bytes = None
         self.home_stamp = None
+        self.last_command = None
+        self.launchd_before_reinstall = None
         self.result = dict(schema=SCHEMA, source_sha=source_sha, binary_sha256=expected_digest,
                            runner_sha256=digest(Path(__file__)), platform="macOS launchd",
                            scope="one fresh synthetic home; loopback only", passed=False,
@@ -200,7 +202,13 @@ class ManagedRun:
         remaining = self.deadline - self.clock()
         if remaining <= 0:
             raise TimeoutError("qualification deadline")
-        return self.runner(argv, payload, self.env, min(COMMAND_SECONDS, remaining))
+        # Never capture stdin: calls can carry message text or credentials. The
+        # bounded result is retained only on failure, in a private local file.
+        self.last_command = {"argv": argv, "phase": self.phase}
+        code, out, err = self.runner(argv, payload, self.env, min(COMMAND_SECONDS, remaining))
+        self.last_command.update(exit_code=code, stdout=out.decode("utf-8", errors="replace"),
+                                 stderr=err.decode("utf-8", errors="replace"))
+        return code, out, err
 
     def cli(self, *action, request=None):
         self.check_candidate()
@@ -336,6 +344,7 @@ class ManagedRun:
         self.wait(self.stopped)
         self.result["cases"]["clean_stop"] = True
         retained = self.retained_files()
+        self.launchd_before_reinstall = self.launch_state()
         self.transition("reinstall")
         self.cli("managed", "install", "--bind", BIND)
         self.capture_plist()
@@ -412,6 +421,18 @@ class ManagedRun:
             self.journey()
         except BaseException as failure:
             self.result.update(error_class=type(failure).__name__, failed_phase=self.phase)
+            try:
+                write_json(self.work / "diagnostic.json", {
+                    "schema": "valhalla.headless-managed-private-diagnostic.v1",
+                    "phase": self.phase, "error_class": type(failure).__name__,
+                    "error_code": failure.code if isinstance(failure, Refusal) else None,
+                    "error": str(failure), "command": self.last_command,
+                    "launchd_before_reinstall": self.launchd_before_reinstall,
+                })
+            except BaseException as diagnostic_failure:
+                # Failure to retain optional diagnostics must never skip the
+                # exact-label cleanup or replace the original failure.
+                self.result["diagnostic_error_class"] = type(diagnostic_failure).__name__
         finally:
             with cleanup_signals():
                 self.deadline = self.clock() + CLEANUP_SECONDS

@@ -20,6 +20,7 @@ class FakeMachine:
         self.calls = []
         self.fail_after_install = False
         self.fail_uninstall = False
+        self.fail_reinstall = False
         self.change_config = False
         self.foreign_loaded_path = False
         self.last_exit = None
@@ -29,7 +30,7 @@ class FakeMachine:
         return 0, json.dumps({"ok": True, "result": result}).encode(), b""
 
     def refuse(self):
-        return 1, b'{"ok":false,"error":{"code":"owner-unavailable"}}', b""
+        return 1, b'{"ok":false,"error":{"code":"owner-unavailable","message":"synthetic private refusal"}}', b""
 
     def service(self):
         return dict(installed=self.run.plist.exists(), loaded=self.loaded, launch_agent_current=True,
@@ -69,6 +70,8 @@ class FakeMachine:
                     self.run.plist.write_bytes(plistlib.dumps(self.run.expected_plist))
                     self.run.plist.chmod(0o600)
                 config = self.run.home / "managed-service.json"
+                if config.exists() and self.fail_reinstall:
+                    return self.refuse()
                 if not config.exists():
                     config.write_bytes(b"synthetic exact selection")
                 elif self.change_config:
@@ -134,6 +137,36 @@ class ManagedQualificationTests(unittest.TestCase):
             self.assertNotIn(private, text)
         self.assertEqual(self.run.env["HOME"], str(self.user))
         self.assertEqual(set(self.run.env), {"HOME", "PATH", "RUST_BACKTRACE"})
+        self.assertFalse((self.run.work / "diagnostic.json").exists())
+
+    def test_reinstall_refusal_retains_private_diagnostic_before_cleanup(self):
+        self.machine.fail_reinstall = True
+        result = self.run.run()
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["failed_phase"], "reinstall")
+        self.assertTrue(result["cleanup_confirmed"])
+        diagnostic_path = self.run.work / "diagnostic.json"
+        self.assertEqual(diagnostic_path.stat().st_mode & 0o777, 0o600)
+        diagnostic = json.loads(diagnostic_path.read_text())
+        self.assertEqual(diagnostic["error_code"], "owner-unavailable")
+        self.assertIn("synthetic private refusal", diagnostic["command"]["stdout"])
+        self.assertEqual(diagnostic["command"]["argv"][3:5], ["managed", "install"])
+        self.assertIn(str(self.run.plist), diagnostic["launchd_before_reinstall"])
+        receipt = (self.run.work / "receipt.json").read_text()
+        for private in ("synthetic private refusal", "owner-unavailable", str(self.run.home), self.run.label):
+            self.assertNotIn(private, receipt)
+        self.assertNotIn("synthetic managed lifecycle message", diagnostic_path.read_text())
+
+    def test_diagnostic_write_failure_does_not_skip_exact_cleanup(self):
+        self.machine.fail_reinstall = True
+        (self.run.work / "diagnostic.pending").write_bytes(b"preserve prior artifact")
+        result = self.run.run()
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["diagnostic_error_class"], "FileExistsError")
+        self.assertEqual(result["failed_phase"], "reinstall")
+        self.assertTrue(result["cleanup_confirmed"])
+        self.assertFalse(self.machine.loaded)
+        self.assertEqual((self.run.work / "diagnostic.pending").read_bytes(), b"preserve prior artifact")
 
     def test_interrupted_partial_install_still_uninstalls_exact_job(self):
         self.machine.fail_after_install = True

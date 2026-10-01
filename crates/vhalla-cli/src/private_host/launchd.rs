@@ -50,6 +50,7 @@ pub(crate) const LOG_NAME: &str = "events.log";
 /// rotates it at startup once it exceeds its bound, keeping one generation, so
 /// arbitrary supervisor output can never fill the event log or wedge startup.
 pub(crate) const SUPERVISOR_LOG_NAME: &str = "supervisor.log";
+pub(crate) const THROTTLE_INTERVAL_SECONDS: u64 = 30;
 fn plist_v1(home: &Path, c: &Config) -> Result<String, String> {
     plist_shape(home, c, "/dev/null")
 }
@@ -74,7 +75,7 @@ fn plist_shape(home: &Path, c: &Config, out: &str) -> Result<String, String> {
 <key>ProgramArguments</key><array><string>{executable}</string><string>private-host</string><string>serve</string><string>{home}</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-<key>ThrottleInterval</key><integer>30</integer>
+<key>ThrottleInterval</key><integer>{throttle}</integer>
 <key>ExitTimeOut</key><integer>15</integer>
 <key>Umask</key><integer>63</integer>
 <key>ProcessType</key><string>Background</string>
@@ -82,7 +83,8 @@ fn plist_shape(home: &Path, c: &Config, out: &str) -> Result<String, String> {
 <key>StandardOutPath</key><string>{out}</string>
 <key>StandardErrorPath</key><string>{out}</string>
 </dict></plist>
-"#
+"#,
+        throttle = THROTTLE_INTERVAL_SECONDS,
     ))
 }
 /// Earlier homes were sealed with launchd output discarded or sent into the
@@ -333,6 +335,17 @@ mod mac {
         stdout: String,
         stderr: String,
     }
+    fn command_timeout(args: &[OsString]) -> Duration {
+        // Even a clean stopped job can make kickstart wait for its configured
+        // throttle. The exact no-flags resume must outlast that interval. Other
+        // command shapes retain the shorter probe/mutation deadline.
+        match args {
+            [verb, _target] if verb == "kickstart" => {
+                Duration::from_secs(THROTTLE_INTERVAL_SECONDS + 5)
+            }
+            _ => Duration::from_secs(10),
+        }
+    }
     fn command(args: &[OsString]) -> Result<Reply, String> {
         let mut child = Command::new("/bin/launchctl")
             .args(args)
@@ -354,7 +367,7 @@ mod mac {
         };
         let out = read(Box::new(stdout));
         let err = read(Box::new(stderr));
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + command_timeout(args);
         let result = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -717,6 +730,35 @@ mod mac {
                     path.display()
                 ),
                 stderr: String::new(),
+            }
+        }
+
+        #[test]
+        fn exact_resume_deadline_covers_the_template_throttle_without_widening_other_commands() {
+            let (_temp, agent, path) = resume_fixture();
+            let throttle: u64 = agent
+                .plist
+                .split_once("<key>ThrottleInterval</key><integer>")
+                .unwrap()
+                .1
+                .split_once("</integer>")
+                .unwrap()
+                .0
+                .parse()
+                .unwrap();
+            let resume = [OsString::from("kickstart"), target(&agent).into()];
+            assert_eq!(command_timeout(&resume), Duration::from_secs(35));
+            assert!(command_timeout(&resume) > Duration::from_secs(throttle));
+            for args in [
+                vec!["print".into(), target(&agent).into()],
+                vec!["bootout".into(), target(&agent).into()],
+                vec!["bootstrap".into(), domain().into(), path.into_os_string()],
+                vec!["kickstart".into()],
+                vec!["kickstart".into(), "-k".into(), target(&agent).into()],
+                vec!["kickstart".into(), "-p".into(), target(&agent).into()],
+                vec!["kickstart".into(), target(&agent).into(), "extra".into()],
+            ] {
+                assert_eq!(command_timeout(&args), Duration::from_secs(10), "{args:?}");
             }
         }
 

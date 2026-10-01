@@ -18,7 +18,8 @@ class MeasurementTests(unittest.TestCase):
         binary = root / "candidate"
         binary.write_bytes(b"immutable synthetic candidate bytes")
         value = dict(binary_sha256=measurement.public.controller.digest(binary), source_sha="b" * 40,
-                     dirty_source=dirty, toolchain="rustc 1.98.1 (provided by build owner)")
+                     dirty_source=dirty, toolchain="rustc 1.98.1 (provided by build owner)",
+                     build_profile="release")
         path = root / "build.json"
         measurement.write_json(path, value)
         return binary, path, value
@@ -32,11 +33,26 @@ class MeasurementTests(unittest.TestCase):
             command.assert_not_called()
             self.assertEqual(result["source_sha"], expected["source_sha"])
             self.assertEqual(result["toolchain"], expected["toolchain"])
+            self.assertEqual(result["build_profile"], "release")
             self.assertTrue(result["exact_committed_source"])
             self.assertEqual(result["manifest_sha256"], measurement.public.controller.digest(path))
             binary.write_bytes(b"another candidate")
             with self.assertRaises(ValueError):
                 measurement.manifest(path, binary)
+
+    def test_manifest_profile_is_explicit_and_historical_manifests_remain_unspecified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary, path, value = self.build(Path(directory))
+            for profile in ("dev", "release"):
+                measurement.write_json(path, value | {"build_profile": profile})
+                self.assertEqual(measurement.manifest(path, binary)["build_profile"], profile)
+            historical = {key: item for key, item in value.items() if key != "build_profile"}
+            measurement.write_json(path, historical)
+            self.assertEqual(measurement.manifest(path, binary)["build_profile"], "unspecified")
+            for profile in (None, False, 1, "", "debug", "release\n", "unspecified", []):
+                measurement.write_json(path, value | {"build_profile": profile})
+                with self.subTest(profile=profile), self.assertRaises(ValueError):
+                    measurement.manifest(path, binary)
 
     def test_dirty_source_is_explicit_and_never_attested_as_exact_commit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -254,6 +270,7 @@ class MeasurementTests(unittest.TestCase):
             receipt = json.loads((work / "measurement-receipt.json").read_bytes())
             self.assertFalse(receipt["passed"] or receipt["capacity_qualified"] or receipt["true_peak_rss_measured"])
             self.assertFalse(receipt["build"]["exact_committed_source"])
+            self.assertEqual(receipt["build"]["build_profile"], "release")
             self.assertTrue(receipt["cleanup_confirmed"])
             self.assertNotIn("sensitive diagnostic text", json.dumps(receipt))
             self.assertTrue((work / "failure-private.json").is_file())

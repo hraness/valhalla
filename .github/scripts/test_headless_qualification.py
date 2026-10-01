@@ -13,6 +13,31 @@ import headless_qualification as qualification
 
 
 class QualificationTests(unittest.TestCase):
+    def test_packaging_requires_release_profile_and_records_the_compiler_evidence(self):
+        profile = dict(opt_level="3", debug_assertions=False, test=False)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "vhalla"
+            executable.write_bytes(b"synthetic executable")
+            messages = root / "cargo.jsonl"
+            record = dict(reason="compiler-artifact", executable=str(executable),
+                          target=dict(name="vhalla", kind=["bin"]), profile=profile)
+            messages.write_text(json.dumps(record) + "\n")
+            bundle = root / "release"
+            with patch.object(qualification.controller, "context", return_value=self.expected()):
+                qualification.package(messages, bundle)
+            manifest = qualification.read_json(bundle / "build.json")
+            self.assertEqual(manifest["build_profile"], "release")
+            self.assertEqual(manifest["cargo_profile"], profile)
+            self.assertEqual(manifest["binary_sha256"], qualification.controller.digest(executable))
+            for selected in (dict(profile, opt_level="0"), dict(profile, debug_assertions=True),
+                             dict(test=False)):
+                messages.write_text(json.dumps(dict(record, profile=selected)) + "\n")
+                rejected = root / "rejected"
+                with self.subTest(profile=selected), self.assertRaises(ValueError):
+                    qualification.package(messages, rejected)
+                self.assertFalse(rejected.exists())
+
     def expected(self, machine="e"):
         return dict(source_sha="a" * 40, run_id="100", run_attempt="2", nonce="b" * 64,
                     binary_sha256="c" * 64, lock_sha256="d" * 64, machine=machine * 64)

@@ -288,6 +288,8 @@ fn all() -> String {
     let mut text = String::from(
         "vhalla identity init <new-directory>\nvhalla identity show <existing-directory>\nvhalla identity backup <existing-directory>\nvhalla identity restore <new-directory>   # phrase on stdin\n",
     );
+    #[cfg(all(unix, feature = "headless"))]
+    text.push_str(&format!("\n{DAEMON}\n"));
     #[cfg(unix)]
     text.push_str("vhalla status [--json]\nvhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE [--json]\nvhalla tui [--snapshot|--json] [--width N]\nvhalla doctor [retire] [--json]\nvhalla commands --json\nvhalla outputs [list|open [NAME]|reveal NAME] [--json]\n");
     #[cfg(unix)]
@@ -493,6 +495,16 @@ mod tests {
                 assert_eq!(text, page(&[name, "-h"]), "{name}");
             }
         }
+    }
+
+    #[test]
+    fn daemon_help_matches_platform_and_feature_availability() {
+        let available = cfg!(all(unix, feature = "headless"));
+        assert_eq!(topics().contains(&"daemon"), available);
+        assert_eq!(topic("daemon").is_some(), available);
+        assert_eq!(overview().contains("vhalla daemon "), available);
+        assert_eq!(root().contains("  daemon "), available);
+        assert_eq!(all().contains("vhalla daemon "), available);
     }
 
     #[test]

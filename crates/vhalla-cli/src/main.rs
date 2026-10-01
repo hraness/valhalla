@@ -101,10 +101,11 @@ fn main() {
             std::process::exit(1);
         }
     };
+    #[cfg(unix)]
     if args.first().is_some_and(|arg| arg == "daemon") {
-        #[cfg(all(unix, feature = "headless"))]
+        #[cfg(feature = "headless")]
         std::process::exit(headless::run(&args[1..]));
-        #[cfg(not(all(unix, feature = "headless")))]
+        #[cfg(not(feature = "headless"))]
         {
             cli::report_error("Daemon support requires a Unix build with the headless feature.");
             std::process::exit(2);
@@ -252,7 +253,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
 }
 
 /// Windows and other non-Unix builds carry the member-side private-room
-/// client and identity custody only. Host, gateway, agent serving and the
+/// client and identity custody only. Daemon, host, gateway, agent serving and the
 /// experimental public/social/rooms surfaces remain Unix-qualified.
 #[cfg(not(unix))]
 fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
@@ -287,6 +288,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
 #[cfg(not(unix))]
 const UNIX_ONLY_COMMANDS: &[&str] = &[
     "commands",
+    "daemon",
     "demo",
     "doctor",
     "experimental",
@@ -888,6 +890,9 @@ mod identity_copy_tests {
                 portable.contains(command) ^ UNIX_ONLY_COMMANDS.contains(command),
                 "{command} must be portable or listed as Unix-only"
             );
+        }
+        for command in UNIX_ONLY_COMMANDS {
+            assert_eq!(run(vec![(*command).into()]), Err(unix_only(command)));
         }
         let rendered = cli::render_error(&unix_only("rooms"), cli::Audience::Human, PLAIN);
         assert!(rendered.starts_with("✗ "), "{rendered}");

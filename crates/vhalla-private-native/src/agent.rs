@@ -502,10 +502,14 @@ impl AgentAccess {
         self.grant.budget.preparations -= 1;
         let draft = kernel.prepare_message(body).map_err(Error::Kernel)?;
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let id = DraftRef(
-            NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-                .map_err(|_| Error::Bounds)?,
-        );
+        let mut current = NEXT.load(Ordering::Relaxed);
+        let id = loop {
+            let next = current.checked_add(1).ok_or(Error::Bounds)?;
+            match NEXT.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break DraftRef(current),
+                Err(observed) => current = observed,
+            }
+        };
         self.pending = Some((id, draft));
         Ok(id)
     }

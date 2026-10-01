@@ -44,7 +44,7 @@ jobs:
           python3 -m unittest discover -s .github/scripts -p 'test_headless_measurement.py'
       - name: Compile the actual headless CLI once
         run: |
-          cargo build --locked -p vhalla-cli --bin vhalla --no-default-features --features headless --message-format=json > "$RUNNER_TEMP/headless-build.jsonl"
+          cargo build --release --locked -p vhalla-cli --bin vhalla --no-default-features --features headless --message-format=json > "$RUNNER_TEMP/headless-build.jsonl"
           python3 .github/scripts/headless_qualification.py package --cargo-messages "$RUNNER_TEMP/headless-build.jsonl" --bundle "$RUNNER_TEMP/headless-bundle"
       - uses: actions/upload-artifact@v7
         with:

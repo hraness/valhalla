@@ -182,6 +182,7 @@ class PrivateQualificationTests(unittest.TestCase):
             daemon.home = root / "a"
             context = self.descriptor()["owner"]
             def call(op, **fields):
+                self.assertEqual(fields["room"], qualification.operation(1))
                 if op == "room.status":
                     return {"context": dict(kind="private", **context)}
                 if op == "private.delivery_init":
@@ -189,6 +190,7 @@ class PrivateQualificationTests(unittest.TestCase):
                     self.assertEqual(qualification.hashlib.sha256(raw).hexdigest(), fields["profile_hash"])
                     return dict(initialized=True, profile_hash=fields["profile_hash"])
                 if op == "private.delivery_attach":
+                    self.assertEqual(fields["operation"], qualification.operation(10))
                     return {"current": {"state": "active"}}
                 self.fail(op)
             daemon.call.side_effect = call
@@ -204,6 +206,70 @@ class PrivateQualificationTests(unittest.TestCase):
             self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
             self.assertNotIn("ca", value)
             self.assertNotIn("tls_name", value)
+
+    def test_shared_mailbox_accepts_actor_local_counters_and_exact_retries(self):
+        journey = qualification.Journey(self.config())
+        status = dict(epoch=2, roster="1" * 64)
+        retained = {}
+        rooms = {}
+        sequences = {}
+
+        def factory(config, name):
+            daemon = Mock(home=Path(config["work"]) / name)
+            def call(op, **fields):
+                self.assertEqual(fields["room"], rooms[name])
+                if op == "room.status":
+                    return status
+                self.assertEqual(op, "room.send")
+                key = fields["operation"]
+                intent = (name, fields["body"], fields["epoch"], fields["roster"])
+                if key in retained:
+                    prior, output = retained[key]
+                    if prior != intent:
+                        raise ValueError("shared namespace operation collision")
+                    return output | {"exact_retry": True}
+                sequences[name] = sequences.get(name, 0) + 1
+                output = dict(exact_retry=False, artifact=key, sequence=sequences[name])
+                retained[key] = (intent, output)
+                return output
+            daemon.call.side_effect = call
+            return daemon
+
+        with patch.object(qualification.public, "Daemon", side_effect=factory):
+            actors = {name: journey.daemon(name) for name in ("a", "b", "c")}
+        rooms.update({name: journey.room(daemon) for name, daemon in actors.items()})
+        # Join operations become local room slots and also enter the shared
+        # mailbox. A new home does not make another actor's ID reusable there.
+        self.assertEqual(len(set(rooms.values())), 3)
+        for name, daemon in actors.items():
+            first = journey.send(daemon, 20, name + "-first", status)
+            journey.retry(daemon, 20, name + "-first", first, status)
+            daemon.stop()
+            daemon.start(initialize=False)
+            journey.retry(daemon, 20, name + "-first", first, status)
+            # Owner and surviving member both use this step after the rekey.
+            journey.send(daemon, 31, name + "-after-removal", status)
+        self.assertEqual(len(retained), 6)
+        self.assertTrue(set(rooms.values()).isdisjoint(retained))
+        self.assertEqual(sequences, dict(a=2, b=2, c=2))
+
+    def test_removed_member_attempt_does_not_reuse_another_actors_operation(self):
+        journey = qualification.Journey(self.config())
+        daemons = [Mock(home=Path("/tmp/synthetic") / name) for name in ("a", "b", "c")]
+        with patch.object(qualification.public, "Daemon", side_effect=daemons):
+            owner, member, survivor = [journey.daemon(name) for name in ("a", "b", "c")]
+        attempted = {}
+        def refused(op, **fields):
+            if op == "room.status":
+                return dict(epoch=3, roster="1" * 64)
+            self.assertEqual(op, "room.send")
+            attempted.update(fields)
+            raise qualification.public.CliRefusal("permission-denied")
+        member.call.side_effect = refused
+        journey.denied_send(member, 31, "removed-new-send")
+        self.assertEqual(attempted["room"], journey.room(member))
+        self.assertNotIn(attempted["operation"], {
+            journey.operation(owner, 31), journey.operation(survivor, 31), journey.operation(member, 20)})
 
     def test_private_observer_checks_actual_profile_mode_and_checked_reply(self):
         config = self.config("f", "client")

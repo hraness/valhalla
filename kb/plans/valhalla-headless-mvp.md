@@ -111,6 +111,75 @@ agent conversation. Cheap idle hosting is not evidence of traffic capacity.
 | `/root/headless_runtime_audit` | Private adapter, MCP, commands/runtime and private integration tests | Fairness passed aggregate; enum-storage lint repairs frozen |
 | `/root/headless_release` | Release/store foundations, public sync, private setup and managed lifecycle | API review complete; browser expectation repaired; hosting guide in progress |
 
+## Candidate checkpoint, 1 October
+
+The initial implementation is committed as `a4b79dbeaa7b59b275b03310460eb58b64e328fe`
+on draft [PR #256](https://github.com/hraness/valhalla/pull/256). It is not ready
+to merge or launch. Current repairs in this checkout are not part of that
+candidate. No release or deployment has been made.
+
+- The CLI suite passed all 352 tests after the representation and test-lint
+  repairs. Private kernel/native totals from the converged run were 104 and
+  195, with two network-only tests ignored. Strict Clippy on Rust 1.98.1 passed
+  for the CLI, private kernel/native and all four direct-room crates.
+- The immutable local dev binary at `/private/tmp/vhc-sfncil98/vhalla` is bound
+  to the committed candidate by `build-manifest.json`; SHA-256 is
+  `7d3a9fad84d216181968c756a4ff2674cb470602118bd2c1055c3cfd1e9c3465`.
+  The public process journey passed signed exchange, explicit writer admission,
+  exact retries, offline restart and catch-up through a replacement read peer.
+  All four path observations were direct. Cleanup completed. This is one-host
+  evidence, not an independent-network result.
+- [Headless VM run 36879178572](https://github.com/hraness/valhalla/actions/runs/36879178572)
+  built the exact candidate. The public host/client journeys passed; all four
+  before/after path observations selected the configured relay. Its private
+  exchange failed. Both private receipts confirmed clean shutdown. The passing
+  legacy Iroh run 36879166405 used a different fixture and is not a substitute
+  for private headless evidence.
+- The private fixture reused small operation IDs across members, while relay v1
+  deduplicates within the whole mailbox. Retained job/SQLite evidence identified
+  both join and send collisions. The controller now gives each synthetic actor
+  a distinct ID range; production relay mapping and persisted state are intact.
+  Documentation and MCP instructions require fresh random 128-bit IDs with the
+  exact original ID/input retained for retry. All 22 focused controller tests
+  passed. The fresh one-host rerun at `/private/tmp/vhc-sfncil98/private-local2`
+  passed all 13 host and 16 client cases, including offline acceptance, exact
+  retries, removal and rekey. Cleanup completed and all eight path stages were
+  direct. Its separate controller manifest records the repaired controller;
+  the immutable binary remains the original dev candidate.
+- The macOS managed journey passed initialization, install, running status and
+  clean stop, then failed reinstall. A private diagnostic reproduction found
+  an exact loaded, stopped launchd job and a supervisor error. A narrow probe
+  confirmed that no-`-k` kickstart succeeded after 30.008232 seconds, exceeding
+  the wrapper's 10-second deadline. Its exact plist was unchanged and cleanup
+  completed. Exact `kickstart TARGET` now has 35 seconds; other command shapes
+  keep ten seconds. A shared constant preserves the emitted 30-second throttle
+  and existing plist bytes. The actual CLI lifecycle still requires a fresh
+  candidate rerun.
+- [Required run 36879166349](https://github.com/hraness/valhalla/actions/runs/36879166349)
+  failed Quality, Windows and the remaining-workspace shard. Rust stable moved
+  to 1.99.0: its atomic deprecation is repaired with an equivalent checked CAS
+  loop, and the compile-fail case now uses a fully qualified private constructor.
+  Windows daemon refusal/help classification and Unix `help all` are repaired.
+  The refreshed constructor-privacy diagnostic passed normally on Rust 1.98.1.
+  Converged repair run 95516 passed 354 CLI and 195 private-native tests, with
+  two network-only tests ignored; both new help and restart-deadline regressions
+  passed. Log: `/var/folders/vh/qdfcqc514qj47bbvzslcwjsc0000gn/T/system-one-9Amfj0/check.log`.
+  Strict all-target CLI/private-native Clippy passed in run 53963. New Rust
+  1.99/Windows CI is pending.
+- Site tests/build and 40 rendered pages passed with owned Chrome for Testing
+  149.0.7827.55, including mobile/desktop, light/dark and cleanup. The full
+  delivery/security Python discovery passed all 260 tests after current repairs,
+  including the release-profile package and measurement contracts. Actionlint
+  passed the updated independent-runner workflow, which now builds `--release`.
+  Documentation deployment and new-candidate readback remain pending.
+
+Next: resolve managed reinstall; validate the converged repairs; integrate the
+latest governed main; commit a fresh candidate; run independent public/private
+journeys with an optimized release build. Measure 48 sequential live messages
+and eight offline messages at 4,096 bytes in each mode on a clean release build,
+reporting the one-host scope and configured limits separately. Final native
+packaging, signing, installation/upgrade, release and launch review remain open.
+
 Initial audit confirms that the existing public activity format, NativeOutbox and
 continuity records bind the consensus/social directory. A direct owner-managed
 room protocol must have its own format identity. The private RoomSession already

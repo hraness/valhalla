@@ -72,6 +72,18 @@ write_json = shared.write_json
 operation = public.operation
 
 
+def actor_operation(actor, number):
+    """Disjoint synthetic IDs for the participants sharing one fresh mailbox.
+
+    Relay v1 rejects different bytes under one operation across its namespace;
+    the original caller ID is carried unchanged. A local retry must therefore
+    retain this same actor-qualified ID, including after a daemon restart.
+    """
+    require(actor in ("a", "b", "c") and type(number) is int and 0 < number < 2**64,
+            "invalid synthetic actor operation")
+    return operation((("a", "b", "c").index(actor) + 1) << 64 | number)
+
+
 def artifact_name(kind):
     current = shared.context()
     return f"headless-private-{kind}-{current['run_id']}-{current['run_attempt']}"
@@ -456,6 +468,7 @@ class Journey:
         self.work = Path(config["work"])
         self.cases = {}
         self.daemons = []
+        self.actors = {}
         self.mailbox = None
         self.remote_machine = None
         self.transport = {}
@@ -492,14 +505,24 @@ class Journey:
         # This listener is independent of the private profile's Iroh mailbox.
         daemon = public.Daemon(dict(self.config, relay=None, relay_only=False), name)
         self.daemons.append(daemon)
+        self.actors[daemon] = name
         daemon.start()
         return daemon
+
+    def operation(self, daemon, number):
+        actor = self.actors.get(daemon)
+        # Other adapters use these read/profile helpers with their own daemons
+        # and retain responsibility for choosing their operation and room IDs.
+        return operation(number) if actor is None else actor_operation(actor, number)
+
+    def room(self, daemon):
+        return self.operation(daemon, 1)
 
     def body(self, label):
         return f"private qualification {self.config['nonce'][:16]} {label}"
 
     def status(self, daemon):
-        return daemon.call("room.status", room=operation(1))
+        return daemon.call("room.status", room=self.room(daemon))
 
     def profile(self, daemon, descriptor, token):
         parent = daemon.home.parent / (daemon.home.name + "-delivery")
@@ -520,10 +543,10 @@ class Journey:
         path.write_bytes(raw)
         path.chmod(0o600)
         digest = hashlib.sha256(raw).hexdigest()
-        initialized = daemon.call("private.delivery_init", room=operation(1), profile=str(path), profile_hash=digest)
+        initialized = daemon.call("private.delivery_init", room=self.room(daemon), profile=str(path), profile_hash=digest)
         require(initialized.get("initialized") is True and initialized.get("profile_hash") == digest,
                 "private queue was not initialized")
-        attached = daemon.call("private.delivery_attach", room=operation(1), operation=operation(10),
+        attached = daemon.call("private.delivery_attach", room=self.room(daemon), operation=self.operation(daemon, 10),
                                profile=str(path), profile_hash=digest)
         require(attached["current"]["state"] == "active", "private delivery was not attached")
         self.endpoints[daemon.home.name] = descriptor["endpoint"]["endpoint_id"]
@@ -531,7 +554,7 @@ class Journey:
     def observe(self, daemon, stage):
         require(stage in TRANSPORT_STAGES[self.config["role"]] and stage not in self.transport,
                 "unexpected private transport stage")
-        status = daemon.call("private.delivery_status", room=operation(1), after=0, limit=16)
+        status = daemon.call("private.delivery_status", room=self.room(daemon), after=0, limit=16)
         transport = status.get("transport", {})
         require(transport.get("kind") == "iroh" and transport.get("relay_only") is bool(self.config["relay"]),
                 "private delivery selected another transport mode")
@@ -543,7 +566,7 @@ class Journey:
 
     def send(self, daemon, number, label, status=None):
         status = status or self.status(daemon)
-        return daemon.call("room.send", room=operation(1), operation=operation(number),
+        return daemon.call("room.send", room=self.room(daemon), operation=self.operation(daemon, number),
                            body=self.body(label), epoch=status["epoch"], roster=status["roster"])
 
     def denied_send(self, daemon, number, label):
@@ -555,7 +578,7 @@ class Journey:
             raise ValueError("unadmitted or removed member sent a new message")
 
     def seen(self, daemon, label, sender):
-        page = daemon.call("room.messages", room=operation(1), after=0, limit=16)
+        page = daemon.call("room.messages", room=self.room(daemon), after=0, limit=16)
         records = [row for row in page["records"] if row["body"] == self.body(label)]
         if not records:
             return None
@@ -563,7 +586,7 @@ class Journey:
         return records[0]
 
     def outbox(self, daemon, sequence):
-        page = daemon.call("room.outbox_status", room=operation(1), after=sequence-1, limit=1)
+        page = daemon.call("room.outbox_status", room=self.room(daemon), after=sequence-1, limit=1)
         require(len(page["records"]) == 1 and page["records"][0]["cursor"] == sequence,
                 "retained application output disappeared")
         require(isinstance(page.get("acceptance_scope"), str), "acceptance scope missing")
@@ -583,10 +606,10 @@ class Journey:
 
     def retained(self, daemon, number):
         def probe():
-            status = daemon.call("private.delivery_status", room=operation(1), after=0, limit=16)
+            status = daemon.call("private.delivery_status", room=self.room(daemon), after=0, limit=16)
             require(status["state"] == "active", "private delivery stopped")
             # Queue sequence and native outbox sequence are separate domains.
-            return any(row["operation"] == operation(number) and row["state"] == "retained"
+            return any(row["operation"] == self.operation(daemon, number) and row["state"] == "retained"
                        for row in status.get("application", {}).get("records", []))
         self.wait(probe)
 
@@ -602,7 +625,7 @@ class Journey:
         self.cases["mailbox_iroh_started"] = True
         owner = self.daemon("a")
         validity = dict(not_before=int(time.time())-60, expires_at=int(time.time())+1800)
-        initial = owner.call("room.create", operation=operation(1), kind="private", limits=LIMITS, validity=validity)
+        initial = owner.call("room.create", operation=self.room(owner), kind="private", limits=LIMITS, validity=validity)
         descriptor = dict(owner={key: initial["context"][key] for key in ("room", "anchor", "account", "device")},
                           endpoint=connection["endpoint"], namespace=connection["namespace"], validity=validity,
                           tokens={name: (self.mailbox.home / f"client-{index}.token").read_text().strip()
@@ -610,13 +633,13 @@ class Journey:
         self.publish("descriptor", **descriptor)
         self.phase("bootstrap")
         hello = self.incoming("client-hello")
-        offers = {name: owner.call("private.offer", room=operation(1), operation=operation(index),
+        offers = {name: owner.call("private.offer", room=self.room(owner), operation=self.operation(owner, index),
                                   recipient=hello["accounts"][name], validity=validity)["offer"]
                   for name, index in (("b", 2), ("c", 3))}
         self.publish("host-offers", client_machine=self.remote_machine, offers=offers)
         requests = self.incoming("client-requests")
         self.phase("admission")
-        responses = {name: owner.call("private.accept_contact", room=operation(1), operation=operation(index),
+        responses = {name: owner.call("private.accept_contact", room=self.room(owner), operation=self.operation(owner, index),
                                      request=requests["requests"][name], validity=validity)["artifact"]
                      for name, index in (("b", 4), ("c", 5))}
         self.cases["explicit_member_admission"] = True
@@ -654,7 +677,7 @@ class Journey:
         self.observe(owner, "owner_catchup")
         self.phase("removal")
         before = self.status(owner)
-        owner.call("private.remove", room=operation(1), operation=operation(30), device=requests["devices"]["b"])
+        owner.call("private.remove", room=self.room(owner), operation=self.operation(owner, 30), device=requests["devices"]["b"])
         after = self.status(owner)
         require(after["epoch"] > before["epoch"] and after["roster"] != before["roster"]
                 and after["members"] == 2 and all(row["device"] != requests["devices"]["b"]
@@ -682,7 +705,7 @@ class Journey:
         offers = self.incoming("host-offers")
         joined = {}
         for name, daemon in members.items():
-            joined[name] = daemon.call("room.join_private", operation=operation(1), offer=offers["offers"][name],
+            joined[name] = daemon.call("room.join_private", operation=self.room(daemon), offer=offers["offers"][name],
                 expected_owner=descriptor["owner"]["account"], validity=descriptor["validity"], limits=LIMITS)
             status = joined[name]["status"]
             require(status["needs_owner_admission"] is True and status["can_send"] is False
@@ -697,7 +720,7 @@ class Journey:
         self.phase("admission")
         admission = self.incoming("host-admission")
         for name, daemon in members.items():
-            status = daemon.call("private.join_contact", room=operation(1), response=admission["responses"][name])
+            status = daemon.call("private.join_contact", room=self.room(daemon), response=admission["responses"][name])
             require(status["phase"] == "member_joined" and status["can_send"] is True, "member admission incomplete")
             self.profile(daemon, descriptor, descriptor["tokens"][name])
         self.wait(lambda: self.status(members["b"])["roster"] == self.status(members["c"])["roster"]
