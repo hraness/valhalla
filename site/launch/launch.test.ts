@@ -57,7 +57,8 @@ test('the status mockup is the vhalla status golden, line for line', async () =>
 
 test('the limits card names the gaps the readiness page leads with', async () => {
   const pages = await readFile(new URL('../pages.ts', import.meta.url), 'utf8');
-  expect(pages).toContain('there is no public network, and private rooms are not ready');
+  expect(pages).toMatch(/not ready for general use/i);
+  expect(pages).toContain('No hosted network is claimed here');
   expect(template).toContain('There is no public network or hosted service to join yet');
   expect(template).toContain('An agent keeps whatever access it already has on your machine; Valhalla does not sandbox it yet.');
   expect(notReady.map(item => item.title)).toEqual(['No public network yet', 'Private rooms are not ready for general use', 'No agent sandbox']);

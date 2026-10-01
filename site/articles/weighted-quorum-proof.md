@@ -1,12 +1,11 @@
 Valhalla's room directory changes only when validators holding more than two thirds of the voting weight sign the change. A Lean proof shows that, for any roster and any weights, two such groups always share at least one honest validator, provided faulty validators hold at most a third of the weight. Because that shared validator signs only one value per signing context, two conflicting decisions cannot both be certified there. The proof covers one fixed roster in one signing context, and it connects to the running Rust code through a set of generated test cases, not through a proof.
 
-**Status: In development.** There is no hosted network, and the [readiness page](/docs/status/) lists what has been tested so far. If you are new to rooms, start with [What a Valhalla room is](/writing/a-room-in-sixty-seconds/).
 
 ## The failure the threshold prevents
 
 The certified room directory is Valhalla's shared record of which rooms exist, who owns them, and who may post. A room has one owner and one posting policy. Suppose two conflicting changes to the same room are proposed at the same moment, and the network briefly splits so that each change reaches only some of the validators. If both changes could collect enough signatures, part of the network would follow one policy and part the other, and nobody could say which room is the real one.
 
-Tests rarely catch this kind of failure. They try the timings someone thought of, and the failure needs one nobody did. It also spreads: messages, invitations and moderation all assume the directory gives one answer, so a split shows up far away, as a message rejected by half the room or an owner who is the owner only on some machines.
+A conflicting directory decision affects more than the directory: messages, invitations and moderation all assume the directory gives one answer, so a split shows up far away, as a message rejected by half the room or an owner who is the owner only on some machines.
 
 With a strict two-thirds threshold, the conflict is ruled out by arithmetic rather than by a tuned timeout or a lucky test. Any two decisions about the same question share at least one validator who behaved correctly, and that validator will not sign both. For a room member, this means that when your software shows a room directory decision with a valid certificate, no second valid certificate for the same height and round says something else, as long as the assumptions listed below hold.
 
@@ -26,12 +25,12 @@ Here is the threshold as a TypeScript illustration; Valhalla's own certificate c
 
 ```ts
 // "More than two thirds" in whole numbers, with no rounding surprises.
-function minimumQuorum(totalWeight: number): number {
-  return Math.floor((2 * totalWeight) / 3) + 1;
+function minimumQuorum(totalWeight: bigint): bigint {
+  return (2n * totalWeight) / 3n + 1n;
 }
 
-minimumQuorum(3);  // 3: every unit of weight must sign
-minimumQuorum(64); // 43: 42 of 64 equal validators is not enough
+minimumQuorum(3n);  // 3n: every unit of weight must sign
+minimumQuorum(64n); // 43n: 42 of 64 equal validators is not enough
 ```
 
 The proof includes a theorem that "three times the signed weight is greater than twice the total" is the same test as "signed weight is at least this minimum", so the two ways of writing the rule cannot drift apart.
@@ -63,20 +62,18 @@ The same file holds small checked examples showing that every assumption is need
 - **Honest validators sign one value per signing context.** With a single validator that will sign anything, two certificates for different values both pass. This is an assumption about the consensus engine's behavior; the proof uses it and does not prove it.
 - **The same signing context.** Certificates from two different signing contexts can carry different values without any contradiction, so the proof says nothing across rounds.
 
-## How the proof connects to the Rust code
+## Check the implementation against the definition
 
 The proof is about a definition written in Lean, not about the Rust that runs in a Valhalla node. Two things connect them.
 
-First, Lean code generates a file of test cases with the expected accept or reject for each: all 340 signer subsets across 30 small rosters of one to four validators with weights one or two, one starter example, and 13 edge cases such as exactly two thirds, 64 validators, duplicate signers, unknown signers, and totals near the arithmetic limit. That makes 354 cases, 94 accepted and 260 rejected. Both Rust certificate verifiers must agree with every one, using real signatures. The Rust tests also check 315 ordered pairs of accepted small certificates against 1,451 fault assignments within the theorem's fault limit.
+Lean generates small rosters and signer sets with expected accept-or-reject decisions. The Rust certificate readers must match those decisions using real signatures. The cases include duplicate signers, unknown signers, exactly two-thirds weight, and totals near the arithmetic limit.
 
-Second, the Lean check runs on every candidate change as part of the required CI check, and the runner refuses unfinished proofs, extra axioms, missing theorems and changed test files. A change to the production Rust reruns the comparison even when no proof file changed, though someone still has to review whether the theorem still describes the changed code.
+This tests the correspondence at the chosen inputs. It is particularly useful at boundaries where a mathematical integer and a machine integer can behave differently. Changing the certificate code still requires reviewing whether the proved definition describes the new behavior.
 
 The comparison has already reproduced one real mismatch. Reading the certificate code for the trial raised the suspicion, and the comparison reproduced it with real signatures: the consensus engine accepted a certificate at the largest possible round number, while both of Valhalla's own certificate readers rejected it as a reserved value. The engine's verifier now rejects that value before it is recorded.
 
-Rechecking the proof is cheap. In one run on an Apple silicon Mac on 24 September 2026, with other checks running at the same time, Lean 4.34.0 checked the quorum file in 4.68 seconds. That is a single observation, not a benchmark.
-
 For why a room of a few peers needs agreement rules at all, see [Consensus for a group chat](https://hraness.com/reference/peer-to-peer-systems/room-scale-consensus).
 
-## Where the guarantee stops
+## Keep the signing context fixed
 
 The theorem assumes authenticated signatures, faulty weight of at most one third, and honest validators that never sign two values in the same signing context. It does not prove the cryptography, agreement across rounds, safe changes to the validator set, the consensus engine as a whole, or that the Rust code computes what the Lean definition does; the link to Rust is the finite set of generated cases above. The room directory validators sit behind the `experimental-rooms-node` build feature, and ordinary message delivery in public rooms does not wait on this consensus.

@@ -1,14 +1,14 @@
 Valhalla tests its ledger by restarting it after every step of a random history. At each step the test saves the ledger to bytes, restores a fresh copy from those bytes, checks that the copy is the same ledger and still refuses an old event replayed as new, and then carries on with the copy. Proof tools cover two smaller pieces: the rule for appending an event, and the file that stops an invitation being used twice.
 
-The ledger is a small Rust crate: an ordered list of events, capped at a fixed size, in which each event names the one before it and is identified by a hash of its contents. It is not yet used by rooms, storage or the host. Its README says durable recovery and signed checkpoints have to come first. Valhalla itself is in development, and there is no public network yet.
+The ledger is a small Rust crate: an ordered list of events, capped at a fixed size, in which each event names the one before it and is identified by a hash of its contents. This ledger is a standalone component rather than the live room store. Its serialized bytes let the example isolate one question: does restoring saved state preserve the rules for the next event?
 
 ## Why restart after every step
 
-A ledger reloaded from its saved bytes has to lose nothing from the saved part, count nothing twice, and give no way to replay an old event. Bugs that break those rules tend to hide in sequences, such as save, add one more event, then reopen. Nobody tries that order by hand, and a test written by the author of the feature usually checks the orders the author already had in mind.
+A ledger reloaded from its saved bytes has to lose nothing from the saved part, count nothing twice, and give no way to replay an old event. Bugs that break those rules tend to hide in sequences, such as save, add one more event, then reopen. A generated history can exercise these combinations beyond the examples selected by the author.
 
 These bugs are also quiet. A crash is noticed; a ledger that reloads slightly wrong is not. An event appears twice, a checkpoint points at the wrong place, or a message can be sent again under an old number, and every feature built on the ledger inherits the fault.
 
-So instead of choosing which orders to test, Valhalla has a program play many random orders against the real code, reload at every step, and check a short list of rules each time. When a rule breaks, the tool shrinks the failing history to a shorter one that still fails and returns it as a replay. The tests and proofs run on every pull request.
+So instead of choosing which orders to test, Valhalla has a program play many random orders against the real code, reload at every step, and check a short list of rules each time. When a rule breaks, the tool shrinks the failing history to a shorter one that still fails and returns it as a replay.
 
 ## Which tool checks which part
 
@@ -53,7 +53,7 @@ The model the test compares against is small on purpose: an array holding the la
 - **No-replay law.** After a restore, an event that reuses an actor's last sequence number is refused.
 - **Carry-on law.** The restored ledger becomes the working ledger, so every later step runs on a copy that has already been through a restart.
 
-A second version of the test picks actors differently. Once someone has written, each step flips a coin between reusing an actor who has already written and drawing any of the four. Because that choice depends on the history so far, it is the case Hegel's draw-as-you-go style is built for. This version checks the restart law: the same bytes and the same checkpoint after every restore. Each property runs 64 random histories on every test run.
+A second version of the test picks actors differently. Once someone has written, each step flips a coin between reusing an actor who has already written and drawing any of the four. Because that choice depends on the history so far, it is the case Hegel's draw-as-you-go style is built for. This version checks the restart law: the same bytes and the same checkpoint after every restore.
 
 The test file also keeps one short history as a plain, named test: append and take a checkpoint, restore, then append one more event and restore again. An earlier version of this property, written with the proptest library, shrank a failure to that two-step order, in which the checkpoint position was lost after a restore. The fix shipped, and the named test keeps the bug from returning.
 
@@ -96,9 +96,7 @@ match refusal(code, already_used, count) {
 }
 ```
 
-Kani runs in continuous integration on every pull request and every push to main, and a pull request cannot merge unless it passes. The same holds for the Verus proof and the Hegel tests.
-
-## What each tool leaves out
+## Match the check to the failure
 
 The recovery test models a restart as saving to bytes and restoring from them. It does not kill a process halfway through a disk write. The ledger code sits below storage, and its saved bytes are not signed, so whatever stores them has to protect them.
 

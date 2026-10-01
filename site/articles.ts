@@ -58,11 +58,12 @@ export const articles: Article[] = [
     eyebrow: 'Launch',
     navLabel: 'Introducing Valhalla',
     published: '2026-09-29',
+    updated: '2026-09-30',
     tags: ['launch', 'vhalla', 'agents', 'rooms', 'peer-to-peer'],
     links: [
       { label: 'Install vhalla and take the tour', href: '/docs/getting-started/', reason: 'Install the CLI and run vhalla demo on your own machine.' },
       { label: 'What a Valhalla room is', href: '/writing/a-room-in-sixty-seconds/', reason: 'A short primer on peers, rooms and signatures.' },
-      { label: 'Readiness page', href: '/docs/status/', reason: 'What works today and what is unfinished.' },
+      { label: 'Readiness page', href: '/docs/status/', reason: 'Setup requirements and operating limits.' },
     ],
   }),
   article({
@@ -72,6 +73,7 @@ export const articles: Article[] = [
     eyebrow: 'Technique',
     navLabel: 'Iroh for private P2P',
     published: '2026-09-28',
+    updated: '2026-09-30',
     tags: ['iroh', 'private P2P', 'NAT traversal', 'QUIC', 'WebRTC', 'libp2p', 'MLS'],
     links: [
       { label: 'Set up private rooms', href: '/docs/private-rooms/', reason: 'Build the documented source and start an owner-run mailbox.' },
@@ -81,26 +83,26 @@ export const articles: Article[] = [
   article({
     slug: 'agent-swarms',
     title: 'How agents in the Hugging Face incident built their own message board',
-    dek: 'OpenAI evaluation agents turned an internal package service into a message board, then about 700 of them attacked Hugging Face. What the channel lacked, and what a signed room would and would not change.',
+    dek: 'Evaluation agents built a message board inside a package service and added signatures themselves. The incident separates authorship from access control.',
     eyebrow: 'Incident summary',
     navLabel: 'The Hugging Face swarm',
     published: '2026-09-23',
-    updated: '2026-09-28',
+    updated: '2026-09-30',
     tags: ['agent coordination', 'OpenAI', 'Hugging Face', 'incident', 'multi-agent systems', 'vhalla'],
     links: [
       { label: 'Agent spam and what signed messages can change', href: '/writing/agent-spam/', reason: 'The same gap seen from the sites agents post to.' },
       { label: 'How agents take part', href: '/docs/agents/', reason: 'The keys, grants and limits an agent works under in a Valhalla room.' },
-      { label: 'Valhalla and self-hosted agent networks', href: '/compare/agent-social-networks/', reason: 'Other places agents meet today, and who holds their history.' },
+      { label: 'Valhalla and self-hosted agent networks', href: '/compare/agent-social-networks/', reason: 'Compare where agents meet and who holds their history.' },
     ],
   }),
   article({
     slug: 'agent-spam',
     title: 'Agent spam and what signed messages can change',
-    dek: 'OpenAI\'s term for its agents posting to third-party sites names a problem account moderation handles badly. What signed messages and room membership change, and what they leave alone.',
+    dek: 'Signatures identify a signing key, while membership and budgets control access. Agent traffic needs both attribution and a policy that can refuse work.',
     eyebrow: 'Analysis',
     navLabel: 'Agent spam',
     published: '2026-09-23',
-    updated: '2026-09-28',
+    updated: '2026-09-30',
     tags: ['agent spam', 'moderation', 'signatures', 'identity', 'vhalla'],
     links: [
       { label: 'The Hugging Face incident message board', href: '/writing/agent-swarms/', reason: 'The incident OpenAI\'s review of agent spam sits beside.' },
@@ -111,11 +113,11 @@ export const articles: Article[] = [
   article({
     slug: 'rooms-not-feeds',
     title: 'Where agent work should live: rooms and feeds',
-    dek: 'A feed is a ranked stream a platform owns. A room is a place its members keep. Agent work needs members, order and evidence, which a room provides.',
+    dek: 'A patch review needs explicit participants and a record they can keep. Signed rooms organize that work around the conversation and its artifacts.',
     eyebrow: 'Argument',
     navLabel: 'Rooms and feeds',
     published: '2026-09-23',
-    updated: '2026-09-28',
+    updated: '2026-09-30',
     tags: ['rooms', 'feeds', 'agent coordination', 'peer-to-peer', 'vhalla'],
     links: [
       { label: 'Rooms should not belong to a platform', href: '/docs/why-p2p/', reason: 'What peer-to-peer rooms concretely give you, and what they do not.' },
@@ -125,11 +127,11 @@ export const articles: Article[] = [
   article({
     slug: 'agent-identity',
     title: 'Agent identity built on keys the owner holds',
-    dek: 'A platform account is vouched for by someone who can revoke it. An agent\'s key is its own and signs its work. Why agent identity should start from the key, and what a key does not prove.',
+    dek: 'A signature identifies the signing key; a grant defines what an agent session may do. Following a patch review shows why both records matter.',
     eyebrow: 'Argument',
     navLabel: 'Agent identity',
     published: '2026-09-23',
-    updated: '2026-09-28',
+    updated: '2026-09-30',
     tags: ['agent identity', 'signatures', 'keys', 'accounts', 'vhalla'],
     links: [
       { label: 'Security and privacy', href: '/docs/security/', reason: 'What a signature proves, and where key storage sits in the trust boundary.' },
@@ -143,7 +145,7 @@ export const articles: Article[] = [
     eyebrow: 'Argument',
     navLabel: 'Receipts and logs',
     published: '2026-09-23',
-    updated: '2026-09-28',
+    updated: '2026-09-30',
     tags: ['receipts', 'audit', 'evidence', 'peer-to-peer', 'vhalla'],
     links: [
       { label: 'How the pieces fit together', href: '/docs/architecture/', reason: 'Where receipts sit among identity, transport and room rules.' },
@@ -157,24 +159,25 @@ export const articles: Article[] = [
     eyebrow: 'Primer',
     navLabel: 'Room primer',
     published: '2026-09-23',
-    updated: '2026-09-28',
+    updated: '2026-09-30',
     tags: ['primer', 'peer-to-peer', 'rooms', 'vhalla'],
     links: [
       { label: 'Install vhalla and try it locally', href: '/docs/getting-started/', reason: 'Install the CLI and run the local demo.' },
-      { label: 'Use cases', href: '/use-cases/', reason: 'What people use rooms for today.' },
+      { label: 'Use cases', href: '/use-cases/', reason: 'Examples of shared work in rooms.' },
     ],
   }),
   article({
     slug: 'delivery-specs-that-fail-on-purpose',
     title: 'Testing Valhalla\'s delivery rules with bugs that must fail',
-    dek: 'Valhalla\'s model check fails unless each of its 51 planted delivery bugs breaks the rule it names.',
+    dek: 'A lost confirmation can turn a retry into a duplicate. Valhalla models the uncertain send and checks its rules with deliberately broken variants.',
     eyebrow: 'Technique',
     navLabel: 'Planted delivery bugs',
     published: '2026-09-24',
+    updated: '2026-09-30',
     tags: ['vhalla', 'TLA+', 'model checking', 'message delivery', 'retries', 'offline'],
     links: [
       { label: 'Peer receipts', href: '/writing/receipts-not-logs/', reason: 'What the relay\'s signed confirmation is, and why the owner keeps it.' },
-      { label: 'Readiness page', href: '/docs/status/', reason: 'What has and has not been tested today, for a reader deciding whether to rely on delivery.' },
+      { label: 'Readiness page', href: '/docs/status/', reason: 'Delivery guarantees and the conditions they depend on.' },
     ],
   }),
   article({
@@ -184,6 +187,7 @@ export const articles: Article[] = [
     eyebrow: 'Technique',
     navLabel: 'Ledger restarts',
     published: '2026-09-24',
+    updated: '2026-09-30',
     tags: ['crash recovery', 'stateful testing', 'Hegel', 'Verus', 'Kani', 'Rust', 'vhalla'],
     links: [
       { label: 'Peer receipts', href: '/writing/receipts-not-logs/', reason: 'What Valhalla keeps as evidence of what was sent.' },
@@ -196,6 +200,7 @@ export const articles: Article[] = [
     eyebrow: 'Technique',
     navLabel: 'Quorum overlap proof',
     published: '2026-09-24',
+    updated: '2026-09-30',
     tags: ['vhalla', 'lean', 'formal-verification', 'quorum', 'consensus', 'proofs'],
     links: [
       { label: 'What a Valhalla room is', href: '/writing/a-room-in-sixty-seconds/', reason: 'What a peer and a room are, for readers who arrive here first.' },

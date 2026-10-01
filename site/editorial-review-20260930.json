@@ -1,0 +1,248 @@
+{
+  "scope": "Independent editorial review of the ten Markdown article bodies and the introducing-valhalla launch beats, including requested factual repairs. Updated metadata, illustrations and rendered pages are outside this review.",
+  "review": {
+    "reviewer": "Codex editorial review (AI)",
+    "reviewerType": "ai",
+    "reviewedOn": "2026-09-30"
+  },
+  "repositoryRevision": "dd0dd2863fa47ae087d64e96864a70d6019bd23e",
+  "records": [
+    {
+      "slug": "a-room-in-sixty-seconds",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 1,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "observations": [
+        "The handoff example separates a signing key, room policy, peer storage and the peer's storage claim; it does not equate a receipt with a member reading the message.",
+        "The only runnable command is vhalla demo, which demo.rs confirms uses a throwaway directory without network access; the next step correctly requires a trusted network fingerprint and an operated network."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "agent-identity",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 1,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "observations": [
+        "The repaired review example distinguishes the account/device signing identity from the local agent session grant; neither is presented as proof of a particular model or program.",
+        "The public author-chain paragraph is scoped to public posts, and the private grant description matches the existing account, room, device, epoch and roster binding in LocalGrant and the CLI agent guide."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "agent-spam",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 1,
+        "factualConfidence": 1,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "observations": [
+        "The replaceable-account example explains why generating a signing key does not grant membership; the private-room example now assigns the grant to a local controller acting through an admitted device.",
+        "The ending leaves request limits and moderation with the receiving service, so it does not claim Valhalla prevents posting to unrelated sites. The cited OpenAI page returned HTTP 403 during this review; its earlier check date must remain unchanged."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "agent-swarms",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 1,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "observations": [
+        "The live METR investigation confirms roughly 1,200 participants, roughly 700 attackers, more than 70,000 messages/files, roughly 63,000 non-file messages, and 19 key publishers with 429 signed messages; the article distinguishes messages from messages/files.",
+        "The conclusion connects the first-key trust problem and skipped signature checks to channel design, while leaving vulnerability exploitation outside that claim. The duplicate impersonation-outcome caveat was removed. OpenAI chronology was not independently reopened in this review."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "delivery-specs-that-fail-on-purpose",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 1,
+        "maintenanceValue": 1
+      },
+      "observations": [
+        "The lost-reply then refusal example explains why an uncertain earlier send stays uncertain; native-delivery/README.md names the matching UncertaintyPreserved rule and exact retry binding.",
+        "The planted-error section requires each broken model to fail its named invariant with a counterexample, rather than treating timeouts as evidence. Model sizes, atomic-save assumptions and hand-maintained code correspondence are retained at their actual scope."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "iroh-private-p2p-transport",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 1,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 1
+      },
+      "observations": [
+        "The mailbox/transport-relay distinction gives a concrete reason an online relay cannot replace offline message storage; the browser paragraph correctly keeps the local native gateway requirement.",
+        "iroh.rs binds delivery identity to the endpoint key and namespace and materializes the bearer token after the pinned handshake. The closing setup link now states that a source build is required. This review checked local integration sources, not every external comparison link."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "ledger-recovery-under-random-crashes",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 1,
+        "maintenanceValue": 1
+      },
+      "observations": [
+        "The save/restore/carry-on loop matches recovery_hegel.rs: capacity 32, up to 23 steps, four actors, checkpoint equality and refusal of a replayed sequence; the article identifies the ledger as a standalone component.",
+        "The Verus and Kani paragraphs keep separate scopes: append reference model versus spent-set decision/format, with explicit per-machine invitation replay limits. Source inspection supports these claims; this editorial review did not rerun the proof tools."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "receipts-not-logs",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "observations": [
+        "The two-peer example preserves the unknown result of a timeout even when another peer returns a valid storage receipt, making the next recovery action understandable.",
+        "The article keeps the signed message and peer claim separate and states that retention is neither permanent availability nor recipient acceptance, consistent with public-participation.md."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "rooms-not-feeds",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 1,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "observations": [
+        "The patch/review/revision handoff gives the room a concrete reader task and explains why a workflow still needs explicit references between concurrent contributions.",
+        "Per-author sequence and previous-post claims are now scoped to public rooms, and private participation uses admitted devices with local grants; the operating paragraph correctly separates preserved history from future delivery availability."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "weighted-quorum-proof",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 1,
+        "maintenanceValue": 1
+      },
+      "observations": [
+        "The overlap argument preserves the strict greater-than-two-thirds threshold and at-most-one-third faulty bound; the repaired bigint example avoids the rounding risk of the original JavaScript Number formula.",
+        "The Lean-to-Rust comparison is described as finite testing rather than a production-code proof, and the same-context/non-equivocation assumptions match verify/lean/README.md. No fresh Lean or Rust execution is claimed by this review."
+      ],
+      "bodyFindings": []
+    },
+    {
+      "slug": "introducing-valhalla",
+      "review": {
+        "reviewer": "Codex editorial review (AI)",
+        "reviewerType": "ai",
+        "reviewedOn": "2026-09-30"
+      },
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 1,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 1
+      },
+      "observations": [
+        "The grant and owner-sealing examples are now explicitly part of the local social-record tour, matching demo.rs; the launch no longer implies that the private agent session grant is the same mechanism or that all room protocols share one record format.",
+        "The public-peer receipt claim is scoped to public rooms, and the status example matches the in-sync fixture. Launch numbers come from facts.ts and the status/setup link retains actual operating limits. The published release archive and rendered illustrations were not independently exercised during this text review."
+      ],
+      "bodyFindings": []
+    }
+  ],
+  "sourceLimitations": [
+    "OpenAI HTML returned 403; retain previous source checkedOn rather than claiming a fresh check.",
+    "METR primary page returned 200 and was inspected for incident counts and signature history.",
+    "Local documentation and implementation were inspected; no proof tools or product runtime were executed during this editorial review.",
+    "The iroh article external comparison references were not all reopened; factualConfidence remains 1."
+  ]
+}

@@ -2,17 +2,14 @@ A message has an awkward moment between leaving your laptop and being stored som
 
 Valhalla gives AI agents and the people who own them peer-to-peer rooms, and its private rooms carry encrypted messages between devices that go offline and come back. Every one of those devices faces that decision. Valhalla answers it with written rules about lost and repeated messages, and checks those rules against every order of events in small models before the code is trusted.
 
-**Status: In development.** Install the latest release with `curl -fsSL https://vhalla.com/install.sh | sh`, or `brew install hraness/tap/vhalla`. There is no public network or hosted service to join yet, so you run each part yourself.
 
 ## The bug that waits for bad Wi-Fi
 
 Most messaging bugs of this kind share one feature: every step is correct on its own. The app saves the message, sends it, waits for a reply and records the result. Each of those works in a test. The failure needs a particular order. The send reaches the server, the reply is lost, the app restarts, and nothing on disk says the first send happened. So it sends again, and the person on the other end sees your message twice. Swap two steps and the opposite happens: the app writes "sent" before sending, crashes, and the message never leaves.
 
-Code written fast tends to get this wrong. Vibe-coded slop, software a model produced quickly that looks finished and breaks on the second use, usually handles the path where the network behaves. It adds a retry because retries sound responsible, without asking what the first attempt may already have done. A chat app built on a foundation like that works in the demo and fails for the person who closed the lid at the wrong moment. The failure is also rare enough that nobody reproduces it on purpose, so it lingers.
+A hand-written test often covers a successful send and a failed send separately. The dangerous case combines success at the server with failure at the client. Testing that case means treating each local save, network action, and restart as a separate step whose order can change.
 
-Writing more tests by hand does not close the gap. A save, a send, a crash and a lost reply can happen in many orders, the count grows quickly as steps are added, and each hand-written test covers the one order its author pictured.
-
-## What Valhalla promises
+## Preserve the uncertain outcome
 
 Valhalla's answer to the lost-reply problem is to keep track of what it does not know. Before a message leaves your device, Valhalla writes down that it is about to try, and marks the message as unsure. It stays unsure until a confirmation arrives that matches that exact message. If the app restarts in between, it wakes up knowing it may already have sent, and when it tries again it sends the same encrypted bytes to the same place. The other side can recognize a repeat because it is identical, so a retry does not become a second message.
 
@@ -115,31 +112,19 @@ accept a mismatched confirmation       -> ConfirmationMatches must fail
 keep charging a confirmed outage       -> bookkeeping must fail
 ```
 
-The model's notes record that on 23 September 2026 each of the six broke its named rule with a complete step-by-step counterexample. The same run explored 27,105 distinct states for the normal configuration and 233,247 for a harsher one with two crashes and a failed save. The largest case took about 7.6 seconds. The notes also say that these planted bugs are deliberate regressions, and that the model found no production bug in these steps.
+The receiving model plants three corresponding mistakes: dropping a message that arrived before the room update it depends on, losing waiting messages in a crash, and applying a repeat twice.
 
-The receiving model plants three mistakes: dropping a message that arrived before the room update it depends on, losing waiting messages in a crash, and applying a repeat twice.
-
-As of 24 September 2026, Valhalla's repository registers 11 TLA+ models in one inventory file, with 71 configurations in total. 19 must pass, 51 are planted bugs that must fail on a named rule, and one more must fail to prove a successful path is reachable at all. One of the 11 models describes a planned design and is marked as design only.
-
-The runner that executes them is strict about what counts:
-
-- It refuses to start if the checker file does not match its pinned digest, or if a model or configuration on disk is missing from the inventory.
-- It runs the checker with one worker and a fixed seed, on copies of the model files, and records a hash of every input and log.
-- A passing configuration must finish cleanly and report its state count.
-- A planted bug must stop with the checker's exit code for the kind of rule it breaks, report that rule as the one violated, and produce a complete trace. For the 50 planted bugs that break an invariant, TLC must also name the expected invariant. A syntax error, a timeout, a missing Java, or the wrong rule breaking is a failure, even though something did break.
-- After the last case it rereads every input and the checker file, and fails the whole run if anything changed while the checks ran.
-
-The runner is called from Valhalla's Rust CI workflow, whose required aggregate check includes it, so a change to production code reruns every model even when no model file changed.
+Each broken configuration must fail on its named rule and return a complete counterexample. A timeout, syntax error, or unrelated failure is not the expected result. The normal configuration must finish exploring its reachable states, and a separate check must reach useful completed work. Together these requirements distinguish a checked behavior from a model that merely prevents anything from happening.
 
 ## From counterexample to regression test
 
-When a planted bug fails, the checker's trace is saved beside its model: 39 of the planted cases keep one. The saved traces explain what each rule protects. The runner treats them as documentation and never lets an old trace stand in for a fresh run.
+A counterexample is a sequence of events that violates a rule. Read it as a candidate regression test: which steps can be reproduced through the real application, and what observable result would expose the same mistake?
 
 A trace is most useful when it describes something the real code once did. In the receiving model, the "drop a message that arrived early" bug follows the same sequence as an older browser build, which skipped a message that arrived before the room update it depended on. A regression test now drives that sequence through the real browser engine, adds a restart and the missing update, and checks that the message is applied exactly once.
 
 The sending model has a similar partner. A test over real TLS loses a successful confirmation, reopens, runs out of attempts, resumes, and then checks that the relay still holds the original message at its original position and did not charge its storage quota a second time. The model notes map each model step to the production function and the test that exercises it.
 
-## What these checks do not cover
+## Choose the model’s boundary
 
 The models check designs at small sizes. The sending model follows one message, with two attempts per budget, one resume, two recorded outages and at most two crashes. The receiving model has two devices, three messages and one crash each. A rule that holds there says nothing directly about larger configurations.
 
@@ -147,4 +132,4 @@ The models assume a save to local storage either completes or does not. They are
 
 The sending model makes no promise that a message is eventually delivered, and it stops at the relay; applying the message is the receiving model's job. The receiving model checks that fetched messages are eventually handled only under stated assumptions: a limited number of crashes, transport and storage that eventually succeed, enough space, and fair scheduling.
 
-The link between a model step and the production code is maintained by hand in the model notes and backed by tests and source review. No machine check proves that the code matches the model, so a model can keep passing after the code has moved away from it. Each new failure found in the real code is supposed to gain its own counterexample and regression test.
+The link between a model step and the production code is maintained by hand in the model notes and backed by tests and source review. No machine check proves that the code matches the model, so a model can keep passing after the code has moved away from it. A failure in the real application can become both a model scenario and a regression test, so the ordering rule and its implementation remain connected. See the [delivery model reference](https://github.com/hraness/valhalla/blob/6cec8177e53f47db964fcaad65d1d128d32dbe81/verify/native-delivery/README.md) for the exact actions and assumptions.

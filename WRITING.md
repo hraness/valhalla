@@ -1,10 +1,10 @@
 # Internal writing and voice
 
-<!-- synced from hraness/.github WRITING.md sha256:9ff22e15275ceb5a9113b49d177a6b309233164661cc723bddd98912fb80c92b -->
+<!-- synced from hraness/.github WRITING.md sha256:882791ef6642ffab1453f5f1b81fc035e88ab5308d3bee9a9bad584c06776593 -->
 
 This guide covers agent responses, code comments, commits, pull requests, plans, and knowledge-base notes. [`STYLE.md`](STYLE.md) adds rules for public prose.
 
-This copy is synced from [hraness/.github](https://github.com/hraness/.github/blob/main/WRITING.md). Change shared rules there; add rules for this repository under “Repository additions” below.
+This is the canonical copy. Repositories keep a synced copy; rules that apply to one repository go under “Repository additions” at the end of that copy.
 
 ## Write for the spoken voice
 

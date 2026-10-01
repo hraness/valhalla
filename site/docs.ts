@@ -110,7 +110,7 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
   <details class="mobile-doc-nav"><summary>${escape(opts.navTitle)}${page.slug ? ` · ${escape(page.kicker)}` : ''}</summary>${opts.nav}</details>
   <div class="docs-layout"><aside class="doc-sidebar">${opts.nav}</aside><main id="main" class="doc-main"><div class="doc-header"><p class="eyebrow">${escape(page.kicker)}</p><h1>${escape(page.title)}</h1><p class="doc-lede">${escape(page.summary)}</p></div><article class="doc-content">${content}</article>
   <nav class="doc-pagination" aria-label="Previous and next pages">${prev ? `<a href="${opts.siblingHref(prev)}"><small>Previous</small>← ${escape(prev.kicker)}</a>` : '<span></span>'}${next ? `<a href="${opts.siblingHref(next)}"><small>Next</small>${escape(next.kicker)} →</a>` : '<span></span>'}</nav>
-  <p class="doc-updated">${escape(opts.updatedLabel)} · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
+  <p class="doc-updated"><a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
   <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 
@@ -186,9 +186,10 @@ const writingNav = (currentHref: string, list: readonly Article[] = articles) =>
   ].map(item => `<a href="${item.href}"${item.href === currentHref ? ' aria-current="page"' : ''}>${escape(item.label)}</a>`).join('')}<a class="nav-source" href="https://github.com/hraness/valhalla">View source ↗</a></nav>`;
 
 const articleIndexHtml = (indexableArticles: readonly Article[]) => indexableArticles.length === 0 ? '' : renderArticleIndexHtml({
+  showDates: false,
   heading: 'Technique posts',
   headingId: 'technique-posts',
-  summary: 'How Valhalla checks its own delivery, storage and agreement rules, drafted with AI from the source code and reviewed before publication.',
+  summary: 'Understand signed rooms, message delivery, and the checks behind Valhalla’s storage and agreement rules.',
   items: indexableArticles.map(article => ({ href: articleHref(article), title: article.title, dek: article.dek, published: article.published, ...(article.updated ? { updated: article.updated } : {}), eyebrow: article.eyebrow })),
 });
 
@@ -217,7 +218,7 @@ export function renderWriting(page: DocPage, template: string, list: readonly Ar
 const articleFooterHtml = (article: Article) => {
   const products: ArticleRelatedLink[] = relatedFor('valhalla').slice(0, 3).map(({ href, mark, name, role }) => ({ href, mark, name, role }));
   return [
-    renderArticleSourcesHtml({ sources: articleSources(article) }),
+    renderArticleSourcesHtml({ showDates: false, sources: articleSources(article) }),
     renderArticleRelatedHtml({ heading: 'Related products', headingId: 'related-products', items: products }),
     renderArticleRelatedHtml({ heading: 'Further reading', headingId: 'further-reading', items: article.links.map(link => ({ href: link.href, name: link.label, relationship: link.reason })) }),
   ].join('');
@@ -245,6 +246,7 @@ export function renderArticle(article: Article, template: string): string {
   const toc = article.headings.length >= 4 ? article.headings.slice(0, 8).map(heading => ({ href: `#${heading.id}` as `#${string}`, label: heading.label })) : [];
   const body = article.bodyHtml.replaceAll('<table>', '<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable table"><table>').replaceAll('</table>', '</table></div>');
   const main = renderArticleHtml({
+    showDates: false,
     heading: article.title,
     dek: article.dek,
     eyebrow: article.eyebrow,
@@ -260,7 +262,7 @@ export function renderArticle(article: Article, template: string): string {
   return `${head}  <body class="docs-page article-page"><a class="skip-link" href="#main">Skip to content</a>${masthead(template)}<div class="page">
   <details class="mobile-doc-nav"><summary>Writing · ${escape(article.navLabel)}</summary>${nav}</details>
   <div class="docs-layout article-layout"><aside class="doc-sidebar">${nav}</aside><main id="main" class="doc-main">${main}
-  <p class="doc-updated">${article.eyebrow === 'Launch' ? 'Launch post' : 'Technique post'} · <a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main></div>
+  <p class="doc-updated"><a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main></div>
   <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 

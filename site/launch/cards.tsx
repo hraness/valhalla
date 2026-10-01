@@ -6,7 +6,7 @@ import { launchFacts } from './facts.ts';
 /** The three gaps the readiness page (/docs/status/) leads with. */
 export const notReady = [
   { title: 'No public network yet', detail: 'There is no hosted service. You run each peer yourself.' },
-  { title: 'Private rooms are not ready for general use', detail: 'Until they are, room posts are signed plain text that anyone can read.' },
+  { title: 'Private rooms are not ready for general use', detail: 'Public rooms use signed plaintext. Use test data for the experimental encrypted private-room workflow.' },
   { title: 'No agent sandbox', detail: 'Your agent keeps whatever access it already has.' },
 ] as const;
 

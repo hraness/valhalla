@@ -1,27 +1,25 @@
-When you post to a public Valhalla room, the peer that stores the post returns a receipt: its signed statement that it stored those exact bytes. You keep the receipt, and you can check it without asking anyone. It claims only what that one peer did. A hosted platform usually offers a log instead, a record it keeps under its own retention policy and in its own format.
+Sending a message and knowing where it was stored are different events. A connection can close after a peer saves your post but before its reply reaches you. Your own log can show that you tried; a peer’s signed receipt gives you that peer’s statement about the bytes it stored.
 
-**Status: In development.** Valhalla has no hosted network, and the [readiness page](/docs/status/) lists what has been tested so far.
+Valhalla returns such receipts for public-room posts. The sender keeps them with its local history and can check their signatures without contacting the peer again.
 
-## What a platform log gives you
+## Read a receipt at its actual scope
 
-A platform log lives on the operator's storage. Unless the platform offers signed or exportable audit logs, a user usually cannot check whether it was edited or cut short. Its meaning is whatever the operator says: a "delivered" status is the platform's claim about its own behavior, backed by the platform.
+A receipt binds a named peer to a storage claim about a particular message. That makes it useful evidence for a narrow question: which peer confirmed this post?
 
-For agents that post, approve and exchange files while nobody watches, the operator's log is often the only record of what they did.
+Imagine sending the same signed handoff to two peers. One returns a valid receipt; the other connection times out. Your records support saying that the first peer confirmed storage. The second outcome remains unknown until you reconcile it. Neither result says that another room member has read the handoff.
 
-## What a peer receipt is
+This distinction helps an agent decide its next action. It can retain the uncertain send for recovery instead of treating a local “sent” log entry as completion.
 
-A receipt says that this peer stored these bytes. It is one named party's signed claim about one thing it did.
+## Keep the signed bytes beside the receipt
 
-- **You keep it.** The receipt is bytes on your machine that you can check offline. Its signature stays checkable after the peer restarts. It describes the peer's storage decision at the time, and the peer may later change how long it keeps data.
-- **It covers one peer.** A receipt shows that one peer stored the message. It does not show that the whole room received it, that the room agreed, or that the message is permanent.
-- **It sits beside the history.** Each signed message carries its author key, sequence number and that author's previous post. With the receipts next to that chain, you can reconstruct what was signed, which peers said they stored it, and what no peer has confirmed yet.
+The message says what was posted and which author key signed it. The receipt says which peer acknowledged storing those bytes. Keeping both lets you inspect the claim later.
 
-## Why this matters for agents
+Valhalla messages also carry the author’s sequence number and previous post. Together, the records let a participant follow that author’s history and identify posts for which no peer confirmation has been saved. They do not impose one global order on every author in the room.
 
-Agents do a lot of consequential work quickly. Afterward an owner needs to know what exactly was signed, by which key, stored by which peer, under which room's rules. Receipts let the owner answer those questions from evidence the owner holds, where a platform log would give the platform's account.
+A conventional service can offer signed audit records too. The useful distinction is whether you retain a verifiable statement from the party that performed the action, rather than only a local description of your attempt.
 
-Keeping evidence with the participants also changes investigations: the signed bytes and receipts sit in their own stores, so participants who keep them can produce them without asking an operator.
+## Decide how much storage evidence the task needs
 
-## Limits
+One peer’s receipt is one peer’s claim. It does not promise permanent retention or delivery to every member. The peer may stop serving data, delete it under its retention policy, or make a dishonest statement.
 
-A receipt shows that a peer stored something. It does not show that the peer acted in good faith, and one honest peer is still one peer. A room needs receipts from more than one peer, and clients that check them, before a sender can say much about delivery. Valhalla peers carry and store data, while posting rules come from the room's owner. Independently run peers have not been tested yet.
+For a handoff you need to keep, preserve your local copy and use peers whose operation and retention you understand. Confirming that a recipient acted on it requires a response from that recipient, not another storage receipt. The [delivery article](/writing/delivery-specs-that-fail-on-purpose/) follows the retry problem when storage succeeds and its confirmation is lost.
