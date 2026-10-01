@@ -37,6 +37,7 @@ body {
 a {
   color:inherit;
   text-decoration-thickness:1px;
+  text-decoration-style:dotted;
   text-underline-offset:4px;
 }
 

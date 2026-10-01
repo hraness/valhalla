@@ -1,8 +1,11 @@
+import { initHranessCookieConsent } from "@hraness/site-footer/consent";
 import {
   capturePostHogCtaClicked, capturePostHogEvent, capturePostHogOutboundLinkOpened,
   capturePostHogInstallCommandCopied, capturePostHogPageNotFound, installPostHogExceptionCapture, observePostHogBrowser,
 } from "@hraness/posthog/client";
 import { analyticsSite, analyticsCtaForUrl } from "./analytics-site";
+
+initHranessCookieConsent();
 
 observePostHogBrowser({
   site: analyticsSite,

@@ -48,7 +48,7 @@
     <header class="masthead hraness-marketing-header hraness-material-chrome"><div class="hraness-marketing-header__inner">
         <a class="wordmark hraness-marketing-header__brand hraness-foil-text" data-foil="" href="/" aria-label="{{PORTFOLIO_NAME}} home"><span class="brand-mark hraness-foil-mark" data-foil="" aria-hidden="true"><img class="hraness-foil-mark__image" src="/valhalla-mark.svg" width="24" height="24" alt=""><span class="hraness-foil-mark__paint" aria-hidden="true"></span></span>{{PORTFOLIO_NAME}}</a>
         <nav class="primary-nav hraness-marketing-header__nav" aria-label="Primary"><a href="/docs/">Docs</a><a href="/use-cases/">Use cases</a><a href="/compare/">Compare</a><a href="/writing/">Writing</a><a class="source-link" href="https://github.com/hraness/valhalla">GitHub <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M4 12 12 4M4 4h8v8"/></svg></a></nav>
-        <div class="header-actions hraness-marketing-header__actions"><a class="header-cta" href="/docs/getting-started/">Install</a>
+        <div class="header-actions hraness-marketing-header__actions"><a class="header-cta" href="/#install-home">Install</a>
         <div class="hraness-design-theme-toggle" data-hraness-appearance-menu data-presentation="menu" data-ready="false">
           <button type="button" class="hraness-design-theme-toggle__trigger" aria-label="Appearance: System" aria-haspopup="menu" aria-expanded="false" aria-controls="appearance-menu"><span data-current-appearance-icon="system" aria-hidden="true">◐</span></button>
           <div class="hraness-design-theme-toggle__popover" hidden>
@@ -61,11 +61,12 @@
         </div>
       </div></header>
     <div class="page">
-      <main id="main">
+      <main id="main" class="hraness-marketing-page">
         <section class="hero" aria-labelledby="title">
           <p class="eyebrow">{{PORTFOLIO_CATEGORY}} · In development</p>
           <h1 id="title">{{PORTFOLIO_HERO_START:6}} <span class="hero-accent">{{PORTFOLIO_HERO_END:6}}</span></h1>
           <p class="hero-lede">{{PORTFOLIO_HERO_SUMMARY}}</p>
+          <div class="hraness-marketing-hero__install"><!-- vhalla-platform-install --></div>
           <div class="actions"><a class="button-link" href="/docs/getting-started/">{{PORTFOLIO_PRIMARY_ACTION}} <span aria-hidden="true">→</span></a><a class="text-link" href="/docs/status/">{{PORTFOLIO_SECONDARY_ACTION}}</a></div>
           <p class="hero-facts">{{LATEST_RELEASE}} · MIT license</p><!-- vhalla-platform-badges -->
           <p class="hero-status">There is no public network or hosted service to join yet, so you run each peer yourself.</p>
@@ -90,7 +91,7 @@
         <section class="section" id="start" aria-labelledby="start-title">
           <div class="section-head"><p class="eyebrow">Get started</p><h2 id="start-title">{{PORTFOLIO_HEADING:start-title}}</h2><p>Install the CLI yourself or ask your agent. The release needs no Rust toolchain.</p></div>
           <ol class="steps">
-            <li><h3>{{PORTFOLIO_HEADING:install-and-take-the-tour}}</h3><!-- vhalla-platform-install --><p>Then run <code>vhalla demo</code> for the local tour. Both installers check the release’s SHA-256 checksum. <code>install.sh</code> puts <code>vhalla</code> in <code>~/.local/bin</code>; on Windows the demo and hosting run in WSL2.</p></li>
+            <li><h3>{{PORTFOLIO_HEADING:install-and-take-the-tour}}</h3><p>Then run <code>vhalla demo</code> for the local tour. Both installers check the release’s SHA-256 checksum. <code>install.sh</code> puts <code>vhalla</code> in <code>~/.local/bin</code>; on Windows the demo and hosting run in WSL2.</p></li>
             <li><h3>{{PORTFOLIO_HEADING:choose-a-network}}</h3><p>For a network you or a collaborator runs, get its configuration file and fingerprint from someone you trust. Follow the <a href="/docs/getting-started/">setup guide</a> to check them.</p></li>
             <li><h3>{{PORTFOLIO_HEADING:sign-and-send}}</h3><p>Save your draft, sign it, and send it to your chosen peer. Keep the peer’s receipt with your local history.</p></li>
           </ol>
