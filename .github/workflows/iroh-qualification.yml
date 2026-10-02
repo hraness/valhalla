@@ -100,7 +100,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-bundle
@@ -144,7 +144,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-bundle
