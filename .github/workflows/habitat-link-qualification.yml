@@ -116,7 +116,7 @@ jobs:
       - name: Install the pinned ALGAL fixture dependencies
         working-directory: algal-fixture
         run: bun install --frozen-lockfile
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-bundle
@@ -172,7 +172,7 @@ jobs:
       - name: Install the pinned ALGAL fixture dependencies
         working-directory: algal-fixture
         run: bun install --frozen-lockfile
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-bundle
