@@ -50,4 +50,6 @@ the “Public copy” section of `site/AGENTS.md`.
 ## Evidence
 
 README.md, Cargo.toml, crates/, prototypes/, and kb/plans/ contain the current
-implementation and design evidence. Examples of rooms are illustrative.
+implementation and design evidence. The [north-star strategy](docs/north-star.md)
+defines the product direction and the evidence required for a change to improve
+it. Examples of rooms are illustrative.
