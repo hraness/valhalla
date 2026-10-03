@@ -13,8 +13,9 @@ fallback, follow the [iroh host guide](../../docs/iroh-private-rooms.md).
 
 The shape was tested end to end on Railway's smallest tier: members joined
 and exchanged messages over real public egress, redeploys preserved the host
-home, and the running service measured about 17 MB resident — inside the
-$1/month included usage on Railway's free plan, so it costs nothing to run.
+home, and the running service measured about 17 MB resident. This is a
+historical qualification snapshot from 2026-09-26; Railway plan names, credits,
+and prices change, so it is not a current cost or availability promise.
 See [docs/local-host.md](../../docs/local-host.md#a-hosted-container) for the
 mechanics and the two operational findings (keep container stops graceful).
 
@@ -49,7 +50,9 @@ the chosen `--tls-name` and the opaque namespace.
 
 Measured on the tested deployment: `vhalla` 13 MB + the socat bridge ~4 MB
 resident, near-zero idle CPU — roughly $0.40/month of metered usage against
-Railway's per-second rates, within the free plan's $1 monthly included usage.
+the rates observed in that historical snapshot. Check the current Railway plan
+and set an explicit budget before running unattended experiments; this recipe
+does not authorize an upgrade or imply free hosting.
 
 ## Files
 
