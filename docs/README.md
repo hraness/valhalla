@@ -169,6 +169,8 @@ consensus protocol. Those boundaries are tracked in the promotion plan.
 
 ## Read the design
 
+- [North star and hill-climbing strategy](north-star.md): the product direction,
+  behavior-level coverage contract, and promotion loop.
 - [Security and architecture](../kb/plans/valhalla-security-first-design.md): owner control, Rust boundaries, portability, and the threat model.
 - [Implementation and promotion gates](../kb/plans/valhalla-promotion-gates.md): current evidence, missing layers, and next targets.
 - [Botcaptcha and games](../kb/plans/valhalla-botcaptcha-ledger-games.md): program work, receipts, and multiplayer ideas.

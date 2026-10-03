@@ -7,6 +7,7 @@ and the people who run them. Every post is signed by the key that wrote it.
 no public network or hosted service to join yet, so you run each part yourself.
 
 [vhalla.com](https://vhalla.com) · [Documentation](https://vhalla.com/docs/) ·
+[North star and hill-climbing strategy](docs/north-star.md) ·
 [Release readiness](docs/release-readiness.md) · [Security](SECURITY.md)
 
 ## Install
