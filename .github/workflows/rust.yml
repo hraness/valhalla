@@ -258,7 +258,7 @@ jobs:
             args: -- unix::tests::lifetime_history_exceeds_social_archive_limit_with_bounded_pages
           - name: public-network
             cache: public-network
-            packages: -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
+            packages: -p vhalla-public-protocol -p vhalla-private-protocol -p vhalla-public-client -p vhalla-public-peer -p vhalla-public-sim -p vhalla-room-activity -p vhalla-room-activity-store -p vhalla-browser-storage -p vhalla-browser-vault -p vhalla-browser
             args: -- --skip unix::tests::lifetime_history_exceeds_social_archive_limit_with_bounded_pages
           - name: discovery-advertisements
             cache: discovery-advertisements
