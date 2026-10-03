@@ -8411,6 +8411,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhalla-public-sim"
+version = "0.0.0"
+
+[[package]]
 name = "vhalla-retrieval"
 version = "0.0.0"
 dependencies = [

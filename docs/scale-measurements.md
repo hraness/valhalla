@@ -114,8 +114,9 @@ churn result.
 
 ## Experiment lanes
 
-1. **Deterministic simulator.** Explore merge, anti-entropy, custody, and
-   partition policies with seeded runs and model checking before live work.
+1. **Deterministic simulator.** Run `cargo run -p vhalla-public-sim --locked`
+   with a committed seed/workload manifest to explore merge, anti-entropy,
+   custody, and partition policies with replayable receipts before live work.
 2. **Local multi-process mesh.** Exercise native and browser protocol vectors,
    crash recovery, bounded queues, and mixed versions on one machine.
 3. **Railway qualification mesh.** Run reproducible multi-region or multi-service
