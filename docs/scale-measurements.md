@@ -69,6 +69,30 @@ events by custody class, cold-start success, and a bounded-memory result under
 duplicate/orphan floods. Diversity is measured by independently controlled
 operators, accounts, ASNs, regions, and storage failure domains.
 
+## Comparative research track
+
+“Post-SOTA” is a qualification outcome, not an assumption. Before using that
+label, replay the same seeded workloads, topology, churn, and abuse schedules
+against representative systems: Nostr relays with NIP-77 reconciliation,
+Matrix/Conduit federation, Bluesky relay/PDS CAR sync, Secure Scuttlebutt or
+Manyverse, P2Panda, libp2p GossipSub plus Kad-DHT, and Automerge Repo/Yjs.
+Include Waku v2's relay/store/light-client split and RLN-style rate limiting in
+the messaging comparison. Compare bootstrap and browser continuity, convergence time, egress per event,
+custody RPO/RTO, recovery after provider loss, and abuse cost. Record protocol
+version, deployment shape, and any feature that is not comparable; do not turn
+a relay-local or federated result into a claim of global independence.
+
+Add an operator-sustainability track: cost per million accepted and retrievable
+events, volunteer or sponsored quota capacity, repair bandwidth, and the
+failure mode when no operator is willing to host a declared custody class.
+Valhalla can avoid a token prerequisite while still measuring how a global
+network pays for durable anchors and abuse response.
+
+Mobile continuity is a separate workload: measure wake or push delivery,
+store-and-forward handoff to a durable anchor, reconnect after sleep, and
+message loss under anchor rotation. Browser or serverless churn does not count
+as mobile availability evidence by itself.
+
 ## Required receipt
 
 Every run records the exact Git SHA, Cargo/Bun lockfile hashes, container or
@@ -82,7 +106,11 @@ durable retrieval. Five-nines-style claims require at least 100,000 event
 attempts or a reported confidence interval and failure upper bound; the current
 40-pull Railway soak cannot support them. Latencies use monotonic send/receive
 deltas or include a measured clock-skew bound; wall-clock timestamps alone do
-not establish p95 or recovery time.
+not establish p95 or recovery time. Availability claims include a Wilson or
+Clopper–Pearson interval, the signed-subscription health-window denominator,
+and separate churn, cold-start, repair, and steady-state traffic; a peer that
+left before an event is excluded from propagation coverage but counted in the
+churn result.
 
 ## Experiment lanes
 

@@ -121,8 +121,12 @@ predecessor, bounded parents, policy hash/epoch, and payload digest. Keep HLC,
 if used, as a display/order hint only. Store bounded orphans, retain flagged
 same-author forks, and merge with a stable causal tie-break. Compaction requires
 a signed frontier checkpoint and replay anchor; an archive/provider proof is
-required only when archive custody is claimed. Keep tombstone floors until the
-declared custody class acknowledges the checkpoint. Generate cross-language
+required only when archive custody is claimed. For each declared custody class,
+keep tombstone floors until its signed checkpoint has a finite causal-stability
+horizon and the custody quorum has acknowledged the retention floor. Expired or
+failed providers must be replaced and the new quorum must re-acknowledge before
+the floor advances; gossip-only peers never authorize durable GC.
+Generate cross-language
 vectors and model-check concurrent authors, malformed inputs, key
 rotation/revocation, tombstones, checkpoint/archive proofs, and mixed-version
 replay.
@@ -154,8 +158,9 @@ churn, and bootstrap withdrawal.
 
 **Exit:** fresh clients reach two independently keyed peers within 10 seconds
 from a verified bootstrap pin, survive withdrawal of one bootstrap family, and
-fall back through a bounded relay when direct paths fail; no single operator,
-account, ASN, or failure domain exceeds the diversity target.
+fall back through a bounded relay when direct paths fail. The measurement uses
+at least four independent operator/ASN/failure-domain families and no single
+family exceeds the diversity target.
 
 The onboarding gate is part of every later phase: a fresh laptop, browser, or
 ephemeral worker can generate an identity, verify a bootstrap pin, resolve a
@@ -163,19 +168,28 @@ room genesis or committed alias, join, post/read, restart, and show custody and
 convergence state without manual key copying. Install-to-first-verified-message,
 reconnect time, and failure explanations are measured.
 
+Public-room creation is measured separately from joining: an authorized creator
+can create an owner-signed genesis and policy epoch 0 offline, resolve
+concurrent slug collisions only when an alias is requested, and publish by full
+genesis ID while the directory is unavailable. Creation receipts include either
+the local genesis or directory decision, room manifest hash, policy epoch, and
+first accepted event.
+
 ### Phase 3 — custody and anti-entropy
 
 Implement custody-class negotiation, replica/provider manifests, locality-aware
 placement, missing-range repair, and optional erasure-coded archive chunks.
 Require signed retention receipts and verify retrieval after restart, provider
-rotation, corruption, and failure-domain loss. Keep best-effort gossip visibly
-separate from durable custody.
+rotation, corruption, and failure-domain loss. A receipt must bind the exact
+event/range or chunk root, expiry, repair threshold, and failure-domain label,
+and include a random retrieval challenge; a signed storage promise alone is
+not evidence. Keep best-effort gossip visibly separate from durable custody.
 
 **Exit:** regional and archive experiments meet the retrieval targets in the
 scale charter while a 30% churn run still converges retained room history.
 Each retention receipt binds the exact event/range or chunk root, policy epoch,
 provider and operator identity, failure-domain label, replica index, expiry,
-and a retrieval challenge result.
+repair threshold, and a retrieval challenge result.
 
 ### Phase 4 — public testnet
 
@@ -191,9 +205,10 @@ with persistent volumes, a disposable churn/fault-injector service, region and
 failure-domain labels, and exported health/metrics receipts; it cannot count as
 independent-operator evidence.
 
-**Exit:** the 100-peer gate passes, public operators can recover after a region
-loss, bootstrap/provider root rotation has a dual-sign overlap and rollback
-receipt, and all advertised guarantees link to receipts with explicit limits.
+**Exit:** the 100-peer gate passes, rooms that declare `regional` or `archive`
+custody recover after a region loss, bootstrap/provider root rotation has a
+dual-sign overlap and rollback receipt, and all advertised guarantees link to
+receipts with explicit limits. Gossip-only rooms claim best effort only.
 
 ### Phase 5 — abuse, governance, and scale
 
@@ -230,7 +245,10 @@ Each phase has four gates: deterministic model/property checks; native/browser
 conformance; live qualification on the declared lane; and independent review of
 the receipt and its limits. Existing TLA+, Lean, Verus, Kani, and Rust property
 checks remain useful for bounded protocol claims, but they do not substitute for
-multi-host failure evidence.
+multi-host failure evidence. The live fault corpus includes Byzantine malformed
+and equivocating peers, resource exhaustion, browser suspension, correlated
+custody loss, and mixed implementations; Jepsen-style histories supplement
+bounded model proofs.
 
 No experiment may delete retained journals, reset author floors, replace a
 network fingerprint, or silently change custody semantics. A failed or partial
@@ -249,7 +267,8 @@ history to clear a failed gate.
 ## Current evidence and next action
 
 The existing Railway soak is the Phase 0 hosted-container baseline. Browser
-access currently shows the existing `valhalla-private-host` production project
+access observed on 2026-10-03T00:42:22Z shows the existing
+`valhalla-private-host` production project
 with four online services and four attached volumes. The account displays eight
 days or $4.17 of trial capacity; it is not evidence for a month-long budget and
 no paid upgrade is assumed. The observed IDs and a conservative local guard are
