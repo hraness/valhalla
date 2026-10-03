@@ -266,6 +266,14 @@ history to clear a failed gate.
 
 ## Current evidence and next action
 
+The first bounded Phase 0 substrate is now present in
+`crates/vhalla-public-sim`: a dependency-free seeded topology/event workload
+model with partition, churn, duplicate suppression, orphan accounting, and a
+stable JSON receipt. Its unit tests prove replay determinism, partition/heal
+convergence for the modeled mesh, and fail-closed input limits. This receipt is
+simulation evidence only; it does not establish transport, custody, or
+provider independence.
+
 The existing Railway soak is the Phase 0 hosted-container baseline. Browser
 access observed on 2026-10-03T00:42:22Z shows the existing
 `valhalla-private-host` production project

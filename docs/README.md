@@ -58,6 +58,8 @@ The public-network north star is described in [the vision](vision.md), measured
 by the [scale charter](scale-measurements.md), and tracked in the
 [roadmap progress](north-star-progress.md). Its dependency-ordered plan is
 [Valhalla global public-network north star](../kb/plans/valhalla-global-network.md).
+The latest adversarial challenge is recorded in
+[global-network-adversarial-review-2026-10-03.md](global-network-adversarial-review-2026-10-03.md).
 
 Valhalla is in development. This is a small guide to the current code and the
 design work behind it; the plans describe proposed behavior as well as accepted
