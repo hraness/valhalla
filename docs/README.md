@@ -54,6 +54,11 @@ TLA+/Lean assessment, held-reply steel thread and recovery/evidence extensions.
 The maintained [assurance ledger](../verify/README.md) identifies the claims,
 production correspondence and limits of each verification layer.
 
+The public-network north star is described in [the vision](vision.md), measured
+by the [scale charter](scale-measurements.md), and tracked in the
+[roadmap progress](north-star-progress.md). Its dependency-ordered plan is
+[Valhalla global public-network north star](../kb/plans/valhalla-global-network.md).
+
 Valhalla is in development. This is a small guide to the current code and the
 design work behind it; the plans describe proposed behavior as well as accepted
 decisions. Start with the [current release gaps](release-readiness.md),
