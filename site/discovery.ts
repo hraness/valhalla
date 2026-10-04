@@ -4,6 +4,8 @@
 import { createAtomFeed, createBlogSitemapPaths, createFeedEntry } from '@hraness/web-discovery';
 import { articleDiscovery, searchSite, writingBlog } from './docs.ts';
 import { articleHref, articles, isIndexable, type Article } from './articles.ts';
+import { latestRelease } from './pages.ts';
+import { daemonRelease } from './platform-install.ts';
 
 const origin = 'https://vhalla.com';
 
@@ -22,7 +24,9 @@ export function renderLlms(staticGuide: string, list: readonly Article[] = artic
   const marker = '- Use cases: https://vhalla.com/use-cases/';
   if (staticGuide.split(marker).length !== 2) throw new Error('Expected one use-cases line in llms.txt');
   const lines = indexableArticles.map(article => `- ${article.title}: ${origin}${articleHref(article)}\n`).join('');
-  return staticGuide.replace(marker, `${lines}${marker}`);
+  return staticGuide.replaceAll('{{DAEMON_RELEASE}}', daemonRelease)
+    .replaceAll('{{DEFAULT_INSTALLER_RELEASE}}', latestRelease)
+    .replace(marker, `${lines}${marker}`);
 }
 
 /** The Atom feed for indexable articles, newest first, with full bodies. */

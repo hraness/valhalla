@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { docs, latestRelease } from "./pages.ts";
+import { daemonRelease } from "./platform-install.ts";
 import { compare, useCases } from "./compare.ts";
 import { writing } from "./writing.ts";
 import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from "./docs.ts";
@@ -49,7 +50,8 @@ test("structured data describes only what the page shows", () => {
   // Platform, license, and version match the hero; price matches the visible FAQ.
   const heroFacts = home.match(/<p class="hero-facts">([^<]+)<\/p>/)?.[1] ?? "";
   expect(heroFacts).toContain(latestRelease);
-  expect(app.softwareVersion).toBe(latestRelease.replace(/^v/, ""));
+  expect(heroFacts).toContain(daemonRelease);
+  expect(app.softwareVersion).toBe(daemonRelease.replace(/^v/, ""));
   // The "Runs on" row under the hero facts names the same platforms.
   const badges = home.match(/<div class="hraness-platform-badges">([\s\S]*?)<\/ul><\/div>/)?.[1] ?? "";
   expect([...badges.matchAll(/<span>([^<]+)<\/span>/g)].map(match => match[1])).toEqual(["macOS", "Linux", "Windows"]);

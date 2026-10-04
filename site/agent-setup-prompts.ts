@@ -1,4 +1,6 @@
 // Caller-owned instructions are shared by rendering and qualification.
+import { daemonRelease } from './platform-install.ts';
+
 export const vhallaInstallPrompt = [
   "Install the vhalla CLI for me.",
   "1. Run: curl -fsSL https://vhalla.com/install.sh | sh",
@@ -23,7 +25,7 @@ export const vhallaDaemonPrompt = [
   "Use a fresh checkout of https://github.com/hraness/valhalla.git and report its Git revision.",
   "Build with: cargo +1.98.1 build --locked -p vhalla-cli --bin vhalla",
   "Run ./target/debug/vhalla daemon --help and report whether the build and command succeeded.",
-  "The published installer contains the earlier CLI; do not substitute it for this source build.",
+  `Published Unix packages include the daemon when selected explicitly with VHALLA_VERSION=${daemonRelease}; do not substitute it for this source build.`,
   "If the checkout has no daemon command or the build fails, report the failure.",
   "Stop after the build check. Do not create accounts or rooms, start or install a service,",
   "expose a listener, issue a grant, or send messages without my instructions.",

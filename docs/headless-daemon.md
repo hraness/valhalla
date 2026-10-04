@@ -5,8 +5,9 @@ on your machine. You use it through JSON commands or give an agent an MCP
 connection to one room. Public rooms contain signed plain text; private rooms
 encrypt messages with Messaging Layer Security (MLS).
 
-**In development.** This guide describes the source checkout. Build the daemon
-on macOS or Linux with Rust 1.98.1 and the repository lockfile:
+**In development.** The [v0.3.1 Unix release](https://github.com/hraness/valhalla/releases/tag/v0.3.1)
+includes the daemon. Follow [Install](../README.md#install) to select that release,
+or build on macOS or Linux with Rust 1.98.1 and the repository lockfile:
 
 ```console
 cargo +1.98.1 build --locked -p vhalla-cli --bin vhalla
@@ -27,12 +28,12 @@ vhalla daemon init --home "$VHALLA_DAEMON_HOME"
 vhalla daemon run --home "$VHALLA_DAEMON_HOME" --bind 127.0.0.1:48888
 ```
 
-Keep that process running. Open another terminal in the repository checkout,
-select the source binary and the same home, and create a public room:
+Keep that process running. Open another terminal and select the same home.
+If you built from source, also run `export PATH="$PWD/target/debug:$PATH"` from
+the checkout in that terminal. Create a public room:
 
 ```console
 export VHALLA_DAEMON_HOME="$HOME/.valhalla-daemon"
-export PATH="$PWD/target/debug:$PATH"
 printf '%s\n' '{"op":"room.create","operation":"00000000000000000000000000000001","kind":"public","limits":{"max_records":10000,"max_record_bytes":8388608}}' |
   vhalla daemon call --home "$VHALLA_DAEMON_HOME"
 ```
@@ -60,6 +61,16 @@ A successful send means the local service saved the message. Inspect
 `room.outbox_status` for its progress. Private delivery distinguishes mailbox
 retention from authenticated acceptance by another member's device. Neither
 means a person read the message.
+
+## Troubleshoot local commands
+
+| Error or symptom | Next action |
+| --- | --- |
+| `Pass --home ABSOLUTE_PATH` | Supply the same absolute home path to initialization, run, status, call, and stop. Do not use a path containing `..`. |
+| The daemon home is refused | Use a directory you own with mode `0700` and no symlink. Preserve an existing home rather than replacing it. |
+| `Use a pipe or socket for daemon call input` | Pipe one JSON request into `vhalla daemon call`, as in the examples above, then close the pipe. Input is limited to 512 KiB and 30 seconds. |
+| `The response may be incomplete` | Keep the original request and operation ID. Check or retry that exact request; do not invent a new operation ID for an uncertain send. |
+| The grant is refused | Use a file you own with mode `0600`, no links, and at most 16 KiB. It must contain the `generation` and `token` from `grant.issue`. |
 
 ## Connect public peers
 

@@ -66,9 +66,9 @@
           <p class="eyebrow">{{PORTFOLIO_CATEGORY}} · In development</p>
           <h1 id="title">{{PORTFOLIO_HERO_START:6}} <span class="hero-accent">{{PORTFOLIO_HERO_END:6}}</span></h1>
           <p class="hero-lede">{{PORTFOLIO_HERO_SUMMARY}}</p>
-          <p class="hero-status">Run a local headless daemon and use the CLI or give an agent access to one room through MCP. The daemon requires a source build on macOS or Linux.</p>
+          <p class="hero-status">Run a local headless daemon and use the CLI or give an agent access to one room through MCP. The {{DAEMON_RELEASE}} Unix release includes the daemon; select it explicitly in the install commands below.</p>
           <div class="actions"><a class="button-link" href="/docs/getting-started/">Get started <span aria-hidden="true">→</span></a><a class="text-link" href="/docs/status/">Development status</a></div>
-          <p class="hero-facts">Published CLI: {{LATEST_RELEASE}} · MIT license</p>
+          <p class="hero-facts">Daemon release: {{DAEMON_RELEASE}} · Installer default: {{LATEST_RELEASE}} · MIT license</p>
         </section>
         <section class="section" aria-labelledby="model-title">
           <div class="section-head"><p class="eyebrow">How it works</p><h2 id="model-title">Keep room state on your machine</h2><p>The daemon saves keys, messages, and pending sends locally. Participants choose the peers and mailboxes that exchange their messages.</p></div>
@@ -82,7 +82,7 @@
         <section class="section" id="start" aria-labelledby="start-title">
           <div class="section-head"><p class="eyebrow">Get started</p><h2 id="start-title">Create a room from the command line</h2><p>The local tutorial builds the service, saves a public message, and reads it back. The daemon has no web UI.</p></div>
           <ol class="steps">
-            <li><h3>Build the daemon</h3><p>Use the current Rust source and committed lockfile. The published installer below downloads the earlier CLI.</p></li>
+            <li><h3>Install or build the daemon</h3><p>Select {{DAEMON_RELEASE}} explicitly below, or use the Rust source and committed lockfile.</p></li>
             <li><h3>Start a local service</h3><p>Choose a new home folder and run <code>vhalla daemon</code>. JSON commands create rooms and inspect saved messages.</p></li>
             <li><h3>Choose participants</h3><p>Connect public peers, invite private-room members, or issue an MCP grant for an agent. Keep owner permissions separate from room access.</p></li>
           </ol>
@@ -106,7 +106,7 @@
           <p class="section-more"><a href="/docs/headless-daemon/#hosting">Hosting and storage limits →</a></p>
         </section>
         <section class="section" aria-labelledby="published-title">
-          <div class="section-head"><p class="eyebrow">Published release</p><h2 id="published-title">Install the earlier CLI {{LATEST_RELEASE}}</h2><p>These installers download the published CLI. It does not include the headless daemon described above. Use the source tutorial for that service.</p></div>
+          <div class="section-head"><p class="eyebrow">Published release</p><h2 id="published-title">Select the daemon release {{DAEMON_RELEASE}}</h2><p>These commands explicitly select {{DAEMON_RELEASE}}. Without version selection, the installers default to {{LATEST_RELEASE}}. Prebuilt daemon packages cover Apple silicon macOS and x86-64 or ARM64 Linux. Windows packages provide identity and private-room member commands only; use Linux or WSL for the daemon. Install authenticated GitHub CLI and run <code>gh auth login</code> for release verification. Explicit Unix version selection disables automatic updates.</p></div>
           <div class="hraness-marketing-hero__install"><!-- vhalla-platform-install --></div>
           <!-- vhalla-platform-badges -->
           <p class="section-more"><a href="/docs/historical-getting-started/">Earlier release instructions →</a></p>
@@ -115,12 +115,12 @@
           <header class="hraness-marketing-questions__header"><p class="hraness-marketing-questions__label">Questions</p><h2 class="hraness-marketing-questions__heading" id="questions-title">{{PORTFOLIO_HEADING:questions-title}}</h2></header>
           <div class="hraness-marketing-question-list">
             <details class="hraness-marketing-question"><summary class="hraness-marketing-question__summary">What does it cost?</summary><div class="hraness-marketing-question__answer"><p>Valhalla is free, MIT-licensed software. You supply the machines, storage, and network connection. Hosting costs depend on your provider and workload.</p></div></details>
-            <details class="hraness-marketing-question"><summary class="hraness-marketing-question__summary">What do I need for the daemon?</summary><div class="hraness-marketing-question__answer"><p>Build the current source with Rust 1.98.1 on macOS or Linux. Windows users can use Linux through WSL. The published installer serves the earlier CLI, not this daemon.</p><p><a href="/docs/getting-started/">Getting started →</a></p></div></details>
+            <details class="hraness-marketing-question"><summary class="hraness-marketing-question__summary">What do I need for the daemon?</summary><div class="hraness-marketing-question__answer"><p>Select {{DAEMON_RELEASE}} explicitly for Apple silicon macOS or x86-64 or ARM64 Linux. The unqualified installer defaults to {{LATEST_RELEASE}}. Windows packages do not include the daemon; use Linux through WSL. You can also build from source with Rust 1.98.1.</p><p><a href="/docs/getting-started/">Getting started →</a></p></div></details>
             <details class="hraness-marketing-question"><summary class="hraness-marketing-question__summary">Can I run a room on a server?</summary><div class="hraness-marketing-question__answer"><p>Yes. Participants can operate an online public replica or private mailbox. An Iroh relay helps with connectivity; it is separate from the peer or mailbox that stores messages.</p><p><a href="/docs/headless-daemon/#hosting">Hosting choices →</a></p></div></details>
           </div>
         </section>
         <section class="section closing" aria-labelledby="build-title">
-          <div class="section-head"><p class="eyebrow">Open source</p><h2 id="build-title">Run a local room</h2><p>Follow the source tutorial, then choose how to connect participants.</p></div>
+          <div class="section-head"><p class="eyebrow">Open source</p><h2 id="build-title">Run a local room</h2><p>Follow the local-room tutorial, then choose how to connect participants.</p></div>
           <div class="actions"><a class="button-link" href="/docs/getting-started/">Get started <span aria-hidden="true">→</span></a><a class="text-link" href="https://github.com/hraness/valhalla">View source on GitHub ↗</a></div>
         </section>
       </main>

@@ -91,6 +91,18 @@ export const vhallaPlatforms: readonly StaticPlatformInstallTarget[] = [
   { id: "windows", command: "irm https://vhalla.com/install.ps1 | iex", shell: "PowerShell", note: "x86_64 · help, identity and joining private rooms; hosting and the rest run in WSL2" },
 ];
 
+export const daemonRelease = "v0.3.1";
+export const daemonUnixInstall = `curl -fsSL https://vhalla.com/install.sh | VHALLA_VERSION=${daemonRelease} sh`;
+export const daemonWindowsInstall = `$env:VHALLA_VERSION = '${daemonRelease}'\nirm https://vhalla.com/install.ps1 | iex`;
+
+export function vhallaDaemonInstall(id: string): string {
+  return renderPlatformInstall(id, [
+    { id: "macos", command: daemonUnixInstall, shell: "Terminal", note: "Apple silicon · daemon included · exact version, automatic updates disabled" },
+    { id: "linux", command: daemonUnixInstall, shell: "Terminal", note: "x86_64 and ARM64 · daemon included · exact version, automatic updates disabled" },
+    { id: "windows", command: daemonWindowsInstall, shell: "PowerShell", note: "x86_64 · identity and private-room member commands only; run the daemon in Linux or WSL" },
+  ]);
+}
+
 export const vhallaRunsOn = ["macos", "linux", { id: "windows", note: "partial" }] as const;
 
 export function vhallaInstall(id: string): string {

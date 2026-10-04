@@ -3,13 +3,13 @@
 // answers. Each JSON-LD answer is the text of the first paragraph of the
 // visible answer; put "more" links in a later paragraph.
 import { latestRelease } from './pages.ts';
-import { vhallaBadges, vhallaInstall } from './platform-install.ts';
+import { daemonRelease, vhallaBadges, vhallaDaemonInstall } from './platform-install.ts';
 import { highlightCode } from '@hraness/design-kit/syntax-highlighting';
 import { launchStylesMarker } from './launch/styles.ts';
 import { marketing } from './portfolio-copy.ts';
 
 // Release status stays local; the product description is authored in Jungle.
-const developmentStatus = 'The headless daemon is in development and requires a source build.';
+const developmentStatus = `Valhalla is in development. The ${daemonRelease} Unix release includes the headless daemon; select it explicitly. Unqualified installers default to ${latestRelease}.`;
 
 const slot = (template: string, marker: string, html: string) => {
   if (template.split(marker).length !== 2) throw new Error(`Home page needs exactly one ${marker}`);
@@ -38,14 +38,15 @@ const stripTags = (html: string) => {
 const text = (html: string) => decode(stripTags(html)).replace(/\s+/g, ' ').trim();
 
 export function homeFaq(template: string): FaqEntry[] {
+  template = template.replaceAll('{{LATEST_RELEASE}}', latestRelease).replaceAll('{{DAEMON_RELEASE}}', daemonRelease);
   const pattern = /<details class="hraness-marketing-question"><summary class="hraness-marketing-question__summary">([\s\S]*?)<\/summary><div class="hraness-marketing-question__answer"><p>([\s\S]*?)<\/p>/g;
   return [...template.matchAll(pattern)].map(match => ({ question: text(match[1]), answer: text(match[2]) }));
 }
 
 export function renderHome(template: string): string {
-  template = template.replaceAll('{{LATEST_RELEASE}}', latestRelease);
+  template = template.replaceAll('{{LATEST_RELEASE}}', latestRelease).replaceAll('{{DAEMON_RELEASE}}', daemonRelease);
   template = slot(template, launchStylesMarker, '');
-  template = template.replace('<!-- vhalla-platform-install -->', vhallaInstall('install-home'));
+  template = template.replace('<!-- vhalla-platform-install -->', vhallaDaemonInstall('install-home'));
   template = template.replace('<!-- vhalla-platform-badges -->', vhallaBadges());
   template = template.replace(/<(code|span) data-home-code="shell">([\s\S]*?)<\/\1>/g, (_match, tag: string, source: string) => {
     const code = highlightCode(decode(source), 'shell', { styles: 'classes' });
@@ -62,7 +63,7 @@ export function renderHome(template: string): string {
   const software = graph['@graph']?.find((item: { '@type'?: string }) => item['@type'] === 'SoftwareApplication');
   if (!software) throw new Error('Home JSON-LD has no SoftwareApplication node');
   software.description = `${marketing.meta} ${developmentStatus}`;
-  software.softwareVersion = latestRelease.replace(/^v/, '');
+  software.softwareVersion = daemonRelease.replace(/^v/, '');
   node.mainEntity = faq.map(({ question, answer }) => ({ '@type': 'Question', name: question, acceptedAnswer: { '@type': 'Answer', text: answer } }));
   const json = JSON.stringify(graph).replaceAll('<', '\\u003c');
   return template.replace(script[0], () => `<script type="application/ld+json">${json}</script>`);
