@@ -1531,3 +1531,47 @@ table a {
 }
 .hero .hraness-platform-badges { margin-block-start: 0.75rem; }
 .steps .hraness-platform-install { margin-block: 0.75rem; }
+
+/* Product landscape: the generated, product-themed world behind the homepage.
+ * A grayscale luminance mask carries the drawing, so its ink is the page's own
+ * text mixed into the paper: a deeper shade of the background hue in light
+ * themes and a lifted one in dark themes, never an accent colour. */
+body:has(> .page > main.hraness-marketing-page) {
+  isolation: isolate;
+  position: relative;
+}
+
+@supports (mask-mode: luminance) {
+  body:has(> .page > main.hraness-marketing-page)::before {
+    background: color-mix(in oklch, var(--foreground, CanvasText) 30%, var(--background, Canvas));
+    content: "";
+    inset: 0;
+    mask-image: image-set(url("/media/landscape/landscape-0ea957a9fa156f57b2b7214b0fb58e20f7f84de36d91b359e1bc249ab0dce48a.webp") 1x, url("/media/landscape/landscape-9b78fee3e818a1e3c84db1efaca1d880cd3deb14cf55d332b556dc84b9d063e4.webp") 2x);
+    mask-mode: luminance;
+    mask-position: top center;
+    mask-repeat: no-repeat;
+    mask-size: 100% auto;
+    opacity: .5;
+    pointer-events: none;
+    position: absolute;
+    z-index: -1;
+  }
+}
+
+@media (max-width: 48rem) {
+  body:has(> .page > main.hraness-marketing-page)::before {
+    mask-image: url("/media/landscape/landscape-50e917cce5ccc2bc1f31977a368b3769e070166e6c216d678f6e5e99dab781e5.webp");
+    opacity: .36;
+  }
+}
+
+@media (forced-colors: active), print {
+  body:has(> .page > main.hraness-marketing-page)::before {
+    display: none;
+  }
+}
+
+/* The marketing column repaints the page colour; let the landscape show through it. */
+body:has(> .page > main.hraness-marketing-page) main.hraness-marketing-page {
+  background: transparent;
+}
