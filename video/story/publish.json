@@ -1,0 +1,11 @@
+{
+  "copies": [
+    ["introducing-valhalla-1080p.mp4", "../../site/media/introducing-valhalla.mp4"],
+    ["introducing-valhalla-1080p.webm", "../../site/media/introducing-valhalla.webm"],
+    ["introducing-valhalla-1x1.mp4", "../../site/media/introducing-valhalla-1x1.mp4"],
+    ["introducing-valhalla-9x16.mp4", "../../site/media/introducing-valhalla-vertical.mp4"],
+    ["introducing-valhalla-poster.jpg", "../../site/media/introducing-valhalla-poster.jpg"],
+    ["introducing-valhalla-social.jpg", "../../site/media/introducing-valhalla-social.jpg"],
+    ["introducing-valhalla.en.vtt", "../../site/media/introducing-valhalla.en.vtt"]
+  ]
+}

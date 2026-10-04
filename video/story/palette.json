@@ -1,0 +1,26 @@
+{
+  "url": "https://vhalla.com",
+  "readOn": "2026-10-04",
+  "palette": {
+    "background": "#191724",
+    "foreground": "#e0def4",
+    "muted": "#adaac0",
+    "surface": "#1f1d2e",
+    "surfaceRaised": "#26233a",
+    "primary": "#c4a7e7",
+    "primarySoft": "#2e283b",
+    "primaryForeground": "#191724"
+  },
+  "used": {
+    "background": "--background",
+    "foreground": "--foreground",
+    "muted": "--muted",
+    "surface": "--surface",
+    "surfaceRaised": "--surface-raised",
+    "primary": "--primary",
+    "primarySoft": "--primary-soft",
+    "primaryForeground": "--primary-foreground"
+  },
+  "body": "#00000000",
+  "html": "#191724"
+}
