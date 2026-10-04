@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { docs } from "./pages.ts";
 import { renderHome } from "./home.ts";
 import { renderDoc } from "./docs.ts";
-import { vhallaPlatforms } from "./platform-install.ts";
+import { daemonRelease, vhallaPlatforms } from "./platform-install.ts";
 
 const index = await readFile(new URL("./index.html", import.meta.url), "utf8");
 const home = renderHome(index);
@@ -20,14 +20,16 @@ test("install tabs list macOS, Linux and Windows with the commands the installer
   expect(windows!.note).toContain("WSL2");
 });
 
-test("home and getting started render the shared block once, with no inline script", () => {
-  for (const page of [home, gettingStarted]) {
-    expect(page.match(/data-hraness-platform-install=""/g)?.length).toBe(1);
+test("current pages select the daemon while preserving a separate default installer block", () => {
+  for (const [page, count] of [[home, 1], [gettingStarted, 2]] as const) {
+    expect(page.match(/data-hraness-platform-install=""/g)?.length).toBe(count);
     expect(page).toContain('<script src="/platform-install-client.js" defer></script>');
     const tabs = [...page.matchAll(/class="hraness-platform-install__tab-label">([^<]+)</g)].map(match => match[1]);
-    expect(tabs).toEqual(["macOS", "Linux", "Windows"]);
+    expect(tabs).toEqual(Array.from({ length: count }, () => ["macOS", "Linux", "Windows"]).flat());
     expect(page).toContain("irm https://vhalla.com/install.ps1 | iex");
-    expect(page).toContain("brew install hraness/tap/vhalla");
+    expect(page).toContain(`VHALLA_VERSION=${daemonRelease}`);
+    expect(page).toContain("automatic updates disabled");
+    expect(page).toContain("private-room member commands only");
     expect(page).not.toContain("<!-- vhalla-platform-");
   }
 });

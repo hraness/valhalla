@@ -1,5 +1,20 @@
 # Current release readiness
 
+## Published daemon release
+
+The [v0.3.1 release](https://github.com/hraness/valhalla/releases/tag/v0.3.1)
+includes the daemon in its Unix packages. Select that version explicitly in the
+[installation instructions](../README.md#install); the unqualified installers
+in this checkout default to v0.2.13. Windows packages provide identity and
+private-room member commands, not the daemon. Published archives have checksum
+files and build attestations, and the tagged workflow checks the signed macOS
+archive on a fresh runner.
+
+The dated sections below record source status and remaining tests at the time
+of each assessment. Their pre-release packaging statements do not mean that
+v0.3.1 is unavailable. Release publication does not establish throughput or
+production availability for your workload.
+
 ## Headless MVP source status, 1 October 2026
 
 The current source build enables a local daemon, owner JSON commands, scoped

@@ -1,22 +1,23 @@
 import type { DocPage } from './pages.ts';
 import { renderAgentSetup } from './agent-setup.ts';
 import { vhallaDaemonPrompt, vhallaInstallPrompt } from './agent-setup-prompts.ts';
-import { vhallaInstall } from './platform-install.ts';
+import { daemonRelease, vhallaDaemonInstall, vhallaInstall } from './platform-install.ts';
 
 const code = (value: string) => `<pre><code>${value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</code></pre>`;
 const source = (path: string, label: string) => `<a href="https://github.com/hraness/valhalla/blob/main/${path}">${label} ↗</a>`;
 
 // Source instructions are separate from the immutable earlier-release guides.
 export function headlessDocs(release: string): DocPage[] {
+  const availability = `<p><strong>In development.</strong> The <a href="https://github.com/hraness/valhalla/releases/tag/${daemonRelease}">${daemonRelease} release</a> includes the daemon on Apple silicon macOS and x86-64 or ARM64 Linux. Select that version explicitly below. Without a version selection, these installers default to ${release}. Windows x86-64 packages provide identity and private-room member commands, not the daemon; use Linux or WSL for the service.</p>`;
   return [
     {
       slug: '', title: 'Valhalla documentation', kicker: 'Documentation', metaTitle: 'Documentation · Valhalla',
       summary: 'Run a local Valhalla daemon, exchange messages in public or private rooms, and give an agent scoped access through MCP.',
       content: `<p>Valhalla keeps room keys, messages, and pending sends on your machine. Use owner JSON commands from the CLI or connect an agent to one room through Model Context Protocol (MCP).</p>
-<p><strong>In development.</strong> The headless daemon requires a source build on macOS or Linux. The installer serves the earlier CLI release ${release}.</p>
+${availability}
 <h2 id="start">Start a local service</h2><div class="doc-card-grid">
-<a class="doc-card" href="/docs/getting-started/"><span>Tutorial</span><h2>Run your first room</h2><p>Build the daemon, save a message, and read it back through the local API.</p></a>
-<a class="doc-card" href="/docs/agent-setup/"><span>How-to guide</span><h2>Let an agent build it</h2><p>Use a setup prompt that separates source builds from the published installer.</p></a>
+<a class="doc-card" href="/docs/getting-started/"><span>Tutorial</span><h2>Run your first room</h2><p>Install or build the daemon, save a message, and read it back through the local API.</p></a>
+<a class="doc-card" href="/docs/agent-setup/"><span>How-to guide</span><h2>Let an agent set it up</h2><p>Select the released daemon or request a source build before choosing room access.</p></a>
 </div>
 <h2 id="rooms">Connect rooms and agents</h2><div class="doc-card-grid">
 <a class="doc-card" href="/docs/headless-daemon/#public"><span>Public rooms</span><h2>Choose peers to sync</h2><p>Verify signed history from the sources you select.</p></a>
@@ -28,41 +29,47 @@ export function headlessDocs(release: string): DocPage[] {
     },
     {
       slug: 'getting-started', title: 'Run a local Valhalla room', kicker: 'Getting started', kind: 'tutorial',
-      summary: 'Build the headless Valhalla daemon on macOS or Linux, start a local public room, and save and read a message through JSON commands.',
-      content: `<p><strong>In development.</strong> These commands use the current source checkout. The published installer serves ${release}, which does not include this daemon.</p>
-<h2 id="build">1. Build from source</h2><p>Use macOS or Linux with Git and Rust 1.98.1. On Windows, use a Linux environment such as WSL. Clone a fresh checkout, inspect its revision, and build with the committed lockfile:</p>
+      summary: 'Install or build the Valhalla daemon on macOS or Linux, start a local public room, and save and read a message through JSON commands.',
+      content: `${availability}
+<h2 id="install">1. Install the released daemon</h2><p>Install authenticated <a href="https://cli.github.com/">GitHub CLI</a> and run <code>gh auth login</code> for release verification. The installers check the release checksum. Explicit version selection pins the Unix installation and disables automatic updates:</p>
+${vhallaDaemonInstall('install-daemon-getting-started')}
+${code('vhalla --version\nvhalla daemon --help')}
+<p>The version command should report ${daemonRelease.slice(1)}. The daemon serves no web application.</p>
+<h3 id="build">Optional: build from source</h3><p>Use macOS or Linux with Git and Rust 1.98.1. On Windows, use a Linux environment such as WSL. Clone a fresh checkout, inspect its revision, and build with the committed lockfile:</p>
 ${code('git clone https://github.com/hraness/valhalla.git\ncd valhalla\ngit rev-parse HEAD\ncargo +1.98.1 build --locked -p vhalla-cli --bin vhalla\nexport PATH="$PWD/target/debug:$PATH"\nvhalla daemon --help')}
-<p>The source build serves no web application. Keep the revision printed above with your setup notes; these source instructions may change before release.</p>
+<p>The source build serves no web application. Keep the revision printed above with your setup notes; a source checkout can differ from the released package.</p>
 <h2 id="start">2. Start a new service</h2><p>Choose a new folder. Initialization creates the account and room storage. Keep the foreground process running:</p>
 ${code('export VHALLA_DAEMON_HOME="$HOME/.valhalla-daemon"\nvhalla daemon init --home "$VHALLA_DAEMON_HOME"\nvhalla daemon run --home "$VHALLA_DAEMON_HOME" --bind 127.0.0.1:48888')}
-<h2 id="room">3. Create a public room</h2><p>Open another terminal in the same source checkout and put its binary first on your path. Select the same service home. This example creates a room for public test content:</p>
-${code('export PATH="$PWD/target/debug:$PATH"\nexport VHALLA_DAEMON_HOME="$HOME/.valhalla-daemon"\nprintf \'%s\\n\' \'{"op":"room.create","operation":"00000000000000000000000000000001","kind":"public","limits":{"max_records":10000,"max_record_bytes":8388608}}\' |\n  vhalla daemon call --home "$VHALLA_DAEMON_HOME"')}
+<h2 id="room">3. Create a public room</h2><p>Open another terminal and select the same service home. If you built from source, first run <code>export PATH="$PWD/target/debug:$PATH"</code> from that checkout. This example creates a room for public test content:</p>
+${code('export VHALLA_DAEMON_HOME="$HOME/.valhalla-daemon"\nprintf \'%s\\n\' \'{"op":"room.create","operation":"00000000000000000000000000000001","kind":"public","limits":{"max_records":10000,"max_record_bytes":8388608}}\' |\n  vhalla daemon call --home "$VHALLA_DAEMON_HOME"')}
 <p>The reply contains <code>ok</code> and <code>result</code>. Its <code>room</code> identifies the local room, and <code>pin</code> identifies the signed room across machines. Keep each operation ID with its original input; retrying that pair resolves an uncertain response without issuing a different message.</p>
 <h2 id="message">4. Save and read a message</h2>
 ${code('printf \'%s\\n\' \'{"op":"room.send","room":"00000000000000000000000000000001","operation":"00000000000000000000000000000002","body":"The build is ready for review."}\' |\n  vhalla daemon call --home "$VHALLA_DAEMON_HOME"\nprintf \'%s\\n\' \'{"op":"room.messages","room":"00000000000000000000000000000001","after":0,"limit":16}\' |\n  vhalla daemon call --home "$VHALLA_DAEMON_HOME"')}
 <p>A successful send means the local service saved the message. It does not mean another peer received it. Follow the <a href="/docs/headless-daemon/#public">public sync steps</a> to connect two services.</p>
 <h2 id="stop">5. Stop the service</h2>${code('vhalla daemon stop --home "$VHALLA_DAEMON_HOME"')}
 <p>Wait for the foreground process to exit. Its home keeps the keys, history, and pending work for the next run. For background operation, follow <a href="/docs/headless-daemon/#hosting">service installation</a>.</p>
-<h2 id="published">Published CLI ${release}</h2><p>These installers download the earlier CLI, separately from the source-built daemon above. They verify release checksums. <a href="/docs/historical-getting-started/">Read the earlier release guide</a> for its commands and platform limits.</p>
+<h2 id="published">Default installer: ${release}</h2><p>Without <code>VHALLA_VERSION</code>, these commands select the earlier CLI, not the daemon. For daemon setup, use the explicit ${daemonRelease} commands above. They verify release checksums. <a href="/docs/historical-getting-started/">Read the earlier release guide</a> for its commands and platform limits.</p>
 ${vhallaInstall('install-getting-started')}
-<h3 id="updates">Updates for the published CLI</h3><p>Supported macOS and Linux installs from <code>install.sh</code> check for updates at most once a day. Run <code>gh auth login</code> first for release verification. Use <code>vhalla update disable</code> to turn off automatic updates. A source build follows its checkout; these installers do not update it.</p>
+<h3 id="updates">Updates for the published CLI</h3><p>Unpinned supported macOS and Linux installs from <code>install.sh</code> check for updates at most once a day. Explicit <code>VHALLA_VERSION</code> selection disables automatic updates for that installation. Run <code>gh auth login</code> first for release verification. Use <code>vhalla update disable</code> to turn off automatic updates. A source build follows its checkout; these installers do not update it.</p>
 <p>${source('docs/headless-daemon.md', 'Full daemon guide')}</p>`,
     },
     {
-      slug: 'agent-setup', title: 'Build Valhalla with your agent', kicker: 'Agent setup', kind: 'how-to',
-      summary: 'Give an agent a source-build prompt for the Valhalla daemon, then choose the service home, rooms, and access permissions yourself.',
-      content: `<p><strong>In development.</strong> The daemon is available from the current source checkout. The published installer serves the earlier CLI ${release}.</p>
-<h2 id="source">Build the daemon</h2><p>Paste this prompt into an agent that can run commands on your machine. It builds the software and reports the revision before any account, room, or service is created.</p>
+      slug: 'agent-setup', title: 'Set up Valhalla with your agent', kicker: 'Agent setup', kind: 'how-to',
+      summary: 'Select the released Valhalla daemon or give an agent a source-build prompt, then choose the service home, rooms, and access permissions yourself.',
+      content: `${availability}
+<h2 id="install">Install the released daemon</h2><p>Use the <a href="/docs/getting-started/#install">explicit version commands</a> to select ${daemonRelease}, then inspect <code>vhalla --version</code> and <code>vhalla daemon --help</code>. Installation does not create rooms or grant agent access.</p>
+<h2 id="source">Optional: build the daemon</h2><p>Paste this prompt into an agent that can run commands on your machine. It builds the software and reports the revision before any account, room, or service is created.</p>
 ${renderAgentSetup('vhalla-daemon', vhallaDaemonPrompt, 'Build the Valhalla daemon with your agent')}
 <h2 id="room">Choose a room and permissions</h2><p>Follow <a href="/docs/getting-started/">the local-room tutorial</a> to choose a new service home. To connect an agent for room work, issue an expiring grant and use <code>vhalla daemon mcp</code>. The <a href="/docs/headless-daemon/#agents">MCP reference</a> lists its four tools and usage limits. Installing the binary does not grant room access.</p>
-<h2 id="published">Install the earlier published CLI</h2><p>Use this separate prompt only for ${release}. It does not install the source-built daemon:</p>
+<h2 id="published">Install the default earlier CLI</h2><p>This separate prompt uses the unqualified installer, which defaults to ${release}. Use the explicit version commands above when you need the daemon:</p>
 ${renderAgentSetup('vhalla-install', vhallaInstallPrompt, 'Install the published vhalla CLI with your agent')}
 <p>Earlier network-bootstrap instructions remain in the <a href="/docs/historical-agent-setup/">historical agent setup guide</a>.</p>`,
     },
     {
       slug: 'headless-daemon', title: 'Run rooms through the daemon', kicker: 'Headless daemon', kind: 'reference',
       summary: 'Use the local Valhalla service for signed public rooms, encrypted private rooms, and scoped MCP access with participant-operated hosting.',
-      content: `<p><strong>In development.</strong> This reference describes the source-built daemon on macOS and Linux. Start with <a href="/docs/getting-started/">a local room</a>. The ${source('docs/headless-daemon.md', 'full daemon guide')} contains the command sequence.</p>
+      content: `${availability}
+<p>This reference covers the daemon on macOS and Linux. Start with <a href="/docs/getting-started/">a local room</a>. The ${source('docs/headless-daemon.md', 'full daemon guide')} contains the command sequence.</p>
 <h2 id="local">The local service</h2><p>The daemon keeps room keys, history, and pending sends in a home folder on your machine. Owner commands use JSON through <code>vhalla daemon call</code>; agents use an MCP connection limited to one room. The service has no web UI.</p>
 <h2 id="public">Public rooms and selected sources</h2><p>A public room has a signed identity, an owner-controlled writer policy, and signed plain-text messages. Enable serving with <code>public.publish</code> and share its <code>public.link</code>. A joining participant checks the room pin with its owner, uses <code>room.join_public</code>, enables the room with <code>public.publish</code>, and selects a peer with <code>public.source</code>. To grant posting access, the owner calls <code>public.set_writers</code> with the complete replacement writer list, retaining existing writers, the owner account key, and the owner's local room author. The two owner keys can differ.</p>
 <p>Each receiver selects the sources it follows. For two-way exchange, both services publish and select one another, or select participants that store both histories. <code>public.sync_status</code> reports progress through each selected source's checkpoint. Completion covers that checkpoint; it does not establish a global latest message or find every peer.</p>
@@ -82,10 +89,11 @@ ${code('vhalla daemon mcp --home /ABSOLUTE/DAEMON_HOME --grant /ABSOLUTE/GRANT.j
     },
     {
       slug: 'status', title: 'Headless MVP status', kicker: 'Status', kind: 'reference',
-      summary: 'The Valhalla headless daemon is in development. This page separates its source features from published releases and remaining operational tests.',
-      content: `<p><strong>In development.</strong> The source checkout includes the daemon, CLI/JSON control, scoped MCP, direct public rooms, and private MLS rooms. The published installer serves ${release}; it does not include this daemon.</p>
+      summary: 'The Valhalla daemon has published Unix packages. Check explicit version selection, platform limits, and operational evidence before choosing a workload.',
+      content: `${availability}
+<p>The released daemon includes CLI/JSON control, scoped MCP, direct public rooms, and private MLS rooms.</p>
 <h2 id="included">The MVP scope</h2><p>Participants run the service and choose their peers. Public rooms sync signed history from selected sources; private rooms use confidential invitations and encrypted mailboxes. The daemon keeps local state and exposes machine-readable commands. It has no web UI.</p>
-<h2 id="pending">Before release</h2><p>Workload measurements, tests between separate runners, managed-service lifecycle checks, and final packaging checks are pending for this source build. Earlier client and transport tests do not establish this daemon's capacity or availability. No throughput, hosting-price, or production-availability promise is made here.</p>
+<h2 id="pending">Release and operational evidence</h2><p>The ${daemonRelease} release publishes Unix headless packages with checksums and build attestations. Its tagged workflow checks the signed macOS archive on a fresh runner. Publication does not establish capacity or availability for your workload. The dated source readiness record describes earlier local measurements, tests between separate runners, and pending operational tests; it is not a statement that published packages are unavailable. No throughput, hosting-price, or production-availability promise is made here.</p>
 <h2 id="limits">Operational limits</h2><p>Public sync completion covers a selected source checkpoint. Private mailbox storage and recipient-device acceptance are different outcomes. Preserve the original signing and MLS state; read-only archives and account recovery phrases cannot activate a replacement live sender. MCP permissions limit room tools, not the agent's other filesystem or network access.</p>
 <h2 id="outside">Outside this MVP</h2><p>AT Protocol adoption and Delve interoperability are not included. Browser applications, social feeds, and validator-based room discovery are outside the primary product path. The <a href="/docs/historical-overview/">earlier documentation</a> remains available for those experiments and clients.</p>
 <p>${source('docs/release-readiness.md', 'Source readiness record')} · <a href="/docs/headless-daemon/">Daemon reference</a> · <a href="/docs/historical-status/">Earlier readiness inventory</a></p>`,

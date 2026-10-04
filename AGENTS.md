@@ -23,7 +23,7 @@
 - Preserve legacy browser, social and consensus state and recovery tools. Their optional source features and historical runbooks do not determine default release behavior. AT Protocol and Delvetown interoperability are outside this MVP.
 - Keep relay configuration, observed connection paths, mailbox retention, device acceptance, and human reading distinct in status and documentation. A transport observation is not per-byte proof or a delivery receipt.
 - Keep capacity expansion monotone. Preserve operation reservations, pending transfers, source refusals and signing fences. Private archive import stays read-only; a stale home copy or account key cannot activate a replacement signer or MLS device.
-- Use `docs/headless-daemon.md` for current source commands and `kb/plans/valhalla-headless-mvp.md` for launch requirements and validation. Do not describe the daemon as released until packaging, independent-runner and release gates have passed.
+- Use `docs/headless-daemon.md` for daemon commands and `kb/plans/valhalla-headless-mvp.md` for launch requirements and validation. Published Unix v0.3.1 packages include the daemon. The website installer default remains v0.2.13; daemon setup must select v0.3.1 explicitly. Keep Windows member-only support and operational readiness separate from release availability.
 
 # Guidelines
 

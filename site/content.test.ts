@@ -8,6 +8,7 @@ import { articles, articleHref, indexableArticles, isIndexable } from './article
 import { articleEvidenceRevision, launchEvidenceRevision, irohEvidenceRevision } from './article-admissions.ts';
 import { renderLlms, renderSitemap } from './discovery.ts';
 import { renderHome } from './home.ts';
+import { daemonRelease, daemonUnixInstall, daemonWindowsInstall } from './platform-install.ts';
 const home = renderHome(await readFile(new URL('./index.html', import.meta.url), 'utf8'));
 const pages = new Map([['/', home], ...docs.map(page=>[docHref(page), renderDoc(page, home)]), ...compare.map(page=>[compareHref(page), renderCompare(page, home)]), ...writing.map(page=>[writingHref(page), renderWriting(page, home)]), ...articles.map(article=>[articleHref(article), renderArticle(article, home)]), ['/use-cases/', renderUseCases(home)]]);
 
@@ -56,7 +57,7 @@ test('readiness and privacy limitations stay discoverable from the home page', (
   expect(home).toContain('href="/docs/status/"');
   expect(home).toContain('Private rooms');
   expect(home).toContain('headless daemon');
-  expect(home).toContain('source build');
+  expect(home).toContain(`VHALLA_VERSION=${daemonRelease}`);
   expect(home).not.toContain('href="https://app.vhalla.com');
   const status=pages.get('/docs/status/')!;
   for(const phrase of ['CLI/JSON', 'MCP', 'separate runners', 'pending', 'AT Protocol']) {
@@ -157,11 +158,43 @@ test('search and agent guides include every maintained page', async () => {
 
 test('the home page and Homebrew instructions name the current release and formula', () => {
   // One release is typed in pages.ts; the home page may name no other version.
-  expect(new Set(home.match(/\bv\d+\.\d+\.\d+\b/g))).toEqual(new Set([latestRelease]));
+  expect(new Set(home.match(/\bv\d+\.\d+\.\d+\b/g))).toEqual(new Set([latestRelease, daemonRelease]));
   // Homebrew 7 refuses formulae from untrusted taps unless the install names the formula in full.
   const getStarted=pages.get('/docs/getting-started/')!;
-  for (const html of [home, getStarted]) expect(html).toContain('brew install hraness/tap/vhalla');
+  expect(getStarted).toContain('brew install hraness/tap/vhalla');
+  expect(home).toContain(`VHALLA_VERSION=${daemonRelease}`);
   for (const [path, html] of pages) expect(html, path).not.toMatch(/brew install vhalla\b/);
+});
+
+test('released daemon selection stays distinct from unchanged installer defaults', async () => {
+  expect(daemonRelease).toBe('v0.3.1');
+  expect(latestRelease).toBe('v0.2.13');
+  const guide = renderLlms(await readFile(new URL('./llms.txt', import.meta.url), 'utf8'));
+  for (const html of [home, ...docs.filter(page => !page.historical).map(page => page.content), guide]) {
+    expect(html).toContain(daemonRelease);
+    expect(html).toContain(latestRelease);
+    expect(html).not.toContain('requires a source build');
+    expect(html).not.toContain('it does not include this daemon');
+    expect(html).not.toContain('{{DAEMON_RELEASE}}');
+  }
+  const started = pages.get('/docs/getting-started/')!;
+  expect(started).toContain(daemonUnixInstall);
+  expect(started).toContain(daemonWindowsInstall);
+  for (const text of [started, guide]) {
+    expect(text).toContain('Apple silicon');
+    expect(text).toContain('ARM64');
+    expect(text).toContain('private-room member commands');
+    expect(text).toContain('not the daemon');
+    expect(text).toContain('gh auth login');
+  }
+  const unix = await readFile(new URL('./install.sh', import.meta.url), 'utf8');
+  const windows = await readFile(new URL('./install.ps1', import.meta.url), 'utf8');
+  expect(unix).toContain(`VERSION="${latestRelease}"`);
+  expect(unix).toContain('VERSION="${VHALLA_VERSION:-$VERSION}"');
+  expect(unix).toContain('--pinned');
+  expect(windows).toContain(`$Version = '${latestRelease}'`);
+  expect(windows).toContain('$Version = $env:VHALLA_VERSION');
+  expect(await readFile(new URL('../README.md', import.meta.url), 'utf8')).toContain(daemonUnixInstall);
 });
 
 test('install.sh --with-menubar matches the release it serves', async () => {

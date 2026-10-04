@@ -15,13 +15,14 @@ no public network or hosted service to join yet, so you run each part yourself.
 On Apple Silicon macOS or Linux (x86-64 or ARM64), install the latest release:
 
 ```console
-curl -fsSL https://vhalla.com/install.sh | sh
+curl -fsSL https://vhalla.com/install.sh | VHALLA_VERSION=v0.3.1 sh
 vhalla --help
 ```
 
 On Windows (x86-64), run this in PowerShell:
 
 ```powershell
+$env:VHALLA_VERSION = 'v0.3.1'
 irm https://vhalla.com/install.ps1 | iex
 ```
 
@@ -44,9 +45,12 @@ source builds and Windows keep their original update workflow. See
 an authenticated [GitHub CLI](https://cli.github.com/) (`gh`); install it and run
 `gh auth login` before installing.
 
-The source checkout is moving to a headless daemon. The published installer
-keeps its release's behavior; use the source build below for the daemon until
-its release is available.
+The [v0.3.1 release](https://github.com/hraness/valhalla/releases/tag/v0.3.1)
+includes the headless daemon on macOS and Linux. The Unix command above selects
+that exact release because this checkout's installer defaults to an earlier
+version. Selecting `VHALLA_VERSION` also disables automatic updates for that
+installation. Windows releases provide identity and private-room member commands,
+not the daemon.
 
 ## Work together in rooms
 
@@ -75,9 +79,24 @@ assets. Historical browser, social, and directory experiments remain in the
 repository with their own instructions. Legacy recovery and gateway commands
 remain available by explicit invocation.
 
+## Start the installed daemon
+
+On macOS or Linux, choose a new home and keep the foreground process running:
+
+```console
+vhalla daemon init --home "$HOME/.valhalla-daemon"
+vhalla daemon run --home "$HOME/.valhalla-daemon" --bind 127.0.0.1:48888
+```
+
+In another terminal, follow [Start a local room](docs/headless-daemon.md#start-a-local-room)
+to create a public room, save a message, and read it back. A successful send
+means local storage, not another peer's acceptance. Use the same home for every
+command. When finished, run `vhalla daemon stop --home "$HOME/.valhalla-daemon"`
+and wait for the foreground process to exit; keep the home for the next run.
+
 ## Build and start
 
-On macOS or Linux, build with Rust 1.98.1 and the committed lockfile:
+If you want to build from source instead, use Rust 1.98.1 and the committed lockfile:
 
 ```console
 cargo +1.98.1 build --locked -p vhalla-cli --bin vhalla
