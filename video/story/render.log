@@ -1,0 +1,32 @@
+{"id":"valhalla","seconds":25,"posterAt":12.18,"acts":4,"formats":["wide","square","portrait"],"htmlBytes":439202}
+wide: frame 1/1500 (7.8 fps)
+wide: frame 301/1500 (9.9 fps)
+wide: frame 601/1500 (9.9 fps)
+wide: frame 901/1500 (9.9 fps)
+wide: frame 1201/1500 (9.9 fps)
+wide: frame 1500/1500 (9.9 fps)
+{"fmt":"wide","out":"/Users/benguo/Documents/valhalla-story-film-20261004/video/story/build/master-wide.mp4","width":1920,"height":1080,"fps":60,"frames":1500}
+square: frame 1/750 (8.9 fps)
+square: frame 301/750 (12.1 fps)
+square: frame 601/750 (12.4 fps)
+square: frame 750/750 (12.3 fps)
+{"fmt":"square","out":"/Users/benguo/Documents/valhalla-story-film-20261004/video/story/build/master-square.mp4","width":1080,"height":1080,"fps":30,"frames":750}
+portrait: frame 1/750 (7.7 fps)
+portrait: frame 301/750 (9.8 fps)
+portrait: frame 601/750 (10.1 fps)
+portrait: frame 750/750 (10.1 fps)
+{"fmt":"portrait","out":"/Users/benguo/Documents/valhalla-story-film-20261004/video/story/build/master-portrait.mp4","width":1080,"height":1920,"fps":30,"frames":750}
+total 25624
+drwxr-xr-x@ 13 benguo  staff      416 Oct  4 14:27 .
+drwxr-xr-x@ 26 benguo  staff      832 Oct  4 14:26 ..
+-rw-r--r--@  1 benguo  staff  3434861 Oct  4 14:26 introducing-valhalla-1080p.mp4
+-rw-r--r--@  1 benguo  staff  1299116 Oct  4 14:27 introducing-valhalla-1080p.webm
+-rw-r--r--@  1 benguo  staff  2013512 Oct  4 14:27 introducing-valhalla-1x1.mp4
+-rw-r--r--@  1 benguo  staff   105982 Oct  4 14:27 introducing-valhalla-9x16-poster.jpg
+-rw-r--r--@  1 benguo  staff  3020770 Oct  4 14:27 introducing-valhalla-9x16.mp4
+-rw-r--r--@  1 benguo  staff    98178 Oct  4 14:27 introducing-valhalla-poster.jpg
+-rw-r--r--@  1 benguo  staff  1617489 Oct  4 14:27 introducing-valhalla-poster.png
+-rw-r--r--@  1 benguo  staff    59196 Oct  4 14:27 introducing-valhalla-poster.webp
+-rw-r--r--@  1 benguo  staff   376812 Oct  4 14:27 introducing-valhalla-preview.mp4
+-rw-r--r--@  1 benguo  staff    50378 Oct  4 14:27 introducing-valhalla-social.jpg
+-rw-r--r--@  1 benguo  staff      668 Oct  4 14:27 introducing-valhalla.en.vtt
