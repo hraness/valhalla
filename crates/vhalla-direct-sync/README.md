@@ -58,3 +58,12 @@ admission, delivery, or recipient reads.
 Run `cargo test --locked -p vhalla-direct-sync` from the workspace root. The
 independent hash fixture is checked with
 `node crates/vhalla-direct-sync/tools/vectors.mjs --check`.
+
+`tests/schedule_hegel.rs` generates source histories that include the smallest
+and largest valid records and events from unlisted authors. Each case mixes
+honest pages with repeated, skipped, reordered, damaged, wrong-room and
+non-owner frames, stale prepared pages, checkpoint extensions and restarts that
+replay the saved frames into a new receiver with different page sizes. After
+every step the test compares the receiver with a separate model of the expected
+progress. A refused page changes nothing, an honest page is accepted, and
+coverage is `Complete` only after the exact history arrives.
