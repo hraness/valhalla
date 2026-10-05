@@ -23,7 +23,7 @@ export const notFoundContent = {
 export function knownRoutes(): StatusPageLink[] {
   const routes: StatusPageLink[] = [{ href: '/', label: 'Valhalla' }];
   for (const collection of Object.values(collections)) {
-    for (const page of collection.pages) routes.push({ href: collection.href(page), label: page.slug ? page.kicker : collection.label });
+    for (const page of collection.pages.filter(page => !page.noindex)) routes.push({ href: collection.href(page), label: page.slug ? page.kicker : collection.label });
   }
   for (const article of articles.filter(isIndexable)) routes.push({ href: articleHref(article), label: article.navLabel });
   routes.push({ href: '/use-cases/', label: useCases.kicker });

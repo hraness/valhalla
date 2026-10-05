@@ -99,7 +99,7 @@ const sourcesHtml = (sources: readonly { label: string; url: string }[]) =>
 
 function render(page: DocPage, template: string, opts: { url: string; title: string; articleType: string; trail: { name: string; url: string }[]; nav: string; navTitle: string; siblings: DocPage[]; siblingHref: (page: DocPage) => string; updatedLabel: string; ogImage: string; extraGraph?: object[]; extraHead?: string; contentAfter?: string; dateModified?: string; historical?: boolean }) {
   const url = opts.url;
-  const head = renderHead(template, { url, title: opts.title, description: page.summary, shareTitle: shareTitle(page), ogImage: opts.ogImage, jsonLd: jsonLd(page, url, opts.trail, opts.articleType, opts.extraGraph, opts.dateModified), extraHead: opts.extraHead });
+  const head = renderHead(template, { url, title: opts.title, description: page.summary, shareTitle: shareTitle(page), ogImage: opts.ogImage, jsonLd: jsonLd(page, url, opts.trail, opts.articleType, opts.extraGraph, opts.dateModified), extraHead: opts.extraHead, ...(page.noindex ? { robots: 'noindex, follow' } : {}) });
   const header = masthead(template);
   const historical = page.historical || opts.historical;
   const context = historical ? '<aside class="doc-note" data-historical-documentation><strong>Historical documentation</strong><p>This page describes earlier Valhalla clients and experiments. For the current headless MVP, start with the <a href="/docs/getting-started/">daemon tutorial</a> and <a href="/docs/headless-daemon/">daemon reference</a>.</p></aside>' : '';

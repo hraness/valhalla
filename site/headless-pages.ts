@@ -8,7 +8,7 @@ const source = (path: string, label: string) => `<a href="https://github.com/hra
 
 // Source instructions are separate from the immutable earlier-release guides.
 export function headlessDocs(release: string): DocPage[] {
-  const availability = `<p><strong>In development.</strong> The <a href="https://github.com/hraness/valhalla/releases/tag/${daemonRelease}">${daemonRelease} release</a> includes the daemon on Apple silicon macOS and x86-64 or ARM64 Linux. Select that version explicitly below. Without a version selection, these installers default to ${release}. Windows x86-64 packages provide identity and private-room member commands, not the daemon; use Linux or WSL for the service.</p>`;
+  const availability = `<p><strong>In development.</strong> The <a href="https://github.com/hraness/valhalla/releases/tag/${daemonRelease}">${daemonRelease} release</a> includes the daemon on Apple silicon macOS and x86-64 or ARM64 Linux. Select that version explicitly below. Without a version selection, these installers default to the <a href="/docs/historical-getting-started/">earlier ${release} CLI</a>. Windows x86-64 packages provide identity and private-room member commands, not the daemon; use Linux or WSL for the service.</p>`;
   return [
     {
       slug: '', title: 'Valhalla documentation', kicker: 'Documentation', metaTitle: 'Documentation · Valhalla',
@@ -25,7 +25,7 @@ ${availability}
 <a class="doc-card" href="/docs/headless-daemon/#agents"><span>MCP</span><h2>Give an agent one room</h2><p>Set permissions, expiry, and usage limits without sharing owner commands.</p></a>
 </div>
 <h2 id="operations">Keep the service running</h2><p>The <a href="/docs/headless-daemon/">daemon reference</a> covers background services, storage limits, and preserving history. Check <a href="/docs/status/">development status</a> before choosing a workload.</p>
-<h2 id="historical">Earlier clients and experiments</h2><p>The <a href="/docs/historical-overview/">historical documentation</a> keeps the browser client, social commands, validator-based public rooms, and earlier setup procedures available. Those guides describe a different build and are outside the headless MVP.</p>`,
+<h2 id="historical">Earlier clients and experiments</h2><p>The <a href="/docs/historical-getting-started/">earlier CLI (${release})</a> page covers the release the installers select without a version, and how it differs from the daemon. The <a href="/docs/historical-overview/">historical documentation</a> keeps the browser client, social commands, validator-based public rooms, and earlier setup procedures available. Those guides describe a different build and are outside the headless MVP.</p>`,
     },
     {
       slug: 'getting-started', title: 'Run a local Valhalla room', kicker: 'Getting started', kind: 'tutorial',
@@ -48,22 +48,33 @@ ${code('printf \'%s\\n\' \'{"op":"room.send","room":"000000000000000000000000000
 <p>A successful send means the local service saved the message. It does not mean another peer received it. Follow the <a href="/docs/headless-daemon/#public">public sync steps</a> to connect two services.</p>
 <h2 id="stop">5. Stop the service</h2>${code('vhalla daemon stop --home "$VHALLA_DAEMON_HOME"')}
 <p>Wait for the foreground process to exit. Its home keeps the keys, history, and pending work for the next run. For background operation, follow <a href="/docs/headless-daemon/#hosting">service installation</a>.</p>
-<h2 id="published">Default installer: ${release}</h2><p>Without <code>VHALLA_VERSION</code>, these commands select the earlier CLI, not the daemon. For daemon setup, use the explicit ${daemonRelease} commands above. They verify release checksums. <a href="/docs/historical-getting-started/">Read the earlier release guide</a> for its commands and platform limits.</p>
+<h2 id="published">Default installer: ${release}</h2><p>Without <code>VHALLA_VERSION</code>, these commands select the earlier CLI, not the daemon. This tutorial needs the daemon, so use the explicit ${daemonRelease} commands above. They verify release checksums. The <a href="/docs/historical-getting-started/">Earlier CLI (${release})</a> page covers its commands, local demo, and platform limits.</p>
 ${vhallaInstall('install-getting-started')}
 <h3 id="updates">Updates for the published CLI</h3><p>Unpinned supported macOS and Linux installs from <code>install.sh</code> check for updates at most once a day. Explicit <code>VHALLA_VERSION</code> selection disables automatic updates for that installation. Run <code>gh auth login</code> first for release verification. Use <code>vhalla update disable</code> to turn off automatic updates. A source build follows its checkout; these installers do not update it.</p>
 <p>${source('docs/headless-daemon.md', 'Full daemon guide')}</p>`,
     },
     {
       slug: 'agent-setup', title: 'Set up Valhalla with your agent', kicker: 'Agent setup', kind: 'how-to',
-      summary: 'Select the released Valhalla daemon or give an agent a source-build prompt, then choose the service home, rooms, and access permissions yourself.',
+      summary: 'Install the Valhalla daemon, then connect Claude Code and Codex to a room over MCP, each with its own grant that sets permissions, limits, and expiry.',
       content: `${availability}
 <h2 id="install">Install the released daemon</h2><p>Use the <a href="/docs/getting-started/#install">explicit version commands</a> to select ${daemonRelease}, then inspect <code>vhalla --version</code> and <code>vhalla daemon --help</code>. Installation does not create rooms or grant agent access.</p>
 <h2 id="source">Optional: build the daemon</h2><p>Paste this prompt into an agent that can run commands on your machine. It builds the software and reports the revision before any account, room, or service is created.</p>
 ${renderAgentSetup('vhalla-daemon', vhallaDaemonPrompt, 'Build the Valhalla daemon with your agent')}
 <h2 id="room">Choose a room and permissions</h2><p>Follow <a href="/docs/getting-started/">the local-room tutorial</a> to choose a new service home. To connect an agent for room work, issue an expiring grant and use <code>vhalla daemon mcp</code>. The <a href="/docs/headless-daemon/#agents">MCP reference</a> lists its four tools and usage limits. Installing the binary does not grant room access.</p>
+<h2 id="claude-code-and-codex">Connect Claude Code and Codex</h2><p>Give each client its own grant, so you can set its permissions, limits, and expiry separately. With the daemon running, issue one grant per client with <code>grant.issue</code>, using the ${source('docs/headless-api.md#grant-schema-and-example', 'grant example')}, and save each result as a private <code>0600</code> file such as <code>claude-grant.json</code> or <code>codex-grant.json</code>. Then register the server from a shell where <code>vhalla</code> is on your <code>PATH</code> and <code>VHALLA_DAEMON_HOME</code> is set. The shell expands both, so the saved command uses the absolute paths the daemon requires.</p>
+${code('claude mcp add --transport stdio valhalla -- "$(command -v vhalla)" daemon mcp \\\n  --home "$VHALLA_DAEMON_HOME" --grant /ABSOLUTE/PRIVATE/claude-grant.json\nclaude mcp get valhalla')}
+<p>By default, <a href="https://code.claude.com/docs/en/mcp">Claude Code</a> keeps the server private to you in the current project; add <code>--scope user</code> to use it in all your projects. <code>claude mcp get</code> shows the saved command and whether Claude Code could connect. It reports <code>Failed to connect</code> when the grant file does not exist yet.</p>
+${code('codex mcp add valhalla -- "$(command -v vhalla)" daemon mcp \\\n  --home "$VHALLA_DAEMON_HOME" --grant /ABSOLUTE/PRIVATE/codex-grant.json\ncodex mcp list')}
+<p><a href="https://developers.openai.com/codex/mcp">Codex</a> saves the server in <code>~/.codex/config.toml</code> as an <code>[mcp_servers.valhalla]</code> table with the same command and arguments. Each client starts its own server process for its sessions, limited to the four tools and the allowance in that client’s grant.</p>
+<p>Checked on 4 October 2026 with Claude Code 2.1.287, Codex CLI 0.160.0, and vhalla 0.3.1: both commands registered the server in empty configuration folders, and the listing commands showed it. An agent session using these tools was not run.</p>
+<p><strong>Limits.</strong> Agents that use grants from one service post as that service’s room author, so the room shows their messages under one key. To give each agent its own key, run a separate service for each and connect them through <a href="/docs/headless-daemon/#public">public sync</a> or a <a href="/docs/headless-daemon/#private">private room</a>. Restarting the daemon ends every grant. The registered server still starts, but its tools refuse requests until you issue new grants; save them over the same files, and the server reads them the next time a client starts it. An agent sees new messages when it calls <code>agent.messages</code>. The grant limits room tools only; each agent keeps its other access to your machine, and a cloud model may receive the room content the agent reads.</p>
 <h2 id="published">Install the default earlier CLI</h2><p>This separate prompt uses the unqualified installer, which defaults to ${release}. Use the explicit version commands above when you need the daemon:</p>
 ${renderAgentSetup('vhalla-install', vhallaInstallPrompt, 'Install the published vhalla CLI with your agent')}
-<p>Earlier network-bootstrap instructions remain in the <a href="/docs/historical-agent-setup/">historical agent setup guide</a>.</p>`,
+<p>The <a href="/docs/historical-getting-started/#agent">Earlier CLI (${release})</a> page covers checking a network with your agent and how that release differs from the daemon.</p>`,
+      sources: [
+        { label: 'Claude Code: connect to tools via MCP', url: 'https://code.claude.com/docs/en/mcp' },
+        { label: 'Codex: Model Context Protocol', url: 'https://developers.openai.com/codex/mcp' },
+      ],
     },
     {
       slug: 'headless-daemon', title: 'Run rooms through the daemon', kicker: 'Headless daemon', kind: 'reference',
