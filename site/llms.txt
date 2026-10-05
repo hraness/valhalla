@@ -12,7 +12,7 @@ Public synchronization follows selected sources and reports coverage of each sou
 
 - Documentation: https://vhalla.com/docs/
 - Install or build the daemon and run a local room: https://vhalla.com/docs/getting-started/
-- Set up with an agent: https://vhalla.com/docs/agent-setup/
+- Set up with an agent, including Claude Code and Codex over MCP: https://vhalla.com/docs/agent-setup/
 - Public sync, private rooms, MCP, hosting, and recovery: https://vhalla.com/docs/headless-daemon/
 - Source and release status: https://vhalla.com/docs/status/
 - Full daemon guide: https://github.com/hraness/valhalla/blob/main/docs/headless-daemon.md
@@ -21,10 +21,7 @@ Public synchronization follows selected sources and reports coverage of each sou
 
 These pages describe earlier clients and experiments. They remain available for their documented builds and are not the current daemon setup.
 
-- Earlier documentation overview: https://vhalla.com/docs/historical-overview/
-- Earlier release installation and source builds: https://vhalla.com/docs/historical-getting-started/
-- Earlier agent install and network selection: https://vhalla.com/docs/historical-agent-setup/
-- Earlier readiness inventory: https://vhalla.com/docs/historical-status/
+- Earlier CLI ({{DEFAULT_INSTALLER_RELEASE}}), the installer default: install, local demo, agent setup, and differences from the daemon: https://vhalla.com/docs/historical-getting-started/
 - Certified public room activity: https://vhalla.com/docs/public-rooms/
 - Standalone private-room host and browser workflows: https://vhalla.com/docs/private-rooms/
 - Certified public peers: https://vhalla.com/docs/operating-a-peer/

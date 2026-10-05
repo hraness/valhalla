@@ -1,10 +1,10 @@
 // Maintained static documentation. No visitor input, runtime fetches or analytics.
-import { vhallaInstall } from "./platform-install.ts";
+import { daemonRelease, vhallaInstall } from "./platform-install.ts";
 import { renderAgentSetup, vhallaBootstrapPrompt, vhallaInstallPrompt } from "./agent-setup.ts";
 import { headlessDocs } from './headless-pages.ts';
 export type DocKind = 'tutorial' | 'how-to' | 'reference' | 'explanation';
 export type DocSource = { label: string; url: `https://${string}` };
-export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string; kind?: DocKind; metaTitle?: string; checkedOn?: string; sources?: DocSource[]; historical?: boolean };
+export type DocPage = { slug: string; title: string; kicker: string; summary: string; content: string; kind?: DocKind; metaTitle?: string; checkedOn?: string; sources?: DocSource[]; historical?: boolean; noindex?: boolean };
 export const docKindLabels: Record<DocKind, string> = {
   tutorial: 'Tutorials',
   'how-to': 'How-to guides',
@@ -50,11 +50,11 @@ ${note('Before using sensitive data', 'Public activity is signed plaintext. Invi
 {
 slug:'getting-started', title:'Install vhalla and try it locally.', kicker:'Getting started', kind:'tutorial',
 summary:'Install the vhalla CLI, run the local demo, then connect to a network you trust. Valhalla is in development, so use fresh test data before you expose a service.',
-content:`<h2 id="build">1. Install the CLI</h2><p>One command downloads the release, verifies its SHA-256 checksum, and installs it. You do not need Rust. On macOS and Linux it goes to <code>~/.local/bin</code>; on Windows, <code>vhalla.exe</code> installs for your user only, with no administrator prompt, and is added to your <code>PATH</code>. Homebrew installs the same checksum-verified binary.</p>
+content:`<h2 id="build">1. Install the CLI</h2><p>One command downloads the release, verifies its SHA-256 checksum, and installs it. You do not need Rust. On macOS and Linux it goes to <code>~/.local/bin</code>; on Windows, <code>vhalla.exe</code> installs for your user only, with no administrator prompt, and is added to your <code>PATH</code>. Homebrew also installs a checksum-verified binary, but its formula can lag behind the installer, so check <code>vhalla --version</code> afterward.</p>
 ${vhallaInstall('install-getting-started')}
 ${code('vhalla --help')}
 <p>Prebuilt binaries cover Apple&nbsp;Silicon macOS, x86-64 and ARM64 Linux, and x86-64 Windows. On Windows, <code>vhalla</code> has identity and the member side of private rooms; for everything else, including the demo, run <code>install.sh</code> inside WSL. To install manually, inspect <a href="/install.sh">install.sh</a> or <a href="/install.ps1">install.ps1</a> or follow the same steps: download the archive and its <code>.sha256</code> sidecar from <a href="https://github.com/hraness/valhalla/releases/tag/${latestRelease}">release ${latestRelease}</a>, verify with <code>shasum -a 256 -c</code>, extract, run.</p>
-<p>Release binaries carry the public-room, private-room, networking and room-directory feature sets already enabled. The macOS binary is signed with Hraness's Developer ID and notarized by Apple. The installer checks both before installing. Examples below use <code>vhalla</code> as shorthand. Native persistence and peer serving currently target Unix. Prefer to delegate? <a href="/docs/agent-setup/">Your agent can run these steps for you</a>.</p>
+<p>Release binaries carry the public-room, private-room, networking and room-directory feature sets already enabled. The macOS binary is signed with Hraness's Developer ID and notarized by Apple. The installer checks both before installing. Examples below use <code>vhalla</code> as shorthand. Native persistence and peer serving currently target Unix. Prefer to delegate? <a href="#agent">Your agent can run these steps for you</a>.</p>
 <h3 id="updates">Keep the CLI up to date</h3><p>Supported macOS and Linux installations from <code>install.sh</code> update automatically before a command, with a check at most once a day. Updates verify the release, archive and executable before replacement. Running commands hold their version until they exit.</p>
 ${code('vhalla update\nvhalla update check --json\nvhalla update status\nvhalla update disable\nvhalla update enable')}
 <p>Run <code>gh auth login</code> before installing: release verification needs authenticated GitHub CLI. Use <code>--no-update</code> before a command or <code>HRANESS_NO_UPDATE=1</code> to skip one automatic check. CI, machine-readable output, offline commands and demos skip automatic checks. Setting <code>VHALLA_VERSION</code> pins an exact version; Homebrew, Cargo, source builds and Windows use their existing update commands. Re-run the installer once to enroll an older verified native copy.</p>
@@ -353,14 +353,48 @@ const historicalSlugs: Record<string, string> = {
   status: 'historical-status',
 };
 
+// One indexable page covers the CLI the installers select without a version.
+// The other earlier entry points stay readable at their URLs, outside search.
+export const earlierCliSlug = 'historical-getting-started';
+export const noindexHistoricalSlugs: ReadonlySet<string> = new Set(['historical-overview', 'historical-agent-setup', 'historical-status']);
+
+// Added after the earlier-guide link rewrite, so links here reach current pages.
+function earlierCli(page: DocPage): DocPage {
+  const intro = `<p>The installers select this earlier CLI when you run them without <code>VHALLA_VERSION</code>. It has the local demo and validator-based public rooms, and no local service. For the daemon and its MCP server, install ${daemonRelease} and follow <a href="/docs/getting-started/">Run a local Valhalla room</a>.</p>
+<h2 id="differences">How it differs from the ${daemonRelease} daemon release</h2><p>Both releases include identity, private-room, and status commands. Run <code>vhalla --help</code> to see which one you have.</p><ul>
+<li><strong>Only in ${latestRelease}:</strong> the local tour (<code>vhalla demo</code>), validator-based public rooms (<code>vhalla public</code>), and the social, room-directory, and paired-chat experiments.</li>
+<li><strong>Only in ${daemonRelease}:</strong> the local service (<code>vhalla daemon</code>) with JSON commands, public rooms that sync from peers you choose, and MCP access through <code>vhalla daemon mcp</code>.</li>
+<li><strong>Agent access:</strong> both releases include <code>vhalla private agent-serve</code>, which gives an agent five tools for one private room (<code>private_status</code>, <code>private_inbox</code>, <code>private_prepare</code>, <code>private_queue</code>, <code>private_outbox_status</code>) under a one-use grant. Only ${daemonRelease} has <code>vhalla daemon mcp</code>, which gives four tools (<code>agent.status</code>, <code>agent.messages</code>, <code>agent.send</code>, <code>agent.outbox_status</code>) for one public or private room. <a href="/docs/agent-setup/#claude-code-and-codex">Connect Claude Code and Codex to the daemon</a>.</li>
+<li><strong>Updates:</strong> unpinned macOS and Linux installs of ${latestRelease} update automatically. Selecting ${daemonRelease} with <code>VHALLA_VERSION</code> turns automatic updates off.</li>
+</ul>
+`;
+  const agent = `
+<h2 id="agent">Let your agent install it</h2><p>The <a href="/docs/agent-setup/#published">agent setup page</a> has a prompt that runs the default installer and the local demo. To check a network afterward, give your agent the network file and its full fingerprint from someone you trust:</p>
+${renderAgentSetup('earlier-bootstrap', vhallaBootstrapPrompt, 'Check your network with your agent')}
+<p>The <a href="/docs/historical-overview/">earlier documentation overview</a>, <a href="/docs/historical-agent-setup/">earlier agent setup</a>, and <a href="/docs/historical-status/">earlier readiness inventory</a> remain available for this release.</p>`;
+  return {
+    ...page,
+    kicker: `Earlier CLI (${latestRelease})`,
+    title: `Install the earlier vhalla CLI (${latestRelease})`,
+    metaTitle: `Install the earlier vhalla CLI (${latestRelease}) · Valhalla`,
+    summary: `Install the earlier ${latestRelease} vhalla CLI that the installers select by default, try its local demo, and see how it differs from the ${daemonRelease} daemon.`,
+    content: `${intro}${page.content}${agent}`,
+  };
+}
+
 export const docs: DocPage[] = [
   ...headlessDocs(latestRelease),
-  ...earlierDocs.map(page => ({
-    ...page,
-    slug: historicalSlugs[page.slug] ?? page.slug,
-    historical: true,
-    metaTitle: `${page.kicker} · Valhalla historical documentation`,
-    content: page.content.replace(/href="\/docs\/(getting-started|agent-setup|status)\//gu,
-      (_match, slug: string) => `href="/docs/${historicalSlugs[slug]}/`),
-  })),
+  ...earlierDocs.map(page => {
+    const slug = historicalSlugs[page.slug] ?? page.slug;
+    const historical: DocPage = {
+      ...page,
+      slug,
+      historical: true,
+      metaTitle: `${page.kicker} · Valhalla historical documentation`,
+      content: page.content.replace(/href="\/docs\/(getting-started|agent-setup|status)\//gu,
+        (_match, earlier: string) => `href="/docs/${historicalSlugs[earlier]}/`),
+      ...(noindexHistoricalSlugs.has(slug) ? { noindex: true } : {}),
+    };
+    return slug === earlierCliSlug ? earlierCli(historical) : historical;
+  }),
 ];

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { readFile, access } from 'node:fs/promises';
-import { docs, documentedRevision, latestRelease } from './pages.ts';
+import { docs, documentedRevision, earlierCliSlug, latestRelease } from './pages.ts';
 import { compare, useCases } from './compare.ts';
 import { writing } from './writing.ts';
 import { renderArticle, renderDoc, renderCompare, renderUseCases, renderWriting, docHref, compareHref, writingHref } from './docs.ts';
@@ -135,9 +135,19 @@ test('historical source links keep immutable revisions and current guides name e
 test('search and agent guides include every maintained page', async () => {
   const sitemap=renderSitemap(await readFile(new URL('./sitemap.xml', import.meta.url), 'utf8'));
   const agentGuide=renderLlms(await readFile(new URL('./llms.txt', import.meta.url), 'utf8'));
+  // Readable earlier entry points stay out of search, the sitemap and the agent guide.
+  expect(docs.filter(page => page.noindex).map(page => page.slug).sort()).toEqual(['historical-agent-setup', 'historical-overview', 'historical-status']);
   for(const page of docs) {
+    const html=pages.get(docHref(page))!;
+    if (page.noindex) {
+      expect(sitemap, page.slug).not.toContain(`<loc>https://vhalla.com${docHref(page)}</loc>`);
+      expect(agentGuide, page.slug).not.toContain(`https://vhalla.com${docHref(page)}`);
+      expect(html, page.slug).toContain('<meta name="robots" content="noindex, follow">');
+      continue;
+    }
     expect(sitemap).toContain(`<loc>https://vhalla.com${docHref(page)}</loc>`);
     expect(agentGuide).toContain(`https://vhalla.com${docHref(page)}`);
+    expect(html, page.slug).not.toContain('<meta name="robots"');
   }
   for(const page of compare) {
     expect(sitemap).toContain(`<loc>https://vhalla.com${compareHref(page)}</loc>`);
@@ -228,4 +238,66 @@ test('install.ps1 serves the documented release and is wired into the build', as
   expect(installer).toContain('Get-FileHash');
   expect(installer).toContain('x86_64-pc-windows-msvc.zip');
   expect(build).toContain('"install.ps1"');
+});
+
+const earlierTools = ['private_status', 'private_inbox', 'private_prepare', 'private_queue', 'private_outbox_status'];
+const daemonTools = ['agent.status', 'agent.messages', 'agent.send', 'agent.outbox_status'];
+
+test('MCP comparisons name the release each tool list describes', () => {
+  const protocols = pages.get('/compare/agent-protocols/')!;
+  expect(protocols).toContain(`In the ${daemonRelease} release for macOS and Linux, <code>vhalla daemon mcp</code> gives an agent four tools`);
+  expect(protocols).toContain(`The installers select the earlier ${latestRelease} CLI when you give no version, and it has no daemon.`);
+  // Both published releases keep the private-room server.
+  expect(protocols).toContain(`${daemonRelease} still includes that command.`);
+  for (const tool of [...daemonTools, ...earlierTools]) expect(protocols, tool).toContain(`<code>${tool}</code>`);
+  expect(protocols).toContain('claude mcp add --transport stdio valhalla -- /absolute/vhalla daemon mcp');
+  expect(protocols).not.toContain('devin mcp add');
+  expect(protocols).toContain('href="https://code.claude.com/docs/en/mcp"');
+  expect(protocols).toContain('href="https://developers.openai.com/codex/mcp"');
+  const cases = pages.get('/use-cases/')!;
+  expect(cases).toContain('href="https://code.claude.com/docs/en/cross-session-messaging"');
+  expect(cases).toContain('href="https://code.claude.com/docs/en/agent-teams"');
+  expect(cases).toContain(`The earlier ${latestRelease} CLI, which the installers select without a version, offers a private-room agent five tools`);
+  expect(cases).toContain('href="/docs/agent-setup/#claude-code-and-codex"');
+  expect(cases).not.toContain('the local demo and a pinned test network');
+});
+
+test('one indexable earlier CLI page is linked wherever the default installer is named', () => {
+  const earlier = docs.find(page => page.slug === earlierCliSlug)!;
+  expect(earlier.historical).toBe(true);
+  expect(earlier.noindex).toBeUndefined();
+  expect(earlier.kicker).toBe(`Earlier CLI (${latestRelease})`);
+  const html = pages.get(docHref(earlier))!;
+  expect(html).toMatch(new RegExp(`<title>[^<]*\\(${latestRelease.replaceAll('.', '\\.')}\\)[^<]*</title>`));
+  for (const tool of [...earlierTools, ...daemonTools]) expect(html, tool).toContain(`<code>${tool}</code>`);
+  expect(html).toContain('both releases include <code>vhalla private agent-serve</code>');
+  expect(html).toContain(`Only ${daemonRelease} has <code>vhalla daemon mcp</code>`);
+  for (const command of ['vhalla demo', 'vhalla public', 'vhalla daemon']) expect(html, command).toContain(`<code>${command}</code>`);
+  expect(html).toContain('brew install hraness/tap/vhalla');
+  expect(html).not.toContain('Homebrew installs the same');
+  expect(html).toContain(`git checkout --detach ${documentedRevision}`);
+  expect(html).toContain('data-hraness-agent-setup-prompt');
+  for (const slug of ['historical-overview', 'historical-agent-setup', 'historical-status']) expect(html, slug).toContain(`href="/docs/${slug}/"`);
+  for (const page of docs.filter(page => !page.historical)) {
+    expect(pages.get(docHref(page)), page.slug || 'docs').toContain(`href="${docHref(earlier)}"`);
+  }
+});
+
+test('agent setup registers the daemon MCP server in Claude Code and Codex with separate grants', () => {
+  const setup = pages.get('/docs/agent-setup/')!;
+  expect(setup).toContain('<h2 id="claude-code-and-codex">');
+  expect(setup).toContain('claude mcp add --transport stdio valhalla -- "$(command -v vhalla)" daemon mcp');
+  expect(setup).toContain('--grant /ABSOLUTE/PRIVATE/claude-grant.json');
+  expect(setup).toContain('claude mcp get valhalla');
+  expect(setup).toContain('codex mcp add valhalla -- "$(command -v vhalla)" daemon mcp');
+  expect(setup).toContain('--grant /ABSOLUTE/PRIVATE/codex-grant.json');
+  expect(setup).toContain('codex mcp list');
+  expect(setup).toContain('<code>[mcp_servers.valhalla]</code>');
+  expect(setup).toContain('href="https://github.com/hraness/valhalla/blob/main/docs/headless-api.md#grant-schema-and-example"');
+  expect(setup).toContain('<code>agent.messages</code>');
+  expect(setup).toContain('href="https://code.claude.com/docs/en/mcp"');
+  expect(setup).toContain('href="https://developers.openai.com/codex/mcp"');
+  // Registration was checked in empty config folders; no agent session was run.
+  expect(setup).toContain('Checked on 4 October 2026 with Claude Code 2.1.287, Codex CLI 0.160.0, and vhalla 0.3.1');
+  expect(setup.split('An agent session using these tools was not run.').length).toBe(2);
 });
