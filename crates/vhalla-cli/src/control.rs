@@ -1,4 +1,4 @@
-//! The agent-navigable surface: `status`, `status refresh`, `tui`,
+//! The agent-navigable surface: `status`, `status refresh`,
 //! `commands`, `doctor`, `doctor retire`, `outputs [list|open|reveal]` and
 //! `support --json`.
 //!
@@ -7,10 +7,6 @@
 //! `hraness-control-kit` envelope line (`{ok, schema, generatedAt, data}` or
 //! `{ok:false, schema:"hraness.error/1", error}`), and the exit status follows
 //! the envelope: 0 ok, 1 failure, 2 usage, 3 needs a person.
-//!
-//! `tui --json` prints the same envelope as `status --json`; `tui
-//! --snapshot` (the default when stdout is not a terminal) prints the same
-//! state as text.
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
@@ -18,11 +14,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hraness_control_kit::envelope;
-use hraness_control_kit::tui::ratatui::layout::Rect;
-use hraness_control_kit::tui::ratatui::text::Line;
-use hraness_control_kit::tui::ratatui::widgets::Paragraph;
-use hraness_control_kit::tui::ratatui::Frame;
-use hraness_control_kit::tui::{self, RunOptions, View};
 use hraness_control_kit::{
     Audience, Envelope, ErrorBody, ErrorCode, NextStep, OpClass, Registry, Verb,
 };
@@ -43,7 +34,7 @@ pub(crate) const OUTPUTS_OPEN_SCHEMA: &str = "valhalla.outputs-open/1";
 /// (`hraness-support-offer-v1`) unchanged.
 pub(crate) const SUPPORT_SCHEMA: &str = "valhalla.support/1";
 
-/// Room counts saved by `status refresh`, read by `status` and `tui`.
+/// Room counts saved by `status refresh`, read by `status`.
 pub(crate) const STATUS_FILE: &str = "room-status.json";
 /// The file earlier releases wrote for the menu bar. Read when
 /// `STATUS_FILE` is missing, never written or removed.
@@ -89,13 +80,7 @@ pub(crate) fn registry() -> Registry {
             &["status", "refresh"],
             OpClass::Operate,
             REFRESH_SCHEMA,
-            "Read room status from your node and save it for status and tui",
-        ),
-        Verb::new(
-            &["tui"],
-            OpClass::Read,
-            STATUS_SCHEMA,
-            "The status screen; --snapshot prints it, --json matches status --json",
+            "Read room status from your node and save it for status",
         ),
         Verb::new(
             &["commands"],
@@ -571,7 +556,7 @@ fn launchctl_bootout(label: &str) {
 // ---------------------------------------------------------------------------
 // Status
 
-/// Everything `status`, `tui` and `status --json` show.
+/// Everything `status` and `status --json` show.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StatusData {
@@ -861,75 +846,27 @@ pub(crate) fn outputs_lines(outputs: &Outputs, width: u16, now_ms: u64) -> Vec<S
     lines
 }
 
-struct StatusView {
-    now_ms: u64,
-}
-struct OutputsView {
-    now_ms: u64,
-}
-
-fn draw(lines: Vec<String>, frame: &mut Frame, area: Rect) {
-    let text: Vec<Line> = lines.into_iter().map(Line::from).collect();
-    frame.render_widget(Paragraph::new(text), area);
-}
-
-impl View<StatusData> for StatusView {
-    fn id(&self) -> &str {
-        "status"
-    }
-    fn title(&self) -> &str {
-        "Status"
-    }
-    fn render(&self, state: &StatusData, frame: &mut Frame, area: Rect) {
-        draw(status_lines(state, area.width, self.now_ms), frame, area)
-    }
-    fn height(&self, state: &StatusData, width: u16) -> u16 {
-        status_lines(state, width, self.now_ms).len().min(200) as u16
-    }
-}
-
-impl View<StatusData> for OutputsView {
-    fn id(&self) -> &str {
-        "outputs"
-    }
-    fn title(&self) -> &str {
-        "Outputs"
-    }
-    fn render(&self, state: &StatusData, frame: &mut Frame, area: Rect) {
-        draw(
-            outputs_lines(&state.outputs, area.width, self.now_ms),
-            frame,
-            area,
-        )
-    }
-    fn height(&self, state: &StatusData, width: u16) -> u16 {
-        outputs_lines(&state.outputs, width, self.now_ms)
-            .len()
-            .min(200) as u16
-    }
-}
-
-pub(crate) fn views(now_ms: u64) -> Vec<Box<dyn View<StatusData>>> {
-    vec![
-        Box::new(StatusView { now_ms }),
-        Box::new(OutputsView { now_ms }),
-    ]
-}
-
-/// The `tui --snapshot` text for one state. Pure, for goldens.
+/// The status text for one state, sectioned by title — the same text
+/// `status` prints. Pure, for goldens.
 #[cfg(test)]
 pub(crate) fn snapshot(data: &StatusData, width: u16, now_ms: u64) -> String {
-    views(now_ms)
-        .iter()
-        .map(|view| {
-            format!(
-                "== {} ==\n{}",
-                view.title(),
-                tui::render_to_string(view.as_ref(), data, width)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    [
+        ("Status", status_lines(data, width, now_ms)),
+        ("Outputs", outputs_lines(&data.outputs, width, now_ms)),
+    ]
+    .iter()
+    .map(|(title, lines)| {
+        let mut text = format!("== {title} ==\n");
+        for line in lines {
+            for ch in line.chars().take(width as usize) {
+                text.push(ch);
+            }
+            text.push('\n');
+        }
+        text
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -964,8 +901,6 @@ fn paths() -> Result<Paths, ErrorBody> {
 #[derive(Debug, Default)]
 struct Flags {
     json: bool,
-    snapshot: bool,
-    width: Option<u16>,
     positional: Vec<String>,
 }
 
@@ -979,24 +914,12 @@ fn usage(message: impl Into<String>, command: &str) -> ErrorBody {
 
 fn parse(args: &[OsString], command: &str, allow: &[&str]) -> Result<Flags, ErrorBody> {
     let mut flags = Flags::default();
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
+    for arg in args {
         let Some(arg) = arg.to_str() else {
             return Err(usage("Arguments must be UTF-8.", command));
         };
         match arg {
             "--json" if allow.contains(&"--json") => flags.json = true,
-            "--snapshot" if allow.contains(&"--snapshot") => flags.snapshot = true,
-            "--width" if allow.contains(&"--width") => {
-                let value = iter
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .and_then(|v| v.parse::<u16>().ok());
-                match value {
-                    Some(width) if (20..=500).contains(&width) => flags.width = Some(width),
-                    _ => return Err(usage("--width takes a number from 20 to 500.", command)),
-                }
-            }
             flag if flag.starts_with("--") && !allow.contains(&"*") => {
                 return Err(usage(format!("Unknown option {flag}."), command));
             }
@@ -1071,7 +994,7 @@ pub(crate) fn dispatch(args: &[OsString]) -> Option<i32> {
     let second = args.get(1).and_then(|arg| arg.to_str());
     if matches!(
         first,
-        "status" | "tui" | "commands" | "doctor" | "outputs" | "menubar"
+        "status" | "commands" | "doctor" | "outputs" | "menubar"
     ) && args.iter().any(|arg| arg == "--help" || arg == "-h")
     {
         let page = crate::help::page_for(first)?;
@@ -1082,7 +1005,6 @@ pub(crate) fn dispatch(args: &[OsString]) -> Option<i32> {
     Some(match (first, second) {
         ("status", Some("refresh")) => status_refresh(&args[2..]),
         ("status", _) => status(&args[1..]),
-        ("tui", _) => run_tui(&args[1..]),
         ("commands", _) => commands(&args[1..]),
         ("doctor", Some("retire")) => doctor_retire(&args[2..]),
         ("doctor", _) => doctor(&args[1..]),
@@ -1152,31 +1074,6 @@ fn status(args: &[OsString]) -> i32 {
         }
         text
     })
-}
-
-fn run_tui(args: &[OsString]) -> i32 {
-    let json = wants_json(args);
-    let flags = match parse(args, "tui", &["--json", "--snapshot", "--width"]) {
-        Ok(flags) if flags.positional.is_empty() => flags,
-        Ok(_) => return fail::<()>(json, usage("tui takes no arguments.", "tui")),
-        Err(error) => return fail::<()>(json, error),
-    };
-    let paths = match paths() {
-        Ok(paths) => paths,
-        Err(error) => return fail::<()>(flags.json, error),
-    };
-    let now_ms = ms(SystemTime::now());
-    let mode = tui::mode_for_stdout(flags.json, flags.snapshot);
-    let (root, home) = (paths.root, paths.home);
-    let options = RunOptions {
-        load: Box::new(move || load_status(&root, &home)),
-        views: views(now_ms),
-        mode,
-        width: flags.width,
-    };
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    tui::run(options, &mut out) as i32
 }
 
 fn commands(args: &[OsString]) -> i32 {
@@ -1317,7 +1214,7 @@ pub(crate) fn doctor_data(
     if !readable {
         next.push(NextStep::new(
             refresh_command(read_room_status(root).as_ref()),
-            "Save room status for status and tui",
+            "Save room status for status",
             Audience::Agent,
         ));
     }
@@ -1644,7 +1541,7 @@ pub(crate) struct Refreshed {
     pub(crate) rooms: Rooms,
 }
 
-#[cfg(feature = "experimental-rooms-tui")]
+#[cfg(feature = "experimental-rooms-replica")]
 pub(crate) fn rooms_from_status_json(stdout: &[u8]) -> Option<Rooms> {
     let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
     let number = |v: &serde_json::Value| {
@@ -1666,7 +1563,7 @@ pub(crate) fn rooms_from_status_json(stdout: &[u8]) -> Option<Rooms> {
 /// Reads room status through `vhalla rooms status ARGS` and returns the
 /// counts or a fixed error code with a message for people.
 fn read_rooms(args: &[String]) -> Result<Rooms, (&'static str, ErrorBody)> {
-    #[cfg(feature = "experimental-rooms-tui")]
+    #[cfg(feature = "experimental-rooms-replica")]
     {
         let exe = std::env::current_exe().map_err(|e| {
             (
@@ -1715,7 +1612,7 @@ fn read_rooms(args: &[String]) -> Result<Rooms, (&'static str, ErrorBody)> {
                 )),
         ))
     }
-    #[cfg(not(feature = "experimental-rooms-tui"))]
+    #[cfg(not(feature = "experimental-rooms-replica"))]
     {
         let _ = args;
         Err((
@@ -2085,7 +1982,6 @@ mod tests {
         for command in [
             "status",
             "status refresh",
-            "tui",
             "commands",
             "doctor",
             "doctor retire",

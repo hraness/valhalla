@@ -39,13 +39,12 @@ vhalla rooms COMMAND SOCIAL_STORE NODE_HOME REALM32HEX [arguments]
   rotate HEIGHT KEY64:POWER,... (build: --features experimental-rooms-node)
   score HEIGHT [MAX] (build: --features experimental-rooms-node)
 vhalla rooms COMMAND SOCIAL_STORE REPLICA_HOME REALM32HEX [arguments]
-  tui NODE_HOME --config FILE  (build: --features experimental-rooms-tui)
-  submit NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE
-  submit NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE
-  submit NODE_HOME archive OWNER_KEYDIR SLUG --config FILE
-  submit NODE_HOME public-policy OWNER_KEYDIR SLUG NETWORK64 open|closed --config FILE
-  pending NODE_HOME --config FILE
-  status NODE_HOME --config FILE
+  submit NODE_HOME create OWNER_KEYDIR AGENT_KEYDIR OWNER64 AGENT64 SLUG EXPIRY DESCRIPTION [EVIDENCE_CSV] --config FILE  (build: --features experimental-rooms-replica)
+  submit NODE_HOME describe OWNER_KEYDIR SLUG EXPIRY DESCRIPTION --config FILE  (build: --features experimental-rooms-replica)
+  submit NODE_HOME archive OWNER_KEYDIR SLUG --config FILE  (build: --features experimental-rooms-replica)
+  submit NODE_HOME public-policy OWNER_KEYDIR SLUG NETWORK64 open|closed --config FILE  (build: --features experimental-rooms-replica)
+  pending NODE_HOME --config FILE  (build: --features experimental-rooms-replica)
+  status NODE_HOME --config FILE  (build: --features experimental-rooms-replica)
 vhalla rooms COMMAND [arguments]
   keygen  (build: --features experimental-rooms-node)
   network-init OUT --realm R32 --directory D64 --policy BASE,WINDOW,MAXWIN,EPOCH,LIFETIME --validators FROM:KEY64:POWER,... [--eligible OWNER64,...] [--limits default|R,CR,DPO,DPW,CPO,P,PPS]  (build: --features experimental-rooms-node)
@@ -202,7 +201,7 @@ impl Args {
     }
     /// The agreed clock (`--now` or local); used by sibling service
     /// modules that need the same admission clock.
-    #[cfg(feature = "experimental-rooms-tui")]
+    #[cfg(feature = "experimental-rooms-replica")]
     pub(crate) fn now(&self) -> u64 {
         self.now
     }
@@ -459,14 +458,14 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         }
     }
     if args.command == "submit" {
-        #[cfg(feature = "experimental-rooms-tui")]
+        #[cfg(feature = "experimental-rooms-replica")]
         {
             return crate::rooms_submit::run(&args);
         }
-        #[cfg(not(feature = "experimental-rooms-tui"))]
+        #[cfg(not(feature = "experimental-rooms-replica"))]
         {
             return Err(format!(
-                "rooms submit needs --features experimental-rooms-tui{}",
+                "rooms submit needs --features experimental-rooms-replica{}",
                 if args.config.is_some() {
                     " (config ignored)"
                 } else {
@@ -476,7 +475,7 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         }
     }
     if matches!(args.command.as_str(), "pending" | "status") {
-        #[cfg(feature = "experimental-rooms-tui")]
+        #[cfg(feature = "experimental-rooms-replica")]
         {
             return if args.command == "pending" {
                 crate::rooms_submit::pending(&args)
@@ -484,10 +483,10 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
                 crate::rooms_submit::status(&args)
             };
         }
-        #[cfg(not(feature = "experimental-rooms-tui"))]
+        #[cfg(not(feature = "experimental-rooms-replica"))]
         {
             return Err(format!(
-                "rooms {} needs --features experimental-rooms-tui{}",
+                "rooms {} needs --features experimental-rooms-replica{}",
                 args.command,
                 if args.config.is_some() {
                     " (config ignored)"
@@ -498,21 +497,9 @@ pub fn run(raw: Vec<OsString>) -> Result<(), String> {
         }
     }
     if args.command == "tui" {
-        #[cfg(feature = "experimental-rooms-tui")]
-        {
-            return crate::rooms_tui::run(&args);
-        }
-        #[cfg(not(feature = "experimental-rooms-tui"))]
-        {
-            return Err(format!(
-                "rooms tui needs --features experimental-rooms-tui{}",
-                if args.config.is_some() {
-                    " (config ignored)"
-                } else {
-                    ""
-                }
-            ));
-        }
+        return Err(
+            "rooms tui is retired: rooms submit/pending/status carry the replica commands".into(),
+        );
     }
     if args.command == "init" {
         if args.values.len() != 6 && args.values.len() != 7 {

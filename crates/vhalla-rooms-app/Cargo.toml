@@ -15,6 +15,9 @@ vhalla-social = { path = "../vhalla-social" }
 # intake drops) is filesystem-bound and unix-only.
 [target.'cfg(unix)'.dependencies]
 vhalla-core = { path = "../vhalla-core" }
+vhalla-identity = { path = "../vhalla-identity", features = ["rooms"] }
+getrandom = "0.3"
+sha2 = "0.10"
 vhalla-journal = { path = "../vhalla-journal" }
 vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus" }
 vhalla-rooms-node = { path = "../vhalla-rooms-node" }

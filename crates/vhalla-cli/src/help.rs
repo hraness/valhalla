@@ -71,7 +71,7 @@ fn topics() -> Vec<&'static str> {
     #[cfg(all(unix, feature = "experimental-network"))]
     topics.push("experimental");
     #[cfg(unix)]
-    topics.extend(["status", "tui", "doctor", "commands", "outputs", "menubar"]);
+    topics.extend(["status", "doctor", "commands", "outputs", "menubar"]);
     topics.extend(["support", "update", "all"]);
     topics
 }
@@ -120,7 +120,6 @@ pub(crate) fn root() -> String {
     text.push_str(
         "\nThis computer\n\
          \x20 status                Rooms, outputs and what to do next (--json)\n\
-         \x20 tui                   The status screen (--snapshot, --json)\n\
          \x20 outputs               Files agents saved: list, open, reveal\n\
          \x20 doctor                Check the Valhalla folder and login items\n\
          \x20 commands --json       Every command, for agents\n",
@@ -214,7 +213,7 @@ Example
 const MENUBAR: &str = "The macOS menu bar is retired. Every command it had is a vhalla command that
 runs, answers and exits, so nothing keeps running in the background.
 
-  status of your rooms       vhalla status (or vhalla tui)
+  status of your rooms       vhalla status
   save fresh room counts     vhalla status refresh (vhalla menubar refresh
                              still works and runs it)
   newest outputs             vhalla outputs list, open NAME, reveal NAME
@@ -249,7 +248,6 @@ Examples
 #[cfg(unix)]
 const CONTROL: &str = "Usage: vhalla status [--json]
        vhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE [--json]
-       vhalla tui [--snapshot|--json] [--width N]
        vhalla doctor [--json]
        vhalla doctor retire [--json]
        vhalla commands --json
@@ -260,8 +258,6 @@ Commands
   status          Whether your rooms are in sync, sends still waiting or
                   that didn't go through, and the newest outputs
   status refresh  Read room status from your node and save it
-  tui             The same status as a screen; q quits, r reloads.
-                  --snapshot prints it, --json prints what status --json does
   doctor          Check the Valhalla folder, saved room status and login
                   items the old menu bar left
   doctor retire   Stop the old menu bar opening at login. The login item is
@@ -276,7 +272,6 @@ Commands
 Examples
   vhalla status --json
   vhalla status refresh ~/valhalla/social ~/valhalla/replica REALM ~/valhalla/node --config node.toml
-  vhalla tui --snapshot --width 80
   vhalla doctor retire
 ";
 
@@ -291,7 +286,7 @@ fn all() -> String {
     #[cfg(all(unix, feature = "headless"))]
     text.push_str(&format!("\n{DAEMON}\n"));
     #[cfg(unix)]
-    text.push_str("vhalla status [--json]\nvhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE [--json]\nvhalla tui [--snapshot|--json] [--width N]\nvhalla doctor [retire] [--json]\nvhalla commands --json\nvhalla outputs [list|open [NAME]|reveal NAME] [--json]\n");
+    text.push_str("vhalla status [--json]\nvhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE [--json]\nvhalla doctor [retire] [--json]\nvhalla commands --json\nvhalla outputs [list|open [NAME]|reveal NAME] [--json]\n");
     #[cfg(unix)]
     text.push_str("vhalla support [--json|dismiss|snooze|enable|status --json]\n");
     text.push_str("vhalla update [check|status|enable|disable] [--json]\n");
@@ -337,7 +332,7 @@ fn topic(name: &str) -> Option<String> {
         #[cfg(unix)]
         "outputs" => OUTPUTS.to_owned(),
         #[cfg(unix)]
-        "status" | "tui" | "doctor" | "commands" => CONTROL.to_owned(),
+        "status" | "doctor" | "commands" => CONTROL.to_owned(),
         #[cfg(all(unix, feature = "experimental-network"))]
         "experimental" => EXPERIMENTAL.to_owned(),
         #[cfg(all(unix, feature = "experimental-social"))]
@@ -424,8 +419,8 @@ fn rooms_page() -> String {
             cfg!(feature = "experimental-rooms-node"),
         ),
         (
-            "experimental-rooms-tui",
-            cfg!(feature = "experimental-rooms-tui"),
+            "experimental-rooms-replica",
+            cfg!(feature = "experimental-rooms-replica"),
         ),
     ] {
         let note = format!("(build: --features {feature})");

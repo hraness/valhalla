@@ -1,4 +1,4 @@
-//! The `rooms submit` command: the scriptable sibling of `rooms tui`.
+//! The `rooms submit` command: scriptable signed room updates.
 //!
 //! `vhalla rooms submit SOCIAL_STORE REPLICA_HOME REALM NODE_HOME KIND
 //! ARGS... --config FILE` opens the replica service, asks it for the
@@ -10,8 +10,8 @@
 
 use std::path::Path;
 
-use vhalla_rooms_app::{Service, ServiceConfig};
-use vhalla_rooms_tui::{form, sign, CREATE_LABELS, DESCRIBE_LABELS};
+use vhalla_rooms_app::sign::{form, CREATE_LABELS, DESCRIBE_LABELS};
+use vhalla_rooms_app::{sign, Service, ServiceConfig};
 
 use crate::rooms::Args;
 

@@ -1,5 +1,5 @@
 #![cfg(unix)]
-//! `status`, `tui`, `commands`, `doctor` and `outputs`: one process per
+//! `status`, `commands`, `doctor` and `outputs`: one process per
 //! command, the shared JSON envelope, and parity with the retired menu bar.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -57,11 +57,6 @@ impl Drop for Home {
     }
 }
 
-fn without_stamp(mut value: Value) -> Value {
-    value.as_object_mut().unwrap().remove("generatedAt");
-    value
-}
-
 fn seed(home: &Home) {
     let state = home.state();
     std::fs::create_dir_all(state.join("outputs")).unwrap();
@@ -80,7 +75,7 @@ fn seed(home: &Home) {
 }
 
 #[test]
-fn tui_json_is_status_json() {
+fn status_json_reports_the_seeded_state() {
     let home = Home::new("parity");
     seed(&home);
     let (code, status) = home.json(&["status", "--json"]);
@@ -90,30 +85,27 @@ fn tui_json_is_status_json() {
     assert_eq!(status["data"]["state"], "sends-waiting");
     assert_eq!(status["data"]["headline"], "2 sends waiting");
     assert_eq!(status["data"]["outputs"]["files"][0]["name"], "summary.md");
-    let (code, tui) = home.json(&["tui", "--json"]);
-    assert_eq!(code, 0);
-    assert_eq!(without_stamp(status), without_stamp(tui));
 }
 
 #[test]
-fn tui_snapshot_prints_every_view_at_the_width_asked() {
-    let home = Home::new("snapshot");
+fn status_prints_the_status_text() {
+    let home = Home::new("status-text");
     seed(&home);
-    for width in ["40", "80", "120"] {
-        let out = home.run(&["tui", "--snapshot", "--width", width]);
-        assert!(out.status.success());
-        let text = String::from_utf8(out.stdout).unwrap();
-        assert!(text.starts_with("== Status ==\n"), "{text}");
-        assert!(text.contains("\n== Outputs ==\n"), "{text}");
-        assert!(text.contains("2 sends waiting"), "{text}");
-        let width: usize = width.parse().unwrap();
-        assert!(text.lines().all(|l| l.chars().count() <= width), "{text}");
-    }
-    // Not a terminal: a snapshot without asking.
+    let out = home.run(&["status"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("2 sends waiting"), "{text}");
+    assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+}
+
+#[test]
+fn tui_is_retired() {
+    let home = Home::new("tui-retired");
     let out = home.run(&["tui"]);
-    assert!(String::from_utf8(out.stdout)
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8(out.stderr)
         .unwrap()
-        .starts_with("== Status ==\n"));
+        .contains("Unknown command \"tui\""));
 }
 
 #[test]
@@ -160,7 +152,9 @@ fn commands_json_lists_every_verb_with_its_class() {
             .unwrap_or_else(|| panic!("{path:?} in {value}"))
     };
     assert_eq!(find(&["status"])["opClass"], "read");
-    assert_eq!(find(&["tui"])["opClass"], "read");
+    assert!(verbs
+        .iter()
+        .all(|v| v["path"] != serde_json::json!(["tui"])));
     assert_eq!(find(&["doctor"])["opClass"], "read");
     assert_eq!(find(&["doctor", "retire"])["opClass"], "operate");
     assert_eq!(find(&["outputs", "open"])["opClass"], "operate");
@@ -197,7 +191,7 @@ fn usage_errors_are_envelopes_with_exit_two() {
     let home = Home::new("usage");
     for args in [
         &["status", "--bogus", "--json"][..],
-        &["tui", "--width", "5", "--json"],
+        &["status", "--width", "5", "--json"],
         &["doctor", "extra", "--json"],
         &["outputs", "open", "../x", "--json"],
         &["status", "refresh", "--json"],
@@ -235,7 +229,7 @@ fn outputs_list_and_a_missing_file() {
 #[test]
 fn every_new_command_answers_help() {
     let home = Home::new("help");
-    for command in ["status", "tui", "doctor", "commands", "outputs"] {
+    for command in ["status", "doctor", "commands", "outputs"] {
         for form in [
             vec![command, "--help"],
             vec![command, "-h"],

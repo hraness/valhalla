@@ -1,12 +1,11 @@
 #![cfg(unix)]
 //! The `rooms submit` and `rooms pending` commands: scriptable signed
 //! submissions into a live validator's intake, with marker resolution
-//! reported back through the replica. This is the noninteractive half of
-//! the room-directory surface — the same signing assembly the TUI runs.
+//! reported back through the replica.
 
 #[cfg(all(
     feature = "experimental-rooms",
-    not(feature = "experimental-rooms-tui")
+    not(feature = "experimental-rooms-replica")
 ))]
 #[test]
 fn submit_command_reports_missing_feature() {
@@ -27,10 +26,10 @@ fn submit_command_reports_missing_feature() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8(output.stderr)
         .unwrap()
-        .contains("experimental-rooms-tui"));
+        .contains("experimental-rooms-replica"));
 }
 
-#[cfg(feature = "experimental-rooms-tui")]
+#[cfg(feature = "experimental-rooms-replica")]
 mod enabled {
     use std::{
         fs,

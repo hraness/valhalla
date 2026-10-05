@@ -947,5 +947,10 @@ fn row(room: &vhalla_rooms::registry::Room) -> RoomRow {
     }
 }
 
+/// Signing assembly for `rooms submit`: identity paths, not keys, plus
+/// the committed replica context the service returns.
+#[cfg(unix)]
+pub mod sign;
+
 #[cfg(all(test, unix))]
 mod tests;

@@ -45,12 +45,10 @@ mod rooms;
 mod rooms_node;
 #[cfg(all(unix, feature = "experimental-rooms-node"))]
 mod rooms_overlay;
-#[cfg(all(unix, feature = "experimental-rooms-tui"))]
+#[cfg(all(unix, feature = "experimental-rooms-replica"))]
 mod rooms_submit;
 #[cfg(all(unix, feature = "experimental-rooms-node"))]
 mod rooms_tailcat;
-#[cfg(all(unix, feature = "experimental-rooms-tui"))]
-mod rooms_tui;
 
 fn main() {
     let mut args: Vec<_> = std::env::args_os().skip(1).take(65).collect();
@@ -300,7 +298,6 @@ const UNIX_ONLY_COMMANDS: &[&str] = &[
     "rooms",
     "social",
     "status",
-    "tui",
 ];
 
 #[cfg(not(unix))]
@@ -322,8 +319,8 @@ fn version() {
         "experimental-rooms",
         #[cfg(feature = "experimental-rooms-node")]
         "experimental-rooms-node",
-        #[cfg(feature = "experimental-rooms-tui")]
-        "experimental-rooms-tui",
+        #[cfg(feature = "experimental-rooms-replica")]
+        "experimental-rooms-replica",
         #[cfg(feature = "experimental-sync")]
         "experimental-sync",
         #[cfg(feature = "experimental-private")]

@@ -8,7 +8,7 @@ This page maps every menu bar action and every state it could show to the comman
 
 | Menu action | What it did | Command now |
 | --- | --- | --- |
-| `status` | The top row: rooms in sync, sends waiting or that didn't go through | `vhalla status` (or `vhalla tui` for a screen); save fresh counts with `vhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE` (the released `vhalla menubar refresh` spelling still works and runs it, with a note on stderr) |
+| `status` | The top row: rooms in sync, sends waiting or that didn't go through | `vhalla status`; save fresh counts with `vhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE` (the released `vhalla menubar refresh` spelling still works and runs it, with a note on stderr) |
 | `outputs.open.<file>` | Opened one of the newest outputs | `vhalla outputs open NAME` |
 | `outputs.reveal.<file>` | Showed that file in Finder | `vhalla outputs reveal NAME` |
 | `outputs.folder` | Opened the outputs folder ("Show all N outputs") | `vhalla outputs open`; `vhalla outputs list` lists every file |
@@ -19,7 +19,7 @@ This page maps every menu bar action and every state it could show to the comman
 
 ## States
 
-Each state the menu bar had a fixture for has a golden in `crates/vhalla-cli/tests/fixtures/status/`: `tui --snapshot` at widths 40, 80 and 120 (`NAME.w40.txt` and so on) and the `status --json` envelope (`NAME.json`).
+Each state the menu bar had a fixture for has a golden in `crates/vhalla-cli/tests/fixtures/status/`: the status text at widths 40, 80 and 120 (`NAME.w40.txt` and so on) and the `status --json` envelope (`NAME.json`).
 
 | Fixture | `status` shows |
 | --- | --- |
