@@ -65,7 +65,7 @@ const jsonLd = (page: DocPage, url: string, trail: { name: string; url: string }
 type HeadOptions = { url: string; title: string; description: string; shareTitle: string; ogImage: string; jsonLd: string; ogType?: string; robots?: string; extraHead?: string; launchStyles?: boolean };
 
 export function renderHead(template: string, opts: HeadOptions): string {
-  let head = template.slice(0, template.indexOf('  <body>'))
+  let head = template.slice(0, template.search(/\n {2}<body[ >]/))
     .replace(`\n  ${launchStylesMarker}`, opts.launchStyles ? `\n${launchStylesHead}` : '')
     .replace('data-hraness-pattern="cells"', 'data-hraness-pattern="none"')
     .replace(/<title>.*?<\/title>/, `<title>${escape(opts.title)}</title>`)
@@ -110,7 +110,7 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
   const index = opts.siblings.indexOf(page);
   const next = opts.siblings[index + 1]; const prev = opts.siblings[index - 1];
   const content = body.replaceAll('<div class="table-wrap">', '<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable reference table">');
-  return `${head}  <body class="docs-page"><a class="skip-link" href="#main">Skip to content</a>${header}<div class="page">
+  return `${head}  <body class="docs-page" data-hraness-landscape="page"><a class="skip-link" href="#main">Skip to content</a>${header}<div class="page">
   <details class="mobile-doc-nav"><summary>${escape(opts.navTitle)}${page.slug ? ` · ${escape(page.kicker)}` : ''}</summary>${opts.nav}</details>
   <div class="docs-layout"><aside class="doc-sidebar">${opts.nav}</aside><main id="main" class="doc-main"><div class="doc-header"><p class="eyebrow">${escape(page.kicker)}</p><h1>${escape(page.title)}</h1><p class="doc-lede">${escape(page.summary)}</p></div><article class="doc-content">${content}</article>
   <nav class="doc-pagination" aria-label="Previous and next pages">${prev ? `<a href="${opts.siblingHref(prev)}"><small>Previous</small>← ${escape(prev.kicker)}</a>` : '<span></span>'}${next ? `<a href="${opts.siblingHref(next)}"><small>Next</small>${escape(next.kicker)} →</a>` : '<span></span>'}</nav>
@@ -264,7 +264,7 @@ export function renderArticle(article: Article, template: string): string {
     afterHtml: articleFooterHtml(article),
   });
   const nav = writingNav(href);
-  return `${head}  <body class="docs-page article-page"><a class="skip-link" href="#main">Skip to content</a>${masthead(template)}<div class="page">
+  return `${head}  <body class="docs-page article-page" data-hraness-landscape="page"><a class="skip-link" href="#main">Skip to content</a>${masthead(template)}<div class="page">
   <details class="mobile-doc-nav"><summary>Writing · ${escape(article.navLabel)}</summary>${nav}</details>
   <div class="docs-layout article-layout"><aside class="doc-sidebar">${nav}</aside><main id="main" class="doc-main">${main}
   <p class="doc-updated"><a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main></div>

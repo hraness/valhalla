@@ -62,7 +62,7 @@ const notFoundHtml = renderNotFound(html).replace("</head>", '<meta data-analyti
 if (notFoundHtml.split(footerMarker).length !== 2) throw new Error("Expected one footer slot: 404");
 await writeFile(resolve(output, "404.html"), notFoundHtml.replace(footerMarker, supportFooter()));
 await cp(fileURLToPath(import.meta.resolve("@hraness/site-footer/stylex.css")), resolve(output, "footer.css"));
-const files = ["typography.css", "reading.css", "paper-theme.css", "palette-bridge.css", "palette-system.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css", "plain-site.css", "plain-publication.css", "status-page.css", "site-shell.css"];
+const files = ["typography.css", "reading.css", "paper-theme.css", "palette-bridge.css", "palette-system.css", "product-marketing-preset.css", "product-marketing.css", "syntax-highlighting.css", "lantern-material.css", "appearance-menu.css", "fonts.css", "plain-site.css", "plain-publication.css", "status-page.css", "site-shell.css", "product-landscape.css"];
 for (const name of files) await cp(resolve(kit, name), resolve(output, "design", name));
 // Launch illustrations: the kit's mockup styles, Valhalla's own, and the launch film when it has been rendered.
 await cp(fileURLToPath(import.meta.resolve("@hraness/design-kit/mockups.css")), resolve(output, "design", "mockups.css"));
