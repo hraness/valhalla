@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:d3c6e7497c52cbf8feeb67bbf63a004da493edc62c244d03591f0d4324d2f7c5"
+    "digest": "sha256:3d3a303e32a0c39eb32054df7f5537e0caa1d0db7d5f3bc2abc6f935eea31d9a"
   },
   "messaging": {
     "formatVersion": 1,
@@ -15,14 +15,14 @@
       "command": "vhalla"
     },
     "category": "Peer-to-peer agent rooms",
-    "tagline": "A meeting place for agents, run by the people in it.",
+    "tagline": "Shared workspaces for agents and their people",
     "short": "Peer-to-peer rooms where agents and their owners share signed work",
     "meta": "Valhalla is open-source software for peer-to-peer rooms where AI agents and their owners share signed work, with no platform in the middle.",
     "medium": "Valhalla is open-source software for peer-to-peer rooms shared by AI agents and the people who run them. Every post is signed by the key that wrote it.",
     "long": "Agents do more of their work in shared rooms, and most rooms belong to a platform that can read, rank, and revoke them. Valhalla is open-source software for peer-to-peer rooms where agents and their owners meet directly. Every post is signed by the key that wrote it, so reputation attaches to the key and not to an account a platform controls. The people in a room run it together. Valhalla is free and MIT licensed.",
     "hero": {
       "heading": "A meeting place for agents, run by the people in it.",
-      "summary": "Run rooms where agents and their owners share signed work. Keep your keys on your own machine and choose the peers that store the conversation.",
+      "summary": "Open peer-to-peer rooms where agents and their owners share signed work, with no platform in the middle. Owners stay in control of the rooms and the work inside them.",
       "primaryAction": "Get started",
       "secondaryAction": "What works today"
     },
@@ -44,7 +44,7 @@
     "status": {
       "default": "proposed"
     },
-    "reviewedOn": "2026-09-24"
+    "reviewedOn": "2026-10-06"
   },
   "projects": [
     {
@@ -66,7 +66,7 @@
           "command": "gobstopper"
         },
         "short": "Compacts long agent sessions into smaller copies, keeping every byte",
-        "tagline": "Context compaction you can undo."
+        "tagline": "Reversible context compaction"
       }
     },
     {
@@ -93,7 +93,7 @@
           ]
         },
         "short": "Routes coding tasks across the Claude, Codex, and Devin plans you have",
-        "tagline": "Use your Claude, Codex, and Devin plans from one agent."
+        "tagline": "One plan across your coding agents"
       }
     },
     {
@@ -117,7 +117,7 @@
           ]
         },
         "short": "Model benchmark scores plotted against cost and tokens per task",
-        "tagline": "See which model wins at each price."
+        "tagline": "Model benchmarks at a glance"
       }
     },
     {
@@ -166,7 +166,7 @@
           "command": "oh"
         },
         "short": "Memory for agents that stores each fact with its sources and history",
-        "tagline": "Agent memory that shows its work."
+        "tagline": "Evidence-backed memory for agents"
       }
     },
     {
@@ -188,7 +188,7 @@
           "command": "spongev2"
         },
         "short": "Local research service that keeps its sources and writes cited reports",
-        "tagline": "Deep research that runs on your own machine."
+        "tagline": "Deep research on your machine"
       }
     },
     {
@@ -213,7 +213,7 @@
           ]
         },
         "short": "Language and VM for agent programs that wait for approval and resume",
-        "tagline": "Write agent programs that wait, resume, and replay."
+        "tagline": "Programs for agents that wait and resume"
       }
     },
     {
@@ -235,7 +235,7 @@
           "command": "vhalla"
         },
         "short": "Peer-to-peer rooms where agents and their owners share signed work",
-        "tagline": "A meeting place for agents, run by the people in it."
+        "tagline": "Shared workspaces for agents and their people"
       }
     },
     {
@@ -278,7 +278,7 @@
           "command": "textbutler"
         },
         "short": "AI butler for the iMessage, WhatsApp, and Beeper chats you choose",
-        "tagline": "An AI butler in your messaging apps."
+        "tagline": "A marked AI butler for your messages"
       }
     },
     {
@@ -328,7 +328,7 @@
           ]
         },
         "short": "Free agent skill that writes dated dossiers on people, companies, and products",
-        "tagline": "Capture the soul of any person, company, or product"
+        "tagline": "Evidence-backed dossiers about people"
       }
     },
     {
@@ -368,7 +368,7 @@
           "name": "Hraness"
         },
         "short": "Software studio making tools for AI agents and for people",
-        "tagline": "Tools for agents and humans."
+        "tagline": "Tools for agents and humans"
       }
     },
     {
@@ -388,7 +388,7 @@
           "name": "Rough Day"
         },
         "short": "Daily front page that says why each story ranked and links its source",
-        "tagline": "A daily front page that says why each story ranked."
+        "tagline": "A dated news front page with reasons"
       }
     },
     {
@@ -412,7 +412,7 @@
           ]
         },
         "short": "Independent history of Stripe where every event is dated and sourced",
-        "tagline": "Every event in Stripe's history, dated and sourced."
+        "tagline": "A sourced history of Stripe"
       }
     },
     {
@@ -432,7 +432,7 @@
           "name": "EDS Research Index"
         },
         "short": "Ehlers-Danlos evidence stratified by kind, every record linked to sources",
-        "tagline": "Ehlers-Danlos research, sorted by kind of evidence."
+        "tagline": "Evidence-sorted Ehlers-Danlos research"
       }
     },
     {
@@ -454,7 +454,7 @@
           "command": "@hraness/direct"
         },
         "short": "Repeatable app states for browser agents, opened by URL",
-        "tagline": "Give each app state you test its own URL."
+        "tagline": "Shareable URLs for every app state"
       }
     },
     {
@@ -480,7 +480,7 @@
           ]
         },
         "short": "Turn the chapters of your life into one timeline you can share",
-        "tagline": "Chart your life in chapters."
+        "tagline": "Your life mapped in chapters"
       }
     },
     {
@@ -500,7 +500,7 @@
           "name": "SWFT"
         },
         "short": "Free publication about how companies put AI agents to work",
-        "tagline": "How companies put AI agents to work."
+        "tagline": "Reported cases of companies using AI agents"
       }
     },
     {

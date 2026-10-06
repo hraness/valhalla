@@ -163,11 +163,11 @@ test("every social card fits the template as written", () => {
     expect(fit.description?.cut ?? "none", card.file).toBe("none");
     expect(fit.headline.threeLine, card.file).toBe(false);
   }
-  // The home card carries the hero's eyebrow over the hero heading.
+  // The home card carries the hero's eyebrow over the tagline headline.
   const homeCard = socialImageFit(socialImageSiteDetails(socialSite, socialCards.find(card => card.file === "social.png")?.page));
   expect(homeCard.layout).toBe("product");
   expect(homeCard.eyebrow).toBe(heroEyebrow.toUpperCase());
-  expect(homeCard.headline.lines.join(" ")).toBe(marketing.hero.heading);
+  expect(homeCard.headline.lines.join(" ")).toBe(marketing.tagline);
   expect(pages.get("/")).toContain(`<p class="eyebrow">${heroEyebrow}</p>`);
   // Every collection card keeps its eyebrow: none is dropped as a repeat of its headline.
   for (const card of socialCards.filter(item => item.page)) {
