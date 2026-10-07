@@ -11,6 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_PEERS: usize = 512;
 pub const MAX_EVENTS: usize = 10_000;
 pub const MAX_STEPS: usize = 10_000;
+/// Maximum forwarding candidates considered in one simulation step.
+pub const MAX_STEP_TRANSFER_ATTEMPTS: usize = 1_000_000;
+/// Maximum forwarding candidates considered in one complete simulation.
+pub const MAX_TRANSFER_ATTEMPTS: usize = 50_000_000;
+const FORWARDING_LINKS_PER_PEER: usize = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
@@ -50,6 +55,20 @@ impl Config {
         }
         if self.churn_percent > 100 {
             return Err(SimError::Limit("churn_percent"));
+        }
+        let attempts_per_step = self
+            .peers
+            .checked_mul(self.events)
+            .and_then(|value| value.checked_mul(FORWARDING_LINKS_PER_PEER))
+            .ok_or(SimError::Limit("transfer attempts per step"))?;
+        if attempts_per_step > MAX_STEP_TRANSFER_ATTEMPTS {
+            return Err(SimError::Limit("transfer attempts per step"));
+        }
+        let attempts = attempts_per_step
+            .checked_mul(self.steps)
+            .ok_or(SimError::Limit("transfer attempts"))?;
+        if attempts > MAX_TRANSFER_ATTEMPTS {
+            return Err(SimError::Limit("transfer attempts"));
         }
         match (self.partition_start, self.partition_end) {
             (Some(start), Some(end)) if start >= end || end > self.steps => {
@@ -167,6 +186,18 @@ fn event_id(seed: u64, author: usize, sequence: u64, parents: &[u64]) -> u64 {
     h
 }
 
+const DIGEST_MULTIPLIER: u64 = 0x9e3779b185ebca87;
+const DIGEST_DOMAIN: u64 = 0xd6e8feb86659fd93;
+const DIGEST_OFFSET: u64 = 0x6a09e667f3bcc909;
+
+fn mix_digest(digest: &mut u64, tag: u64, value: u64) {
+    *digest = (*digest ^ tag.wrapping_mul(DIGEST_DOMAIN))
+        .rotate_left(17)
+        .wrapping_mul(DIGEST_MULTIPLIER)
+        ^ value.wrapping_mul(DIGEST_DOMAIN);
+    *digest = (*digest).rotate_left(29).wrapping_mul(DIGEST_MULTIPLIER);
+}
+
 pub fn run(config: Config) -> Result<Receipt, SimError> {
     config.validate()?;
     let mut rng = Rng::new(config.seed);
@@ -233,10 +264,15 @@ pub fn run(config: Config) -> Result<Receipt, SimError> {
 
         // A ring plus deterministic skip links approximates a sparse gossip
         // mesh without making topology generation depend on platform APIs.
-        let mut transfers = Vec::new();
+        // A set makes duplicate forwarding attempts explicit and keeps the
+        // pending batch bounded by the validated per-step transfer budget.
+        let mut transfers = BTreeSet::new();
         for left in 0..config.peers {
             let right = (left + 1) % config.peers;
-            let skip = (left + 1 + (rng.next() as usize % config.peers)) % config.peers;
+            // Reduce before converting to usize so 32-bit and 64-bit targets
+            // choose the same topology for a given seed.
+            let skip_offset = (rng.next() % config.peers as u64) as usize;
+            let skip = (left + 1 + skip_offset) % config.peers;
             for neighbor in [right, skip] {
                 if neighbor == left || !peers[left].online || !peers[neighbor].online {
                     continue;
@@ -244,14 +280,9 @@ pub fn run(config: Config) -> Result<Receipt, SimError> {
                 if partitioned && (left < config.peers / 2) != (neighbor < config.peers / 2) {
                     continue;
                 }
-                let from: Vec<u64> = peers[left].events.iter().copied().collect();
-                let to: Vec<u64> = peers[neighbor].events.iter().copied().collect();
-                let have: BTreeSet<u64> = to.into_iter().collect();
-                for id in from {
-                    if have.contains(&id) {
+                for id in peers[left].events.iter().copied() {
+                    if peers[neighbor].events.contains(&id) || !transfers.insert((neighbor, id)) {
                         duplicate_suppressed += 1;
-                    } else {
-                        transfers.push((neighbor, id));
                     }
                 }
             }
@@ -278,15 +309,62 @@ pub fn run(config: Config) -> Result<Receipt, SimError> {
                 .count()
         })
         .sum();
-    let mut digest = config.seed ^ 0x6a09e667f3bcc909;
-    for (id, event) in &events {
-        digest = digest.rotate_left(9) ^ *id ^ event.author as u64 ^ event.sequence;
+    // Bind every manifest-controlled input, not only observed counters. For
+    // example, one-peer partitions can produce identical counters at different
+    // intervals, but those are still different experiments.
+    let mut digest = DIGEST_OFFSET;
+    mix_digest(&mut digest, 0, 2);
+    mix_digest(&mut digest, 1, config.seed);
+    mix_digest(&mut digest, 2, config.peers as u64);
+    mix_digest(&mut digest, 3, config.events as u64);
+    mix_digest(&mut digest, 4, config.steps as u64);
+    mix_digest(&mut digest, 5, u64::from(config.churn_percent));
+    match config.partition_start {
+        Some(value) => {
+            mix_digest(&mut digest, 6, 1);
+            mix_digest(&mut digest, 7, value as u64);
+        }
+        None => mix_digest(&mut digest, 6, 0),
     }
-    for peer in &peers {
-        digest = digest.rotate_left(7) ^ peer.events.len() as u64 ^ u64::from(peer.online);
+    match config.partition_end {
+        Some(value) => {
+            mix_digest(&mut digest, 8, 1);
+            mix_digest(&mut digest, 9, value as u64);
+        }
+        None => mix_digest(&mut digest, 8, 0),
+    }
+    for (event_index, (id, event)) in events.iter().enumerate() {
+        mix_digest(&mut digest, 10, event_index as u64);
+        mix_digest(&mut digest, 11, *id);
+        mix_digest(&mut digest, 12, event.author as u64);
+        mix_digest(&mut digest, 13, event.sequence);
+        mix_digest(&mut digest, 14, event.parents.len() as u64);
+        for (parent_index, parent) in event.parents.iter().enumerate() {
+            mix_digest(&mut digest, 15, parent_index as u64);
+            mix_digest(&mut digest, 16, *parent);
+        }
+    }
+    for (peer_index, peer) in peers.iter().enumerate() {
+        mix_digest(&mut digest, 17, peer_index as u64);
+        mix_digest(&mut digest, 18, u64::from(peer.online));
+        mix_digest(&mut digest, 19, peer.events.len() as u64);
+        for id in &peer.events {
+            mix_digest(&mut digest, 20, *id);
+        }
+    }
+    for (tag, value) in [
+        (21, delivered_events as u64),
+        (22, duplicate_suppressed as u64),
+        (23, orphan_references as u64),
+        (24, partition_steps as u64),
+        (25, churn_steps as u64),
+    ] {
+        mix_digest(&mut digest, tag, value);
     }
     Ok(Receipt {
-        schema_version: 1,
+        // Digest semantics changed in schema version 2 to bind the full
+        // manifest, so old verifiers cannot silently accept a mismatched run.
+        schema_version: 2,
         seed: config.seed,
         peers: config.peers,
         configured_events: config.events,
@@ -319,7 +397,63 @@ mod tests {
             partition_end: None,
             ..Config::default()
         };
-        assert_eq!(run(config.clone()).unwrap(), run(config).unwrap());
+        let first = run(config.clone()).unwrap();
+        let second = run(config).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.to_json(), second.to_json());
+    }
+
+    #[test]
+    fn receipt_digest_binds_schedule_inputs() {
+        let first = Config {
+            peers: 1,
+            events: 1,
+            steps: 2,
+            churn_percent: 0,
+            partition_start: Some(0),
+            partition_end: Some(1),
+            ..Config::default()
+        };
+        let second = Config {
+            partition_start: Some(1),
+            partition_end: Some(2),
+            ..first.clone()
+        };
+        let first_receipt = run(first).unwrap();
+        let second_receipt = run(second).unwrap();
+        assert_eq!(
+            first_receipt.partition_steps,
+            second_receipt.partition_steps
+        );
+        assert_eq!(
+            first_receipt.delivered_events,
+            second_receipt.delivered_events
+        );
+        assert_ne!(first_receipt.digest, second_receipt.digest);
+    }
+
+    #[test]
+    fn digest_distinguishes_extreme_seeds() {
+        let config = Config {
+            peers: 1,
+            events: 1,
+            steps: 1,
+            churn_percent: 0,
+            partition_start: None,
+            partition_end: None,
+            ..Config::default()
+        };
+        let zero = run(Config {
+            seed: 0,
+            ..config.clone()
+        })
+        .unwrap();
+        let maximum = run(Config {
+            seed: u64::MAX,
+            ..config
+        })
+        .unwrap();
+        assert_ne!(zero.digest, maximum.digest);
     }
 
     #[test]
@@ -338,11 +472,63 @@ mod tests {
     }
 
     #[test]
+    fn receipts_account_for_duplicates_and_orphans() {
+        let duplicate_config = Config {
+            peers: 2,
+            events: 2,
+            steps: 2,
+            churn_percent: 0,
+            partition_start: None,
+            partition_end: None,
+            ..Config::default()
+        };
+        let duplicate_receipt = run(duplicate_config).unwrap();
+        assert!(duplicate_receipt.delivered_events > 0);
+        assert!(duplicate_receipt.duplicate_suppressed > 0);
+
+        let orphan_config = Config {
+            peers: 4,
+            events: 4,
+            steps: 1,
+            churn_percent: 0,
+            partition_start: Some(0),
+            partition_end: Some(1),
+            ..Config::default()
+        };
+        let orphan_receipt = run(orphan_config).unwrap();
+        assert_eq!(orphan_receipt.partition_steps, 1);
+        assert!(orphan_receipt.orphan_references > 0);
+
+        let churn_config = Config {
+            peers: 2,
+            events: 2,
+            steps: 2,
+            churn_percent: 100,
+            partition_start: None,
+            partition_end: None,
+            ..Config::default()
+        };
+        let churn_receipt = run(churn_config).unwrap();
+        assert_eq!(churn_receipt.churn_steps, 2);
+    }
+
+    #[test]
     fn bounds_are_fail_closed() {
         let config = Config {
             peers: MAX_PEERS + 1,
             ..Config::default()
         };
         assert_eq!(run(config), Err(SimError::Limit("peers")));
+
+        let config = Config {
+            peers: MAX_PEERS,
+            events: MAX_EVENTS,
+            steps: 1,
+            ..Config::default()
+        };
+        assert_eq!(
+            run(config),
+            Err(SimError::Limit("transfer attempts per step"))
+        );
     }
 }
