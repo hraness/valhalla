@@ -10,7 +10,7 @@ CSP = "; ".join([
     "default-src 'none'", "script-src 'self' 'wasm-unsafe-eval'",
     "style-src 'self'", "worker-src 'self'", "connect-src 'self' https:",
     "img-src 'self'", "base-uri 'none'", "form-action 'none'",
-    "object-src 'none'",
+    "frame-ancestors 'none'", "object-src 'none'",
 ])
 HEADERS = {
     "Content-Security-Policy": CSP,
