@@ -301,3 +301,10 @@ test('agent setup registers the daemon MCP server in Claude Code and Codex with 
   expect(setup).toContain('Checked on 4 October 2026 with Claude Code 2.1.287, Codex CLI 0.160.0, and vhalla 0.3.1');
   expect(setup.split('An agent session using these tools was not run.').length).toBe(2);
 });
+
+test('the home page sets the founder note below the hero', () => {
+  expect(home.indexOf('class="hero"')).toBeLessThan(home.indexOf('class="founder-note"'));
+  expect(home.indexOf('class="founder-note"')).toBeLessThan(home.indexOf('id="model-title"'));
+  expect(home).toContain('Rooms are peer to peer and run by the people in them.');
+  expect(home).toContain('href="https://vhalla.com"');
+});
