@@ -27,14 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: 1.98.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: headless-qualification
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -46,7 +46,7 @@ jobs:
         run: |
           cargo build --release --locked -p vhalla-cli --bin vhalla --no-default-features --features headless --message-format=json > "$RUNNER_TEMP/headless-build.jsonl"
           python3 .github/scripts/headless_qualification.py package --cargo-messages "$RUNNER_TEMP/headless-build.jsonl" --bundle "$RUNNER_TEMP/headless-bundle"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-bundle/
@@ -61,18 +61,18 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-bundle
       - name: Start the synthetic public room owner
         run: python3 .github/scripts/headless_qualification.py host-start --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-host"
       - name: Publish the public room link
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-host/descriptor.json
@@ -85,7 +85,7 @@ jobs:
           python3 .github/scripts/headless_qualification.py host-admit --work "$RUNNER_TEMP/headless-host"
           python3 .github/scripts/headless_qualification.py host-offline --work "$RUNNER_TEMP/headless-host"
       - name: Publish the replacement peer after stopping the owner
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-host-offline-ready-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-host/host-offline-ready.json
@@ -100,7 +100,7 @@ jobs:
         run: python3 .github/scripts/headless_qualification.py host-stop --work "$RUNNER_TEMP/headless-host"
       - name: Retain sanitized host evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-host-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-host/host-receipt.json
@@ -116,11 +116,11 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-bundle
@@ -129,7 +129,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/headless_qualification.py client-start --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-client"
       - name: Publish the member's public identity and peer link
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-client-offer-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-client/client-offer.json
@@ -138,7 +138,7 @@ jobs:
       - name: Exchange signed messages and stop the member
         run: python3 .github/scripts/headless_qualification.py client-offline --work "$RUNNER_TEMP/headless-client"
       - name: Publish the offline transition
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-client-offline-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-client/client-offline.json
@@ -153,7 +153,7 @@ jobs:
         run: python3 .github/scripts/headless_qualification.py client-stop --work "$RUNNER_TEMP/headless-client"
       - name: Retain sanitized member evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-client-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-client/client-receipt.json
@@ -168,11 +168,11 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-bundle
@@ -181,7 +181,7 @@ jobs:
       # These short-retention handoffs contain fresh synthetic bootstrap data.
       # Tokens have no cryptographic expiry; always-stop closes their mailbox.
       - name: Share this run's mailbox setup
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-host/descriptor.json
@@ -191,7 +191,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/headless_private_qualification.py host-offers --work "$RUNNER_TEMP/headless-private-host"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-host-offers-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-host/host-offers.json
@@ -201,7 +201,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/headless_private_qualification.py host-admit --work "$RUNNER_TEMP/headless-private-host"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-host-admission-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-host/host-admission.json
@@ -211,7 +211,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/headless_private_qualification.py host-offline --work "$RUNNER_TEMP/headless-private-host"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-host-offline-ready-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-host/host-offline-ready.json
@@ -228,7 +228,7 @@ jobs:
         run: python3 .github/scripts/headless_private_qualification.py host-stop --work "$RUNNER_TEMP/headless-private-host"
       - name: Retain sanitized private host evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-host-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-host/host-receipt.json
@@ -243,11 +243,11 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-bundle
@@ -255,7 +255,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/headless_private_qualification.py client-start --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-private-client"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-client-hello-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-client/client-hello.json
@@ -265,7 +265,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/headless_private_qualification.py client-requests --work "$RUNNER_TEMP/headless-private-client"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-client-requests-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-client/client-requests.json
@@ -275,7 +275,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/headless_private_qualification.py client-offline --work "$RUNNER_TEMP/headless-private-client"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-client-offline-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-client/client-offline.json
@@ -285,7 +285,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/headless_private_qualification.py client-restart --work "$RUNNER_TEMP/headless-private-client"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-client-caught-up-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-client/client-caught-up.json
@@ -300,7 +300,7 @@ jobs:
         run: python3 .github/scripts/headless_private_qualification.py client-stop --work "$RUNNER_TEMP/headless-private-client"
       - name: Retain sanitized private client evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-private-client-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-private-client/client-receipt.json
@@ -312,11 +312,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-bundle
@@ -346,7 +346,7 @@ jobs:
         run: python3 .github/scripts/headless_linux_managed_qualification.py cleanup --bundle "$RUNNER_TEMP/headless-bundle" --work "$RUNNER_TEMP/headless-linux-managed"
       - name: Retain sanitized Linux managed evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-linux-managed-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -360,11 +360,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-bundle
@@ -384,7 +384,7 @@ jobs:
           PY
       - name: Retain sanitized MCP process evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: headless-mcp-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/headless-mcp/receipt.json

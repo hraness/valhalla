@@ -64,14 +64,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: 1.98.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: iroh-qualification
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -81,7 +81,7 @@ jobs:
         run: |
           cargo test --no-run --lib --locked -p vhalla-private-native --features agent-rpc,relay-iroh --message-format=json > "$RUNNER_TEMP/iroh-build.jsonl"
           python3 .github/scripts/iroh_qualification.py package --cargo-messages "$RUNNER_TEMP/iroh-build.jsonl" --bundle "$RUNNER_TEMP/iroh-bundle"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-bundle/
@@ -96,18 +96,18 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-bundle
       - name: Start the bounded synthetic host supervisor
         run: python3 .github/scripts/iroh_qualification.py host-start --bundle "$RUNNER_TEMP/iroh-bundle" --work "$RUNNER_TEMP/iroh-host"
       - name: Publish the short-lived synthetic descriptor while the host runs
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: iroh-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
           # This file has only the public endpoint and a newly generated token
@@ -124,7 +124,7 @@ jobs:
         run: python3 .github/scripts/iroh_qualification.py host-stop --work "$RUNNER_TEMP/iroh-host"
       - name: Retain sanitized host evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: iroh-host-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-host/host-receipt.json
@@ -140,11 +140,11 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: iroh-binary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-bundle
@@ -154,7 +154,7 @@ jobs:
         run: python3 .github/scripts/iroh_qualification.py client --bundle "$RUNNER_TEMP/iroh-bundle" --work "$RUNNER_TEMP/iroh-client"
       - name: Publish sanitized completion even after failure
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: iroh-client-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/iroh-client/client-receipt.json

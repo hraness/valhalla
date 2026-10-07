@@ -12,7 +12,7 @@ const browser=await resolvePinnedBrowser(browserArg==='--pinned'?undefined:brows
 const root=resolve(rootArg),out=resolve(outArg);await mkdir(out,{recursive:false});
 const profile=await mkdtemp(join(out,'profile-'));
 const hashes={};for(const name of await readdir(root)){if(/\.(js|wasm)$/.test(name))hashes[name]=createHash('sha256').update(await readFile(join(root,name))).digest('hex');}
-const csp="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'";
+const csp="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; base-uri 'none'";
 const page='<!doctype html><meta charset="utf-8"><title>Private MLS worker qualification</title><script type="module" src="/main.js"></script>';
 const main=`globalThis.done=(async()=>{
   const run=denied=>new Promise((resolve,reject)=>{
