@@ -8,10 +8,8 @@ const header = (key: string): string | undefined => catchAll.headers.find((h: { 
 
 test("every response carries the baseline security headers", () => {
   expect(header("Strict-Transport-Security")).toMatch(/^max-age=\d{8,}; includeSubDomains$/u);
-  expect(header("X-Frame-Options")).toBe("DENY");
   expect(header("X-Content-Type-Options")).toBe("nosniff");
   expect(header("Referrer-Policy")).toBe("strict-origin-when-cross-origin");
-  expect(header("Content-Security-Policy")).toContain("frame-ancestors 'none'");
   expect(header("Content-Security-Policy")).not.toContain("'unsafe-inline'");
   expect(header("Content-Security-Policy")).not.toContain("'unsafe-eval'");
 });

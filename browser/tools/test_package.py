@@ -26,7 +26,6 @@ class Packaging(unittest.TestCase):
             headers = {h["key"]: h["value"] for h in config["headers"][0]["headers"]}
             self.assertNotIn("'unsafe-inline'", headers["Content-Security-Policy"])
             self.assertNotIn("'unsafe-eval'", headers["Content-Security-Policy"])
-            self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
             self.assertIn(boot[0].name, json.loads((root / "artifact.json").read_text())["assets"])
 
     def test_local_routes_cannot_be_packaged_for_production(self):

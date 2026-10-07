@@ -23,7 +23,7 @@ const HEADER_MAX: usize = 8192;
 pub const ENDPOINT: &str = "/private-relay/v1";
 /// Public UI artifact memory cap, separate from relay ciphertext bounds.
 pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
-const CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self' https:; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
+const CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self' https:; img-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'";
 
 /// Independent browser admission secret. Never reuse the upstream relay token.
 #[derive(Clone)]
