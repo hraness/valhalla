@@ -19,6 +19,8 @@ const kit = dirname(fileURLToPath(import.meta.resolve("@hraness/design-kit/paper
 await rm(output, { recursive: true, force: true });
 await mkdir(resolve(output, "design"), { recursive: true });
 for (const name of ["styles.css", "icon.png", "apple-icon.png", "social.png", "og-docs.png", "og-compare.png", "og-writing.png", "og-usecases.png", "robots.txt", "install.sh", "install.ps1", "valhalla-mark.svg"]) await cp(resolve(root, name), resolve(output, name));
+await mkdir(resolve(output, ".well-known"), { recursive: true });
+await cp(resolve(root, ".well-known", "security.txt"), resolve(output, ".well-known", "security.txt"));
 await writeFile(resolve(output, "sitemap.xml"), renderSitemap(await readFile(resolve(root, "sitemap.xml"), "utf8")));
 await writeFile(resolve(output, "llms.txt"), renderLlms(await readFile(resolve(root, "llms.txt"), "utf8")));
 const html = withAnalytics(renderMarketingCopy(await readFile(resolve(root, "index.html"), "utf8")));
