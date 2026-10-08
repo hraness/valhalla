@@ -292,20 +292,32 @@ def api_request(path, maximum=1024 * 1024):
     url = f"https://api.github.com/repos/{repository}/{path}"
     request = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
         "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+    opener = urllib.request.build_opener(NoRedirect())
     try:
-        response = urllib.request.build_opener(NoRedirect()).open(request, timeout=15)
+        response = opener.open(request, timeout=15)
     except urllib.error.HTTPError as error:
         if error.code != 302:
             raise
-        destination = error.headers["Location"]
+        destination = error.headers.get("Location")
+        error.close()
+        # Listings must come from the API; only a selected artifact zip can leave it.
+        require(re.fullmatch(r"actions/artifacts/[1-9][0-9]*/zip", path),
+                "unexpected API redirect")
+        require(destination is not None, "artifact redirect has no destination")
         parsed = urllib.parse.urlsplit(destination)
         require(parsed.scheme == "https" and parsed.username is None and parsed.password is None,
                 "unsafe artifact download redirect")
         require(parsed.hostname and any(parsed.hostname.endswith(suffix) for suffix in
                 (".blob.core.windows.net", ".actions.githubusercontent.com", ".githubusercontent.com")),
                 "unexpected artifact download host")
-        # Never forward the repository token to the signed blob URL.
-        response = urllib.request.urlopen(destination, timeout=15)
+        # Never forward the repository token; this opener forbids further redirects.
+        try:
+            response = opener.open(urllib.request.Request(destination), timeout=15)
+        except urllib.error.HTTPError as redirected:
+            if 300 <= redirected.code < 400:
+                redirected.close()
+                raise ValueError("artifact download redirected twice") from None
+            raise
     with response:
         raw = response.read(maximum + 1)
     require(len(raw) <= maximum, "artifact response exceeded byte bound")
