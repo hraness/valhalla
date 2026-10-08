@@ -444,8 +444,10 @@ def owned_command(pid: int, home: str) -> bool:
 def stop_owned_service(work: Path) -> bool:
     try:
         record = read_service_record(work)
-    except (OSError, ValueError):
-        return True
+    except (OSError, TypeError, ValueError, AttributeError):
+        # Missing or corrupt ownership evidence is not proof that the service
+        # stopped; leave cleanup unresolved rather than guessing success.
+        return False
     pid = record["pid"]
     if not group_alive(pid):
         return True
