@@ -103,7 +103,7 @@ def write_json(path: Path, value) -> None:
 
 def runtime_context() -> dict[str, str]:
     value = {
-        "source_sha": os.environ.get("GITHUB_SHA", ""),
+        "source_sha": os.environ.get("QUALIFICATION_SOURCE_SHA") or os.environ.get("GITHUB_SHA", ""),
         "run_id": os.environ.get("GITHUB_RUN_ID", ""),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
     }
@@ -666,6 +666,7 @@ function rawWrongOrigin(body) {
 }
 try {
   child=spawn(browser.executablePath,tools.requiredBrowserArgs(['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-extensions','--disable-sync','--metrics-recording-only','--no-proxy-server','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0','--user-data-dir='+profile,'about:blank']),{stdio:['ignore','pipe','pipe'],detached:true});
+  await writeFile(join(output,'browser.pid'),String(child.pid)+'\n',{mode:0o600});
   for(const stream of [child.stdout,child.stderr]) stream.on('data',chunk=>{logs.value=(logs.value+chunk.toString()).slice(-65536);});
   await wait(()=>/DevTools listening on (ws:\/\/[^\s]+)/.test(logs.value)||child.exitCode!==null);
   if(child.exitCode!==null) throw Error('pinned browser exited');
@@ -731,6 +732,7 @@ try {
   for(const waiter of pending.values()) { try { waiter.reject(Error('browser qualification closing')); } catch {} }
   pending.clear();
   try { socket?.close(); } catch {}
+  try { await rm(join(output,'browser.pid'),{force:true}); } catch {}
   let profileRemoved=false;
   if(groupCleared) { try { await rm(profile,{recursive:true,force:true}); profileRemoved=true; } catch {} }
   const stopped=child ? child.exitCode!==null : false;
@@ -740,6 +742,34 @@ try {
   if(!result.passed)process.exitCode=1;
 }
 '''
+
+
+def owned_browser_command(pid: int, output: Path) -> bool:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+        root = str(output.resolve()).encode()
+        return (b"--headless" in raw
+                and b"--remote-debugging-address=127.0.0.1" in raw
+                and b"--user-data-dir=" + root + b"/profile-" in raw)
+    except OSError:
+        return False
+
+
+def stop_timed_out_browser_driver(process: subprocess.Popen, output: Path) -> None:
+    _, node_cleared = stop_group(process.pid, grace=10.0)
+    browser_cleared = True
+    pid_path = output / "browser.pid"
+    if pid_path.exists() or pid_path.is_symlink():
+        pid_text = private_text(pid_path, 32)
+        require(POSITIVE.fullmatch(pid_text) is not None, "invalid owned browser pid")
+        browser_pid = int(pid_text)
+        if group_alive(browser_pid):
+            require(owned_browser_command(browser_pid, output),
+                    "refusing to signal an unowned browser")
+            _, browser_cleared = stop_group(browser_pid, grace=10.0)
+    require(node_cleared and browser_cleared, "browser driver cleanup deadline")
+    shutil.rmtree(output, ignore_errors=True)
+    require(not output.exists(), "browser profile cleanup failed")
 
 
 def run_browser_driver(meta: dict, work: Path, mode: str, origin: str,
@@ -753,8 +783,21 @@ def run_browser_driver(meta: dict, work: Path, mode: str, origin: str,
     item, put, page = canonical_frames(namespace)
     command = ["node", str(driver), mode, origin, capability, namespace, item, put, page,
                str(output), str(Path("browser/tools/pinned_browser.mjs").resolve())]
-    result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, env=selected_env(), timeout=150, check=False)
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, env=selected_env(),
+                               start_new_session=True)
+    try:
+        process.communicate(timeout=150)
+    except subprocess.TimeoutExpired as timeout:
+        try:
+            stop_timed_out_browser_driver(process, output)
+        finally:
+            try:
+                process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        raise TimeoutError("browser driver deadline") from timeout
+    result = process
     receipt = read_json(output / "receipt.json")
     serialized = json.dumps(receipt, sort_keys=True)
     require(capability not in serialized, "browser receipt disclosed its capability")
