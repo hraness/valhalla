@@ -62,7 +62,7 @@ jobs:
       - name: Focused controller and receipt contracts
         run: python3 -m unittest discover -s .github/scripts -p 'test_iroh_browser_qualification.py'
       - name: Native real-upstream regression
-        run: cargo test --locked -p vhalla-private-native --features relay-iroh real_iroh_upstream_retains_exact_http_items_and_refuses_browser_capability -- --exact
+        run: cargo test --locked -p vhalla-private-native --features relay-iroh relay::http::tests::real_iroh_upstream_retains_exact_http_items_and_refuses_browser_capability -- --exact
       - name: Build the pinned native CLI and production private browser
         run: |
           set -euo pipefail

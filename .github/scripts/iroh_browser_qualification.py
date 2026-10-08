@@ -144,7 +144,7 @@ def bundle_identity(bundle: Path) -> dict:
             "wrong browser bundle schema")
     require(all(meta.get(key) == value for key, value in current.items()),
             "browser bundle belongs to another run")
-    for key in ("tree_sha", "binary_sha256", "lock_sha256", "browser_manifest_sha256",
+    for key in ("binary_sha256", "lock_sha256", "browser_manifest_sha256",
                 "controller_sha256"):
         require(isinstance(meta.get(key), str) and HEX64.fullmatch(meta[key]),
                 f"invalid bundle {key}")
