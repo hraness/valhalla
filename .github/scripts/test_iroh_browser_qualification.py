@@ -1,4 +1,5 @@
 """Focused contracts for the separate-job browser/Iroh qualification lane."""
+import inspect
 import os
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,7 @@ class BrowserQualificationTests(unittest.TestCase):
             "GITHUB_SHA": "a" * 40,
             "GITHUB_RUN_ID": "100",
             "GITHUB_RUN_ATTEMPT": "2",
+            "QUALIFICATION_SOURCE_SHA": "a" * 40,
         }
         self.context = {
             "source_sha": self.env["GITHUB_SHA"],
@@ -83,9 +85,16 @@ class BrowserQualificationTests(unittest.TestCase):
                            ("GITHUB_RUN_ID", "0"),
                            ("GITHUB_RUN_ATTEMPT", "-1")):
             changed = self.env | {key: value}
+            if key == "GITHUB_SHA":
+                changed["QUALIFICATION_SOURCE_SHA"] = ""
             with self.subTest(key=key), patch.dict(os.environ, changed, clear=False):
                 with self.assertRaises(ValueError):
                     qualification.runtime_context()
+
+    def test_runtime_context_prefers_explicit_workflow_source_commit(self):
+        explicit = self.env | {"QUALIFICATION_SOURCE_SHA": "b" * 40}
+        with patch.dict(os.environ, explicit, clear=False):
+            self.assertEqual(qualification.runtime_context()["source_sha"], "b" * 40)
 
     def test_upstream_is_explicitly_pinned_and_not_an_arbitrary_probe(self):
         self.assertEqual(qualification.validate_relay_url(qualification.DEFAULT_RELAY_URL),
@@ -173,6 +182,17 @@ class BrowserQualificationTests(unittest.TestCase):
         self.assertIn("direct_path_qualified:false", qualification.BROWSER_DRIVER)
         self.assertIn("cleanup_confirmed", qualification.BROWSER_DRIVER)
         self.assertNotIn("upstream_token:", qualification.BROWSER_DRIVER)
+
+    def test_browser_driver_timeout_reaps_only_its_owned_processes(self):
+        source = inspect.getsource(qualification.run_browser_driver)
+        self.assertIn("start_new_session=True", source)
+        self.assertIn("stop_timed_out_browser_driver", source)
+        self.assertIn("browser.pid", qualification.BROWSER_DRIVER)
+        self.assertIn("detached:true", qualification.BROWSER_DRIVER)
+        self.assertIn(
+            "refusing to signal an unowned browser",
+            inspect.getsource(qualification.stop_timed_out_browser_driver),
+        )
 
 
 if __name__ == "__main__":
