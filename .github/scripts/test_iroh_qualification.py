@@ -146,6 +146,95 @@ class QualificationTests(unittest.TestCase):
             with self.subTest(entries=[e[0] for e in entries]), self.assertRaises(ValueError):
                 qualification.unpack_document(self.archive(entries), "descriptor.json")
 
+    def redirect(self, destination):
+        return qualification.urllib.error.HTTPError(
+            "https://api.github.com/repos/owner/repo/actions/artifacts/17/zip", 302, "Found",
+            {"Location": destination}, io.BytesIO(b"redirect response"))
+
+    def test_api_request_accepts_one_approved_https_hop_without_forwarding_token(self):
+        destination = "https://fixture.blob.core.windows.net/artifact?signature=synthetic"
+        first = self.redirect(destination)
+        body = io.BytesIO(b"zip")
+        opener = Mock()
+        opener.open.side_effect = [first, body]
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo", "GH_TOKEN": "private"}), \
+                patch.object(qualification.urllib.request, "build_opener", return_value=opener) as build, \
+                patch.object(qualification.urllib.request, "urlopen") as urlopen:
+            self.assertEqual(qualification.api_request("actions/artifacts/17/zip", maximum=3), b"zip")
+        build.assert_called_once()
+        self.assertIsInstance(build.call_args.args[0], qualification.NoRedirect)
+        self.assertEqual(opener.open.call_count, 2)
+        initial, download = (call.args[0] for call in opener.open.call_args_list)
+        self.assertEqual(initial.get_header("Authorization"), "Bearer private")
+        self.assertEqual(download.full_url, destination)
+        self.assertIsNone(download.get_header("Authorization"))
+        self.assertEqual(download.header_items(), [])
+        self.assertTrue(first.fp.closed)
+        self.assertTrue(body.closed)
+        urlopen.assert_not_called()
+
+    def test_api_request_refuses_second_redirect_before_reading_body(self):
+        destination = "https://fixture.actions.githubusercontent.com/artifact"
+        hostile_body = Mock()
+        second = qualification.urllib.error.HTTPError(
+            destination, 307, "Temporary Redirect", {"Location": "https://evil.example/payload"},
+            hostile_body)
+        opener = Mock()
+        opener.open.side_effect = [self.redirect(destination), second]
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo", "GH_TOKEN": "private"}), \
+                patch.object(qualification.urllib.request, "build_opener", return_value=opener), \
+                patch.object(qualification.urllib.request, "urlopen") as urlopen:
+            with self.assertRaisesRegex(ValueError, "redirected twice"):
+                qualification.api_request("actions/artifacts/17/zip")
+        self.assertEqual(opener.open.call_count, 2)
+        self.assertIsNone(opener.open.call_args.args[0].get_header("Authorization"))
+        hostile_body.read.assert_not_called()
+        hostile_body.close.assert_called_once()
+        urlopen.assert_not_called()
+
+    def test_api_request_rejects_oversized_redirect_response(self):
+        opener = Mock()
+        body = io.BytesIO(b"12345")
+        opener.open.side_effect = [self.redirect("https://fixture.githubusercontent.com/artifact"), body]
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo", "GH_TOKEN": "private"}), \
+                patch.object(qualification.urllib.request, "build_opener", return_value=opener):
+            with self.assertRaisesRegex(ValueError, "exceeded byte bound"):
+                qualification.api_request("actions/artifacts/17/zip", maximum=4)
+        self.assertTrue(body.closed)
+        self.assertEqual(opener.open.call_count, 2)
+
+    def test_api_request_refuses_unapproved_first_redirect(self):
+        for destination in ("http://fixture.blob.core.windows.net/artifact",
+                            "https://evil.example/artifact",
+                            "https://user@fixture.blob.core.windows.net/artifact"):
+            with self.subTest(destination=destination):
+                opener = Mock()
+                opener.open.side_effect = [self.redirect(destination)]
+                with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo", "GH_TOKEN": "private"}), \
+                        patch.object(qualification.urllib.request, "build_opener", return_value=opener):
+                    with self.assertRaises(ValueError):
+                        qualification.api_request("actions/artifacts/17/zip")
+                opener.open.assert_called_once()
+
+    def test_api_request_refuses_inventory_redirect_and_missing_location(self):
+        for path, headers, refusal in (
+            ("actions/runs/100/artifacts?per_page=100&page=1",
+             {"Location": "https://fixture.blob.core.windows.net/forged-list"}, "unexpected API redirect"),
+            ("actions/artifacts/17/zip", {}, "artifact redirect has no destination"),
+        ):
+            with self.subTest(path=path):
+                first = qualification.urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo/" + path, 302, "Found", headers,
+                    io.BytesIO(b"redirect response"))
+                opener = Mock()
+                opener.open.side_effect = [first]
+                with patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo", "GH_TOKEN": "private"}), \
+                        patch.object(qualification.urllib.request, "build_opener", return_value=opener):
+                    with self.assertRaisesRegex(ValueError, refusal):
+                        qualification.api_request(path)
+                opener.open.assert_called_once()
+                self.assertTrue(first.fp.closed)
+
     def test_test_process_receives_no_repository_or_runtime_tokens(self):
         with patch.dict(os.environ, {"GH_TOKEN": "private", "ACTIONS_RUNTIME_TOKEN": "private",
                                     "GITHUB_TOKEN": "private", "PROVIDER_SECRET": "private",
