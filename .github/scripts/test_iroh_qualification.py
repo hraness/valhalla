@@ -58,6 +58,85 @@ class QualificationTests(unittest.TestCase):
                     archive.writestr(name, value)
         return data.getvalue()
 
+    def artifact(self, identity, selected=False):
+        return dict(name="iroh-descriptor-100-2" if selected else f"other-{identity}",
+                    id=identity, expired=False, size_in_bytes=512)
+
+    def pages_api(self, pages):
+        calls = []
+
+        def respond(path):
+            calls.append(path)
+            if path.startswith("actions/artifacts/"):
+                return self.archive([("descriptor.json", '{"synthetic":true}')])
+            return json.dumps(pages[int(path.rsplit("&page=", 1)[1]) - 1]).encode()
+
+        return respond, calls
+
+    def test_poll_waits_for_complete_multi_page_inventory_before_download(self):
+        pages = [dict(total_count=101, artifacts=[self.artifact(i, i == 1) for i in range(1, 101)]),
+                 dict(total_count=101, artifacts=[self.artifact(101)])]
+        respond, calls = self.pages_api(pages)
+        with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2"}), \
+                patch.object(qualification, "api_request", side_effect=respond):
+            self.assertEqual(qualification.poll_document("descriptor", "descriptor.json", 1),
+                             {"synthetic": True})
+        self.assertEqual(calls, ["actions/runs/100/artifacts?per_page=100&page=1",
+                                 "actions/runs/100/artifacts?per_page=100&page=2",
+                                 "actions/artifacts/1/zip"])
+
+    def test_poll_refuses_cross_page_matching_names_and_repeated_identities(self):
+        first = [self.artifact(i, i == 1) for i in range(1, 101)]
+        for last in (self.artifact(101, True), self.artifact(1),
+                     self.artifact(101, True) | {"expired": True}):
+            with self.subTest(last=last):
+                pages = [dict(total_count=101, artifacts=first),
+                         dict(total_count=101, artifacts=[last])]
+                respond, calls = self.pages_api(pages)
+                with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2"}), \
+                        patch.object(qualification, "api_request", side_effect=respond):
+                    with self.assertRaises(ValueError):
+                        qualification.poll_document("descriptor", "descriptor.json", 1)
+                self.assertEqual(len(calls), 2)
+                self.assertFalse(any("/zip" in path for path in calls))
+
+    def test_poll_refuses_incomplete_or_unstable_inventory(self):
+        first = [self.artifact(i, i == 1) for i in range(1, 101)]
+        for second in (dict(total_count=102, artifacts=[self.artifact(101)]),
+                       dict(total_count=100, artifacts=[self.artifact(101)])):
+            with self.subTest(second=second["total_count"]):
+                pages = [dict(total_count=102, artifacts=first), second]
+                respond, calls = self.pages_api(pages)
+                with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2"}), \
+                        patch.object(qualification, "api_request", side_effect=respond):
+                    with self.assertRaises(ValueError):
+                        qualification.poll_document("descriptor", "descriptor.json", 1)
+                self.assertEqual(len(calls), 2)
+                self.assertFalse(any("/zip" in path for path in calls))
+
+        for count in (None, True):
+            with self.subTest(invalid_total=count):
+                respond, calls = self.pages_api([dict(total_count=count,
+                                                       artifacts=[self.artifact(1, True)])])
+                with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2"}), \
+                        patch.object(qualification, "api_request", side_effect=respond):
+                    with self.assertRaises(ValueError):
+                        qualification.poll_document("descriptor", "descriptor.json", 1)
+                self.assertEqual(len(calls), 1)
+
+    def test_poll_refuses_full_tenth_page_even_with_a_matching_first_page(self):
+        pages = [dict(total_count=1000, artifacts=[self.artifact(i, i == 1)
+                                                    for i in range(page * 100 + 1, page * 100 + 101)])
+                 for page in range(10)]
+        respond, calls = self.pages_api(pages)
+        with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2"}), \
+                patch.object(qualification, "api_request", side_effect=respond):
+            with self.assertRaises(ValueError):
+                qualification.poll_document("descriptor", "descriptor.json", 1)
+        self.assertEqual(len(calls), qualification.MAX_ARTIFACT_PAGES)
+        self.assertTrue(calls[-1].endswith("&page=10"))
+        self.assertFalse(any("/zip" in path for path in calls))
+
     def test_download_never_extracts_unselected_paths_or_unbounded_documents(self):
         raw = self.archive([("descriptor.json", '{"synthetic":true}')])
         self.assertEqual(qualification.unpack_document(raw, "descriptor.json"), {"synthetic": True})

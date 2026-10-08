@@ -34,6 +34,8 @@ CLIENT_CASES = (
 )
 HOST_CASES = ("stopped_on_request", "service_joined", "exact_durable_records")
 MAX_JSON = 65536
+ARTIFACT_PAGE_SIZE = 100
+MAX_ARTIFACT_PAGES = 10
 PHASES = frozenset(("descriptor", "automatic_put_page", "wrong_token", "wrong_endpoint",
                    "wrong_namespace", "fresh_client_reconnect", "forced_relay_put_page",
                    "host_identity", "host_storage", "host_service", "host_bind",
@@ -322,6 +324,43 @@ def select_artifact(document, name):
     return selected["id"]
 
 
+def inventory_artifact(name):
+    """Select only after a bounded, complete inventory of this run's artifacts."""
+    found = None
+    total = None
+    identities = set()
+    seen_name = False
+    for page in range(1, MAX_ARTIFACT_PAGES + 1):
+        listing = json.loads(api_request(
+            f"actions/runs/{context()['run_id']}/artifacts?per_page={ARTIFACT_PAGE_SIZE}&page={page}"))
+        require(isinstance(listing, dict), "invalid artifact inventory")
+        entries = listing.get("artifacts")
+        count = listing.get("total_count")
+        require(type(count) is int and count >= 0 and type(entries) is list
+                and len(entries) <= ARTIFACT_PAGE_SIZE, "invalid artifact inventory")
+        if total is None:
+            total = count
+        require(count == total, "artifact inventory changed during pagination")
+        for entry in entries:
+            require(isinstance(entry, dict), "invalid artifact entry")
+            identity = entry.get("id")
+            require(type(identity) is int and identity > 0 and identity not in identities,
+                    "invalid or duplicate artifact identity")
+            identities.add(identity)
+            if entry.get("name") == name:
+                require(not seen_name, "duplicate run artifact name")
+                seen_name = True
+        selected = select_artifact(listing, name)
+        require(selected is None or found is None, "duplicate run artifact name")
+        if selected is not None:
+            found = selected
+        if len(entries) < ARTIFACT_PAGE_SIZE:
+            require(len(identities) == total, "incomplete artifact inventory")
+            return found
+    # A full final page cannot prove there is no next page, even if count agrees.
+    raise ValueError("artifact inventory exceeds page bound")
+
+
 def unpack_document(raw, filename):
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         files = archive.infolist()
@@ -335,18 +374,9 @@ def poll_document(kind, filename, timeout):
     name = artifact_name(kind)
     while time.monotonic() < until:
         try:
-            found = []
-            for page in range(1, 11):
-                listing = json.loads(api_request(
-                    f"actions/runs/{context()['run_id']}/artifacts?per_page=100&page={page}"))
-                selected = select_artifact(listing, name)
-                if selected is not None:
-                    found.append(selected)
-                if len(listing.get("artifacts", [])) < 100:
-                    break
-            require(len(found) <= 1, "duplicate run artifact name")
-            if found:
-                return unpack_document(api_request(f"actions/artifacts/{found[0]}/zip"), filename)
+            selected = inventory_artifact(name)
+            if selected is not None:
+                return unpack_document(api_request(f"actions/artifacts/{selected}/zip"), filename)
         except urllib.error.HTTPError as error:
             if error.code not in (404, 429, 500, 502, 503, 504):
                 raise ValueError("artifact API refused request") from None
