@@ -288,6 +288,13 @@ class BrowserQualificationTests(unittest.TestCase):
                 patch.object(qualification, 'group_alive', return_value=False):
             self.assertTrue(service.stop())
 
+    def test_stop_owned_service_does_not_guess_missing_or_corrupt_record_is_stopped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            self.assertFalse(qualification.stop_owned_service(work))
+            (work / "service.json").write_text("{}")
+            self.assertFalse(qualification.stop_owned_service(work))
+
     def test_client_waits_for_descriptor_artifact_before_downloading_it(self):
         workflow = (Path(__file__).resolve().parents[1] / "workflows" /
                     "iroh-browser-qualification.yml").read_text(encoding="utf-8")
