@@ -1,0 +1,201 @@
+name: Iroh browser gateway qualification
+
+# Advisory live evidence for the maintained production browser path. This
+# workflow never turns a single hosted-runner route into a NAT or direct-path
+# claim; the repository Rust Required gate remains the deterministic admission.
+on:
+  workflow_dispatch:
+    inputs:
+      iroh_relay_url:
+        description: Explicitly selected Iroh HTTPS relay upstream
+        required: false
+        default: https://use1-1.relay.n0.iroh.link.
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/iroh-browser-qualification.yml
+      - .github/scripts/iroh_browser_qualification.py
+      - .github/scripts/test_iroh_browser_qualification.py
+      - browser/**
+      - crates/vhalla-private-native/**
+      - crates/vhalla-private-relay/**
+      - crates/vhalla-cli/**
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+env:
+  IROH_RELAY_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.iroh_relay_url || 'https://use1-1.relay.n0.iroh.link.' }}
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_RELEASE_DEBUG: 0
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: short
+
+concurrency:
+  group: iroh-browser-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: iroh-browser-qualification
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: trunk@0.21.14
+      - name: Focused controller and receipt contracts
+        run: python3 -m unittest discover -s .github/scripts -p 'test_iroh_browser_qualification.py'
+      - name: Native real-upstream regression
+        run: cargo test --locked -p vhalla-private-native --lib --features relay-iroh relay::http::tests::real_iroh_upstream_retains_exact_http_items_and_refuses_browser_capability -- --exact
+      - name: Build the pinned native CLI and production private browser
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p vhalla-cli --features experimental-private --bin vhalla
+          (cd browser && trunk --skip-version-check build --release --locked --features private-rooms --dist "$RUNNER_TEMP/iroh-browser-dist" && python3 tools/package.py "$RUNNER_TEMP/iroh-browser-dist" && python3 -m unittest discover -s tools -p 'test_*.py')
+          tree_sha="$(git rev-parse "${GITHUB_SHA}^{tree}")"
+          python3 .github/scripts/iroh_browser_qualification.py package \
+            --binary target/release/vhalla \
+            --browser "$RUNNER_TEMP/iroh-browser-dist" \
+            --bundle "$RUNNER_TEMP/iroh-browser-bundle" \
+            --tree-sha "$tree_sha" \
+            --relay-url "$IROH_RELAY_URL"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: iroh-browser-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-bundle
+          if-no-files-found: error
+          retention-days: 3
+
+  host:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: iroh-browser-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-bundle
+      - name: Start the disposable Iroh host and publish its scoped descriptor
+        run: python3 .github/scripts/iroh_browser_qualification.py host-start --bundle "$RUNNER_TEMP/iroh-browser-bundle" --work "$RUNNER_TEMP/iroh-browser-host" --relay-url "$IROH_RELAY_URL"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: iroh-browser-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-host/descriptor.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Await the separate browser job and reconcile host shutdown
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/iroh_browser_qualification.py host-wait --work "$RUNNER_TEMP/iroh-browser-host"
+      - name: Always stop and reap the exact owned Iroh host
+        if: always()
+        run: python3 .github/scripts/iroh_browser_qualification.py host-stop --work "$RUNNER_TEMP/iroh-browser-host"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: iroh-browser-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-host/host-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  client:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: iroh-browser-bundle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-bundle
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: iroh-browser-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-descriptor
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+      - name: Provision the repository's pinned Chromium and sandbox
+        run: bash .github/scripts/pinned_chromium.sh setup
+      - name: Exercise the real browser, loopback gateway, Iroh host and retry fences
+        run: python3 .github/scripts/iroh_browser_qualification.py client --bundle "$RUNNER_TEMP/iroh-browser-bundle" --descriptor "$RUNNER_TEMP/iroh-browser-descriptor/descriptor.json" --work "$RUNNER_TEMP/iroh-browser-client"
+      - name: Always remove the owned browser sandbox admission
+        if: always()
+        run: bash .github/scripts/pinned_chromium.sh cleanup
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: iroh-browser-client-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-client/client-receipt.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  result:
+    name: Qualification result
+    if: ${{ always() }}
+    needs: [build, host, client]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: always()
+        with:
+          name: iroh-browser-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-host
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: always()
+        with:
+          name: iroh-browser-client-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/iroh-browser-client
+      - name: Bind both sanitized receipts to this exact build and leave topology claims closed
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          HOST_RESULT: ${{ needs.host.result }}
+          CLIENT_RESULT: ${{ needs.client.result }}
+        run: |
+          set -euo pipefail
+          test "$BUILD_RESULT" = success
+          test "$HOST_RESULT" = success
+          test "$CLIENT_RESULT" = success
+          python3 .github/scripts/iroh_browser_qualification.py result \
+            --host "$RUNNER_TEMP/iroh-browser-host/host-receipt.json" \
+            --client "$RUNNER_TEMP/iroh-browser-client/client-receipt.json"
