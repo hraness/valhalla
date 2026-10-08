@@ -150,6 +150,23 @@ jobs:
           test -f "$RUNNER_TEMP/iroh-browser-bundle/vhalla"
           test ! -L "$RUNNER_TEMP/iroh-browser-bundle/vhalla"
           chmod 700 "$RUNNER_TEMP/iroh-browser-bundle/vhalla"
+      - name: Wait until the host descriptor artifact is published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESCRIPTOR_ARTIFACT: iroh-browser-descriptor-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            if gh api --paginate \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+                --jq ".artifacts[] | select(.name == \"${DESCRIPTOR_ARTIFACT}\" and .expired == false) | select(.size_in_bytes > 0 and .size_in_bytes <= 1048576) | .id" \
+                | grep -Eq '^[1-9][0-9]*$'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for ${DESCRIPTOR_ARTIFACT} after ${attempt} polls" >&2
+          exit 1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: iroh-browser-descriptor-${{ github.run_id }}-${{ github.run_attempt }}

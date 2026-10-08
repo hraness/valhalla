@@ -1,6 +1,7 @@
 """Focused contracts for the separate-job browser/Iroh qualification lane."""
 import inspect
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -193,6 +194,20 @@ class BrowserQualificationTests(unittest.TestCase):
             "refusing to signal an unowned browser",
             inspect.getsource(qualification.stop_timed_out_browser_driver),
         )
+
+    def test_client_waits_for_descriptor_artifact_before_downloading_it(self):
+        workflow = (Path(__file__).resolve().parents[1] / "workflows" /
+                    "iroh-browser-qualification.yml").read_text(encoding="utf-8")
+        client = workflow.split("\n  client:\n", 1)[1]
+        wait = client.index("Wait until the host descriptor artifact is published")
+        download = client.index("name: iroh-browser-descriptor-${{ github.run_id }}-${{ github.run_attempt }}")
+        self.assertLess(wait, download)
+        self.assertIn("gh api --paginate", client)
+        self.assertIn("DESCRIPTOR_ARTIFACT", client)
+        self.assertIn("actions: read", client)
+        self.assertIn("sleep 5", client)
+        self.assertIn(".size_in_bytes > 0", client)
+        self.assertIn(".size_in_bytes <= 1048576", client)
 
 
 if __name__ == "__main__":
