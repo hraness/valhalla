@@ -293,6 +293,12 @@ class ServiceProcess:
             self.process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             cleared = False
+        else:
+            # A child that exits while stop_group is polling remains a zombie
+            # until this owner reaps it. Recheck the process group after the
+            # wait so a transient leader state cannot make an owned shutdown
+            # look failed (or let descendants escape the cleanup receipt).
+            cleared = not group_alive(self.process.pid)
         return cleared and (sent or self.process.returncode is not None)
 
 
@@ -307,13 +313,19 @@ def private_text(path: Path, maximum: int = 256) -> str:
     return text.strip()
 
 
-def machine_commitment(nonce: str) -> str:
+def machine_commitment() -> str:
+    # Bind the opaque runner identity to this qualification run, not to a
+    # fresh per-role nonce. Otherwise two roles on one machine always appear
+    # distinct and the receipt cannot support its independent-runner claim.
     boot = b""
     try:
         boot = Path("/proc/sys/kernel/random/boot_id").read_bytes()
     except OSError:
         pass
-    return hashlib.sha256(nonce.encode() + boot + socket.gethostname().encode()).hexdigest()
+    context = runtime_context()
+    salt = "\0".join(context.values()).encode()
+    identity = b"valhalla/iroh-browser-machine/v1\0" + salt + b"\0" + boot
+    return hashlib.sha256(identity + socket.gethostname().encode()).hexdigest()
 
 
 def base_receipt(meta: dict, role: str, machine: str | None = None) -> dict:
@@ -326,7 +338,8 @@ def base_receipt(meta: dict, role: str, machine: str | None = None) -> dict:
                 independent_nat_qualified=False, started_unix=int(time.time()))
 
 
-def descriptor_from_home(meta: dict, work: Path, relay_url: str) -> dict:
+def descriptor_from_home(meta: dict, work: Path, relay_url: str, host_machine: str) -> dict:
+    require(HEX64.fullmatch(host_machine) is not None, "invalid host identity commitment")
     home = work / "host"
     config = read_json(home / "config.json")
     endpoint = config.get("iroh")
@@ -342,7 +355,7 @@ def descriptor_from_home(meta: dict, work: Path, relay_url: str) -> dict:
                 tree_sha=meta["tree_sha"], binary_sha256=meta["binary_sha256"],
                 lock_sha256=meta["lock_sha256"], browser_manifest_sha256=meta["browser_manifest_sha256"],
                 iroh_relay_url=relay_url, endpoint=endpoint, namespace=namespace,
-                upstream_token=token, host_machine=machine_commitment(nonce),
+                upstream_token=token, host_machine=host_machine,
                 descriptor_nonce=nonce, created_unix=int(time.time()))
 
 
@@ -377,7 +390,7 @@ def host_start(bundle: Path, work: Path, relay_url: str) -> None:
     try:
         validate_relay_url(relay_url)
         meta = bundle_identity(bundle)
-        machine = machine_commitment(secrets.token_hex(32))
+        machine = machine_commitment()
         receipt = base_receipt(meta, "host", machine)
         receipt["cases"] = {case: False for case in HOST_CASES}
         write_json(work / "host-receipt.json", receipt)
@@ -388,7 +401,7 @@ def host_start(bundle: Path, work: Path, relay_url: str) -> None:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, env=selected_env(), timeout=90, check=False)
         require(result.returncode == 0, "host initialization refused")
-        descriptor = descriptor_from_home(meta, work, relay_url)
+        descriptor = descriptor_from_home(meta, work, relay_url, machine)
         service = ServiceProcess([str(meta["binary"]), "private-host", "serve", str(home)],
                                  work, "host-service")
         service.start(lambda value: isinstance(value, dict) and value.get("status") == "listening")
@@ -552,12 +565,18 @@ def validate_client(value: dict, meta: dict) -> None:
             "client receipt commitment or result failed")
     require(value.get("cleanup_confirmed") is True and value.get("browser_qualified") is True,
             "browser/client cleanup or qualification failed")
+    require(value.get("iroh_relay_url") == DEFAULT_RELAY_URL,
+            "client upstream selection differs")
     require(value.get("direct_path_qualified") is False
             and value.get("independent_nat_qualified") is False,
             "client made an unqualified topology claim")
     cases = value.get("cases", {})
     require(all(cases.get(case) is True for case in CLIENT_CASES),
             "client browser cases are incomplete")
+    require(HEX64.fullmatch(meta.get("host_machine", "")) is not None,
+            "host machine commitment is invalid")
+    require(value.get("host_machine") == meta.get("host_machine"),
+            "client host commitment differs")
     require(HEX64.fullmatch(value.get("machine", "")) is not None,
             "client machine commitment is invalid")
     require(value["machine"] != meta.get("host_machine"),
@@ -596,13 +615,18 @@ def finish_host(work: Path, wait_for_client: bool) -> bool:
     return receipt["passed"]
 
 
-def choose_port() -> int:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
-    finally:
-        probe.close()
+def choose_port(excluded: set[int] | None = None) -> int:
+    excluded = excluded or set()
+    for _ in range(32):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        finally:
+            probe.close()
+        if port not in excluded:
+            return port
+    raise OSError("unable to choose a fresh loopback port")
 
 
 def canonical_frames(namespace: str) -> tuple[str, str, str]:
@@ -834,7 +858,7 @@ def client_run(bundle: Path, descriptor_path: Path, work: Path) -> None:
     meta = bundle_identity(bundle)
     descriptor = read_json(descriptor_path)
     validate_descriptor(descriptor, meta)
-    machine = machine_commitment(secrets.token_hex(32))
+    machine = machine_commitment()
     receipt = base_receipt(meta, "client", machine)
     receipt["host_machine"] = descriptor["host_machine"]
     receipt["cases"] = {case: False for case in CLIENT_CASES}
@@ -846,10 +870,20 @@ def client_run(bundle: Path, descriptor_path: Path, work: Path) -> None:
         capability = secrets.token_hex(32)
         browser_token.write_text(capability + "\n"); browser_token.chmod(0o600)
         upstream_token.write_text(descriptor["upstream_token"] + "\n"); upstream_token.chmod(0o600)
-        port = choose_port()
-        origin = f"http://127.0.0.1:{port}"
-        config = gateway_config(work, descriptor, meta, browser_token, upstream_token, port)
-        gateway = start_gateway(meta, work, config)
+        used_ports: set[int] = set()
+        def launch(endpoint=None):
+            nonlocal gateway
+            if gateway is not None:
+                require(gateway.stop(), "gateway restart cleanup failed")
+                gateway = None
+            port = choose_port(used_ports)
+            used_ports.add(port)
+            origin = f"http://127.0.0.1:{port}"
+            config = gateway_config(work, descriptor, meta, browser_token, upstream_token, port, endpoint)
+            gateway = start_gateway(meta, work, config)
+            return gateway, origin
+
+        gateway, origin = launch()
         healthy = run_browser_driver(meta, work, "healthy", origin, capability, descriptor["namespace"])
         for name in ("browser_origin", "browser_manifest_loaded", "first_put", "exact_duplicate",
                      "page_exact", "wrong_capability_refused", "wrong_namespace_refused",
@@ -860,28 +894,25 @@ def client_run(bundle: Path, descriptor_path: Path, work: Path) -> None:
 
         offline_endpoint = {"endpoint_id": descriptor["endpoint"]["endpoint_id"],
                             "relay_url": None, "addresses": ["127.0.0.1:9"]}
-        config = gateway_config(work, descriptor, meta, browser_token, upstream_token, port,
-                                offline_endpoint)
-        gateway = start_gateway(meta, work, config)
+        gateway, origin = launch(offline_endpoint)
         offline = run_browser_driver(meta, work, "offline", origin, capability, descriptor["namespace"])
         receipt["cases"]["offline_refused"] = offline["cases"].get("offline_refused") is True
         require(gateway.stop(), "offline gateway cleanup failed")
         gateway = None
-        config = gateway_config(work, descriptor, meta, browser_token, upstream_token, port)
-        gateway = start_gateway(meta, work, config)
+        gateway, origin = launch()
         retry = run_browser_driver(meta, work, "retry", origin, capability, descriptor["namespace"])
         receipt["cases"]["offline_retry_duplicate"] = retry["cases"].get("retry_duplicate") is True
         require(gateway.stop(), "offline retry gateway cleanup failed")
         gateway = None
 
         upstream_token.write_text("55" * 32 + "\n"); upstream_token.chmod(0o600)
-        gateway = start_gateway(meta, work, config)
+        gateway, origin = launch()
         denied = run_browser_driver(meta, work, "denied", origin, capability, descriptor["namespace"])
         receipt["cases"]["upstream_token_refused"] = denied["cases"].get("upstream_token_refused") is True
         require(gateway.stop(), "denied gateway cleanup failed")
         gateway = None
         upstream_token.write_text(descriptor["upstream_token"] + "\n"); upstream_token.chmod(0o600)
-        gateway = start_gateway(meta, work, config)
+        gateway, origin = launch()
         retry = run_browser_driver(meta, work, "retry", origin, capability, descriptor["namespace"])
         receipt["cases"]["upstream_retry_duplicate"] = retry["cases"].get("retry_duplicate") is True
         receipt["browser"] = healthy.get("browser")
@@ -910,11 +941,38 @@ def client_run(bundle: Path, descriptor_path: Path, work: Path) -> None:
 
 
 def validate_result(host: dict, client: dict) -> None:
+    current = runtime_context()
+    for receipt in (host, client):
+        require(all(receipt.get(key) == value for key, value in current.items()),
+                "receipt run commitment differs")
+    require(host.get("schema") == SCHEMA and host.get("role") == "host",
+            "foreign host receipt")
+    require(client.get("schema") == SCHEMA and client.get("role") == "client",
+            "foreign client receipt")
     require(host.get("passed") is True and host.get("cleanup_confirmed") is True,
             "host qualification failed")
     require(client.get("passed") is True and client.get("cleanup_confirmed") is True,
             "client qualification failed")
+    require(host.get("iroh_relay_url") == DEFAULT_RELAY_URL
+            and client.get("iroh_relay_url") == DEFAULT_RELAY_URL,
+            "host/client upstream selection differs")
+    require(host.get("browser_qualified") is False
+            and host.get("direct_path_qualified") is False
+            and host.get("independent_nat_qualified") is False,
+            "host made an unqualified topology claim")
     require(matching_commitments(host, client), "host/client commitments differ")
+    host_machine = host.get("machine")
+    client_machine = client.get("machine")
+    require(HEX64.fullmatch(host_machine or "") is not None,
+            "host identity commitment is invalid")
+    require(HEX64.fullmatch(client_machine or "") is not None,
+            "client identity commitment is invalid")
+    require(client.get("host_machine") == host_machine,
+            "client host commitment differs")
+    require(host.get("client_machine") == client_machine,
+            "host client commitment differs")
+    require(client_machine != host_machine,
+            "host and client runner commitments are not distinct")
     require(client.get("browser_qualified") is True
             and client.get("direct_path_qualified") is False
             and client.get("independent_nat_qualified") is False,

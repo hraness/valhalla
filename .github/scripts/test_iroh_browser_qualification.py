@@ -1,7 +1,9 @@
 """Focused contracts for the separate-job browser/Iroh qualification lane."""
 import inspect
+import json
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -97,6 +99,15 @@ class BrowserQualificationTests(unittest.TestCase):
         with patch.dict(os.environ, explicit, clear=False):
             self.assertEqual(qualification.runtime_context()["source_sha"], "b" * 40)
 
+    def test_machine_commitment_is_stable_within_one_run(self):
+        with patch.dict(os.environ, self.env, clear=False):
+            first = qualification.machine_commitment()
+            second = qualification.machine_commitment()
+        self.assertEqual(first, second)
+        self.assertRegex(first, r"[a-f0-9]{64}\Z")
+        with patch.dict(os.environ, self.env | {"GITHUB_RUN_ID": "101"}, clear=False):
+            self.assertNotEqual(first, qualification.machine_commitment())
+
     def test_upstream_is_explicitly_pinned_and_not_an_arbitrary_probe(self):
         self.assertEqual(qualification.validate_relay_url(qualification.DEFAULT_RELAY_URL),
                          qualification.DEFAULT_RELAY_URL)
@@ -135,6 +146,23 @@ class BrowserQualificationTests(unittest.TestCase):
         with patch.dict(os.environ, self.env, clear=False), self.assertRaises(ValueError):
             qualification.validate_descriptor(wrong_endpoint, self.meta())
 
+    def test_descriptor_uses_host_receipt_machine_commitment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            home = work / "host"
+            home.mkdir()
+            endpoint = {"endpoint_id": "2" * 64,
+                        "relay_url": qualification.DEFAULT_RELAY_URL,
+                        "addresses": []}
+            (home / "config.json").write_text(json.dumps({
+                "iroh": endpoint, "namespace": "3" * 64,
+            }))
+            (home / "client-1.token").write_text("4" * 64 + "\n")
+            with patch.dict(os.environ, self.env, clear=False):
+                descriptor = qualification.descriptor_from_home(
+                    self.meta(), work, qualification.DEFAULT_RELAY_URL, "6" * 64)
+            self.assertEqual(descriptor["host_machine"], "6" * 64)
+
     def test_client_receipt_requires_every_case_and_keeps_topology_unqualified(self):
         with patch.dict(os.environ, self.env, clear=False):
             qualification.validate_client(self.client(), self.meta())
@@ -147,6 +175,8 @@ class BrowserQualificationTests(unittest.TestCase):
         for change in ({"direct_path_qualified": True},
                        {"independent_nat_qualified": True},
                        {"browser_qualified": False},
+                       {"iroh_relay_url": "https://evil.example/"},
+                       {"host_machine": "9" * 64},
                        {"machine": "1" * 64},
                        {"cleanup_confirmed": False}):
             with self.subTest(change=change), patch.dict(os.environ, self.env, clear=False), \
@@ -155,19 +185,43 @@ class BrowserQualificationTests(unittest.TestCase):
 
     def test_result_rejects_missing_host_durability_or_topology_claims(self):
         host = {
+            "schema": qualification.SCHEMA, "role": "host",
+            "machine": "1" * 64, "client_machine": "6" * 64,
+            "iroh_relay_url": qualification.DEFAULT_RELAY_URL,
+            "browser_qualified": False, "direct_path_qualified": False,
+            "independent_nat_qualified": False,
             "passed": True, "cleanup_confirmed": True,
             "cases": {case: True for case in qualification.HOST_CASES},
         } | self.meta()
         client = self.client()
-        qualification.validate_result(host, client)
+        with patch.dict(os.environ, self.env, clear=False):
+            qualification.validate_result(host, client)
         for change in (
             {"cleanup_confirmed": False},
             {"cases": {case: True for case in qualification.HOST_CASES[:-1]}},
             {"passed": False},
+            {"iroh_relay_url": "https://evil.example/"},
+            {"direct_path_qualified": True},
+            {"machine": "7" * 64},
+            {"client_machine": "7" * 64},
         ):
             broken = host | change
             with self.subTest(change=change), self.assertRaises(ValueError):
                 qualification.validate_result(broken, client)
+        for change in (
+            {"host_machine": "7" * 64},
+            {"iroh_relay_url": "https://evil.example/"},
+            {"machine": "1" * 64},
+        ):
+            broken = client | change
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                qualification.validate_result(host, broken)
+        for key, replacement in (("QUALIFICATION_SOURCE_SHA", "9" * 40),
+                                 ("GITHUB_RUN_ID", "101"),
+                                 ("GITHUB_RUN_ATTEMPT", "3")):
+            with self.subTest(key=key), patch.dict(os.environ, self.env | {key: replacement}, clear=False), \
+                    self.assertRaises(ValueError):
+                qualification.validate_result(host, client)
 
     def test_child_environment_does_not_forward_repository_or_gateway_credentials(self):
         with patch.dict(os.environ, {**self.env, "GH_TOKEN": "secret", "ACTIONS_RUNTIME_TOKEN": "secret",
@@ -194,6 +248,45 @@ class BrowserQualificationTests(unittest.TestCase):
             "refusing to signal an unowned browser",
             inspect.getsource(qualification.stop_timed_out_browser_driver),
         )
+
+    def test_gateway_restarts_select_distinct_loopback_ports(self):
+        ports = iter((43101, 43101, 43102))
+
+        class FakeSocket:
+            def __init__(self):
+                self.port = next(ports)
+
+            def bind(self, address):
+                self.address = address
+
+            def getsockname(self):
+                return ("127.0.0.1", self.port)
+
+            def close(self):
+                pass
+
+        with patch.object(qualification.socket, 'socket', side_effect=lambda *args: FakeSocket()):
+            self.assertEqual(qualification.choose_port({43101}), 43102)
+        source = inspect.getsource(qualification.client_run)
+        self.assertIn('used_ports: set[int] = set()', source)
+        self.assertIn('choose_port(used_ports)', source)
+        self.assertIn('nonlocal gateway', source)
+        self.assertIn('gateway restart cleanup failed', source)
+
+    def test_service_stop_rechecks_group_after_reaping_leader(self):
+        class FakeProcess:
+            pid = 321
+            returncode = None
+
+            def wait(self, timeout):
+                self.returncode = 0
+                return self.returncode
+
+        service = qualification.ServiceProcess([], Path('.'), 'test-service')
+        service.process = FakeProcess()
+        with patch.object(qualification, 'stop_group', return_value=(True, False)), \
+                patch.object(qualification, 'group_alive', return_value=False):
+            self.assertTrue(service.stop())
 
     def test_client_waits_for_descriptor_artifact_before_downloading_it(self):
         workflow = (Path(__file__).resolve().parents[1] / "workflows" /
