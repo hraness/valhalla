@@ -117,6 +117,10 @@ def success(value, schema, expected, now, *, full=True):
 
 
 def claims(value, expected):
+    # A receipt for one journey cannot add its own unverified qualification.
+    # MCP and managed-service receipts emit no qualification fields at all.
+    require(not ({name for name in value if name.endswith("_qualified")} - set(expected)),
+            "unrecognized qualification claim")
     for name, claim in expected.items():
         require(type(value.get(name)) is type(claim) and value[name] == claim,
                 "unsupported qualification claim: " + name)
@@ -204,6 +208,7 @@ def verify(root, source_sha, run_id, run_attempt, lockfile, *, now=None):
     service = document(managed_files["receipt.json"])
     cleanup = document(managed_files["cleanup-receipt.json"])
     success(service, linux.SCHEMA, expected, now)
+    claims(service, {})
     require(service.get("build_profile") == "release" and service.get("platform") == "Linux systemd user"
             and service.get("scope") == "one fresh synthetic home; loopback only"
             and service.get("cleanup_fallback_used") is False,
@@ -223,6 +228,7 @@ def verify(root, source_sha, run_id, run_attempt, lockfile, *, now=None):
     # The MCP runner does not emit lock_sha256, run_id or run_attempt. Its
     # successful job and exact run/attempt artifact name are the run binding.
     success(process, mcp.SCHEMA, expected, now, full=False)
+    claims(process, {})
     require(process.get("platform") == "linux" and process.get("scope") ==
             "one fresh public room; actual foreground daemon and MCP pipes; no network peer"
             and process.get("cleanup_fallback_used") is False

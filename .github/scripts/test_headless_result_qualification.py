@@ -202,6 +202,21 @@ class HeadlessResultTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verify()
 
+    def test_unemitted_qualification_claim_rejected(self):
+        for selected, name in (
+            (("public-host", "host-receipt.json"), "independent_machines_qualified"),
+            (("private-client", "client-receipt.json"), "unbounded_availability_qualified"),
+            (("linux-managed", "receipt.json"), "browser_qualified"),
+            (("mcp", "receipt.json"), "independent_nat_qualified"),
+        ):
+            with self.subTest(selected=selected):
+                path = self.files[selected]
+                original = path.read_text()
+                self.mutate(selected, name, True)
+                with self.assertRaises(ValueError):
+                    self.verify()
+                path.write_text(original)
+
     def test_changed_runner_or_peer_selection_rejected(self):
         for selected, field, value in (
             (("linux-managed", "receipt.json"), "runner_sha256", "0" * 64),
