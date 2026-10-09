@@ -396,7 +396,10 @@ jobs:
     if: always()
     needs: [build, host, client, private-host, private-client, linux-managed, mcp]
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Require every role and its cleanup to succeed
         env:
@@ -415,3 +418,41 @@ jobs:
           test "$PRIVATE_CLIENT_RESULT" = success
           test "$LINUX_MANAGED_RESULT" = success
           test "$MCP_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # Exact names only: do not download short-lived private bootstrap handoffs.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: headless-binary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-result/binary
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: headless-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-result/public-host
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: headless-client-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-result/public-client
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: headless-private-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-result/private-host
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: headless-private-client-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-result/private-client
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: headless-linux-managed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-result/linux-managed
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: headless-mcp-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/headless-result/mcp
+      - name: Bind exact receipts to this source, build, run, attempt and cleanup
+        run: |
+          python3 .github/scripts/headless_result_qualification.py \
+            --artifacts "$RUNNER_TEMP/headless-result" --lockfile Cargo.lock \
+            --source-sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
