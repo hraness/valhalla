@@ -65,7 +65,7 @@ can start with one pinned seed and discovery enabled.
 
 For a running local node, use `rooms status` with a separate replica home as
 described in the [CLI instructions](../crates/vhalla-cli/README.md). That
-command requires the `experimental-rooms-tui` feature; the seed image builds
+command requires the `experimental-rooms-replica` feature; the seed image builds
 only `experimental-rooms-node`.
 
 All temporary laptop nodes stopped through SIGINT after verification. The

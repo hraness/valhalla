@@ -203,7 +203,6 @@ pub(crate) const COMMANDS: &[&str] = &[
     "social",
     "status",
     "support",
-    "tui",
     "update",
 ];
 

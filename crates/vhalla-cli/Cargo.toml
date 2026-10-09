@@ -13,7 +13,7 @@ experimental-network = ["dep:vhalla-native", "dep:vhalla-session", "dep:tokio", 
 experimental-social = ["vhalla-identity/social", "dep:vhalla-social", "dep:vhalla-social-store", "dep:vhalla-core", "dep:getrandom", "dep:libc", "dep:vhalla-discovery", "dep:vhalla-attention", "dep:vhalla-discovery-store"]
 experimental-rooms = ["experimental-social", "vhalla-identity/rooms", "dep:vhalla-rooms", "dep:vhalla-rooms-store"]
 experimental-rooms-node = ["experimental-rooms", "dep:vhalla-rooms-node", "dep:vhalla-rooms-consensus", "dep:vhalla-journal", "dep:tokio", "dep:getrandom", "dep:tracing-subscriber"]
-experimental-rooms-tui = ["experimental-rooms-node", "dep:vhalla-rooms-app", "dep:vhalla-rooms-tui"]
+experimental-rooms-replica = ["experimental-rooms-node", "dep:vhalla-rooms-app"]
 experimental-sync = ["experimental-social", "experimental-network", "dep:vhalla-retrieval"]
 
 experimental-public = ["experimental-rooms-node", "vhalla-identity/room-activity", "dep:vhalla-room-activity", "dep:vhalla-room-activity-store", "dep:vhalla-browser-storage", "dep:vhalla-public-client", "dep:vhalla-public-peer", "dep:vhalla-public-protocol", "dep:vhalla-rooms-app"]
@@ -24,7 +24,7 @@ experimental-private = ["dep:vhalla-private-native", "vhalla-private-native/rela
 anyhow = "1"
 base64 = { version = "0.22.1", optional = true }
 hraness-cli-update = { git = "https://github.com/hraness/cli-update", tag = "v0.1.0", version = "=0.1.0" }
-hraness-control-kit = { git = "https://github.com/hraness/desktop-foundation", tag = "v0.9.0", default-features = false }
+hraness-control-kit = { git = "https://github.com/hraness/desktop-foundation", tag = "v2.0.0", default-features = false }
 hraness-support-foundation = { git = "https://github.com/hraness/support-foundation", rev = "b32c1c81bb2444f50509ed54388758ecfab1f1c0" }
 vhalla-identity = { path = "../vhalla-identity" }
 vhalla-room-activity = { path = "../vhalla-room-activity", optional = true }
@@ -56,9 +56,9 @@ tokio = { version = "1.53", default-features = false, features = ["rt", "rt-mult
 time = { version = "=0.3.55", default-features = false, features = ["std"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
-# `status`, `tui`, `commands` and `doctor`: the shared envelope, verb registry
-# and terminal views. Pinned to the immutable v0.9.0 release tag.
-hraness-control-kit = { git = "https://github.com/hraness/desktop-foundation", tag = "v0.9.0", features = ["tui"] }
+# `status`, `commands` and `doctor`: the shared envelope, verb registry
+# and owner-control helpers. Pinned to the immutable v2.0.0 release tag.
+hraness-control-kit = { git = "https://github.com/hraness/desktop-foundation", tag = "v2.0.0" }
 rustix = { version = "=1.1.4", features = ["event", "fs", "stdio", "process"] }
 rcgen = { version = "=0.13.2", default-features = false, features = ["crypto", "ring"], optional = true }
 vhalla-public-peer = { path = "../vhalla-public-peer", optional = true }
@@ -72,7 +72,6 @@ vhalla-rooms-consensus = { path = "../vhalla-rooms-consensus", optional = true }
 vhalla-journal = { path = "../vhalla-journal", optional = true }
 vhalla-rooms-node = { path = "../vhalla-rooms-node", optional = true }
 vhalla-rooms-app = { path = "../vhalla-rooms-app", optional = true }
-vhalla-rooms-tui = { path = "../vhalla-rooms-tui", optional = true }
 vhalla-retrieval = { path = "../vhalla-retrieval", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 

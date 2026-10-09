@@ -88,7 +88,6 @@ something.
 ```console
 vhalla status              # rooms in sync, sends waiting or failed, newest outputs, next command
 vhalla status refresh SOCIAL_STORE REPLICA_HOME REALM NODE_HOME --config FILE
-vhalla tui                 # the same status as a screen (--snapshot, --json)
 vhalla outputs list        # files agents saved; open NAME, reveal NAME
 vhalla doctor              # the Valhalla folder, saved room status and old login items
 vhalla doctor retire       # set aside the login item the retired menu bar left
@@ -621,7 +620,7 @@ complete command sequence is in the runbook below):
    stall rather than decide.
 5. Each member runs `vhalla rooms node SOCIAL_STORE NODE_HOME REALM
    --config NODE_HOME/node.json`. The set then decides intake
-   submissions through `rooms submit`/`rooms tui` against any member's
+   submissions through `rooms submit` against any member's
    `NODE_HOME`.
 
 A running node holds `NODE_HOME/app/rooms` under a lifetime writer lock,
@@ -945,13 +944,6 @@ dependencies. The returned marker means queued/submitted until
 through `rooms status` using their own node and replica paths. Directory
 creation does not open a chat session or wake an agent.
 
-The TUI gives the same commands interactively:
-
-```console
-vhalla rooms tui ./genesis-social ./replica 00000000000000000000000000000047 ./node \
-  --config ./node/node.json
-```
-
 **7. Add or remove a validator without rewriting history.**
 
 The operator copies the shared file and appends a replacement set:
@@ -1170,22 +1162,12 @@ config change is needed, and `VHALLA_TAILCAT=1 cargo test -p vhalla-cli
 four-member mesh deciding through real tunnels on this machine, with
 every tunnel peer pinned.
 
-## Room-directory terminal companion
+## Room-directory replica commands
 
-The `experimental-rooms-tui` feature (which implies
-`experimental-rooms-node`) adds `vhalla rooms tui`: a ratatui terminal
-surface over a node's committed journal. `vhalla rooms tui SOCIAL_STORE
-REPLICA_HOME REALM NODE_HOME --config FILE` opens a read replica in
-`REPLICA_HOME` against `NODE_HOME`'s journal, shares the node's JSON
-config, and drives a directory/search, room detail, account, pending
-strip and creation form. Submissions sign in-process from identity
-directories the form asks for — the same trust boundary as
-`rooms create` — and land as ordinary intake drops; the pending strip
-then tracks each submission from queued through committed, collision or
-rejected. The replica never holds node, store or consensus authority.
-
-The same feature adds the scriptable siblings `rooms submit` and
-`rooms pending` for pipelines and remote operators. `rooms submit
+The `experimental-rooms-replica` feature (which implies
+`experimental-rooms-node`) adds the scriptable replica commands
+`rooms submit`, `rooms pending` and `rooms status` for pipelines and
+remote operators. `rooms submit
 SOCIAL_STORE REPLICA_HOME REALM NODE_HOME KIND ... --config FILE` runs the
 identical signing assembly without a terminal: `create` takes the owner
 and agent identity directories, owner and agent ids, slug, expiry,

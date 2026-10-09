@@ -51,7 +51,7 @@ joining and leaving the voting set, and matching committed state.
 5. Deploy and run `node-check` to verify the local configuration and
    genesis store. Submit a batch and verify its commit in every validator's
    journal to confirm live consensus. To inspect that history through
-   `rooms status`, use a CLI built with `experimental-rooms-tui` and a local
+   `rooms status`, use a CLI built with `experimental-rooms-replica` and a local
    read replica; the seed image includes only `experimental-rooms-node`.
    A local status check alone cannot establish peer connectivity or quorum
    availability.
