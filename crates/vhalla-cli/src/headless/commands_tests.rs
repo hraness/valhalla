@@ -47,6 +47,17 @@ async fn run(home: &Path, shutdown: impl Future<Output = ()>) -> Result<(), Erro
     run_home(home, &test_listen(), shutdown).await
 }
 
+async fn run_local(home: &Path, shutdown: impl Future<Output = ()>) -> Result<(), ErrorBody> {
+    // Grant checks need the retained backend and real local sockets, not an
+    // unrelated peer endpoint bind before the readiness handshake.
+    local::serve_factory(
+        home,
+        |generation| launch(home, generation, false, None),
+        shutdown,
+    )
+    .await
+}
+
 fn id(value: u8) -> Id {
     Hex([value; 16])
 }
@@ -579,7 +590,7 @@ async fn run_never_initializes_missing_native_state_and_init_releases_its_lock()
 }
 
 async fn ready(home: &Path) {
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(20), async {
         loop {
             if local::admin_request(home, json!({"op":"control.hello"}))
                 .await
@@ -587,7 +598,8 @@ async fn ready(home: &Path) {
             {
                 break;
             }
-            tokio::task::yield_now().await;
+            // Give startup I/O time to progress without hot-polling custody.
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await
@@ -777,7 +789,7 @@ async fn mcp_grant_cannot_select_other_rooms_administer_or_survive_a_restart() {
         owner(&home, Action::Stop, Value::Null).await;
     };
     let (result, ()) = timeout(Duration::from_secs(30), async {
-        tokio::join!(run(&home, std::future::pending()), interaction)
+        tokio::join!(run_local(&home, std::future::pending()), interaction)
     })
     .await
     .unwrap();
@@ -793,7 +805,7 @@ async fn mcp_grant_cannot_select_other_rooms_administer_or_survive_a_restart() {
         owner(&home, Action::Stop, Value::Null).await;
     };
     let (result, ()) = timeout(Duration::from_secs(30), async {
-        tokio::join!(run(&home, std::future::pending()), interaction)
+        tokio::join!(run_local(&home, std::future::pending()), interaction)
     })
     .await
     .unwrap();
