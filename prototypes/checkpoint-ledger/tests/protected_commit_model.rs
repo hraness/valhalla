@@ -140,12 +140,13 @@ impl Witness {
         Ok(&self.durable)
     }
 
-    // The independently controlled host authenticates the owner and fencing
-    // epoch and serializes an exact full-pin CAS. A successful response means
-    // the new witness record is durable, not just visible.
+    // Staging is a fault-injection cut, NOT a successful host CAS response.
+    // The host must serialize through durable sync (or crash resolution): a
+    // second CAS cannot overwrite a first request while it is only visible.
     fn cas_visible(&mut self, writer: Writer, candidate: &Candidate) -> Result<(), Refusal> {
         let current = self.read(writer)?;
-        if current != &candidate.expected
+        if self.visible != self.durable
+            || current != &candidate.expected
             || candidate.next.generation()
                 != current
                     .generation()
@@ -457,4 +458,31 @@ fn authenticated_full_pin_cas_rejects_stale_fence_forks_and_racing_writers() {
     );
     assert_eq!(model.witness.durable, candidate.next);
     assert_eq!(model.witness.durable.generation(), base.generation() + 1);
+}
+
+#[test]
+fn pending_host_cas_cannot_be_overwritten_before_durable_resolution() {
+    let (base, candidate, fork) = fixtures();
+    let mut model = Model::new(base.clone());
+    let owner = model.owner();
+    model.witness.cas_visible(owner, &candidate).unwrap();
+    assert_eq!(model.witness.visible, candidate.next);
+    assert_eq!(model.witness.durable, base);
+    // Both requests see the same durable predecessor. Neither a different
+    // certified pin nor an exact retry may displace the unresolved first CAS.
+    assert_eq!(
+        model.witness.cas_visible(owner, &fork),
+        Err(Refusal::Conflict)
+    );
+    assert_eq!(
+        model.witness.cas_visible(owner, &candidate),
+        Err(Refusal::Conflict)
+    );
+    assert_eq!(model.witness.visible, candidate.next);
+    model.witness.durable = model.witness.visible.clone();
+    assert_eq!(
+        model.witness.cas_visible(owner, &fork),
+        Err(Refusal::Conflict)
+    );
+    assert_eq!(model.witness.durable, candidate.next);
 }
