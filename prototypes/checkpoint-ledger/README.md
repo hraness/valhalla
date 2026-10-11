@@ -114,21 +114,24 @@ is not a witness; a parsed `Pin` cannot establish freshness.
 
 The witness here is an **independent deterministic test double**, not a service
 or production storage adapter. The trait contract alone cannot prove isolation,
-monotonicity, durability or the authenticity of its implementer. There is no
-protected write/commit path, no settled ordering between the witness CAS and
-local CAS under crash or timeout, and no claim that a successful reference
-recovery prevents real rollback. An adversary controlling both witness and disk
-can still coordinate rollback. A witness advance after capture can also make
-this read stale; callers needing a latest-at-completion guarantee must establish
+monotonicity, durability or the authenticity of its implementer.
+The `protected_commit` module adds a one-step write and intent reconciliation
+experiment under a separate `FencedWitness` trait; `PinWitness` still has no
+protected write contract. The experiment cannot prove that a test-double host
+keeps a durable, isolated monotonic pin or that physical sync survives power
+loss. An adversary controlling both witness and disk can still coordinate
+rollback. A witness advance after capture can also make this read stale; callers needing a latest-at-completion guarantee must establish
 a separate snapshot/serialization protocol. Physical power-loss behavior,
 independent-host custody and live availability require separate qualification.
 
-### Protected two-store protocol proposal (model only)
+### Protected two-store prototype contract
 
 **Agent-decided, owner may revisit (2026-10-11):** the security/recovery
-integration lane specifies the following *future* owner-host protocol, exercised
-by `tests/protected_commit_model.rs`. Nothing in this section changes `commit`,
-`load`, `load_protected` or a production entrypoint.
+integration lane specifies the owner-host contract exercised by the model and
+by `protected_commit` with `FileStore` and an independent witness test double.
+Legacy `commit`, `load`, `load_protected` and all production entrypoints remain
+unchanged. Calling legacy `commit` on a protected store would bypass the witness;
+this prototype does not enforce access isolation between the two APIs.
 
 - Provision a separately controlled, owner-identified host and an explicit
   initial certified full pin. Its authenticated read and serialized durable CAS
@@ -183,15 +186,20 @@ quorum, or a host that lies about sync, violates the assumptions. Liveness under
 partitions is intentionally not promised. Read snapshots can become stale after
 capture; latest-at-completion needs a fenced read or a second host check.
 
-The fault model uses genuine `PreparedCommit` pins but an in-memory marker in
-place of the actual durable journal and bundle verifier. It covers cuts before
-and after journal/local/witness sync, lost responses, competing certified pins,
-invalid/stale grants, witness outages and coordinated rollback of all local
-bytes. It does **not** prove a network authentication scheme, OS lock/lease
-continuity, backend linearizability, physical power-loss sync, service custody,
-actual recovery-byte validation or cross-machine availability. The future
-adapter must implement and test these contracts separately before any protected
-write or recovery activation.
+The older fault model uses genuine `PreparedCommit` pins but an in-memory marker in
+place of the actual durable journal and bundle verifier. The new file-backed
+`protected_file` test instead persists exact bundle and 435-byte canonical intent
+bytes and reopens the directory before independent certificate/history checks.
+Together they exercise cuts before and after journal/local/witness sync, lost
+responses, competing certified pins, invalid/stale grants, witness
+outages and coordinated rollback of all local bytes. It does **not** prove a network authentication scheme, OS lock/lease
+continuity, backend linearizability, physical power-loss sync, service custody
+or cross-machine availability. The prototype adapter assumes a
+pre-provisioned certified pin in both stores, retains exactly one intent, refuses another advance while it exists, and provides
+no protected bootstrap or intent-retention/compaction protocol. The independent
+witness is only a test double; authentication, owner identity, exclusive grant
+custody, actual host durability, and physical faults remain unqualified. Never
+activate protected write or recovery based on these tests.
 
 ## Native storage profile
 
@@ -227,6 +235,7 @@ cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked --te
 cargo clippy --manifest-path prototypes/checkpoint-ledger/Cargo.toml --all-targets --locked -- -D warnings
 cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
 cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked
+cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked --test protected_file
 cargo clippy --manifest-path prototypes/checkpoint-ledger/Cargo.toml --all-targets --features native-store --locked -- -D warnings
 ```
 
@@ -239,9 +248,9 @@ step, including failed syncs, lost acknowledgements, and writers racing at CAS.
 
 ## Remaining work
 
-Real protected pin freshness (including a monotonic independent witness and a
-verified crash-safe two-store commit adapter), physical crash qualification,
-explicit trust rotation, conflict retention, compaction, and network admission
+Real protected pin freshness (including a monotonic independently controlled
+witness and a physically qualified two-store commit), intent rotation,
+physical crash qualification, explicit trust rotation, conflict retention, compaction, and network admission
 remain open. Direct ledger users must retain certificates separately; the
 persistence layer bundles them with each stored snapshot. Neither establishes
 global agreement, prevents malicious signers, authenticates each event author,

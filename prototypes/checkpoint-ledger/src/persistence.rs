@@ -157,9 +157,9 @@ pub trait Storage {
 /// fn replace_candidate(commit: &mut PreparedCommit, pin: Pin) { commit.pin = pin; }
 /// ```
 pub struct PreparedCommit {
-    expected: Option<Pin>,
-    pin: Pin,
-    bytes: Vec<u8>,
+    pub(crate) expected: Option<Pin>,
+    pub(crate) pin: Pin,
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl PreparedCommit {
@@ -269,7 +269,7 @@ pub fn commit<S: Storage>(
 /// expectation from the local store, a bundle, or a cached unverified pin.
 /// `None` means no witnessed pin, not permission to bootstrap or fall back.
 /// This trait does not implement a witness or prove its durability/isolation;
-/// in particular, there is no protected commit protocol in this prototype.
+/// this read-only trait does not implement the separate `protected_commit` path.
 pub trait PinWitness {
     /// Backend error, including an unavailable witness.
     type Error;
@@ -337,7 +337,7 @@ pub fn load<S: Storage>(
     load_pinned(storage, &pin, trust, max_events).map(Some)
 }
 
-fn load_pinned<S: Storage>(
+pub(crate) fn load_pinned<S: Storage>(
     storage: &mut S,
     pin: &Pin,
     trust: TrustConfig,
@@ -413,7 +413,7 @@ fn encode_bundle(snapshot: &[u8], certificate: &[u8]) -> Result<Vec<u8>, Protoco
     Ok(raw)
 }
 
-fn decode_bundle(raw: &[u8]) -> Result<(&[u8], &[u8]), ProtocolError> {
+pub(crate) fn decode_bundle(raw: &[u8]) -> Result<(&[u8], &[u8]), ProtocolError> {
     if raw.len() > MAX_BUNDLE_BYTES {
         return Err(ProtocolError::OversizedBundle);
     }
