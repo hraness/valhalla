@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(target_os = "linux")]
+#[path = "commands_lock_trace.rs"]
+mod lock_trace;
 use crate::headless::catalog::{Hex, Id};
 use std::{
     io::Write,
@@ -44,7 +47,14 @@ fn test_listen() -> Listen {
 }
 
 async fn run(home: &Path, shutdown: impl Future<Output = ()>) -> Result<(), ErrorBody> {
-    run_home(home, &test_listen(), shutdown).await
+    let result = run_home(home, &test_listen(), shutdown).await;
+    #[cfg(target_os = "linux")]
+    if matches!(&result, Err(error) if error.code == ErrorCode::ControlAlreadyRunning) {
+        // Capture the exact inode, kernel holder PID and our FDs before the
+        // caller unwinds; a later green retry cannot diagnose this refusal.
+        let _ = lock_trace::record(home, "run-refused");
+    }
+    result
 }
 
 async fn run_local(home: &Path, shutdown: impl Future<Output = ()>) -> Result<(), ErrorBody> {
@@ -584,9 +594,49 @@ async fn run_never_initializes_missing_native_state_and_init_releases_its_lock()
     assert!(!home.join("account").exists());
     assert!(!home.join("catalog").exists());
     initialize_home(&home).await.unwrap();
-    run(&home, async {}).await.unwrap();
+    #[cfg(target_os = "linux")]
+    let after_init = lock_trace::record(&home, "after-init").expect("Linux lock trace");
+    let first = run(&home, async {}).await;
+    #[cfg(target_os = "linux")]
+    let after_first = lock_trace::record(
+        &home,
+        if first.is_ok() {
+            "after-shutdown"
+        } else {
+            "after-refusal"
+        },
+    )
+    .expect("Linux lock trace");
+    first.unwrap();
     assert!(!home.join("control/admin.sock").exists());
     assert!(!home.join("control/agent.sock").exists());
+    // The retained home must restart on the same lock inode after shutdown.
+    let restarted = run(&home, async {}).await;
+    #[cfg(target_os = "linux")]
+    let after_restart = lock_trace::record(
+        &home,
+        if restarted.is_ok() {
+            "after-restart"
+        } else {
+            "restart-refused"
+        },
+    )
+    .expect("Linux lock trace");
+    restarted.unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        for state in [&after_init, &after_first, &after_restart] {
+            assert_eq!((state.dev, state.ino), (after_init.dev, after_init.ino));
+            assert!(
+                state.fds.is_empty(),
+                "supervisor lock FD survived: {state:?}"
+            );
+            assert!(
+                state.holders.is_empty(),
+                "supervisor lock still held: {state:?}"
+            );
+        }
+    }
 }
 
 async fn ready(home: &Path) {
