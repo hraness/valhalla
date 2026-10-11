@@ -1,8 +1,7 @@
 use super::*;
-#[cfg(target_os = "linux")]
-#[path = "commands_lock_trace.rs"]
-mod lock_trace;
 use crate::headless::catalog::{Hex, Id};
+#[cfg(target_os = "linux")]
+use crate::headless::lock_trace;
 use std::{
     io::Write,
     os::unix::{fs::PermissionsExt, net::UnixStream},

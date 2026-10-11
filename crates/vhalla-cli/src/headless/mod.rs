@@ -5,6 +5,9 @@ mod backend;
 mod catalog;
 mod commands;
 mod local;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "commands_lock_trace.rs"]
+mod lock_trace;
 mod managed;
 mod mcp;
 mod network;

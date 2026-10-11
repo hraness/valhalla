@@ -1,9 +1,8 @@
 use super::super::tests::{ready, Temp};
-#[cfg(target_os = "linux")]
-#[path = "../../commands_lock_trace.rs"]
-mod lock_trace;
 use super::super::{serve_factory, Launch};
 use super::*;
+#[cfg(target_os = "linux")]
+use crate::headless::lock_trace;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Mutex,
