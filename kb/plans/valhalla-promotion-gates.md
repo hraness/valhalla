@@ -1363,9 +1363,36 @@ sealed_history_page_partition_matches_single_frame_reference -- --exact`
 --all-features -- -D warnings` passed with the retained offline Cargo cache;
 format and diff checks are recorded on the final tree at handoff. This is a
 local replay regression, not physical-crash, independent-machine, browser/WASM,
-network-availability or release evidence. Integration still needs an exact-head
-PR `Required` and post-merge main gate before admitting this change; draft
-CLI custody probe PR #303 is separate and remains undiagnosed.
+network-availability or release evidence. PR #304 was subsequently merged
+as `202d8b09`; `Required` passed on its exact PR head `79e33b9d` and on
+post-merge main. Draft CLI custody probe PR #303 is separate and remains
+undiagnosed.
+
+**Agent-decided, owner may revisit (2026-10-11): native pending-seal replay
+across reopen.** From main `202d8b09`, the direct-native controller test
+`tests::pending_seal_replay_survives_restart_and_bounded_passes` retains an
+owner-signed policy closing a 160-frame author chain after a reader has only
+three of its frames. The reader remains fenced before and after reopen, with
+incomplete message visibility and exact local-operation retry bytes. Later
+authentic frames are retained in batches of at most 16 while frame 4 is
+withheld; a second reopen still cannot commit the policy. A bad-signature
+frame 4 cannot change storage, the author index or policy. Its exact valid
+retry takes one bounded pass, remains pending, and subsequent 128-frame-budget
+reconcile calls reach the exact signed seal. All 160 owner messages and the
+reader operation become owner-sealed; the signed terminal and the local
+operation retain their signed bytes on final reopen; the local operation
+remains owner-sealed.
+This deliberately does not treat an authentic signed fork as retryable.
+
+Local Darwin verification (Rust 1.98.1, locked tree, Git CLI fetch for the
+Cargo Git dependencies): the focused exact lib test passed 1/1;
+`cargo +1.98.1 test --locked -p vhalla-direct-native` passed 69 lib tests
+and 5 integration tests; strict all-targets/all-features package Clippy and
+`cargo +1.98.1 fmt --all -- --check` and staged `git diff --check`
+passed. This is a temp-store reopen
+regression, not a physical-crash, independent-machine, browser/WASM, live
+deployment or release qualification. Exact-PR-head and post-merge-main
+`Required` still belong to the integration gate for this new slice.
 
 Full promotion remains **unaccepted** until Gates 0–5 have named owners,
 production APIs, acceptance receipts, and residual risks. When a gate is

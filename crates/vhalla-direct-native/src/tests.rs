@@ -1092,3 +1092,5 @@ fn out_of_order_author_catchup_keeps_progress_between_bounded_calls() {
         .iter()
         .all(|message| message.visibility == Visibility::Provisional));
 }
+
+include!("pending_seal_replay_test.rs");
