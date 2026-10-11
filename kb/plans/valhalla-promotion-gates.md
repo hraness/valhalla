@@ -1343,6 +1343,27 @@ This plan does not authorize or promise:
 
 ## Decision record and durable memory
 
+**Agent-decided, owner may revisit (2026-10-11): retained-anchor reconciliation
+page partitions.** The `vhalla-direct-room` 64-case Hegel regression
+`anchor_reconciliation_page_partitions_match_single_frame_replay` retains a
+signed author chain longer than twice the 32-frame page limit, then learns an
+earlier exact owner seal. Fresh signing and admission remain fenced until the
+retained suffix is reconciled. Each drawn legal page partition agrees with
+single-frame replay. A signed interior fork or wrong frozen terminal in a later
+page refuses atomically without changing the verified prefix or retained head;
+retrying the exact valid page completes the proof, leaves the retained head
+unchanged, and only then allows one fresh current-policy append. This changes
+tests only, not signed bytes, policy authority or resource bounds.
+
+Local Darwin verification on Rust 1.98.1 with the locked offline Cargo cache:
+the focused exact test passed 1/1; `cargo +1.98.1 test --locked -p
+vhalla-direct-room` passed 23/23 protocol tests plus doc tests; strict
+all-targets/all-features package Clippy and `cargo +1.98.1 fmt --all -- --check`
+passed. The final exact-tree diff check and PR-head `Required` gate belong to
+the integration/delivery receipt. This is local protocol evidence, not a
+physical-crash drill, independent-machine verification, browser/WASM parity,
+network availability or release qualification.
+
 **Agent-decided, owner may revisit (2026-10-11): sealed-history page partitions.**
 On main `25dcdfe1` (PR #302), the direct-room protocol-test lane adds
 `sealed_history_page_partition_matches_single_frame_reference` without changing
