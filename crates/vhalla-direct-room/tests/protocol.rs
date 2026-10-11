@@ -898,3 +898,66 @@ fn fresh_admission_requires_exact_sealed_ancestry_even_for_longer_chains() {
     rebuilt.commit_after_persist(step, &state).unwrap();
     assert_eq!(rebuilt.head().event, current.id());
 }
+
+#[test]
+fn sealed_history_rejects_later_page_atomically_and_recovers_exact_target() {
+    let mut state = policy();
+    let accepted = event(&state, 2, 1, EventId::ZERO, "old-policy sealed frame");
+    let excluded = event(&state, 2, 2, accepted.id(), "excluded old-policy frame");
+    let old_boundary = close_with_history(
+        &mut state,
+        &[1, 2],
+        vec![seal(&accepted)],
+        std::slice::from_ref(&accepted),
+    );
+    let mut frames = vec![accepted, excluded.clone()];
+    for sequence in 3..=u64::try_from(MAX_CHAIN_PAGE + 2).unwrap() {
+        let previous = frames.last().unwrap().id();
+        frames.push(event(
+            &state,
+            2,
+            sequence,
+            previous,
+            &format!("current-policy frame {sequence}"),
+        ));
+    }
+    let candidate = frames[MAX_CHAIN_PAGE].clone();
+    let terminal = frames[MAX_CHAIN_PAGE + 1].clone();
+    // This terminal is signed by the same author under the same policy, but
+    // it cannot satisfy the owner's exact seal after the valid candidate.
+    let wrong_terminal = event(
+        &state,
+        2,
+        terminal.claims().sequence,
+        candidate.id(),
+        "signed fork terminal",
+    );
+    assert_ne!(wrong_terminal.id(), terminal.id());
+    let new_boundary = close_with_history(&mut state, &[1, 2], vec![seal(&terminal)], &frames[1..]);
+    assert!(matches!(
+        old_boundary.history_requirement(excluded.clone()).unwrap(),
+        HistoryRequirement::ContinuityOnly
+    ));
+    assert!(matches!(
+        new_boundary.history_requirement(excluded),
+        Err(Error::Policy)
+    ));
+
+    let mut proof = verifier(&new_boundary, candidate.clone());
+    assert_eq!(proof.target(), (terminal.claims().sequence, terminal.id()));
+    proof.push(&frames[..MAX_CHAIN_PAGE]).unwrap();
+    let prefix = proof.head();
+    assert_eq!(prefix.sequence, MAX_CHAIN_PAGE as u64);
+    assert_eq!(prefix.event, frames[MAX_CHAIN_PAGE - 1].id());
+    assert_eq!(proof.clone().finish(), Err(Error::Gap));
+    assert_eq!(
+        proof.push(&[candidate.clone(), wrong_terminal]),
+        Err(Error::Fork)
+    );
+    assert_eq!(proof.head(), prefix);
+    assert_eq!(proof.clone().finish(), Err(Error::Gap));
+    proof.push(&frames[MAX_CHAIN_PAGE..]).unwrap();
+    assert_eq!(proof.head().sequence, terminal.claims().sequence);
+    assert_eq!(proof.head().event, terminal.id());
+    assert_eq!(proof.finish().unwrap().event(), &candidate);
+}

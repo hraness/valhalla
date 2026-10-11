@@ -79,6 +79,16 @@ alone does not meet it.
 
 ## Decisions and evidence to retain
 
+**Agent-decided, owner may revisit (11 October 2026):** protocol testing owns
+a bounded multi-page sealed-history recovery regression in
+`crates/vhalla-direct-room/tests/protocol.rs`; root integration owns the
+current-tree `Required` gate. A later invalid signed proof page must not move
+the verified prefix or admit a candidate; retrying the exact valid page must
+reach the owner's seal. Earlier-policy continuity frames remain excluded from
+fresh admission. The separate CLI custody refusal remains undiagnosed pending a
+Linux lock-holder trace. This local regression is not independent-machine,
+browser/WASM, deployment, or release qualification.
+
 The 22 September workflow selected existing CLI agents (Codex and Devin) first, with the Mac as
 an explicitly local, mostly persistent host and Tailcat or equivalent private
 networking. Browser sessions are also in scope. No paid server, provider budget
