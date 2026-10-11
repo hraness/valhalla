@@ -1343,6 +1343,30 @@ This plan does not authorize or promise:
 
 ## Decision record and durable memory
 
+**Agent-decided, owner may revisit (2026-10-11): sealed-history page partitions.**
+On main `25dcdfe1` (PR #302), the direct-room protocol-test lane adds
+`sealed_history_page_partition_matches_single_frame_reference` without changing
+wire bytes, policy, proof implementation or bounds. Each of 64 Hegel cases draws
+legal pages and a candidate and seal target from signed history, once beyond
+32 frames and once beyond 64. After each valid page it checks the verified head
+against one-frame replay. An empty or over-32 page is refused; a later page
+with a signed fork or wrong terminal cannot move the prior head, and retrying
+that exact valid page finishes with the same candidate and closing-policy ID.
+An earlier-policy unsealed frame remains continuity only under its old boundary
+and cannot become fresh history under the new boundary.
+
+Local Darwin verification in an isolated worktree from that main commit:
+`cargo +1.98.1 test --locked -p vhalla-direct-room --test protocol
+sealed_history_page_partition_matches_single_frame_reference -- --exact`
+(1/1), `cargo +1.98.1 test --locked -p vhalla-direct-room` (22/22), and
+`cargo +1.98.1 clippy --locked -p vhalla-direct-room --all-targets
+--all-features -- -D warnings` passed with the retained offline Cargo cache;
+format and diff checks are recorded on the final tree at handoff. This is a
+local replay regression, not physical-crash, independent-machine, browser/WASM,
+network-availability or release evidence. Integration still needs an exact-head
+PR `Required` and post-merge main gate before admitting this change; draft
+CLI custody probe PR #303 is separate and remains undiagnosed.
+
 Full promotion remains **unaccepted** until Gates 0–5 have named owners,
 production APIs, acceptance receipts, and residual risks. When a gate is
 accepted, append its exact commit, commands, vectors, and recovery result to
