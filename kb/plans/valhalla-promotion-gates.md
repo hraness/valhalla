@@ -1141,6 +1141,57 @@ qualification and production rollback defense are unproven. Exact-head Rust
 `Required` (including prototype-checks and Workspace auxiliary checks) belongs
 to final delivery, not this uncommitted local evidence.
 
+### Protected two-store commit model — 2026-10-11
+
+**Agent-decided, owner may revisit:** select the security/recovery integration
+lane's separately controlled owner-host protocol specification and deterministic
+fault model as the follow-up to the protected-pin reference contract. The
+bounded change is `prototypes/checkpoint-ledger/tests/protected_commit_model.rs`,
+the prototype README and this promotion plan; no production API, provisioned
+service or protected adapter is part of this decision.
+
+The proposed host authenticates a fixed owner/store/realm identity for fresh
+reads and serializes durable compare-and-swap of the *entire* generation, bundle
+digest, checkpoint and policy digest. It persists its own fencing epoch, rejects
+old writers, conflicting full pins at the same generation, generation overflow
+and non-successor writes. A numeric height is not a proof of ancestry: before
+any local publication the owner must validate a certified strict extension
+against the exact witnessed predecessor. Bootstrap, key recovery and trust
+rotation need separately authorized protocols; neither local bytes nor a
+certificate mint host custody. The owner holds a fenced local writer lock from
+checking both stores through acknowledgement, retains bounded immutable
+certificate/snapshot bytes and revalidatable predecessor/target intent, syncs
+both, conditionally syncs the local full pin, **then** advances the remote pin.
+Only when both exact records and certified bytes are durably checked may the
+caller acknowledge. No deletion/compaction is implied by this ordering.
+
+Crash, timeout and lost acknowledgement remain indeterminate. A fresh host read
+and fenced reconciliation repeats the remote CAS only when the durable local
+pin and independently reverified exact bundle/intent equal the target and the
+host still holds the predecessor. If both hold target, confirm and acknowledge
+idempotently; if both hold predecessor, a staged uncommitted candidate may be
+retried. All other combinations refuse until exact certified data is restored
+or an explicit conflict is settled. In particular an ahead witness with lost
+local payloads cannot reconstruct them, and an outage cannot select a local
+older pin or fall back to the legacy unprotected loader. The host's durable
+monotonic CAS preserves an acknowledged *witness frontier* across modeled
+crashes and lost responses, not availability of its local payload.
+
+The three deterministic model tests use genuine prepared certified pin fixtures
+but abstract the durable bundle verifier as an in-memory checked-data marker.
+They exercise sync cuts, lost responses, local all-bytes rollback, data loss,
+outage, stale/unauthorized grants and competing same-predecessor writers. This
+is a protocol specification and fault model, **not** a production write path,
+proof of independent host custody, actual authentication, physical fsync,
+network availability or browser/WASM parity. The README owns detailed ordering,
+assumptions and refusal behavior. Next admission requires an owner-controlled
+service/adapter, real credential and fence custody, independently verified
+byte-level crash reconciliation and live/physical qualification before protected
+recovery can be activated. The existing `load_protected` test double still has
+a snapshot-after-capture race; a latest-at-completion claim needs a separate
+fenced read/serialization design. Exact-head `Required` remains the delivery
+gate for this test change.
+
 ### Next trust-rotation experiment
 
 Ordinary commits reject all implicit trust or epoch changes. The next reference

@@ -123,6 +123,76 @@ this read stale; callers needing a latest-at-completion guarantee must establish
 a separate snapshot/serialization protocol. Physical power-loss behavior,
 independent-host custody and live availability require separate qualification.
 
+### Protected two-store protocol proposal (model only)
+
+**Agent-decided, owner may revisit (2026-10-11):** the security/recovery
+integration lane specifies the following *future* owner-host protocol, exercised
+by `tests/protected_commit_model.rs`. Nothing in this section changes `commit`,
+`load`, `load_protected` or a production entrypoint.
+
+- Provision a separately controlled, owner-identified host and an explicit
+  initial certified full pin. Its authenticated read and serialized durable CAS
+  address a fixed realm/store identity, protocol version and owner identity;
+  compare the **entire** expected 200-byte pin. Persist an incrementing host
+  fencing epoch with the pin. An authenticated caller presents a current fenced
+  writer grant; no local file, network-supplied key, parsed pin or certificate
+  can issue one. Reject stale grants, absent state, wrong identity, conflicting
+  same-generation pins, generation overflow and non-successor generations.
+  Same-policy transitions require higher height; the host does not infer ledger
+  ancestry from a height or hash. Rotation and re-provisioning are separate,
+  expressly authorized protocols. A read returns the host's durable latest pin,
+  not a client cache; a successful CAS response means the pin survived a host
+  restart under the host's durability contract. Authenticate and scope the
+  transport; never put owner secrets in certificate or bundle bytes.
+- Under a fenced local writer lock, re-read witness and local pin. Require exact
+  agreement, then verify the candidate with `PreparedCommit` against that
+  predecessor, including its certified ancestry. Durably retain bounded,
+  immutable candidate bundle **and** a predecessor/target intent that can be
+  revalidated after restart. Sync their names and contents; fail closed at
+  capacity rather than deleting older acknowledged data. CAS and sync the local
+  full pin; only then request host CAS from exact predecessor to target. Do not
+  send the host CAS based on a merely visible local write. Keep the writer fence
+  through the final local durability check and acknowledgement. A healthy
+  caller acknowledges only after both pins and the exact verified bundle are
+  durable and the witness still identifies that target; a later concurrent
+  advance makes this attempt's acknowledgement indeterminate, not a rollback.
+- Any timeout, lost acknowledgement or crash is **unknown**, never an abort.
+  On restart obtain a *fresh authenticated* host pin and exclusive writer fence;
+  re-read durable local pin and reverify the exact retained bundle/intent. If
+  local pin is target and host still predecessor, repeat host CAS, not local
+  rollback. If both equal target, idempotently confirm durable local bytes and
+  return its acknowledgement. If both still equal predecessor, a staged but
+  uncommitted intent may be retried as a new local publication. Any other pair
+  (including an ahead witness, an unrelated winner or a locally rolled-back
+  pin) refuses until a separately verified exact restoration or explicit
+  conflict decision. The witness is **not** a backup of snapshot/certificate
+  bytes and cannot reconstruct them. Host outage, missing intent or payload,
+  changed trust, corrupt bytes and revoked custody all fence the protected path;
+  never dispatch to legacy `load` or scan older bundles as a workaround.
+
+**Safety under the model assumptions:** after a successful acknowledgement,
+local certified bytes and the host's durable pin both reached the target. The
+host never accepts a lower generation, different full pin at the same generation,
+or a CAS from an old predecessor, so later permitted transitions cannot erase
+that *witnessed frontier*. A crash discards only visible, un-synced data; lost
+responses do not roll back durable CAS. If all local payloads are lost after an
+ack, recovery **refuses** until exact certified data is independently restored;
+this is not a guarantee of data availability or proof of host durability. A
+client compromising the host, its authority, both trust domains or the signing
+quorum, or a host that lies about sync, violates the assumptions. Liveness under
+partitions is intentionally not promised. Read snapshots can become stale after
+capture; latest-at-completion needs a fenced read or a second host check.
+
+The fault model uses genuine `PreparedCommit` pins but an in-memory marker in
+place of the actual durable journal and bundle verifier. It covers cuts before
+and after journal/local/witness sync, lost responses, competing certified pins,
+invalid/stale grants, witness outages and coordinated rollback of all local
+bytes. It does **not** prove a network authentication scheme, OS lock/lease
+continuity, backend linearizability, physical power-loss sync, service custody,
+actual recovery-byte validation or cross-machine availability. The future
+adapter must implement and test these contracts separately before any protected
+write or recovery activation.
+
 ## Native storage profile
 
 The `native-store` feature exposes `file_store::FileStore` on Unix. It requires
@@ -153,6 +223,7 @@ From the repository root:
 ```console
 cargo run --manifest-path prototypes/checkpoint-ledger/Cargo.toml --example recovery --locked
 cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked
+cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked --test protected_commit_model
 cargo clippy --manifest-path prototypes/checkpoint-ledger/Cargo.toml --all-targets --locked -- -D warnings
 cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
 cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked
@@ -169,12 +240,12 @@ step, including failed syncs, lost acknowledgements, and writers racing at CAS.
 ## Remaining work
 
 Real protected pin freshness (including a monotonic independent witness and a
-crash-safe two-store commit protocol), physical crash qualification, explicit
-trust rotation, conflict retention, compaction, and network admission remain
-open. Direct ledger users must retain certificates separately; the persistence
-layer bundles them with each stored snapshot. Neither establishes global
-agreement, prevents malicious signers, authenticates each event author, or
-authorizes host effects. Untrusted appends can fill or advance the staging
+verified crash-safe two-store commit adapter), physical crash qualification,
+explicit trust rotation, conflict retention, compaction, and network admission
+remain open. Direct ledger users must retain certificates separately; the
+persistence layer bundles them with each stored snapshot. Neither establishes
+global agreement, prevents malicious signers, authenticates each event author,
+or authorizes host effects. Untrusted appends can fill or advance the staging
 history, so production transport must not expose them without admission policy.
 
 Follow the [promotion gates](../../kb/plans/valhalla-promotion-gates.md) before
