@@ -1394,6 +1394,26 @@ regression, not a physical-crash, independent-machine, browser/WASM, live
 deployment or release qualification. Exact-PR-head and post-merge-main
 `Required` still belong to the integration gate for this new slice.
 
+**Agent-decided, owner may revisit (2026-10-11): private-relay PAGE byte cap.**
+From main `884285e9`, the portable `vhalla-private-relay` wire regression
+`byte_cap_pages_keep_mailbox_positions_and_reject_corrupt_continuations`
+constructs 16 maximum-payload opaque items with overlapping sender-local
+sequences and distinct mailbox positions. The 4 MiB response budget yields 15
+whole records and an exact exclusive cursor; encoding the remainder from
+that cursor yields position 16, and both decoded pages preserve every original
+position and item. Missing or noncanonical continuation, skipped position,
+wrong item length, corrupted digest and a skipped/replayed request cursor all
+refuse as malformed rather than yielding an advancing page. No wire bytes,
+bounds, or production implementation changed.
+
+Local Darwin verification with Rust 1.98.1 and the locked tree: the focused
+exact test passed 1/1, all package tests 6/6, the wasm32-unknown-unknown
+package check and strict all-targets/all-features Clippy passed. Formatting and
+diff checks are recorded at handoff; exact-head `Required` remains the
+integration gate. This is a portable codec regression, not browser execution,
+native mailbox persistence, independent-machine, live delivery or release
+qualification. Draft CLI custody probe PR #303 remains separate.
+
 Full promotion remains **unaccepted** until Gates 0–5 have named owners,
 production APIs, acceptance receipts, and residual risks. When a gate is
 accepted, append its exact commit, commands, vectors, and recovery result to
