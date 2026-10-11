@@ -43,6 +43,16 @@ pub(super) fn held_by(state: &Snapshot, pid: u32) -> bool {
         .any(|entry| entry.split_whitespace().any(|part| part == expected))
 }
 
+fn fd_matches(metadata: io::Result<fs::Metadata>, dev: u64, ino: u64) -> io::Result<bool> {
+    match metadata {
+        Ok(fd_meta) => Ok(fd_meta.dev() == dev && fd_meta.ino() == ino),
+        // An FD may close between read_dir and metadata. Other errors are
+        // missing evidence, not proof that no matching FD exists.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 fn matching_fds(pid: &str, dev: u64, ino: u64) -> io::Result<Vec<u32>> {
     // Inspect only the observer or the explicitly task-owned test child.
     // The iterator's own directory descriptor can disappear mid-scan; it is
@@ -54,9 +64,7 @@ fn matching_fds(pid: &str, dev: u64, ino: u64) -> io::Result<Vec<u32>> {
         }
         let entry = entry?;
         if let Ok(fd) = entry.file_name().to_string_lossy().parse::<u32>() {
-            if fs::metadata(entry.path())
-                .is_ok_and(|fd_meta| fd_meta.dev() == dev && fd_meta.ino() == ino)
-            {
+            if fd_matches(fs::metadata(entry.path()), dev, ino)? {
                 fds.push(fd);
             }
         }
@@ -188,6 +196,17 @@ mod tests {
             },
             4242
         ));
+    }
+
+    #[test]
+    fn unreadable_fd_is_not_an_empty_observation() {
+        assert!(!fd_matches(Err(io::Error::from(io::ErrorKind::NotFound)), 0, 0).unwrap());
+        assert_eq!(
+            fd_matches(Err(io::Error::from(io::ErrorKind::PermissionDenied)), 0, 0)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     // A failed assertion must never strand a child holding the synthetic home.
