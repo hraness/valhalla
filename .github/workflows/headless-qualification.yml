@@ -456,3 +456,70 @@ jobs:
           python3 .github/scripts/headless_result_qualification.py \
             --artifacts "$RUNNER_TEMP/headless-result" --lockfile Cargo.lock \
             --source-sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+
+  # Draft PR #303 only: this is an advisory reproduction attempt, not a
+  # custody repair or independent-runner qualification result.
+  custody-lock-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/cli-custody-lock-trace-20261011'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: cli-custody-diagnostic
+          save-if: false
+      - name: Probe Linux lock inode, holder and FD lifetime with controls
+        shell: bash
+        run: |
+          logs="$RUNNER_TEMP/cli-custody-diagnostic"
+          mkdir -p "$logs"
+          failed=0
+          focused=headless::commands::tests::run_never_initializes_missing_native_state_and_init_releases_its_lock
+          # Stop at the first failure to retain the closest possible trace.
+          for attempt in {1..32}; do
+            log="$logs/focused-$attempt.log"
+            if timeout 900s cargo +1.98.1 test --locked -p vhalla-cli --bin vhalla --all-features "$focused" -- --exact --nocapture > "$log" 2>&1 && grep -q 'test result: ok. 1 passed; 0 failed' "$log"; then
+              echo "focused attempt $attempt passed"
+            else
+              echo "focused attempt $attempt failed or timed out; see $log"
+              failed=1
+              break
+            fi
+          done
+          for control in \
+            headless::local::runtime::tests::factory_opens_only_under_custody_and_publishes_endpoints_after_success \
+            headless::local::custody::tests::competing_owner_cannot_rotate_cap_and_last_drop_releases_custody; do
+            log="$logs/${control##*::}.log"
+            if timeout 900s cargo +1.98.1 test --locked -p vhalla-cli --bin vhalla --all-features "$control" -- --exact --nocapture > "$log" 2>&1 && grep -q 'test result: ok. 1 passed; 0 failed' "$log"; then
+              echo "control ${control##*::} passed"
+            else
+              echo "control ${control##*::} failed or timed out; see $log"
+              failed=1
+            fi
+          done
+          # Keep the default libtest parallelism to exercise the reported race.
+          if timeout 900s cargo +1.98.1 test --locked -p vhalla-cli --bin vhalla --all-features > "$logs/parallel.log" 2>&1; then
+            echo 'default-parallel CLI suite passed'
+          else
+            echo 'default-parallel CLI suite failed or timed out'
+            failed=1
+          fi
+          if ((failed)); then
+            grep -hE 'supervisor-lock|ControlAlreadyRunning|FAILED|test result:|error:' "$logs"/*.log | tail -n 100 || true
+          fi
+          exit "$failed"
+      - name: Retain bounded synthetic lock diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: cli-custody-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cli-custody-diagnostic/*.log
+          if-no-files-found: error
+          retention-days: 7
