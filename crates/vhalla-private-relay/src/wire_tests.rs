@@ -82,7 +82,7 @@ fn byte_cap_pages_keep_mailbox_positions_and_reject_corrupt_continuations() {
     );
 
     // A truncated page cannot silently claim completion or yield a new cursor
-    // if its continuation, position, item length or item digest is corrupt.
+    // if its continuation, head, count, position, item length or digest is corrupt.
     let refused = |body: &[u8]| {
         assert!(matches!(
             decode_page(body, 0, MAX_RELAY_PAGE),
@@ -95,6 +95,18 @@ fn byte_cap_pages_keep_mailbox_positions_and_reject_corrupt_continuations() {
     let mut corrupt = first.clone();
     corrupt[8] = 2; // Noncanonical continuation flag.
     refused(&corrupt);
+    for head in [cursor - 1, cursor] {
+        let mut corrupt = first.clone();
+        corrupt[..8].copy_from_slice(&head.to_be_bytes());
+        // Below the last retained position, or falsely complete with more set.
+        refused(&corrupt);
+    }
+    for count in [14u16, 16, (MAX_RELAY_PAGE + 1) as u16] {
+        let mut corrupt = first.clone();
+        corrupt[9..11].copy_from_slice(&count.to_be_bytes());
+        // Too few leaves trailing records; too many lacks bytes or exceeds the limit.
+        refused(&corrupt);
+    }
     let mut corrupt = first.clone();
     corrupt[11..19].copy_from_slice(&2u64.to_be_bytes());
     refused(&corrupt);
