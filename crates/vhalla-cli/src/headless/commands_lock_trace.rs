@@ -312,13 +312,14 @@ mod tests {
         assert_eq!((after_child.dev, after_child.ino), (held.dev, held.ino));
         assert!(after_child.fds.is_empty() && after_child.holders.is_empty());
 
+        let restart_home = home.as_path();
         tokio::time::timeout(
             Duration::from_secs(20),
             local::serve_factory(
                 &home,
-                |generation| async {
+                |generation| async move {
                     Ok(local::Launch {
-                        backend: ServiceBackend::open(&home, generation).await?,
+                        backend: ServiceBackend::open(restart_home, generation).await?,
                         endpoint: None,
                     })
                 },
