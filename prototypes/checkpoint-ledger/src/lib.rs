@@ -15,6 +15,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod persistence;
+pub mod protected_commit;
 
 #[cfg(all(feature = "native-store", unix))]
 pub mod file_store;

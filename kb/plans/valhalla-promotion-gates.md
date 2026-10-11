@@ -1133,8 +1133,8 @@ This does **not** establish browser execution or cross-implementation parity.
 Promotion still requires the owner to specify the actual witness protocol and
 isolation, monotonic authenticated CAS and durable custody, plus a separately
 verified order/reconciliation protocol between the witness and local CAS under
-crash and uncertain acknowledgements. This prototype exposes **no** protected
-commit operation. The reference cannot resist coordinated disk+witness
+crash and uncertain acknowledgements. At this reference-contract stage the prototype exposed **no** protected
+commit operation; the later single-step adapter is documented below. The reference cannot resist coordinated disk+witness
 compromise, physical power loss, or an advance of the witness *after* the
 snapshot was captured. A live host, network availability, independent-machine
 qualification and production rollback defense are unproven. Exact-head Rust
@@ -1191,6 +1191,26 @@ recovery can be activated. The existing `load_protected` test double still has
 a snapshot-after-capture race; a latest-at-completion claim needs a separate
 fenced read/serialization design. Exact-head `Required` remains the delivery
 gate for this test change.
+
+### Protected two-store adapter prototype — 2026-10-11
+
+**Agent-decided, owner may revisit:** `protected_commit` implements a single
+same-policy pin advance in the disposable checkpoint-ledger crate. The Unix
+`FileStore` retains a bounded, canonical predecessor/target intent alongside
+its immutable certified bundle. A fresh fenced witness-interface read gates the
+local commit; local sync precedes host CAS. Restart reconciliation re-verifies
+exact snapshot/certificate bytes, ancestry, intent and full pins; an unknown CAS
+response is not an abort. A different pending intent never overwrites this one.
+The independent host is only a test double, not a deployed service or custody
+proof. No protected bootstrap, intent rotation or compaction is provided.
+
+The `protected_file` suite exercises reopen, lost acknowledgement, staged local
+pin, pending visible host CAS, fork refusal, local rollback, missing intent,
+corrupt bundle, outage and revoked writer grant. Byte-level API tests are not
+physical power-loss validation. Promotion and activation still require a real
+independently controlled witness with authenticated fixed identity, durable
+serialized CAS and revocable exclusive grant; local/host crash drills, bounded
+retention, production authority integration and exact-head delivery checks.
 
 ### Next trust-rotation experiment
 

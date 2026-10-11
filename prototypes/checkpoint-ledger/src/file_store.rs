@@ -9,13 +9,15 @@
 //! nor supplies malicious-disk rollback protection: the pin is on the same disk.
 //!
 //! Immutable bundles are synced before publication through a hard link, followed
-//! by a directory sync. A pin is written and synced at a temporary path, renamed,
-//! then directory-synced. I/O errors may leave an uncertain committed outcome;
-//! callers must reconcile and re-sync a retry. Orphans consume capacity and are
-//! never pruned automatically. Only fixed temporary files are replaced/removed.
-//! The live tests exercise API-level operations, not physical power-loss behavior.
+//! by a directory sync. A pin and protected intent are written and synced at
+//! temporary paths, renamed, then directory-synced. I/O errors may leave an
+//! uncertain committed outcome; callers must reconcile and re-sync a retry.
+//! Orphans consume capacity and are never pruned automatically. Only fixed
+//! temporary files are replaced/removed. The live tests exercise API-level
+//! operations, not physical power-loss behavior.
 
 use crate::persistence::{bundle_id, BundleId, Pin, Storage, MAX_BUNDLE_BYTES, PIN_BYTES};
+use crate::protected_commit::{Intent, IntentStorage, INTENT_BYTES};
 use alloc::{string::String, vec, vec::Vec};
 use core::fmt;
 use std::fs::{self, DirBuilder, File, Metadata, OpenOptions, TryLockError};
@@ -29,6 +31,8 @@ const LOCK: &str = "store.lock";
 const PIN: &str = "pin";
 const PIN_TEMP: &str = "pin.tmp";
 const BUNDLE_TEMP: &str = "bundle.tmp";
+const INTENT: &str = "intent";
+const INTENT_TEMP: &str = "intent.tmp";
 
 /// Storage failures preserve missing files, malformed data, and lock contention
 /// as distinct outcomes. Any I/O error during publication can be indeterminate.
@@ -44,6 +48,8 @@ pub enum Error {
     Busy,
     /// The pin exists but does not have its exact canonical representation.
     MalformedPin,
+    /// The intent exists but does not have its exact canonical representation.
+    MalformedIntent,
     /// A record has the wrong digest, different immutable bytes, or wrong size.
     CorruptBundle,
     /// The configured bundle-file capacity has been reached.
@@ -58,6 +64,7 @@ impl fmt::Display for Error {
             Self::UnsafePath => f.write_str("unsafe store path or permissions"),
             Self::Busy => f.write_str("store is already locked"),
             Self::MalformedPin => f.write_str("malformed persistent pin"),
+            Self::MalformedIntent => f.write_str("malformed persistent intent"),
             Self::CorruptBundle => f.write_str("corrupt or oversized bundle"),
             Self::Capacity => f.write_str("bundle capacity reached"),
         }
@@ -121,8 +128,8 @@ impl FileStore {
 
     /// Open an existing store without creating a directory, lock file, or pin.
     ///
-    /// A truncated/corrupt pin fails here, rather than being treated as an empty
-    /// store. Stale regular temporary files are ignored until the next write.
+    /// A truncated/corrupt pin or intent fails here, rather than being treated
+    /// as an empty store. Stale regular temporary files are ignored until a write.
     pub fn open(path: impl AsRef<Path>, max_bundles: usize) -> Result<Self, Error> {
         validate_bound(max_bundles)?;
         let path = path.as_ref();
@@ -142,6 +149,7 @@ impl FileStore {
         };
         store.bundle_count()?;
         store.read_pin()?;
+        store.read_intent()?;
         Ok(store)
     }
 
@@ -156,7 +164,10 @@ impl FileStore {
             validate_regular(&fs::symlink_metadata(entry.path())?)?;
             let name = entry.file_name();
             let name = name.to_str().ok_or(Error::UnsafePath)?;
-            if matches!(name, LOCK | PIN | PIN_TEMP | BUNDLE_TEMP) {
+            if matches!(
+                name,
+                LOCK | PIN | PIN_TEMP | BUNDLE_TEMP | INTENT | INTENT_TEMP
+            ) {
                 continue;
             }
             if !is_bundle_name(name) {
@@ -188,6 +199,42 @@ impl FileStore {
     fn sync_bundle(&self, id: BundleId) -> Result<(), Error> {
         let file = open_private(&self.bundle_path(id))?;
         file.sync_all()?;
+        self.directory.sync_all()?;
+        Ok(())
+    }
+}
+
+impl IntentStorage for FileStore {
+    fn read_intent(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        let path = self.path.join(INTENT);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => validate_regular(&metadata)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        let raw = read_bounded(&path, INTENT_BYTES, Error::MalformedIntent)?;
+        if Intent::decode(&raw).is_err() {
+            return Err(Error::MalformedIntent);
+        }
+        Ok(Some(raw))
+    }
+
+    fn put_intent(&mut self, raw: &[u8]) -> Result<(), Error> {
+        if Intent::decode(raw).is_err() {
+            return Err(Error::MalformedIntent);
+        }
+        // The protocol checks for a different existing intent before calling
+        // this. Defend against accidental overwrites at the backend boundary.
+        if let Some(current) = self.read_intent()? {
+            if current != raw {
+                return Err(Error::MalformedIntent);
+            }
+        }
+        let mut temporary = self.fresh_temp(INTENT_TEMP)?;
+        temporary.write_all(raw)?;
+        temporary.sync_all()?;
+        drop(temporary);
+        fs::rename(self.path.join(INTENT_TEMP), self.path.join(INTENT))?;
         self.directory.sync_all()?;
         Ok(())
     }
