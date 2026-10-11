@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use ed25519_dalek::SigningKey;
 use proptest::prelude::*;
 use valhalla_checkpoint_ledger_prototype::persistence::{
-    bundle_id, commit, load, BundleId, CommitOutcome, Pin, PreparedCommit, ProtocolError, Storage,
-    StoreError, PIN_BYTES,
+    bundle_id, commit, load, load_protected, BundleId, CommitOutcome, Pin, PinWitness,
+    PreparedCommit, ProtectedLoadError, ProtocolError, Storage, StoreError, PIN_BYTES,
 };
 use valhalla_checkpoint_ledger_prototype::{certificate_realm, CertifiedLedger};
 use valhalla_checkpoint_proof_prototype::{wire, Approval, CheckpointProof, TrustConfig};
@@ -27,11 +27,12 @@ enum Fault {
     Crash,
     Missing,
     Corrupt,
+    Unavailable,
 }
 
 // Independent crash oracle: successful sync publishes durable state; a crash
 // discards visible-only state. Reads can observe unsynced records before crash.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Disk {
     visible: BTreeMap<BundleId, Vec<u8>>,
     durable: BTreeMap<BundleId, Vec<u8>>,
@@ -98,6 +99,25 @@ impl Storage for Disk {
         self.durable_pin = self.pin.clone();
         self.trip(Cut::PinSynced)?;
         Ok(true)
+    }
+}
+
+// This test double is separate from Disk: a local pin, even if well formed,
+// cannot nominate the witness expectation. It models one snapshot from a
+// hypothetical monotonic owner witness, not its durability or write protocol.
+#[derive(Default)]
+struct IndependentWitness {
+    latest: Option<Pin>,
+    unavailable: bool,
+}
+impl PinWitness for IndependentWitness {
+    type Error = Fault;
+    fn capture_pin(&mut self) -> Result<Option<Pin>, Fault> {
+        if self.unavailable {
+            Err(Fault::Unavailable)
+        } else {
+            Ok(self.latest.clone())
+        }
     }
 }
 
@@ -334,6 +354,174 @@ fn missing_or_corrupt_current_bundle_never_falls_back_and_pin_rollback_is_outsid
     ));
     let mut rolled_back = old_disk;
     assert_eq!(loaded_count(&mut rolled_back), Some(1));
+}
+
+#[test]
+fn protected_pin_refuses_stale_missing_and_coordinated_store_rollback() {
+    fn refuses(
+        disk: &mut Disk,
+        witness: &mut IndependentWitness,
+        policy: TrustConfig,
+        reason: ProtectedLoadError<Fault, Fault>,
+    ) {
+        let before = disk.clone();
+        assert_eq!(
+            load_protected(disk, witness, policy, 64).err(),
+            Some(reason)
+        );
+        // Refusal never repairs, re-pins, publishes an orphan, or changes the
+        // certified in-memory model: no model exists on this error path.
+        assert_eq!(*disk, before);
+    }
+
+    let (mut disk, mut model, old_pin) = base();
+    let old_disk = disk.clone();
+    append(&mut model, b"second");
+    let cert = certify(&mut model);
+    let prepared = PreparedCommit::prepare(&model, &cert, Some(&old_pin)).unwrap();
+    commit(&mut disk, &prepared).unwrap();
+    let good = disk.clone();
+    let new_pin = prepared.pin().clone();
+    let mut witness = IndependentWitness {
+        latest: Some(new_pin.clone()),
+        ..Default::default()
+    };
+    let original_snapshot = model.snapshot();
+    let recovered = load_protected(&mut disk, &mut witness, trust(), 64).unwrap();
+    assert_eq!(recovered.snapshot(), original_snapshot);
+    assert_eq!(
+        recovered.accepted().unwrap().checkpoint(),
+        new_pin.checkpoint()
+    );
+    assert_eq!(disk, good);
+
+    // A valid, current local pin is not a fallback when the witness disappears.
+    witness.unavailable = true;
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::Witness(Fault::Unavailable),
+    );
+    witness.unavailable = false;
+    witness.latest = None;
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::MissingWitness,
+    );
+    witness.latest = Some(new_pin.clone());
+
+    // The old local pin is still valid plain data, but no longer the witness's
+    // full pin, even if its old bundle still exists.
+    disk.pin = Some(old_pin.clone());
+    disk.durable_pin = Some(old_pin);
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::PinMismatch,
+    );
+    disk = good.clone();
+    disk.pin = None;
+    disk.durable_pin = None;
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::MissingLocalPin,
+    );
+    // Replacing the *entire* local store with a previously valid old store
+    // still cannot roll back the independent expectation.
+    disk = old_disk;
+    assert_eq!(
+        load(&mut disk, trust(), 64).unwrap().unwrap().event_count(),
+        1
+    );
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::PinMismatch,
+    );
+
+    // Every field of the canonical full pin must match, not just its height or
+    // bundle address. Decode is structural and does not authenticate a forgery.
+    let generation = b"vhalla/checkpoint-store/pin/v1".len() + 2;
+    for offset in [
+        generation,
+        generation + 8,
+        generation + 40,
+        generation + 56,
+        generation + 64,
+        generation + 96,
+        generation + 128,
+        generation + 160,
+    ] {
+        disk = good.clone();
+        let mut bytes = new_pin.encode();
+        bytes[offset] ^= 1;
+        let forged = Pin::decode(&bytes).unwrap();
+        assert_ne!(forged, new_pin);
+        disk.pin = Some(forged.clone());
+        disk.durable_pin = Some(forged);
+        refuses(
+            &mut disk,
+            &mut witness,
+            trust(),
+            ProtectedLoadError::PinMismatch,
+        );
+    }
+
+    disk = good.clone();
+    disk.visible.get_mut(&new_pin.bundle()).unwrap()[0] ^= 1;
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::Local(StoreError::Invalid(ProtocolError::BundleMismatch)),
+    );
+    disk = good.clone();
+    disk.visible.remove(&new_pin.bundle());
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::Local(StoreError::Backend(Fault::Missing)),
+    );
+    disk = good.clone();
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust_threshold(1),
+        ProtectedLoadError::Local(StoreError::Invalid(ProtocolError::WrongPredecessor)),
+    );
+
+    disk.unreadable_pin = true;
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::Local(StoreError::Backend(Fault::Corrupt)),
+    );
+    // Even when local bytes are unreadable, the witness failure takes priority.
+    witness.unavailable = true;
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::Witness(Fault::Unavailable),
+    );
+    witness.unavailable = false;
+    witness.latest = None;
+    refuses(
+        &mut disk,
+        &mut witness,
+        trust(),
+        ProtectedLoadError::MissingWitness,
+    );
+    assert_eq!(model.snapshot(), original_snapshot);
 }
 
 #[test]

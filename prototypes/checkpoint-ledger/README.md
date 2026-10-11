@@ -73,11 +73,12 @@ operation; an indeterminate pin write requires reconciliation, not an assumed
 abort. Even when the target pin is already visible, retry repeats the bundle and
 pin durability operations before reporting `AlreadyCommitted`.
 
-`load` reads only the local backend's pin, loads that exact bundle, checks its
-digest, and re-verifies certificate and history. Missing or corrupt current data
-is an error; it never selects an older bundle from a directory scan. A concurrent
-writer may advance after the initial pin read, so the result is a consistent
-captured frontier, not a promise to return the newest state at completion.
+`load` is **legacy/unprotected**: it reads only the local backend's pin, loads
+that exact bundle, checks its digest, and re-verifies certificate and history.
+Missing or corrupt current data is an error; it never selects an older bundle
+from a directory scan. A concurrent writer may advance after the initial pin
+read, so the result is a consistent captured frontier, not a promise to return
+the newest state at completion.
 `Pin::decode` parses plain data and supplies no authentication or authority.
 
 Canonical records use domain strings, version `1:u16`, and big-endian integers:
@@ -97,6 +98,30 @@ snapshot bytes `1,2,3` and certificate bytes `4,5` is 48 bytes with SHA-256
 A pin with generation 9, bundle bytes all 1, realm 42, epoch 7, trust bytes all 2,
 head bytes all 3, root bytes all 4, and height 5 has SHA-256
 `829b308a1ee954cdeb8a77538ee6808ede66ea9afa529244fc79495881880a64`.
+
+## Protected-pin reference contract
+
+**Agent-decided, owner may revisit (2026-10-11):** for guarded recovery,
+choose a separately controlled owner-host, monotonic and durable **full-pin**
+witness. A `PinWitness` supplies a captured expectation containing generation,
+bundle digest, checkpoint and trust-policy digest. `load_protected` first requires
+that independent expectation, then requires exact equality with the local pin
+before reading and re-verifying its one bundle, certificate and history. A
+missing, stale or substituted local pin (even alongside its matching old
+bundle), changed policy, corrupt bundle, absent witness or unavailable witness
+refuses without a model, write, fallback or repair. The native/file store alone
+is not a witness; a parsed `Pin` cannot establish freshness.
+
+The witness here is an **independent deterministic test double**, not a service
+or production storage adapter. The trait contract alone cannot prove isolation,
+monotonicity, durability or the authenticity of its implementer. There is no
+protected write/commit path, no settled ordering between the witness CAS and
+local CAS under crash or timeout, and no claim that a successful reference
+recovery prevents real rollback. An adversary controlling both witness and disk
+can still coordinate rollback. A witness advance after capture can also make
+this read stale; callers needing a latest-at-completion guarantee must establish
+a separate snapshot/serialization protocol. Physical power-loss behavior,
+independent-host custody and live availability require separate qualification.
 
 ## Native storage profile
 
@@ -143,12 +168,13 @@ step, including failed syncs, lost acknowledgements, and writers racing at CAS.
 
 ## Remaining work
 
-Protected pin freshness, physical crash qualification, explicit trust rotation,
-conflict retention, compaction, and network admission remain open. Direct ledger
-users must retain certificates separately; the persistence layer bundles them
-with each stored snapshot. Neither establishes
-global agreement, prevent malicious signers, authenticate each event author,
-or authorize host effects. Untrusted appends can fill or advance the staging
+Real protected pin freshness (including a monotonic independent witness and a
+crash-safe two-store commit protocol), physical crash qualification, explicit
+trust rotation, conflict retention, compaction, and network admission remain
+open. Direct ledger users must retain certificates separately; the persistence
+layer bundles them with each stored snapshot. Neither establishes global
+agreement, prevents malicious signers, authenticates each event author, or
+authorizes host effects. Untrusted appends can fill or advance the staging
 history, so production transport must not expose them without admission policy.
 
 Follow the [promotion gates](../../kb/plans/valhalla-promotion-gates.md) before

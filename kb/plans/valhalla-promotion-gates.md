@@ -1096,13 +1096,50 @@ check acknowledged frontiers across crashes and retries. Other tests cover
 malformed pin errors versus absence, stale writers, forks, generation overflow,
 policy changes, missing/corrupt pinned bundles, and typed preparation fences.
 
-This is a **crash-consistency reference under backend contracts**, not protected
-freshness. An ordinary file store cannot detect deletion or coordinated rollback
-of the pin and matching bundles by someone controlling the disk. Tests explicitly
-demonstrate that limit. A decoded pin is plain data; the local owner-selected
-backend supplies the recovery expectation. Filesystem tests exercise API behavior,
-not physical power loss or arbitrary filesystems. Loading captures the pin at its
-initial read and does not promise the newest pin if another writer advances later.
+The legacy local-store path is a **crash-consistency reference under backend
+contracts**, not protected freshness. An ordinary file store cannot detect
+deletion or coordinated rollback of the pin and matching bundles by someone
+controlling the disk. Tests explicitly demonstrate that limit. A decoded pin is
+plain data; the local owner-selected backend supplies only the legacy recovery
+expectation. Filesystem tests exercise API behavior, not physical power loss or
+arbitrary filesystems. Loading captures the pin at its initial read and does not
+promise the newest pin if another writer advances later.
+
+### Protected-pin freshness reference contract — 2026-10-11
+
+**Agent-decided, owner may revisit:** model an owner-controlled, independently
+retained, durable monotonic **full-pin** witness for guarded recovery. This is a
+choice of a *required trust boundary*, not a deployed witness. The disposable
+checkpoint-ledger prototype's `PinWitness` test double captures generation,
+bundle digest, checkpoint and trust digest separately from the untrusted local
+`Storage`. `load_protected` requires the exact captured full pin before loading
+and rechecking the single referenced bundle, certificate and derived history.
+The old `load` remains explicitly legacy/unprotected; a valid local pin cannot
+prove freshness merely because it decodes or has matching local bundle bytes.
+
+The exact regression `protected_pin_refuses_stale_missing_and_coordinated_store_rollback`
+accepts the current witnessed certified frontier; stale and deleted local pins,
+rollback of both pin and matching old bundle, substitutions of every full-pin
+field, missing/corrupt current bundle, wrong policy, missing witness and witness
+unavailability all refuse without local mutation or an automatic fallback. It
+uses only a deterministic independent-in-memory witness test double. Local
+Darwin/Rust 1.98.1 checks with locked Cargo (network downloads; not offline): focused test 1/1;
+feature-enabled full suite (10 unit, 2 partition, 13 composition, 12
+persistence, 5 doc tests); default suite (2 unit, 2 partition, 13 composition,
+11 persistence, 5 doc tests); feature-enabled strict all-targets Clippy,
+prototype format check, and default `wasm32-unknown-unknown` compilation passed.
+This does **not** establish browser execution or cross-implementation parity.
+
+Promotion still requires the owner to specify the actual witness protocol and
+isolation, monotonic authenticated CAS and durable custody, plus a separately
+verified order/reconciliation protocol between the witness and local CAS under
+crash and uncertain acknowledgements. This prototype exposes **no** protected
+commit operation. The reference cannot resist coordinated disk+witness
+compromise, physical power loss, or an advance of the witness *after* the
+snapshot was captured. A live host, network availability, independent-machine
+qualification and production rollback defense are unproven. Exact-head Rust
+`Required` (including prototype-checks and Workspace auxiliary checks) belongs
+to final delivery, not this uncommitted local evidence.
 
 ### Next trust-rotation experiment
 
