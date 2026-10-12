@@ -873,7 +873,9 @@ jobs:
 
   site:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Cold Chromium provisioning plus both full local runs and optional production
+    # verification must finish before the job limit, including evidence upload.
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -886,8 +888,23 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '24'
+      # Key by the exact Playwright pin, not a moving system Chrome install.
+      - name: Resolve pinned Playwright cache key
+        id: site-playwright
+        run: |
+          version="$(node --input-type=module -e 'import pkg from "./package.json" with {type:"json"}; process.stdout.write(pkg.devDependencies["playwright-core"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Restore the site qualifier's pinned Chromium
+        id: site-chromium-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: site-chromium-${{ runner.os }}-${{ runner.arch }}-playwright-${{ steps.site-playwright.outputs.version }}
       - name: Provision the site qualifier's pinned Chromium
-        run: bunx --no-install playwright-core install --with-deps chromium
+        # Always check/install the pinned full browser and Linux dependencies,
+        # including on a cache hit. The site never uses the headless shell.
+        run: bunx --no-install playwright-core install --with-deps --no-shell chromium
       - name: Admit the pinned Chromium sandbox on hosted Linux
         run: |
           # Ubuntu restricts user namespaces for executables without an AppArmor
@@ -903,6 +920,12 @@ jobs:
           }
           EOF
           sudo apparmor_parser --replace "$VHALLA_CI_APPARMOR_PROFILE"
+      - name: Save the site qualifier's pinned Chromium
+        if: steps.site-chromium-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: site-chromium-${{ runner.os }}-${{ runner.arch }}-playwright-${{ steps.site-playwright.outputs.version }}
       - name: Static site responsive, keyboard and CSP qualification
         run: node site/tools/qualify_browser.mjs "$GITHUB_WORKSPACE/site/dist" --pinned "$RUNNER_TEMP/vhalla-site-results" "$GITHUB_WORKSPACE/vercel.json"
       - name: Every public page at phone and desktop sizes in both themes
