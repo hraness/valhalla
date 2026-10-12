@@ -460,8 +460,9 @@ jobs:
   # Draft PR #303 only: this is an advisory reproduction attempt, not a
   # custody repair or independent-runner qualification result.
   # Agent-decided, owner may revisit: after 32 focused attempts without a
-  # spontaneous refusal, prefer five distinct one-shot Linux controls and
-  # one parallel trace over repeating that inconclusive loop. Keep PR draft.
+  # spontaneous refusal, prefer eight distinct one-shot Linux controls and
+  # observer regressions plus one parallel trace over repeating that loop.
+  # Keep PR draft.
   custody-lock-diagnostic:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/cli-custody-lock-trace-20261011'
     runs-on: ubuntu-latest
@@ -491,7 +492,10 @@ jobs:
             headless::local::runtime::tests::factory_opens_only_under_custody_and_publishes_endpoints_after_success \
             headless::local::custody::tests::competing_owner_cannot_rotate_cap_and_last_drop_releases_custody \
             headless::lock_trace::tests::synthetic_child_owner_fds_release_before_restart \
-            headless::lock_trace::tests::unreadable_fd_is_not_an_empty_observation; do
+            headless::lock_trace::tests::unreadable_fd_is_not_an_empty_observation \
+            headless::lock_trace::tests::first_run_timeline_is_bounded_and_keeps_only_distinct_recent_states \
+            headless::lock_trace::tests::post_init_observer_reports_exhaustion_before_first_run \
+            headless::lock_trace::tests::first_run_timeline_marks_phase_even_when_lock_state_is_unchanged; do
             log="$logs/${focused##*::}.log"
             if timeout 900s cargo +1.98.1 test --locked -p vhalla-cli --bin vhalla --all-features "$focused" -- --exact --nocapture > "$log" 2>&1 && grep -q 'test result: ok. 1 passed; 0 failed' "$log"; then
               echo "focused ${focused##*::} passed"
