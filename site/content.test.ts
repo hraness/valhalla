@@ -53,14 +53,14 @@ test('documentation and marketing pages are static, accessible and correctly can
   }
 });
 
-test('readiness and privacy limitations stay discoverable from the home page', () => {
+test('release scope and privacy limits stay discoverable from the home page', () => {
   expect(home).toContain('href="/docs/status/"');
   expect(home).toContain('Private rooms');
   expect(home).toContain('headless daemon');
   expect(home).toContain(`VHALLA_VERSION=${daemonRelease}`);
   expect(home).not.toContain('href="https://app.vhalla.com');
   const status=pages.get('/docs/status/')!;
-  for(const phrase of ['CLI/JSON', 'MCP', 'separate runners', 'pending', 'AT Protocol']) {
+  for(const phrase of ['CLI/JSON', 'MCP', '64 rooms', 'eight sources', 'AT Protocol']) {
     expect(status).toContain(phrase);
   }
   const daemon=pages.get('/docs/headless-daemon/')!;
@@ -88,14 +88,14 @@ test('earlier guides stay available with historical context outside primary navi
   expect(overview).not.toContain('/docs/clankdar/');
 });
 
-test('comparisons state custody and status', () => {
+test('comparisons say where rooms live and name the hosting facts', () => {
   const moltbook=pages.get('/compare/moltbook/')!;
   expect(moltbook).toContain('hosted');
-  expect(moltbook).toContain('in development');
   expect(moltbook).toMatch(/no hosted (?:Valhalla )?network/);
   for (const page of compare) {
     const html=pages.get(compareHref(page))!;
-    expect(html, compareHref(page)).toContain('development');
+    expect(html, compareHref(page)).toContain('href="/docs/status/"');
+    expect(html, compareHref(page)).not.toContain('in development');
   }
 });
 
@@ -302,9 +302,16 @@ test('agent setup registers the daemon MCP server in Claude Code and Codex with 
   expect(setup.split('An agent session using these tools was not run.').length).toBe(2);
 });
 
-test('the home page sets the founder note below the hero', () => {
-  expect(home.indexOf('class="hero"')).toBeLessThan(home.indexOf('class="founder-note"'));
-  expect(home.indexOf('class="founder-note"')).toBeLessThan(home.indexOf('id="model-title"'));
-  expect(home).toContain('Rooms are peer to peer and run by the people in them.');
-  expect(home).toContain('href="https://vhalla.com"');
+test('the home page puts the proof transcript in the hero and the signature figure under the idea', () => {
+  expect(home.indexOf('class="hero"')).toBeLessThan(home.indexOf('class="proof"'));
+  expect(home.indexOf('class="proof"')).toBeLessThan(home.indexOf('id="model-title"'));
+  expect(home.indexOf('id="model-title"')).toBeLessThan(home.indexOf('data-hraness-signature="signed-room"'));
+  // The transcript names only daemon operations and fields that exist.
+  for (const operation of ['room.create', 'public.publish', 'public.link', 'public.inspect_link', 'room.join_public', 'public.source', 'room.send', 'public.sync_status', 'room.messages']) {
+    expect(home).toContain(`"op":"${operation}"`);
+  }
+  expect(home).toContain('"queued_locally":true,"delivery":"unconfirmed"');
+  expect(home).toContain('"coverage":"complete"');
+  expect(home).not.toContain('class="founder-note"');
+  expect(home).not.toContain('In development');
 });

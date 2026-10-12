@@ -43,7 +43,9 @@ test('every launch fact matches the record it names', async () => {
   expect(launchFacts.grantExpiry.value).toBe('one hour');
   expect(await read('docs/cli-agents.md')).toContain(`exposes exactly ${launchFacts.agentTools.value} tools`);
   expect(await read('README.md')).toContain(`**${LAUNCH_STATUS}.**`);
-  expect(template).toContain(`· ${LAUNCH_STATUS}</p>`);
+  // The home hero carries the registry category alone; the status line lives in the README and on the install page.
+  expect(template).toContain('<p class="eyebrow">{{PORTFOLIO_CATEGORY}}</p>');
+  expect(template).not.toContain(`· ${LAUNCH_STATUS}</p>`);
   expect(valhallaMessaging).toEqual(product('valhalla').messaging);
 });
 

@@ -8,8 +8,6 @@ import { highlightCode } from '@hraness/design-kit/syntax-highlighting';
 import { launchStylesMarker } from './launch/styles.ts';
 import { marketing } from './portfolio-copy.ts';
 
-// Release status stays local; the product description is authored in Jungle.
-const developmentStatus = `Valhalla is in development. The ${daemonRelease} Unix release includes the headless daemon; select it explicitly. Unqualified installers default to ${latestRelease}.`;
 
 const slot = (template: string, marker: string, html: string) => {
   if (template.split(marker).length !== 2) throw new Error(`Home page needs exactly one ${marker}`);
@@ -62,7 +60,7 @@ export function renderHome(template: string): string {
   if (!node) throw new Error('Home JSON-LD has no FAQPage node');
   const software = graph['@graph']?.find((item: { '@type'?: string }) => item['@type'] === 'SoftwareApplication');
   if (!software) throw new Error('Home JSON-LD has no SoftwareApplication node');
-  software.description = `${marketing.meta} ${developmentStatus}`;
+  software.description = marketing.meta;
   software.softwareVersion = daemonRelease.replace(/^v/, '');
   node.mainEntity = faq.map(({ question, answer }) => ({ '@type': 'Question', name: question, acceptedAnswer: { '@type': 'Answer', text: answer } }));
   const json = JSON.stringify(graph).replaceAll('<', '\\u003c');

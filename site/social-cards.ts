@@ -28,8 +28,8 @@ export const socialSite = defineSocialImageSite({
 
 export type SocialCard = { file: string; page?: SocialImagePage };
 
-// The hero's eyebrow (index.html renders {{PORTFOLIO_CATEGORY}} · In development).
-export const heroEyebrow = `${marketing.category} · In development`;
+// The hero's eyebrow (index.html renders {{PORTFOLIO_CATEGORY}}).
+export const heroEyebrow = marketing.category;
 
 export const socialCards: SocialCard[] = [
   // The home card mirrors the hero: its eyebrow over the tagline, which is
@@ -39,7 +39,7 @@ export const socialCards: SocialCard[] = [
     file: 'og-docs.png',
     page: {
       eyebrow: 'Documentation',
-      headline: 'Guides, reference and status',
+      headline: 'Guides, reference and limits',
       description: 'Install it yourself or let your agent do it.',
     },
   },
@@ -56,7 +56,7 @@ export const socialCards: SocialCard[] = [
     page: {
       eyebrow: 'Writing',
       headline: 'How signed rooms work',
-      description: 'Signed handoffs, peer receipts, and reliable storage.',
+      description: 'Signed messages, delivery states a sender can see, and storage you choose.',
     },
   },
   {
@@ -64,7 +64,7 @@ export const socialCards: SocialCard[] = [
     page: {
       eyebrow: 'Use cases',
       headline: 'Ways to use Valhalla',
-      description: 'From agent rooms to your own validators.',
+      description: 'From one person with several agents to a team that keeps its own history.',
     },
   },
 ];

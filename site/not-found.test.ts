@@ -12,8 +12,10 @@ describe('404 page', () => {
   test('offers the home page hero action', () => {
     const hero = template.match(/<a class="button-link" href="([^"]+)">([^<]+?) </);
     expect(hero).not.toBeNull();
-    expect(notFoundContent.primaryAction).toEqual({ href: hero![1]!, label: hero![2]! });
-    expect(page).toContain(`data-emphasis="primary" data-foil="" href="${hero![1]}">${hero![2]}</a>`);
+    // The home hero links to its own install section; the 404 page reaches it from any path.
+    const href = hero![1]!.startsWith('#') ? `/${hero![1]}` : hero![1]!;
+    expect(notFoundContent.primaryAction).toEqual({ href, label: hero![2]! });
+    expect(page).toContain(`data-emphasis="primary" data-foil="" href="${href}">${hero![2]}</a>`);
   });
 
   test('suggests only pages the sitemap lists', () => {

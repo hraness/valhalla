@@ -1542,22 +1542,224 @@ table a {
 /* Product landscape: end */
 
 
-/* Home: founder note */
-.founder-note {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 1.25rem;
-  max-width: 40rem; margin-block: 0.5rem 3rem;
-  padding-block: 1.75rem; border-block: 1px solid var(--ui-surface-edge, color-mix(in srgb, var(--foreground) 14%, transparent));
+/* Home: hero with the proof transcript beside it */
+:root {
+  --sr-soft:color-mix(in srgb,var(--vhalla-accent) 9%,var(--paper));
 }
-.founder-note__emoji { font-size: 2rem; line-height: 1; padding-block-start: 0.2rem; }
-.founder-note__body { display: grid; gap: 0.9rem; }
-.founder-note__body p {
-  margin: 0; font-family: var(--font-note, "Instrument Serif", "Iowan Old Style", "Palatino Linotype", Palatino, serif);
-  font-size: 1.375rem; line-height: 1.5; text-wrap: pretty; hanging-punctuation: first;
+code,pre {
+  font-variant-ligatures:none;
 }
-.founder-note__action { font-weight: 400; }
-.founder-note__body .founder-note__signature { color: var(--muted); font-size: 1.25rem; }
-.founder-note__signature::before { content: "— "; }
-@media (max-width: 40rem) {
-  .founder-note { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
-  .founder-note__body p { font-size: 1.25rem; }
+.hero {
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  gap:40px 56px;
+  max-width:none;
+  align-items:start;
+}
+.hero-copy {
+  max-width:46rem;
+}
+.hero .proof {
+  max-width:none;
+  min-width:0;
+  padding-bottom:0;
+}
+.terminal {
+  min-width:0;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:var(--code-surface);
+  overflow:hidden;
+}
+.terminal pre {
+  overflow-x:auto;
+  tab-size:2;
+}
+.terminal pre:focus-visible {
+  outline:2px solid var(--focus);
+  outline-offset:-2px;
+}
+.terminal-bar {
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:10px 14px;
+  border-bottom:1px solid var(--line);
+  font:500 12px/1.4 var(--mono);
+  color:var(--muted);
+}
+.terminal-dots {
+  display:inline-flex;
+  gap:5px;
+}
+.terminal-dots i {
+  width:9px;
+  height:9px;
+  border-radius:50%;
+  background:color-mix(in srgb,var(--ink) 18%,var(--paper));
+}
+.terminal--plain {
+  margin-top:4px;
+}
+.section-more {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px 28px;
+  margin-top:20px;
+  font-size:15px;
+}
+.section-more a {
+  text-decoration:none;
+  color:var(--ink);
+  border-bottom:1px solid var(--line);
+}
+.section-more a:hover {
+  border-bottom-color:var(--ink);
+}
+@media(min-width:1100px) {
+  .hero {
+    grid-template-columns:minmax(0,25rem) minmax(0,1fr);
+    padding-bottom:80px;
+  }
+  .hero-copy {
+    max-width:none;
+  }
+  .hero .proof {
+    grid-column:2;
+  }
+}
+@media(max-width:1099px) {
+  .hero .proof .terminal pre {
+    max-height:26rem;
+  }
+}
+
+/* Home: signed room signature moment. CSS keyframes only; the end state is the
+ * static frame, so reduced motion and print show the finished picture. */
+.signed-room,
+.mechanism {
+  margin:0;
+  min-width:0;
+}
+.signed-room__drawing,
+.mechanism__drawing {
+  display:block;
+  width:100%;
+  height:auto;
+  color:var(--ink);
+  overflow:visible;
+}
+.signed-room__drawing {
+  max-width:40rem;
+}
+.signed-room figcaption,
+.mechanism figcaption {
+  margin-top:14px;
+  max-width:44rem;
+  font-size:14px;
+  line-height:1.7;
+  color:var(--muted);
+}
+@media(prefers-reduced-motion:no-preference) {
+  .sr-route path {
+    animation:sr-route 1s ease-out both;
+  }
+  .sr-route--late {
+    animation-delay:2s;
+  }
+  .sr-message {
+    animation:sr-appear .5s ease-out both;
+  }
+  .sr-message--2 {
+    animation-delay:.4s;
+  }
+  .sr-copy {
+    animation:sr-appear .5s ease-out both;
+    animation-delay:1s;
+  }
+  .sr-copy--2 {
+    animation-delay:1.3s;
+  }
+  .sr-state--stored {
+    animation:sr-appear .5s ease-out both;
+    animation-delay:1.2s;
+  }
+  .sr-machine--c .sr-machine__shell {
+    animation:sr-join .8s ease-out both;
+    animation-delay:1.9s;
+  }
+  .sr-catchup {
+    animation:sr-appear .5s ease-out both;
+    animation-delay:2.7s;
+  }
+  .sr-catchup--2 {
+    animation-delay:3s;
+  }
+  .sr-state--caught {
+    animation:sr-appear .5s ease-out both;
+    animation-delay:2.9s;
+  }
+}
+@keyframes sr-appear {
+  from {
+    opacity:0;
+    transform:translateY(4px);
+  }
+  to {
+    opacity:1;
+    transform:none;
+  }
+}
+@keyframes sr-route {
+  from {
+    opacity:0;
+  }
+  to {
+    opacity:1;
+  }
+}
+@keyframes sr-join {
+  from {
+    stroke-dasharray:3 4;
+    opacity:.45;
+  }
+  to {
+    stroke-dasharray:none;
+    opacity:1;
+  }
+}
+
+/* Home: mechanism diagram. One wide and one tall drawing; CSS picks one. */
+.mechanism__drawing--wide {
+  max-width:46rem;
+}
+.mechanism__drawing--tall {
+  display:none;
+  max-width:22rem;
+}
+@media(max-width:640px) {
+  .mechanism__drawing--wide {
+    display:none;
+  }
+  .mechanism__drawing--tall {
+    display:block;
+  }
+}
+@media(forced-colors:active) {
+  .signed-room__drawing,
+  .mechanism__drawing {
+    color:CanvasText;
+  }
+  .signed-room__drawing rect,
+  .mechanism__drawing rect {
+    fill:Canvas;
+  }
+  .signed-room__drawing text,
+  .mechanism__drawing text {
+    fill:CanvasText;
+  }
+  .sr-seal {
+    fill:none;
+    stroke:CanvasText;
+  }
 }

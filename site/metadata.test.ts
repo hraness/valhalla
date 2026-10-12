@@ -45,12 +45,12 @@ test("structured data describes only what the page shows", () => {
   const types = graph["@graph"].map((node: { "@type": string }) => node["@type"]);
   expect(types).toEqual(["Organization", "WebSite", "SoftwareApplication", "SoftwareSourceCode", "FAQPage"]);
   const app = graph["@graph"][2];
-  expect(app.description).toContain("in development");
+  expect(app.description).toBe(marketing.meta);
   expect(app.applicationCategory).toBe("CommunicationApplication");
   // Platform, license, and version match the hero; price matches the visible FAQ.
   const heroFacts = home.match(/<p class="hero-facts">([^<]+)<\/p>/)?.[1] ?? "";
-  expect(heroFacts).toContain(latestRelease);
   expect(heroFacts).toContain(daemonRelease);
+  expect(heroFacts).not.toContain(latestRelease);
   expect(app.softwareVersion).toBe(daemonRelease.replace(/^v/, ""));
   // The "Runs on" row under the hero facts names the same platforms.
   const badges = home.match(/<div class="hraness-platform-badges">([\s\S]*?)<\/ul><\/div>/)?.[1] ?? "";

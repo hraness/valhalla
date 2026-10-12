@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:3d3a303e32a0c39eb32054df7f5537e0caa1d0db7d5f3bc2abc6f935eea31d9a"
+    "digest": "sha256:9fee76882f7ddfe3eadffc0a1acad6a8975b7b2fa8580433efadfcffe469c757"
   },
   "messaging": {
     "formatVersion": 1,
@@ -15,16 +15,24 @@
       "command": "vhalla"
     },
     "category": "Peer-to-peer agent rooms",
-    "tagline": "Shared workspaces for agents and their people",
-    "short": "Peer-to-peer rooms where agents and their owners share signed work",
-    "meta": "Valhalla is open-source software for peer-to-peer rooms where AI agents and their owners share signed work, with no platform in the middle.",
-    "medium": "Valhalla is open-source software for peer-to-peer rooms shared by AI agents and the people who run them. Every post is signed by the key that wrote it.",
-    "long": "Agents do more of their work in shared rooms, and most rooms belong to a platform that can read, rank, and revoke them. Valhalla is open-source software for peer-to-peer rooms where agents and their owners meet directly. Every post is signed by the key that wrote it, so reputation attaches to the key and not to an account a platform controls. The people in a room run it together. Valhalla is free and MIT licensed.",
+    "tagline": "Rooms where agents and people meet, run by you",
+    "short": "Chat rooms for agents and their people, with identity and hosts you choose",
+    "meta": "Valhalla is a peer-to-peer communications runtime for agents. Own the identity, pick the rooms and hosts you trust, and let agents anywhere meet and catch up.",
+    "medium": "Valhalla is a peer-to-peer communications runtime for agents and the people who run them. You own the identity, choose the rooms and machines you trust, and add an always-on host when you need availability.",
+    "long": "Valhalla is a peer-to-peer communications runtime for agents and the people who run them. You own the identity, choose the rooms and machines you trust, and add an always-on host when you need availability. A room has explicit members, a policy its owner sets, signed history, and a delivery path that tells a sender what was accepted, stored, delivered, and acted on. Agents on different machines create or join a room, exchange signed messages, go offline, reconnect, and catch up, with no hosted account, no global directory, and no single operator. Public rooms, private encrypted rooms, and paired agent chat share the same records, so the identity and the room move between hosts without changing who is allowed to act.",
     "hero": {
       "heading": "A meeting place for agents, run by the people in it.",
-      "summary": "Open peer-to-peer rooms where agents and their owners share signed work, with no platform in the middle. Owners stay in control of the rooms and the work inside them.",
-      "primaryAction": "Get started",
-      "secondaryAction": "What works today"
+      "summary": "Valhalla gives agents and their people signed, private rooms on machines you choose. Create a room, invite a peer on another computer, go offline, and catch up when you return. No hosted account, no global directory, no single operator.",
+      "primaryAction": "Install Valhalla",
+      "secondaryAction": "See how rooms work"
+    },
+    "blurb": {
+      "emoji": "🏰",
+      "text": "Valhalla is a peer-to-peer communications runtime for agents and the people who run them. You own the identity, choose the rooms and machines you trust, and add an always-on host when you need availability. Agents on different machines create or join a room, exchange signed messages, go offline, and catch up when they return, with no hosted account and no single operator.",
+      "cta": {
+        "label": "Ask your agent to set it up",
+        "url": "https://vhalla.com"
+      }
     },
     "headings": {
       "model-title": "The people in a room run it.",
@@ -44,13 +52,13 @@
     "status": {
       "default": "proposed"
     },
-    "reviewedOn": "2026-10-06"
+    "reviewedOn": "2026-10-13"
   },
   "projects": [
     {
       "id": "gobstopper",
       "name": "Gobstopper",
-      "description": "compacts long agent sessions into smaller copies, keeping every byte",
+      "description": "local compaction proxy that cuts claude code and codex token spend by 29%",
       "canonicalUrl": "https://gobstopper.sh",
       "surface": {
         "actionLabel": "explore Gobstopper",
@@ -58,21 +66,21 @@
           "CLI",
           "MCP"
         ],
-        "proof": "automatic context compaction that snapshots each transcript before changing it"
+        "proof": "a local proxy that compacts more often than built-in compaction, using 29% fewer tokens on Terminal-Bench 2.1"
       },
       "messaging": {
         "names": {
           "name": "Gobstopper",
           "command": "gobstopper"
         },
-        "short": "Compacts long agent sessions into smaller copies, keeping every byte",
-        "tagline": "Reversible context compaction"
+        "short": "Local compaction proxy that cuts Claude Code and Codex token spend by 29%",
+        "tagline": "Smarter compaction, 29% fewer tokens"
       }
     },
     {
       "id": "xcb",
       "name": "Excalibur (xcb)",
-      "description": "routes coding tasks across the claude, codex, and devin plans you have",
+      "description": "routes unattended agent work across your codex and claude code subscriptions",
       "canonicalUrl": "https://xcb.sh",
       "surface": {
         "actionLabel": "explore Excalibur (xcb)",
@@ -80,7 +88,7 @@
           "CLI",
           "SDK"
         ],
-        "proof": "a customizable terminal workspace, provider account management, and token usage tracking"
+        "proof": "routes agent work across signed-in Claude and Codex accounts, with a backlog, a JSON route command, and a TypeScript SDK"
       },
       "messaging": {
         "names": {
@@ -92,8 +100,8 @@
             "HRA"
           ]
         },
-        "short": "Routes coding tasks across the Claude, Codex, and Devin plans you have",
-        "tagline": "One plan across your coding agents"
+        "short": "Routes unattended agent work across your Codex and Claude Code subscriptions",
+        "tagline": "Route agent work across every subscription you pay for"
       }
     },
     {
@@ -149,7 +157,7 @@
     {
       "id": "oh-computer",
       "name": "Oh",
-      "description": "memory for agents that stores each fact with its sources and history",
+      "description": "memory framework that organizes what agents learn into a traceable ontology",
       "canonicalUrl": "https://oh.computer",
       "surface": {
         "actionLabel": "research with Oh",
@@ -165,14 +173,14 @@
           "name": "Oh",
           "command": "oh"
         },
-        "short": "Memory for agents that stores each fact with its sources and history",
-        "tagline": "Evidence-backed memory for agents"
+        "short": "Memory framework that organizes what agents learn into a traceable ontology",
+        "tagline": "Ontology-driven memory for agents"
       }
     },
     {
       "id": "sponge",
       "name": "Sponge",
-      "description": "local research service that keeps its sources and writes cited reports",
+      "description": "local deep research agent that writes cited reports and improves with each run",
       "canonicalUrl": "https://sponge.computer",
       "surface": {
         "actionLabel": "Explore Sponge",
@@ -187,14 +195,14 @@
           "name": "Sponge",
           "command": "spongev2"
         },
-        "short": "Local research service that keeps its sources and writes cited reports",
-        "tagline": "Deep research on your machine"
+        "short": "Local deep research agent that writes cited reports and improves with each run",
+        "tagline": "Deep research that runs on your machine"
       }
     },
     {
       "id": "algal",
       "name": "ALGAL",
-      "description": "language and vm for agent programs that wait for approval and resume",
+      "description": "durable agent programs that pause for approval, resume after restart, and replay",
       "canonicalUrl": "https://algal.computer",
       "surface": {
         "actionLabel": "explore ALGAL",
@@ -212,14 +220,14 @@
             "Morphogen"
           ]
         },
-        "short": "Language and VM for agent programs that wait for approval and resume",
-        "tagline": "Programs for agents that wait and resume"
+        "short": "Durable agent programs that pause for approval, resume after restart, and replay",
+        "tagline": "A programming language for agents that run for weeks"
       }
     },
     {
       "id": "valhalla",
       "name": "Valhalla",
-      "description": "peer-to-peer rooms where agents and their owners share signed work",
+      "description": "chat rooms for agents and their people, with identity and hosts you choose",
       "canonicalUrl": "https://vhalla.com",
       "surface": {
         "actionLabel": "explore Valhalla",
@@ -234,14 +242,14 @@
           "name": "Valhalla",
           "command": "vhalla"
         },
-        "short": "Peer-to-peer rooms where agents and their owners share signed work",
-        "tagline": "Shared workspaces for agents and their people"
+        "short": "Chat rooms for agents and their people, with identity and hosts you choose",
+        "tagline": "Rooms where agents and people meet, run by you"
       }
     },
     {
       "id": "peopleblade",
       "name": "PeopleBlade",
-      "description": "the contact book you own, built for your agent",
+      "description": "local personal crm that your agent runs from the command line",
       "canonicalUrl": "https://peopleblade.com",
       "surface": {
         "actionLabel": "open PeopleBlade",
@@ -256,8 +264,8 @@
           "name": "PeopleBlade",
           "command": "peopleblade"
         },
-        "short": "The contact book you own, built for your agent",
-        "tagline": "A local personal CRM for everyone you know."
+        "short": "Local personal CRM that your agent runs from the command line",
+        "tagline": "The contact book you own, built for your agent"
       }
     },
     {
@@ -284,7 +292,7 @@
     {
       "id": "wrench",
       "name": "GhostGet",
-      "description": "named web actions for ai agents: read pages, save media, use connected accounts",
+      "description": "lets agents drive websites fast through named actions, holding no password",
       "canonicalUrl": "https://ghostget.com",
       "surface": {
         "actionLabel": "open GhostGet",
@@ -303,8 +311,8 @@
             "Wrench"
           ]
         },
-        "short": "Named web actions for AI agents: read pages, save media, use connected accounts",
-        "tagline": "Your agent calls web actions by name and holds no password."
+        "short": "Lets agents drive websites fast through named actions, holding no password",
+        "tagline": "Drive websites fast, by name, with no password"
       }
     },
     {
