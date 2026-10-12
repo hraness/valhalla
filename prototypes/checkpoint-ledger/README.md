@@ -125,6 +125,25 @@ aborted. Tests simulate byte-level cuts and reopen, not power loss. No actual
 external anchor store, host custody, physical durability, new-epoch bundle,
 protected witness CAS or activation is supplied.
 
+A generated-history check in `tests/rotation_archive_hegel.rs` runs 64 Hegel
+cases with `HEGEL_SEED=20261012` (Hegel 0.46.4, Rust 1.98.1). Each case draws
+1–12 state-dependent commands after an invalid-input/record/retry prefix. It
+compares every attempted write and reopen with a separate, in-memory model of
+ordered exact certificate bytes, SHA-256 frames, the latest independently held
+commitment, retained count, and sticky conflict/capacity state. The fixed tail
+covers a valid conflicting certificate, a valid over-capacity refusal, stale
+pin, torn marker, rollback, missing file, and controlled restoration. A
+one-record counterexample rejects the known-bad model mutation that treats a
+stale pin as a clean empty archive. At most three distinct valid claims, two
+retained frames and one refusal marker exist per case; each case uses one
+private temporary directory with two files, then removes it. This is source
+and local-file simulation, not an independently controlled pin or power cut.
+Reproduce the focused case suite from the repository root with:
+
+```console
+HEGEL_SEED=20261012 cargo +1.98.1 test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked --test rotation_archive_hegel
+```
+
 The fixed transcript test is independently generated with Python `hashlib` and
 big-endian integers, using OpenSSL to derive public keys from **public test seeds**
 `[1,2,3]` and `[4,5,6]`. A one-event ledger with realm 42, epoch 7, actor 1,

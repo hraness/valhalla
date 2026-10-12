@@ -17,4 +17,5 @@ vhalla-ledger = { path = "../../crates/vhalla-ledger" }
 valhalla-checkpoint-proof-prototype = { path = "../checkpoint-proof" }
 
 [dev-dependencies]
+hegeltest = "0.46.0"
 proptest = "1.6"
