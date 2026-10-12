@@ -42,6 +42,108 @@ fn frozen_v1_item_and_page_request_bytes_survive_extraction() {
     let decoded = decode_page(&encode_page(&page).unwrap(), 7, 1).unwrap();
     assert_eq!(decoded.records[0].item, item);
 }
+
+#[test]
+fn byte_cap_pages_keep_mailbox_positions_and_reject_corrupt_continuations() {
+    let namespace = RelayNamespace::from_bytes([9; 32]).unwrap();
+    let records: Vec<_> = (1..=16u8)
+        .map(|position| PositionedItem {
+            position: u64::from(position),
+            item: RelayItem::new(
+                namespace,
+                // Sender-local sequences overlap; only mailbox positions page.
+                1 + u64::from(position % 2),
+                OperationId::from_bytes([position; 16]).unwrap(),
+                OutboxKind::Application,
+                &vec![position; MAX_RELAY_PAYLOAD],
+            )
+            .unwrap(),
+        })
+        .collect();
+    let item_bytes = records[0].item.encode().unwrap().len();
+    assert!(11 + 15 * (12 + item_bytes) <= MAX_PAGE_BODY);
+    assert!(11 + 16 * (12 + item_bytes) > MAX_PAGE_BODY);
+
+    let first = encode_page(&RelayPage {
+        head: 16,
+        next: None,
+        records: records.clone(),
+    })
+    .unwrap();
+    assert!(first.len() <= MAX_PAGE_BODY);
+    let first_page = decode_page(&first, 0, MAX_RELAY_PAGE).unwrap();
+    assert_eq!(first_page.head, 16);
+    assert_eq!(first_page.records, records[..15]);
+    let cursor = first_page.next.unwrap();
+    assert_eq!(cursor, 15);
+    assert_eq!(
+        page_request(cursor, MAX_RELAY_PAGE).unwrap()[..8],
+        cursor.to_be_bytes()
+    );
+
+    // A truncated page cannot silently claim completion or yield a new cursor
+    // if its continuation, head, count, position, item length or digest is corrupt.
+    let refused = |body: &[u8]| {
+        assert!(matches!(
+            decode_page(body, 0, MAX_RELAY_PAGE),
+            Err(NetError::Malformed)
+        ));
+    };
+    let mut corrupt = first.clone();
+    corrupt[8] = 0; // Lost continuation despite a retained head of 16.
+    refused(&corrupt);
+    let mut corrupt = first.clone();
+    corrupt[8] = 2; // Noncanonical continuation flag.
+    refused(&corrupt);
+    for head in [cursor - 1, cursor] {
+        let mut corrupt = first.clone();
+        corrupt[..8].copy_from_slice(&head.to_be_bytes());
+        // Below the last retained position, or falsely complete with more set.
+        refused(&corrupt);
+    }
+    for count in [14u16, 16, (MAX_RELAY_PAGE + 1) as u16] {
+        let mut corrupt = first.clone();
+        corrupt[9..11].copy_from_slice(&count.to_be_bytes());
+        // Too few leaves trailing records; too many lacks bytes or exceeds the limit.
+        refused(&corrupt);
+    }
+    let mut corrupt = first.clone();
+    corrupt[11..19].copy_from_slice(&2u64.to_be_bytes());
+    refused(&corrupt);
+    let mut corrupt = first.clone();
+    corrupt[19..23].copy_from_slice(&((item_bytes + 1) as u32).to_be_bytes());
+    refused(&corrupt);
+    let mut corrupt = first.clone();
+    corrupt[23 + item_bytes - 1] ^= 1; // Break the first item's digest.
+    refused(&corrupt);
+
+    // The response from the exact exclusive cursor recovers the sole remaining
+    // item. Neither a skipped nor a replayed cursor can accept that response.
+    let rest = encode_page(&RelayPage {
+        head: 16,
+        next: None,
+        records: records
+            .iter()
+            .filter(|record| record.position > cursor)
+            .cloned()
+            .collect(),
+    })
+    .unwrap();
+    for wrong_cursor in [cursor - 1, cursor + 1] {
+        assert!(matches!(
+            decode_page(&rest, wrong_cursor, MAX_RELAY_PAGE),
+            Err(NetError::Malformed)
+        ));
+    }
+    let last_page = decode_page(&rest, cursor, MAX_RELAY_PAGE).unwrap();
+    assert_eq!(last_page.head, 16);
+    assert_eq!(last_page.next, None);
+    assert_eq!(last_page.records, records[15..]);
+    let mut collected = first_page.records;
+    collected.extend(last_page.records);
+    assert_eq!(collected, records);
+}
+
 #[test]
 fn hostile_frames_pages_status_and_receipt_are_bounded() {
     for raw in [

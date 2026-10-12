@@ -1,9 +1,9 @@
 //! Bounded immutable bundles and a conditional local pin transaction.
 //!
-//! Durability and pin freshness are contracts of the owner-selected [`Storage`]
-//! backend. A decoded [`Pin`] is plain data, never authenticated evidence. An
-//! ordinary filesystem can provide crash consistency but cannot detect rollback
-//! of both pin and bundles by an adversary controlling that filesystem.
+//! Local durability is a contract of the owner-selected [`Storage`] backend;
+//! freshness against local rollback additionally requires an independent
+//! [`PinWitness`]. A decoded [`Pin`] is plain data, never authenticated evidence.
+//! An ordinary filesystem cannot detect rollback of both pin and bundles.
 
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
@@ -128,7 +128,8 @@ impl Pin {
 pub trait Storage {
     /// Backend-specific failures, including capacity and malformed local data.
     type Error;
-    /// Read the protected local pin; only actual absence returns `None`.
+    /// Read the local pin; only actual absence returns `None`. This is not
+    /// independent freshness evidence.
     fn read_pin(&mut self) -> Result<Option<Pin>, Self::Error>;
     /// Read at most [`MAX_BUNDLE_BYTES`] before allocating from a stored length.
     fn read_bundle(&mut self, id: BundleId) -> Result<Vec<u8>, Self::Error>;
@@ -156,9 +157,9 @@ pub trait Storage {
 /// fn replace_candidate(commit: &mut PreparedCommit, pin: Pin) { commit.pin = pin; }
 /// ```
 pub struct PreparedCommit {
-    expected: Option<Pin>,
-    pin: Pin,
-    bytes: Vec<u8>,
+    pub(crate) expected: Option<Pin>,
+    pub(crate) pin: Pin,
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl PreparedCommit {
@@ -260,11 +261,71 @@ pub fn commit<S: Storage>(
     }
 }
 
-/// Load only the owner-selected backend's exact pin and reverify the referenced
-/// bytes, certificate, context, and ledger. Missing/corrupt data never falls back
-/// to an older generation. Returning a model is not a durable write receipt.
-/// The result is consistent with the pin read at the start; another writer may
-/// advance that pin while this read is in progress.
+/// Independent freshness boundary for guarded reference recovery.
+///
+/// The owner-selected implementation must capture the newest durably retained
+/// **full** pin (generation, bundle address, checkpoint, and trust digest) from
+/// an independently controlled, monotonic witness. It must not derive this
+/// expectation from the local store, a bundle, or a cached unverified pin.
+/// `None` means no witnessed pin, not permission to bootstrap or fall back.
+/// This trait does not implement a witness or prove its durability/isolation;
+/// this read-only trait does not implement the separate `protected_commit` path.
+pub trait PinWitness {
+    /// Backend error, including an unavailable witness.
+    type Error;
+    /// Capture one independent expectation without mutating either store.
+    fn capture_pin(&mut self) -> Result<Option<Pin>, Self::Error>;
+}
+
+/// Refusal from guarded recovery; none of these authorizes fallback or repair.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ProtectedLoadError<S, W> {
+    /// The independent witness cannot supply a trustworthy expectation.
+    Witness(W),
+    /// No independent pin was witnessed (including deletion of its record).
+    MissingWitness,
+    /// The local pin or its checked bundle could not be read or verified.
+    Local(StoreError<S>),
+    /// The witnessed pin is absent from the untrusted local store.
+    MissingLocalPin,
+    /// The complete local pin differs from the captured independent pin.
+    PinMismatch,
+}
+
+/// Recover only the exact independently witnessed pin and its checked bundle.
+///
+/// Captures the witness *before* reading untrusted local bytes. A missing,
+/// stale, or replaced local pin, unavailable witness, and invalid bundle all
+/// refuse without writing, scanning for older bundles, or returning a model.
+/// This is a reference contract, not an implementation of a durable monotonic
+/// witness, its commit ordering, physical-crash safety, or live rollback defense.
+/// A concurrent witness advance after capture is not detected by this read.
+pub fn load_protected<S: Storage, W: PinWitness>(
+    storage: &mut S,
+    witness: &mut W,
+    trust: TrustConfig,
+    max_events: usize,
+) -> Result<CertifiedLedger, ProtectedLoadError<S::Error, W::Error>> {
+    let expected = witness
+        .capture_pin()
+        .map_err(ProtectedLoadError::Witness)?
+        .ok_or(ProtectedLoadError::MissingWitness)?;
+    let current = storage
+        .read_pin()
+        .map_err(|e| ProtectedLoadError::Local(StoreError::Backend(e)))?
+        .ok_or(ProtectedLoadError::MissingLocalPin)?;
+    if current != expected {
+        return Err(ProtectedLoadError::PinMismatch);
+    }
+    load_pinned(storage, &expected, trust, max_events).map_err(ProtectedLoadError::Local)
+}
+
+/// Legacy/unprotected load from the owner-selected **local** pin. It cannot
+/// detect rollback of that pin and its matching bundle; use [`load_protected`]
+/// only when an independent, monotonic full-pin witness is actually available.
+/// Missing/corrupt data never falls back to an older generation. Returning a
+/// model is not a durable write receipt. The result reflects the captured pin;
+/// another writer may advance that pin while this read is in progress.
 pub fn load<S: Storage>(
     storage: &mut S,
     trust: TrustConfig,
@@ -273,6 +334,15 @@ pub fn load<S: Storage>(
     let Some(pin) = storage.read_pin().map_err(StoreError::Backend)? else {
         return Ok(None);
     };
+    load_pinned(storage, &pin, trust, max_events).map(Some)
+}
+
+pub(crate) fn load_pinned<S: Storage>(
+    storage: &mut S,
+    pin: &Pin,
+    trust: TrustConfig,
+    max_events: usize,
+) -> Result<CertifiedLedger, StoreError<S::Error>> {
     if pin.trust_digest != trust.digest() {
         return Err(StoreError::Invalid(ProtocolError::WrongPredecessor));
     }
@@ -286,13 +356,12 @@ pub fn load<S: Storage>(
         return Err(StoreError::Invalid(ProtocolError::BundleMismatch));
     }
     let (snapshot, certificate) = decode_bundle(&raw).map_err(StoreError::Invalid)?;
-    // Trust is supplied by the local storage boundary, never by Pin::decode.
+    // The owner supplies trust, never Pin::decode or untrusted bundle bytes.
     let anchor = RecoveryAnchor {
         checkpoint: pin.checkpoint,
         trust_digest: pin.trust_digest,
     };
     CertifiedLedger::recover(snapshot, certificate, &anchor, trust, max_events)
-        .map(Some)
         .map_err(|e| StoreError::Invalid(ProtocolError::History(e)))
 }
 
@@ -344,7 +413,7 @@ fn encode_bundle(snapshot: &[u8], certificate: &[u8]) -> Result<Vec<u8>, Protoco
     Ok(raw)
 }
 
-fn decode_bundle(raw: &[u8]) -> Result<(&[u8], &[u8]), ProtocolError> {
+pub(crate) fn decode_bundle(raw: &[u8]) -> Result<(&[u8], &[u8]), ProtocolError> {
     if raw.len() > MAX_BUNDLE_BYTES {
         return Err(ProtocolError::OversizedBundle);
     }

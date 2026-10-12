@@ -1096,13 +1096,121 @@ check acknowledged frontiers across crashes and retries. Other tests cover
 malformed pin errors versus absence, stale writers, forks, generation overflow,
 policy changes, missing/corrupt pinned bundles, and typed preparation fences.
 
-This is a **crash-consistency reference under backend contracts**, not protected
-freshness. An ordinary file store cannot detect deletion or coordinated rollback
-of the pin and matching bundles by someone controlling the disk. Tests explicitly
-demonstrate that limit. A decoded pin is plain data; the local owner-selected
-backend supplies the recovery expectation. Filesystem tests exercise API behavior,
-not physical power loss or arbitrary filesystems. Loading captures the pin at its
-initial read and does not promise the newest pin if another writer advances later.
+The legacy local-store path is a **crash-consistency reference under backend
+contracts**, not protected freshness. An ordinary file store cannot detect
+deletion or coordinated rollback of the pin and matching bundles by someone
+controlling the disk. Tests explicitly demonstrate that limit. A decoded pin is
+plain data; the local owner-selected backend supplies only the legacy recovery
+expectation. Filesystem tests exercise API behavior, not physical power loss or
+arbitrary filesystems. Loading captures the pin at its initial read and does not
+promise the newest pin if another writer advances later.
+
+### Protected-pin freshness reference contract — 2026-10-11
+
+**Agent-decided, owner may revisit:** model an owner-controlled, independently
+retained, durable monotonic **full-pin** witness for guarded recovery. This is a
+choice of a *required trust boundary*, not a deployed witness. The disposable
+checkpoint-ledger prototype's `PinWitness` test double captures generation,
+bundle digest, checkpoint and trust digest separately from the untrusted local
+`Storage`. `load_protected` requires the exact captured full pin before loading
+and rechecking the single referenced bundle, certificate and derived history.
+The old `load` remains explicitly legacy/unprotected; a valid local pin cannot
+prove freshness merely because it decodes or has matching local bundle bytes.
+
+The exact regression `protected_pin_refuses_stale_missing_and_coordinated_store_rollback`
+accepts the current witnessed certified frontier; stale and deleted local pins,
+rollback of both pin and matching old bundle, substitutions of every full-pin
+field, missing/corrupt current bundle, wrong policy, missing witness and witness
+unavailability all refuse without local mutation or an automatic fallback. It
+uses only a deterministic independent-in-memory witness test double. Local
+Darwin/Rust 1.98.1 checks with locked Cargo (network downloads; not offline): focused test 1/1;
+feature-enabled full suite (10 unit, 2 partition, 13 composition, 12
+persistence, 5 doc tests); default suite (2 unit, 2 partition, 13 composition,
+11 persistence, 5 doc tests); feature-enabled strict all-targets Clippy,
+prototype format check, and default `wasm32-unknown-unknown` compilation passed.
+This does **not** establish browser execution or cross-implementation parity.
+
+Promotion still requires the owner to specify the actual witness protocol and
+isolation, monotonic authenticated CAS and durable custody, plus a separately
+verified order/reconciliation protocol between the witness and local CAS under
+crash and uncertain acknowledgements. At this reference-contract stage the prototype exposed **no** protected
+commit operation; the later single-step adapter is documented below. The reference cannot resist coordinated disk+witness
+compromise, physical power loss, or an advance of the witness *after* the
+snapshot was captured. A live host, network availability, independent-machine
+qualification and production rollback defense are unproven. Exact-head Rust
+`Required` (including prototype-checks and Workspace auxiliary checks) belongs
+to final delivery, not this uncommitted local evidence.
+
+### Protected two-store commit model — 2026-10-11
+
+**Agent-decided, owner may revisit:** select the security/recovery integration
+lane's separately controlled owner-host protocol specification and deterministic
+fault model as the follow-up to the protected-pin reference contract. The
+bounded change is `prototypes/checkpoint-ledger/tests/protected_commit_model.rs`,
+the prototype README and this promotion plan; no production API, provisioned
+service or protected adapter is part of this decision.
+
+The proposed host authenticates a fixed owner/store/realm identity for fresh
+reads and serializes durable compare-and-swap of the *entire* generation, bundle
+digest, checkpoint and policy digest. It persists its own fencing epoch, rejects
+old writers, conflicting full pins at the same generation, generation overflow
+and non-successor writes. A numeric height is not a proof of ancestry: before
+any local publication the owner must validate a certified strict extension
+against the exact witnessed predecessor. Bootstrap, key recovery and trust
+rotation need separately authorized protocols; neither local bytes nor a
+certificate mint host custody. The owner holds a fenced local writer lock from
+checking both stores through acknowledgement, retains bounded immutable
+certificate/snapshot bytes and revalidatable predecessor/target intent, syncs
+both, conditionally syncs the local full pin, **then** advances the remote pin.
+Only when both exact records and certified bytes are durably checked may the
+caller acknowledge. No deletion/compaction is implied by this ordering.
+
+Crash, timeout and lost acknowledgement remain indeterminate. A fresh host read
+and fenced reconciliation repeats the remote CAS only when the durable local
+pin and independently reverified exact bundle/intent equal the target and the
+host still holds the predecessor. If both hold target, confirm and acknowledge
+idempotently; if both hold predecessor, a staged uncommitted candidate may be
+retried. All other combinations refuse until exact certified data is restored
+or an explicit conflict is settled. In particular an ahead witness with lost
+local payloads cannot reconstruct them, and an outage cannot select a local
+older pin or fall back to the legacy unprotected loader. The host's durable
+monotonic CAS preserves an acknowledged *witness frontier* across modeled
+crashes and lost responses, not availability of its local payload.
+
+The three deterministic model tests use genuine prepared certified pin fixtures
+but abstract the durable bundle verifier as an in-memory checked-data marker.
+They exercise sync cuts, lost responses, local all-bytes rollback, data loss,
+outage, stale/unauthorized grants and competing same-predecessor writers. This
+is a protocol specification and fault model, **not** a production write path,
+proof of independent host custody, actual authentication, physical fsync,
+network availability or browser/WASM parity. The README owns detailed ordering,
+assumptions and refusal behavior. Next admission requires an owner-controlled
+service/adapter, real credential and fence custody, independently verified
+byte-level crash reconciliation and live/physical qualification before protected
+recovery can be activated. The existing `load_protected` test double still has
+a snapshot-after-capture race; a latest-at-completion claim needs a separate
+fenced read/serialization design. Exact-head `Required` remains the delivery
+gate for this test change.
+
+### Protected two-store adapter prototype — 2026-10-11
+
+**Agent-decided, owner may revisit:** `protected_commit` implements a single
+same-policy pin advance in the disposable checkpoint-ledger crate. The Unix
+`FileStore` retains a bounded, canonical predecessor/target intent alongside
+its immutable certified bundle. A fresh fenced witness-interface read gates the
+local commit; local sync precedes host CAS. Restart reconciliation re-verifies
+exact snapshot/certificate bytes, ancestry, intent and full pins; an unknown CAS
+response is not an abort. A different pending intent never overwrites this one.
+The independent host is only a test double, not a deployed service or custody
+proof. No protected bootstrap, intent rotation or compaction is provided.
+
+The `protected_file` suite exercises reopen, lost acknowledgement, staged local
+pin, pending visible host CAS, fork refusal, local rollback, missing intent,
+corrupt bundle, outage and revoked writer grant. Byte-level API tests are not
+physical power-loss validation. Promotion and activation still require a real
+independently controlled witness with authenticated fixed identity, durable
+serialized CAS and revocable exclusive grant; local/host crash drills, bounded
+retention, production authority integration and exact-head delivery checks.
 
 ### Next trust-rotation experiment
 
@@ -1342,6 +1450,98 @@ This plan does not authorize or promise:
   consensus proof.
 
 ## Decision record and durable memory
+
+**Agent-decided, owner may revisit (2026-10-11): retained-anchor reconciliation
+page partitions.** The `vhalla-direct-room` 64-case Hegel regression
+`anchor_reconciliation_page_partitions_match_single_frame_replay` retains a
+signed author chain longer than twice the 32-frame page limit, then learns an
+earlier exact owner seal. Fresh signing and admission remain fenced until the
+retained suffix is reconciled. Each drawn legal page partition agrees with
+single-frame replay. A signed interior fork or wrong frozen terminal in a later
+page refuses atomically without changing the verified prefix or retained head;
+retrying the exact valid page completes the proof, leaves the retained head
+unchanged, and only then allows one fresh current-policy append. This changes
+tests only, not signed bytes, policy authority or resource bounds.
+
+Local Darwin verification on Rust 1.98.1 with the locked offline Cargo cache:
+the focused exact test passed 1/1; `cargo +1.98.1 test --locked -p
+vhalla-direct-room` passed 23/23 protocol tests plus doc tests; strict
+all-targets/all-features package Clippy and `cargo +1.98.1 fmt --all -- --check`
+passed. The final exact-tree diff check and PR-head `Required` gate belong to
+the integration/delivery receipt. This is local protocol evidence, not a
+physical-crash drill, independent-machine verification, browser/WASM parity,
+network availability or release qualification.
+
+**Agent-decided, owner may revisit (2026-10-11): sealed-history page partitions.**
+On main `25dcdfe1` (PR #302), the direct-room protocol-test lane adds
+`sealed_history_page_partition_matches_single_frame_reference` without changing
+wire bytes, policy, proof implementation or bounds. Each of 64 Hegel cases draws
+legal pages and a candidate and seal target from signed history, once beyond
+32 frames and once beyond 64. After each valid page it checks the verified head
+against one-frame replay. An empty or over-32 page is refused; a later page
+with a signed fork or wrong terminal cannot move the prior head, and retrying
+that exact valid page finishes with the same candidate and closing-policy ID.
+An earlier-policy unsealed frame remains continuity only under its old boundary
+and cannot become fresh history under the new boundary.
+
+Local Darwin verification in an isolated worktree from that main commit:
+`cargo +1.98.1 test --locked -p vhalla-direct-room --test protocol
+sealed_history_page_partition_matches_single_frame_reference -- --exact`
+(1/1), `cargo +1.98.1 test --locked -p vhalla-direct-room` (22/22), and
+`cargo +1.98.1 clippy --locked -p vhalla-direct-room --all-targets
+--all-features -- -D warnings` passed with the retained offline Cargo cache;
+format and diff checks are recorded on the final tree at handoff. This is a
+local replay regression, not physical-crash, independent-machine, browser/WASM,
+network-availability or release evidence. PR #304 was subsequently merged
+as `202d8b09`; `Required` passed on its exact PR head `79e33b9d` and on
+post-merge main. Draft CLI custody probe PR #303 is separate and remains
+undiagnosed.
+
+**Agent-decided, owner may revisit (2026-10-11): native pending-seal replay
+across reopen.** From main `202d8b09`, the direct-native controller test
+`tests::pending_seal_replay_survives_restart_and_bounded_passes` retains an
+owner-signed policy closing a 160-frame author chain after a reader has only
+three of its frames. The reader remains fenced before and after reopen, with
+incomplete message visibility and exact local-operation retry bytes. Later
+authentic frames are retained in batches of at most 16 while frame 4 is
+withheld; a second reopen still cannot commit the policy. A bad-signature
+frame 4 cannot change storage, the author index or policy. Its exact valid
+retry takes one bounded pass, remains pending, and subsequent 128-frame-budget
+reconcile calls reach the exact signed seal. All 160 owner messages and the
+reader operation become owner-sealed; the signed terminal and the local
+operation retain their signed bytes on final reopen; the local operation
+remains owner-sealed.
+This deliberately does not treat an authentic signed fork as retryable.
+
+Local Darwin verification (Rust 1.98.1, locked tree, Git CLI fetch for the
+Cargo Git dependencies): the focused exact lib test passed 1/1;
+`cargo +1.98.1 test --locked -p vhalla-direct-native` passed 69 lib tests
+and 5 integration tests; strict all-targets/all-features package Clippy and
+`cargo +1.98.1 fmt --all -- --check` and staged `git diff --check`
+passed. This is a temp-store reopen
+regression, not a physical-crash, independent-machine, browser/WASM, live
+deployment or release qualification. Exact-PR-head and post-merge-main
+`Required` still belong to the integration gate for this new slice.
+
+**Agent-decided, owner may revisit (2026-10-11): private-relay PAGE byte cap.**
+From main `884285e9`, the portable `vhalla-private-relay` wire regression
+`byte_cap_pages_keep_mailbox_positions_and_reject_corrupt_continuations`
+constructs 16 maximum-payload opaque items with overlapping sender-local
+sequences and distinct mailbox positions. The 4 MiB response budget yields 15
+whole records and an exact exclusive cursor; encoding the remainder from
+that cursor yields position 16, and both decoded pages preserve every original
+position and item. Missing or noncanonical continuation, skipped position,
+wrong item length, corrupted digest and a skipped/replayed request cursor all
+refuse as malformed rather than yielding an advancing page. No wire bytes,
+bounds, or production implementation changed.
+
+Local Darwin verification with Rust 1.98.1 and the locked tree: the focused
+exact test passed 1/1, all package tests 6/6, the wasm32-unknown-unknown
+package check and strict all-targets/all-features Clippy passed. Formatting and
+diff checks are recorded at handoff; exact-head `Required` remains the
+integration gate. This is a portable codec regression, not browser execution,
+native mailbox persistence, independent-machine, live delivery or release
+qualification. Draft CLI custody probe PR #303 remains separate.
 
 Full promotion remains **unaccepted** until Gates 0–5 have named owners,
 production APIs, acceptance receipts, and residual risks. When a gate is

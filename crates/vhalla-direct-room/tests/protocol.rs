@@ -258,6 +258,149 @@ fn anchor_reconciliation_cannot_connect_a_divergent_existing_branch() {
     assert_eq!(chain.authoring_head(&state), Err(Error::Gap));
 }
 
+#[hegel::test(test_cases = 64)]
+fn anchor_reconciliation_page_partitions_match_single_frame_replay(tc: hegel::TestCase) {
+    use hegel::generators as gs;
+
+    let mut state = policy();
+    let signing_state = state.clone();
+    let author = key(2).verifying_key().to_bytes();
+    let chain_len = tc.draw(
+        gs::integers::<usize>()
+            .min_value(2 * MAX_CHAIN_PAGE + 3)
+            .max_value(2 * MAX_CHAIN_PAGE + 6),
+    );
+    let seal_index = tc.draw(gs::integers::<usize>().max_value(MAX_CHAIN_PAGE - 1));
+    let mut retained = AuthorChain::new(state.room(), author).unwrap();
+    let mut frames = Vec::with_capacity(chain_len);
+    for sequence in 1..=chain_len {
+        let frame = event(
+            &signing_state,
+            2,
+            sequence as u64,
+            retained.head().event,
+            &format!("retained frame {sequence}"),
+        );
+        let step = retained.prepare_continuity(frame.clone(), &state).unwrap();
+        retained
+            .commit_continuity_after_persist(step, &state)
+            .unwrap();
+        frames.push(frame);
+    }
+    let original = retained.clone();
+    let terminal = retained.head();
+    // The owner seal is learned only after the complete signed chain was retained.
+    close_with_history(
+        &mut state,
+        &[1, 2],
+        vec![seal(&frames[seal_index])],
+        &frames[..=seal_index],
+    );
+    let next = event(
+        &state,
+        2,
+        terminal.sequence + 1,
+        terminal.event,
+        "fresh current-policy append",
+    );
+    assert_eq!(retained.authoring_head(&state), Err(Error::Gap));
+    assert!(matches!(
+        retained.prepare_next(next.clone(), &state),
+        Err(Error::Gap)
+    ));
+    let mut paged = retained.prepare_anchor_reconciliation(&state).unwrap();
+    let mut singles = retained.prepare_anchor_reconciliation(&state).unwrap();
+    assert_eq!(paged.progress().event, frames[seal_index].id());
+    assert_eq!(paged.target(), terminal);
+    assert_eq!(
+        retained.clone().reconcile_anchor(paged.clone(), &state),
+        Err(Error::Gap)
+    );
+
+    let suffix = &frames[seal_index + 1..];
+    // Reserve a later page containing an interior fork and the frozen terminal.
+    // At least one full page's worth of signed ancestors precedes that page.
+    let tail_len = tc.draw(
+        gs::integers::<usize>()
+            .min_value(3)
+            .max_value(MAX_CHAIN_PAGE.min(suffix.len() - MAX_CHAIN_PAGE)),
+    );
+    let prefix_len = suffix.len() - tail_len;
+    let mut cursor = 0;
+    while cursor < prefix_len {
+        let size = tc.draw(
+            gs::integers::<usize>()
+                .min_value(1)
+                .max_value(MAX_CHAIN_PAGE.min(prefix_len - cursor)),
+        );
+        let page = &suffix[cursor..cursor + size];
+        paged.push(page).unwrap();
+        for frame in page {
+            singles.push(std::slice::from_ref(frame)).unwrap();
+        }
+        cursor += size;
+        assert_eq!(paged.progress(), singles.progress());
+        assert!(!paged.is_ready());
+        assert_eq!(retained, original);
+    }
+    assert!(cursor >= MAX_CHAIN_PAGE);
+    let prefix = paged.progress();
+    let valid_tail = &suffix[cursor..];
+    assert_eq!(valid_tail.len(), tail_len);
+
+    let mut fork_page = valid_tail.to_vec();
+    let forked = &fork_page[1];
+    fork_page[1] = event(
+        &signing_state,
+        2,
+        forked.claims().sequence,
+        forked.claims().previous,
+        "signed interior fork",
+    );
+    assert_ne!(fork_page[1].id(), valid_tail[1].id());
+    let mut terminal_page = valid_tail.to_vec();
+    let last = terminal_page.len() - 1;
+    let frozen = &terminal_page[last];
+    terminal_page[last] = event(
+        &signing_state,
+        2,
+        frozen.claims().sequence,
+        frozen.claims().previous,
+        "signed wrong terminal",
+    );
+    assert_ne!(terminal_page[last].id(), terminal.event);
+    for invalid in [&fork_page, &terminal_page] {
+        assert_eq!(paged.push(invalid), Err(Error::Fork));
+        assert_eq!(paged.progress(), prefix);
+        assert_eq!(singles.progress(), prefix);
+        assert_eq!(retained, original);
+        assert_eq!(retained.authoring_head(&state), Err(Error::Gap));
+        assert_eq!(
+            retained.clone().reconcile_anchor(paged.clone(), &state),
+            Err(Error::Gap)
+        );
+    }
+
+    paged.push(valid_tail).unwrap();
+    for frame in valid_tail {
+        singles.push(std::slice::from_ref(frame)).unwrap();
+    }
+    assert_eq!(paged.progress(), singles.progress());
+    assert_eq!(paged.progress(), terminal);
+    assert!(paged.is_ready());
+    assert!(singles.is_ready());
+    let mut reference = retained.clone();
+    reference.reconcile_anchor(singles, &state).unwrap();
+    retained.reconcile_anchor(paged, &state).unwrap();
+    assert_eq!(retained, reference);
+    assert_eq!(retained.head(), terminal);
+    assert_eq!(retained.authoring_head(&state), Ok(terminal));
+    let step = retained.prepare_next(next.clone(), &state).unwrap();
+    retained.commit_after_persist(step, &state).unwrap();
+    assert_eq!(retained.head().event, next.id());
+    assert_eq!(retained.head().sequence, terminal.sequence + 1);
+}
+
 #[test]
 fn records_preserve_bytes_and_require_signature_and_separate_room_pin() {
     let genesis = genesis();
@@ -960,4 +1103,144 @@ fn sealed_history_rejects_later_page_atomically_and_recovers_exact_target() {
     assert_eq!(proof.head().sequence, terminal.claims().sequence);
     assert_eq!(proof.head().event, terminal.id());
     assert_eq!(proof.finish().unwrap().event(), &candidate);
+}
+
+#[hegel::test(test_cases = 64)]
+fn sealed_history_page_partition_matches_single_frame_reference(tc: hegel::TestCase) {
+    use hegel::generators as gs;
+
+    // Every case exercises both a seal beyond page one and a seal beyond page two.
+    // Sequence two is valid signed continuity under the earlier policy, not a
+    // candidate for fresh admission under either closing policy.
+    for crossings in 1..=2 {
+        let mut state = policy();
+        let accepted = event(&state, 2, 1, EventId::ZERO, "earlier sealed");
+        let excluded = event(&state, 2, 2, accepted.id(), "earlier unsealed");
+        let earlier = close_with_history(
+            &mut state,
+            &[1, 2],
+            vec![seal(&accepted)],
+            std::slice::from_ref(&accepted),
+        );
+        let signing_state = state.clone();
+        let first_target = if crossings == 1 {
+            MAX_CHAIN_PAGE + 1
+        } else {
+            2 * MAX_CHAIN_PAGE
+        };
+        let chain_len = tc.draw(
+            gs::integers::<usize>()
+                .min_value(first_target + 1)
+                .max_value(2 * MAX_CHAIN_PAGE + 4),
+        );
+        let last_target = if crossings == 1 {
+            (2 * MAX_CHAIN_PAGE - 1).min(chain_len - 1)
+        } else {
+            chain_len - 1
+        };
+        let target_index = tc.draw(
+            gs::integers::<usize>()
+                .min_value(first_target)
+                .max_value(last_target),
+        );
+        let mut frames = vec![accepted, excluded.clone()];
+        for sequence in 3..=chain_len {
+            frames.push(event(
+                &signing_state,
+                2,
+                sequence as u64,
+                frames.last().unwrap().id(),
+                &format!("page-partition frame {sequence}"),
+            ));
+        }
+        let candidate_index = tc.draw(gs::integers::<usize>().min_value(2).max_value(target_index));
+        let candidate = frames[candidate_index].clone();
+        let target = frames[target_index].clone();
+        let closed = close_with_history(
+            &mut state,
+            &[1, 2],
+            vec![seal(&target)],
+            &frames[1..=target_index],
+        );
+        assert!(matches!(
+            earlier.history_requirement(excluded.clone()).unwrap(),
+            HistoryRequirement::ContinuityOnly
+        ));
+        assert!(matches!(
+            closed.history_requirement(excluded),
+            Err(Error::Policy)
+        ));
+
+        let mut paged = verifier(&closed, candidate.clone());
+        let mut singles = verifier(&closed, candidate.clone());
+        assert_eq!(paged.target(), (target.claims().sequence, target.id()));
+        let target_len = target_index + 1;
+        // Leave a later, bounded page of at least two frames. Its failure must
+        // not apply even its valid first frame to the previously checked prefix.
+        let tail_len = tc.draw(
+            gs::integers::<usize>()
+                .min_value(2)
+                .max_value((target_len - MAX_CHAIN_PAGE).min(MAX_CHAIN_PAGE)),
+        );
+        let prefix_len = target_len - tail_len;
+        let mut cursor = 0;
+        while cursor < prefix_len {
+            let size = tc.draw(
+                gs::integers::<usize>()
+                    .min_value(1)
+                    .max_value((prefix_len - cursor).min(MAX_CHAIN_PAGE)),
+            );
+            let page = &frames[cursor..cursor + size];
+            paged.push(page).unwrap();
+            for frame in page {
+                singles.push(std::slice::from_ref(frame)).unwrap();
+            }
+            cursor += size;
+            assert_eq!(paged.head(), singles.head());
+            assert_eq!(paged.clone().finish(), Err(Error::Gap));
+        }
+        assert!(cursor >= MAX_CHAIN_PAGE);
+        let prefix = paged.head();
+        let valid_tail = &frames[cursor..=target_index];
+        assert_eq!(valid_tail.len(), tail_len);
+        assert_eq!(paged.push(&[]), Err(Error::Bounds));
+        assert_eq!(
+            paged.push(&vec![target.clone(); MAX_CHAIN_PAGE + 1]),
+            Err(Error::Bounds)
+        );
+        assert_eq!(paged.head(), prefix);
+
+        let mut bad_tail = valid_tail.to_vec();
+        // A signed fork at the penultimate frame is detected by the following
+        // valid frame; a signed wrong terminal is rejected against the seal.
+        let bad_index = if tc.draw(gs::booleans()) {
+            tail_len - 2
+        } else {
+            tail_len - 1
+        };
+        let original = bad_tail[bad_index].clone();
+        bad_tail[bad_index] = event(
+            &signing_state,
+            2,
+            original.claims().sequence,
+            original.claims().previous,
+            "signed page fork",
+        );
+        assert_ne!(bad_tail[bad_index].id(), original.id());
+        assert_eq!(paged.push(&bad_tail), Err(Error::Fork));
+        assert_eq!(paged.head(), prefix);
+        assert_eq!(paged.clone().finish(), Err(Error::Gap));
+
+        paged.push(valid_tail).unwrap();
+        for frame in valid_tail {
+            singles.push(std::slice::from_ref(frame)).unwrap();
+        }
+        assert_eq!(paged.head(), singles.head());
+        assert_eq!(paged.head().event, target.id());
+        let actual = paged.finish().unwrap();
+        let reference = singles.finish().unwrap();
+        assert_eq!(actual, reference);
+        assert_eq!(actual.event(), &candidate);
+        assert_eq!(actual.closing_policy(), closed.closing_policy());
+    }
 }
