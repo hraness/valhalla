@@ -165,31 +165,47 @@ struct Timeline {
     changes: std::collections::VecDeque<String>,
     discarded: usize,
     samples: usize,
+    first_run_samples: usize,
+    exhausted: bool,
 }
 
 impl Timeline {
     const MAX_CHANGES: usize = 32;
-    fn push(&mut self, state: String) {
+    const MAX_SAMPLES: usize = 2_048;
+    fn push(&mut self, state: String, first_run: bool) {
         self.samples += 1;
-        if self.previous.as_deref() == Some(&state) {
+        self.first_run_samples += usize::from(first_run);
+        // Deduplicate within a phase, not across its boundary. A first-run
+        // sample needs its own timestamp even if the lock state never changed.
+        // The phase is read before the non-atomic procfs snapshot begins.
+        let phase = if first_run { "first-run" } else { "pre-run" };
+        let observation = format!("phase={phase} {state}");
+        if self.previous.as_deref() == Some(&observation) {
             return;
         }
-        self.previous = Some(state.clone());
+        self.previous = Some(observation.clone());
         if self.changes.len() == Self::MAX_CHANGES {
             self.changes.pop_front();
             self.discarded += 1;
         }
-        self.changes.push_back(format!("ms={} {state}", millis()));
+        self.changes
+            .push_back(format!("ms={} {observation}", millis()));
     }
 }
 
 pub(super) struct FirstRunObserver {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    first_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<Timeline>>,
 }
 
 impl FirstRunObserver {
     pub(super) fn start(home: &Path) -> io::Result<Self> {
+        Self::start_with_budget(home, Timeline::MAX_SAMPLES)
+    }
+
+    fn start_with_budget(home: &Path, max_samples: usize) -> io::Result<Self> {
+        assert!((1..=Timeline::MAX_SAMPLES).contains(&max_samples));
         use std::{
             sync::{atomic::Ordering, mpsc, Arc},
             thread,
@@ -197,17 +213,22 @@ impl FirstRunObserver {
         };
         let home = home.to_path_buf();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let first_run = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (started, ready) = mpsc::sync_channel(1);
         let observer_stop = Arc::clone(&stop);
+        let observer_first_run = Arc::clone(&first_run);
         let worker = thread::Builder::new()
             .name("supervisor-lock-observer".into())
             .spawn(move || {
                 let mut timeline = Timeline::default();
                 // Even if the caller stalls, bound all sampling and history.
-                for _ in 0..2_048 {
+                for _ in 0..max_samples {
                     if observer_stop.load(Ordering::Acquire) {
                         break;
                     }
+                    // A sample before the caller enters the first run does
+                    // not cover its lock attempt, even if it saw an owner.
+                    let during_first_run = observer_first_run.load(Ordering::Acquire);
                     let state = match snapshot(&home) {
                         Ok(state) => format!(
                             "dev={} ino={} holders={:?} self_fds={:?}",
@@ -218,9 +239,13 @@ impl FirstRunObserver {
                         }
                         Err(error) => format!("trace_unavailable={error}"),
                     };
-                    timeline.push(state);
+                    timeline.push(state, during_first_run);
                     if timeline.samples == 1 {
                         let _ = started.send(());
+                    }
+                    if timeline.samples == max_samples {
+                        timeline.exhausted = true;
+                        break;
                     }
                     thread::sleep(Duration::from_millis(1));
                 }
@@ -228,6 +253,7 @@ impl FirstRunObserver {
             })?;
         let observer = Self {
             stop,
+            first_run,
             thread: Some(worker),
         };
         if ready.recv_timeout(Duration::from_secs(10)).is_err() {
@@ -238,38 +264,52 @@ impl FirstRunObserver {
         Ok(observer)
     }
 
-    fn stop_and_report(&mut self, report: bool) {
+    pub(super) fn mark_first_run_started(&self) {
+        use std::sync::atomic::Ordering;
+        self.first_run.store(true, Ordering::Release);
+    }
+
+    fn stop_and_report(&mut self, report: bool) -> Option<Timeline> {
         use std::sync::atomic::Ordering;
         self.stop.store(true, Ordering::Release);
-        if let Some(worker) = self.thread.take() {
-            match worker.join() {
-                Ok(timeline) if report => {
+        let worker = self.thread.take()?;
+        match worker.join() {
+            Ok(timeline) => {
+                // A green run with no first-run samples, or an exhausted
+                // sampling budget, cannot be read as an absence of holders.
+                if report || timeline.exhausted || timeline.first_run_samples == 0 {
                     eprintln!(
-                        "supervisor-lock phase=first-run-timeline observer_pid={} samples={} discarded={} (non-atomic procfs samples)",
+                        "supervisor-lock phase=first-run-timeline observer_pid={} samples={} first_run_samples={} sampling_exhausted={} no_first_run_sample={} discarded={} (non-atomic procfs samples)",
                         std::process::id(),
                         timeline.samples,
+                        timeline.first_run_samples,
+                        timeline.exhausted,
+                        timeline.first_run_samples == 0,
                         timeline.discarded
                     );
-                    for entry in timeline.changes {
+                    for entry in &timeline.changes {
                         eprintln!("supervisor-lock phase=first-run-sample {entry}");
                     }
                 }
-                Err(_) => eprintln!(
+                Some(timeline)
+            }
+            Err(_) => {
+                eprintln!(
                     "supervisor-lock phase=first-run-timeline trace_unavailable=observer-panicked"
-                ),
-                Ok(_) => {}
+                );
+                None
             }
         }
     }
 
     pub(super) fn finish(mut self, refusal: bool) {
-        self.stop_and_report(refusal);
+        let _ = self.stop_and_report(refusal);
     }
 }
 
 impl Drop for FirstRunObserver {
     fn drop(&mut self) {
-        self.stop_and_report(std::thread::panicking());
+        let _ = self.stop_and_report(std::thread::panicking());
     }
 }
 
@@ -331,16 +371,92 @@ mod tests {
     #[test]
     fn first_run_timeline_is_bounded_and_keeps_only_distinct_recent_states() {
         let mut timeline = Timeline::default();
-        timeline.push("lock_missing".into());
-        timeline.push("lock_missing".into());
+        timeline.push("lock_missing".into(), false);
+        timeline.push("lock_missing".into(), false);
         for ino in 0..Timeline::MAX_CHANGES {
-            timeline.push(format!("dev=2049 ino={ino} holders=[] self_fds=[]"));
+            timeline.push(format!("dev=2049 ino={ino} holders=[] self_fds=[]"), true);
         }
         assert_eq!(timeline.samples, Timeline::MAX_CHANGES + 2);
+        assert_eq!(timeline.first_run_samples, Timeline::MAX_CHANGES);
         assert_eq!(timeline.discarded, 1);
         assert_eq!(timeline.changes.len(), Timeline::MAX_CHANGES);
         assert!(!timeline.changes.front().unwrap().contains("lock_missing"));
         assert!(timeline.changes.back().unwrap().contains("ino=31 "));
+    }
+
+    #[test]
+    fn first_run_timeline_marks_phase_even_when_lock_state_is_unchanged() {
+        let mut timeline = Timeline::default();
+        let state = "dev=2049 ino=42 holders=[] self_fds=[]";
+        timeline.push(state.into(), false);
+        timeline.push(state.into(), false);
+        timeline.push(state.into(), true);
+        timeline.push(state.into(), true);
+        assert_eq!(timeline.samples, 4);
+        assert_eq!(timeline.first_run_samples, 2);
+        assert_eq!(timeline.changes.len(), 2);
+        assert!(timeline.changes[0].starts_with("ms="));
+        assert!(timeline.changes[0].contains(&format!(" phase=pre-run {state}")));
+        assert!(timeline.changes[1].starts_with("ms="));
+        assert!(timeline.changes[1].contains(&format!(" phase=first-run {state}")));
+    }
+
+    // A small test budget reproduces an init -> run gap that outlives the
+    // observer, without waiting through the full 2,048-sample cap. The run
+    // still uses the real lock path; this is not a spontaneous refusal.
+    #[tokio::test]
+    async fn post_init_observer_reports_exhaustion_before_first_run() {
+        let root = tempfile::Builder::new()
+            .prefix("vh-lock-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let home = root.path().join("home");
+        commands::execute(&["init".into(), "--home".into(), home.as_os_str().into()])
+            .await
+            .unwrap();
+        let after_init = record(&home, "exhaustion-after-init").unwrap();
+        assert!(after_init.fds.is_empty() && after_init.holders.is_empty());
+
+        let mut observer = FirstRunObserver::start_with_budget(&home, 1).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !observer.thread.as_ref().unwrap().is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "observer did not exhaust its budget"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        observer.mark_first_run_started();
+        let run_home = home.as_path();
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            local::serve_factory(
+                &home,
+                |generation| async move {
+                    Ok(local::Launch {
+                        backend: ServiceBackend::open(run_home, generation).await?,
+                        endpoint: None,
+                    })
+                },
+                async {},
+            ),
+        )
+        .await
+        .expect("first run timed out");
+        if result.is_err() {
+            let _ = record(&home, "exhaustion-run-refused");
+        }
+        let timeline = observer.stop_and_report(result.is_err()).unwrap();
+        assert_eq!(timeline.samples, 1);
+        assert_eq!(timeline.first_run_samples, 0);
+        assert!(timeline.exhausted);
+        result.unwrap();
+        let after_run = record(&home, "exhaustion-after-run").unwrap();
+        assert_eq!(
+            (after_run.dev, after_run.ino),
+            (after_init.dev, after_init.ino)
+        );
+        assert!(after_run.fds.is_empty() && after_run.holders.is_empty());
     }
 
     // A failed assertion must never strand a child holding the synthetic home.
