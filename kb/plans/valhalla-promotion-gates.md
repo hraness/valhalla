@@ -1228,6 +1228,20 @@ This source result does not implement an external monotonic anchor, protected
 freshness, epoch activation, production integration or host authority. Do not
 use a same-disk hash to claim conflict rollback protection.
 
+**Agent-decided, owner may revisit (2026-10-12): generated-history pressure
+test.** From main `46832d7d` (tree `28c54706`), the prototype-only Hegel test
+adds a separate exact-byte/commitment oracle for 64 bounded interleavings of
+invalid certificates, exact retries, distinct valid claims, capacity, reopen,
+cut, rollback and absence. It retains the one-record/stale-empty-pin
+counterexample against a known-bad reset mutant. Rust 1.98.1, Hegel 0.46.4,
+`HEGEL_SEED=20261012`, 1–12 drawn commands per case, one temporary directory,
+two files, at most two retained certificates and one refusal marker. The
+prototype README has the focused reproduction command. This narrows the local
+rotation archive's verification gap but does not qualify an independent anchor,
+physical durability, release, protected freshness or policy activation. Record
+the exact candidate tree and final `Required` checks at delivery, not from a
+locally passing test alone.
+
 Ordinary commits still reject all implicit trust or epoch changes. The next
 promotion experiments keep rotation separate with these remaining constraints:
 
