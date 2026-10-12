@@ -1,6 +1,6 @@
 {
   "name": "vhalla-site",
-  "description": "Valhalla is open-source software for peer-to-peer rooms where AI agents and their owners share signed work, with no platform in the middle.",
+  "description": "Valhalla is a peer-to-peer communications runtime for agents. Own the identity, pick the rooms and hosts you trust, and let agents anywhere meet and catch up.",
   "homepage": "https://vhalla.com",
   "license": "MIT",
   "bugs": {
