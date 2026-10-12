@@ -36,6 +36,62 @@ exact spelling and epoch against the immutable trust policy; human room names,
 case variants, and shorter numbers are not aliases. This is an internal mapping
 decision, not a released wire-format commitment or a way to allocate realm IDs.
 
+## Rotation reference (not activation)
+
+**Agent-decided, owner may revisit (2026-10-12):** model the next trust transition
+only as a checked, volatile observation. `RotationObserver` borrows a
+`CertifiedLedger` whose certificate still matches its current tip and binds the
+old policy digest to that checked certificate. The caller supplies the complete
+old and proposed new policies from its own configuration, not from the incoming
+certificate. The new policy must name the same realm and exactly the next epoch.
+A shared ledger borrow prevents appends while an observer is alive; when history
+advances, discard the observer and check the new tip again. This does not prove
+that a separately retained old pin is fresh or protected against rollback.
+
+The reference format is **not** a released wire version. It uses fixed-width
+big-endian fields, version `1:u16` and full Ed25519 public-key identifiers:
+
+```text
+statement = "valhalla/checkpoint-ledger/rotation/v1" || version
+          || realm:u128 || old_epoch:u64 || next_epoch:u64
+          || old_head:32 || old_derived_root:32 || old_height:u64
+          || old_policy_digest:32 || new_policy_digest:32
+old_signing_transcript = statement || 0:u8
+new_signing_transcript = statement || 1:u8
+certificate = statement || old_count:u16 || (sorted old_key:32 || signature:64)*
+                        || new_count:u16 || (sorted new_key:32 || signature:64)*
+```
+
+Both quorums sign the **same** transition with different role bytes; overlapping
+members must sign twice. The verifier checks every signature, rejects unknown,
+duplicate and unsorted keys, short quorums, wrong realm/epoch/frontier/digests,
+truncated/extra bytes and oversized input (32 KiB hard limit, at most 128 signers
+per side). It retains at most 2–8 different valid transitions as full canonical
+certificates. A valid retry of the same *statement* is idempotent even if it uses
+a different valid signer subset. A second distinct valid statement is an
+explicit conflict, not a candidate chosen by arrival, height or timeout. At
+capacity, a further distinct valid statement permanently blocks that observer
+without evicting prior evidence. A fresh in-memory observer is **not** recovery
+from a conflict: preserving conflicts across restarts needs a separate store.
+`Recorded` is only an observation, not permission to install a policy or reset
+actor sequences. No transition signing, new-epoch genesis, persistence, physical
+durability, independent witness custody, protected pin CAS, policy activation,
+consensus, host effect or rollback-resistant conflict archive is provided.
+
+The fixed transcript test is independently generated with Python `hashlib` and
+big-endian integers, using OpenSSL to derive public keys from **public test seeds**
+`[1,2,3]` and `[4,5,6]`. A one-event ledger with realm 42, epoch 7, actor 1,
+sequence 1 and payload `genesis` produces head
+`28c8de9d35d1e0383eedfdc4a5f50e6f88b7174bbd4c877d21666212599faec4` and root
+`5a506f8ad7d5e85d97aaa80a8fcfb5b3710d8c41207ec4d1ae7fd066cf0e43fc`.
+Old and new configured policy digests are respectively
+`55723a12b7f2984c17dacee58bef3c94bda92181b881bc52166a0f1b8ba96404` and
+`d052843ba5f6e0d69b3e8016b0effbaed38cc0e3fb184b7db701840f2b523168`.
+The 209-byte role-bound transcripts have SHA-256
+`55f6aa8bd4e66063b97e665f9c37ecbaf1d582bcf55879cd81b439cbbb1fb5a8`
+(old) and `2a1a890c2213cdfa6a10a3284848810e0914f13d7d9380fc3b22add4912b2b10`
+(new). This checks Rust transcript framing, not external certificate verification.
+
 ## Recovery boundary
 
 Recovery takes snapshot bytes, certificate bytes, the owner's trust policy, and
@@ -231,6 +287,7 @@ From the repository root:
 ```console
 cargo run --manifest-path prototypes/checkpoint-ledger/Cargo.toml --example recovery --locked
 cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked
+cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked --test rotation
 cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked --test protected_commit_model
 cargo clippy --manifest-path prototypes/checkpoint-ledger/Cargo.toml --all-targets --locked -- -D warnings
 cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
@@ -250,12 +307,13 @@ step, including failed syncs, lost acknowledgements, and writers racing at CAS.
 
 Real protected pin freshness (including a monotonic independently controlled
 witness and a physically qualified two-store commit), intent rotation,
-physical crash qualification, explicit trust rotation, conflict retention, compaction, and network admission
-remain open. Direct ledger users must retain certificates separately; the
-persistence layer bundles them with each stored snapshot. Neither establishes
-global agreement, prevents malicious signers, authenticates each event author,
-or authorizes host effects. Untrusted appends can fill or advance the staging
-history, so production transport must not expose them without admission policy.
+physical crash qualification, durable trust rotation and conflict retention,
+new-epoch genesis, compaction, and network admission remain open. Direct ledger
+users must retain certificates separately; the persistence layer bundles them
+with each stored snapshot. Neither establishes global agreement, prevents
+malicious signers, authenticates each event author, or authorizes host effects.
+Untrusted appends can fill or advance the staging history, so production transport
+must not expose them without admission policy.
 
 Follow the [promotion gates](../../kb/plans/valhalla-promotion-gates.md) before
 moving this composition into the production workspace or the steel thread.

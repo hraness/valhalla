@@ -16,6 +16,7 @@ extern crate std;
 
 pub mod persistence;
 pub mod protected_commit;
+pub mod rotation;
 
 #[cfg(all(feature = "native-store", unix))]
 pub mod file_store;
