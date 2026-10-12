@@ -592,10 +592,17 @@ async fn run_never_initializes_missing_native_state_and_init_releases_its_lock()
     assert!(run(&home, async {}).await.is_err());
     assert!(!home.join("account").exists());
     assert!(!home.join("catalog").exists());
+    // The two historical CI refusals occurred on the first post-init run.
+    // Read-only concurrent snapshots can retain a short lock lifetime that a
+    // single snapshot after try_lock would miss; a green run proves nothing.
+    #[cfg(target_os = "linux")]
+    let observer = lock_trace::FirstRunObserver::start(&home).expect("Linux lock observer");
     initialize_home(&home).await.unwrap();
     #[cfg(target_os = "linux")]
     let after_init = lock_trace::record(&home, "after-init").expect("Linux lock trace");
     let first = run(&home, async {}).await;
+    #[cfg(target_os = "linux")]
+    observer.finish(first.is_err());
     #[cfg(target_os = "linux")]
     let after_first = lock_trace::record(
         &home,

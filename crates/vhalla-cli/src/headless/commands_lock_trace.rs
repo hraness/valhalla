@@ -154,6 +154,125 @@ pub(super) fn record_child(home: &Path, phase: &str, pid: u32) -> io::Result<(Sn
     Ok((state, child))
 }
 
+// This observer only runs in the missing-state test. The old refusals were at
+// the first init -> run boundary; a post-refusal snapshot can miss a short-lived
+// holder. Sample the exact home concurrently, without acquiring the lock or
+// reading any capability. Procfs reads are not atomic: this is a timeline to
+// investigate, never proof that an absent holder could not have existed.
+#[derive(Default)]
+struct Timeline {
+    previous: Option<String>,
+    changes: std::collections::VecDeque<String>,
+    discarded: usize,
+    samples: usize,
+}
+
+impl Timeline {
+    const MAX_CHANGES: usize = 32;
+    fn push(&mut self, state: String) {
+        self.samples += 1;
+        if self.previous.as_deref() == Some(&state) {
+            return;
+        }
+        self.previous = Some(state.clone());
+        if self.changes.len() == Self::MAX_CHANGES {
+            self.changes.pop_front();
+            self.discarded += 1;
+        }
+        self.changes.push_back(format!("ms={} {state}", millis()));
+    }
+}
+
+pub(super) struct FirstRunObserver {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Timeline>>,
+}
+
+impl FirstRunObserver {
+    pub(super) fn start(home: &Path) -> io::Result<Self> {
+        use std::{
+            sync::{atomic::Ordering, mpsc, Arc},
+            thread,
+            time::Duration,
+        };
+        let home = home.to_path_buf();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (started, ready) = mpsc::sync_channel(1);
+        let observer_stop = Arc::clone(&stop);
+        let worker = thread::Builder::new()
+            .name("supervisor-lock-observer".into())
+            .spawn(move || {
+                let mut timeline = Timeline::default();
+                // Even if the caller stalls, bound all sampling and history.
+                for _ in 0..2_048 {
+                    if observer_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let state = match snapshot(&home) {
+                        Ok(state) => format!(
+                            "dev={} ino={} holders={:?} self_fds={:?}",
+                            state.dev, state.ino, state.holders, state.fds
+                        ),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                            "lock_missing".to_owned()
+                        }
+                        Err(error) => format!("trace_unavailable={error}"),
+                    };
+                    timeline.push(state);
+                    if timeline.samples == 1 {
+                        let _ = started.send(());
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                timeline
+            })?;
+        let observer = Self {
+            stop,
+            thread: Some(worker),
+        };
+        if ready.recv_timeout(Duration::from_secs(10)).is_err() {
+            // Drop joins the exact observer before reporting a startup error.
+            drop(observer);
+            return Err(io::Error::other("lock observer did not start"));
+        }
+        Ok(observer)
+    }
+
+    fn stop_and_report(&mut self, report: bool) {
+        use std::sync::atomic::Ordering;
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.thread.take() {
+            match worker.join() {
+                Ok(timeline) if report => {
+                    eprintln!(
+                        "supervisor-lock phase=first-run-timeline observer_pid={} samples={} discarded={} (non-atomic procfs samples)",
+                        std::process::id(),
+                        timeline.samples,
+                        timeline.discarded
+                    );
+                    for entry in timeline.changes {
+                        eprintln!("supervisor-lock phase=first-run-sample {entry}");
+                    }
+                }
+                Err(_) => eprintln!(
+                    "supervisor-lock phase=first-run-timeline trace_unavailable=observer-panicked"
+                ),
+                Ok(_) => {}
+            }
+        }
+    }
+
+    pub(super) fn finish(mut self, refusal: bool) {
+        self.stop_and_report(refusal);
+    }
+}
+
+impl Drop for FirstRunObserver {
+    fn drop(&mut self) {
+        self.stop_and_report(std::thread::panicking());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +326,21 @@ mod tests {
                 .kind(),
             io::ErrorKind::PermissionDenied
         );
+    }
+
+    #[test]
+    fn first_run_timeline_is_bounded_and_keeps_only_distinct_recent_states() {
+        let mut timeline = Timeline::default();
+        timeline.push("lock_missing".into());
+        timeline.push("lock_missing".into());
+        for ino in 0..Timeline::MAX_CHANGES {
+            timeline.push(format!("dev=2049 ino={ino} holders=[] self_fds=[]"));
+        }
+        assert_eq!(timeline.samples, Timeline::MAX_CHANGES + 2);
+        assert_eq!(timeline.discarded, 1);
+        assert_eq!(timeline.changes.len(), Timeline::MAX_CHANGES);
+        assert!(!timeline.changes.front().unwrap().contains("lock_missing"));
+        assert!(timeline.changes.back().unwrap().contains("ino=31 "));
     }
 
     // A failed assertion must never strand a child holding the synthetic home.
