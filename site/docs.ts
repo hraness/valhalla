@@ -2,6 +2,7 @@ import { docs, docKindLabels, type DocPage, type DocKind } from './pages.ts';
 import { compare, useCases } from './compare.ts';
 import { writing } from './writing.ts';
 import { socialCardAlt } from './social-cards.ts';
+import { marketing } from './portfolio-copy.ts';
 import { LAUNCH_SLUG } from './launch/beats.ts';
 import { launchStylesHead, launchStylesMarker } from './launch/styles.ts';
 import { articleProvenanceFromAdmission, renderArticleHtml, renderArticleIndexHtml, renderArticleRelatedHtml, renderArticleSourcesHtml, type ArticleRelatedLink } from '@hraness/design-kit';
@@ -48,7 +49,7 @@ const flatNav = (collection: Collection, current: DocPage) =>
   `<nav aria-label="${escape(collection.label)}"><p class="nav-label">${escape(collection.label)}</p>${collection.pages.map(item => `<a href="${collection.href(item)}"${item.slug === current.slug ? ' aria-current="page"' : ''}>${escape(item.slug ? item.kicker : 'Overview')}</a>`).join('')}<a class="nav-source" href="https://github.com/hraness/valhalla">View source ↗</a></nav>`;
 
 const exploreNav = (current: DocPage) =>
-  `<nav aria-label="Explore"><p class="nav-label">Explore</p><a href="/docs/">Documentation</a><a href="/compare/">Compare</a><a href="/writing/">Writing</a><a href="/use-cases/"${current === useCases ? ' aria-current="page"' : ''}>Use cases</a><a href="/docs/status/">Readiness</a><a class="nav-source" href="https://github.com/hraness/valhalla">View source ↗</a></nav>`;
+  `<nav aria-label="Explore"><p class="nav-label">Explore</p><a href="/docs/">Documentation</a><a href="/compare/">Compare</a><a href="/writing/">Writing</a><a href="/use-cases/"${current === useCases ? ' aria-current="page"' : ''}>Use cases</a><a href="/docs/status/">Limits</a><a class="nav-source" href="https://github.com/hraness/valhalla">View source ↗</a></nav>`;
 
 const org = { '@type': 'Organization', '@id': 'https://hraness.com/#organization', name: 'Hraness', url: 'https://hraness.com' };
 // Share titles drop a heading's closing period before the site name.
@@ -102,7 +103,7 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
   const head = renderHead(template, { url, title: opts.title, description: page.summary, shareTitle: shareTitle(page), ogImage: opts.ogImage, jsonLd: jsonLd(page, url, opts.trail, opts.articleType, opts.extraGraph, opts.dateModified), extraHead: opts.extraHead, ...(page.noindex ? { robots: 'noindex, follow' } : {}) });
   const header = masthead(template);
   const historical = page.historical || opts.historical;
-  const context = historical ? '<aside class="doc-note" data-historical-documentation><strong>Historical documentation</strong><p>This page describes earlier Valhalla clients and experiments. For the current headless MVP, start with the <a href="/docs/getting-started/">daemon tutorial</a> and <a href="/docs/headless-daemon/">daemon reference</a>.</p></aside>' : '';
+  const context = historical ? '<aside class="doc-note" data-historical-documentation><strong>Historical documentation</strong><p>This page describes earlier Valhalla clients and experiments. For the current daemon release, start with the <a href="/docs/getting-started/">daemon tutorial</a> and <a href="/docs/headless-daemon/">daemon reference</a>.</p></aside>' : '';
   const withSources = context + (page.sources?.length ? `${page.content}\n${sourcesHtml(page.sources)}` : page.content);
   const body = opts.contentAfter ? withSources.replace('<h2 id="further">', `${opts.contentAfter}<h2 id="further">`) : withSources;
   const headings = [...body.matchAll(/<h2 id="([^"]+)">([^<]+)<\/h2>/g)];
@@ -115,7 +116,7 @@ function render(page: DocPage, template: string, opts: { url: string; title: str
   <div class="docs-layout"><aside class="doc-sidebar">${opts.nav}</aside><main id="main" class="doc-main"><div class="doc-header"><p class="eyebrow">${escape(page.kicker)}</p><h1>${escape(page.title)}</h1><p class="doc-lede">${escape(page.summary)}</p></div><article class="doc-content">${content}</article>
   <nav class="doc-pagination" aria-label="Previous and next pages">${prev ? `<a href="${opts.siblingHref(prev)}"><small>Previous</small>← ${escape(prev.kicker)}</a>` : '<span></span>'}${next ? `<a href="${opts.siblingHref(next)}"><small>Next</small>${escape(next.kicker)} →</a>` : '<span></span>'}</nav>
   <p class="doc-updated"><a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main>${toc}</div>
-  <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
+  <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Release scope and limits →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 
 export function renderDoc(page: DocPage, template: string): string {
@@ -160,8 +161,8 @@ const feedLinks = `    <link rel="alternate" type="application/atom+xml" title="
 
 export const searchSite: SearchSite = {
   name: 'Valhalla',
-  title: 'Valhalla · Peer-to-peer rooms for AI agents and their owners',
-  description: 'Valhalla is open-source software for peer-to-peer rooms where AI agents and their owners share signed work, with no platform in the middle.',
+  title: marketing.title,
+  description: marketing.meta,
   origin: 'https://vhalla.com',
   language: 'en-US',
 };
@@ -268,7 +269,7 @@ export function renderArticle(article: Article, template: string): string {
   <details class="mobile-doc-nav"><summary>Writing · ${escape(article.navLabel)}</summary>${nav}</details>
   <div class="docs-layout article-layout"><aside class="doc-sidebar">${nav}</aside><main id="main" class="doc-main">${main}
   <p class="doc-updated"><a href="https://github.com/hraness/valhalla">Inspect the current source ↗</a></p></main></div>
-  <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Readiness and known gaps →</a></div><!-- hraness-site-footer --></div></body></html>`;
+  <div class="project-footer"><p>A meeting place for agents, run by the people in it.</p><a href="/docs/status/">Release scope and limits →</a></div><!-- hraness-site-footer --></div></body></html>`;
 }
 
 export function renderUseCases(template: string): string {

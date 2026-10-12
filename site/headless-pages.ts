@@ -8,7 +8,9 @@ const source = (path: string, label: string) => `<a href="https://github.com/hra
 
 // Source instructions are separate from the immutable earlier-release guides.
 export function headlessDocs(release: string): DocPage[] {
-  const availability = `<p><strong>In development.</strong> The <a href="https://github.com/hraness/valhalla/releases/tag/${daemonRelease}">${daemonRelease} release</a> includes the daemon on Apple silicon macOS and x86-64 or ARM64 Linux. Select that version explicitly below. Without a version selection, these installers default to the <a href="/docs/historical-getting-started/">earlier ${release} CLI</a>. Windows x86-64 packages provide identity and private-room member commands, not the daemon; use Linux or WSL for the service.</p>`;
+  const availability = `<p>The <a href="https://github.com/hraness/valhalla/releases/tag/${daemonRelease}">${daemonRelease} release</a> includes the daemon on Apple silicon macOS and x86-64 or ARM64 Linux. Select that version when you install; without a version selection, the installers choose the <a href="/docs/historical-getting-started/">earlier ${release} CLI</a>. Windows x86-64 packages provide identity and private-room member commands, not the daemon; use Linux or WSL for the service.</p>`;
+  // The one status sentence on the site lives on the install page.
+  const status = `<p><strong>Status.</strong> Valhalla is in development; ${daemonRelease} is the current daemon release and the one these commands install.</p>`;
   return [
     {
       slug: '', title: 'Valhalla documentation', kicker: 'Documentation', metaTitle: 'Documentation · Valhalla',
@@ -24,13 +26,14 @@ ${availability}
 <a class="doc-card" href="/docs/headless-daemon/#private"><span>Private rooms</span><h2>Invite members</h2><p>Use MLS encryption and a mailbox a participant operates.</p></a>
 <a class="doc-card" href="/docs/headless-daemon/#agents"><span>MCP</span><h2>Give an agent one room</h2><p>Set permissions, expiry, and usage limits without sharing owner commands.</p></a>
 </div>
-<h2 id="operations">Keep the service running</h2><p>The <a href="/docs/headless-daemon/">daemon reference</a> covers background services, storage limits, and preserving history. Check <a href="/docs/status/">development status</a> before choosing a workload.</p>
-<h2 id="historical">Earlier clients and experiments</h2><p>The <a href="/docs/historical-getting-started/">earlier CLI (${release})</a> page covers the release the installers select without a version, and how it differs from the daemon. The <a href="/docs/historical-overview/">historical documentation</a> keeps the browser client, social commands, validator-based public rooms, and earlier setup procedures available. Those guides describe a different build and are outside the headless MVP.</p>`,
+<h2 id="operations">Keep the service running</h2><p>The <a href="/docs/headless-daemon/">daemon reference</a> covers background services, storage limits, and preserving history. Read the <a href="/docs/status/">release scope and limits</a> before choosing a workload.</p>
+<h2 id="historical">Earlier clients and experiments</h2><p>The <a href="/docs/historical-getting-started/">earlier CLI (${release})</a> page covers the release the installers select without a version, and how it differs from the daemon. The <a href="/docs/historical-overview/">historical documentation</a> keeps the browser client, social commands, validator-based public rooms, and earlier setup procedures available. Those guides describe a different build and are outside the current daemon release.</p>`,
     },
     {
       slug: 'getting-started', title: 'Run a local Valhalla room', kicker: 'Getting started', kind: 'tutorial',
       summary: 'Install or build the Valhalla daemon on macOS or Linux, start a local public room, and save and read a message through JSON commands.',
-      content: `${availability}
+      content: `${status}
+${availability}
 <h2 id="install">1. Install the released daemon</h2><p>Install authenticated <a href="https://cli.github.com/">GitHub CLI</a> and run <code>gh auth login</code> for release verification. The installers check the release checksum. Explicit version selection pins the Unix installation and disables automatic updates:</p>
 ${vhallaDaemonInstall('install-daemon-getting-started')}
 ${code('vhalla --version\nvhalla daemon --help')}
@@ -96,18 +99,18 @@ ${code('vhalla daemon mcp --home /ABSOLUTE/DAEMON_HOME --grant /ABSOLUTE/GRANT.j
 <p>After stopping the foreground process and waiting for it to exit, use <code>daemon managed install</code> for launchd on macOS or systemd on Linux. Managed uninstall keeps room data, configuration, and logs.</p>
 <h2 id="recovery">Storage and recovery</h2><p><code>room.status</code> reports native storage use. <code>public.sync_storage</code> reports public sync stores separately. The service has a 64-room limit and permits eight selected sources per public room. Public stores support owner-selected growth; private-room quotas are fixed at creation. These limits are format and configuration limits, not measured throughput promises.</p>
 <p>Restart the original intact home to continue signing. Preserve all its files and any separately selected profiles, tokens, certificates, and delivery queues. Stop the daemon before exporting private history. A private archive opens as read-only history; it cannot become a live sender. An old snapshot or recovery phrase cannot safely restore signing sequences or private MLS state.</p>
-<p>After losing device state, join with a fresh author or device accepted by the owner. Losing a public owner's signing state requires a new pinned room for further owner changes. See <a href="/docs/status/">status and remaining tests</a> before choosing a production workload.</p>`,
+<p>After losing device state, join with a fresh author or device accepted by the owner. Losing a public owner's signing state requires a new pinned room for further owner changes. See the <a href="/docs/status/">release scope and limits</a> before choosing a production workload.</p>`,
     },
     {
-      slug: 'status', title: 'Headless MVP status', kicker: 'Status', kind: 'reference',
-      summary: 'The Valhalla daemon has published Unix packages. Check explicit version selection, platform limits, and operational evidence before choosing a workload.',
+      slug: 'status', title: 'Release scope and limits', kicker: 'Status', kind: 'reference',
+      summary: 'What the current Valhalla daemon release includes, the fixed limits it runs within, and what sits outside it.',
       content: `${availability}
 <p>The released daemon includes CLI/JSON control, scoped MCP, direct public rooms, and private MLS rooms.</p>
-<h2 id="included">The MVP scope</h2><p>Participants run the service and choose their peers. Public rooms sync signed history from selected sources; private rooms use confidential invitations and encrypted mailboxes. The daemon keeps local state and exposes machine-readable commands. It has no web UI.</p>
-<h2 id="pending">Release and operational evidence</h2><p>The ${daemonRelease} release publishes Unix headless packages with checksums and build attestations. Its tagged workflow checks the signed macOS archive on a fresh runner. Publication does not establish capacity or availability for your workload. The dated source readiness record describes earlier local measurements, tests between separate runners, and pending operational tests; it is not a statement that published packages are unavailable. No throughput, hosting-price, or production-availability promise is made here.</p>
-<h2 id="limits">Operational limits</h2><p>Public sync completion covers a selected source checkpoint. Private mailbox storage and recipient-device acceptance are different outcomes. Preserve the original signing and MLS state; read-only archives and account recovery phrases cannot activate a replacement live sender. MCP permissions limit room tools, not the agent's other filesystem or network access.</p>
-<h2 id="outside">Outside this MVP</h2><p>AT Protocol adoption and Delve interoperability are not included. Browser applications, social feeds, and validator-based room discovery are outside the primary product path. The <a href="/docs/historical-overview/">earlier documentation</a> remains available for those experiments and clients.</p>
-<p>${source('docs/release-readiness.md', 'Source readiness record')} · <a href="/docs/headless-daemon/">Daemon reference</a> · <a href="/docs/historical-status/">Earlier readiness inventory</a></p>`,
+<h2 id="included">What the release includes</h2><p>Participants run the service and choose their peers. Public rooms sync signed history from selected sources; private rooms use confidential invitations and encrypted mailboxes. The daemon keeps local state and exposes machine-readable commands. It has no web UI.</p>
+<h2 id="limits">Fixed limits</h2><p>A service holds up to 64 rooms and follows up to eight sources per public room. Public sync completion covers a selected source checkpoint. Private mailbox storage and recipient-device acceptance are different outcomes. Preserve the original signing and MLS state; read-only archives and account recovery phrases cannot activate a replacement live sender. MCP permissions limit room tools, not the agent's other filesystem or network access.</p>
+<h2 id="hosting">Availability follows your machines</h2><p>There is no hosted service. Published packages carry checksums and a signed build record; capacity and uptime for your workload come from the hosts you run and the routes between them. A host that is asleep delays delivery until it returns.</p>
+<h2 id="outside">Outside this release</h2><p>AT Protocol adoption and Delve interoperability are not included. Browser applications, social feeds, and validator-based room discovery are outside the primary product path. The <a href="/docs/historical-overview/">earlier documentation</a> remains available for those experiments and clients.</p>
+<p><a href="/docs/headless-daemon/">Daemon reference</a> · <a href="/docs/getting-started/">Getting started</a> · <a href="/docs/historical-status/">Earlier documentation inventory</a></p>`,
     },
   ];
 }
