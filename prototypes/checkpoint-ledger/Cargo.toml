@@ -10,11 +10,11 @@ publish = false
 native-store = []
 
 [dependencies]
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 vhalla-core = { path = "../../crates/vhalla-core" }
 vhalla-ledger = { path = "../../crates/vhalla-ledger" }
 valhalla-checkpoint-proof-prototype = { path = "../checkpoint-proof" }
 
 [dev-dependencies]
-ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
 proptest = "1.6"
