@@ -1544,8 +1544,10 @@ table a {
 
 /* Home: hero with the proof transcript beside it */
 :root {
-  --hraness-marketing-accent-soft:color-mix(in srgb,var(--vhalla-accent) 9%,var(--paper));
-  --hraness-marketing-accent-ink:var(--ink);
+  --sr-soft:color-mix(in srgb,var(--vhalla-accent) 9%,var(--paper));
+}
+code,pre {
+  font-variant-ligatures:none;
 }
 .hero {
   display:grid;
@@ -1658,44 +1660,45 @@ table a {
   line-height:1.7;
   color:var(--muted);
 }
-.sr-route path {
-  stroke-dashoffset:0;
-  animation:sr-route 1.6s ease-out both;
-}
-.sr-route--late {
-  animation-delay:3.2s!important;
-}
-.sr-message {
-  animation:sr-appear .6s ease-out both;
-}
-.sr-message--2 {
-  animation-delay:.8s;
-}
-.sr-copy {
-  animation:sr-appear .6s ease-out both;
-  animation-delay:1.6s;
-}
-.sr-copy--2 {
-  animation-delay:2.2s;
-}
-.sr-machine--c .sr-machine__shell {
-  animation:sr-join 1s ease-out both;
-  animation-delay:3s;
-}
-.sr-catchup {
-  animation:sr-appear .6s ease-out both;
-  animation-delay:4.2s;
-}
-.sr-catchup--2 {
-  animation-delay:4.6s;
-}
-.sr-state--stored {
-  animation:sr-appear .6s ease-out both;
-  animation-delay:1.8s;
-}
-.sr-state--caught {
-  animation:sr-appear .6s ease-out both;
-  animation-delay:4.4s;
+@media(prefers-reduced-motion:no-preference) {
+  .sr-route path {
+    animation:sr-route 1s ease-out both;
+  }
+  .sr-route--late {
+    animation-delay:2s;
+  }
+  .sr-message {
+    animation:sr-appear .5s ease-out both;
+  }
+  .sr-message--2 {
+    animation-delay:.4s;
+  }
+  .sr-copy {
+    animation:sr-appear .5s ease-out both;
+    animation-delay:1s;
+  }
+  .sr-copy--2 {
+    animation-delay:1.3s;
+  }
+  .sr-state--stored {
+    animation:sr-appear .5s ease-out both;
+    animation-delay:1.2s;
+  }
+  .sr-machine--c .sr-machine__shell {
+    animation:sr-join .8s ease-out both;
+    animation-delay:1.9s;
+  }
+  .sr-catchup {
+    animation:sr-appear .5s ease-out both;
+    animation-delay:2.7s;
+  }
+  .sr-catchup--2 {
+    animation-delay:3s;
+  }
+  .sr-state--caught {
+    animation:sr-appear .5s ease-out both;
+    animation-delay:2.9s;
+  }
 }
 @keyframes sr-appear {
   from {
