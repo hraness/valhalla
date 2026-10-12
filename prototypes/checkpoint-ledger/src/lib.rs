@@ -21,6 +21,9 @@ pub mod rotation;
 #[cfg(all(feature = "native-store", unix))]
 pub mod file_store;
 
+#[cfg(all(feature = "native-store", unix))]
+pub mod rotation_archive;
+
 use alloc::{format, string::String, vec::Vec};
 use valhalla_checkpoint_proof_prototype::{
     CheckpointStatement, Digest32, Reject, TrustConfig, VerifiedProof,

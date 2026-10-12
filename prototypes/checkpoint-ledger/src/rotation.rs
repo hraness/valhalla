@@ -21,6 +21,13 @@ pub const MAX_ROTATION_BYTES: usize = 32 * 1024;
 /// Maximum number of distinct transitions retained for one checked frontier.
 pub const MAX_TRANSITIONS: usize = 8;
 
+/// Extract an UNVERIFIED new-policy digest for looking up a separately configured
+/// policy. The lookup must never construct or install policy from these bytes;
+/// [`RotationObserver::observe`] authenticates the entire certificate afterward.
+pub fn proposed_policy_digest(raw: &[u8]) -> Result<Digest32, Reject> {
+    Ok(Reader::new(raw)?.statement()?.new_digest)
+}
+
 /// Independently configured policy; never decoded from an incoming transition.
 ///
 /// The digest is the exact checkpoint-proof policy digest, including realm,
@@ -221,6 +228,18 @@ impl<'a> RotationObserver<'a> {
             evidence: Vec::new(),
             exhausted: false,
         })
+    }
+
+    /// Checked old frontier used to scope an external evidence record.
+    #[must_use]
+    pub fn old_frontier(&self) -> Checkpoint {
+        self.old
+    }
+
+    /// Independently configured old policy digest.
+    #[must_use]
+    pub fn old_policy_digest(&self) -> Digest32 {
+        self.old_policy.digest
     }
 
     /// Make an unsigned proposal from *independently supplied* new policy.

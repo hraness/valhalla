@@ -72,11 +72,58 @@ a different valid signer subset. A second distinct valid statement is an
 explicit conflict, not a candidate chosen by arrival, height or timeout. At
 capacity, a further distinct valid statement permanently blocks that observer
 without evicting prior evidence. A fresh in-memory observer is **not** recovery
-from a conflict: preserving conflicts across restarts needs a separate store.
-`Recorded` is only an observation, not permission to install a policy or reset
-actor sequences. No transition signing, new-epoch genesis, persistence, physical
-durability, independent witness custody, protected pin CAS, policy activation,
-consensus, host effect or rollback-resistant conflict archive is provided.
+from a conflict. The native archive below separately retains locally verifiable
+evidence across restarts, provided its commitment is independently retained. `Recorded` is only an
+observation, not permission to install a policy or reset actor sequences. No
+transition signing, new-epoch genesis, protected freshness, physical durability,
+independent witness custody, policy activation, consensus, or host effect is
+provided.
+
+### Local rotation conflict archive (not protected freshness)
+
+**Agent-decided, owner may revisit (2026-10-12):** the optional Unix
+`native-store` reference adds `rotation_archive::RotationArchive`, separate from
+`RotationObserver`. An explicit `create_new` requires a checked old ledger tip
+and complete configured old policy, and refuses existing directories. Every
+`reopen` requires that same checked current tip, old policy, count bound, an
+**independently retained exact archive commitment**, and a resolver of proposed
+new policies from independent configuration. A digest extracted from incoming
+bytes is only an unverified lookup key. Reopen rechecks both quorums and all
+certificates. Absence, rollback, altered/missing/reordered bytes, unavailable
+configuration, stale tip or a wrong commitment refuses; never bootstrap an
+empty observer from a missing archive. The archive never supplies policy or
+activation authority. A commitment recomputed from the same local directory
+does not protect against an erased conflict.
+
+The local-only, unreleased reference format is an exact append-only byte string:
+
+```text
+header = "valhalla/rotation-archive/v1" || version:1:u16
+       || old_realm:u128 || old_epoch:u64 || old_head:32 || old_root:32
+       || old_height:u64 || old_policy_digest:32 || capacity:u8
+record = 1:u8 || certificate_length:u16 || SHA256(certificate):32 || certificate
+capacity_marker = 2:u8  (only after exactly capacity distinct valid records)
+commitment = SHA256("valhalla/rotation-archive/commit/v1" || complete_archive)
+```
+
+An independent Python `struct`/`hashlib` construction from the fixed old
+frontier and policy above produces a 159-byte empty archive header at capacity 2,
+with commitment `c7ccac48ffbf1981bf9b60ef38d651ff7e482eeb2a469b576b0ecb0970674bd6`.
+
+Capacity is 2–8 distinct transitions; a certificate is at most 32 KiB. A
+byte-identical valid retry writes nothing; a second transition retains both
+certificates and blocks selection. A further distinct valid claim at capacity
+appends a sticky refusal marker without evicting earlier evidence. This marker
+does not retain the overflowing certificate. Different valid approval bytes
+for an already retained *statement* are refused by the archive rather than
+accepted as an exact retry; the standalone observer still treats them as the
+same transition. The archive keeps a lifetime file lock, private Unix modes,
+and file/directory syncs. An uncertain append/sync poisons its handle; a lost
+acknowledgement or cut between local sync and independent anchoring must be
+reconciled against the separately retained expected commitment, not assumed
+aborted. Tests simulate byte-level cuts and reopen, not power loss. No actual
+external anchor store, host custody, physical durability, new-epoch bundle,
+protected witness CAS or activation is supplied.
 
 The fixed transcript test is independently generated with Python `hashlib` and
 big-endian integers, using OpenSSL to derive public keys from **public test seeds**
@@ -259,7 +306,8 @@ activate protected write or recovery based on these tests.
 
 ## Native storage profile
 
-The `native-store` feature exposes `file_store::FileStore` on Unix. It requires
+The `native-store` feature exposes `file_store::FileStore` and
+`rotation_archive::RotationArchive` on Unix. It requires
 Rust 1.89 or newer for standard-library [file locking](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock).
 `create_new(path, max_bundles)` refuses existing directories; `open` requires an
 existing store. One OS lock is held for the adapter's lifetime. The directory
@@ -288,6 +336,7 @@ From the repository root:
 cargo run --manifest-path prototypes/checkpoint-ledger/Cargo.toml --example recovery --locked
 cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked
 cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked --test rotation
+cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked --test rotation_archive
 cargo test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --locked --test protected_commit_model
 cargo clippy --manifest-path prototypes/checkpoint-ledger/Cargo.toml --all-targets --locked -- -D warnings
 cargo check --manifest-path prototypes/checkpoint-ledger/Cargo.toml --target wasm32-unknown-unknown --locked
@@ -307,10 +356,10 @@ step, including failed syncs, lost acknowledgements, and writers racing at CAS.
 
 Real protected pin freshness (including a monotonic independently controlled
 witness and a physically qualified two-store commit), intent rotation,
-physical crash qualification, durable trust rotation and conflict retention,
-new-epoch genesis, compaction, and network admission remain open. Direct ledger
-users must retain certificates separately; the persistence layer bundles them
-with each stored snapshot. Neither establishes global agreement, prevents
+physical crash qualification, protected conflict freshness and production trust
+rotation, new-epoch genesis, compaction, and network admission remain open.
+Direct ledger users must retain certificates separately; the persistence layer
+bundles them with each stored snapshot. Neither establishes global agreement, prevents
 malicious signers, authenticates each event author, or authorizes host effects.
 Untrusted appends can fill or advance the staging history, so production transport
 must not expose them without admission policy.

@@ -1212,10 +1212,24 @@ independently controlled witness with authenticated fixed identity, durable
 serialized CAS and revocable exclusive grant; local/host crash drills, bounded
 retention, production authority integration and exact-head delivery checks.
 
-### Next trust-rotation experiment
+### Trust-rotation reference and remaining experiments
 
-Ordinary commits reject all implicit trust or epoch changes. The next reference
-should keep rotation a separate protocol with these proposed constraints:
+**Agent-decided, owner may revisit (2026-10-12):** the standalone checkpoint
+ledger prototype now verifies dual-quorum transition certificates against its
+checked old tip and independently configured policies. An optional Unix local
+archive binds a private, append-only, bounded record to that same tip and
+requires an independently retained *exact archive commitment* on every reopen.
+It re-verifies every certificate with configured old and proposed new policies;
+byte-identical retries do not append, distinct valid transitions remain retained
+conflicts, and a valid over-capacity attempt leaves a sticky refusal marker.
+Missing, altered, reordered or unanchored evidence is refusal, not a clean new
+observer. Local cut and lost-ack tests exercise reopen, not physical power loss.
+This source result does not implement an external monotonic anchor, protected
+freshness, epoch activation, production integration or host authority. Do not
+use a same-disk hash to claim conflict rollback protection.
+
+Ordinary commits still reject all implicit trust or epoch changes. The next
+promotion experiments keep rotation separate with these remaining constraints:
 
 1. A signed transition binds the realm, exact old and new policy digests, the old
    certified frontier, and exactly the next epoch. Incoming certificates never
@@ -1232,8 +1246,10 @@ should keep rotation a separate protocol with these proposed constraints:
    evidence and fail closed until an explicit selection/agreement rule exists;
    higher generation, epoch, or arrival order must not silently choose a winner.
 
-These are upcoming acceptance targets, not implemented rotation support. Protected
-freshness, conflict retention, compaction, and host integration remain open gates.
+Items 1–2 have a bounded verifier and item 5 has local-only conflict retention;
+new-epoch genesis, protected storage/anchor integration and policy selection are
+not implemented. Physical durability, independent-host freshness, compaction,
+production admission and host integration remain open gates.
 
 ## Invariant map
 
@@ -1558,7 +1574,8 @@ workspace implementations. The disposable certificate/history adapter now joins
 signature checks to real linear history, conditional persistence, and an optional
 Unix store. Crash models and native reopen tests exercise recovery against a local
 pin. Full promotion remains unaccepted; physical crash qualification, protected
-pin freshness, trust rotation, compaction, and policy/host composition remain open.
+pin and rotation-archive freshness, trust activation, compaction, and policy/host
+composition remain open.
 
 ## Durable memory
 
