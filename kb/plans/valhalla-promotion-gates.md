@@ -1648,6 +1648,36 @@ position or establish actual relay custody, recipient processing, human
 reading, browser/WASM execution parity, independent-machine qualification,
 physical durability, network availability or release readiness.
 
+**Agent-decided, owner may revisit (2026-10-13): private-relay TLS framed
+receipt regression.** [PR #328](https://github.com/hraness/valhalla/pull/328)
+(head `284dd68073aff0d00cd6737fb7080db1cb6d233c`) was squash-merged as
+`2a957417c61c7935989564fb6f072eab3b9289f0`; both have tree
+`2319102bba1c0eb2d0709712cd6ad86cd6c48f0e`. The test-only change in
+`crates/vhalla-private-native/src/relay/tls/tests.rs` adds
+`tls_submit_refuses_corrupt_framed_receipts`. Against a scripted TLS peer it
+refuses zero/over-limit lengths, truncated length/body, an **in-frame** receipt
+suffix, unknown status and a receipt for a different item. It checks exact
+stored encoded-item/ciphertext retries, preserves earlier uncertainty through
+subsequent malformed replies, reopen and resume, then parses a scripted
+matching receipt. No runtime code, wire format, receipt authority or resource
+bound changed. TLS consumes one declared response frame: it does **not** inspect
+or refuse bytes after that frame.
+
+Local Rust 1.98.1 compilation, strict package Clippy, formatting and a
+non-socket framed-codec test passed in the originating lane. Both focused
+socket TLS tests stopped at loopback `TcpListener::bind` with sandbox `EPERM`
+before their assertions; those local failures do not verify TLS behavior.
+On the socket-capable GitHub runner, PR-head Rust run
+[38447444423](https://github.com/hraness/valhalla/actions/runs/38447444423)
+logged the new TLS test `ok` in `private-rooms` (native suite: 197 passed,
+2 ignored); PR-head `site`, `Required` and five CodeQL analyses succeeded.
+Post-merge main Rust push run
+[38448771965](https://github.com/hraness/valhalla/actions/runs/38448771965)
+on the exact merge SHA passed `Required`. A matching receipt from this scripted
+peer proves adapter parsing/state transition, **not** independent mailbox
+custody, recipient delivery or reading, browser/WASM parity, physical crash
+durability, deployment, network availability or release readiness.
+
 Full promotion remains **unaccepted** until Gates 0–5 have named owners,
 production APIs, acceptance receipts, and residual risks. When a gate is
 accepted, append its exact commit, commands, vectors, and recovery result to
