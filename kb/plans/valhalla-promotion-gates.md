@@ -1135,11 +1135,33 @@ isolation, monotonic authenticated CAS and durable custody, plus a separately
 verified order/reconciliation protocol between the witness and local CAS under
 crash and uncertain acknowledgements. At this reference-contract stage the prototype exposed **no** protected
 commit operation; the later single-step adapter is documented below. The reference cannot resist coordinated disk+witness
-compromise, physical power loss, or an advance of the witness *after* the
-snapshot was captured. A live host, network availability, independent-machine
+compromise, physical power loss, or an advance of the witness *after* its
+final sequential recheck. A live host, network availability, independent-machine
 qualification and production rollback defense are unproven. Exact-head Rust
 `Required` (including prototype-checks and Workspace auxiliary checks) belongs
 to final delivery, not this uncommitted local evidence.
+
+### Guarded read mid-verification recheck — 2026-10-13
+
+**Agent-decided, owner may revisit:** the read-only `load_protected` reference
+now re-captures the independent **full** pin and re-reads the local full pin after
+verifying the captured pin's exact bundle, certificate and history. A change of
+either pin during verification refuses as `PinChanged`; disappearance or I/O
+failure on the second read keeps the existing missing/witness/local error mapping.
+It returns no model, guesses no retry or fallback, and performs no write. The
+first-read mismatch still reports `PinMismatch`. The deterministic
+`protected_load_refuses_mid_read_advance` fixture changes either store at the
+bundle-read hook, exercises second-read witness and local outages, and checks
+stable same-pin recovery and corrupt-bundle refusal. This closes that observed
+mid-verification window only: the two final reads are sequential, not fenced or
+atomic. An advance after either recheck is not ruled out, and no
+latest-at-completion, independent witness custody, physical power-cut or
+production recovery claim follows. Local Rust 1.98.1 locked checks: focused
+regression 1/1, native-store persistence 13/13, protected-file 7/7, strict
+all-targets Clippy, format check and WASM compile passed. Wordcell percolate,
+refresh and check passed (the generated catalog also corrected a pre-existing
+entry). No browser/WASM runtime parity follows. Exact-PR-head and post-main
+`Required` still gate delivery.
 
 ### Protected two-store commit model — 2026-10-11
 
@@ -1187,8 +1209,8 @@ network availability or browser/WASM parity. The README owns detailed ordering,
 assumptions and refusal behavior. Next admission requires an owner-controlled
 service/adapter, real credential and fence custody, independently verified
 byte-level crash reconciliation and live/physical qualification before protected
-recovery can be activated. The existing `load_protected` test double still has
-a snapshot-after-capture race; a latest-at-completion claim needs a separate
+recovery can be activated. The `load_protected` test double rechecks pins
+after bundle validation, but a post-recheck race remains; a latest-at-completion claim needs a separate
 fenced read/serialization design. Exact-head `Required` remains the delivery
 gate for this test change.
 

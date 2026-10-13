@@ -246,7 +246,9 @@ choose a separately controlled owner-host, monotonic and durable **full-pin**
 witness. A `PinWitness` supplies a captured expectation containing generation,
 bundle digest, checkpoint and trust-policy digest. `load_protected` first requires
 that independent expectation, then requires exact equality with the local pin
-before reading and re-verifying its one bundle, certificate and history. A
+before reading and re-verifying its one bundle, certificate and history.
+After verification it re-reads the independent full pin and then the local full
+pin, refusing an observed mid-read change or second-read outage. A
 missing, stale or substituted local pin (even alongside its matching old
 bundle), changed policy, corrupt bundle, absent witness or unavailable witness
 refuses without a model, write, fallback or repair. The native/file store alone
@@ -260,8 +262,14 @@ experiment under a separate `FencedWitness` trait; `PinWitness` still has no
 protected write contract. The experiment cannot prove that a test-double host
 keeps a durable, isolated monotonic pin or that physical sync survives power
 loss. An adversary controlling both witness and disk can still coordinate
-rollback. A witness advance after capture can also make this read stale; callers needing a latest-at-completion guarantee must establish
-a separate snapshot/serialization protocol. Physical power-loss behavior,
+rollback. **Agent-decided, owner may revisit (2026-10-13):** the extra reads
+narrow a known window, not establish an atomic snapshot. A witness or local
+advance after its respective final read can still make recovery stale at
+completion. Callers requiring that guarantee need a separate fenced read or
+serialization protocol. `protected_load_refuses_mid_read_advance` injects
+witness and local changes during bundle reading; second-read missing/outage,
+unchanged-pin recovery and corrupt-bundle refusal are deterministic test-double
+cases, not evidence of independent custody. Physical power-loss behavior,
 independent-host custody and live availability require separate qualification.
 
 ### Protected two-store prototype contract
@@ -269,8 +277,8 @@ independent-host custody and live availability require separate qualification.
 **Agent-decided, owner may revisit (2026-10-11):** the security/recovery
 integration lane specifies the owner-host contract exercised by the model and
 by `protected_commit` with `FileStore` and an independent witness test double.
-Legacy `commit`, `load`, `load_protected` and all production entrypoints remain
-unchanged. Calling legacy `commit` on a protected store would bypass the witness;
+Legacy `commit`, `load` and all production entrypoints remain
+unchanged; `load_protected` remains a read-only reference with final rechecks. Calling legacy `commit` on a protected store would bypass the witness;
 this prototype does not enforce access isolation between the two APIs.
 
 - Provision a separately controlled, owner-identified host and an explicit
@@ -324,7 +332,8 @@ this is not a guarantee of data availability or proof of host durability. A
 client compromising the host, its authority, both trust domains or the signing
 quorum, or a host that lies about sync, violates the assumptions. Liveness under
 partitions is intentionally not promised. Read snapshots can become stale after
-capture; latest-at-completion needs a fenced read or a second host check.
+the final sequential rechecks; latest-at-completion needs a fenced read or
+serialization, not an unfenced second host check alone.
 
 The older fault model uses genuine `PreparedCommit` pins but an in-memory marker in
 place of the actual durable journal and bundle verifier. The new file-backed

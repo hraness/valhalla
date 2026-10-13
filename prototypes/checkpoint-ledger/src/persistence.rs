@@ -288,18 +288,21 @@ pub enum ProtectedLoadError<S, W> {
     Local(StoreError<S>),
     /// The witnessed pin is absent from the untrusted local store.
     MissingLocalPin,
-    /// The complete local pin differs from the captured independent pin.
+    /// The complete local pin differs from the initially captured independent pin.
     PinMismatch,
+    /// A full witness or local pin changed during checked bundle recovery.
+    PinChanged,
 }
 
 /// Recover only the exact independently witnessed pin and its checked bundle.
 ///
-/// Captures the witness *before* reading untrusted local bytes. A missing,
-/// stale, or replaced local pin, unavailable witness, and invalid bundle all
-/// refuse without writing, scanning for older bundles, or returning a model.
-/// This is a reference contract, not an implementation of a durable monotonic
-/// witness, its commit ordering, physical-crash safety, or live rollback defense.
-/// A concurrent witness advance after capture is not detected by this read.
+/// Captures the witness *before* reading untrusted local bytes, then re-reads
+/// the full witness and local pins after checking the exact bundle. A mismatch
+/// or second-read outage refuses without writing, scanning, or returning a model.
+/// The sequential final reads do not form an atomic snapshot: a change after
+/// either recheck may still make this result stale at completion. This is not
+/// a durable monotonic witness, a fenced read, physical-crash safety, or a
+/// live rollback defense.
 pub fn load_protected<S: Storage, W: PinWitness>(
     storage: &mut S,
     witness: &mut W,
@@ -317,7 +320,23 @@ pub fn load_protected<S: Storage, W: PinWitness>(
     if current != expected {
         return Err(ProtectedLoadError::PinMismatch);
     }
-    load_pinned(storage, &expected, trust, max_events).map_err(ProtectedLoadError::Local)
+    let recovered =
+        load_pinned(storage, &expected, trust, max_events).map_err(ProtectedLoadError::Local)?;
+    let witnessed_again = witness
+        .capture_pin()
+        .map_err(ProtectedLoadError::Witness)?
+        .ok_or(ProtectedLoadError::MissingWitness)?;
+    if witnessed_again != expected {
+        return Err(ProtectedLoadError::PinChanged);
+    }
+    let local_again = storage
+        .read_pin()
+        .map_err(|e| ProtectedLoadError::Local(StoreError::Backend(e)))?
+        .ok_or(ProtectedLoadError::MissingLocalPin)?;
+    if local_again != expected {
+        return Err(ProtectedLoadError::PinChanged);
+    }
+    Ok(recovered)
 }
 
 /// Legacy/unprotected load from the owner-selected **local** pin. It cannot
