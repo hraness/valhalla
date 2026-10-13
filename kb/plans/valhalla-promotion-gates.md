@@ -1603,6 +1603,25 @@ integration gate. This is a portable codec regression, not browser execution,
 native mailbox persistence, independent-machine, live delivery or release
 qualification. Draft CLI custody probe PR #303 remains separate.
 
+**Agent-decided, owner may revisit (2026-10-13): canonical private-relay v1
+single-bit refusal.** From main `c129a3d8` (tree `52031c77`), the portable
+`vhalla-private-relay` test `relay_item_single_bit_mutations_refuse` reuses the
+frozen valid 112-byte item and refuses each of its 896 one-bit mutations,
+every proper prefix and all 256 possible one-byte suffixes. The existing
+positive fixture still encodes to the same bytes and retains the same local
+retention-receipt round trip. No production codec, wire format, receipt meaning,
+authority or bounds changed; extend production code only for a demonstrated
+counterexample.
+
+Local Darwin verification with Rust 1.98.1 and the locked offline Cargo cache:
+focused exact test 1/1, package tests 7/7 plus doctests, strict all-targets/
+all-features package Clippy, workspace formatting, relay
+`wasm32-unknown-unknown` check and `git diff --check` passed. The WASM result
+is a compile check, not browser execution or native/WASM vector parity. This
+is codec evidence only, not sender authentication, recipient delivery,
+independent-machine qualification, network availability or release readiness.
+Exact-PR-head and post-main `Required` belong to delivery.
+
 Full promotion remains **unaccepted** until Gates 0–5 have named owners,
 production APIs, acceptance receipts, and residual risks. When a gate is
 accepted, append its exact commit, commands, vectors, and recovery result to

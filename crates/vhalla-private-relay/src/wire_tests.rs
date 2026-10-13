@@ -9,11 +9,14 @@ fn bytes(hex: &str) -> Vec<u8> {
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
         .collect()
 }
+fn frozen_v1_item_bytes() -> Vec<u8> {
+    bytes(
+        "56485052454c4159010909090909090909090909090909090909090909090909090909090909090909000000000000000101010101010101010101010101010101050000000a63697068657274657874c244c1e36896476b54aca9f9241462c6b8f759e8910a92bd4d56aaeab52b86e2",
+    )
+}
 #[test]
 fn frozen_v1_item_and_page_request_bytes_survive_extraction() {
-    let raw = bytes(
-        "56485052454c4159010909090909090909090909090909090909090909090909090909090909090909000000000000000101010101010101010101010101010101050000000a63697068657274657874c244c1e36896476b54aca9f9241462c6b8f759e8910a92bd4d56aaeab52b86e2",
-    );
+    let raw = frozen_v1_item_bytes();
     let item = RelayItem::decode(&raw).unwrap();
     assert_eq!(item.encode().unwrap(), raw);
     assert_eq!(item.kind(), OutboxKind::Application);
@@ -41,6 +44,39 @@ fn frozen_v1_item_and_page_request_bytes_survive_extraction() {
     };
     let decoded = decode_page(&encode_page(&page).unwrap(), 7, 1).unwrap();
     assert_eq!(decoded.records[0].item, item);
+}
+
+#[test]
+fn relay_item_single_bit_mutations_refuse() {
+    let raw = frozen_v1_item_bytes();
+    assert_eq!(RelayItem::decode(&raw).unwrap().encode().unwrap(), raw);
+
+    // Cover every bit of the frozen valid item, including header, ciphertext,
+    // and retained digest. A malformed item cannot produce a retention receipt.
+    for byte_index in 0..raw.len() {
+        for bit in 0..8 {
+            let mut changed = raw.clone();
+            changed[byte_index] ^= 1u8 << bit;
+            assert!(
+                RelayItem::decode(&changed).is_err(),
+                "accepted byte {byte_index}, bit {bit}"
+            );
+        }
+    }
+    for len in 0..raw.len() {
+        assert!(
+            RelayItem::decode(&raw[..len]).is_err(),
+            "accepted prefix {len}"
+        );
+    }
+    for trailing in u8::MIN..=u8::MAX {
+        let mut changed = raw.clone();
+        changed.push(trailing);
+        assert!(
+            RelayItem::decode(&changed).is_err(),
+            "accepted trailing byte {trailing}"
+        );
+    }
 }
 
 #[test]
