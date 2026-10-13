@@ -1622,6 +1622,32 @@ is codec evidence only, not sender authentication, recipient delivery,
 independent-machine qualification, network availability or release readiness.
 Exact-PR-head and post-main `Required` belong to delivery.
 
+**Agent-decided, owner may revisit (2026-10-13): private-relay framed
+retention-status refusal.** From main `09a37b8a` (tree `ea5485bf`), the
+portable `vhalla-private-relay` regression
+`framed_retention_status_refuses_corruption` follows the exact bounded
+`decode_frame(MAX_RESPONSE)` -> `decode_status` -> `decode_receipt` path.
+Both canonical duplicate flags round-trip for the frozen v1 item. Every proper
+framed prefix and all 256 one-byte suffixes, zero/short/overstated/understated
+lengths, nonempty error-status bodies, unknown status codes, and a valid
+receipt for a different item refuse at their respective layers. A shortened
+frame with its length adjusted remains valid framing but its incomplete
+receipt refuses. All canonical error statuses 2 through 7 map to their closed
+`NetError`. No production implementation, wire format, status meaning,
+receipt authority, dependency or resource bound changed.
+
+Local Darwin verification with Rust 1.98.1 and the locked offline Cargo cache:
+focused exact test 1/1, package tests 9/9 plus doctests, strict all-targets/
+all-features Clippy, workspace formatting, relay `wasm32-unknown-unknown`
+compile check, and `git diff --check` passed. The first network-mode Cargo
+invocation could not fetch a Git dependency due to an SSL handshake; the
+pinned offline cache completed the exact checks. PR-head and post-main
+`Required` belong to the final delivery gate and are not asserted here.
+This test cannot authenticate a selected host's plausible nonzero mailbox
+position or establish actual relay custody, recipient processing, human
+reading, browser/WASM execution parity, independent-machine qualification,
+physical durability, network availability or release readiness.
+
 Full promotion remains **unaccepted** until Gates 0–5 have named owners,
 production APIs, acceptance receipts, and residual risks. When a gate is
 accepted, append its exact commit, commands, vectors, and recovery result to

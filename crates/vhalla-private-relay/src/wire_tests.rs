@@ -123,6 +123,97 @@ fn retention_receipt_refuses_corruption() {
 }
 
 #[test]
+fn framed_retention_status_refuses_corruption() {
+    let item = RelayItem::decode(&frozen_v1_item_bytes()).unwrap();
+    let different_item = RelayItem::new(
+        item.namespace(),
+        item.sequence(),
+        item.operation(),
+        item.kind(),
+        b"different ciphertext",
+    )
+    .unwrap();
+    assert_ne!(item.digest(), different_item.digest());
+    let decode =
+        |raw: &[u8], expected_item: &RelayItem| -> std::result::Result<RelayReceipt, NetError> {
+            let (status, body) = decode_frame(raw, MAX_RESPONSE)?;
+            let body = decode_status(status, body)?;
+            decode_receipt(&body, expected_item)
+        };
+
+    // This is a selected host's local-retention claim, not authenticated
+    // custody, recipient processing, or human reading. Even a plausible
+    // nonzero position can be forged by the selected host.
+    for duplicate in [false, true] {
+        let receipt = RelayReceipt {
+            position: 8,
+            digest: item.digest(),
+            duplicate,
+        };
+        let raw_receipt = encode_receipt(receipt);
+        let framed = frame(STATUS_OK, &raw_receipt);
+        assert_eq!(decode(&framed, &item), Ok(receipt));
+        assert_eq!(decode(&framed, &different_item), Err(NetError::Malformed));
+
+        for len in 0..framed.len() {
+            assert_eq!(
+                decode_frame(&framed[..len], MAX_RESPONSE),
+                Err(NetError::Malformed),
+                "accepted framed prefix {len} (duplicate={duplicate})"
+            );
+        }
+        for trailing in u8::MIN..=u8::MAX {
+            let mut corrupt = framed.clone();
+            corrupt.push(trailing);
+            assert_eq!(
+                decode_frame(&corrupt, MAX_RESPONSE),
+                Err(NetError::Malformed),
+                "accepted framed suffix {trailing} (duplicate={duplicate})"
+            );
+        }
+        let declared = u32::try_from(framed.len() - 4).unwrap();
+        for length in [0, 1, declared - 1, declared + 1, MAX_RESPONSE as u32 + 1] {
+            let mut corrupt = framed.clone();
+            corrupt[..4].copy_from_slice(&length.to_be_bytes());
+            assert_eq!(
+                decode_frame(&corrupt, MAX_RESPONSE),
+                Err(NetError::Malformed),
+                "accepted declared length {length} (duplicate={duplicate})"
+            );
+        }
+        // A correctly adjusted, shorter frame is valid framing, but an
+        // incomplete successful receipt must still fail at receipt decoding.
+        let shorter = frame(STATUS_OK, &raw_receipt[..raw_receipt.len() - 1]);
+        let (status, body) = decode_frame(&shorter, MAX_RESPONSE).unwrap();
+        assert_eq!(decode_status(status, body).unwrap(), raw_receipt[..40]);
+        assert_eq!(decode(&shorter, &item), Err(NetError::Malformed));
+    }
+
+    for (status, error) in [
+        (STATUS_CONFLICT, NetError::Conflict),
+        (STATUS_CAPACITY, NetError::Capacity),
+        (STATUS_BOUNDS, NetError::Bounds),
+        (STATUS_SCOPE, NetError::Scope),
+        (STATUS_DENIED, NetError::Denied),
+        (STATUS_UNAVAILABLE, NetError::Unavailable),
+    ] {
+        let framed = frame(status, &[]);
+        let (code, body) = decode_frame(&framed, MAX_RESPONSE).unwrap();
+        assert_eq!(decode_status(code, body), Err(error));
+        let framed = frame(status, b"unexpected body");
+        let (code, body) = decode_frame(&framed, MAX_RESPONSE).unwrap();
+        assert_eq!(decode_status(code, body), Err(NetError::Malformed));
+    }
+    for status in std::iter::once(1u8).chain(8u8..=u8::MAX) {
+        for body in [&[][..], &b"unexpected body"[..]] {
+            let framed = frame(status, body);
+            let (code, body) = decode_frame(&framed, MAX_RESPONSE).unwrap();
+            assert_eq!(decode_status(code, body), Err(NetError::Malformed));
+        }
+    }
+}
+
+#[test]
 fn relay_item_single_bit_mutations_refuse() {
     let raw = frozen_v1_item_bytes();
     assert_eq!(RelayItem::decode(&raw).unwrap().encode().unwrap(), raw);
