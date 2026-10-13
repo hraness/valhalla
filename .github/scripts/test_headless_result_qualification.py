@@ -105,7 +105,7 @@ class HeadlessResultTests(unittest.TestCase):
               schema=linux.SCHEMA, source_sha=SHA, run_id=RUN, run_attempt=ATTEMPT,
               cleanup_confirmed=True, cleanup_fallback_used=False))
         write(self.files["mcp", "receipt.json"], dict(schema=mcp.SCHEMA,
-              source_sha=SHA, binary_sha256=self.expected["binary_sha256"], passed=True,
+              **self.expected, passed=True,
               cleanup_confirmed=True, cleanup_fallback_used=False, started_unix=NOW-20,
               finished_unix=NOW-1, runner_sha256=result.digest(result.SCRIPTS / "headless_mcp_qualification.py", 1024*1024),
               platform="linux", scope="one fresh public room; actual foreground daemon and MCP pipes; no network peer",
@@ -120,10 +120,11 @@ class HeadlessResultTests(unittest.TestCase):
         doc[field] = value
         write(path, doc)
 
-    def test_complete_receipts_with_mcp_emitted_fields_only(self):
+    def test_complete_receipts_with_exact_mcp_build_context(self):
         self.verify()
-        self.assertNotIn("run_id", read(self.files["mcp", "receipt.json"]))
-        self.assertNotIn("lock_sha256", read(self.files["mcp", "receipt.json"]))
+        mcp_receipt = read(self.files["mcp", "receipt.json"])
+        for field in self.expected:
+            self.assertEqual(mcp_receipt[field], self.expected[field])
         self.assertNotIn("client_machine", read(self.files["private-host", "host-receipt.json"]))
 
     def test_missing_and_unexpected_artifact_rejected(self):
@@ -161,6 +162,10 @@ class HeadlessResultTests(unittest.TestCase):
             (("linux-managed", "cleanup-receipt.json"), "run_id", "72"),
             (("mcp", "receipt.json"), "source_sha", "c" * 40),
             (("mcp", "receipt.json"), "binary_sha256", "c" * 64),
+            (("mcp", "receipt.json"), "run_id", "74"),
+            (("mcp", "receipt.json"), "run_attempt", "3"),
+            (("mcp", "receipt.json"), "nonce", "c" * 64),
+            (("mcp", "receipt.json"), "lock_sha256", "c" * 64),
         ):
             with self.subTest(selected=selected, field=field):
                 path = self.files[selected]
@@ -169,6 +174,23 @@ class HeadlessResultTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.verify()
                 path.write_text(original)
+
+    def test_missing_and_wrongly_typed_mcp_context_rejected_with_same_candidate(self):
+        selected = ("mcp", "receipt.json")
+        path = self.files[selected]
+        original = path.read_text()
+        for field in ("run_id", "run_attempt", "nonce", "lock_sha256"):
+            for value in (None, 2, True):
+                with self.subTest(field=field, value=value):
+                    receipt = read(path)
+                    if value is None:
+                        receipt.pop(field)
+                    else:
+                        receipt[field] = value
+                    write(path, receipt)
+                    with self.assertRaises(ValueError):
+                        self.verify()
+                    path.write_text(original)
 
     def test_binary_and_lock_bytes_bound(self):
         path = self.files["binary", "fixture"]

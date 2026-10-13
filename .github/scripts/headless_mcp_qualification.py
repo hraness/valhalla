@@ -5,10 +5,12 @@ Use a new private work directory and a read-only, immutable candidate. No build,
 installed service, external peer, relay, existing home, or user grant is used.
 Only receipt.json is shareable; retained homes, grants and diagnostics are private.
 Run through the shared compute lane. The same adapter can qualify installed bytes
-after copying them to an immutable task-owned candidate.
+after copying them to an immutable task-owned candidate. A workflow fixture
+must have its sibling build manifest; standalone candidates remain supported.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,6 +34,69 @@ CASES = ("fresh_daemon", "initialize_handshake", "four_tools_discovered", "fixed
 MESSAGE = "synthetic MCP process qualification message"
 JOURNEY_SECONDS = 120
 COMMAND_SECONDS = 20
+MAX_MANIFEST = 65536
+MAX_LOCK = 2 * 1024 * 1024
+
+
+def bounded_owned_file(path, maximum):
+    """Read a single owned regular file without following links or unbounded growth."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(descriptor)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                and info.st_nlink == 1 and 0 < info.st_size <= maximum,
+                "missing, unsafe or oversized build input")
+        with os.fdopen(os.dup(descriptor), "rb") as source:
+            raw = source.read(maximum + 1)
+        require(len(raw) == info.st_size and stamp(os.fstat(descriptor)) == stamp(info)
+                and stamp(path.lstat()) == stamp(info), "build input changed while reading")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def build_context(binary, expected_digest, source_sha, lockfile):
+    """Bind CI's fixture to the sibling manifest before starting any process.
+
+    A standalone binary without a sibling manifest emits no run context and is
+    intentionally not acceptable to the workflow's aggregate verifier.
+    """
+    path = binary.parent / "build.json"
+    if binary.name != "fixture" and not path.exists() and not path.is_symlink():
+        return {}
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, "duplicate build manifest field")
+            value[key] = item
+        return value
+
+    def reject_constant(_value):
+        raise ValueError("non-finite build manifest field")
+
+    manifest = json.loads(bounded_owned_file(path, MAX_MANIFEST),
+                          object_pairs_hook=unique, parse_constant=reject_constant)
+    require(type(manifest) is dict and manifest.get("schema") == "valhalla.headless-public-independent-runners.v1",
+            "foreign build manifest")
+    require(type(manifest.get("source_sha")) is str and manifest["source_sha"] == source_sha
+            and type(manifest.get("binary_sha256")) is str
+            and manifest["binary_sha256"] == expected_digest,
+            "build source or candidate digest differs")
+    for name in ("lock_sha256", "nonce"):
+        require(type(manifest.get(name)) is str and re.fullmatch(r"[a-f0-9]{64}", manifest[name]),
+                "invalid build commitment: " + name)
+    for name in ("run_id", "run_attempt"):
+        value = manifest.get(name)
+        require(type(value) is str and re.fullmatch(r"[1-9][0-9]*", value) and len(value) <= 20,
+                "invalid build context: " + name)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        require(all(manifest[key] == os.environ.get(env) for key, env in
+                    (("source_sha", "GITHUB_SHA"), ("run_id", "GITHUB_RUN_ID"),
+                     ("run_attempt", "GITHUB_RUN_ATTEMPT"))), "foreign workflow context")
+    require(hashlib.sha256(bounded_owned_file(lockfile, MAX_LOCK)).hexdigest() == manifest["lock_sha256"],
+            "source lock differs from build")
+    return {key: manifest[key] for key in ("run_id", "run_attempt", "nonce", "lock_sha256")}
 
 
 def frame(number, method, **params):
@@ -64,8 +129,8 @@ def content(value):
 
 
 class McpRun:
-    def __init__(self, binary, expected_digest, work, source_sha, *, runner=run_command,
-                 popen=subprocess.Popen, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, binary, expected_digest, work, source_sha, *, lockfile=Path("Cargo.lock"),
+                 runner=run_command, popen=subprocess.Popen, clock=time.monotonic, sleep=time.sleep):
         require(re.fullmatch(r"[a-f0-9]{64}", expected_digest), "invalid binary digest")
         require(re.fullmatch(r"[a-f0-9]{40}", source_sha), "invalid source revision")
         require(binary.is_absolute() and not binary.is_symlink(), "candidate must be absolute and regular")
@@ -77,6 +142,7 @@ class McpRun:
         self.binary_stamp = stamp(info)
         self.binary_digest = expected_digest
         require(digest(self.binary) == expected_digest, "candidate digest differs")
+        context = build_context(self.binary, expected_digest, source_sha, lockfile)
         require(work.is_absolute() and work.name not in ("", ".", "..")
                 and not work.exists() and not work.is_symlink(), "work must be a new absolute directory")
         self.work = work.parent.resolve(strict=True) / work.name
@@ -93,7 +159,7 @@ class McpRun:
         self.phase = "preflight"
         self.last_command = None
         self.result = dict(schema=SCHEMA, source_sha=source_sha, binary_sha256=expected_digest,
-                           runner_sha256=digest(Path(__file__)), platform=sys.platform,
+                           **context, runner_sha256=digest(Path(__file__)), platform=sys.platform,
                            scope="one fresh public room; actual foreground daemon and MCP pipes; no network peer",
                            passed=False, cleanup_confirmed=False, cleanup_fallback_used=False,
                            started_unix=int(time.time()), cases={name: False for name in CASES})
