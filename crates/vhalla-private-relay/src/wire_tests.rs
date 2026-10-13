@@ -47,6 +47,82 @@ fn frozen_v1_item_and_page_request_bytes_survive_extraction() {
 }
 
 #[test]
+fn retention_receipt_refuses_corruption() {
+    let item = RelayItem::decode(&frozen_v1_item_bytes()).unwrap();
+    let different_item = RelayItem::new(
+        item.namespace(),
+        item.sequence(),
+        item.operation(),
+        item.kind(),
+        b"different ciphertext",
+    )
+    .unwrap();
+    assert_ne!(different_item.digest(), item.digest());
+
+    // This wire receipt claims local retention, never recipient delivery.
+    // Matching the item digest and requiring a nonzero position do not prove
+    // relay custody or authenticate the mailbox position.
+    for duplicate in [false, true] {
+        let receipt = RelayReceipt {
+            position: 8,
+            digest: item.digest(),
+            duplicate,
+        };
+        let raw = encode_receipt(receipt);
+        assert_eq!(raw.len(), 41);
+        assert_eq!(&raw[..8], &8u64.to_be_bytes());
+        assert_eq!(&raw[8..40], &item.digest());
+        assert_eq!(raw[40], u8::from(duplicate));
+        assert_eq!(decode_receipt(&raw, &item), Ok(receipt));
+        assert_eq!(
+            decode_receipt(&raw, &different_item),
+            Err(NetError::Malformed)
+        );
+
+        for len in 0..raw.len() {
+            assert_eq!(
+                decode_receipt(&raw[..len], &item),
+                Err(NetError::Malformed),
+                "accepted prefix {len} (duplicate={duplicate})"
+            );
+        }
+        for trailing in u8::MIN..=u8::MAX {
+            let mut corrupt = raw.clone();
+            corrupt.push(trailing);
+            assert_eq!(
+                decode_receipt(&corrupt, &item),
+                Err(NetError::Malformed),
+                "accepted trailing byte {trailing} (duplicate={duplicate})"
+            );
+        }
+        let mut zero = raw.clone();
+        zero[..8].fill(0);
+        assert_eq!(decode_receipt(&zero, &item), Err(NetError::Malformed));
+
+        for index in 8..40 {
+            for bit in 0..8 {
+                let mut corrupt = raw.clone();
+                corrupt[index] ^= 1u8 << bit;
+                assert_eq!(
+                    decode_receipt(&corrupt, &item),
+                    Err(NetError::Malformed),
+                    "accepted digest byte {index}, bit {bit} (duplicate={duplicate})"
+                );
+            }
+        }
+        for flag in 2..=u8::MAX {
+            let mut corrupt = raw.clone();
+            corrupt[40] = flag;
+            assert_eq!(
+                decode_receipt(&corrupt, &item),
+                Err(NetError::Malformed),
+                "accepted noncanonical flag {flag}"
+            );
+        }
+    }
+}
+
+#[test]
 fn relay_item_single_bit_mutations_refuse() {
     let raw = frozen_v1_item_bytes();
     assert_eq!(RelayItem::decode(&raw).unwrap().encode().unwrap(), raw);
