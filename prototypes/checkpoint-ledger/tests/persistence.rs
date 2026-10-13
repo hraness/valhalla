@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use ed25519_dalek::SigningKey;
 use proptest::prelude::*;
@@ -118,6 +120,81 @@ impl PinWitness for IndependentWitness {
         } else {
             Ok(self.latest.clone())
         }
+    }
+}
+
+// The bundle-read hook deterministically moves a separate witness or the local
+// pin while the old, valid bundle is being read. No thread timing is involved.
+#[derive(Clone)]
+struct ReadWitness(Rc<RefCell<ReadWitnessState>>);
+struct ReadWitnessState {
+    latest: Option<Pin>,
+    unavailable: bool,
+    reads: usize,
+}
+impl ReadWitness {
+    fn new(pin: Pin) -> Self {
+        Self(Rc::new(RefCell::new(ReadWitnessState {
+            latest: Some(pin),
+            unavailable: false,
+            reads: 0,
+        })))
+    }
+}
+impl PinWitness for ReadWitness {
+    type Error = Fault;
+    fn capture_pin(&mut self) -> Result<Option<Pin>, Fault> {
+        let mut state = self.0.borrow_mut();
+        state.reads += 1;
+        if state.unavailable {
+            Err(Fault::Unavailable)
+        } else {
+            Ok(state.latest.clone())
+        }
+    }
+}
+
+enum ReadChange {
+    None,
+    Witness(Option<Pin>),
+    WitnessOutage,
+    Local(Option<Pin>),
+    LocalOutage,
+}
+struct ReadRaceDisk {
+    disk: Disk,
+    witness: ReadWitness,
+    change: ReadChange,
+    pin_reads: usize,
+    bundle_reads: usize,
+}
+impl Storage for ReadRaceDisk {
+    type Error = Fault;
+    fn read_pin(&mut self) -> Result<Option<Pin>, Fault> {
+        self.pin_reads += 1;
+        self.disk.read_pin()
+    }
+    fn read_bundle(&mut self, id: BundleId) -> Result<Vec<u8>, Fault> {
+        self.bundle_reads += 1;
+        let raw = self.disk.read_bundle(id)?;
+        match std::mem::replace(&mut self.change, ReadChange::None) {
+            ReadChange::None => {}
+            ReadChange::Witness(pin) => self.witness.0.borrow_mut().latest = pin,
+            ReadChange::WitnessOutage => self.witness.0.borrow_mut().unavailable = true,
+            ReadChange::Local(pin) => self.disk.pin = pin,
+            ReadChange::LocalOutage => self.disk.unreadable_pin = true,
+        }
+        Ok(raw)
+    }
+    fn put_bundle(&mut self, _id: BundleId, _raw: &[u8]) -> Result<(), Fault> {
+        panic!("protected load must not write a bundle")
+    }
+    fn compare_exchange_pin(
+        &mut self,
+        _expected: Option<&Pin>,
+        _next: &Pin,
+    ) -> Result<bool, Fault> {
+        panic!("protected load must not write a pin")
     }
 }
 
@@ -522,6 +599,123 @@ fn protected_pin_refuses_stale_missing_and_coordinated_store_rollback() {
         ProtectedLoadError::MissingWitness,
     );
     assert_eq!(model.snapshot(), original_snapshot);
+}
+
+#[test]
+fn protected_load_refuses_mid_read_advance() {
+    let (good, mut model, pin) = base();
+    let old_snapshot = model.snapshot();
+    append(&mut model, b"second");
+    let cert = certify(&mut model);
+    let next = PreparedCommit::prepare(&model, &cert, Some(&pin))
+        .unwrap()
+        .pin()
+        .clone();
+    let advanced_snapshot = model.snapshot();
+
+    for (change, reason, local_reads) in [
+        (
+            ReadChange::Witness(Some(next.clone())),
+            ProtectedLoadError::PinChanged,
+            1,
+        ),
+        (
+            ReadChange::Local(Some(next.clone())),
+            ProtectedLoadError::PinChanged,
+            2,
+        ),
+        (
+            ReadChange::Witness(None),
+            ProtectedLoadError::MissingWitness,
+            1,
+        ),
+        (
+            ReadChange::WitnessOutage,
+            ProtectedLoadError::Witness(Fault::Unavailable),
+            1,
+        ),
+        (
+            ReadChange::Local(None),
+            ProtectedLoadError::MissingLocalPin,
+            2,
+        ),
+        (
+            ReadChange::LocalOutage,
+            ProtectedLoadError::Local(StoreError::Backend(Fault::Corrupt)),
+            2,
+        ),
+    ] {
+        let mut witness = ReadWitness::new(pin.clone());
+        let mut raced = ReadRaceDisk {
+            disk: good.clone(),
+            witness: witness.clone(),
+            change,
+            pin_reads: 0,
+            bundle_reads: 0,
+        };
+        assert_eq!(
+            load_protected(&mut raced, &mut witness, trust(), 64).err(),
+            Some(reason)
+        );
+        assert_eq!(witness.0.borrow().reads, 2);
+        assert_eq!(raced.pin_reads, local_reads);
+        assert_eq!(raced.bundle_reads, 1);
+        // Only the injected read-side change occurs; neither recovery nor
+        // refusal writes, repairs or scans for an older certified bundle.
+        assert_eq!(raced.disk.visible, good.visible);
+        assert_eq!(raced.disk.durable, good.durable);
+        assert_eq!(raced.disk.durable_pin, good.durable_pin);
+        assert_eq!((raced.disk.puts, raced.disk.cas), (good.puts, good.cas));
+        assert_eq!(model.snapshot(), advanced_snapshot);
+    }
+
+    let mut witness = ReadWitness::new(pin.clone());
+    let mut stable = ReadRaceDisk {
+        disk: good.clone(),
+        witness: witness.clone(),
+        change: ReadChange::None,
+        pin_reads: 0,
+        bundle_reads: 0,
+    };
+    let recovered = load_protected(&mut stable, &mut witness, trust(), 64).unwrap();
+    assert_eq!(recovered.snapshot(), old_snapshot);
+    assert_eq!(recovered.accepted().unwrap().checkpoint(), pin.checkpoint());
+    assert_eq!(
+        (
+            witness.0.borrow().reads,
+            stable.pin_reads,
+            stable.bundle_reads
+        ),
+        (2, 2, 1)
+    );
+    assert_eq!(stable.disk, good);
+
+    let mut corrupt = good.clone();
+    corrupt.visible.get_mut(&pin.bundle()).unwrap()[0] ^= 1;
+    let before = corrupt.clone();
+    let mut witness = ReadWitness::new(pin);
+    let mut invalid = ReadRaceDisk {
+        disk: corrupt,
+        witness: witness.clone(),
+        change: ReadChange::None,
+        pin_reads: 0,
+        bundle_reads: 0,
+    };
+    assert_eq!(
+        load_protected(&mut invalid, &mut witness, trust(), 64).err(),
+        Some(ProtectedLoadError::Local(StoreError::Invalid(
+            ProtocolError::BundleMismatch
+        )))
+    );
+    assert_eq!(
+        (
+            witness.0.borrow().reads,
+            invalid.pin_reads,
+            invalid.bundle_reads
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(invalid.disk, before);
 }
 
 #[test]
