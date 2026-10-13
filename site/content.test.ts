@@ -302,16 +302,16 @@ test('agent setup registers the daemon MCP server in Claude Code and Codex with 
   expect(setup.split('An agent session using these tools was not run.').length).toBe(2);
 });
 
-test('the home page puts the proof transcript in the hero and the signature figure under the idea', () => {
+test('the home page puts the room mockup in the hero and the signature figure under the idea', () => {
   expect(home.indexOf('class="hero"')).toBeLessThan(home.indexOf('class="proof"'));
   expect(home.indexOf('class="proof"')).toBeLessThan(home.indexOf('id="model-title"'));
   expect(home.indexOf('id="model-title"')).toBeLessThan(home.indexOf('data-hraness-signature="signed-room"'));
-  // The transcript names only daemon operations and fields that exist.
-  for (const operation of ['room.create', 'public.publish', 'public.link', 'public.inspect_link', 'room.join_public', 'public.source', 'room.send', 'public.sync_status', 'room.messages']) {
-    expect(home).toContain(`"op":"${operation}"`);
-  }
-  expect(home).toContain('"queued_locally":true,"delivery":"unconfirmed"');
-  expect(home).toContain('"coverage":"complete"');
+  // The room mockup is an example: invented members, and only delivery states the daemon reports.
+  expect(home).toContain('class="room"');
+  expect(home).toContain('An example room.');
+  for (const state of ['signed', 'stored', 'delivered']) expect(home).toContain(`<span>${state}</span>`.replace('<span>signed</span>', '<span class="room-seal">signed</span>'));
   expect(home).not.toContain('class="founder-note"');
   expect(home).not.toContain('In development');
+  // One object per section, at most eight sections between the hero and the footer.
+  expect((home.match(/<section /g) ?? []).length).toBeLessThanOrEqual(9);
 });
