@@ -173,6 +173,7 @@ class McpQualificationTests(unittest.TestCase):
                         self.machine.grant["token"], self.machine.grant["generation"]):
             self.assertNotIn(private, (run.work / "receipt.json").read_text())
 
+    @mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "false"})
     def test_manifest_refusal_precedes_work_directory_and_any_candidate_launch(self):
         fixture, lock, manifest, build = self.bundled_candidate()
         good = build.read_text()
