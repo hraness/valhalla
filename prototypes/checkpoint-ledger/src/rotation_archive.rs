@@ -33,6 +33,25 @@ const LOCK: &str = "archive.lock";
 const EVIDENCE: u8 = 1;
 const EXHAUSTED: u8 = 2;
 
+// The same seek/write_all/sync path is used for real files and the unit-test
+// fault wrapper. No fault configuration is present in a normal library build.
+trait AppendIo: Seek + Write {
+    fn sync_file(&mut self) -> io::Result<()>;
+}
+
+impl AppendIo for File {
+    fn sync_file(&mut self) -> io::Result<()> {
+        self.sync_all()
+    }
+}
+
+fn append_bytes(io: &mut impl AppendIo, suffix: &[u8]) -> Result<(), Error> {
+    io.seek(SeekFrom::End(0))
+        .map_err(|_| Error::UncertainWrite)?;
+    io.write_all(suffix).map_err(|_| Error::UncertainWrite)?;
+    io.sync_file().map_err(|_| Error::UncertainWrite)
+}
+
 /// Hash of the exact versioned archive bytes; only an independently retained
 /// copy detects erasure or rollback. This value alone supplies no policy or
 /// host authority. No default or missing-file fallback is provided.
@@ -123,6 +142,8 @@ pub struct RotationArchive<'a> {
     raw: Vec<u8>,
     exhausted: bool,
     poisoned: bool,
+    #[cfg(test)]
+    fault: Option<io_faults::Fault>,
 }
 
 impl<'a> RotationArchive<'a> {
@@ -160,6 +181,8 @@ impl<'a> RotationArchive<'a> {
                 raw,
                 exhausted: false,
                 poisoned: false,
+                #[cfg(test)]
+                fault: None,
             },
             expected,
         ))
@@ -256,6 +279,8 @@ impl<'a> RotationArchive<'a> {
             raw,
             exhausted,
             poisoned: false,
+            #[cfg(test)]
+            fault: None,
         })
     }
 
@@ -363,13 +388,16 @@ impl<'a> RotationArchive<'a> {
 
     fn write_suffix(&mut self, suffix: &[u8]) -> Result<(), Error> {
         self.poisoned = true;
-        self.file
-            .seek(SeekFrom::End(0))
-            .map_err(|_| Error::UncertainWrite)?;
-        self.file
-            .write_all(suffix)
-            .map_err(|_| Error::UncertainWrite)?;
-        self.file.sync_all().map_err(|_| Error::UncertainWrite)?;
+        #[cfg(test)]
+        let result = match self.fault.as_mut() {
+            Some(fault) => {
+                append_bytes(&mut io_faults::FaultIo::new(&mut self.file, fault), suffix)
+            }
+            None => append_bytes(&mut self.file, suffix),
+        };
+        #[cfg(not(test))]
+        let result = append_bytes(&mut self.file, suffix);
+        result?;
         self.raw.extend_from_slice(suffix);
         self.poisoned = false;
         Ok(())
@@ -443,3 +471,7 @@ fn read_bounded(file: &mut File) -> Result<Vec<u8>, Error> {
     }
     Ok(raw)
 }
+
+#[cfg(test)]
+#[path = "rotation_archive_io_faults.rs"]
+mod io_faults;

@@ -1242,6 +1242,19 @@ physical durability, release, protected freshness or policy activation. Record
 the exact candidate tree and final `Required` checks at delivery, not from a
 locally passing test alone.
 
+**Agent-decided, owner may revisit (2026-10-13): rotation-archive I/O fault
+regression.** The Unix `native-store` prototype now injects errors through
+the archive's real append seek/write/sync path for evidence records and the
+capacity marker. Tests cover zero and partial writes, sync-before and
+sync-after lost-acknowledgement cases, poisoned-handle retry refusal without
+another write, exact-pin reopen and certificate re-verification, and a
+recovered marker's unchanged commitment after refusing overflow. Known-bad
+clear-poison and same-disk guessed-pin counterexamples are retained. The
+prototype README supplies the focused command and limitations. This is an
+API-level local-file simulation, not independently held pin custody, a power-cut
+durability result, protected freshness or permission to activate rotation.
+Final exact-tree and PR-head `Required` evidence belongs to delivery.
+
 Ordinary commits still reject all implicit trust or epoch changes. The next
 promotion experiments keep rotation separate with these remaining constraints:
 
