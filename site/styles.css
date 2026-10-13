@@ -155,20 +155,9 @@ main {
   align-items:center;
   min-height:36px;
   padding:0 14px;
-  border:1px solid var(--ink);
-  border-radius:6px;
-  background:var(--ink);
-  color:var(--paper);
   font-size:14px;
-  font-weight:550;
   text-decoration:none;
   white-space:nowrap;
-}
-
-.header-cta:hover {
-  color:var(--paper);
-  background:var(--vhalla-accent);
-  border-color:var(--vhalla-accent);
 }
 
 .header-actions .hraness-design-theme-toggle__trigger {
@@ -210,18 +199,7 @@ h1 {
   gap:14px;
   min-height:48px;
   padding:12px 20px;
-  border:1px solid var(--ink);
-  border-radius:6px;
-  color:var(--paper);
-  background:var(--ink);
   text-decoration:none;
-  font-weight:550;
-}
-
-.button-link:hover {
-  color:var(--paper);
-  background:var(--vhalla-accent);
-  border-color:var(--vhalla-accent);
 }
 
 .text-link {
@@ -799,8 +777,10 @@ h1 {
 pre:not(.hraness-agent-setup__pre) {
   font:13px/1.75 var(--mono);
   max-width:100%;
+  max-inline-size:100%;
   tab-size:2;
   overflow-x:auto;
+  overscroll-behavior-x:contain;
   overflow-wrap:normal;
   white-space:pre;
   padding:19px 21px;
@@ -1762,4 +1742,88 @@ code,pre {
     fill:none;
     stroke:CanvasText;
   }
+}
+
+/* Ingot primary action. Shared across the portfolio, 2026-10-13. The header
+ * action and every primary button on the site read like the foil lockup: a
+ * neutral metal, a faint spectrum reflection, one hairline edge. */
+.hraness-marketing-action[data-emphasis="primary"],
+.button-link,
+.header-cta,
+.ingot {
+  --ingot-ink: var(--ink, var(--foreground, CanvasText));
+  --ingot-paper: var(--paper, var(--background, Canvas));
+  --ingot-metal: color-mix(in oklch, var(--ingot-ink) 88%, var(--ingot-paper));
+  --ingot-metal-light: color-mix(in oklch, var(--ingot-ink) 72%, var(--ingot-paper));
+  --ingot-text: var(--ingot-paper);
+  position: relative;
+  isolation: isolate;
+  border: 1px solid color-mix(in oklch, var(--ingot-ink) 92%, var(--ingot-paper));
+  border-radius: 0.625rem;
+  background-color: var(--ingot-metal);
+  background-image:
+    linear-gradient(180deg, color-mix(in srgb, white 16%, transparent) 0%, transparent 46%, color-mix(in srgb, black 10%, transparent) 100%),
+    linear-gradient(115deg,
+      color-mix(in srgb, var(--hraness-foil-1, oklch(0.89 0.065 337)) 9%, transparent),
+      color-mix(in srgb, var(--hraness-foil-2, oklch(0.875 0.05 277)) 9%, transparent),
+      color-mix(in srgb, var(--hraness-foil-3, oklch(0.92 0.05 170)) 9%, transparent),
+      color-mix(in srgb, var(--hraness-foil-4, oklch(0.95 0.045 96)) 9%, transparent),
+      color-mix(in srgb, var(--hraness-foil-5, oklch(0.9 0.05 55)) 9%, transparent),
+      color-mix(in srgb, var(--hraness-foil-6, oklch(0.875 0.06 305)) 9%, transparent)),
+    linear-gradient(115deg, var(--ingot-metal-light) 0%, var(--ingot-metal) 28%, var(--ingot-metal-light) 52%, var(--ingot-metal) 74%, var(--ingot-metal-light) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 28%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, black 18%, transparent),
+    0 1px 2px color-mix(in srgb, var(--ingot-ink) 18%, transparent),
+    0 6px 16px -8px color-mix(in srgb, var(--ingot-ink) 35%, transparent);
+  color: var(--ingot-text);
+  font-weight: 550;
+  letter-spacing: 0.005em;
+  text-shadow: 0 1px 0 color-mix(in srgb, black 22%, transparent);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+.hraness-marketing-action[data-emphasis="primary"]:hover,
+.button-link:hover,
+.header-cta:hover,
+.ingot:hover { color: var(--ingot-text); filter: brightness(1.06); }
+.hraness-marketing-action[data-emphasis="primary"]:active,
+.button-link:active,
+.header-cta:active,
+.ingot:active { transform: translateY(1px); box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent), inset 0 2px 6px color-mix(in srgb, black 30%, transparent), 0 1px 1px color-mix(in srgb, var(--ingot-ink) 12%, transparent); }
+.hraness-marketing-action[data-emphasis="primary"]:focus-visible,
+.button-link:focus-visible,
+.header-cta:focus-visible,
+.ingot:focus-visible { outline: 2px solid var(--focus, var(--hraness-marketing-accent, var(--primary))); outline-offset: 3px; }
+:where([data-theme="dark"], .dark) .hraness-marketing-action[data-emphasis="primary"],
+:where([data-theme="dark"], .dark) .button-link,
+:where([data-theme="dark"], .dark) .header-cta,
+:where([data-theme="dark"], .dark) .ingot {
+  /* Silver on dark: the ingot is the pale metal and the text is the page ink. */
+  --ingot-metal: color-mix(in oklch, var(--ingot-ink) 90%, var(--ingot-paper));
+  --ingot-metal-light: color-mix(in oklch, var(--ingot-ink) 76%, var(--ingot-paper));
+  text-shadow: 0 1px 0 color-mix(in srgb, white 30%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"]):not(.light)) .hraness-marketing-action[data-emphasis="primary"],
+  :root:where(:not([data-theme="light"]):not(.light)) .button-link,
+  :root:where(:not([data-theme="light"]):not(.light)) .header-cta,
+  :root:where(:not([data-theme="light"]):not(.light)) .ingot {
+    --ingot-metal: color-mix(in oklch, var(--ingot-ink) 90%, var(--ingot-paper));
+    --ingot-metal-light: color-mix(in oklch, var(--ingot-ink) 76%, var(--ingot-paper));
+    text-shadow: 0 1px 0 color-mix(in srgb, white 30%, transparent);
+  }
+}
+@media (forced-colors: active) {
+  .hraness-marketing-action[data-emphasis="primary"], .button-link, .header-cta, .ingot { background: ButtonFace; color: ButtonText; border-color: ButtonText; box-shadow: none; text-shadow: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hraness-marketing-action[data-emphasis="primary"], .button-link, .header-cta, .ingot { transition: none; }
+  .hraness-marketing-action[data-emphasis="primary"]:active, .button-link:active, .header-cta:active, .ingot:active { transform: none; }
+}
+
+/* Phone width: no code block may widen the page. */
+pre {
+  max-inline-size:100%;
+  overflow-x:auto;
+  overscroll-behavior-x:contain;
 }
