@@ -1212,6 +1212,23 @@ independently controlled witness with authenticated fixed identity, durable
 serialized CAS and revocable exclusive grant; local/host crash drills, bounded
 retention, production authority integration and exact-head delivery checks.
 
+**Agent-decided, owner may revisit (2026-10-13): protected-intent corruption
+regression.** A Unix `protected_file` test exercises eight retained-intent
+mutations (truncation, overlength, domain/version errors, invalid pin generations,
+and validly encoded wrong predecessor/target) at two interruption points: before
+local pin CAS with the witness still at the predecessor, and after a lost host-CAS
+reply with the witness at the target. Malformed bytes refuse on reopen; injected
+under the held lock, both `advance` (original and certified competing fork) and
+`reconcile` refuse, without scanning older bundles or mutating any file name,
+contents, Unix type/mode, witness pin or CAS count. With the exact intent repaired,
+a corrupt certified target bundle still refuses. Restoring its exact original
+bytes permits only the original target and exactly one total witness CAS. The
+prototype README gives the focused Rust 1.98.1 command. This is local-file and
+deterministic test-double evidence, not independently held witness custody,
+physical crash durability, a WASM runtime test or production activation. Final
+candidate-tree validation and exact-PR-head/post-main `Required` belong to
+delivery; independent witness and physical-crash qualification remain separate.
+
 ### Trust-rotation reference and remaining experiments
 
 **Agent-decided, owner may revisit (2026-10-12):** the standalone checkpoint

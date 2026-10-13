@@ -341,6 +341,27 @@ witness is only a test double; authentication, owner identity, exclusive grant
 custody, actual host durability, and physical faults remain unqualified. Never
 activate protected write or recovery based on these tests.
 
+A focused `protected_file` regression damages the retained predecessor/target
+intent in eight ways: truncation, extra bytes, wrong domain or version, zero
+predecessor or target generation, and structurally valid but mismatched
+predecessor or target pins. It repeats each case after a staged local-CAS cut
+(witness at predecessor) and a lost host-CAS reply (witness at target). Malformed
+intent refuses at reopen and, when injected under an open lock, both `advance`
+(for the original candidate and a certified fork) and `reconcile` refuse without
+fallback. Refusal preserves every store entry's name, bytes, Unix file type and
+mode, plus the witness pins and CAS count. Restoring the exact intent alone is
+not enough if the certified target bundle is corrupt; restoring its exact bytes
+then reconciles only the original target, permits protected load, and leaves
+exactly one witness CAS across the attempt and recovery. Run on Unix with:
+
+```console
+cargo +1.98.1 test --manifest-path prototypes/checkpoint-ledger/Cargo.toml --features native-store --locked --test protected_file
+```
+
+This is a deterministic test-double/API-level restart, not evidence of
+independent witness custody, physical power-loss durability, WASM runtime parity,
+production activation, or an available recovery service.
+
 ## Native storage profile
 
 The `native-store` feature exposes `file_store::FileStore` and
