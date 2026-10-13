@@ -1148,3 +1148,188 @@ fn overlong_service_wait_cap_refuses_construction() {
         Some(NetError::Bounds)
     );
 }
+
+#[test]
+fn tls_submit_refuses_corrupt_framed_receipts() {
+    use crate::relay::delivery::{self, DeliveryStore, JobState, RetryPolicy, TickBudget};
+    use vhalla_private_kernel::{
+        protocol::{AnchorId, Key, PrivateRoomScope, RoomId},
+        Context,
+    };
+
+    let fixture = Fixture::new();
+    let cert = certificates();
+    let exact = item(1);
+    let raw = exact.encode().unwrap();
+    let good_receipt = encode_receipt(RelayReceipt {
+        position: 1,
+        digest: exact.digest(),
+        duplicate: false,
+    });
+    // TLS consumes one declared response frame. Bytes after that frame are
+    // neither accepted as response data nor checked/refused by this reader.
+    // Only an in-frame suffix is a refusal here (agent-decided, owner may revisit).
+    let mut with_suffix = good_receipt.clone();
+    with_suffix.push(0xff); // Inside the declared frame, not after it.
+    let responses = [
+        0u32.to_be_bytes().to_vec(),
+        ((MAX_RESPONSE + 1) as u32).to_be_bytes().to_vec(),
+        vec![0, 0],                   // Truncated length prefix.
+        vec![0, 0, 0, 42, STATUS_OK], // Truncated declared body.
+        frame(STATUS_OK, &with_suffix),
+        frame(0xff, &[]), // Unknown status, not a receipt.
+        frame(
+            STATUS_OK,
+            &encode_receipt(RelayReceipt {
+                position: 1,
+                digest: item(2).digest(),
+                duplicate: false,
+            }),
+        ),
+        frame(STATUS_OK, &good_receipt),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut server_config = (*cert.config).clone();
+    server_config.alpn_protocols = vec![protocol(ns())];
+    let server = thread::spawn(move || {
+        for response in responses {
+            let (stream, _) = listener.accept().unwrap();
+            let mut tls = StreamOwned::new(
+                rustls::ServerConnection::new(Arc::new(server_config.clone())).unwrap(),
+                DeadlineSocket {
+                    stream,
+                    deadline: deadline(),
+                },
+            );
+            let request = read_frame(&mut tls, MAX_REQUEST, deadline()).unwrap();
+            assert_eq!(request[0], OP_PUT);
+            assert_eq!(&request[1..33], token(7).as_bytes());
+            assert_eq!(&request[33..], raw);
+            tls.write_all(&response).unwrap();
+            tls.flush().unwrap();
+        }
+    });
+
+    let context = Context {
+        scope: PrivateRoomScope {
+            room: RoomId::from_bytes([1; 32]).unwrap(),
+            anchor: AnchorId::from_bytes([2; 32]).unwrap(),
+        },
+        account: Key::from_bytes(
+            ed25519_dalek::SigningKey::from_bytes(&[3; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .unwrap(),
+        device: Key::from_bytes(
+            ed25519_dalek::SigningKey::from_bytes(&[4; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .unwrap(),
+    };
+    let queue = fixture.0.join("adversarial-delivery");
+    let mut transport = client(address, &cert, 7);
+    let endpoint = transport.endpoint_id();
+    let mut jobs = DeliveryStore::create_new(
+        &queue,
+        context,
+        ns(),
+        endpoint,
+        delivery::Limits {
+            max_jobs: 2,
+            max_bytes: 1024 * 1024,
+        },
+        RetryPolicy {
+            max_attempts: 3,
+            initial_backoff_secs: 1,
+            max_backoff_secs: 8,
+        },
+    )
+    .unwrap();
+    let queued = jobs.enqueue(&exact, 100).unwrap();
+    let budget = || TickBudget {
+        max_jobs: 1,
+        max_bytes: 1024 * 1024,
+        deadline: deadline(),
+    };
+    let mut now = 100;
+    for case in 0..7 {
+        let result = jobs.tick(&mut transport, now, budget()).unwrap();
+        assert_eq!(result.bytes, exact.encode().unwrap().len());
+        let status = &result.jobs[0];
+        assert_eq!(result.jobs.len(), 1);
+        assert_eq!(status.id, queued.id);
+        assert_eq!(
+            status.position, None,
+            "case {case} is not retention evidence"
+        );
+        assert_ne!(status.state, JobState::Retained);
+        if case == 2 || case == 3 {
+            assert!(matches!(
+                status.last_error,
+                Some(NetError::Unavailable | NetError::Connect | NetError::Timeout)
+            ));
+        } else {
+            assert_eq!(status.last_error, Some(NetError::Malformed));
+        }
+        // The first truncated response leaves the attempt uncertain; later
+        // malformed replies cannot erase that earlier unknown outcome.
+        if case >= 2 {
+            assert!(status.uncertain, "case {case} lost prior uncertainty");
+        }
+        let persisted = status.clone();
+        now = status.next_due;
+        drop(jobs);
+        jobs = DeliveryStore::open(&queue, context, ns(), endpoint).unwrap();
+        let reopened = jobs.job(queued.id).unwrap().unwrap();
+        assert_eq!(reopened, persisted);
+        if case >= 2 {
+            assert!(reopened.uncertain, "reopen lost uncertainty at case {case}");
+        }
+        let reader = rusqlite::Connection::open_with_flags(
+            queue.join("delivery.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let stored: Vec<u8> = reader
+            .query_row(
+                "SELECT item FROM jobs WHERE id=?1",
+                rusqlite::params![queued.id.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            exact.encode().unwrap(),
+            "retry must use exact bytes"
+        );
+        if persisted.state == JobState::Stopped {
+            let resumed = jobs.resume(Some(queued.id), now).unwrap();
+            assert_eq!(resumed.len(), 1);
+            assert_eq!(resumed[0].position, None);
+            if case >= 2 {
+                assert_eq!(resumed[0].state, JobState::Uncertain);
+                assert!(
+                    resumed[0].uncertain,
+                    "resume lost uncertainty at case {case}"
+                );
+            }
+        } else {
+            assert_eq!(persisted.state, JobState::Uncertain);
+        }
+    }
+    assert_eq!(jobs.evidence(queued.id).unwrap().outages, 2);
+    // This scripted, authenticated peer's matching receipt qualifies adapter
+    // parsing only; it is not independent custody or recipient delivery proof.
+    let result = jobs.tick(&mut transport, now, budget()).unwrap();
+    assert_eq!(result.jobs.len(), 1);
+    assert_eq!(result.jobs[0].state, JobState::Retained);
+    assert_eq!(result.jobs[0].position, Some(1));
+    assert_eq!(result.jobs[0].id, exact.digest());
+    server.join().unwrap();
+    drop(jobs);
+    let jobs = DeliveryStore::open(&queue, context, ns(), endpoint).unwrap();
+    assert_eq!(jobs.job(queued.id).unwrap(), Some(result.jobs[0].clone()));
+}
